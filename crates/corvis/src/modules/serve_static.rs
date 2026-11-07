@@ -1,11 +1,17 @@
 //! Static files: `ServeStaticModule.forRoot({ rootPath, serveRoot, exclude })`.
+//!
+//! Like `@nestjs/serve-static` on Express, the files are served by `express.static`
+//! ([`crate::http::ServeStatic`]): dotfiles ignored by default, `Range`, `ETag`,
+//! `Last-Modified`, conditional GET, a `301` to `dir/` for directories and streamed bodies.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::common::middleware::path_matches;
 use crate::di::{DynamicModule, Module, ModuleDefinition, Provider, Token};
-use crate::http::{Request, Response};
+use crate::http::serve_static::Outcome;
+use crate::http::{Dotfiles, Request, Response, ServeStatic};
 
 #[derive(Debug, Clone)]
 pub struct ServeStaticOptions {
@@ -19,11 +25,26 @@ pub struct ServeStaticOptions {
     pub index: bool,
     /// SPA fallback: serve `index.html` for unknown GET routes not excluded.
     pub spa_fallback: bool,
+    /// `serveStaticOptions.dotfiles` (default `Ignore`, like `express.static`).
+    pub dotfiles: Dotfiles,
+    /// See [`ServeStatic::follow_symlinks`] (default `true`).
+    pub follow_symlinks: bool,
+    /// The `express.static` built from these options on first use.
+    server: OnceLock<ServeStatic>,
 }
 
 impl ServeStaticOptions {
     pub fn new(root_path: impl Into<String>) -> Self {
-        ServeStaticOptions { root_path: root_path.into(), serve_root: "/".into(), exclude: Vec::new(), index: true, spa_fallback: false }
+        ServeStaticOptions {
+            root_path: root_path.into(),
+            serve_root: "/".into(),
+            exclude: Vec::new(),
+            index: true,
+            spa_fallback: false,
+            dotfiles: Dotfiles::Ignore,
+            follow_symlinks: true,
+            server: OnceLock::new(),
+        }
     }
     pub fn serve_root(mut self, r: impl Into<String>) -> Self {
         self.serve_root = r.into();
@@ -37,19 +58,28 @@ impl ServeStaticOptions {
         self.spa_fallback = v;
         self
     }
+    /// `serveStaticOptions: { dotfiles }`.
+    pub fn dotfiles(mut self, d: Dotfiles) -> Self {
+        self.dotfiles = d;
+        self
+    }
+    /// See [`ServeStatic::follow_symlinks`].
+    pub fn follow_symlinks(mut self, v: bool) -> Self {
+        self.follow_symlinks = v;
+        self
+    }
 
-    fn resolve(&self, url_path: &str) -> Option<PathBuf> {
-        let root = self.serve_root.trim_end_matches('/');
-        let rel = url_path.strip_prefix(root)?;
-        if !rel.is_empty() && !rel.starts_with('/') && !root.is_empty() {
-            return None;
-        }
-        let decoded = percent_encoding::percent_decode_str(rel).decode_utf8_lossy().to_string();
-        let rel_path = Path::new(decoded.trim_start_matches('/'));
-        if rel_path.components().any(|c| !matches!(c, Component::Normal(_))) {
-            return None;
-        }
-        Some(Path::new(&self.root_path).join(rel_path))
+    fn server(&self) -> &ServeStatic {
+        self.server.get_or_init(|| {
+            let mut s = ServeStatic::new(&self.root_path)
+                .mount(self.serve_root.trim_end_matches('/'))
+                .dotfiles(self.dotfiles)
+                .follow_symlinks(self.follow_symlinks);
+            if !self.index {
+                s = s.index(&[]);
+            }
+            s
+        })
     }
 
     pub(crate) async fn try_serve(&self, req: &Request) -> Option<Response> {
@@ -60,20 +90,17 @@ impl ServeStaticOptions {
         if self.exclude.iter().any(|e| path_matches(e, path)) {
             return None;
         }
-        let mut file = self.resolve(path)?;
-        if file.is_dir() || path.ends_with('/') {
-            if !self.index {
-                return None;
+        let server = self.server();
+        let inner = server.inner_path(path)?;
+        match server.serve(req, inner).await {
+            Outcome::Respond(r) => Some(r),
+            Outcome::Next if self.spa_fallback && Path::new(path).extension().is_none() => {
+                match server.serve(req, "/index.html").await {
+                    Outcome::Respond(r) => Some(r),
+                    Outcome::Next => None,
+                }
             }
-            file = file.join("index.html");
-        }
-        match tokio::fs::read(&file).await {
-            Ok(data) => Some(Response::bytes(data, crate::common::mime::from_path(&file))),
-            Err(_) if self.spa_fallback && Path::new(path).extension().is_none() => {
-                let index = Path::new(&self.root_path).join("index.html");
-                tokio::fs::read(&index).await.ok().map(|d| Response::bytes(d, "text/html; charset=utf-8"))
-            }
-            Err(_) => None,
+            Outcome::Next => None,
         }
     }
 }

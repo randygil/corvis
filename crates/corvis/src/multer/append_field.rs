@@ -3,8 +3,35 @@
 //!
 //! Array holes (`items[2]` before `items[0]`) are kept as `null`, which is what `JSON.stringify`
 //! prints for them.
+//!
+//! JavaScript arrays are sparse: `x[1000000]=v` costs one slot in V8, but a `Vec<Value>` would
+//! reserve a million. The holes a request may create are therefore bounded by an
+//! [`ArrayBudget`] (1000 per request); an index that needs more holes turns that array into an
+//! object with the indices as keys (`{ "1000000": "v" }`), like `qs` does past its `arrayLimit`.
 
 use serde_json::{Map, Value};
+
+/// Nesting depth of field names (`a[b][c]` = 2) when `limits.field_nesting_depth` is not set.
+/// Deeper names are kept as a literal key (like `qs` past its `depth`), so a name with thousands
+/// of `[x]` cannot build a value deep enough to overflow the stack.
+pub(crate) const DEFAULT_MAX_FIELD_DEPTH: usize = 32;
+/// Hard cap of the nesting depth, even with a bigger `limits.field_nesting_depth`.
+pub(crate) const MAX_FIELD_DEPTH: usize = 256;
+
+/// Holes (`null` padding) the fields of one request may create in arrays.
+pub(crate) const MAX_ARRAY_HOLES: usize = 1000;
+
+/// What is left of [`MAX_ARRAY_HOLES`] for the current request.
+#[derive(Debug, Clone)]
+pub(crate) struct ArrayBudget {
+    holes_left: usize,
+}
+
+impl Default for ArrayBudget {
+    fn default() -> Self {
+        ArrayBudget { holes_left: MAX_ARRAY_HOLES }
+    }
+}
 
 #[derive(Debug, Clone)]
 enum Key {
@@ -20,7 +47,7 @@ struct Step {
     last: bool,
 }
 
-fn parse_path(key: &str) -> Vec<Step> {
+fn parse_path(key: &str, max_depth: usize) -> Vec<Step> {
     let failure = || vec![Step { key: Key::Object(key.to_string()), append: false, next_is_array: false, last: true }];
     let first_end = key.find('[').unwrap_or(key.len());
     let first = &key[..first_end];
@@ -31,6 +58,9 @@ fn parse_path(key: &str) -> Vec<Step> {
     let bytes = key.as_bytes();
     let mut pos = first_end;
     while pos < key.len() {
+        if steps.len() > max_depth {
+            return failure();
+        }
         if bytes[pos] == b'[' && bytes.get(pos + 1) == Some(&b']') {
             pos += 2;
             steps.last_mut().unwrap().append = true;
@@ -48,8 +78,8 @@ fn parse_path(key: &str) -> Vec<Step> {
                 steps.last_mut().unwrap().next_is_array = true;
                 // parseInt of a huge index would overflow; treat it like a plain key.
                 match digits.parse::<usize>() {
-                    Ok(n) if n <= 1_000_000 => steps.push(Step { key: Key::Array(n), append: false, next_is_array: false, last: false }),
-                    _ => return failure(),
+                    Ok(n) => steps.push(Step { key: Key::Array(n), append: false, next_is_array: false, last: false }),
+                    Err(_) => return failure(),
                 }
                 continue;
             }
@@ -139,12 +169,37 @@ fn set_last(ctx: &mut Ctx<'_>, step: &Step, entry: Value) {
 }
 
 /// `appendField(store, key, value)`.
-pub(crate) fn append_field(store: &mut Map<String, Value>, key: &str, value: Value) {
-    let steps = parse_path(key);
-    apply(&mut Ctx::Obj(store), &steps, value);
+///
+/// `max_depth` bounds the nesting of `key` (see [`DEFAULT_MAX_FIELD_DEPTH`]).
+pub(crate) fn append_field(store: &mut Map<String, Value>, budget: &mut ArrayBudget, key: &str, value: Value, max_depth: usize) {
+    let steps = parse_path(key, max_depth.min(MAX_FIELD_DEPTH));
+    apply(&mut Ctx::Obj(store), &steps, value, budget);
 }
 
-fn apply(ctx: &mut Ctx<'_>, steps: &[Step], value: Value) {
+/// Before descending into `slot` with the index `next`: if it is an array and reaching the index
+/// needs more holes than the budget allows, the array becomes an object keyed by index
+/// (the existing items keep their positions as keys, holes are dropped).
+fn reserve_holes(slot: &mut Value, next: &Key, budget: &mut ArrayBudget) {
+    let (Value::Array(a), Key::Array(i)) = (&*slot, next) else { return };
+    if *i < a.len() {
+        return;
+    }
+    let holes = *i - a.len();
+    if holes <= budget.holes_left {
+        budget.holes_left -= holes;
+        return;
+    }
+    let Value::Array(items) = std::mem::take(slot) else { return };
+    let mut obj = Map::new();
+    for (idx, item) in items.into_iter().enumerate() {
+        if !item.is_null() {
+            obj.insert(idx.to_string(), item);
+        }
+    }
+    *slot = Value::Object(obj);
+}
+
+fn apply(ctx: &mut Ctx<'_>, steps: &[Step], value: Value, budget: &mut ArrayBudget) {
     let Some((step, rest)) = steps.split_first() else { return };
     if step.last {
         set_last(ctx, step, value);
@@ -174,9 +229,13 @@ fn apply(ctx: &mut Ctx<'_>, steps: &[Step], value: Value) {
             ctx.set(&step.key, Value::Object(obj));
         }
     }
-    match ctx.slot(&step.key) {
-        Some(Value::Object(o)) => apply(&mut Ctx::Obj(o), rest, value),
-        Some(Value::Array(a)) => apply(&mut Ctx::Arr(a), rest, value),
+    let Some(slot) = ctx.slot(&step.key) else { return };
+    if let Some(next) = rest.first() {
+        reserve_holes(slot, &next.key, budget);
+    }
+    match slot {
+        Value::Object(o) => apply(&mut Ctx::Obj(o), rest, value, budget),
+        Value::Array(a) => apply(&mut Ctx::Arr(a), rest, value, budget),
         _ => {}
     }
 }
@@ -188,10 +247,53 @@ mod tests {
 
     fn build(pairs: &[(&str, &str)]) -> Value {
         let mut m = Map::new();
+        let mut budget = ArrayBudget::default();
         for (k, v) in pairs {
-            append_field(&mut m, k, json!(v));
+            append_field(&mut m, &mut budget, k, json!(v), DEFAULT_MAX_FIELD_DEPTH);
         }
         Value::Object(m)
+    }
+
+    /// A name nested thousands of levels deep used to build an equally deep value (recursive
+    /// `apply`, `js_key_order`, `Drop`): a stack overflow aborts the process. Past the depth
+    /// limit the name is a literal key.
+    #[test]
+    fn deep_field_name_is_kept_literal() {
+        let deep = format!("a{}", "[b]".repeat(100_000));
+        let v = build(&[(deep.as_str(), "x")]);
+        assert_eq!(v.as_object().unwrap().keys().next().map(|k| k.len()), Some(deep.len()));
+        let ok = format!("a{}", "[b]".repeat(DEFAULT_MAX_FIELD_DEPTH));
+        let v = build(&[(ok.as_str(), "x")]);
+        let mut cur = &v["a"];
+        for _ in 0..DEFAULT_MAX_FIELD_DEPTH {
+            cur = &cur["b"];
+        }
+        assert_eq!(cur, &json!("x"));
+        let over = format!("a{}", "[b]".repeat(DEFAULT_MAX_FIELD_DEPTH + 1));
+        assert!(build(&[(over.as_str(), "x")]).get(&over).is_some());
+    }
+
+    /// `x[1000000]=v` used to reserve a dense `Vec` of a million `null`s (~200 MiB from a 71-byte
+    /// body). Now holes are bounded per request and a far index becomes an object key.
+    #[test]
+    fn far_array_index_does_not_allocate_holes() {
+        assert_eq!(build(&[("x[1000000]", "v")]), json!({ "x": { "1000000": "v" } }));
+        assert_eq!(build(&[("x[99999999999]", "v")]), json!({ "x": { "99999999999": "v" } }));
+        // Existing items keep their index as key.
+        assert_eq!(build(&[("x[0]", "a"), ("x[5000]", "b")]), json!({ "x": { "0": "a", "5000": "b" } }));
+        assert_eq!(build(&[("x[0][k]", "a"), ("x[5000][k]", "b")]), json!({ "x": { "0": { "k": "a" }, "5000": { "k": "b" } } }));
+        // The budget is per request: the second far index no longer fits.
+        let v = build(&[("a[600]", "1"), ("b[600]", "2")]);
+        assert_eq!(v["a"].as_array().map(|a| a.len()), Some(601));
+        assert_eq!(v["b"], json!({ "600": "2" }));
+        // Many fields cannot add up: total padding stays within the budget.
+        let mut m = Map::new();
+        let mut budget = ArrayBudget::default();
+        for i in 0..1000 {
+            append_field(&mut m, &mut budget, &format!("x{i}[999]"), json!("v"), DEFAULT_MAX_FIELD_DEPTH);
+        }
+        let slots: usize = m.values().map(|v| v.as_array().map_or(0, |a| a.len())).sum();
+        assert!(slots <= MAX_ARRAY_HOLES + 1000, "{slots}");
     }
 
     #[test]

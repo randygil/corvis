@@ -100,20 +100,28 @@ fn extract_functions(v: &mut Value, fns: &mut Vec<(String, String)>) {
     }
 }
 
-/// `buildSwaggerInitJS(swaggerDoc, customOptions)`.
+/// `buildSwaggerInitJS(swaggerDoc, customOptions)`. Only `swagger_options` (`customOptions`) may
+/// carry `{"$js": "..."}` functions: the same marker inside the document stays data, so the
+/// content of the document never becomes code in the init script.
 pub fn build_swagger_init_js(doc: &Value, swagger_url: Option<&str>, swagger_options: &Value) -> String {
+    let mut fns = Vec::new();
+    let mut custom_options = if swagger_options.is_null() { Value::Object(Obj::new()) } else { swagger_options.clone() };
+    extract_functions(&mut custom_options, &mut fns);
     let mut init = Obj::new();
     init.insert("swaggerDoc".into(), doc.clone());
     if let Some(u) = swagger_url {
         init.insert("swaggerUrl".into(), js::s(u));
     }
-    init.insert("customOptions".into(), if swagger_options.is_null() { Value::Object(Obj::new()) } else { swagger_options.clone() });
-    let mut init = Value::Object(init);
-    let mut fns = Vec::new();
-    extract_functions(&mut init, &mut fns);
+    init.insert("customOptions".into(), custom_options);
+    let init = Value::Object(init);
     let mut json = js::stringify_pretty(&init, 2);
+    // `customOptions` is serialized last: the last occurrence is the placeholder, never a string
+    // of the document that happens to look like one.
     for (placeholder, code) in fns {
-        json = json.replacen(&format!("\"{placeholder}\""), &code, 1);
+        let quoted = format!("\"{placeholder}\"");
+        if let Some(i) = json.rfind(&quoted) {
+            json.replace_range(i..i + quoted.len(), &code);
+        }
     }
     JS_TEMPLATE.replacen("<% swaggerOptions %>", &format!("let options = {json};"), 1)
 }

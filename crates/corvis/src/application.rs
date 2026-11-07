@@ -74,6 +74,7 @@ pub(crate) struct AppConfig {
     cors: Option<CorsOptions>,
     body_limit: usize,
     http_settings: crate::http::HttpSettings,
+    server: crate::server::ServerOptions,
 }
 
 /// A Corvis application instance.
@@ -128,6 +129,7 @@ impl CorvisApplication {
                 cors: options.cors,
                 body_limit: options.body_limit,
                 http_settings: crate::http::HttpSettings::default(),
+                server: crate::server::ServerOptions::default(),
             },
             shared: None,
             hooks_called: false,
@@ -217,6 +219,13 @@ impl CorvisApplication {
         self
     }
 
+    /// Timeouts and connection limits of the HTTP server (`headersTimeout`, `requestTimeout`,
+    /// `keepAliveTimeout`, `maxConnections`, ...). Call it before `listen()`.
+    pub fn set_server_options(&mut self, options: crate::server::ServerOptions) -> &mut Self {
+        self.config.server = options;
+        self
+    }
+
     /// `app.useLogger(logger)`.
     pub fn use_logger(&mut self, logger: impl LoggerService) -> &mut Self {
         crate::logger::set_logger(logger);
@@ -283,6 +292,21 @@ impl CorvisApplication {
     /// `app.set('query parser', 'simple' | 'extended' | false)` (Express 5 default: simple).
     pub fn set_query_parser(&mut self, parser: crate::http::body_parser::QueryParser) -> &mut Self {
         self.config.http_settings.body_parser.query_parser = parser;
+        self
+    }
+
+    /// Maximum nesting depth of JSON bodies (default 256; deeper bodies are answered with 400).
+    /// It also caps the depth of urlencoded bodies (32 by default, like body-parser).
+    pub fn set_body_parser_max_depth(&mut self, depth: usize) -> &mut Self {
+        self.config.http_settings.body_parser.max_depth = depth;
+        self
+    }
+
+    /// `app.set('trust proxy', ...)`: `false` (default, `req.ip` is the socket address), `true`,
+    /// a hop count (`1` behind one reverse proxy) or a list of proxy addresses/subnets
+    /// ([`TrustProxy::parse`](crate::http::TrustProxy::parse)`("loopback, 10.0.0.0/8")`).
+    pub fn set_trust_proxy(&mut self, trust: impl Into<crate::http::TrustProxy>) -> &mut Self {
+        self.config.http_settings.body_parser.trust_proxy = trust.into();
         self
     }
 
@@ -426,7 +450,7 @@ impl CorvisApplication {
         }
         let signal = Arc::new(std::sync::Mutex::new(None::<String>));
         let signal2 = signal.clone();
-        crate::server::serve(listener, shared, async move {
+        crate::server::serve(listener, shared, self.config.server.clone(), async move {
             if let Ok(s) = rx.await {
                 *signal2.lock().unwrap() = Some(s);
             }
@@ -442,8 +466,9 @@ impl CorvisApplication {
         let listener = self.bind(addr).await?;
         let shared = self.shared.clone().expect("initialized");
         let local = listener.local_addr()?;
+        let server = self.config.server.clone();
         tokio::spawn(async move {
-            let _ = crate::server::serve(listener, shared, futures::future::pending()).await;
+            let _ = crate::server::serve(listener, shared, server, futures::future::pending()).await;
         });
         Ok(local)
     }

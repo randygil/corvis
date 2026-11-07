@@ -164,10 +164,51 @@ pub fn array_max_size(v: V<'_>, n: usize) -> bool {
 pub fn array_not_empty(v: V<'_>) -> bool {
     v.and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false)
 }
+/// `arrayUnique`: no two elements are equal (`serde_json::Value` equality). Linear: elements are
+/// bucketed by a hash consistent with that equality and only compared within a bucket (the
+/// previous pairwise scan was O(n²), ~350 ms for a 100 KB body).
 pub fn array_unique(v: V<'_>) -> bool {
-    v.and_then(|v| v.as_array())
-        .map(|a| a.iter().enumerate().all(|(i, x)| !a[..i].contains(x)))
-        .unwrap_or(false)
+    let Some(a) = v.and_then(|v| v.as_array()) else { return false };
+    if a.len() < 2 {
+        return true;
+    }
+    let mut buckets: std::collections::HashMap<u64, Vec<&Value>> = std::collections::HashMap::with_capacity(a.len());
+    for x in a {
+        let bucket = buckets.entry(value_hash(x)).or_default();
+        if bucket.contains(&x) {
+            return false;
+        }
+        bucket.push(x);
+    }
+    true
+}
+
+/// A hash consistent with `Value`'s `PartialEq` (object keys in any order are equal).
+fn value_hash(v: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match v {
+        Value::Null => 0u8.hash(&mut h),
+        Value::Bool(b) => (1u8, b).hash(&mut h),
+        Value::Number(n) => (2u8, n).hash(&mut h),
+        Value::String(s) => (3u8, s).hash(&mut h),
+        Value::Array(a) => {
+            (4u8, a.len()).hash(&mut h);
+            for x in a {
+                value_hash(x).hash(&mut h);
+            }
+        }
+        Value::Object(o) => {
+            // Order-independent: the entries' hashes are combined commutatively.
+            let sum = o.iter().fold(0u64, |acc, (k, x)| {
+                let mut e = std::collections::hash_map::DefaultHasher::new();
+                (k, value_hash(x)).hash(&mut e);
+                acc.wrapping_add(e.finish())
+            });
+            (5u8, o.len(), sum).hash(&mut h);
+        }
+    }
+    h.finish()
 }
 pub fn is_enum<T: DeserializeOwned>(v: V<'_>) -> bool {
     v.map(|v| serde_json::from_value::<T>(v.clone()).is_ok()).unwrap_or(false)
@@ -323,6 +364,30 @@ mod tests {
         assert!(array_unique(Some(&json!([1, 2, 3]))));
         assert!(!array_unique(Some(&json!([1, 1]))));
         assert!(is_date_string(Some(&json!("2024-01-31T10:00:00Z"))));
+    }
+
+    #[test]
+    fn array_unique_semantics() {
+        assert!(array_unique(Some(&json!([]))));
+        assert!(!array_unique(Some(&json!({}))));
+        assert!(!array_unique(None));
+        assert!(array_unique(Some(&json!([1, "1", true, null, [1], { "a": 1 }]))));
+        assert!(!array_unique(Some(&json!([{ "a": 1, "b": [2] }, { "b": [2], "a": 1 }]))));
+        assert!(array_unique(Some(&json!([{ "a": 1 }, { "a": 2 }, [1, 2], [2, 1]]))));
+        assert!(!array_unique(Some(&json!([[1, [2]], [1, [2]]]))));
+        assert!(!array_unique(Some(&json!(["x", "y", "x"]))));
+    }
+
+    /// Before: pairwise comparison, O(n²) (18 518 numbers from a 100 KB body took 353 ms in
+    /// release and minutes in a debug build for this size).
+    #[test]
+    fn array_unique_is_linear() {
+        let mut items: Vec<Value> = (0..100_000).map(|i| json!(i)).collect();
+        let t = std::time::Instant::now();
+        assert!(array_unique(Some(&Value::Array(items.clone()))));
+        items.push(json!(0));
+        assert!(!array_unique(Some(&Value::Array(items))));
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }
 
     #[test]

@@ -31,6 +31,8 @@
 //! let same = db.user().find_many(()).include(user::posts::include()).exec().await?;
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod client;
 mod datetime;
 mod db;

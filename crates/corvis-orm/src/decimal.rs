@@ -205,8 +205,20 @@ pub struct Decimal {
     cfg: &'static DecimalConfig,
 }
 
+/// decimal.js `Decimal.maxE`: a result whose exponent (of its most significant digit) is above
+/// this is `Infinity`.
+const MAX_E: i64 = 9_000_000_000_000_000;
+/// decimal.js `Decimal.minE`: a result whose exponent is below this is zero.
+const MIN_E: i64 = -MAX_E;
+
+/// Longest string a conversion may produce, like the maximum string length of V8
+/// (`2^29 - 24`): beyond it JavaScript throws `RangeError: Invalid string length`.
+const MAX_STRING_LEN: i64 = (1 << 29) - 24;
+
 fn pow10(n: u64) -> BigUint {
-    BigUint::from(10u32).pow(n as u32)
+    // Never truncate the exponent: a wrong power of ten would give a wrong result silently.
+    let n = u32::try_from(n).expect("[DecimalError] Exponent out of range");
+    BigUint::from(10u32).pow(n)
 }
 
 /// Number of decimal digits of `n` (1 for zero).
@@ -232,7 +244,6 @@ fn normalize(mut c: BigUint, mut e: i64) -> (BigUint, i64) {
     if c.is_zero() {
         return (c, 0);
     }
-    let ten = BigUint::from(10u32);
     // Fast path for small values.
     if let Some(mut v) = c.to_u128() {
         while v % 10 == 0 {
@@ -241,15 +252,28 @@ fn normalize(mut c: BigUint, mut e: i64) -> (BigUint, i64) {
         }
         return (BigUint::from(v), e);
     }
-    loop {
-        let (q, r) = c.div_rem(&ten);
-        if !r.is_zero() {
-            break;
+    // A number divisible by 10^k is divisible by 2^k, so the binary trailing zeros bound the
+    // decimal ones. Strip them in chunks of 10^(2^j), largest first: O(log k) divisions instead
+    // of one division per zero (which is quadratic for long runs of zeros).
+    let bound = c.trailing_zeros().unwrap_or(0);
+    if bound == 0 {
+        return (c, e);
+    }
+    let mut k = 1u64 << (63 - bound.leading_zeros());
+    while k > 0 {
+        let (q, r) = c.div_rem(&pow10(k));
+        if r.is_zero() {
+            c = q;
+            e += k as i64;
         }
-        c = q;
-        e += 1;
+        k >>= 1;
     }
     (c, e)
+}
+
+/// Exponent of the most significant digit of `coeff * 10^exp` (`coeff` non-zero).
+fn sci_exp_of(coeff: &BigUint, exp: i64) -> i64 {
+    exp.saturating_add(ndigits(coeff) - 1)
 }
 
 /// Whether to round the magnitude up when dropping digits.
@@ -321,7 +345,28 @@ impl Decimal {
 
     fn finite(neg: bool, coeff: BigUint, exp: i64, cfg: &'static DecimalConfig) -> Decimal {
         let (coeff, exp) = normalize(coeff, exp);
-        Decimal { kind: Kind::Finite, neg, coeff, exp, cfg }
+        Decimal { kind: Kind::Finite, neg, coeff, exp, cfg }.check_range()
+    }
+
+    /// decimal.js `finalise`: an exponent above `maxE` overflows to `Infinity` and one below
+    /// `minE` underflows to zero (keeping the sign).
+    fn check_range(self) -> Decimal {
+        if self.kind != Kind::Finite || self.coeff.is_zero() {
+            return self;
+        }
+        // Cheap test first: the number of digits is at most bits * log10(2) + 1.
+        let digits_hi = (self.coeff.bits() as f64 * std::f64::consts::LOG10_2) as i64 + 1;
+        if self.exp >= MIN_E && self.exp.saturating_add(digits_hi) <= MAX_E {
+            return self;
+        }
+        let e = sci_exp_of(&self.coeff, self.exp);
+        if e > MAX_E {
+            Decimal::special(Kind::Infinite, self.neg, self.cfg)
+        } else if e < MIN_E {
+            Decimal { kind: Kind::Finite, neg: self.neg, coeff: BigUint::zero(), exp: 0, cfg: self.cfg }
+        } else {
+            self
+        }
     }
 
     fn special(kind: Kind, neg: bool, cfg: &'static DecimalConfig) -> Decimal {
@@ -399,27 +444,23 @@ impl Decimal {
         // /^(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?$/i
         let bytes = body.as_bytes();
         let mut i = 0;
-        let mut digits = String::new();
-        let mut frac_len: i64 = 0;
-        let mut int_digits = 0;
         while i < bytes.len() && bytes[i].is_ascii_digit() {
-            digits.push(bytes[i] as char);
             i += 1;
-            int_digits += 1;
         }
-        let mut frac_digits = 0;
+        let int_part = &bytes[..i];
+        let mut frac_part: &[u8] = &[];
         if i < bytes.len() && bytes[i] == b'.' {
             i += 1;
+            let start = i;
             while i < bytes.len() && bytes[i].is_ascii_digit() {
-                digits.push(bytes[i] as char);
                 i += 1;
-                frac_len += 1;
-                frac_digits += 1;
             }
+            frac_part = &bytes[start..i];
         }
-        if int_digits == 0 && frac_digits == 0 {
+        if int_part.is_empty() && frac_part.is_empty() {
             return Err(invalid());
         }
+        // The exponent saturates: anything beyond `maxE` / `minE` is out of range anyway.
         let mut exp: i64 = 0;
         if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
             i += 1;
@@ -430,19 +471,41 @@ impl Decimal {
             }
             let start = i;
             while i < bytes.len() && bytes[i].is_ascii_digit() {
+                exp = exp.saturating_mul(10).saturating_add((bytes[i] - b'0') as i64);
                 i += 1;
             }
             if start == i {
                 return Err(invalid());
             }
-            let n: i64 = body[start..i].parse().map_err(|_| invalid())?;
-            exp = if eneg { -n } else { n };
+            if eneg {
+                exp = -exp;
+            }
         }
         if i != bytes.len() {
             return Err(invalid());
         }
-        let c = BigUint::parse_bytes(digits.as_bytes(), 10).ok_or_else(invalid)?;
-        Ok(Decimal::finite(neg, c, exp - frac_len, &DEFAULT_CONFIG))
+        // Leading and trailing zeros are dropped on the text (linear) instead of dividing the
+        // coefficient by ten once per zero.
+        let mut digits: Vec<u8> = Vec::with_capacity(int_part.len() + frac_part.len());
+        digits.extend_from_slice(int_part);
+        digits.extend_from_slice(frac_part);
+        let lead = digits.iter().take_while(|d| **d == b'0').count();
+        if lead == digits.len() {
+            return Ok(Decimal { kind: Kind::Finite, neg, coeff: BigUint::zero(), exp: 0, cfg: &DEFAULT_CONFIG });
+        }
+        let trail = digits.iter().rev().take_while(|d| **d == b'0').count();
+        let significant = &digits[lead..digits.len() - trail];
+        // Exponent of the last kept digit, and of the first one (decimal.js `x.e`).
+        let exp = exp.saturating_sub(frac_part.len() as i64).saturating_add(trail as i64);
+        let sci = exp.saturating_add(significant.len() as i64 - 1);
+        if sci > MAX_E {
+            return Ok(Decimal::special(Kind::Infinite, neg, &DEFAULT_CONFIG));
+        }
+        if sci < MIN_E {
+            return Ok(Decimal { kind: Kind::Finite, neg, coeff: BigUint::zero(), exp: 0, cfg: &DEFAULT_CONFIG });
+        }
+        let coeff = BigUint::parse_bytes(significant, 10).ok_or_else(invalid)?;
+        Ok(Decimal { kind: Kind::Finite, neg, coeff, exp, cfg: &DEFAULT_CONFIG })
     }
 
     /// From an `f64`, like `new Decimal(number)` (uses the shortest round-trip digits).
@@ -1061,8 +1124,14 @@ impl Decimal {
                     Decimal::finite(self.neg && k % 2 == 1, BigUint::zero(), 0, cfg)
                 };
             }
+            let neg = self.neg && k % 2 == 1;
+            // The exponent of the result is outside the range when it does not even fit an i64.
+            let Some(exp) = self.exp.checked_mul(k as i64) else {
+                let big = (self.exp > 0) == (n > 0);
+                return if big { Decimal::special(Kind::Infinite, neg, cfg) } else { Decimal::finite(neg, BigUint::zero(), 0, cfg) };
+            };
             let c = self.coeff.pow(k as u32);
-            let r = Decimal::finite(self.neg && k % 2 == 1, c, self.exp * k as i64, cfg);
+            let r = Decimal::finite(neg, c, exp, cfg);
             if n < 0 {
                 return Decimal::finite(false, BigUint::one(), 0, cfg).div(r);
             }
@@ -1149,7 +1218,7 @@ impl Decimal {
 
     /// The value as `i64` when it is an integer that fits.
     pub fn to_i64_exact(&self) -> Option<i64> {
-        if !self.is_integer() {
+        if !self.is_integer() || self.sci_exp() > 19 {
             return None;
         }
         let m = (&self.coeff * pow10(self.exp.max(0) as u64)).to_i128()?;
@@ -1166,7 +1235,14 @@ impl Decimal {
         let e = self.sci_exp();
         let mut s = self.digits_string();
         let len = s.len() as i64;
-        let zeros = |n: i64| "0".repeat(n.max(0) as usize);
+        let zeros = |n: i64| {
+            // Like JavaScript (`RangeError: Invalid string length`): never try to allocate a
+            // string longer than a JS engine can hold.
+            if n > MAX_STRING_LEN {
+                panic!("RangeError: Invalid string length");
+            }
+            "0".repeat(n.max(0) as usize)
+        };
         if is_exp {
             if let Some(sd) = sd
                 && sd - len > 0
@@ -1582,7 +1658,7 @@ mod pg {
 
     impl sqlx::Encode<'_, Postgres> for Decimal {
         fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
-            buf.extend_from_slice(&encode_numeric(self));
+            buf.extend_from_slice(&encode_numeric(self)?);
             Ok(IsNull::No)
         }
     }
@@ -1596,8 +1672,23 @@ mod pg {
         }
     }
 
+    /// `(ndigits, weight, dscale)` of the binary NUMERIC of a finite, non-zero value, or `None`
+    /// when a field does not fit its 16-bit slot (the value cannot be sent to Postgres).
+    pub(crate) fn numeric_header(d: &Decimal) -> Option<(i16, i16, u16)> {
+        let dscale = if d.exp < 0 { u16::try_from(d.exp.checked_neg()?).ok()? } else { 0 };
+        // Base-10000 groups: the least significant one holds the digit at 10^exp.
+        let low = d.exp.div_euclid(4);
+        let weight = d.sci_exp().div_euclid(4);
+        let nd = weight.checked_sub(low)?.checked_add(1)?;
+        Some((i16::try_from(nd).ok()?, i16::try_from(weight).ok()?, dscale))
+    }
+
+    /// The conversion error of a value that does not fit the binary NUMERIC format (the
+    /// wording of the reference query engine).
+    pub(crate) const NUMERIC_OVERFLOW: &str = "Couldn't convert an integer (possible overflow).";
+
     /// Binary NUMERIC: ndigits, weight, sign, dscale, base-10000 digits.
-    pub(crate) fn encode_numeric(d: &Decimal) -> Vec<u8> {
+    pub(crate) fn encode_numeric(d: &Decimal) -> Result<Vec<u8>, BoxDynError> {
         let mut out = Vec::new();
         let header = |out: &mut Vec<u8>, nd: i16, weight: i16, sign: u16, dscale: u16| {
             out.extend_from_slice(&nd.to_be_bytes());
@@ -1608,50 +1699,35 @@ mod pg {
         match d.kind {
             Kind::NaN => {
                 header(&mut out, 0, 0, SIGN_NAN, 0);
-                return out;
+                return Ok(out);
             }
             Kind::Infinite => {
                 header(&mut out, 0, 0, if d.neg { SIGN_NINF } else { SIGN_PINF }, 0);
-                return out;
+                return Ok(out);
             }
             Kind::Finite => {}
         }
         if d.coeff.is_zero() {
             header(&mut out, 0, 0, SIGN_POS, 0);
-            return out;
+            return Ok(out);
         }
-        let dscale = if d.exp < 0 { (-d.exp) as u16 } else { 0 };
-        // Align the exponent to a multiple of 4 (base 10000 groups).
-        let mut exp = d.exp;
-        let mut c = d.coeff.clone();
-        let rem = exp.rem_euclid(4);
-        if rem != 0 {
-            c *= pow10(rem as u64);
-            exp -= rem;
+        // Never truncate the 16-bit fields: a truncated weight or scale is another number.
+        let (nd, weight, dscale) = numeric_header(d).ok_or(NUMERIC_OVERFLOW)?;
+        // Digits of the coefficient followed by the zeros that align its exponent on a group
+        // boundary, left-padded to whole groups.
+        let rem = d.exp.rem_euclid(4) as usize;
+        let mut digits = d.coeff.to_string().into_bytes();
+        digits.resize(digits.len() + rem, b'0');
+        let pad = nd as usize * 4 - digits.len();
+        out.reserve(nd as usize * 2);
+        header(&mut out, nd, weight, if d.neg { SIGN_NEG } else { SIGN_POS }, dscale);
+        let mut padded = vec![b'0'; pad];
+        padded.extend_from_slice(&digits);
+        for g in padded.chunks(4) {
+            let v = g.iter().fold(0i16, |acc, c| acc * 10 + (c - b'0') as i16);
+            out.extend_from_slice(&v.to_be_bytes());
         }
-        // Base-10000 digits, least significant first.
-        let base = BigUint::from(10000u32);
-        let mut groups: Vec<i16> = Vec::new();
-        while !c.is_zero() {
-            let (q, r) = c.div_rem(&base);
-            groups.push(r.to_u32().unwrap_or(0) as i16);
-            c = q;
-        }
-        // Weight of the least significant group is exp/4.
-        let low_weight = exp / 4;
-        // Strip trailing zero groups (least significant).
-        let mut start = 0;
-        while start < groups.len() && groups[start] == 0 {
-            start += 1;
-        }
-        let groups = &groups[start..];
-        let low_weight = low_weight + start as i64;
-        let weight = low_weight + groups.len() as i64 - 1;
-        header(&mut out, groups.len() as i16, weight as i16, if d.neg { SIGN_NEG } else { SIGN_POS }, dscale);
-        for g in groups.iter().rev() {
-            out.extend_from_slice(&g.to_be_bytes());
-        }
-        out
+        Ok(out)
     }
 
     pub(crate) fn decode_numeric(b: &[u8]) -> Result<Decimal, BoxDynError> {
@@ -1682,9 +1758,19 @@ mod pg {
     }
 }
 
-pub(crate) use pg::decode_numeric;
+pub(crate) use pg::{NUMERIC_OVERFLOW, decode_numeric};
 #[allow(unused_imports)]
 pub(crate) use pg::encode_numeric;
+
+impl Decimal {
+    /// `true` when the value can be stored in a Postgres `NUMERIC`: its binary representation
+    /// needs a weight, a scale and a number of base-10000 digits that fit in 16 bits (at most
+    /// 131072 digits before the decimal point and 65535 after it). Values beyond that are
+    /// rejected with a conversion error instead of being truncated.
+    pub fn fits_numeric(&self) -> bool {
+        self.kind != Kind::Finite || self.coeff.is_zero() || pg::numeric_header(self).is_some()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1706,10 +1792,69 @@ mod tests {
     }
 
     #[test]
+    fn parse_applies_the_exponent_range_of_decimal_js() {
+        // maxE / minE = ±9e15 on the exponent of the first digit; no overflow on the way.
+        assert_eq!(Decimal::parse("1e9000000000000000").unwrap().sci_exp(), 9_000_000_000_000_000);
+        assert!(!Decimal::parse("1e9000000000000001").unwrap().is_finite());
+        assert!(Decimal::parse("10e8999999999999999").unwrap().is_finite());
+        assert!(!Decimal::parse("100e8999999999999999").unwrap().is_finite());
+        assert!(Decimal::parse("-1e-9000000000000001").unwrap().is_zero());
+        assert_eq!(Decimal::parse("-1e-9000000000000001").unwrap().value_of(), "-0");
+        assert!(Decimal::parse("0.11e-9223372036854775807").unwrap().is_zero());
+        assert!(Decimal::parse("1e-9223372036854775808").unwrap().is_zero());
+        assert!(!Decimal::parse("1e+99999999999999999999999999999").unwrap().is_finite());
+        assert_eq!(Decimal::parse("000123.4500e2").unwrap().to_string(), "12345");
+        assert_eq!(Decimal::parse("-0.000").unwrap().value_of(), "-0");
+        assert!(Decimal::parse("1e").is_err() && Decimal::parse(".").is_err() && Decimal::parse("1e5.5").is_err());
+        // Arithmetic results are clamped the same way (decimal.js `finalise`).
+        let big = Decimal::parse("1e8000000000000000").unwrap();
+        assert!(!big.times(&big).is_finite());
+        assert!(!big.pow(100_000).is_finite());
+        assert!(Decimal::parse("1e-8000000000000000").unwrap().pow(100_000).is_zero());
+        assert_eq!(big.to_i64_exact(), None);
+    }
+
+    #[test]
+    fn trailing_zeros_are_removed_quickly() {
+        let t = std::time::Instant::now();
+        let c = BigUint::parse_bytes(format!("7{}", "0".repeat(60_000)).as_bytes(), 10).unwrap();
+        let (c, e) = normalize(c, -5);
+        assert_eq!((c, e), (BigUint::from(7u32), 59_995));
+        let c = BigUint::from(2u32).pow(70_000);
+        let (c2, e) = normalize(c.clone(), 0);
+        assert_eq!((c2, e), (c, 0));
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    #[should_panic(expected = "RangeError: Invalid string length")]
+    fn huge_fixed_notation_panics_instead_of_aborting() {
+        Decimal::parse("1e8000000000000000").unwrap().to_fixed_plain();
+    }
+
+    #[test]
+    fn numeric_encoding_never_truncates() {
+        for s in ["9999e-262144", "5e262144", "1e131072", "1e-65536"] {
+            let d = Decimal::from(s);
+            assert!(!d.fits_numeric(), "{s}");
+            assert!(encode_numeric(&d).is_err(), "{s}");
+        }
+        for s in ["1e131071", "-1e-16383", "1e-65535", "123456789.000000001", "9.9999e131071"] {
+            let d = Decimal::from(s);
+            assert!(d.fits_numeric(), "{s}");
+            let back = decode_numeric(&encode_numeric(&d).unwrap()).unwrap();
+            assert!(back == d, "{s}: {back:?}");
+        }
+        // Long coefficients encode in linear time (one decimal conversion, no per-group division).
+        let d = Decimal::from(format!("1{}.5", "7".repeat(100_000)));
+        assert_eq!(decode_numeric(&encode_numeric(&d).unwrap()).unwrap(), d);
+    }
+
+    #[test]
     fn numeric_roundtrip() {
         for s in ["0", "1", "-1", "24.5", "0.0001", "12345678.12345678", "1e30", "-0.00000123", "10000", "99999999999999999999.99"] {
             let d = Decimal::from(s);
-            let back = decode_numeric(&encode_numeric(&d)).unwrap();
+            let back = decode_numeric(&encode_numeric(&d).unwrap()).unwrap();
             assert_eq!(back.to_string(), d.to_string(), "{s}");
         }
     }

@@ -5,6 +5,8 @@
 //!   macro with the same name, which evaluates to a `corvis::CustomDecorator`.
 //! * `#[derive(ApiSchema)]` describes a struct like a TypeScript class with `@ApiProperty()`.
 
+#![forbid(unsafe_code)]
+
 mod args;
 mod derive;
 

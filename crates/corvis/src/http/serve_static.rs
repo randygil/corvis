@@ -14,6 +14,15 @@
 //! - Files get `Accept-Ranges`, `Cache-Control: public, max-age=N`, `Last-Modified`, a weak
 //!   `ETag` (`W/"<size hex>-<mtime hex>"`), the `mime-types` content type, conditional GET
 //!   (`304`, `412`) and single byte ranges (`206`, `416`).
+//!
+//! Hardening on top of `send` (it does not change what a normal request gets):
+//! - Bodies are streamed from disk in chunks (`seek` + `take`), never read whole.
+//! - The dotfiles policy is applied again to the real names on disk below the canonical root,
+//!   so aliases such as the NTFS 8.3 names (`ENV~1` for `.env`, `GIT~1` for `.git`) or a link
+//!   inside the root that points to a dotfile cannot bypass it.
+//! - On Windows, segments with `:` (NTFS alternate data streams, `a.txt::$DATA`) are not served.
+//! - [`ServeStatic::follow_symlinks`]`(false)` refuses any symlink or junction and anything whose
+//!   canonical path is outside the canonical root.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -22,6 +31,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::StatusCode;
 
+use super::response::file_stream;
 use super::{HandlerResult, Request, Response};
 use crate::common::middleware::{CorvisMiddleware, Next};
 
@@ -50,6 +60,7 @@ pub struct ServeStatic {
     accept_ranges: bool,
     cache_control: bool,
     extensions: Vec<String>,
+    follow_symlinks: bool,
 }
 
 /// `express.static(root)`.
@@ -75,6 +86,7 @@ impl ServeStatic {
             accept_ranges: true,
             cache_control: true,
             extensions: Vec::new(),
+            follow_symlinks: true,
         }
     }
     /// `app.use(path, express.static(...))`: only requests under `path` (case-insensitive,
@@ -131,8 +143,16 @@ impl ServeStatic {
         self
     }
 
+    /// `true` (default, like `send`): symlinks and junctions under the root are followed, even
+    /// when they point outside of it. `false`: a path that goes through a link, or whose
+    /// canonical path is not under the canonical root, is answered as not found (404).
+    pub fn follow_symlinks(mut self, v: bool) -> Self {
+        self.follow_symlinks = v;
+        self
+    }
+
     /// The path inside the mount (`parseurl(req).pathname` after Express strips the mount).
-    fn inner_path<'a>(&self, path: &'a str) -> Option<&'a str> {
+    pub(crate) fn inner_path<'a>(&self, path: &'a str) -> Option<&'a str> {
         if self.mount.is_empty() {
             return Some(path);
         }
@@ -152,7 +172,7 @@ impl ServeStatic {
 }
 
 /// What `send` decided.
-enum Outcome {
+pub(crate) enum Outcome {
     /// Fall through to the next handler (`next()`).
     Next,
     /// A response written by the middleware.
@@ -223,6 +243,60 @@ fn content_type(path: &Path) -> String {
     }
 }
 
+/// `containsDotFile` for one name: longer than one character and starting with `.`.
+fn is_dotfile(name: &std::ffi::OsStr) -> bool {
+    let n = name.to_string_lossy();
+    n.len() > 1 && n.starts_with('.')
+}
+
+/// An NTFS 8.3 short name has a `~` followed by a digit (`ENV~1`, `GIT~1`, `INDEX~1.HTM`).
+fn looks_like_short_name(segment: &str) -> bool {
+    segment.as_bytes().windows(2).any(|w| w[0] == b'~' && w[1].is_ascii_digit())
+}
+
+/// Walks `root/parts` on disk (blocking I/O). `Ok(true)` when a real name below the root is a
+/// dotfile even though the URL segment is not one: an 8.3 alias or a name with trailing dots
+/// (Windows), or a link inside the root that resolves to a dotfile. `Err(404)` when an entry
+/// does not exist or, with `follow_symlinks == false`, the path goes through a symlink or
+/// junction or its canonical path is not under the canonical root.
+fn check_on_disk(root: &Path, parts: &[String], follow_symlinks: bool) -> Result<bool, u16> {
+    let canonical_root = std::fs::canonicalize(root).map_err(|_| 404u16)?;
+    let mut dot = false;
+    let mut current = root.to_path_buf();
+    for segment in parts {
+        current.push(segment);
+        let meta = std::fs::symlink_metadata(&current).map_err(|_| 404u16)?;
+        // `is_symlink` is also true for NTFS junctions (name-surrogate reparse points).
+        if meta.file_type().is_symlink() {
+            if !follow_symlinks {
+                return Err(404);
+            }
+            // The long name of a link cannot be read without following it, so a short-name
+            // alias of a link is treated as a dotfile.
+            if cfg!(windows) && looks_like_short_name(segment) {
+                dot = true;
+            }
+        } else if cfg!(windows) {
+            // The name stored on disk: resolves 8.3 aliases and trailing dots or spaces.
+            let canonical = std::fs::canonicalize(&current).map_err(|_| 404u16)?;
+            if canonical.file_name().is_some_and(is_dotfile) {
+                dot = true;
+            }
+        }
+    }
+    let canonical = std::fs::canonicalize(&current).map_err(|_| 404u16)?;
+    match canonical.strip_prefix(&canonical_root) {
+        Ok(rel) => {
+            if rel.components().any(|c| matches!(c, Component::Normal(n) if is_dotfile(n))) {
+                dot = true;
+            }
+        }
+        Err(_) if !follow_symlinks => return Err(404),
+        Err(_) => {}
+    }
+    Ok(dot)
+}
+
 /// `range-parser` for a single combined range: `None` = ignore the header, `Some(Err)` = 416.
 fn parse_range(size: u64, header: &str) -> Option<Result<(u64, u64), ()>> {
     let spec = header.trim_start().strip_prefix("bytes=")?;
@@ -276,7 +350,24 @@ impl ServeStatic {
         }
     }
 
-    async fn serve(&self, req: &Request, inner: &str) -> Outcome {
+    /// The checks on disk for `root/parts` ([`check_on_disk`]): `Err(status)` refuses the
+    /// request (`403` for `Dotfiles::Deny`, `404` otherwise). Skipped with
+    /// `Dotfiles::Allow` and `follow_symlinks(true)`, where nothing can be refused.
+    async fn verify(&self, parts: Vec<String>) -> Result<(), u16> {
+        if self.dotfiles == Dotfiles::Allow && self.follow_symlinks {
+            return Ok(());
+        }
+        let root = self.root.clone();
+        let follow = self.follow_symlinks;
+        let dot = tokio::task::spawn_blocking(move || check_on_disk(&root, &parts, follow)).await.map_err(|_| 500u16)??;
+        match (dot, self.dotfiles) {
+            (true, Dotfiles::Deny) => Err(403),
+            (true, Dotfiles::Ignore) => Err(404),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) async fn serve(&self, req: &Request, inner: &str) -> Outcome {
         if req.method() != http::Method::GET && req.method() != http::Method::HEAD {
             if self.fallthrough {
                 return Outcome::Next;
@@ -329,12 +420,22 @@ impl ServeStatic {
             // Drive prefixes or roots smuggled in a segment (`C:`): never leave the root.
             return self.fail(403, false);
         }
+        if cfg!(windows) && parts.iter().any(|p| p.contains(':')) {
+            // NTFS alternate data streams (`a.txt:hidden`, `a.txt::$DATA`).
+            return self.fail(404, false);
+        }
+        let parts: Vec<String> = parts.iter().map(|p| p.to_string()).collect();
 
         if !self.index.is_empty() && has_trailing_slash {
             for idx in &self.index {
                 let p = file.join(idx);
                 if let Ok(meta) = tokio::fs::metadata(&p).await {
                     if meta.is_file() {
+                        let mut checked = parts.clone();
+                        checked.extend(idx.split('/').filter(|s| !s.is_empty()).map(String::from));
+                        if let Err(status) = self.verify(checked).await {
+                            return self.fail(status, false);
+                        }
                         return Outcome::Respond(self.send(req, &p, &meta).await);
                     }
                 }
@@ -350,6 +451,13 @@ impl ServeStatic {
                         let p = PathBuf::from(format!("{}.{ext}", file.display()));
                         if let Ok(m) = tokio::fs::metadata(&p).await {
                             if m.is_file() {
+                                let mut checked = parts.clone();
+                                if let Some(last) = checked.last_mut() {
+                                    last.push_str(&format!(".{ext}"));
+                                }
+                                if let Err(status) = self.verify(checked).await {
+                                    return self.fail(status, false);
+                                }
                                 return Outcome::Respond(self.send(req, &p, &m).await);
                             }
                         }
@@ -358,6 +466,9 @@ impl ServeStatic {
                 return self.fail(404, false);
             }
         };
+        if let Err(status) = self.verify(parts).await {
+            return self.fail(status, false);
+        }
         if meta.is_dir() {
             if !self.redirect || has_trailing_slash {
                 return self.fail(404, false);
@@ -460,23 +571,16 @@ impl ServeStatic {
             }
         }
         headers.push(("Content-Length", len.to_string()));
-        let data = if req.method() == http::Method::HEAD {
-            Bytes::new()
+        // `createReadStream(path, { start, end })`: only the requested bytes, in chunks.
+        let body = if req.method() == http::Method::HEAD || len == 0 {
+            Response::bytes(Bytes::new(), ctype)
         } else {
-            match tokio::fs::read(path).await {
-                Ok(all) => {
-                    let all = Bytes::from(all);
-                    let end = (start + len).min(all.len() as u64);
-                    all.slice(start.min(end) as usize..end as usize)
-                }
+            match file_stream(path, start, len).await {
+                Ok(stream) => Response::stream(stream, ctype),
                 Err(_) => return Self::error_response(500),
             }
         };
-        let mut r = with_headers(Response::bytes(data, ctype), &headers).with_status(status);
-        if req.method() == http::Method::HEAD {
-            r.set_header("Content-Length", len.to_string());
-        }
-        r
+        with_headers(body, &headers).with_status(status)
     }
 
     /// The `fresh` package.
@@ -540,5 +644,25 @@ mod tests {
         assert_eq!(parse_range(10, "bytes=0-1,5-6"), None);
         assert_eq!(parse_range(10, "bytes=0-4,3-8"), Some(Ok((0, 8))));
         assert!(html_document("Redirecting", "Redirecting to /x/").starts_with("<!DOCTYPE html>\n<html lang=\"en\">"));
+    }
+
+    /// static-response #3: a 1-byte range of a big file must not load the file in memory.
+    #[tokio::test]
+    async fn bodies_are_streamed_from_disk() {
+        let dir = std::env::temp_dir().join(format!("corvis-ss-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("big.bin"), vec![7u8; 3 * 1024 * 1024]).unwrap();
+        let ss = ServeStatic::new(&dir);
+        let mut headers = http::HeaderMap::new();
+        headers.insert("range", http::HeaderValue::from_static("bytes=0-0"));
+        let req = Request::new(http::Method::GET, "/big.bin".parse().unwrap(), headers, Bytes::new()).unwrap();
+        let Outcome::Respond(r) = ss.serve(&req, "/big.bin").await else { panic!("not served") };
+        assert_eq!(r.status_code(), 206);
+        assert_eq!(r.headers().get("content-length").unwrap(), "1");
+        assert!(matches!(r.body(), crate::http::Body::Stream { .. }), "body read in memory: {:?}", r.body());
+        let req = Request::new(http::Method::GET, "/big.bin".parse().unwrap(), http::HeaderMap::new(), Bytes::new()).unwrap();
+        let Outcome::Respond(r) = ss.serve(&req, "/big.bin").await else { panic!("not served") };
+        assert!(matches!(r.body(), crate::http::Body::Stream { .. }), "body read in memory: {:?}", r.body());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

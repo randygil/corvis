@@ -133,9 +133,10 @@ fn positional(args: &[String]) -> Vec<String> {
 
 // ---------------------------------------------------------------------- new
 
-fn corvis_dependency(args: &[String]) -> String {
+fn corvis_dependency(args: &[String]) -> Result<String, String> {
     if let Some(v) = opt(args, "--corvis-version") {
-        return format!("version = \"{v}\"");
+        names::validate_version_req(&v)?;
+        return Ok(format!("version = \"{v}\""));
     }
     let path = opt(args, "--corvis-path")
         .or_else(|| std::env::var("CORVIS_PATH").ok())
@@ -145,19 +146,25 @@ fn corvis_dependency(args: &[String]) -> String {
             p.canonicalize().unwrap_or(p).display().to_string()
         });
     let path = path.trim_start_matches(r"\\?\").replace('\\', "/");
-    format!("path = \"{path}\"")
+    // Written inside a TOML basic string.
+    if path.chars().any(|c| c == '"' || c.is_control()) {
+        return Err(format!("invalid --corvis-path \"{}\"", path.escape_debug()));
+    }
+    Ok(format!("path = \"{path}\""))
 }
 
 fn cmd_new(args: &[String]) -> Res {
     let pos = positional(args);
     let name = pos.first().ok_or("missing project name: corvis new <name>")?;
+    names::validate_name(name)?;
+    let dependency = corvis_dependency(args)?;
     let n = Names::new(name);
     let root = PathBuf::from(&n.kebab);
     if root.exists() {
         return Err(format!("directory {} already exists", root.display()));
     }
     println!("⚡ We will scaffold your app in a few seconds..\n");
-    let cargo = render(templates::CARGO_TOML, &n).replace("__CORVIS_DEP__", &corvis_dependency(args));
+    let cargo = render(templates::CARGO_TOML, &n).replace("__CORVIS_DEP__", &dependency);
     write_file(&root.join("Cargo.toml"), &cargo)?;
     write_file(&root.join(".gitignore"), templates::GITIGNORE)?;
     write_file(&root.join(".env"), templates::ENV)?;
@@ -210,11 +217,13 @@ fn cmd_generate(args: &[String]) -> Res {
     let pos = positional(args);
     let schematic = pos.first().ok_or("missing schematic: corvis g <schematic> <name>")?;
     let name = pos.get(1).ok_or("missing name: corvis g <schematic> <name>")?;
+    names::validate_name(name)?;
     let n = Names::new(name);
+    let dir = opt(args, "--path").unwrap_or_else(|| n.snake.clone());
+    names::validate_module_dir(&dir)?;
     let p = find_project()?;
     let flat = flag(args, "--flat");
     let no_spec = flag(args, "--no-spec");
-    let dir = opt(args, "--path").unwrap_or_else(|| n.snake.clone());
 
     let simple = |suffix: &str, template: &str, register: Option<&str>| -> Res {
         let file_stem = format!("{}_{suffix}", n.snake);

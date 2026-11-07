@@ -27,20 +27,21 @@ use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::{FutureExt, StreamExt};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::Notify;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Error, Message};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role};
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role, WebSocketConfig};
 
 use crate::common::context::{ExecutionContext, Target};
 use crate::common::enhancer::EnhancerRef;
@@ -55,6 +56,7 @@ use crate::logger::Logger;
 use crate::router::controller::ParamDef;
 use crate::router::{AppShared, RouterConfig};
 use crate::server::ResBody;
+use crate::ws::{CLOSE_INTERNAL_ERROR, CLOSE_POLICY_VIOLATION, OutQueue, PushError, guarded, write_loop};
 
 /// Implemented by `#[websocket_gateway]`.
 pub trait Gateway: Send + Sync + 'static {
@@ -232,12 +234,14 @@ static CLIENT_IDS: AtomicU64 = AtomicU64::new(1);
 
 struct ClientInner {
     id: String,
-    tx: mpsc::UnboundedSender<Message>,
+    queue: Arc<OutQueue>,
     rooms: Mutex<HashSet<String>>,
     handshake: Request,
     server: WsServer,
     /// Set by `disconnect()`: frames received afterwards are not dispatched.
     closing: AtomicBool,
+    /// Wakes the connection loop to arm the close deadline.
+    close_signal: Notify,
 }
 
 /// A connected socket (`@ConnectedSocket() client`).
@@ -255,8 +259,24 @@ impl WsClient {
         let frame = json!({ "event": event, "data": serde_json::to_value(data).unwrap_or(Value::Null) });
         self.send_text(frame.to_string())
     }
+    /// Queues a text frame. Returns `false` if the client is closing, or if the frame does
+    /// not fit in its send buffer (`GatewayOptions::max_buffered_amount`); in that case the
+    /// pending frames are dropped and the client is disconnected with `1008`.
     pub fn send_text(&self, text: impl Into<String>) -> bool {
-        self.inner.tx.send(Message::Text(text.into())).is_ok()
+        match self.inner.queue.push(Message::Text(text.into()), None) {
+            Ok(()) => true,
+            Err(PushError::Closed) => false,
+            Err(PushError::Full) => {
+                Logger::new("WebSocketGateway").warn(format!("client {}: send buffer limit exceeded, closing with 1008", self.id()));
+                let reason = Cow::Borrowed("Send buffer limit exceeded");
+                self.close_with(CloseFrame { code: CloseCode::from(CLOSE_POLICY_VIOLATION), reason }, true);
+                false
+            }
+        }
+    }
+    /// `ws.bufferedAmount`: bytes queued for this client and not yet written to the socket.
+    pub fn buffered_amount(&self) -> usize {
+        self.inner.queue.buffered()
     }
     pub fn join(&self, room: &str) {
         self.inner.rooms.lock().unwrap().insert(room.to_string());
@@ -281,9 +301,24 @@ impl WsClient {
     pub fn get<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
         self.inner.handshake.get::<T>()
     }
+    /// `client.close()`. The client leaves `server.clients()` at once; the close frame is sent
+    /// after the frames already queued and, if the peer does not answer within
+    /// `GatewayOptions::close_timeout` (30 s), the TCP connection is destroyed.
     pub fn disconnect(&self) {
         self.inner.closing.store(true, Ordering::SeqCst);
-        let _ = self.inner.tx.send(Message::Close(None));
+        if self.inner.queue.close(None, false) {
+            self.after_close();
+        }
+    }
+    fn close_with(&self, frame: CloseFrame<'static>, discard: bool) {
+        self.inner.closing.store(true, Ordering::SeqCst);
+        if self.inner.queue.close(Some(frame), discard) {
+            self.after_close();
+        }
+    }
+    fn after_close(&self) {
+        self.inner.server.remove(self.id());
+        self.inner.close_signal.notify_one();
     }
     /// Closes the connection with a close code and reason (e.g. `4401`, `"Unauthorized"`).
     /// Valid codes are 1000-1003, 1007-1014 and 3000-4999; others are sent as `1008`.
@@ -295,9 +330,7 @@ impl WsClient {
         while !reason.is_char_boundary(end) {
             end -= 1;
         }
-        self.inner.closing.store(true, Ordering::SeqCst);
-        let frame = CloseFrame { code: CloseCode::from(code), reason: Cow::Owned(reason[..end].to_string()) };
-        let _ = self.inner.tx.send(Message::Close(Some(frame)));
+        self.close_with(CloseFrame { code: CloseCode::from(code), reason: Cow::Owned(reason[..end].to_string()) }, false);
     }
     /// `true` once `disconnect()` / `disconnect_with()` was called.
     pub fn is_closing(&self) -> bool {
@@ -313,9 +346,90 @@ pub fn client_from_any(c: &Arc<dyn Any + Send + Sync>) -> Result<WsClient, HttpE
     c.downcast_ref::<WsClient>().cloned().ok_or_else(|| HttpException::new("invalid socket", 500))
 }
 
+/// Decides whether a handshake is accepted (`verifyClient`); receives the upgrade request.
+pub type VerifyClient = Arc<dyn Fn(&Request) -> bool + Send + Sync>;
+
+/// Options of a gateway (the `@WebSocketGateway({ ... })` options of the `ws` adapter). Set
+/// them on the gateway's server, usually in `after_init`:
+///
+/// ```ignore
+/// #[async_trait]
+/// impl OnGatewayInit for ChatGateway {
+///     async fn after_init(&self, server: WsServer) {
+///         server.set_options(GatewayOptions::default().allowed_origins(["https://chat.example"]).max_payload(64 * 1024));
+///     }
+/// }
+/// ```
+#[derive(Clone)]
+pub struct GatewayOptions {
+    /// `maxPayload`: largest message (and frame) accepted, in bytes (default 1 MiB). Bigger
+    /// messages close the connection with `1009`.
+    pub max_payload: usize,
+    /// Maximum bytes queued for sending to one client (default 8 MiB). See
+    /// [`WsClient::send_text`].
+    pub max_buffered_amount: usize,
+    /// Maximum handlers running at once for one connection (default 32). At the limit the
+    /// connection stops reading frames until one finishes (TCP backpressure).
+    pub max_inflight: usize,
+    /// How long a disconnected client may take to answer the close frame before the TCP
+    /// connection is destroyed (default 30 s, like `ws`).
+    pub close_timeout: Duration,
+    /// When set, handshakes whose `Origin` header is not in the list (compared ignoring
+    /// ASCII case) are rejected with `403`. Requests without `Origin` (non-browser clients)
+    /// are accepted. Protects cookie-authenticated gateways from cross-site WebSocket hijacking.
+    pub allowed_origins: Option<Vec<String>>,
+    /// `verifyClient`: return `false` to reject the handshake with `401`.
+    pub verify_client: Option<VerifyClient>,
+}
+
+impl Default for GatewayOptions {
+    fn default() -> Self {
+        GatewayOptions {
+            max_payload: 1024 * 1024,
+            max_buffered_amount: crate::ws::DEFAULT_MAX_BUFFERED_AMOUNT,
+            max_inflight: 32,
+            close_timeout: crate::ws::DEFAULT_CLOSE_TIMEOUT,
+            allowed_origins: None,
+            verify_client: None,
+        }
+    }
+}
+
+impl GatewayOptions {
+    pub fn max_payload(mut self, bytes: usize) -> Self {
+        self.max_payload = bytes;
+        self
+    }
+    pub fn max_buffered_amount(mut self, bytes: usize) -> Self {
+        self.max_buffered_amount = bytes;
+        self
+    }
+    pub fn max_inflight(mut self, n: usize) -> Self {
+        self.max_inflight = n.max(1);
+        self
+    }
+    pub fn close_timeout(mut self, timeout: Duration) -> Self {
+        self.close_timeout = timeout;
+        self
+    }
+    pub fn allowed_origins<I, S>(mut self, origins: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_origins = Some(origins.into_iter().map(Into::into).collect());
+        self
+    }
+    pub fn verify_client(mut self, f: impl Fn(&Request) -> bool + Send + Sync + 'static) -> Self {
+        self.verify_client = Some(Arc::new(f));
+        self
+    }
+}
+
 #[derive(Default)]
 struct ServerInner {
     clients: RwLock<HashMap<String, WsClient>>,
+    options: RwLock<GatewayOptions>,
 }
 
 /// The gateway server (`@WebSocketServer() server`): broadcast and rooms.
@@ -340,6 +454,15 @@ impl WsServer {
     pub fn for_path(path: &str) -> WsServer {
         SERVERS.lock().unwrap().entry(path.to_string()).or_default().clone()
     }
+    /// Replaces the options of this gateway; they apply to the handshakes and connections
+    /// that start afterwards.
+    pub fn set_options(&self, options: GatewayOptions) {
+        *self.inner.options.write().unwrap_or_else(|e| e.into_inner()) = options;
+    }
+    pub fn options(&self) -> GatewayOptions {
+        self.inner.options.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    /// The connected clients (a client leaves as soon as `disconnect()` is called).
     pub fn clients(&self) -> Vec<WsClient> {
         self.inner.clients.read().unwrap().values().cloned().collect()
     }
@@ -484,28 +607,79 @@ pub(crate) fn match_upgrade(shared: &AppShared, headers: &http::HeaderMap, path:
     shared.gateways.get(p).cloned()
 }
 
+/// Answers a rejected handshake like `ws`' `abortHandshake`: status, `text/html` body with
+/// the message and `Connection: close`.
+fn reject_handshake(status: u16, message: &str, extra: &[(&str, &str)]) -> hyper::Response<ResBody> {
+    let status = http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_REQUEST);
+    let mut resp = Response::bytes(message.to_string(), "text/html").with_status(status);
+    for (k, v) in extra {
+        resp.set_header(k, v);
+    }
+    let mut resp = crate::server::into_hyper(resp, false);
+    resp.headers_mut().insert(http::header::CONNECTION, http::HeaderValue::from_static("close"));
+    resp
+}
+
+/// The checks of `ws`' `handleUpgrade` plus the gateway's `allowed_origins` and
+/// `verify_client`. `Err` carries the rejection response.
+fn validate_handshake(headers: &http::HeaderMap, method: &http::Method, options: &GatewayOptions) -> Result<Vec<u8>, hyper::Response<ResBody>> {
+    if method != http::Method::GET {
+        return Err(reject_handshake(405, "Invalid HTTP method", &[]));
+    }
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let key = header("sec-websocket-key").unwrap_or("");
+    let key_ok = key.len() == 24
+        && key.ends_with("==")
+        && key.as_bytes()[..22].iter().all(|b| b.is_ascii_alphanumeric() || *b == b'+' || *b == b'/');
+    if !key_ok {
+        return Err(reject_handshake(400, "Missing or invalid Sec-WebSocket-Key header", &[]));
+    }
+    let version = header("sec-websocket-version").and_then(|v| v.trim().parse::<u32>().ok());
+    if version != Some(13) && version != Some(8) {
+        return Err(reject_handshake(400, "Missing or invalid Sec-WebSocket-Version header", &[("Sec-WebSocket-Version", "13, 8")]));
+    }
+    if let (Some(allowed), Some(origin)) = (&options.allowed_origins, headers.get(http::header::ORIGIN)) {
+        let origin = origin.to_str().unwrap_or("");
+        if !allowed.iter().any(|a| a.eq_ignore_ascii_case(origin)) {
+            return Err(reject_handshake(403, "Forbidden", &[]));
+        }
+    }
+    Ok(key.as_bytes().to_vec())
+}
+
 /// Performs the upgrade handshake and spawns the connection loop.
 pub(crate) fn upgrade(gateway: Arc<GatewayRuntime>, mut req: hyper::Request<Incoming>, remote: SocketAddr) -> hyper::Response<ResBody> {
-    use http_body_util::BodyExt;
-    let empty = || http_body_util::Empty::<bytes::Bytes>::new().map_err(|never| match never {}).boxed_unsync();
-    let Some(key) = req.headers().get("sec-websocket-key").map(|k| k.as_bytes().to_vec()) else {
-        return hyper::Response::builder().status(400).body(empty()).unwrap();
+    let options = gateway.server.options();
+    let key = match validate_handshake(req.headers(), req.method(), &options) {
+        Ok(key) => key,
+        Err(resp) => return resp,
     };
     let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(&key);
     let on_upgrade = hyper::upgrade::on(&mut req);
     let (parts, _) = req.into_parts();
-    let handshake = Request::new(parts.method, parts.uri, parts.headers, bytes::Bytes::new()).ok().map(|mut r| {
-        r.version = parts.version;
-        r.remote_addr = Some(remote);
-        r
-    });
+    let Ok(mut handshake) = Request::new(parts.method, parts.uri, parts.headers, bytes::Bytes::new()) else {
+        return reject_handshake(400, "Bad Request", &[]);
+    };
+    handshake.version = parts.version;
+    handshake.remote_addr = Some(remote);
+    if let Some(verify) = &options.verify_client {
+        let mut accepted = false;
+        if !guarded("verify_client", || accepted = verify(&handshake)) || !accepted {
+            return reject_handshake(401, "Unauthorized", &[]);
+        }
+    }
     tokio::spawn(async move {
         let Ok(upgraded) = on_upgrade.await else { return };
-        let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
-        if let Some(handshake) = handshake {
-            run_connection(gateway, ws, handshake).await;
-        }
+        let mut config = WebSocketConfig::default();
+        config.max_message_size = Some(options.max_payload);
+        config.max_frame_size = Some(options.max_payload);
+        let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(config)).await;
+        run_connection(gateway, ws, handshake, options).await;
     });
+    let empty = || {
+        use http_body_util::BodyExt;
+        http_body_util::Empty::<bytes::Bytes>::new().map_err(|never| match never {}).boxed_unsync()
+    };
     hyper::Response::builder()
         .status(101)
         .header("upgrade", "websocket")
@@ -647,54 +821,111 @@ async fn dispatch(
     }
 }
 
-async fn run_connection<S>(gateway: Arc<GatewayRuntime>, ws: WebSocketStream<S>, handshake: Request)
+/// Runs an `OnGatewayConnection` / `OnGatewayDisconnect` hook; a panic is logged and
+/// reported as `false`.
+async fn run_hook(gateway: &GatewayRuntime, name: &str, hook: &crate::discovery::GatewayHook, client: &WsClient) -> bool {
+    let arg: Arc<dyn Any + Send + Sync> = Arc::new(client.clone());
+    match AssertUnwindSafe(async { hook(arg).await }).catch_unwind().await {
+        Ok(()) => true,
+        Err(_) => {
+            Logger::new("WsExceptionsHandler").error(format!("{}: {name} panicked", gateway.name));
+            false
+        }
+    }
+}
+
+/// Removes the client from its server and stops its writer even if the connection task
+/// panics or is cancelled.
+struct ConnectionGuard {
+    client: WsClient,
+    writer: tokio::task::AbortHandle,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.client.inner.closing.store(true, Ordering::SeqCst);
+        self.client.inner.server.remove(self.client.id());
+        self.client.inner.queue.shutdown();
+        self.writer.abort();
+    }
+}
+
+async fn run_connection<S>(gateway: Arc<GatewayRuntime>, ws: WebSocketStream<S>, handshake: Request, options: GatewayOptions)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let (mut sink, mut stream) = ws.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-    let writer = tokio::spawn(async move {
-        while let Some(m) = rx.recv().await {
-            let close = matches!(m, Message::Close(_));
-            if sink.send(m).await.is_err() || close {
-                break;
-            }
-        }
-    });
+    let (sink, mut stream) = ws.split();
+    let queue = Arc::new(OutQueue::new(options.max_buffered_amount));
+    let mut writer = tokio::spawn(write_loop(sink, queue.clone()));
     let id = format!("{:x}{:04x}", chrono::Utc::now().timestamp_millis(), CLIENT_IDS.fetch_add(1, Ordering::SeqCst));
     let client = WsClient {
         inner: Arc::new(ClientInner {
             id,
-            tx: tx.clone(),
+            queue,
             rooms: Mutex::new(HashSet::new()),
             handshake,
             server: gateway.server.clone(),
             closing: AtomicBool::new(false),
+            close_signal: Notify::new(),
         }),
     };
+    let guard = ConnectionGuard { client: client.clone(), writer: writer.abort_handle() };
     gateway.server.add(client.clone());
     if let Some(h) = &gateway.info.on_connection {
-        h(Arc::new(client.clone())).await;
+        if !run_hook(&gateway, "handleConnection", h, &client).await {
+            client.close_with(CloseFrame { code: CloseCode::from(CLOSE_INTERNAL_ERROR), reason: Cow::Borrowed("") }, false);
+        }
     }
     // Handlers of a connection run concurrently (a slow handler does not block the socket)
     // but start in the order their frames arrived, like RxJS `mergeMap`: a `join` followed
-    // by a `message` always sees the room joined.
+    // by a `message` always sees the room joined. With `max_inflight` handlers running the
+    // socket is not read until one of them finishes.
     let mut inflight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
+    let mut deadline: Option<tokio::time::Instant> = None;
+    let mut writer_done = false;
     loop {
+        let current_deadline = deadline;
+        let timeout = async move {
+            match current_deadline {
+                Some(d) => tokio::time::sleep_until(d).await,
+                None => futures::future::pending::<()>().await,
+            }
+        };
+        let can_read = inflight.len() < options.max_inflight;
         let msg = tokio::select! {
-            msg = stream.next() => msg,
+            msg = stream.next(), if can_read => msg,
             Some(()) = inflight.next(), if !inflight.is_empty() => continue,
+            _ = client.inner.close_signal.notified(), if deadline.is_none() => {
+                deadline = Some(tokio::time::Instant::now() + options.close_timeout);
+                continue;
+            }
+            _ = timeout => break,
+            // The writer stops after a write error: the connection is gone.
+            _ = &mut writer, if !writer_done => {
+                writer_done = true;
+                if !client.is_closing() {
+                    break;
+                }
+                continue;
+            }
         };
         let Some(msg) = msg else { break };
+        // Pings are answered by tungstenite itself (one pending pong at most).
         let text = match msg {
             Ok(Message::Text(t)) => t.to_string(),
             Ok(Message::Binary(b)) => String::from_utf8_lossy(&b).into_owned(),
-            Ok(Message::Ping(p)) => {
-                let _ = tx.send(Message::Pong(p));
-                continue;
-            }
-            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(Message::Close(_)) => break,
             Ok(_) => continue,
+            Err(Error::ConnectionClosed | Error::AlreadyClosed | Error::Io(_)) => break,
+            Err(e) => {
+                // Like `ws`: 1009 above `max_payload`, 1007 for invalid UTF-8, 1002 otherwise.
+                let (_, code) = crate::ws::protocol_error(&e);
+                client.close_with(CloseFrame { code: CloseCode::from(code), reason: Cow::Borrowed("") }, true);
+                if !writer_done {
+                    writer_done = tokio::time::timeout(Duration::from_secs(1), &mut writer).await.is_ok();
+                }
+                break;
+            }
         };
         if client.is_closing() {
             continue;
@@ -715,10 +946,14 @@ where
         tokio::spawn(async move { while inflight.next().await.is_some() {} });
     }
     if let Some(h) = &gateway.info.on_disconnect {
-        h(Arc::new(client.clone())).await;
+        run_hook(&gateway, "handleDisconnect", h, &client).await;
     }
-    drop(tx);
-    writer.abort();
+    // Dropping the guard stops the writer; with both halves of the stream dropped the TCP
+    // connection is closed.
+    drop(guard);
+    if !writer_done {
+        let _ = writer.await;
+    }
 }
 
 #[doc(hidden)]

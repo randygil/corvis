@@ -1,0 +1,16 @@
+# Configuración de cargo-audit (`cargo audit`, la lee desde `.cargo/audit.toml`).
+
+[advisories]
+# RUSTSEC-2023-0071 — `rsa` 0.9 (ataque Marvin: recuperación de la clave por canal lateral de
+# tiempo; sin versión corregida).
+# Justificación: `rsa` aparece en `Cargo.lock` solo porque `sqlx` declara `sqlx-mysql` como
+# dependencia opcional, y Cargo registra en el lock las dependencias opcionales de todo el grafo.
+# corvis-orm activa solo Postgres y SQLite, así que `sqlx-mysql` y `rsa` nunca se compilan:
+# `cargo tree -i rsa --target all --all-features` no devuelve nada. Si algún día se activa MySQL,
+# hay que quitar esta excepción y reevaluar el aviso.
+ignore = ["RUSTSEC-2023-0071"]
+informational_warnings = ["unmaintained", "unsound", "notice"]
+
+[output]
+deny = ["warnings"]
+quiet = false

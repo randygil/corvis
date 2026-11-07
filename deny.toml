@@ -1,0 +1,42 @@
+# Configuración de cargo-deny (`cargo deny check`): avisos de seguridad, licencias, crates
+# vetados y orígenes de las dependencias. Se evalúa con todas las features activas.
+[graph]
+all-features = true
+
+[advisories]
+# Base de datos de RustSec. Las versiones retiradas (yanked) son un error; los crates sin
+# mantenimiento o con avisos de "unsound" se reportan todos.
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+# RUSTSEC-2023-0071 (`rsa`, ataque Marvin) no se ignora aquí: cargo-deny solo evalúa el grafo
+# que realmente se compila y `rsa` no está en él (ver `.cargo/audit.toml`).
+ignore = []
+
+[licenses]
+# Licencias compatibles con un framework MIT que los usuarios incluyen en aplicaciones propias.
+# Solo las que aparecen hoy en el grafo; una licencia nueva obliga a revisarla y agregarla.
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC",
+    "Zlib", "Unicode-3.0", "BSL-1.0", "Unlicense", "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+# Los ejemplos y el benchmark (`publish = false`) no se distribuyen: no necesitan licencia.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+# Versiones `*`: aviso. Hoy solo las producen las dependencias por `path` entre crates del
+# workspace sin `version` (`corvis`, `corvis-macros` y `corvis-orm-macros`), que no son un riesgo
+# de seguridad pero impiden publicar en crates.io; al publicar, agregarles `version` y pasar este
+# valor a "deny".
+wildcards = "warn"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+# Solo crates.io: ni registros ni repositorios git desconocidos.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

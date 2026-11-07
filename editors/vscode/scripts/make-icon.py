@@ -1,4 +1,4 @@
-"""Draws media/icon.png (128x128): a steel "C" shaped like a bird head (Corviknight) with a red eye.
+"""Draws media/icon.png (128x128): a steel "C" shaped like a raven's head with a red eye.
 
 Run: python scripts/make-icon.py   (requires Pillow)
 """

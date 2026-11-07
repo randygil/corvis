@@ -23,15 +23,16 @@
 //! ```
 
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::{SinkExt, Stream, StreamExt};
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use http::{HeaderMap, HeaderValue, StatusCode};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -40,6 +41,211 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role, WebSocketConfig
 use crate::http::{Request, Response};
 use crate::http_adapter::{UpgradeRequest, UpgradedIo};
 use crate::logger::Logger;
+
+/// Default limit of bytes queued for sending on one connection (`max_buffered_amount`).
+pub const DEFAULT_MAX_BUFFERED_AMOUNT: usize = 8 * 1024 * 1024;
+/// Default time a closing connection waits for the peer's close frame before the TCP
+/// connection is destroyed (`ws` uses 30 s).
+pub const DEFAULT_CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Default limit of received bytes waiting to be read from [`WebSocket::messages`].
+pub const DEFAULT_MAX_UNREAD_BYTES: usize = 16 * 1024 * 1024;
+
+/// Close code sent when a peer does not read fast enough and the send buffer is full.
+pub(crate) const CLOSE_POLICY_VIOLATION: u16 = 1008;
+/// Close code sent when a listener or hook panicked.
+pub(crate) const CLOSE_INTERNAL_ERROR: u16 = 1011;
+
+pub(crate) type Ack = oneshot::Sender<Result<(), WsError>>;
+
+/// Why a frame could not be queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PushError {
+    /// The connection is closing or closed.
+    Closed,
+    /// The frame does not fit in the send buffer (`max_buffered_amount`).
+    Full,
+}
+
+#[derive(Default)]
+struct OutState {
+    items: VecDeque<(Message, usize, Option<Ack>)>,
+    queued: usize,
+    writing: usize,
+    closed: bool,
+}
+
+/// The outgoing queue of a connection, bounded in bytes. A single writer task drains it,
+/// so a peer that does not read only blocks its own writer; [`OutQueue::buffered`] is the
+/// `bufferedAmount` of `ws` (queued bytes plus the frame being written).
+pub(crate) struct OutQueue {
+    state: Mutex<OutState>,
+    notify: Notify,
+    limit: usize,
+}
+
+fn frame_size(m: &Message) -> usize {
+    m.len() + 16
+}
+
+impl OutQueue {
+    pub(crate) fn new(limit: usize) -> Self {
+        OutQueue { state: Mutex::new(OutState::default()), notify: Notify::new(), limit: limit.max(1) }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, OutState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queues a frame. A frame is always accepted when nothing is pending (so one message
+    /// larger than the limit can still be sent); otherwise the total must stay within it.
+    pub(crate) fn push(&self, m: Message, ack: Option<Ack>) -> Result<(), PushError> {
+        let size = frame_size(&m);
+        let mut s = self.lock();
+        if s.closed {
+            return Err(PushError::Closed);
+        }
+        let pending = s.queued + s.writing;
+        if pending > 0 && pending + size > self.limit {
+            return Err(PushError::Full);
+        }
+        s.items.push_back((m, size, ack));
+        s.queued += size;
+        drop(s);
+        self.notify.notify_one();
+        Ok(())
+    }
+
+    /// Queues a close frame after the pending frames (or instead of them with `discard`) and
+    /// rejects any later frame. Returns `false` if the queue was already closed.
+    pub(crate) fn close(&self, frame: Option<CloseFrame<'static>>, discard: bool) -> bool {
+        let mut s = self.lock();
+        if s.closed && !discard {
+            return false;
+        }
+        if discard {
+            s.items.clear();
+            s.queued = 0;
+        }
+        let m = Message::Close(frame);
+        let size = frame_size(&m);
+        s.items.push_back((m, size, None));
+        s.queued += size;
+        s.closed = true;
+        drop(s);
+        self.notify.notify_one();
+        true
+    }
+
+    /// Next frame to write; `None` once closed and drained.
+    pub(crate) async fn next(&self) -> Option<(Message, usize, Option<Ack>)> {
+        loop {
+            let notified = self.notify.notified();
+            {
+                let mut s = self.lock();
+                if let Some((m, size, ack)) = s.items.pop_front() {
+                    s.queued -= size;
+                    s.writing += size;
+                    return Some((m, size, ack));
+                }
+                if s.closed {
+                    return None;
+                }
+            }
+            notified.await;
+        }
+    }
+
+    pub(crate) fn written(&self, size: usize) {
+        let mut s = self.lock();
+        s.writing = s.writing.saturating_sub(size);
+    }
+
+    pub(crate) fn buffered(&self) -> usize {
+        let s = self.lock();
+        s.queued + s.writing
+    }
+
+    /// Drops every pending frame (their acks fail) and rejects new ones.
+    pub(crate) fn shutdown(&self) {
+        let mut s = self.lock();
+        s.closed = true;
+        s.items.clear();
+        s.queued = 0;
+        s.writing = 0;
+        drop(s);
+        self.notify.notify_one();
+    }
+}
+
+/// Writes the frames of `queue` to `sink` until a close frame is written, a write fails or
+/// the queue is shut down.
+pub(crate) async fn write_loop<S>(mut sink: S, queue: Arc<OutQueue>)
+where
+    S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    while let Some((m, size, ack)) = queue.next().await {
+        let close = matches!(m, Message::Close(_));
+        let r = sink.send(m).await.map_err(|e| WsError::new(e.to_string(), None));
+        queue.written(size);
+        let failed = r.is_err();
+        if let Some(a) = ack {
+            let _ = a.send(r);
+        }
+        if failed || close {
+            break;
+        }
+    }
+}
+
+/// Runs a listener or hook, turning a panic into an error log. Returns `false` if it panicked.
+pub(crate) fn guarded(context: &str, f: impl FnOnce()) -> bool {
+    match std::panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(()) => true,
+        Err(panic) => {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "panic".to_string());
+            Logger::new("WebSocket").error(format!("{context} panicked: {msg}"));
+            false
+        }
+    }
+}
+
+/// Bytes received and not yet taken from the `messages()` streams; the read loop stops
+/// reading from the socket while it is above the limit (TCP backpressure).
+struct UnreadGauge {
+    bytes: AtomicUsize,
+    notify: Notify,
+    limit: usize,
+}
+
+impl UnreadGauge {
+    fn over_limit(&self) -> bool {
+        self.bytes.load(Ordering::SeqCst) > self.limit
+    }
+}
+
+/// Accounts one message queued in a `messages()` stream until it is taken (or dropped).
+struct UnreadTicket {
+    gauge: Arc<UnreadGauge>,
+    size: usize,
+}
+
+impl UnreadTicket {
+    fn new(gauge: &Arc<UnreadGauge>, size: usize) -> Self {
+        gauge.bytes.fetch_add(size, Ordering::SeqCst);
+        UnreadTicket { gauge: gauge.clone(), size }
+    }
+}
+
+impl Drop for UnreadTicket {
+    fn drop(&mut self) {
+        self.gauge.bytes.fetch_sub(self.size, Ordering::SeqCst);
+        self.gauge.notify.notify_one();
+    }
+}
 
 /// A message received or sent on a [`WebSocket`] (`data` + `isBinary` in `ws`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,9 +400,11 @@ struct Listeners {
     pong: Vec<BytesListener>,
 }
 
-enum Command {
-    Send(Message, Option<oneshot::Sender<Result<(), WsError>>>),
-    Close(Option<CloseFrame<'static>>),
+/// Requests to the connection task (frames go through the [`OutQueue`]).
+enum Control {
+    /// A close frame was queued: arm the close deadline.
+    Close,
+    /// Destroy the connection now.
     Terminate,
 }
 
@@ -207,7 +415,9 @@ struct WsInner {
     state: AtomicU8,
     protocol: String,
     request: Request,
-    tx: mpsc::UnboundedSender<Command>,
+    queue: Arc<OutQueue>,
+    control: mpsc::UnboundedSender<Control>,
+    unread: Arc<UnreadGauge>,
     listeners: Mutex<Listeners>,
     closed: watch::Sender<Option<(u16, String)>>,
 }
@@ -270,44 +480,66 @@ impl WebSocket {
         WsError::new(format!("WebSocket is not open: readyState {} ({})", s.as_u8(), s.name()), None)
     }
 
-    /// `ws.send(data)`: queues a text (`String`, `&str`, `serde_json::Value`) or binary
-    /// (`Vec<u8>`, `Bytes`) frame. Fails if the socket is not `OPEN`.
-    pub fn send(&self, data: impl Into<WsMessage>) -> Result<(), WsError> {
+    /// `ws.bufferedAmount`: bytes queued for sending and not yet written to the socket.
+    pub fn buffered_amount(&self) -> usize {
+        self.inner.queue.buffered()
+    }
+
+    fn enqueue(&self, m: Message, ack: Option<Ack>) -> Result<(), WsError> {
         if !self.is_open() {
             return Err(self.not_open());
         }
-        self.inner.tx.send(Command::Send(data.into().into_tungstenite(), None)).map_err(|_| self.not_open())
+        match self.inner.queue.push(m, ack) {
+            Ok(()) => Ok(()),
+            Err(PushError::Closed) => Err(self.not_open()),
+            Err(PushError::Full) => {
+                // The peer does not read: drop what is pending and close with 1008.
+                Logger::new("WebSocket").warn(format!("socket {}: send buffer limit exceeded, closing with 1008", self.id()));
+                self.close_internal(CLOSE_POLICY_VIOLATION, "Send buffer limit exceeded", true);
+                Err(WsError::new("WebSocket send buffer limit exceeded (max_buffered_amount)", Some("WS_ERR_BUFFER_FULL")))
+            }
+        }
+    }
+
+    fn close_internal(&self, code: u16, reason: &str, discard: bool) {
+        if self.ready_state() == ReadyState::Closed {
+            return;
+        }
+        self.inner.state.store(ReadyState::Closing as u8, Ordering::SeqCst);
+        let frame = CloseFrame { code: CloseCode::from(code), reason: Cow::Owned(reason.to_string()) };
+        if self.inner.queue.close(Some(frame), discard) {
+            let _ = self.inner.control.send(Control::Close);
+        }
+    }
+
+    /// `ws.send(data)`: queues a text (`String`, `&str`, `serde_json::Value`) or binary
+    /// (`Vec<u8>`, `Bytes`) frame. Fails if the socket is not `OPEN`, or if the send buffer
+    /// would exceed `max_buffered_amount`; in that case the connection is closed with `1008`.
+    pub fn send(&self, data: impl Into<WsMessage>) -> Result<(), WsError> {
+        self.enqueue(data.into().into_tungstenite(), None)
     }
 
     /// `ws.send(data, (err) => ...)`: like [`send`](Self::send) but resolves once the frame
     /// was written to the socket, with the write error if any.
     pub async fn send_and_wait(&self, data: impl Into<WsMessage>) -> Result<(), WsError> {
-        if !self.is_open() {
-            return Err(self.not_open());
-        }
         let (tx, rx) = oneshot::channel();
-        self.inner.tx.send(Command::Send(data.into().into_tungstenite(), Some(tx))).map_err(|_| self.not_open())?;
+        self.enqueue(data.into().into_tungstenite(), Some(tx))?;
         rx.await.unwrap_or_else(|_| Err(self.not_open()))
     }
 
     /// `ws.ping(data)`.
     pub fn ping(&self, data: impl Into<Bytes>) -> Result<(), WsError> {
-        if !self.is_open() {
-            return Err(self.not_open());
-        }
-        self.inner.tx.send(Command::Send(Message::Ping(data.into().to_vec()), None)).map_err(|_| self.not_open())
+        self.enqueue(Message::Ping(data.into().to_vec()), None)
     }
 
     /// `ws.pong(data)`.
     pub fn pong(&self, data: impl Into<Bytes>) -> Result<(), WsError> {
-        if !self.is_open() {
-            return Err(self.not_open());
-        }
-        self.inner.tx.send(Command::Send(Message::Pong(data.into().to_vec()), None)).map_err(|_| self.not_open())
+        self.enqueue(Message::Pong(data.into().to_vec()), None)
     }
 
-    /// `ws.close([code[, reason]])`: starts the closing handshake. The connection is
-    /// destroyed if the peer does not answer within 30 seconds (like `ws`).
+    /// `ws.close([code[, reason]])`: starts the closing handshake (the close frame goes after
+    /// the frames already queued). The connection is destroyed if the peer does not answer
+    /// within `close_timeout` (30 seconds by default, like `ws`).
     /// Valid codes: 1000, 1001-1003, 1007-1014 and 3000-4999; the reason must fit in 123 bytes.
     pub fn close(&self, code: Option<u16>, reason: &str) -> Result<(), WsError> {
         if let Some(c) = code {
@@ -324,7 +556,9 @@ impl WebSocket {
         }
         self.inner.state.store(ReadyState::Closing as u8, Ordering::SeqCst);
         let frame = code.map(|c| CloseFrame { code: CloseCode::from(c), reason: Cow::Owned(reason.to_string()) });
-        let _ = self.inner.tx.send(Command::Close(frame));
+        if self.inner.queue.close(frame, false) {
+            let _ = self.inner.control.send(Control::Close);
+        }
         Ok(())
     }
 
@@ -334,7 +568,7 @@ impl WebSocket {
             return;
         }
         self.inner.state.store(ReadyState::Closing as u8, Ordering::SeqCst);
-        let _ = self.inner.tx.send(Command::Terminate);
+        let _ = self.inner.control.send(Control::Terminate);
     }
 
     /// `ws.on('message', (data, isBinary) => ...)`.
@@ -366,21 +600,26 @@ impl WebSocket {
 
     /// The incoming messages as a `Stream` that ends when the socket closes. Call it
     /// inside the `handle_upgrade` callback so no message is missed.
+    ///
+    /// Backpressure: while more than `max_unread_bytes` received bytes wait in the streams,
+    /// the connection stops reading from the socket (the peer's sends block in TCP).
     pub fn messages(&self) -> std::pin::Pin<Box<dyn Stream<Item = WsMessage> + Send + 'static>> {
-        let (tx, rx) = mpsc::unbounded_channel::<WsMessage>();
+        let (tx, rx) = mpsc::unbounded_channel::<(WsMessage, UnreadTicket)>();
         if self.ready_state() != ReadyState::Closed {
             let tx = Arc::new(Mutex::new(Some(tx)));
             let t1 = tx.clone();
+            let gauge = self.inner.unread.clone();
             self.on_message(move |m| {
-                if let Some(tx) = t1.lock().unwrap().as_ref() {
-                    let _ = tx.send(m);
+                if let Some(tx) = t1.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    let ticket = UnreadTicket::new(&gauge, m.as_bytes().len() + 16);
+                    let _ = tx.send((m, ticket));
                 }
             });
             self.on_close(move |_, _| {
-                tx.lock().unwrap().take();
+                tx.lock().unwrap_or_else(|e| e.into_inner()).take();
             });
         }
-        Box::pin(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|m| (m, rx)) }))
+        Box::pin(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|(m, _ticket)| (m, rx)) }))
     }
 
     /// Resolves with `(code, reason)` once the connection is closed.
@@ -396,34 +635,48 @@ impl WebSocket {
         }
     }
 
+    fn listeners(&self) -> std::sync::MutexGuard<'_, Listeners> {
+        self.inner.listeners.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// A listener that panicked is logged and the connection is closed with `1011`, so the
+    /// socket never stays half-alive.
+    fn listener_panicked(&self) {
+        self.close_internal(CLOSE_INTERNAL_ERROR, "", false);
+    }
     fn emit_message(&self, m: WsMessage) {
-        let ls = self.inner.listeners.lock().unwrap().message.clone();
+        let ls = self.listeners().message.clone();
         for l in ls {
-            l(m.clone());
+            if !guarded("a 'message' listener", || l(m.clone())) {
+                self.listener_panicked();
+            }
         }
     }
     fn emit_error(&self, e: &WsError) {
-        let ls = self.inner.listeners.lock().unwrap().error.clone();
+        let ls = self.listeners().error.clone();
         for l in ls {
-            l(e);
+            if !guarded("an 'error' listener", || l(e)) {
+                self.listener_panicked();
+            }
         }
     }
     fn emit_bytes(&self, ping: bool, data: Bytes) {
         let ls = {
-            let g = self.inner.listeners.lock().unwrap();
+            let g = self.listeners();
             if ping { g.ping.clone() } else { g.pong.clone() }
         };
         for l in ls {
-            l(data.clone());
+            if !guarded("a 'ping'/'pong' listener", || l(data.clone())) {
+                self.listener_panicked();
+            }
         }
     }
     fn emit_close(&self, code: u16, reason: &str) {
-        let ls = std::mem::take(&mut self.inner.listeners.lock().unwrap().close);
+        let ls = std::mem::take(&mut self.listeners().close);
         for l in ls {
-            l(code, reason);
+            guarded("a 'close' listener", || l(code, reason));
         }
         // Drop the remaining listeners: they may hold clones of this socket.
-        *self.inner.listeners.lock().unwrap() = Listeners::default();
+        *self.listeners() = Listeners::default();
         self.inner.closed.send_replace(Some((code, reason.to_string())));
     }
 }
@@ -440,15 +693,45 @@ pub struct WebSocketServerOptions {
     pub client_tracking: bool,
     /// `handleProtocols`; by default the first requested subprotocol is accepted.
     pub handle_protocols: Option<HandleProtocols>,
+    /// Maximum bytes queued for sending on one connection (default 8 MiB). When `send` would
+    /// exceed it (the peer does not read), the pending frames are dropped, `send` fails with
+    /// `WS_ERR_BUFFER_FULL` and the connection is closed with `1008`. Not in `ws`, which
+    /// buffers without limit and leaves the check of `bufferedAmount` to the application.
+    pub max_buffered_amount: usize,
+    /// How long a closing connection waits for the peer's close frame before the TCP
+    /// connection is destroyed (default 30 s, like `ws`).
+    pub close_timeout: Duration,
+    /// Received bytes allowed to wait in [`WebSocket::messages`] streams before the
+    /// connection stops reading from the socket (default 16 MiB).
+    pub max_unread_bytes: usize,
 }
 
 impl Default for WebSocketServerOptions {
     fn default() -> Self {
-        WebSocketServerOptions { max_payload: 100 * 1024 * 1024, client_tracking: true, handle_protocols: None }
+        WebSocketServerOptions {
+            max_payload: 100 * 1024 * 1024,
+            client_tracking: true,
+            handle_protocols: None,
+            max_buffered_amount: DEFAULT_MAX_BUFFERED_AMOUNT,
+            close_timeout: DEFAULT_CLOSE_TIMEOUT,
+            max_unread_bytes: DEFAULT_MAX_UNREAD_BYTES,
+        }
     }
 }
 
 impl WebSocketServerOptions {
+    pub fn max_buffered_amount(mut self, bytes: usize) -> Self {
+        self.max_buffered_amount = bytes;
+        self
+    }
+    pub fn close_timeout(mut self, timeout: Duration) -> Self {
+        self.close_timeout = timeout;
+        self
+    }
+    pub fn max_unread_bytes(mut self, bytes: usize) -> Self {
+        self.max_unread_bytes = bytes;
+        self
+    }
     pub fn max_payload(mut self, bytes: usize) -> Self {
         self.max_payload = bytes;
         self
@@ -594,34 +877,66 @@ impl WebSocketServer {
         let server = self.clone();
         tokio::spawn(async move {
             let Ok(io) = upgraded.await else { return };
-            let max = server.inner.options.max_payload;
+            let options = &server.inner.options;
             let mut config = WebSocketConfig::default();
-            config.max_message_size = Some(max);
-            config.max_frame_size = Some(max);
+            config.max_message_size = Some(options.max_payload);
+            config.max_frame_size = Some(options.max_payload);
             let stream = WebSocketStream::from_raw_socket(io, Role::Server, Some(config)).await;
-            let (tx, rx) = mpsc::unbounded_channel();
+            let (control, rx) = mpsc::unbounded_channel();
             let ws = WebSocket {
                 inner: Arc::new(WsInner {
                     id: SOCKET_IDS.fetch_add(1, Ordering::SeqCst),
                     state: AtomicU8::new(ReadyState::Open as u8),
                     protocol: protocol.unwrap_or_default(),
                     request,
-                    tx,
+                    queue: Arc::new(OutQueue::new(options.max_buffered_amount)),
+                    control,
+                    unread: Arc::new(UnreadGauge {
+                        bytes: AtomicUsize::new(0),
+                        notify: Notify::new(),
+                        limit: options.max_unread_bytes,
+                    }),
                     listeners: Mutex::new(Listeners::default()),
                     closed: watch::channel(None).0,
                 }),
             };
-            if server.inner.options.client_tracking {
-                server.inner.clients.lock().unwrap().insert(ws.id(), ws.clone());
+            if options.client_tracking {
+                server.inner.clients.lock().unwrap_or_else(|e| e.into_inner()).insert(ws.id(), ws.clone());
             }
-            cb(ws.clone());
-            run(ws.clone(), stream, rx).await;
-            server.inner.clients.lock().unwrap().remove(&ws.id());
+            // Removes the socket from `clients()` and reports it closed even if something
+            // below panics.
+            let _cleanup = Cleanup { server: server.clone(), ws: ws.clone() };
+            if !guarded("the handleUpgrade callback", || cb(ws.clone())) {
+                ws.terminate();
+            }
+            run(ws.clone(), stream, rx, options.close_timeout).await;
         });
     }
 }
 
-fn protocol_error(e: &tokio_tungstenite::tungstenite::Error) -> (WsError, u16) {
+struct Cleanup {
+    server: WebSocketServer,
+    ws: WebSocket,
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        self.server.inner.clients.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.ws.id());
+        if self.ws.ready_state() != ReadyState::Closed {
+            self.ws.inner.state.store(ReadyState::Closed as u8, Ordering::SeqCst);
+            self.ws.inner.queue.shutdown();
+            if std::thread::panicking() {
+                // Listeners are not called while unwinding (a second panic would abort).
+                *self.ws.listeners() = Listeners::default();
+                self.ws.inner.closed.send_replace(Some((1006, String::new())));
+            } else {
+                self.ws.emit_close(1006, "");
+            }
+        }
+    }
+}
+
+pub(crate) fn protocol_error(e: &tokio_tungstenite::tungstenite::Error) -> (WsError, u16) {
     use tokio_tungstenite::tungstenite::Error as E;
     match e {
         E::Capacity(_) => (WsError::new("Max payload size exceeded", Some("WS_ERR_UNSUPPORTED_MESSAGE_LENGTH")), 1009),
@@ -630,8 +945,11 @@ fn protocol_error(e: &tokio_tungstenite::tungstenite::Error) -> (WsError, u16) {
     }
 }
 
-async fn run(ws: WebSocket, mut stream: WebSocketStream<UpgradedIo>, mut rx: mpsc::UnboundedReceiver<Command>) {
+async fn run(ws: WebSocket, stream: WebSocketStream<UpgradedIo>, mut control: mpsc::UnboundedReceiver<Control>, close_timeout: Duration) {
     use tokio_tungstenite::tungstenite::Error as E;
+    let (sink, mut stream) = stream.split();
+    let mut writer = tokio::spawn(write_loop(sink, ws.inner.queue.clone()));
+    let mut writer_done = false;
     let mut received: Option<(u16, String)> = None;
     let mut deadline: Option<tokio::time::Instant> = None;
     loop {
@@ -642,12 +960,14 @@ async fn run(ws: WebSocket, mut stream: WebSocketStream<UpgradedIo>, mut rx: mps
                 None => futures::future::pending::<()>().await,
             }
         };
+        let paused = ws.inner.unread.over_limit();
         tokio::select! {
-            incoming = stream.next() => match incoming {
+            incoming = stream.next(), if !paused => match incoming {
                 None => break,
                 Some(Ok(msg)) => match msg {
                     Message::Text(t) => ws.emit_message(WsMessage::Text(t)),
                     Message::Binary(b) => ws.emit_message(WsMessage::Binary(Bytes::from(b))),
+                    // tungstenite answers pings by itself.
                     Message::Ping(p) => ws.emit_bytes(true, Bytes::from(p)),
                     Message::Pong(p) => ws.emit_bytes(false, Bytes::from(p)),
                     Message::Close(frame) => {
@@ -656,7 +976,7 @@ async fn run(ws: WebSocket, mut stream: WebSocketStream<UpgradedIo>, mut rx: mps
                             None => (1005, String::new()),
                         });
                         ws.inner.state.store(ReadyState::Closing as u8, Ordering::SeqCst);
-                        deadline.get_or_insert_with(|| tokio::time::Instant::now() + Duration::from_secs(30));
+                        deadline.get_or_insert_with(|| tokio::time::Instant::now() + close_timeout);
                     }
                     Message::Frame(_) => {}
                 },
@@ -665,35 +985,31 @@ async fn run(ws: WebSocket, mut stream: WebSocketStream<UpgradedIo>, mut rx: mps
                     let (err, code) = protocol_error(&e);
                     ws.emit_error(&err);
                     let frame = CloseFrame { code: CloseCode::from(code), reason: Cow::Borrowed("") };
-                    let _ = tokio::time::timeout(Duration::from_secs(1), stream.close(Some(frame))).await;
+                    ws.inner.queue.close(Some(frame), true);
+                    writer_done = tokio::time::timeout(Duration::from_secs(1), &mut writer).await.is_ok();
                     break;
                 }
             },
-            cmd = rx.recv() => match cmd {
-                Some(Command::Send(m, ack)) => {
-                    let r = stream.send(m).await.map_err(|e| WsError::new(e.to_string(), None));
-                    if let Some(a) = ack {
-                        let _ = a.send(r);
-                    }
+            _ = ws.inner.unread.notify.notified(), if paused => {}
+            cmd = control.recv() => match cmd {
+                Some(Control::Close) => {
+                    deadline.get_or_insert_with(|| tokio::time::Instant::now() + close_timeout);
                 }
-                Some(Command::Close(frame)) => {
-                    let _ = stream.close(frame).await;
-                    deadline.get_or_insert_with(|| tokio::time::Instant::now() + Duration::from_secs(30));
-                }
-                Some(Command::Terminate) | None => break,
+                Some(Control::Terminate) | None => break,
             },
             _ = timeout => break,
         }
     }
+    // Dropping both halves closes the TCP connection, even if the writer is blocked on a
+    // peer that does not read.
+    if !writer_done {
+        writer.abort();
+        let _ = writer.await;
+    }
     drop(stream);
     ws.inner.state.store(ReadyState::Closed as u8, Ordering::SeqCst);
     // Fail pending `send_and_wait` calls.
-    rx.close();
-    while let Ok(cmd) = rx.try_recv() {
-        if let Command::Send(_, Some(ack)) = cmd {
-            let _ = ack.send(Err(ws.not_open()));
-        }
-    }
+    ws.inner.queue.shutdown();
     let (code, reason) = received.unwrap_or((1006, String::new()));
     ws.emit_close(code, &reason);
 }

@@ -29,7 +29,6 @@ form_urlencoded = "1"
 percent-encoding = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 regex = "1"
-dotenvy = "0.15"
 chrono-tz = { version = "0.10", features = ["case-insensitive"] }
 indexmap = "2"
 jsonwebtoken = { version = "9", optional = true }
@@ -40,6 +39,7 @@ url = "2"
 unicode-normalization = "0.1"
 rand = "0.8"
 sha1 = "0.10"
+sha2 = "0.10"
 memchr = "2"
 
 [features]

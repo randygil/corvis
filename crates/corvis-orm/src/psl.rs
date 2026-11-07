@@ -438,7 +438,13 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ParseError> {
 struct Parser {
     toks: Vec<(Tok, usize)>,
     pos: usize,
+    /// Nesting of arrays / function calls in the current expression.
+    depth: usize,
 }
+
+/// Deepest nesting of `[...]` / `f(...)` in an attribute value. Real schemas use two or three
+/// levels; the limit keeps a hostile schema from overflowing the stack.
+const MAX_EXPR_DEPTH: usize = 64;
 
 impl Parser {
     fn peek(&self) -> Option<&Tok> {
@@ -721,6 +727,16 @@ impl Parser {
     }
 
     fn expr(&mut self) -> Result<Expr, ParseError> {
+        if self.depth >= MAX_EXPR_DEPTH {
+            return self.err(format!("expression nested too deeply (more than {MAX_EXPR_DEPTH} levels)"));
+        }
+        self.depth += 1;
+        let e = self.expr_inner();
+        self.depth -= 1;
+        e
+    }
+
+    fn expr_inner(&mut self) -> Result<Expr, ParseError> {
         self.skip_newlines();
         match self.next() {
             Some(Tok::Str(s)) => Ok(Expr::String(s)),
@@ -757,7 +773,7 @@ impl Parser {
 /// Parses a `schema.prisma` source.
 pub fn parse(src: &str) -> Result<Schema, ParseError> {
     let toks = lex(src)?;
-    Parser { toks, pos: 0 }.schema()
+    Parser { toks, pos: 0, depth: 0 }.schema()
 }
 
 /// Parses the schema at `path`. If it is a directory (the `prismaSchemaFolder` layout),

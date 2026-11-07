@@ -10,7 +10,8 @@ use serde_json::{Map, Value};
 use super::busboy::{self, Event};
 use super::{
     FileInfo, Limits, MULTER_MODULE_OPTIONS, MulterError, MulterErrorCode, MulterOptions, MultipartData,
-    StorageEngine, append_field::append_field, is_multipart, transform_busboy_error, transform_multer_error,
+    BodySource, StorageEngine, append_field::{ArrayBudget, append_field}, is_multipart, transform_busboy_error,
+    transform_multer_error,
 };
 use crate::common::context::ExecutionContext;
 use crate::common::interceptor::{CallHandler, CorvisInterceptor};
@@ -61,19 +62,33 @@ struct Setup {
     strategy: Strategy,
 }
 
+/// Files written by the storage engine, removed if a later pipe or the handler fails.
+struct Cleanup {
+    storage: Arc<dyn StorageEngine>,
+    files: Vec<Map<String, Value>>,
+}
+
+impl Cleanup {
+    async fn run(self, req: &Request) {
+        for mut f in self.files {
+            let _ = self.storage.remove_file(req, &mut f).await;
+        }
+    }
+}
+
 /// Runs multer on the request and stores `req.body` / `req.file` / `req.files`.
-async fn run(ctx: &ExecutionContext, local: &MulterOptions, setup: &Setup) -> Result<(), HttpException> {
+async fn run(ctx: &ExecutionContext, local: &MulterOptions, setup: &Setup) -> Result<Option<Cleanup>, HttpException> {
     let req = ctx.request();
     if !is_multipart(req) {
-        return Ok(());
+        return Ok(None);
     }
     let module_opts = ctx
         .module_ref()
         .and_then(|m| m.get_token_in_context::<MulterOptions>(MULTER_MODULE_OPTIONS).ok());
     let options = local.merged_over(module_opts.as_deref());
-    let data = process(req, &options, setup).await?;
+    let (data, cleanup) = process(req, &options, setup).await?;
     req.insert(data);
-    Ok(())
+    Ok(cleanup.filter(|c| !c.files.is_empty() && options.remove_files_on_error.unwrap_or(true)))
 }
 
 struct PendingFile {
@@ -133,7 +148,148 @@ impl Appender {
     }
 }
 
-async fn process(req: &Request, options: &MulterOptions, setup: &Setup) -> Result<MultipartData, HttpException> {
+/// State of one upload while its events are handled.
+struct Upload<'a> {
+    req: &'a Request,
+    options: &'a MulterOptions,
+    setup: &'a Setup,
+    limits: &'a Limits,
+    storage: Arc<dyn StorageEngine>,
+    files_left: HashMap<String, u64>,
+    body: Map<String, Value>,
+    budget: ArrayBudget,
+    appender: Appender,
+    pending: HashMap<usize, PendingFile>,
+    uploaded: Vec<Map<String, Value>>,
+}
+
+impl Upload<'_> {
+    /// Handles one busboy event. `Ok(Some(id))` asks the parser to drop the data of file `id`.
+    async fn on_event(&mut self, ev: Event) -> Result<Option<usize>, HttpException> {
+        let limits = self.limits;
+        match ev {
+            Event::Field { name, value, value_truncated } => {
+                handle_field(&mut self.body, &mut self.budget, name, value, value_truncated, limits)
+                    .map_err(transform_multer_error)?;
+                Ok(None)
+            }
+            Event::FileStart { id, name, filename, encoding, mime_type } => {
+                let Some(fieldname) = name else {
+                    return Err(transform_multer_error(MulterError::new(MulterErrorCode::MissingFieldName, None)));
+                };
+                // Parts without a file name are not files for multer.
+                let Some(filename) = filename.filter(|f| !f.is_empty()) else { return Ok(Some(id)) };
+                if let Some(max) = limits.field_name_size {
+                    if fieldname.encode_utf16().count() as u64 > max {
+                        return Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFieldKey, None)));
+                    }
+                }
+                let info = FileInfo { fieldname: fieldname.clone(), originalname: filename, encoding, mimetype: mime_type };
+                let slot = self.appender.insert(&fieldname);
+                let filter = if self.setup.fields.is_some() {
+                    let left = self.files_left.get(&fieldname).copied().unwrap_or(0);
+                    if left == 0 {
+                        Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitUnexpectedFile, Some(fieldname))))
+                    } else {
+                        if left != u64::MAX {
+                            self.files_left.insert(fieldname.clone(), left - 1);
+                        }
+                        apply_filter(self.options, self.req, &info)
+                    }
+                } else {
+                    apply_filter(self.options, self.req, &info)
+                };
+                match filter {
+                    Err(e) => {
+                        self.appender.remove(slot);
+                        Err(e)
+                    }
+                    Ok(false) => {
+                        // `fileStream.resume()`: the contents are skipped.
+                        self.appender.remove(slot);
+                        self.pending.insert(id, PendingFile { info, included: false, slot: None });
+                        Ok(Some(id))
+                    }
+                    Ok(true) => {
+                        self.pending.insert(id, PendingFile { info, included: true, slot: Some(slot) });
+                        Ok(None)
+                    }
+                }
+            }
+            Event::FileLimit { id } => match self.pending.get(&id) {
+                Some(p) if p.included => Err(transform_multer_error(MulterError::new(
+                    MulterErrorCode::LimitFileSize,
+                    Some(p.info.fieldname.clone()),
+                ))),
+                _ => Ok(None),
+            },
+            Event::FileEnd { id, data } => match self.pending.remove(&id) {
+                Some(PendingFile { info, included: true, slot: Some(slot) }) => {
+                    match self.storage.handle_file(self.req, &info, data).await {
+                        Ok(stored) => {
+                            let mut file = Map::new();
+                            file.insert("fieldname".into(), Value::String(info.fieldname.clone()));
+                            file.insert("originalname".into(), Value::String(info.originalname.clone()));
+                            file.insert("encoding".into(), Value::String(info.encoding.clone()));
+                            file.insert("mimetype".into(), Value::String(info.mimetype.clone()));
+                            file.extend(stored);
+                            self.appender.replace(slot, file.clone());
+                            self.uploaded.push(file);
+                            Ok(None)
+                        }
+                        Err(e) => {
+                            self.appender.remove(slot);
+                            Err(e)
+                        }
+                    }
+                }
+                _ => Ok(None),
+            },
+            Event::FilesLimit => Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFileCount, None))),
+            Event::FieldsLimit => Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFieldCount, None))),
+            Event::PartsLimit => Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitPartCount, None))),
+            Event::Error(msg) => Err(transform_busboy_error(msg)),
+        }
+    }
+}
+
+/// Reads the body from the socket chunk by chunk, feeding busboy and handling its events as
+/// they come: a limit, a rejected file or a malformed part stops the read right away.
+async fn read_events(
+    up: &mut Upload<'_>,
+    source: &mut BodySource,
+    parser: &mut busboy::StreamParser<'_>,
+    body_limit: u64,
+) -> Result<(), HttpException> {
+    let mut total: u64 = 0;
+    loop {
+        let Some(chunk) = source.next().await? else {
+            for ev in parser.finish() {
+                if let Some(id) = up.on_event(ev).await? {
+                    parser.discard_file(id);
+                }
+            }
+            return Ok(());
+        };
+        total += chunk.len() as u64;
+        if total > body_limit {
+            return Err(crate::server::entity_too_large_error());
+        }
+        if parser.is_complete() {
+            // Closing boundary seen: the epilogue is read (so the connection stays usable)
+            // but ignored, like busboy.
+            continue;
+        }
+        parser.push(chunk);
+        for ev in parser.take_events() {
+            if let Some(id) = up.on_event(ev).await? {
+                parser.discard_file(id);
+            }
+        }
+    }
+}
+
+async fn process(req: &Request, options: &MulterOptions, setup: &Setup) -> Result<(MultipartData, Option<Cleanup>), HttpException> {
     let storage = options.resolve_storage();
     let limits = options.limits.clone().unwrap_or_default();
     let preserve_path = options.preserve_path.unwrap_or(false);
@@ -144,8 +300,15 @@ async fn process(req: &Request, options: &MulterOptions, setup: &Setup) -> Resul
             busboy::ConfigError::BoundaryNotFound => transform_busboy_error(busboy::BOUNDARY_NOT_FOUND),
             other => HttpException::internal(super::BusboyError(other.message())),
         })?;
+    let body_limit = options.effective_body_limit(&limits);
+    let mut source = BodySource::of(req);
+    if crate::server::content_length(req.headers()).is_some_and(|n| n > body_limit) {
+        // A declared length over the limit is rejected before reading anything.
+        source.give_back(req);
+        return Err(crate::server::entity_too_large_error());
+    }
     let cfg = busboy::Config { limits: &limits, preserve_path, def_param_charset: &def_param_charset };
-    let events = busboy::parse(req.raw_body(), &boundary, &cfg);
+    let mut parser = busboy::StreamParser::new(&boundary, &cfg);
 
     let mut files_left: HashMap<String, u64> = HashMap::new();
     if let Some(fields) = &setup.fields {
@@ -153,108 +316,31 @@ async fn process(req: &Request, options: &MulterOptions, setup: &Setup) -> Resul
             files_left.insert(f.name.clone(), f.max_count.unwrap_or(u64::MAX));
         }
     }
-    let mut body = Map::new();
-    let mut appender = Appender { strategy: setup.strategy, list: Vec::new(), by_field: Vec::new(), single: None };
-    let mut pending: HashMap<usize, PendingFile> = HashMap::new();
-    let mut uploaded: Vec<Map<String, Value>> = Vec::new();
-    let mut error: Option<HttpException> = None;
+    let mut up = Upload {
+        req,
+        options,
+        setup,
+        limits: &limits,
+        storage: storage.clone(),
+        files_left,
+        body: Map::new(),
+        budget: ArrayBudget::default(),
+        appender: Appender { strategy: setup.strategy, list: Vec::new(), by_field: Vec::new(), single: None },
+        pending: HashMap::new(),
+        uploaded: Vec::new(),
+    };
 
-    for ev in events {
-        let result: Result<(), HttpException> = match ev {
-            Event::Field { name, value, value_truncated } => {
-                handle_field(&mut body, name, value, value_truncated, &limits).map_err(transform_multer_error)
-            }
-            Event::FileStart { id, name, filename, encoding, mime_type } => {
-                let Some(fieldname) = name else {
-                    error = Some(transform_multer_error(MulterError::new(MulterErrorCode::MissingFieldName, None)));
-                    break;
-                };
-                // Parts without a file name are not files for multer.
-                let Some(filename) = filename.filter(|f| !f.is_empty()) else { continue };
-                if let Some(max) = limits.field_name_size {
-                    if fieldname.encode_utf16().count() as u64 > max {
-                        error = Some(transform_multer_error(MulterError::new(MulterErrorCode::LimitFieldKey, None)));
-                        break;
-                    }
-                }
-                let info = FileInfo { fieldname: fieldname.clone(), originalname: filename, encoding, mimetype: mime_type };
-                let slot = appender.insert(&fieldname);
-                let filter = if setup.fields.is_some() {
-                    let left = files_left.get(&fieldname).copied().unwrap_or(0);
-                    if left == 0 {
-                        Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitUnexpectedFile, Some(fieldname))))
-                    } else {
-                        if left != u64::MAX {
-                            files_left.insert(fieldname.clone(), left - 1);
-                        }
-                        apply_filter(options, req, &info)
-                    }
-                } else {
-                    apply_filter(options, req, &info)
-                };
-                match filter {
-                    Err(e) => {
-                        appender.remove(slot);
-                        Err(e)
-                    }
-                    Ok(false) => {
-                        appender.remove(slot);
-                        pending.insert(id, PendingFile { info, included: false, slot: None });
-                        Ok(())
-                    }
-                    Ok(true) => {
-                        pending.insert(id, PendingFile { info, included: true, slot: Some(slot) });
-                        Ok(())
-                    }
-                }
-            }
-            Event::FileLimit { id } => match pending.get(&id) {
-                Some(p) if p.included => Err(transform_multer_error(MulterError::new(
-                    MulterErrorCode::LimitFileSize,
-                    Some(p.info.fieldname.clone()),
-                ))),
-                _ => Ok(()),
-            },
-            Event::FileEnd { id, data } => match pending.remove(&id) {
-                Some(PendingFile { info, included: true, slot: Some(slot) }) => {
-                    match storage.handle_file(req, &info, data).await {
-                        Ok(stored) => {
-                            let mut file = Map::new();
-                            file.insert("fieldname".into(), Value::String(info.fieldname.clone()));
-                            file.insert("originalname".into(), Value::String(info.originalname.clone()));
-                            file.insert("encoding".into(), Value::String(info.encoding.clone()));
-                            file.insert("mimetype".into(), Value::String(info.mimetype.clone()));
-                            file.extend(stored);
-                            appender.replace(slot, file.clone());
-                            uploaded.push(file);
-                            Ok(())
-                        }
-                        Err(e) => {
-                            appender.remove(slot);
-                            Err(e)
-                        }
-                    }
-                }
-                _ => Ok(()),
-            },
-            Event::FilesLimit => Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFileCount, None))),
-            Event::FieldsLimit => Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFieldCount, None))),
-            Event::PartsLimit => Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitPartCount, None))),
-            Event::Error(msg) => Err(transform_busboy_error(msg)),
-        };
-        if let Err(e) = result {
-            error = Some(e);
-            break;
-        }
-    }
-
-    if let Some(err) = error {
+    let result = read_events(&mut up, &mut source, &mut parser, body_limit).await;
+    source.give_back(req);
+    if let Err(err) = result {
         // `removeUploadedFiles`: undo what the storage already wrote.
-        for mut f in uploaded {
+        for mut f in std::mem::take(&mut up.uploaded) {
             let _ = storage.remove_file(req, &mut f).await;
         }
         return Err(err);
     }
+    let Upload { body, mut appender, uploaded, .. } = up;
+    let cleanup = Some(Cleanup { storage, files: uploaded });
 
     // `req.body` is a plain JS object: array-index keys enumerate first.
     let body = crate::z::js::js_key_order(Value::Object(body));
@@ -277,7 +363,7 @@ async fn process(req: &Request, options: &MulterOptions, setup: &Setup) -> Resul
             data.files = Some(Arc::new(Value::Object(obj)));
         }
     }
-    Ok(data)
+    Ok((data, cleanup))
 }
 
 fn apply_filter(options: &MulterOptions, req: &Request, info: &FileInfo) -> Result<bool, HttpException> {
@@ -289,6 +375,7 @@ fn apply_filter(options: &MulterOptions, req: &Request, info: &FileInfo) -> Resu
 
 fn handle_field(
     body: &mut Map<String, Value>,
+    budget: &mut ArrayBudget,
     name: Option<String>,
     value: String,
     value_truncated: bool,
@@ -308,7 +395,10 @@ fn handle_field(
             return Err(MulterError::new(MulterErrorCode::LimitFieldNesting, Some(name)));
         }
     }
-    append_field(body, &name, Value::String(value));
+    let max_depth = limits
+        .field_nesting_depth
+        .map_or(super::append_field::DEFAULT_MAX_FIELD_DEPTH, |d| usize::try_from(d).unwrap_or(usize::MAX));
+    append_field(body, budget, &name, Value::String(value), max_depth);
     Ok(())
 }
 
@@ -336,8 +426,14 @@ macro_rules! interceptor_options {
         #[async_trait]
         impl CorvisInterceptor for $t {
             async fn intercept(&self, ctx: &ExecutionContext, next: CallHandler) -> HandlerResult {
-                run(ctx, &self.options, &self.setup()).await?;
-                next.handle().await
+                let cleanup = run(ctx, &self.options, &self.setup()).await?;
+                let result = next.handle().await;
+                // A pipe (`ParseFilePipe`) or the handler rejected the request: the files the
+                // storage already wrote are removed, so rejected uploads do not stay on disk.
+                if let (true, Some(cleanup)) = (result.is_err(), cleanup) {
+                    cleanup.run(ctx.request()).await;
+                }
+                result
             }
         }
     };

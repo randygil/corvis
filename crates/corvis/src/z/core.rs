@@ -23,8 +23,11 @@ pub enum ZodVersion {
     V4,
 }
 
+/// Default of [`ZodConfig::max_depth`].
+pub const DEFAULT_MAX_DEPTH: usize = 128;
+
 /// Global configuration (`z.config({...})`).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ZodConfig {
     /// Default version for `parse` calls that do not override it.
     pub version: ZodVersion,
@@ -36,6 +39,25 @@ pub struct ZodConfig {
     /// structs serialize `DateTime` as strings). Off by default for zod fidelity;
     /// `ZodSerializerInterceptor` turns it on for responses.
     pub date_strings: bool,
+    /// Maximum nesting of recursive schemas (`z.lazy`, `z.json()`) during one parse. Default
+    /// [`DEFAULT_MAX_DEPTH`] (128). A deeper input produces a `custom` issue ("Too deeply
+    /// nested...") instead of recursing until the stack overflows. zod has no such limit: in
+    /// Node.js the parse throws `RangeError: Maximum call stack size exceeded`; in Rust a stack
+    /// overflow aborts the whole process, so the limit is mandatory. Overridable per parse with
+    /// [`ParseOptions::max_depth`](super::ParseOptions::max_depth).
+    pub max_depth: usize,
+}
+
+impl Default for ZodConfig {
+    fn default() -> Self {
+        ZodConfig {
+            version: ZodVersion::default(),
+            custom_error: None,
+            locale_error: None,
+            date_strings: false,
+            max_depth: DEFAULT_MAX_DEPTH,
+        }
+    }
 }
 
 static CONFIG: LazyLock<RwLock<ZodConfig>> = LazyLock::new(|| RwLock::new(ZodConfig::default()));
@@ -57,6 +79,30 @@ pub fn configure(f: impl FnOnce(&mut ZodConfig)) {
 /// Current global configuration.
 pub fn get_config() -> ZodConfig {
     CONFIG.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// [`ZodConfig::max_depth`] of the global configuration.
+pub(crate) fn global_max_depth() -> usize {
+    CONFIG.read().unwrap_or_else(|e| e.into_inner()).max_depth
+}
+
+/// Message of the issue reported when [`ZodConfig::max_depth`] is exceeded.
+pub(crate) fn too_deep_message(max: usize) -> String {
+    format!("Too deeply nested: the input exceeds the maximum depth of {max}")
+}
+
+/// The `custom` issue reported when [`ZodConfig::max_depth`] is exceeded. Its `input` is left
+/// `undefined` on purpose: the offending value is, by definition, a deep subtree, and copying it
+/// into the issue (or into an error map) is what the limit is there to avoid.
+pub(crate) fn too_deep_issue(max: usize) -> RawIssue {
+    let mut iss = RawIssue::new(
+        vec![("code", Value::String("custom".into())), ("message", Value::String(too_deep_message(max)))],
+        Val::Undef,
+        None,
+        None,
+    );
+    iss.too_deep = true;
+    iss
 }
 
 /// Sets the global default version (`z::set_version(ZodVersion::V3)` for zod 3 behaviour).
@@ -177,6 +223,19 @@ impl Val {
     /// Like [`Val::to_json`] but `undefined` becomes `null` (array slots).
     pub fn to_json_or_null(&self) -> Value {
         self.to_json().unwrap_or(Value::Null)
+    }
+
+    /// Like [`Val::to_json`], without copying a JSON value.
+    pub fn into_json(self) -> Option<Value> {
+        match self {
+            Val::Json(v) => Some(v),
+            other => other.to_json(),
+        }
+    }
+
+    /// Like [`Val::to_json_or_null`], without copying a JSON value.
+    pub fn into_json_or_null(self) -> Value {
+        self.into_json().unwrap_or(Value::Null)
     }
 
     /// `util.parsedType(value)`.
@@ -329,6 +388,9 @@ pub struct RawIssue {
     pub(crate) inst_error: Option<ErrorMap>,
     /// `continue`: `Some(true)` keeps running checks; `None`/`Some(false)` aborts.
     pub(crate) cont: Option<bool>,
+    /// The issue reports that [`ZodConfig::max_depth`] was exceeded (unions surface it as is
+    /// instead of wrapping it in `invalid_union`).
+    pub(crate) too_deep: bool,
 }
 
 impl std::fmt::Debug for RawIssue {
@@ -352,7 +414,7 @@ impl RawIssue {
                 (k, v) => (k.to_string(), v),
             })
             .collect();
-        RawIssue { fields, path, input, inst_error, cont }
+        RawIssue { fields, path, input, inst_error, cont, too_deep: false }
     }
 
     pub fn code(&self) -> ZodIssueCode {
@@ -400,7 +462,7 @@ pub enum Direction {
 }
 
 /// Per-parse context (`ParseContext` + internals).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RunCtx {
     pub direction: Direction,
     pub(crate) skip_checks: bool,
@@ -411,6 +473,24 @@ pub struct RunCtx {
     /// See [`ZodConfig::date_strings`].
     pub date_strings: bool,
     pub(crate) config: Arc<ZodConfigSnapshot>,
+    /// Current nesting of recursive schemas (see [`ZodConfig::max_depth`]).
+    pub(crate) depth: Cell<usize>,
+    pub(crate) max_depth: usize,
+}
+
+impl Default for RunCtx {
+    fn default() -> Self {
+        RunCtx::new(&super::ParseOptions::default())
+    }
+}
+
+/// Restores [`RunCtx::depth`] when a recursive schema returns (or unwinds).
+pub(crate) struct DepthGuard<'a>(&'a Cell<usize>);
+
+impl Drop for DepthGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
 }
 
 #[derive(Default)]
@@ -429,7 +509,19 @@ impl RunCtx {
             report_input: opts.report_input,
             date_strings: opts.date_strings.unwrap_or(cfg.date_strings),
             config: Arc::new(ZodConfigSnapshot { custom_error: cfg.custom_error, locale_error: cfg.locale_error }),
+            depth: Cell::new(0),
+            max_depth: opts.max_depth.unwrap_or(cfg.max_depth),
         }
+    }
+
+    /// Enters one level of a recursive schema; `None` when [`ZodConfig::max_depth`] is reached.
+    pub(crate) fn enter(&self) -> Option<DepthGuard<'_>> {
+        let d = self.depth.get();
+        if d >= self.max_depth {
+            return None;
+        }
+        self.depth.set(d + 1);
+        Some(DepthGuard(&self.depth))
     }
 
     pub(crate) fn backward(&self) -> bool {
@@ -742,5 +834,5 @@ pub(crate) fn raw_from_v3(issue: &ZodIssue) -> RawIssue {
     }
     fields.insert("path".into(), Value::Null);
     fields.insert("message".into(), Value::String(issue.message.clone()));
-    RawIssue { fields, path: issue.path.clone(), input: Val::Undef, inst_error: None, cont: None }
+    RawIssue { fields, path: issue.path.clone(), input: Val::Undef, inst_error: None, cont: None, too_deep: false }
 }

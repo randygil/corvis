@@ -25,6 +25,8 @@
 //! - a `UserDelegate` extension trait implemented for `OrmClient` (`db.user()`);
 //! - a `user` module with typed helpers (`user::email::contains("@x")`, `user::id::order(..)`, ...).
 
+#![forbid(unsafe_code)]
+
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
@@ -940,10 +942,17 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             });
         } else {
             let kind = f.kind.unwrap();
+            // The bare value (`{ field: value }`) means `equals` in a filter and is also what a
+            // `WhereUniqueInput` accepts for a unique field; Json filters need `{ equals }`.
+            let equals = if kind == Kind::Json {
+                quote! { ::corvis_orm::WhereParam::field(#api, "equals", ::corvis_orm::to_json(&v.into())) }
+            } else {
+                quote! { ::corvis_orm::WhereParam::new(#api, ::corvis_orm::to_json(&v.into())) }
+            };
             fns.push(quote! {
-                /// `{ field: { equals: value } }`
+                /// `{ field: value }` (`{ field: { equals: value } }` for Json fields)
                 pub fn equals(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                    ::corvis_orm::WhereParam::field(#api, "equals", ::corvis_orm::to_json(&v.into()))
+                    #equals
                 }
                 /// `{ field: { not: value } }`
                 pub fn not(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::WhereParam<#name> {

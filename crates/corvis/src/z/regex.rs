@@ -1,5 +1,9 @@
-//! JavaScript `RegExp` emulation on top of `fancy-regex` (lookarounds, backreferences),
-//! with JS semantics for `\d`, `\w`, `\s`, `\b`, `.`, flags and `RegExp.prototype.source`.
+//! JavaScript `RegExp` emulation with JS semantics for `\d`, `\w`, `\s`, `\b`, `.`, flags and
+//! `RegExp.prototype.source`.
+//!
+//! Patterns without lookarounds or backreferences run on the `regex` crate (finite automata,
+//! linear time in the input). Only patterns that need them use the backtracking engine of
+//! `fancy-regex`, bounded by [`BACKTRACK_LIMIT`].
 
 use std::fmt;
 use std::sync::Arc;
@@ -14,7 +18,18 @@ use std::sync::Arc;
 pub struct JsRegex {
     source: Arc<str>,
     flags: Arc<str>,
-    re: Arc<fancy_regex::Regex>,
+    re: Engine,
+}
+
+/// Backtracking steps allowed per `test` on the `fancy-regex` engine.
+pub const BACKTRACK_LIMIT: usize = 1_000_000;
+
+#[derive(Clone)]
+enum Engine {
+    /// No lookarounds or backreferences: `regex` (linear time).
+    Linear(Arc<regex::Regex>),
+    /// `fancy-regex` (backtracking).
+    Backtracking(Arc<fancy_regex::Regex>),
 }
 
 impl JsRegex {
@@ -25,17 +40,43 @@ impl JsRegex {
     }
 
     pub fn try_new(source: &str, flags: &str) -> Result<Self, String> {
-        let translated = translate(source, flags)?;
-        let re = fancy_regex::RegexBuilder::new(&translated)
-            .backtrack_limit(1_000_000)
-            .build()
-            .map_err(|e| e.to_string())?;
-        Ok(JsRegex { source: escape_source(source).into(), flags: canonical_flags(flags).into(), re: Arc::new(re) })
+        // `\b`/`\B` as the ASCII word boundaries of `regex`. The crate rejects lookarounds and
+        // backreferences; those patterns go to the backtracking engine.
+        let linear = translate_for(source, flags, true).ok().and_then(|t| regex::Regex::new(&t).ok());
+        let re = match linear {
+            Some(re) => Engine::Linear(Arc::new(re)),
+            None => {
+                let translated = translate(source, flags)?;
+                let re = fancy_regex::RegexBuilder::new(&translated)
+                    .backtrack_limit(BACKTRACK_LIMIT)
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                Engine::Backtracking(Arc::new(re))
+            }
+        };
+        Ok(JsRegex { source: escape_source(source).into(), flags: canonical_flags(flags).into(), re })
     }
 
-    /// `regex.test(input)`.
+    /// `regex.test(input)`. On the backtracking engine an input that exceeds
+    /// [`BACKTRACK_LIMIT`] does not match (V8 would keep going); that is logged as a warning.
     pub fn test(&self, input: &str) -> bool {
-        self.re.is_match(input).unwrap_or(false)
+        match &self.re {
+            Engine::Linear(re) => re.is_match(input),
+            Engine::Backtracking(re) => re.is_match(input).unwrap_or_else(|e| {
+                crate::logger::Logger::new("JsRegex").warn(format!(
+                    "/{}/{}: {e} on an input of {} bytes; treated as no match",
+                    self.source,
+                    self.flags,
+                    input.len()
+                ));
+                false
+            }),
+        }
+    }
+
+    /// `true` when the pattern runs on the linear-time engine (no lookarounds/backreferences).
+    pub fn is_linear(&self) -> bool {
+        matches!(self.re, Engine::Linear(_))
     }
 
     /// `regex.source`.
@@ -268,6 +309,12 @@ fn translate_escape(chars: &[char], i: usize, in_class: bool, unicode: bool) -> 
 
 /// Translates JS regex syntax to fancy-regex syntax.
 pub(crate) fn translate(src: &str, flags: &str) -> Result<String, String> {
+    translate_for(src, flags, false)
+}
+
+/// Translates JS regex syntax. With `native_boundaries`, `\b`/`\B` become the ASCII word
+/// boundaries of `regex` (`(?-u:\b)`) instead of lookarounds.
+fn translate_for(src: &str, flags: &str, native_boundaries: bool) -> Result<String, String> {
     for f in flags.chars() {
         if !"dgimsuvy".contains(f) {
             return Err(format!("invalid flag '{f}'"));
@@ -292,7 +339,11 @@ pub(crate) fn translate(src: &str, flags: &str) -> Result<String, String> {
         let c = chars[i];
         match c {
             '\\' => {
-                let (t, n) = translate_escape(&chars, i + 1, false, unicode)?;
+                let (t, n) = match chars.get(i + 1) {
+                    Some('b') if native_boundaries => (r"(?-u:\b)".to_string(), 1),
+                    Some('B') if native_boundaries => (r"(?-u:\B)".to_string(), 1),
+                    _ => translate_escape(&chars, i + 1, false, unicode)?,
+                };
                 out.push_str(&t);
                 i += 1 + n;
             }
@@ -441,5 +492,36 @@ mod tests {
         assert!(JsRegex::new(r"^[^]$", "").test("\n"));
         let re: JsRegex = "/^x+$/i".parse().unwrap();
         assert!(re.test("XX"));
+    }
+
+    #[test]
+    fn engine_selection() {
+        // `\b` is the ASCII word boundary of JS on both engines.
+        for (src, linear) in [(r"\bfoo\b", true), (r"^a\Bb$", true), (r"^(\w)\1$", false), (r"(?=a)a", false), (r"^\d+$", true)] {
+            assert_eq!(JsRegex::new(src, "").is_linear(), linear, "{src}");
+        }
+        let b = JsRegex::new(r"\bfoo\b", "");
+        assert!(b.test("a foo b") && b.test("foo") && !b.test("afoo") && !b.test("foo_"));
+        assert!(b.test("éfooé"), "non-ASCII letters are not word characters in JS");
+        assert!(JsRegex::new(r"^[a-z]+\b$", "i").test("ABC"));
+        assert!(JsRegex::new(r"^a\Bb$", "").test("ab"));
+    }
+
+    /// Before: every pattern with `\b` ran on the backtracking engine, and when it reached the
+    /// backtrack limit `test` returned `false` even for valid input (here `c$` matches).
+    #[test]
+    fn word_boundary_patterns_are_linear_and_exact() {
+        let re = JsRegex::new(r"\b(\w+\s?)+\b!|c$", "");
+        assert!(re.is_linear());
+        assert!(re.test(&format!("{}c", "ab ".repeat(30))));
+        let re = JsRegex::new(r"\w+\bX", "");
+        let t = std::time::Instant::now();
+        assert!(!re.test(&"a".repeat(90_000)));
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+        // With a lookahead the pattern stays on the backtracking engine: the limit still applies
+        // (logged as a warning) and the result is `false`, as documented.
+        let re = JsRegex::new(r"(?=\w)\b(\w+\s?)+\b!|c$", "");
+        assert!(!re.is_linear());
+        assert!(!re.test(&format!("{}c", "ab ".repeat(30))));
     }
 }

@@ -26,6 +26,8 @@ pub struct Request {
     pub(crate) params: HashMap<String, String>,
     pub(crate) query: Map<String, Value>,
     pub(crate) remote_addr: Option<SocketAddr>,
+    /// `trust proxy` setting used by `ip()`, `ips()` and `hostname()`.
+    pub(crate) trust_proxy: super::proxy_addr::TrustProxy,
     pub(crate) extensions: Arc<RwLock<http::Extensions>>,
     pub(crate) route_path: Option<String>,
 }
@@ -77,6 +79,7 @@ impl Request {
             params: HashMap::new(),
             query,
             remote_addr: None,
+            trust_proxy: parser.trust_proxy.clone(),
             extensions: Arc::new(RwLock::new(http::Extensions::new())),
             route_path: None,
         }
@@ -143,40 +146,61 @@ impl Request {
         crate::common::lenient::from_value(Value::Object(self.query.clone()))
             .map_err(|e| BadRequestException::new(e.to_string()))
     }
-    /// Client IP (`req.ip`), honoring `X-Forwarded-For`.
+    /// Client IP (`req.ip`). By default the socket address (`X-Forwarded-For` is ignored); with a
+    /// `trust proxy` setting ([`crate::CorvisApplication::set_trust_proxy`]) the closest
+    /// `X-Forwarded-For` address that is not a trusted proxy, like `proxy-addr`.
     pub fn ip(&self) -> String {
-        if let Some(fwd) = self.header("x-forwarded-for") {
-            if let Some(first) = fwd.split(',').next() {
-                return first.trim().to_string();
-            }
-        }
+        self.proxy_addrs().pop().unwrap_or_default()
+    }
+    /// `req.ips`: the trusted `X-Forwarded-For` chain, from the client to the closest proxy
+    /// (empty unless `trust proxy` is set).
+    pub fn ips(&self) -> Vec<String> {
+        let mut addrs = self.proxy_addrs();
+        addrs.remove(0);
+        addrs.reverse();
+        addrs
+    }
+    fn socket_ip(&self) -> String {
         self.remote_addr.map(|a| a.ip().to_string()).unwrap_or_else(|| "127.0.0.1".to_string())
+    }
+    /// `proxyaddr.all(req, trust)`: the socket address, then the trusted hops up to the client.
+    fn proxy_addrs(&self) -> Vec<String> {
+        super::proxy_addr::all_addrs(self.socket_ip(), &self.headers, &self.trust_proxy)
     }
     pub fn remote_addr(&self) -> Option<SocketAddr> {
         self.remote_addr
     }
-    /// `req.hostname`.
+    /// `req.hostname`: the `Host` header without the port (IPv6 literals keep their brackets:
+    /// `[::1]`), or the first `X-Forwarded-Host` when `trust proxy` trusts the socket address.
+    /// HTTP/2 requests without `Host` use the `:authority`.
     pub fn hostname(&self) -> Option<&str> {
-        self.header("host").map(|h| h.split(':').next().unwrap_or(h))
+        let forwarded = self.header("x-forwarded-host").filter(|h| !h.is_empty() && self.trust_proxy.trusts(&self.socket_ip(), 0));
+        let host = match forwarded {
+            Some(h) => h.split(',').next().unwrap_or(h).trim_end(),
+            None => match self.header("host") {
+                Some(h) => h,
+                None => return self.uri.authority().map(|a| a.host()).filter(|h| !h.is_empty()),
+            },
+        };
+        if host.is_empty() {
+            return None;
+        }
+        let offset = if host.starts_with('[') { host.find(']').map_or(0, |i| i + 1) } else { 0 };
+        Some(match host[offset..].find(':') {
+            Some(i) => &host[..offset + i],
+            None => host,
+        })
     }
     /// The matched route pattern (e.g. `/cats/:id`), once routed.
     pub fn route_path(&self) -> Option<&str> {
         self.route_path.as_deref()
     }
-    /// Cookies sent by the client.
+    /// Cookies sent by the client, parsed like `cookie-parser` (`cookie.parse`): the first
+    /// occurrence of a name wins, surrounding double quotes are removed and a value is
+    /// URI-decoded only when it contains `%` (an invalid escape keeps the raw value).
     pub fn cookies(&self) -> HashMap<String, String> {
-        let mut out = HashMap::new();
-        for v in self.headers.get_all(http::header::COOKIE) {
-            if let Ok(s) = v.to_str() {
-                for pair in s.split(';') {
-                    if let Some((k, v)) = pair.split_once('=') {
-                        let v = percent_encoding::percent_decode_str(v.trim()).decode_utf8_lossy().to_string();
-                        out.insert(k.trim().to_string(), v);
-                    }
-                }
-            }
-        }
-        out
+        let header: Vec<String> = self.headers.get_all(http::header::COOKIE).iter().map(|v| super::body_parser::latin1(v.as_bytes())).collect();
+        parse_cookies(&header.join("; "))
     }
     pub fn cookie(&self, name: &str) -> Option<String> {
         self.cookies().remove(name)
@@ -211,6 +235,59 @@ impl Request {
 #[derive(Clone)]
 struct RequestUser(Value);
 
+/// `cookie.parse(str)` (cookie 0.7).
+fn parse_cookies(s: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let b = s.as_bytes();
+    let len = b.len();
+    if len < 2 {
+        return out;
+    }
+    let is_ws = |c: u8| c == b' ' || c == b'\t';
+    // `startIndex` / `endIndex`: skip spaces and tabs inside `[start, end)`.
+    let trim = |mut start: usize, mut end: usize| {
+        while start < end && is_ws(b[start]) {
+            start += 1;
+        }
+        while end > start && is_ws(b[end - 1]) {
+            end -= 1;
+        }
+        (start, end)
+    };
+    let find = |c: u8, from: usize| b[from..].iter().position(|&x| x == c).map(|p| p + from);
+    let mut index = 0;
+    while index < len {
+        let Some(eq) = find(b'=', index) else { break };
+        let end = match find(b';', index) {
+            None => len,
+            // A pair without `=`: resume after the last `;` before this `=`.
+            Some(semi) if eq > semi => {
+                index = b[..eq].iter().rposition(|&x| x == b';').map_or(eq, |p| p + 1);
+                continue;
+            }
+            Some(semi) => semi,
+        };
+        let (ks, ke) = trim(index, eq);
+        let key = &s[ks..ke];
+        if !out.contains_key(key) {
+            let (mut vs, mut ve) = trim(eq + 1, end);
+            if ve > vs && b[vs] == b'"' && b[ve - 1] == b'"' {
+                vs += 1;
+                ve = ve.saturating_sub(1).max(vs);
+            }
+            let raw = &s[vs..ve];
+            let value = if raw.contains('%') {
+                super::body_parser::qs::decode_uri_component(raw).unwrap_or_else(|| raw.to_string())
+            } else {
+                raw.to_string()
+            };
+            out.insert(key.to_string(), value);
+        }
+        index = end + 1;
+    }
+    out
+}
+
 /// `req.query` as Express 5 computes it (`query parser` setting).
 pub(crate) fn parse_query_with(q: &str, mode: super::body_parser::QueryParser) -> Map<String, Value> {
     use super::body_parser::QueryParser;
@@ -222,7 +299,12 @@ pub(crate) fn parse_query_with(q: &str, mode: super::body_parser::QueryParser) -
         },
         QueryParser::Simple => {
             // node:querystring.parse: keys are literal (`a[]` stays `a[]`), repeated keys
-            // become arrays, at most 1000 keys, object keys in JavaScript order.
+            // become arrays, at most 1000 pairs (`maxKeys`, empty ones included), object keys in
+            // JavaScript order.
+            let q = match q.match_indices('&').nth(999) {
+                Some((i, _)) => &q[..i],
+                None => q,
+            };
             let mut obj = super::json_parse::JsObject::new();
             let mut seen: Vec<(String, Value)> = Vec::new();
             for (k, v) in form_urlencoded::parse(q.as_bytes()) {

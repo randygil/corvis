@@ -263,13 +263,97 @@ En Rust, `$` no es válido en un identificador, así que los métodos `$x` del c
   Los errores de la base sin código `P2xxx` (CHECK, triggers con `RAISE EXCEPTION`, `EXCLUDE`...) llegan como
   `UnknownRequestError` con el mismo texto que el motor de consultas de referencia, que incluye el SQLSTATE y el nombre de la constraint.
 
+## Seguridad
+
+### Conexión y TLS
+
+- La feature `tls-rustls` (activa por defecto) compila sqlx con TLS (rustls y los certificados raíz
+  de Mozilla). El modo se elige con `sslmode` en la URL, como en libpq:
+  - `sslmode=prefer` (por defecto en sqlx): intenta TLS y, si el servidor no lo ofrece, sigue en
+    texto plano. No protege contra un atacante en la red.
+  - `sslmode=require`: exige TLS pero no verifica el certificado.
+  - `sslmode=verify-full`: exige TLS, verifica la cadena y el nombre del host. **Es el modo
+    recomendado en producción**. Con una CA propia: `&sslrootcert=/ruta/ca.pem`.
+  - Para compilar sin TLS: `default-features = false, features = ["corvis"]`.
+- Los errores de conexión (`P1001`) muestran solo `host:puerto`, nunca el usuario, la contraseña ni
+  la query string de la URL. Un protocolo no soportado tampoco repite la URL.
+
+### Argumentos de consulta que vienen del cliente
+
+`query_json` y los helpers aceptan los mismos argumentos que el cliente JavaScript de referencia,
+así que pasar el `Value` de una request directamente a una consulta le da al cliente el poder de esos
+argumentos. corvis-orm limita lo que podría tumbar el proceso o corromper datos:
+
+- **Profundidad.** Los argumentos con más de 125 niveles de objetos o listas (el mismo límite que el
+  motor de referencia) se rechazan con un `QueryValidationError` antes de recorrerlos, así que un
+  `where` anidado no desborda la pila. Se cambia con `OrmClientOptions::max_query_depth(n)`; subirlo
+  mucho vuelve a exponer la pila.
+- **`WhereUniqueInput`.** En `findUnique`, `update`, `upsert`, `delete`, `cursor`, `connect`... los
+  campos `@id`, `@unique` y los de una clave compuesta solo aceptan el valor (`{ email: "a@b.c" }`),
+  nunca un filtro (`{ equals }`, `{ not }`, `{ startsWith }`) ni `null`, igual que la versión 5+ del
+  cliente de referencia. Los demás campos siguen aceptando filtros.
+- **`Decimal`.** El parseo es lineal y respeta el rango de decimal.js (exponente hasta ±9e15: más
+  allá es `Infinity` o `0`). Un valor que no cabe en un `NUMERIC` de Postgres (más de 131072 dígitos
+  enteros o 65535 decimales) falla con el mismo error de conversión del motor de referencia
+  (`ConversionError("Couldn't convert an integer (possible overflow).")`) en vez de truncarse. En
+  Postgres la precisión y la escala de la columna las aplica la base (`numeric field overflow`,
+  redondeo a la escala). En SQLite la columna se trata como `@db.Decimal(p, s)` o, por defecto,
+  `Decimal(65, 30)`: al escribir se redondea a `s` decimales y se rechaza (error de validación) un
+  valor cuya parte entera no cabe. `db_push` crea los `Decimal` de Postgres como `DECIMAL(65,30)`.
+- **Números.** Un `BigInt` fuera de 64 bits o un byte de `Bytes` fuera de `0..=255` es un error de
+  validación, nunca un valor saturado o truncado. En SQL crudo, un `u64` mayor que `i64::MAX` se
+  envía como `numeric`.
+- **Paginación.** `take` admite cualquier `i64`; `limit` negativo en `updateMany`/`deleteMany` da
+  `P2019` (`Provided limit (-1) must be a positive integer.`).
+- **Listas `in`/`notIn` largas** (y las de `include` y `_count`): con más de 1000 elementos van en
+  un solo parámetro (`= ANY($1)` en Postgres, `json_each(?)` en SQLite), así que no chocan con el
+  límite de parámetros de la base.
+- **Filtros de texto en `Json` (SQLite).** `string_contains`, `string_starts_with` y
+  `string_ends_with` comparan el texto literal: `%`, `_`, `*`, `?` y `[` no son comodines.
+
+Lo que **no** se limita, porque es parte de la API (y del cliente de referencia):
+
+- Un cliente que controla `where` puede filtrar por cualquier campo no único con cualquier operador
+  (`{ token: { not: "" } }` en `findFirst`), y uno que controla `select`, `include` u `omit` puede
+  pedir campos y relaciones que la app no pensaba devolver (`omit: { password: false }`).
+- `distinct` se aplica en memoria; un `include` paginado hace una consulta por registro padre.
+- `search` usa `to_tsquery`: una sintaxis inválida da un error de la base.
+- Los errores de validación nombran campos y repiten parte de la entrada; `log_queries` escribe los
+  valores de los parámetros.
+
+Por eso, con datos de una request, construye los argumentos con los campos y operadores que la ruta
+permite (o valida el cuerpo con un esquema estricto) en lugar de reenviar el JSON tal cual.
+
+### Escrituras y concurrencia
+
+- `update`, `delete`, `upsert` (cuando no es nativo), `updateMany`, `updateManyAndReturn` y
+  `deleteMany` repiten su `where` completo en la sentencia `UPDATE`/`DELETE` (`WHERE pk = ? AND
+  (<where>)`). Si otra transacción cambió la fila entre la lectura y la escritura, la fila ya no
+  cumple el filtro: `update`/`delete` fallan con `P2025` (`No record was found for an update.` /
+  `... for a delete.`) y los `*Many` no la cuentan. La concurrencia optimista funciona:
+  `updateMany({ where: { id, version }, data: { version: { increment: 1 } } })` tiene un solo
+  ganador también en Postgres (`READ COMMITTED`).
+- Las escrituras anidadas de relaciones (`posts: { update: ... }`) corren en una transacción, como en
+  el cliente de referencia, pero sin bloquear las filas que leen.
+
+### Transacciones
+
+- Una transacción interactiva que expira mientras la closure termina nunca devuelve `Ok`: si el
+  temporizador ya hizo rollback, el resultado es `P2028`.
+- Si el futuro de una transacción se cancela (por ejemplo, el cliente HTTP cortó la conexión), sqlx
+  hace rollback y el temporizador se detiene en el acto.
+
+### Esquemas
+
+- `corvis-orm generate` rechaza valores de atributos con más de 64 niveles de `[...]`/`f(...)`
+  anidados en el `schema.prisma` (antes desbordaban la pila).
+
 ## Qué no está soportado (por ahora)
 
 - MySQL, SQL Server, MongoDB y CockroachDB.
 - `migrate dev`/`diff`/`reset`. `db_push` solo crea las tablas e índices que faltan; no modifica ni elimina columnas.
 - Middlewares, `$extends`, `$on` (eventos de log) y métricas.
 - SQL crudo dentro de `_transaction_batch` (úsalo dentro de `_transaction`).
-- PostgreSQL con TLS (no se activa ninguna feature TLS de sqlx).
 - Los mensajes de error siguen a la versión 6 del cliente de referencia con su motor nativo. Con la versión 7 y driver
   adapters, algunos `meta` cambian (por ejemplo, `P2002` no trae `target`); el `code` es el mismo.
 

@@ -139,7 +139,8 @@ fn decode_param(v: &str) -> Result<String, String> {
     let fail = || format!("Failed to decode param '{v}'");
     let b = v.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(b.len());
-    let hex = |i: usize| b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+    // Both digits must be hexadecimal (`%+A` is a URIError in JavaScript).
+    let hex = |i: usize| crate::http::body_parser::qs::percent_byte(b, i);
     let mut i = 0;
     while i < b.len() {
         if b[i] != b'%' {

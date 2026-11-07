@@ -33,6 +33,44 @@ fn words(input: &str) -> Vec<String> {
     out
 }
 
+/// A project or element name: `^[A-Za-z][A-Za-z0-9_-]*$`. Names become file names, Rust
+/// identifiers and text inside the generated code, so separators (`/`, `\`, `:`), quotes and
+/// other characters are rejected instead of being copied into paths or sources.
+pub fn validate_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("invalid name \"{}\": use letters, digits, '-' and '_', starting with a letter", name.escape_debug()))
+    }
+}
+
+/// `--path <dir>`: the feature folder under `src/`, also used as a Rust module name
+/// (`mod <dir>;`, `crate::<dir>::...`), so it must be a plain identifier (`^[A-Za-z_][A-Za-z0-9_]*$`).
+pub fn validate_module_dir(dir: &str) -> Result<(), String> {
+    let mut chars = dir.chars();
+    let ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && dir != "_";
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("invalid --path \"{}\": use a module name such as users or user_profile", dir.escape_debug()))
+    }
+}
+
+/// `--corvis-version <v>`: a Cargo version requirement (`0.1`, `^0.1.2`, `>=0.1, <0.3`,
+/// `=1.0.0-beta.1`). It is written inside a TOML string, so quotes, backslashes and line
+/// breaks are rejected.
+pub fn validate_version_req(v: &str) -> Result<(), String> {
+    let ok = !v.trim().is_empty()
+        && v.chars().any(|c| c.is_ascii_digit() || c == '*')
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || " .,^~=<>*+-".contains(c));
+    if ok { Ok(()) } else { Err(format!("invalid --corvis-version \"{}\"", v.escape_debug())) }
+}
+
 impl Names {
     pub fn new(input: &str) -> Names {
         let w = words(input);
@@ -78,5 +116,27 @@ mod tests {
         assert_eq!(Names::new("UserProfile").snake, "user_profile");
         assert_eq!(Names::new("cats").singular().pascal, "Cat");
         assert_eq!(Names::new("categories").singular().snake, "category");
+    }
+
+    #[test]
+    fn name_validation() {
+        for ok in ["cats", "user-profile", "UserProfile", "user_profile2", "a"] {
+            assert!(validate_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "1cats", "-x", "../x", "a/b", r"a\b", "C:", "a\"b", "a b", "a.b", "a\nb", "gató"] {
+            assert!(validate_name(bad).is_err(), "{bad}");
+        }
+        for ok in ["users", "user_profile", "_x", "v2"] {
+            assert!(validate_module_dir(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "_", "../src", "a/b", "/abs", r"C:\x", "a-b", "1a", "a;b"] {
+            assert!(validate_module_dir(bad).is_err(), "{bad}");
+        }
+        for ok in ["0.1", "^0.1.2", ">=0.1, <0.3", "=1.0.0-beta.1", "*", "~1"] {
+            assert!(validate_version_req(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", " ", "1\"\nevil = \"x", r"1\x", "latest", "1;2"] {
+            assert!(validate_version_req(bad).is_err(), "{bad}");
+        }
     }
 }

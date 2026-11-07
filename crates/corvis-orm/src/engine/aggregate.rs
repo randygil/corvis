@@ -60,7 +60,7 @@ fn group_type(group: &str) -> &'static str {
 }
 
 /// `P2019` ("Input error. ...") raised by the engine for invalid `groupBy` arguments.
-fn input_error(model: &ModelMeta, details: String) -> OrmError {
+pub(crate) fn input_error(model: &ModelMeta, details: String) -> OrmError {
     OrmError::known("P2019", format!("Input error. {details}"), serde_json::json!({ "modelName": model.name, "details": details }))
 }
 
@@ -250,7 +250,7 @@ impl Engine {
             None => {}
         }
         self.order_sql(q, "t0", &order, reverse);
-        self.limit_sql(q, take.map(|t| t.abs()), skip);
+        self.limit_sql(q, take.map(|t| t.checked_abs().unwrap_or(i64::MAX)), skip);
         q.push(") AS sub");
         Ok(())
     }
@@ -388,7 +388,7 @@ impl Engine {
         }
         let reverse = take.is_some_and(|t| t < 0);
         self.order_sql(&mut q, "t0", &order, reverse);
-        self.limit_sql(&mut q, take.map(|t| t.abs()), skip);
+        self.limit_sql(&mut q, take.map(|t| t.checked_abs().unwrap_or(i64::MAX)), skip);
         let rows = self.client.fetch(&q, Some(model)).await?;
         let d = self.dialect();
         let mut out = Vec::new();

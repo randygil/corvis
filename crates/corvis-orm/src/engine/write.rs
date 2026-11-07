@@ -213,47 +213,83 @@ impl Engine {
             .collect())
     }
 
-    /// ` WHERE (pk...) IN (SELECT pk... FROM t AS t0 WHERE <w> [LIMIT n])`
-    fn pk_in_subquery(&self, q: &mut Sql, model: &'static ModelMeta, w: &Value, limit: Option<i64>) -> Result<()> {
-        let pk = model.pk();
+    /// ` WHERE [(pk...) IN (SELECT pk... FROM t AS t0 WHERE <w> LIMIT n) AND ](<w>)` for an
+    /// `UPDATE` / `DELETE` whose target table is aliased `t0`.
+    ///
+    /// The filter is always part of the statement itself, so it is evaluated atomically with the
+    /// write: on Postgres a concurrent change of the row makes the `UPDATE` re-check `<w>` on the
+    /// new version (a subquery alone would keep matching the old snapshot). That is what makes
+    /// `update({ where: { id, status } })` and `updateMany({ where: { id, version } })` safe for
+    /// optimistic concurrency.
+    fn filter_where(&self, q: &mut Sql, model: &'static ModelMeta, w: &Value, limit: Option<i64>) -> Result<()> {
         q.push(" WHERE ");
-        if pk.len() > 1 {
-            q.push("(");
-        }
-        for (i, f) in pk.iter().enumerate() {
-            if i > 0 {
-                q.push(", ");
-            }
-            q.ident(f.column);
-        }
-        if pk.len() > 1 {
-            q.push(")");
-        }
-        q.push(" IN (SELECT ");
-        for (i, f) in pk.iter().enumerate() {
-            if i > 0 {
-                q.push(", ");
-            }
-            q.col("t0", f.column);
-        }
-        q.push(" FROM ").table(model.schema, model.table).push(" AS t0 WHERE ");
-        self.where_sql(q, model, "t0", w)?;
         if let Some(l) = limit {
-            q.push(" LIMIT ").bind(SqlValue::Int(l));
+            let pk = model.pk();
+            if pk.len() > 1 {
+                q.push("(");
+            }
+            for (i, f) in pk.iter().enumerate() {
+                if i > 0 {
+                    q.push(", ");
+                }
+                q.col("t0", f.column);
+            }
+            if pk.len() > 1 {
+                q.push(")");
+            }
+            q.push(" IN (SELECT ");
+            for (i, f) in pk.iter().enumerate() {
+                if i > 0 {
+                    q.push(", ");
+                }
+                q.col("t0", f.column);
+            }
+            q.push(" FROM ").table(model.schema, model.table).push(" AS t0 WHERE ");
+            self.where_sql(q, model, "t0", w)?;
+            q.push(" LIMIT ").bind(SqlValue::Int(l)).push(") AND ");
         }
-        q.push(")");
-        Ok(())
+        self.where_sql(q, model, "t0", w)
     }
 
+    /// `UPDATE t AS t0 SET ... WHERE <w>`: the number of updated rows.
     pub(crate) async fn update_where(&self, model: &'static ModelMeta, sets: &[(&'static FieldMeta, SetExpr)], w: &Value, limit: Option<i64>) -> Result<u64> {
         if sets.is_empty() {
             return Ok(self.ids_where(model, w, limit).await?.len() as u64);
         }
-        let mut q = Sql::new(self.dialect());
-        q.push("UPDATE ").table(model.schema, model.table).push(" SET ");
-        self.set_list_sql(&mut q, sets, "");
-        self.pk_in_subquery(&mut q, model, w, limit)?;
+        let q = self.update_sql(model, sets, w, limit, false)?;
         self.client.execute(&q, Some(model)).await
+    }
+
+    /// `UPDATE ... RETURNING <pk>`: the (new) ids of the updated rows.
+    async fn update_where_returning(&self, model: &'static ModelMeta, sets: &[(&'static FieldMeta, SetExpr)], w: &Value, limit: Option<i64>) -> Result<Vec<Id>> {
+        if sets.is_empty() {
+            return self.ids_where(model, w, limit).await;
+        }
+        let q = self.update_sql(model, sets, w, limit, true)?;
+        let rows = self.client.fetch(&q, Some(model)).await?;
+        let d = self.dialect();
+        Ok(rows
+            .rows
+            .into_iter()
+            .map(|r| model.pk().iter().zip(r).map(|(f, v)| (f.name.to_string(), crate::db::coerce_field_d(f, v, d))).collect())
+            .collect())
+    }
+
+    fn update_sql(&self, model: &'static ModelMeta, sets: &[(&'static FieldMeta, SetExpr)], w: &Value, limit: Option<i64>, returning: bool) -> Result<Sql> {
+        let mut q = Sql::new(self.dialect());
+        q.push("UPDATE ").table(model.schema, model.table).push(" AS t0 SET ");
+        self.set_list_sql(&mut q, sets, "");
+        self.filter_where(&mut q, model, w, limit)?;
+        if returning {
+            q.push(" RETURNING ");
+            for (i, f) in model.pk().iter().enumerate() {
+                if i > 0 {
+                    q.push(", ");
+                }
+                q.ident(f.column);
+            }
+        }
+        Ok(q)
     }
 
     /// `col = value, col = alias.col + value, ...` (`alias` qualifies the current values; empty for none).
@@ -283,11 +319,22 @@ impl Engine {
         }
     }
 
+    /// `DELETE FROM t AS t0 WHERE <w>`: the number of deleted rows.
     pub(crate) async fn delete_where(&self, model: &'static ModelMeta, w: &Value, limit: Option<i64>) -> Result<u64> {
         let mut q = Sql::new(self.dialect());
-        q.push("DELETE FROM ").table(model.schema, model.table);
-        self.pk_in_subquery(&mut q, model, w, limit)?;
+        q.push("DELETE FROM ").table(model.schema, model.table).push(" AS t0");
+        self.filter_where(&mut q, model, w, limit)?;
         self.client.execute(&q, Some(model)).await
+    }
+
+    /// `limit` of `updateMany` / `deleteMany`: a non-negative integer (`P2019` otherwise, like the
+    /// reference engine; SQLite would take a negative `LIMIT` as "no limit").
+    fn limit_arg(&self, model: &'static ModelMeta, args: &Map<String, Value>) -> Result<Option<i64>> {
+        let limit = self.int_arg(args, "limit")?;
+        if let Some(l) = limit.filter(|l| *l < 0) {
+            return Err(super::aggregate::input_error(model, format!("Provided limit ({l}) must be a positive integer.")));
+        }
+        Ok(limit)
     }
 
     /// `data: { field: value | { set | increment | decrement | multiply | divide | push } }`
@@ -308,7 +355,7 @@ impl Engine {
             }
             let (op, val) = o.iter().next().unwrap();
             if op == "set" {
-                return Ok(SetExpr::Value(self.value(f, val, false)?));
+                return Ok(SetExpr::Value(self.data_value(f, val)?));
             }
             if op == "push" {
                 let tmp = Value::Array(list_or_one(val));
@@ -325,7 +372,7 @@ impl Engine {
             };
             return Ok(SetExpr::Arith(sym, self.value(f, val, false)?));
         }
-        Ok(SetExpr::Value(self.value(f, v, false)?))
+        Ok(SetExpr::Value(self.data_value(f, v)?))
     }
 
     /// Scalar-only `data` (createMany / updateMany).
@@ -415,7 +462,7 @@ impl Engine {
                         Some(inner) if f.list => inner,
                         _ => v,
                     };
-                    cols.push((f, self.value(f, v, false)?));
+                    cols.push((f, self.data_value(f, v)?));
                     provided.insert(f.name);
                     continue;
                 }
@@ -753,7 +800,7 @@ impl Engine {
                                 )));
                             };
                             let data = self.obj(&data, "data", "object")?.clone();
-                            self.update_record(r.target, tid, data).await?;
+                            self.update_record(r.target, tid, data, None).await?;
                         }
                     }
                     "updateMany" => {
@@ -774,7 +821,7 @@ impl Engine {
                             match existing {
                                 Some(tid) => {
                                     let data = self.obj(o.get("update").unwrap_or(&Value::Null), "update", "object")?.clone();
-                                    self.update_record(r.target, tid, data).await?;
+                                    self.update_record(r.target, tid, data, None).await?;
                                 }
                                 None => {
                                     let mut data = self.obj(o.get("create").unwrap_or(&Value::Null), "create", "object")?.clone();
@@ -841,7 +888,7 @@ impl Engine {
                 Some(inner) if f.list => inner,
                 _ => v,
             };
-            cols.push((f, self.value(f, v, false)?));
+            cols.push((f, self.data_value(f, v)?));
             provided.insert(f.name);
         }
         self.complete_insert(model, &mut cols, &provided)?;
@@ -854,8 +901,14 @@ impl Engine {
     }
 
     /// `update` of one record (by id) with nested writes. Returns the (possibly new) id.
-    pub(crate) fn update_record<'a>(&'a self, model: &'static ModelMeta, id: Id, data: Map<String, Value>) -> BoxFuture<'a, Result<Id>> {
+    ///
+    /// `guard` is the `where` of the caller: it is repeated in the `UPDATE` (`WHERE pk AND
+    /// (<guard>)`), and when the row no longer matches it the update fails with `P2025` instead
+    /// of overwriting a row that changed since it was read.
+    pub(crate) fn update_record<'a>(&'a self, model: &'static ModelMeta, id: Id, data: Map<String, Value>, guard: Option<Value>) -> BoxFuture<'a, Result<Id>> {
         async move {
+            let mut guard = guard;
+            let target = |guard: &Option<Value>| and(Value::Object(id.clone()), guard.clone());
             let mut sets: Vec<(&'static FieldMeta, SetExpr)> = Vec::new();
             let mut after: Vec<(&'static FieldMeta, Value)> = Vec::new();
             let mut new_id = id.clone();
@@ -909,7 +962,10 @@ impl Engine {
                                 sets.push((pf, SetExpr::Value(SqlValue::Null(pf.kind))));
                             }
                             // Clear the foreign key first, then delete the target.
-                            self.update_where(model, &std::mem::take(&mut sets), &Value::Object(id.clone()), None).await?;
+                            let n = self.update_where(model, &std::mem::take(&mut sets), &target(&guard), None).await?;
+                            if n == 0 && guard.take().is_some() {
+                                return Err(self.not_found("No record was found for an update."));
+                            }
                             let n = self.delete_where(r.target, &w, Some(1)).await?;
                             if n == 0 {
                                 return Err(self.not_found(format!(
@@ -939,13 +995,13 @@ impl Engine {
                                         r.target.name
                                     )));
                                 };
-                                self.update_record(r.target, tid, data).await?;
+                                self.update_record(r.target, tid, data, None).await?;
                             } else {
                                 self.check_keys(o, &["create", "update", "where"])?;
                                 match tid {
                                     Some(tid) => {
                                         let data = self.obj(o.get("update").unwrap_or(&Value::Null), "update", "object")?.clone();
-                                        self.update_record(r.target, tid, data).await?;
+                                        self.update_record(r.target, tid, data, None).await?;
                                     }
                                     None => {
                                         let data = self.obj(o.get("create").unwrap_or(&Value::Null), "create", "object")?.clone();
@@ -969,7 +1025,10 @@ impl Engine {
             }
             sets.extend(self.updated_at_sets(model, &data)?);
             if !sets.is_empty() {
-                self.update_where(model, &sets, &Value::Object(id.clone()), None).await?;
+                let n = self.update_where(model, &sets, &target(&guard), None).await?;
+                if n == 0 && guard.is_some() {
+                    return Err(self.not_found("No record was found for an update."));
+                }
             }
             for (f, v) in after {
                 self.nested_relation_writes(model, &new_id, f, v, true).await?;
@@ -1048,7 +1107,7 @@ impl Engine {
                 let Some(id) = e.ids_where(model, &w, Some(1)).await?.into_iter().next() else {
                     return Err(e.not_found("No record was found for an update."));
                 };
-                e.update_record(model, id, data).await
+                e.update_record(model, id, data, Some(w)).await
             }
             .boxed()
         };
@@ -1065,39 +1124,14 @@ impl Engine {
         }
         let data = self.data_arg(model, &args, "data", "UpdateManyMutationInput")?;
         let sets = self.scalar_sets(model, &data)?;
-        let limit = self.int_arg(&args, "limit")?;
+        let limit = self.limit_arg(model, &args)?;
         let w = args.get("where").cloned().unwrap_or(Value::Null);
         if !returning {
             let n = self.update_where(model, &sets, &w, limit).await?;
             return Ok(json!({ "count": n }));
         }
-        let ids = self
-            .in_tx(move |e| {
-                async move {
-                    let ids = e.ids_where(model, &w, limit).await?;
-                    if ids.is_empty() {
-                        return Ok(ids);
-                    }
-                    e.update_where(model, &sets, &ids_filter(&ids), None).await?;
-                    // Primary keys may have been updated.
-                    let mut new_ids = Vec::new();
-                    for id in ids {
-                        let mut nid = id.clone();
-                        for (k, v) in &data {
-                            if nid.contains_key(k) {
-                                let nv = v.as_object().and_then(|o| o.get("set")).cloned().unwrap_or_else(|| v.clone());
-                                if !nv.is_object() {
-                                    nid.insert(k.clone(), nv);
-                                }
-                            }
-                        }
-                        new_ids.push(nid);
-                    }
-                    Ok(new_ids)
-                }
-                .boxed()
-            })
-            .await?;
+        // One statement: the rows it updated, with their new primary keys.
+        let ids = self.update_where_returning(model, &sets, &w, limit).await?;
         self.read_back_many(model, &ids, &args).await
     }
 
@@ -1119,7 +1153,7 @@ impl Engine {
             .in_tx(move |e| {
                 async move {
                     match e.ids_where(model, &w, Some(1)).await?.into_iter().next() {
-                        Some(id) => e.update_record(model, id, update).await,
+                        Some(id) => e.update_record(model, id, update, Some(w)).await,
                         None => e.create_record(model, create).await,
                     }
                 }
@@ -1220,7 +1254,7 @@ impl Engine {
                 Some(inner) if f.list => inner,
                 _ => v,
             };
-            cols.push((f, self.value(f, v, false)?));
+            cols.push((f, self.data_value(f, v)?));
             provided.insert(f.name);
         }
         self.complete_insert(model, &mut cols, &provided)?;
@@ -1276,13 +1310,17 @@ impl Engine {
             return Err(self.not_found("No record was found for a delete."));
         };
         let record = self.read_back(model, &id, &args).await?;
-        self.delete_where(model, &Value::Object(id), None).await?;
+        // The filter is repeated in the `DELETE`: when the row changed (or was deleted) since it
+        // was read, nothing is deleted and the delete fails like a missing record.
+        if self.delete_where(model, &and(Value::Object(id), Some(w)), None).await? == 0 {
+            return Err(self.not_found("No record was found for a delete."));
+        }
         Ok(record)
     }
 
     pub(crate) async fn delete_many_action(&self, model: &'static ModelMeta, args: Map<String, Value>) -> Result<Value> {
         self.check_keys(&args, &["where", "limit"])?;
-        let limit = self.int_arg(&args, "limit")?;
+        let limit = self.limit_arg(model, &args)?;
         let n = self.delete_where(model, args.get("where").unwrap_or(&Value::Null), limit).await?;
         Ok(json!({ "count": n }))
     }

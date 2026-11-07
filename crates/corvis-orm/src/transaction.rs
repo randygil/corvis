@@ -157,9 +157,17 @@ impl TxState {
             tokio::select! {
                 _ = deadline => {
                     if let Some(s) = weak.upgrade() {
-                        let tx = s.conn.lock().await.take();
+                        // `expired` is set while the lock is held: `finish()` either takes the
+                        // connection first, or sees it gone *and* the flag set.
+                        let tx = {
+                            let mut guard = s.conn.lock().await;
+                            let tx = guard.take();
+                            if tx.is_some() {
+                                s.expired.store(true, Ordering::SeqCst);
+                            }
+                            tx
+                        };
                         if let Some(tx) = tx {
-                            s.expired.store(true, Ordering::SeqCst);
                             let _ = tx.rollback().await;
                         }
                     }
@@ -193,6 +201,15 @@ impl TxState {
             format!("Transaction already closed: A {what} cannot be executed on a committed transaction.")
         };
         tx_error(msg)
+    }
+}
+
+impl Drop for TxState {
+    /// Stops the timer when the transaction is dropped without `finish()` (its future was
+    /// cancelled): otherwise the timer task would sleep until the timeout (a year for the
+    /// transactions of nested writes). The connection itself is rolled back by sqlx on drop.
+    fn drop(&mut self) {
+        self.done.notify_one();
     }
 }
 

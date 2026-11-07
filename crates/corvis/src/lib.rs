@@ -34,6 +34,8 @@
 //! }
 //! ```
 
+#![forbid(unsafe_code)]
+
 extern crate self as corvis;
 
 pub mod application;
@@ -61,6 +63,7 @@ pub mod websockets;
 pub mod ws;
 
 mod server;
+pub use server::ServerOptions;
 
 #[doc(hidden)]
 pub mod __private;
@@ -130,7 +133,7 @@ pub use corvis_macros::{
 };
 
 #[cfg(feature = "websockets")]
-pub use websockets::{OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsClient, WsException, WsResponse, WsServer};
+pub use websockets::{GatewayOptions, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsClient, WsException, WsResponse, WsServer};
 pub use http_adapter::{HttpAdapter, HttpAdapterHost, HttpServer, UpgradeRequest};
 #[cfg(feature = "jwt")]
 pub use jwt::{JwtModule, JwtModuleOptions, JwtService, JwtSignOptions, extract_bearer_token};

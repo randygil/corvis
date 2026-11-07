@@ -290,7 +290,7 @@ impl Served {
             return None;
         }
         if let Some(dir) = &self.options.custom_swagger_ui_path {
-            let file = dir.join(rel);
+            let file = confined_asset(dir, rel)?;
             let data = std::fs::read(&file).ok()?;
             return Some(Ok(Response::bytes(data, mime_for(rel))));
         }
@@ -298,6 +298,62 @@ impl Served {
         let url = format!("https://cdn.jsdelivr.net/npm/swagger-ui-dist@{SWAGGER_UI_DIST_VERSION}/{name}");
         Some(Ok(Response::redirect(url, 302)))
     }
+}
+
+/// Resolves `<path>/<rel>` inside `custom_swagger_ui_path` the way `express.static` does: the
+/// result must stay inside the folder. `rel` is percent-decoded and must be plain file names
+/// separated by `/` (no empty, `.`/`..` or dot-file segments, no `\`, `:` or control characters,
+/// no Windows device names); the canonical path (symlinks and NTFS short names resolved) must
+/// still be inside the canonical folder and be a regular file. Anything else is not served.
+pub(crate) fn confined_asset(dir: &std::path::Path, rel: &str) -> Option<PathBuf> {
+    let decoded = percent_decode(rel)?;
+    let mut file = dir.to_path_buf();
+    for seg in decoded.split('/') {
+        if !safe_segment(seg) {
+            return None;
+        }
+        file.push(seg);
+    }
+    let root = dir.canonicalize().ok()?;
+    let canonical = file.canonicalize().ok()?;
+    let inside = canonical.strip_prefix(&root).ok()?;
+    let visible = inside.components().all(|c| match c {
+        std::path::Component::Normal(s) => s.to_str().is_some_and(safe_segment),
+        _ => false,
+    });
+    (visible && canonical.is_file()).then_some(canonical)
+}
+
+fn safe_segment(seg: &str) -> bool {
+    if seg.is_empty() || seg.starts_with('.') || seg.chars().any(|c| matches!(c, '\\' | ':' | '/') || c.is_control()) {
+        return false;
+    }
+    // `CON`, `nul.txt`, `COM1.js`...: Windows opens the device instead of a file.
+    let stem = seg.split('.').next().unwrap_or(seg).trim_end().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    !device
+}
+
+/// `decodeURIComponent` of a path (`None` when malformed or not UTF-8, like `send`'s 400).
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+            if !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 fn mime_for(file: &str) -> &'static str {

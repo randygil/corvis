@@ -268,6 +268,15 @@ impl OrmError {
         ))
     }
 
+    /// A parameter that cannot be converted to its database type (parameter `index`, 0-based),
+    /// worded like the reference query engine.
+    pub(crate) fn conversion(index: usize, cause: &str) -> Self {
+        Self::unknown(format!(
+            "Error occurred during query execution:
+ConnectorError(ConnectorError {{ user_facing_error: None, kind: QueryError(Error {{ kind: ToSql({index}), cause: Some(Error {{ kind: ConversionError({cause:?}), original_code: None, original_message: None }}) }}), transient: false }})"
+        ))
+    }
+
     fn from_sqlx_other(err: sqlx::Error) -> Self {
         match err {
             sqlx::Error::PoolTimedOut => Self::known(

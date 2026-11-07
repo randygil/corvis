@@ -13,6 +13,34 @@ use super::exception::{HttpException, IntoStatus};
 
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static>>;
 
+/// Largest chunk read from disk at a time by [`file_stream`].
+const FILE_CHUNK: usize = 64 * 1024;
+
+/// `fs.createReadStream(path, { start, end: start + len - 1 })`: `len` bytes of the file from
+/// `start`, read in chunks of up to 64 KiB, so serving a file (or a range of it) never holds it
+/// in memory. A file that shrinks meanwhile ends the stream with `UnexpectedEof`.
+pub(crate) async fn file_stream(path: &std::path::Path, start: u64, len: u64) -> std::io::Result<ByteStream> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = tokio::fs::File::open(path).await?;
+    if start > 0 {
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+    }
+    let stream = futures::stream::try_unfold(file.take(len), |mut reader| async move {
+        let want = reader.limit().min(FILE_CHUNK as u64) as usize;
+        if want == 0 {
+            return Ok(None);
+        }
+        let mut buf = vec![0u8; want];
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+        }
+        buf.truncate(n);
+        Ok(Some((Bytes::from(buf), reader)))
+    });
+    Ok(Box::pin(stream))
+}
+
 /// Response body.
 pub enum Body {
     Empty,
@@ -79,10 +107,11 @@ impl Response {
     pub fn stream(stream: ByteStream, content_type: impl Into<String>) -> Self {
         Response { body: Body::Stream { stream, content_type: content_type.into() }, ..Default::default() }
     }
-    /// `res.redirect(url, status)`.
+    /// `res.redirect(url, status)`: `Location` goes through `encodeurl` like in Express
+    /// (spaces, `<`, `"`, CR/LF and non-ASCII are percent-encoded; `%XX` escapes are kept).
     pub fn redirect(url: impl AsRef<str>, status: impl IntoStatus) -> Self {
         let mut r = Response::new().with_status(status);
-        if let Ok(v) = HeaderValue::from_str(url.as_ref()) {
+        if let Ok(v) = HeaderValue::from_str(&super::res::encode_url(url.as_ref())) {
             r.headers.insert(http::header::LOCATION, v);
         }
         r
@@ -132,7 +161,8 @@ impl Response {
     pub fn headers_mut(&mut self) -> &mut HeaderMap {
         &mut self.headers
     }
-    /// `res.cookie(name, value)`.
+    /// `res.cookie(name, value)`. Panics (`TypeError`) on an invalid cookie, see
+    /// [`Cookie::try_to_string`].
     pub fn with_cookie(mut self, cookie: Cookie) -> Self {
         self.append_header("set-cookie", cookie.to_string());
         self
@@ -226,29 +256,56 @@ impl Cookie {
     }
 }
 
-impl std::fmt::Display for Cookie {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Cookie {
+    /// The `Set-Cookie` value. The name, `path`, `domain` and `same_site` are validated like
+    /// `cookie` 0.7 (`serialize`), so a value taken from the request cannot add attributes;
+    /// `Err` carries the `TypeError` message of the package. The value is always percent-encoded.
+    pub fn try_to_string(&self) -> Result<String, String> {
+        use super::res::{valid_cookie_domain, valid_cookie_name, valid_cookie_path};
+        if !valid_cookie_name(&self.name) {
+            return Err("TypeError: argument name is invalid".into());
+        }
         let enc = percent_encoding::utf8_percent_encode(&self.value, percent_encoding::NON_ALPHANUMERIC);
-        write!(f, "{}={}", self.name, enc)?;
+        let mut out = format!("{}={}", self.name, enc);
         if let Some(p) = &self.path {
-            write!(f, "; Path={p}")?;
+            if !valid_cookie_path(p) {
+                return Err("TypeError: option path is invalid".into());
+            }
+            out.push_str(&format!("; Path={p}"));
         }
         if let Some(d) = &self.domain {
-            write!(f, "; Domain={d}")?;
+            if !d.is_empty() && !valid_cookie_domain(d) {
+                return Err("TypeError: option domain is invalid".into());
+            }
+            out.push_str(&format!("; Domain={d}"));
         }
         if let Some(m) = self.max_age {
-            write!(f, "; Max-Age={m}")?;
+            out.push_str(&format!("; Max-Age={m}"));
         }
         if self.http_only {
-            write!(f, "; HttpOnly")?;
+            out.push_str("; HttpOnly");
         }
         if self.secure {
-            write!(f, "; Secure")?;
+            out.push_str("; Secure");
         }
         if let Some(s) = &self.same_site {
-            write!(f, "; SameSite={s}")?;
+            if !["strict", "lax", "none"].iter().any(|v| s.eq_ignore_ascii_case(v)) {
+                return Err("TypeError: option sameSite is invalid".into());
+            }
+            out.push_str(&format!("; SameSite={s}"));
         }
-        Ok(())
+        Ok(out)
+    }
+}
+
+/// [`Cookie::try_to_string`]. Panics on an invalid cookie, like `cookie.serialize` throws (and
+/// `res.cookie()` panics): inside a handler that ends in a generic `500`.
+impl std::fmt::Display for Cookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.try_to_string() {
+            Ok(s) => f.write_str(&s),
+            Err(e) => panic!("{e}"),
+        }
     }
 }
 
@@ -445,9 +502,11 @@ impl StreamableFile {
         self.options.length = Some(len);
         self
     }
-    /// Sets `Content-Disposition: attachment; filename="..."`.
+    /// Sets `Content-Disposition` with the `content-disposition` package, like
+    /// `res.attachment(name)`: `attachment; filename="..."` with `"` and `\` escaped, the
+    /// basename only, and `filename*` for non-latin1 names.
     pub fn filename(mut self, name: impl AsRef<str>) -> Self {
-        self.options.disposition = Some(format!("attachment; filename=\"{}\"", name.as_ref()));
+        self.options.disposition = Some(super::res::content_disposition(name.as_ref()));
         self
     }
     pub fn options(&self) -> &StreamableFileOptions {
@@ -462,11 +521,18 @@ impl StreamableFile {
             self.options.length,
         )
     }
-    /// Reads a file; `type` is inferred from its extension and `length` from its size.
+    /// `new StreamableFile(createReadStream(path))`: the file is streamed from disk in chunks;
+    /// `type` is inferred from its extension and `length` from its size. Fails if `path` is
+    /// not a regular file.
     pub async fn from_path(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let path = path.as_ref();
-        let data = tokio::fs::read(path).await?;
-        Ok(StreamableFile::new(data).content_type(crate::common::mime::from_path(path)))
+        let meta = tokio::fs::metadata(path).await?;
+        if !meta.is_file() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+        }
+        let stream = file_stream(path, 0, meta.len()).await?;
+        let options = StreamableFileOptions::new().r#type(crate::common::mime::from_path(path)).length(meta.len());
+        Ok(StreamableFile::from_stream(stream, options))
     }
 }
 impl IntoResponse for StreamableFile {

@@ -15,6 +15,8 @@
 //! SwaggerModule::setup("docs", &mut app, document);
 //! ```
 
+#![forbid(unsafe_code)]
+
 pub mod decorators;
 pub mod document;
 pub mod explorer;

@@ -4,6 +4,7 @@ pub mod body_parser;
 pub mod exception;
 pub mod express;
 pub mod json_parse;
+pub mod proxy_addr;
 pub mod request;
 pub mod res;
 pub mod response;
@@ -13,6 +14,7 @@ pub mod status;
 
 pub use exception::*;
 pub use express::{EtagMode, HttpSettings};
+pub use proxy_addr::TrustProxy;
 pub use request::Request;
 pub use res::{CookieOptions, Res, ResMode, SendBody};
 pub use response::{Body, ByteStream, Cookie, HandlerResult, Html, IntoResponse, Json, Redirect, Response, StreamableFile};

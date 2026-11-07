@@ -12,7 +12,7 @@
 //! async fn health(&self) {}
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -47,31 +47,83 @@ impl ThrottlerOptions {
     }
 }
 
+/// Default maximum number of counters kept by [`ThrottlerStorage`].
+pub const DEFAULT_THROTTLER_MAX_ENTRIES: usize = 100_000;
+
+type KeyHash = [u8; 32];
+
+#[derive(Default)]
+struct Counters {
+    /// `sha256(key)` -> (hits, expiration).
+    hits: HashMap<KeyHash, (u32, Instant)>,
+    /// The same counters ordered by expiration, for amortized purging and eviction.
+    by_expiry: BTreeSet<(Instant, KeyHash)>,
+}
+
 /// In-memory storage of hit counters.
+///
+/// Like `@nestjs/throttler`, keys are stored as `sha256(key)`, so their size does not depend
+/// on the request. Expired counters are removed on every `increment` (each one once, in
+/// expiration order) and the table never holds more than `max_entries` counters: when it is
+/// full, the counter closest to expiring is dropped.
 pub struct ThrottlerStorage {
     pub(crate) throttlers: Vec<ThrottlerOptions>,
-    hits: Mutex<HashMap<String, (u32, Instant)>>,
+    counters: Mutex<Counters>,
+    max_entries: usize,
 }
 
 impl ThrottlerStorage {
     pub fn new(throttlers: Vec<ThrottlerOptions>) -> Self {
-        ThrottlerStorage { throttlers, hits: Mutex::new(HashMap::new()) }
+        ThrottlerStorage { throttlers, counters: Mutex::new(Counters::default()), max_entries: DEFAULT_THROTTLER_MAX_ENTRIES }
+    }
+
+    /// Maximum number of counters kept in memory (default [`DEFAULT_THROTTLER_MAX_ENTRIES`]).
+    pub fn with_max_entries(mut self, max_entries: usize) -> Self {
+        self.max_entries = max_entries.max(1);
+        self
+    }
+
+    /// Number of live counters.
+    pub fn len(&self) -> usize {
+        self.counters.lock().unwrap_or_else(|e| e.into_inner()).hits.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Approximate memory used by the counters, in bytes.
+    pub fn memory_usage(&self) -> usize {
+        let per_entry = std::mem::size_of::<(KeyHash, (u32, Instant))>() + std::mem::size_of::<(Instant, KeyHash)>() + 16;
+        self.len() * per_entry
     }
 
     /// Increments the counter for `key`; returns `(hits, time_to_expire)`.
     pub fn increment(&self, key: &str, ttl: Duration) -> (u32, Duration) {
-        let mut map = self.hits.lock().unwrap();
+        use sha2::Digest as _;
+        let hash: KeyHash = sha2::Sha256::digest(key.as_bytes()).into();
         let now = Instant::now();
-        let entry = map.entry(key.to_string()).or_insert((0, now + ttl));
-        if entry.1 <= now {
-            *entry = (0, now + ttl);
+        let mut guard = self.counters.lock().unwrap_or_else(|e| e.into_inner());
+        let c = &mut *guard;
+        while let Some(&(exp, k)) = c.by_expiry.first() {
+            if exp > now {
+                break;
+            }
+            c.by_expiry.pop_first();
+            c.hits.remove(&k);
         }
-        entry.0 += 1;
-        if map.len() > 10_000 {
-            map.retain(|_, (_, exp)| *exp > now);
+        if let Some(entry) = c.hits.get_mut(&hash) {
+            entry.0 = entry.0.saturating_add(1);
+            return (entry.0, entry.1.saturating_duration_since(now));
         }
-        let e = map.get(key).copied().unwrap_or((1, now + ttl));
-        (e.0, e.1.saturating_duration_since(now))
+        let exp = now + ttl;
+        while c.hits.len() >= self.max_entries {
+            let Some((_, k)) = c.by_expiry.pop_first() else { break };
+            c.hits.remove(&k);
+        }
+        c.hits.insert(hash, (1, exp));
+        c.by_expiry.insert((exp, hash));
+        (1, ttl)
     }
 }
 
@@ -89,8 +141,14 @@ impl Module for ThrottlerModule {
 impl ThrottlerModule {
     /// `ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }])` – global.
     pub fn for_root(throttlers: Vec<ThrottlerOptions>) -> DynamicModule {
+        Self::for_root_storage(ThrottlerStorage::new(throttlers))
+    }
+
+    /// Like [`for_root`](Self::for_root) with a configured storage, e.g.
+    /// `ThrottlerStorage::new(vec![...]).with_max_entries(500_000)`.
+    pub fn for_root_storage(storage: ThrottlerStorage) -> DynamicModule {
         DynamicModule::new::<ThrottlerModule>()
-            .provider(Provider::use_value(Token::of::<ThrottlerStorage>(), ThrottlerStorage::new(throttlers)))
+            .provider(Provider::use_value(Token::of::<ThrottlerStorage>(), storage))
             .export(Token::of::<ThrottlerStorage>())
             .global(true)
     }
@@ -124,3 +182,37 @@ impl CanActivate for ThrottlerGuard {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Keys are stored hashed (fixed size), expired counters are purged without waiting for
+    /// 10 000 entries, and the table never grows past `max_entries`.
+    #[test]
+    fn storage_memory_is_bounded() {
+        let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 3)]).with_max_entries(100);
+        let big = "A".repeat(400_000);
+        for i in 0..50 {
+            storage.increment(&format!("default:{i}-{big}:C:h"), Duration::from_millis(20));
+        }
+        assert!(storage.memory_usage() < 50 * 1024, "{} bytes", storage.memory_usage());
+        std::thread::sleep(Duration::from_millis(40));
+        storage.increment("default:fresh:C:h", Duration::from_secs(60));
+        assert_eq!(storage.len(), 1, "expired counters must be purged");
+        for i in 0..1_000 {
+            storage.increment(&format!("k{i}"), Duration::from_secs(60));
+        }
+        assert!(storage.len() <= 100, "{}", storage.len());
+    }
+
+    #[test]
+    fn counts_per_key_and_resets_after_ttl() {
+        let storage = ThrottlerStorage::new(vec![]);
+        assert_eq!(storage.increment("a", Duration::from_millis(30)).0, 1);
+        assert_eq!(storage.increment("a", Duration::from_millis(30)).0, 2);
+        assert_eq!(storage.increment("b", Duration::from_millis(30)).0, 1);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(storage.increment("a", Duration::from_millis(30)).0, 1);
+    }
+}

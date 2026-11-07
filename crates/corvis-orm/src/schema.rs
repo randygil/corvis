@@ -4,7 +4,19 @@ use crate::db::{Dialect, quote_ident};
 use crate::error::{OrmError, Result};
 use crate::meta::{DefaultValue, FieldKind, FieldMeta, ModelMeta, ReferentialAction, RelationKind, resolve_relation};
 
-fn column_type(d: Dialect, f: &FieldMeta) -> &'static str {
+fn column_type(d: Dialect, f: &FieldMeta) -> String {
+    if d == Dialect::Postgres && f.kind == FieldKind::Decimal {
+        // Like the reference migrations: `@db.Decimal(p, s)` or `DECIMAL(65,30)` (a `TEXT`
+        // column would compare as text and fail against `numeric` parameters).
+        return match f.native_type.filter(|_| f.native_name() == Some("Decimal")) {
+            Some(t) => format!("DECIMAL{}", t.trim_start_matches("Decimal").replace(' ', "")),
+            None => "DECIMAL(65,30)".to_string(),
+        };
+    }
+    column_type_base(d, f).to_string()
+}
+
+fn column_type_base(d: Dialect, f: &FieldMeta) -> &'static str {
     match (d, f.kind) {
         (Dialect::Sqlite, FieldKind::Int | FieldKind::BigInt) => "INTEGER",
         (Dialect::Sqlite, FieldKind::Float) => "REAL",

@@ -50,7 +50,15 @@ pub use storage::{
 /// Injection token of the module-wide options (`MULTER_MODULE_OPTIONS`).
 pub const MULTER_MODULE_OPTIONS: &str = "MULTER_MODULE_OPTIONS";
 
+/// Default maximum size of a multipart body read by a file interceptor (10 MiB). See
+/// [`MulterOptions::body_limit`].
+pub const DEFAULT_MULTIPART_BODY_LIMIT: u64 = 10 * 1024 * 1024;
+
 /// `limits` of multer / busboy. `None` = busboy's default (`field_size` = 1 MiB, the rest unlimited).
+///
+/// They are enforced while the body is read from the socket: the upload is aborted as soon as a
+/// limit is hit, without reading the rest. The whole body is also capped by
+/// [`MulterOptions::body_limit`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Limits {
     /// Max field name size in UTF-16 units (multer checks it only when set).
@@ -116,6 +124,10 @@ pub struct MulterOptions {
     pub preserve_path: Option<bool>,
     pub def_param_charset: Option<String>,
     pub file_filter: Option<FileFilter>,
+    /// Maximum size of the whole multipart body (see [`MulterOptions::body_limit`]).
+    pub body_limit: Option<u64>,
+    /// Remove the stored files when a later pipe or the handler fails (default `true`).
+    pub remove_files_on_error: Option<bool>,
 }
 
 impl std::fmt::Debug for MulterOptions {
@@ -127,6 +139,8 @@ impl std::fmt::Debug for MulterOptions {
             .field("preserve_path", &self.preserve_path)
             .field("def_param_charset", &self.def_param_charset)
             .field("file_filter", &self.file_filter.as_ref().map(|_| "fn"))
+            .field("body_limit", &self.body_limit)
+            .field("remove_files_on_error", &self.remove_files_on_error)
             .finish()
     }
 }
@@ -154,6 +168,10 @@ impl MulterOptions {
         self
     }
     /// Keep the full path sent by the client in `originalname` (`preservePath`).
+    ///
+    /// The path is the client's: never use it as is to build a path on disk. The disk storage
+    /// refuses names that leave its destination (`../`, absolute paths), but a custom storage
+    /// engine must check it itself.
     pub fn preserve_path(mut self, v: bool) -> Self {
         self.preserve_path = Some(v);
         self
@@ -167,6 +185,36 @@ impl MulterOptions {
         self.file_filter = Some(Arc::new(f));
         self
     }
+    /// Maximum size in bytes of the whole multipart body (all parts, headers and boundaries).
+    /// A bigger body is answered with `413 request entity too large` as soon as the limit is
+    /// crossed (or before reading, if `Content-Length` already exceeds it).
+    ///
+    /// Default: [`DEFAULT_MULTIPART_BODY_LIMIT`] (10 MiB), or `file_size * files + 1 MiB` when
+    /// `limits.file_size` asks for more. multer has no such limit; Corvis keeps each file in
+    /// memory until the storage engine receives it, so the body must be bounded.
+    pub fn body_limit(mut self, bytes: u64) -> Self {
+        self.body_limit = Some(bytes);
+        self
+    }
+    /// `false` keeps the files the storage engine already wrote when a pipe (`ParseFilePipe`) or
+    /// the handler fails afterwards. By default they are removed (`StorageEngine::remove_file`),
+    /// so rejected uploads do not pile up on disk.
+    pub fn remove_files_on_error(mut self, remove: bool) -> Self {
+        self.remove_files_on_error = Some(remove);
+        self
+    }
+
+    /// The body limit that applies with these options and `limits`.
+    pub(crate) fn effective_body_limit(&self, limits: &Limits) -> u64 {
+        if let Some(b) = self.body_limit {
+            return b;
+        }
+        let from_files = limits
+            .file_size
+            .map(|f| f.saturating_mul(limits.files.unwrap_or(1).max(1)).saturating_add(1024 * 1024))
+            .unwrap_or(0);
+        DEFAULT_MULTIPART_BODY_LIMIT.max(from_files)
+    }
 
     /// `{ ...moduleOptions, ...localOptions }`.
     pub(crate) fn merged_over(&self, base: Option<&MulterOptions>) -> MulterOptions {
@@ -178,6 +226,8 @@ impl MulterOptions {
             preserve_path: self.preserve_path.or(base.preserve_path),
             def_param_charset: self.def_param_charset.clone().or_else(|| base.def_param_charset.clone()),
             file_filter: self.file_filter.clone().or_else(|| base.file_filter.clone()),
+            body_limit: self.body_limit.or(base.body_limit),
+            remove_files_on_error: self.remove_files_on_error.or(base.remove_files_on_error),
         }
     }
 
@@ -398,7 +448,99 @@ pub fn is_multipart(req: &Request) -> bool {
     }
 }
 
-/// Bodies with this content type skip the JSON/urlencoded body limit (multer applies its own limits).
+/// Reads the whole body of a request whose body the server did not read up front (a
+/// `multipart/*` body: only file interceptors read it, streaming) and returns it, failing with
+/// `413` past `limit` bytes, `408` past the server's `request_timeout` and `400` if the client
+/// aborts. For other requests it returns `req.raw_body()`.
+///
+/// Use it in a handler or middleware that parses a multipart body by itself. The body can be
+/// read only once: afterwards file interceptors see an empty body.
+pub async fn read_body(req: &Request, limit: u64) -> Result<bytes::Bytes, HttpException> {
+    let mut source = BodySource::of(req);
+    if source.is_stream() && crate::server::content_length(req.headers()).is_some_and(|n| n > limit) {
+        source.give_back(req);
+        return Err(crate::server::entity_too_large_error());
+    }
+    let mut out = bytes::BytesMut::new();
+    loop {
+        let chunk = match source.next().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => {
+                source.give_back(req);
+                return Err(e);
+            }
+        };
+        if (out.len() + chunk.len()) as u64 > limit {
+            source.give_back(req);
+            return Err(crate::server::entity_too_large_error());
+        }
+        if !source.is_stream() {
+            return Ok(chunk);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out.freeze())
+}
+
+/// Where a multipart body comes from: the socket (read on demand) or the request buffer
+/// (requests built in memory, e.g. by `corvis::testing`).
+pub(crate) enum BodySource {
+    Stream { body: hyper::body::Incoming, deadline: Option<tokio::time::Instant> },
+    Buffered(Option<bytes::Bytes>),
+}
+
+impl BodySource {
+    pub(crate) fn of(req: &Request) -> Self {
+        match crate::server::PendingBodySlot::take(req) {
+            Some(p) => BodySource::Stream { body: p.body, deadline: p.deadline },
+            None => BodySource::Buffered(Some(req.raw_body().clone()).filter(|b| !b.is_empty())),
+        }
+    }
+
+    pub(crate) fn is_stream(&self) -> bool {
+        matches!(self, BodySource::Stream { .. })
+    }
+
+    /// Puts an unfinished socket body back on the request (after a failed read), so the server
+    /// drains a bounded part of it once the error response is sent.
+    pub(crate) fn give_back(self, req: &Request) {
+        if let (BodySource::Stream { body, deadline }, Some(slot)) = (self, req.get::<crate::server::PendingBodySlot>()) {
+            let mut guard = slot.0.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = Some(crate::server::PendingBody { body, deadline });
+        }
+    }
+
+    /// The next chunk of the body (`None` at the end).
+    pub(crate) async fn next(&mut self) -> Result<Option<bytes::Bytes>, HttpException> {
+        use http_body_util::BodyExt;
+        match self {
+            BodySource::Buffered(b) => Ok(b.take()),
+            BodySource::Stream { body, deadline } => loop {
+                let frame = match deadline {
+                    Some(d) => tokio::time::timeout_at(*d, body.frame())
+                        .await
+                        .map_err(|_| crate::server::request_timeout_error())?,
+                    None => body.frame().await,
+                };
+                match frame {
+                    None => return Ok(None),
+                    Some(Err(_)) => return Err(crate::server::request_aborted_error()),
+                    Some(Ok(f)) => {
+                        if let Ok(data) = f.into_data() {
+                            if !data.is_empty() {
+                                return Ok(Some(data));
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// `true` for `Content-Type: multipart/*`: the server leaves these bodies unread (see
+/// [`read_body`] and the file interceptors).
 pub(crate) fn is_multipart_content_type(headers: &http::HeaderMap) -> bool {
     headers
         .get(http::header::CONTENT_TYPE)

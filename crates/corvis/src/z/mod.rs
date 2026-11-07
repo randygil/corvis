@@ -38,8 +38,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
 pub use self::core::{
-    CheckOpts, Direction, ErrorMap, ErrorParam, IssueInfo, Payload, RawIssue, RunCtx, Val, WhenFn, ZodConfig,
-    ZodVersion, config, configure, en_message, error_fn, get_config, set_version, version, with_version,
+    CheckOpts, DEFAULT_MAX_DEPTH, Direction, ErrorMap, ErrorParam, IssueInfo, Payload, RawIssue, RunCtx, Val, WhenFn,
+    ZodConfig, ZodVersion, config, configure, en_message, error_fn, get_config, set_version, version, with_version,
 };
 pub use self::regex::JsRegex;
 pub use compound::*;
@@ -95,9 +95,11 @@ pub trait ZodType: Send + Sync + 'static {
     // ----- zod 4 -----
 
     /// `_zod.run(payload, ctx)`.
-    fn run_v4(&self, mut payload: Payload, _ctx: &RunCtx) -> Payload {
+    fn run_v4(&self, mut payload: Payload, ctx: &RunCtx) -> Payload {
         let input = payload.value.to_json();
         let mut c = ParseCtx::new();
+        c.depth = ctx.depth.get();
+        c.max_depth = Some(ctx.max_depth);
         match self.check(input.as_ref(), &mut c) {
             Ok(v) if c.issues.is_empty() => payload.value = Val::from_output(v),
             _ => {
@@ -183,6 +185,10 @@ pub trait ZodType: Send + Sync + 'static {
 pub struct ParseCtx {
     pub path: Vec<Value>,
     pub issues: Vec<ZodIssue>,
+    /// Current nesting of recursive schemas (see [`ZodConfig::max_depth`]).
+    pub(crate) depth: usize,
+    /// Per-parse override of [`ZodConfig::max_depth`].
+    pub(crate) max_depth: Option<usize>,
 }
 
 impl ParseCtx {
@@ -204,13 +210,19 @@ impl ParseCtx {
     }
 
     pub(crate) fn sub(&self) -> ParseCtx {
-        ParseCtx { path: self.path.clone(), issues: Vec::new() }
+        ParseCtx { path: self.path.clone(), issues: Vec::new(), depth: self.depth, max_depth: self.max_depth }
+    }
+
+    pub(crate) fn max_depth(&self) -> usize {
+        self.max_depth.unwrap_or_else(self::core::global_max_depth)
     }
 }
 
 /// Runs a v4-only node under v3 (`check`): v4 semantics, issues converted to the v3 layout.
 pub(crate) fn v3_via_v4(node: &dyn ZodType, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
-    let rctx = RunCtx::new(&ParseOptions::default());
+    let mut rctx = RunCtx::new(&ParseOptions::default());
+    rctx.depth.set(ctx.depth);
+    rctx.max_depth = ctx.max_depth();
     let p = node.run_v4(Payload::new(Val::from_opt(input)), &rctx);
     if p.issues.is_empty() {
         return Ok(p.value.to_json());
@@ -366,7 +378,7 @@ impl RefinementCtx<'_> {
                     None => input.clone(),
                 };
                 let cont = if b.fatal { Some(false) } else { b.cont.or(*object_continue) };
-                issues.push(RawIssue { fields, path: b.path, input, inst_error: inst_error.clone(), cont });
+                issues.push(RawIssue { fields, path: b.path, input, inst_error: inst_error.clone(), cont, too_deep: false });
             }
         }
     }
@@ -384,7 +396,7 @@ impl RefinementCtx<'_> {
                 let mut fields = Map::new();
                 fields.insert("message".into(), Value::String(message));
                 fields.insert("code".into(), Value::String("custom".into()));
-                issues.push(RawIssue { fields, path: Vec::new(), input: input.clone(), inst_error: None, cont: None });
+                issues.push(RawIssue { fields, path: Vec::new(), input: input.clone(), inst_error: None, cont: None, too_deep: false });
             }
         }
     }
@@ -544,6 +556,8 @@ pub struct ParseOptions {
     pub date_strings: Option<bool>,
     /// `decode` (forward, default) or `encode` (backward).
     pub direction: Direction,
+    /// Overrides [`ZodConfig::max_depth`] for this parse.
+    pub max_depth: Option<usize>,
 }
 
 impl ParseOptions {
@@ -576,10 +590,16 @@ impl ParseOptions {
         self.direction = d;
         self
     }
+    /// Maximum nesting of recursive schemas for this parse (see [`ZodConfig::max_depth`]).
+    pub fn max_depth(mut self, n: usize) -> Self {
+        self.max_depth = Some(n);
+        self
+    }
 }
 
-fn run_v3(schema: &Schema, value: Option<&Value>) -> Result<Value, ZodError> {
+fn run_v3(schema: &Schema, value: Option<&Value>, opts: &ParseOptions) -> Result<Value, ZodError> {
     let mut ctx = ParseCtx::new();
+    ctx.max_depth = opts.max_depth;
     match schema.check(value, &mut ctx) {
         Ok(v) if ctx.issues.is_empty() => Ok(v.unwrap_or(Value::Null)),
         _ => {
@@ -594,7 +614,7 @@ fn run_v3(schema: &Schema, value: Option<&Value>) -> Result<Value, ZodError> {
 /// Parses `value` (`None` = undefined) and returns the output as a [`Val`].
 pub fn parse_val(schema: &Schema, value: Option<&Value>, opts: &ParseOptions) -> Result<Val, ZodError> {
     match opts.version.unwrap_or_else(version) {
-        ZodVersion::V3 => run_v3(schema, value).map(Val::Json),
+        ZodVersion::V3 => run_v3(schema, value, opts).map(Val::Json),
         ZodVersion::V4 => {
             let ctx = RunCtx::new(opts);
             let p = schema.run(Payload::new(Val::from_opt(value)), &ctx);

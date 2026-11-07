@@ -30,6 +30,7 @@ async fn start() -> TestApp {
         unsafe {
             std::env::set_var("DATABASE_URL", "sqlite::memory:");
             std::env::set_var("STATS_INTERVAL_MS", "100");
+            std::env::set_var("JWT_SECRET", "tertulia-test-secret-0123456789abcdef");
         }
     });
     let mut app = tertulia::create_app().await.unwrap();

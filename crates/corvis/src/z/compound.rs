@@ -214,19 +214,24 @@ impl ZodType for ZArray {
             ctx,
             !self.checks.is_empty(),
             |mut p| {
-                let Val::Json(Value::Array(items)) = &p.value else {
-                    let input = p.value.clone();
-                    p.push(type_issue("array", &input, self.errors.v4_map(&self.error)));
-                    return p;
+                // The elements are moved into their payloads: copying the array at every level
+                // makes recursive schemas quadratic.
+                let items = match std::mem::replace(&mut p.value, Val::Undef) {
+                    Val::Json(Value::Array(items)) => items,
+                    other => {
+                        p.value = other;
+                        let input = p.value.clone();
+                        p.push(type_issue("array", &input, self.errors.v4_map(&self.error)));
+                        return p;
+                    }
                 };
-                let items = items.clone();
                 let mut out = Vec::with_capacity(items.len());
                 for (i, item) in items.into_iter().enumerate() {
                     let r = self.item.run(Payload::new(Val::Json(item)), ctx);
                     if !r.issues.is_empty() {
                         p.issues.extend(prefix_all(r.issues, i));
                     }
-                    out.push(r.value.to_json_or_null());
+                    out.push(r.value.into_json_or_null());
                 }
                 p.value = Val::Json(Value::Array(out));
                 p
@@ -341,17 +346,17 @@ impl ZodType for ZTuple {
         "array".into()
     }
     fn run_v4(&self, mut p: Payload, ctx: &RunCtx) -> Payload {
-        let Val::Json(Value::Array(input)) = &p.value else {
+        if !matches!(p.value, Val::Json(Value::Array(_))) {
             let input = p.value.clone();
             p.push(RawIssue::new(vec![("expected", json!("tuple")), ("code", json!("invalid_type"))], input, self.error.clone(), None));
             return p;
-        };
-        let input = input.clone();
-        let input_val = p.value.clone();
+        }
         let optin_start = tuple_opt_start(&self.items, true);
         let optout_start = tuple_opt_start(&self.items, false);
+        let len = p.value.length().unwrap_or(0);
         if self.rest.is_none() {
-            if input.len() < optin_start {
+            if len < optin_start {
+                let input_val = p.value.clone();
                 p.push(RawIssue::new(
                     vec![("code", json!("too_small")), ("minimum", json!(optin_start)), ("inclusive", json!(true)), ("origin", json!("array"))],
                     input_val,
@@ -360,22 +365,29 @@ impl ZodType for ZTuple {
                 ));
                 return p;
             }
-            if input.len() > self.items.len() {
+            if len > self.items.len() {
+                let input_val = p.value.clone();
                 p.push(RawIssue::new(
                     vec![("code", json!("too_big")), ("maximum", json!(self.items.len())), ("inclusive", json!(true)), ("origin", json!("array"))],
-                    input_val.clone(),
+                    input_val,
                     self.error.clone(),
                     None,
                 ));
             }
         }
-        let results: Vec<Payload> =
-            self.items.iter().enumerate().map(|(i, s)| s.run(Payload::new(Val::from_opt(input.get(i))), ctx)).collect();
+        // Elements are moved into their payloads (no copy of the array per level).
+        let Val::Json(Value::Array(mut input)) = std::mem::replace(&mut p.value, Val::Undef) else { unreachable!() };
+        let results: Vec<Payload> = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s.run(Payload::new(Val::from_output(input.get_mut(i).map(std::mem::take))), ctx))
+            .collect();
         let mut out: Vec<Val> = Vec::new();
         let mut rest_vals: Vec<(usize, Val)> = Vec::new();
         if let Some(rest) = &self.rest {
-            for (i, el) in input.iter().enumerate().skip(self.items.len()) {
-                let r = rest.run(Payload::new(Val::Json(el.clone())), ctx);
+            for (i, el) in input.iter_mut().enumerate().skip(self.items.len()) {
+                let r = rest.run(Payload::new(Val::Json(std::mem::take(el))), ctx);
                 if !r.issues.is_empty() {
                     p.issues.extend(prefix_all(r.issues, i));
                 }
@@ -408,7 +420,7 @@ impl ZodType for ZTuple {
                 break;
             }
         }
-        p.value = Val::Json(Value::Array(full.iter().map(Val::to_json_or_null).collect()));
+        p.value = Val::Json(Value::Array(full.into_iter().map(Val::into_json_or_null).collect()));
         p
     }
     fn def_type(&self) -> &'static str {
@@ -541,23 +553,43 @@ impl ZodType for ZRecord {
         "object".into()
     }
     fn run_v4(&self, mut p: Payload, ctx: &RunCtx) -> Payload {
-        let Some(input) = is_plain_object(&p.value).cloned() else {
+        if is_plain_object(&p.value).is_none() {
             let input = p.value.clone();
             p.push(type_issue("record", &input, self.error.clone()));
             return p;
-        };
+        }
         let key_schema = self.key_type();
         let mut out = Map::new();
         let values = if self.partial { None } else { key_schema.values() };
         if let Some(values) = values {
-            let mut record_keys: Vec<String> = Vec::new();
+            let key_str_of = |key: &Val| match key {
+                Val::Json(Value::String(s)) => Some(s.clone()),
+                Val::Json(Value::Number(n)) => Some(js::num_to_string(js::json_f64(n))),
+                _ => None,
+            };
+            let record_keys: Vec<String> = values.iter().filter_map(key_str_of).collect();
+            // The `unrecognized_keys` issue reports the original object: copy it only then.
+            let unrecognized: Vec<Value> = match &p.value {
+                Val::Json(Value::Object(m)) => m.keys().filter(|k| !record_keys.contains(k)).map(|k| json!(k)).collect(),
+                _ => Vec::new(),
+            };
+            let unrecognized_input = (!unrecognized.is_empty()).then(|| p.value.clone());
+            // Values are moved into their payloads (no copy of the object per level); a key that
+            // the key schema lists twice gets a copy until its last use.
+            let Val::Json(Value::Object(mut input)) = std::mem::replace(&mut p.value, Val::Undef) else { unreachable!() };
+            let mut uses: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for k in &record_keys {
+                *uses.entry(k.clone()).or_default() += 1;
+            }
             for key in values {
-                let key_str = match &key {
-                    Val::Json(Value::String(s)) => s.clone(),
-                    Val::Json(Value::Number(n)) => js::num_to_string(js::json_f64(n)),
-                    _ => continue,
+                let Some(key_str) = key_str_of(&key) else { continue };
+                let last_use = match uses.get_mut(&key_str) {
+                    Some(n) => {
+                        *n -= 1;
+                        *n == 0
+                    }
+                    None => true,
                 };
-                record_keys.push(key_str.clone());
                 let key_json = key.to_json_or_null();
                 let kr = key_schema.run(Payload::new(key.clone()), ctx);
                 if !kr.issues.is_empty() {
@@ -572,38 +604,39 @@ impl ZodType for ZRecord {
                     continue;
                 }
                 let out_key = js_string_of(&kr.value);
-                let r = self.value.run(Payload::new(Val::from_opt(input.get(&key_str))), ctx);
+                let value = if last_use { input.get_mut(&key_str).map(std::mem::take) } else { input.get(&key_str).cloned() };
+                let r = self.value.run(Payload::new(Val::from_output(value)), ctx);
                 if !r.issues.is_empty() {
                     p.issues.extend(prefix_all(r.issues, key_json));
                 }
-                if let Some(v) = r.value.to_json() {
+                if let Some(v) = r.value.into_json() {
                     out.insert(out_key, v);
                 }
             }
-            let unrecognized: Vec<Value> = input.keys().filter(|k| !record_keys.contains(k)).map(|k| json!(k)).collect();
-            if !unrecognized.is_empty() {
+            if let Some(input) = unrecognized_input {
                 p.push(RawIssue::new(
                     vec![("code", json!("unrecognized_keys")), ("keys", Value::Array(unrecognized))],
-                    p.value.clone(),
+                    input,
                     self.error.clone(),
                     None,
                 ));
             }
         } else {
-            for (key, v) in &input {
+            let Val::Json(Value::Object(input)) = std::mem::replace(&mut p.value, Val::Undef) else { unreachable!() };
+            for (key, v) in input {
                 if key == "__proto__" {
                     continue;
                 }
                 let mut kr = key_schema.run(Payload::new(Val::Json(json!(key))), ctx);
-                if !kr.issues.is_empty() && regexes::NUMBER.test(key) {
-                    let retry = key_schema.run(Payload::new(Val::number(js::string_to_number(key))), ctx);
+                if !kr.issues.is_empty() && regexes::NUMBER.test(&key) {
+                    let retry = key_schema.run(Payload::new(Val::number(js::string_to_number(&key))), ctx);
                     if retry.issues.is_empty() {
                         kr = retry;
                     }
                 }
                 if !kr.issues.is_empty() {
                     if self.loose {
-                        out.insert(key.clone(), v.clone());
+                        out.insert(key, v);
                     } else {
                         let iss = RawIssue::new(
                             vec![("code", json!("invalid_key")), ("origin", json!("record")), ("issues", finalized_json(ctx, &kr.issues))],
@@ -616,11 +649,11 @@ impl ZodType for ZRecord {
                     }
                     continue;
                 }
-                let r = self.value.run(Payload::new(Val::Json(v.clone())), ctx);
+                let r = self.value.run(Payload::new(Val::Json(v)), ctx);
                 if !r.issues.is_empty() {
-                    p.issues.extend(prefix_all(r.issues, key.clone()));
+                    p.issues.extend(prefix_all(r.issues, key));
                 }
-                if let Some(v) = r.value.to_json() {
+                if let Some(v) = r.value.into_json() {
                     out.insert(js_string_of(&kr.value), v);
                 }
             }
@@ -888,14 +921,15 @@ impl ZObject {
 }
 
 fn handle_property(r: Payload, p: &mut Payload, out: &mut Map<String, Value>, key: &str, present: bool, optin: bool, optout: bool) {
-    if !r.issues.is_empty() {
+    let had_issues = !r.issues.is_empty();
+    if had_issues {
         if optin && optout && !present {
             return;
         }
-        p.issues.extend(prefix_all(r.issues.clone(), key));
+        p.issues.extend(prefix_all(r.issues, key));
     }
     if !present && !optin {
-        if r.issues.is_empty() {
+        if !had_issues {
             p.push(
                 RawIssue::new(vec![("code", json!("invalid_type")), ("expected", json!("nonoptional"))], Val::Undef, None, None)
                     .with_path(vec![json!(key)]),
@@ -903,7 +937,7 @@ fn handle_property(r: Payload, p: &mut Payload, out: &mut Map<String, Value>, ke
         }
         return;
     }
-    if let Some(v) = r.value.to_json() {
+    if let Some(v) = r.value.into_json() {
         out.insert(key.to_string(), v);
     }
 }
@@ -965,32 +999,42 @@ impl ZodType for ZObject {
         Some(self)
     }
     fn run_v4(&self, mut p: Payload, ctx: &RunCtx) -> Payload {
-        let Some(input) = is_plain_object(&p.value).cloned() else {
+        if is_plain_object(&p.value).is_none() {
             let input = p.value.clone();
             p.push(type_issue("object", &input, self.inst_error()));
             return p;
+        }
+        let catchall = self.catchall_schema();
+        let is_never = catchall.as_ref().is_some_and(|c| matches!(self.unknown, UnknownKeys::Strict(_)) || c.def_type() == "never");
+        let is_extra = |key: &str| key != "__proto__" && !self.shape.iter().any(|(k, _)| k == key);
+        // The `unrecognized_keys` issue reports the original object: copy it only in that case.
+        let input_val = match &p.value {
+            Val::Json(Value::Object(m)) if is_never && m.keys().any(|k| is_extra(k)) => Some(p.value.clone()),
+            _ => None,
         };
-        let input_val = p.value.clone();
+        // Property values are moved into their payloads: copying the object at every level
+        // makes recursive schemas quadratic.
+        let Val::Json(Value::Object(mut input)) = std::mem::replace(&mut p.value, Val::Undef) else { unreachable!() };
         let mut out = Map::new();
         for (key, schema) in &self.shape {
-            let r = schema.run(Payload::new(Val::from_opt(input.get(key))), ctx);
-            handle_property(r, &mut p, &mut out, key, input.contains_key(key), schema.optin(), schema.optout());
+            let present = input.contains_key(key);
+            let r = schema.run(Payload::new(Val::from_output(input.get_mut(key).map(std::mem::take))), ctx);
+            handle_property(r, &mut p, &mut out, key, present, schema.optin(), schema.optout());
         }
-        if let Some(catchall) = self.catchall_schema() {
-            let is_never = matches!(self.unknown, UnknownKeys::Strict(_)) || catchall.def_type() == "never";
+        if let Some(catchall) = catchall {
             let mut unrecognized = Vec::new();
-            for (key, v) in &input {
-                if key == "__proto__" || self.shape.iter().any(|(k, _)| k == key) {
+            for (key, v) in input.iter_mut() {
+                if !is_extra(key) {
                     continue;
                 }
                 if is_never {
                     unrecognized.push(json!(key));
                     continue;
                 }
-                let r = catchall.run(Payload::new(Val::Json(v.clone())), ctx);
+                let r = catchall.run(Payload::new(Val::Json(std::mem::take(v))), ctx);
                 handle_property(r, &mut p, &mut out, key, true, catchall.optin(), catchall.optout());
             }
-            if !unrecognized.is_empty() {
+            if let (false, Some(input_val)) = (unrecognized.is_empty(), input_val) {
                 let err = match &self.unknown {
                     UnknownKeys::Strict(Some(m)) => Some(ErrorParam::Message(m.clone()).into_map()),
                     _ => self.inst_error(),
@@ -1095,6 +1139,10 @@ pub(crate) fn union_v4(options: &[Schema], p: Payload, ctx: &RunCtx, error: Opti
         }
         results.push(r);
     }
+    // A nesting-limit issue is reported as is, not as one more `invalid_union` per level.
+    if let Some(i) = results.iter().position(|r| r.issues.iter().any(|i| i.too_deep)) {
+        return results.swap_remove(i);
+    }
     let nonaborted: Vec<usize> = (0..results.len()).filter(|i| !results[*i].is_aborted(0)).collect();
     if nonaborted.len() == 1 {
         return results.swap_remove(nonaborted[0]);
@@ -1184,7 +1232,10 @@ impl ZodType for ZXor {
         if self.0.len() == 1 {
             return self.0[0].run(p, ctx);
         }
-        let results: Vec<Payload> = self.0.iter().map(|o| o.run(Payload::new(p.value.clone()), ctx)).collect();
+        let mut results: Vec<Payload> = self.0.iter().map(|o| o.run(Payload::new(p.value.clone()), ctx)).collect();
+        if let Some(i) = results.iter().position(|r| r.issues.iter().any(|i| i.too_deep)) {
+            return results.swap_remove(i);
+        }
         let successes: Vec<&Payload> = results.iter().filter(|r| r.issues.is_empty()).collect();
         let input = p.value.clone();
         match successes.len() {
@@ -1600,18 +1651,158 @@ pub fn keyof(o: &ZObject) -> ZEnum {
     o.keyof()
 }
 /// `z.json()`: any JSON value.
+///
+/// zod defines it as `z.lazy(() => z.union([string, number, boolean, null, array(json),
+/// record(string, json)]))`; that is the schema used for JSON Schema output, zod 3 and non-JSON
+/// inputs. A JSON input always matches exactly one option, so it is validated in a single pass
+/// with the same result (`__proto__` keys dropped, keys in V8 order) and the same nesting limit
+/// ([`ZodConfig::max_depth`](super::ZodConfig::max_depth)) as the union of lazies.
 pub fn json() -> Schema {
-    fn node() -> Schema {
+    Schema::new(ZJson(super::lazy(json_node)))
+}
+
+fn json_node() -> Schema {
+    // One union shared by every level (the lazies resolve to it instead of building a new level
+    // of schemas per level of input).
+    static NODE: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
+    NODE.get_or_init(|| {
         union([
             Schema::new(super::string()),
             Schema::new(super::number()),
             Schema::new(super::boolean()),
             Schema::new(super::null()),
-            Schema::new(array(super::lazy(node))),
-            Schema::new(record_with(super::string(), super::lazy(node))),
+            Schema::new(array(super::lazy(json_node))),
+            Schema::new(record_with(super::string(), super::lazy(json_node))),
         ])
+    })
+    .clone()
+}
+
+/// `z.json()` (see [`json`]): the zod definition plus a single-pass path for JSON inputs.
+#[derive(Clone)]
+struct ZJson(Schema);
+
+impl ZJson {
+    /// One element of an array or record: it goes through `z.lazy` in zod's definition.
+    fn child(v: Value, ctx: &RunCtx, path: &mut Vec<Value>, issues: &mut Vec<RawIssue>) -> Value {
+        match ctx.enter() {
+            Some(_guard) => Self::value(v, ctx, path, issues),
+            None => {
+                issues.push(super::core::too_deep_issue(ctx.max_depth).with_path(path.clone()));
+                Value::Null
+            }
+        }
     }
-    super::lazy(node)
+
+    fn value(v: Value, ctx: &RunCtx, path: &mut Vec<Value>, issues: &mut Vec<RawIssue>) -> Value {
+        match v {
+            Value::Array(items) => Value::Array(
+                items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        path.push(json!(i));
+                        let out = Self::child(item, ctx, path, issues);
+                        path.pop();
+                        out
+                    })
+                    .collect(),
+            ),
+            Value::Object(map) => {
+                let mut out = Map::new();
+                for (k, item) in map {
+                    if k == "__proto__" {
+                        continue;
+                    }
+                    path.push(json!(k));
+                    let v = Self::child(item, ctx, path, issues);
+                    path.pop();
+                    out.insert(k, v);
+                }
+                Value::Object(super::js::js_map(out))
+            }
+            other => other,
+        }
+    }
+}
+
+impl ZodType for ZJson {
+    fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
+        self.0.check(input, ctx)
+    }
+    fn type_name(&self) -> String {
+        self.0.type_name()
+    }
+    fn run_v4(&self, mut p: Payload, ctx: &RunCtx) -> Payload {
+        if !matches!(p.value, Val::Json(_)) {
+            return self.0.run(p, ctx);
+        }
+        let Some(_guard) = ctx.enter() else {
+            p.push(super::core::too_deep_issue(ctx.max_depth));
+            return p;
+        };
+        let Val::Json(v) = std::mem::replace(&mut p.value, Val::Undef) else { unreachable!() };
+        let mut path = Vec::new();
+        p.value = Val::Json(Self::value(v, ctx, &mut path, &mut p.issues));
+        p
+    }
+    fn optin(&self) -> bool {
+        self.0.optin()
+    }
+    fn optout(&self) -> bool {
+        self.0.optout()
+    }
+    fn def_type(&self) -> &'static str {
+        self.0.def_type()
+    }
+    fn inner_schema(&self) -> Option<Schema> {
+        self.0.node().inner_schema()
+    }
+    fn identity(&self) -> Option<usize> {
+        Some(self.0.id())
+    }
+    fn is_transforming(&self) -> bool {
+        self.0.node().is_transforming()
+    }
+    fn json_schema(&self, jsg: &mut JsonSchemaGen, json: &mut Map<String, Value>, path: &[Value]) -> Result<(), String> {
+        self.0.node().json_schema(jsg, json, path)
+    }
+}
+
+#[cfg(test)]
+mod json_tests {
+    use super::*;
+    use crate::z::{ParseOptions, parse_val};
+
+    /// The single-pass path gives the same result as zod's union of lazies.
+    #[test]
+    fn json_fast_path_matches_union_of_lazies() {
+        let fast = json();
+        let slow = super::super::lazy(json_node);
+        let cases = [
+            json!(null),
+            json!("s"),
+            json!(1.5),
+            json!(12345678901234567890u64),
+            json!(-0.0),
+            json!([1, "a", [true, null], {}]),
+            json!({ "b": 1, "2": [ { "__proto__": { "x": 1 }, "y": "z" } ], "1": null, "__proto__": 5 }),
+        ];
+        for c in cases {
+            let a = parse_val(&fast, Some(&c), &ParseOptions::v4()).unwrap();
+            let b = parse_val(&slow, Some(&c), &ParseOptions::v4()).unwrap();
+            assert_eq!(a, b, "{c}");
+            assert_eq!(serde_json::to_string(&a.to_json()).unwrap(), serde_json::to_string(&b.to_json()).unwrap());
+        }
+        let mut deep = json!(1);
+        for i in 0..10 {
+            deep = if i % 2 == 0 { json!([0, deep]) } else { json!({ "k": deep, "j": 1 }) };
+        }
+        let opts = ParseOptions::v4().max_depth(6);
+        let a = parse_val(&fast, Some(&deep), &opts).unwrap_err().to_json();
+        let b = parse_val(&slow, Some(&deep), &opts).unwrap_err().to_json();
+        assert_eq!(a, b);
+    }
 }
 
 impl ZObject {

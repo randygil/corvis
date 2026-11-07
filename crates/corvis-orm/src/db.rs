@@ -253,7 +253,7 @@ fn sqlite_query(sql: &Sql) -> sqlx::query::Query<'_, Sqlite, sqlx::sqlite::Sqlit
 }
 
 /// JSON representation of a bound value (SQLite scalar lists, logs).
-fn sql_value_json(v: &SqlValue) -> Value {
+pub(crate) fn sql_value_json(v: &SqlValue) -> Value {
     match v.strip_cast() {
         SqlValue::Null(_) => Value::Null,
         SqlValue::Bool(b) => Value::Bool(*b),

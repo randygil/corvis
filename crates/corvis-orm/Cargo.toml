@@ -10,9 +10,12 @@ readme = "README.md"
 keywords = ["orm", "sqlx", "corvis", "database", "postgres"]
 
 [features]
-default = ["corvis"]
+default = ["corvis", "tls-rustls"]
 # OrmModule / OrmService / OrmExceptionFilter and logging through the corvis logger.
 corvis = ["dep:corvis"]
+# TLS for Postgres connections (`sslmode=require` / `verify-ca` / `verify-full`), with rustls and
+# the Mozilla root certificates. Disable default features to build without TLS.
+tls-rustls = ["sqlx/tls-rustls"]
 
 [dependencies]
 corvis = { workspace = true, optional = true }

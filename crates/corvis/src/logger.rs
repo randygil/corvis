@@ -83,6 +83,45 @@ impl ConsoleLogger {
         self.json = json;
         self
     }
+
+    /// One line of the text format. The message and the context are escaped (see
+    /// [`escape_control`]) so logged user data cannot start fake entries or drive the terminal.
+    fn text_line(&self, level: LogLevel, message: &str, context: Option<&str>, pid: u32, date: &str, elapsed: Option<u128>) -> String {
+        let message = escape_control(message);
+        let ctx = context.map(|c| format!("[{}] ", escape_control(c))).unwrap_or_default();
+        let diff = elapsed.map(|ms| format!(" +{ms}ms")).unwrap_or_default();
+        if self.colors {
+            let c = level.color();
+            format!(
+                "{c}[{}] {pid}  - \x1b[39m{date} {c}{:>7}\x1b[39m \x1b[33m{ctx}\x1b[39m{c}{message}\x1b[39m\x1b[33m{diff}\x1b[39m",
+                self.app_name,
+                level.label()
+            )
+        } else {
+            format!("[{}] {pid}  - {date} {:>7} {ctx}{message}{diff}", self.app_name, level.label())
+        }
+    }
+}
+
+/// Escapes what a terminal or a line-oriented log reader would interpret: `\r` and `\n` as
+/// `\r` / `\n`, the other C0 controls (except tab) and DEL as `\xNN`, and the C1 controls
+/// (`U+0080`–`U+009F`, e.g. the 8-bit CSI `U+009B`) as `\u{NN}`.
+fn escape_control(s: &str) -> std::borrow::Cow<'_, str> {
+    let special = |c: char| c.is_control() && c != '\t';
+    if !s.chars().any(special) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            c if special(c) && (c as u32) < 0x80 => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if special(c) => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 static LAST_LOG: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
@@ -108,19 +147,8 @@ impl LoggerService for ConsoleLogger {
             let _ = writeln!(std::io::stdout(), "{v}");
             return;
         }
-        let date = now.format("%m/%d/%Y, %-I:%M:%S %p");
-        let ctx = context.map(|c| format!("[{c}] ")).unwrap_or_default();
-        let diff = elapsed.map(|ms| format!(" +{ms}ms")).unwrap_or_default();
-        let line = if self.colors {
-            let c = level.color();
-            format!(
-                "{c}[{}] {pid}  - \x1b[39m{date} {c}{:>7}\x1b[39m \x1b[33m{ctx}\x1b[39m{c}{message}\x1b[39m\x1b[33m{diff}\x1b[39m",
-                self.app_name,
-                level.label()
-            )
-        } else {
-            format!("[{}] {pid}  - {date} {:>7} {ctx}{message}{diff}", self.app_name, level.label())
-        };
+        let date = now.format("%m/%d/%Y, %-I:%M:%S %p").to_string();
+        let line = self.text_line(level, message, context, pid, &date, elapsed);
         if matches!(level, LogLevel::Error | LogLevel::Fatal) {
             let _ = writeln!(std::io::stderr(), "{line}");
         } else {
@@ -205,5 +233,33 @@ impl Logger {
     }
     pub fn warn_with(message: impl AsRef<str>, context: &str) {
         emit(LogLevel::Warn, message.as_ref(), Some(context));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// static-response #9: user data cannot forge log lines or send terminal escapes.
+    #[test]
+    fn text_mode_escapes_control_characters() {
+        let plain = ConsoleLogger::new().colors(false);
+        let line = plain.text_line(
+            LogLevel::Warn,
+            "login failed for x\r\n[Corvis] 1  - 01/01/2026, 1:00:00 AM     LOG [Auth] admin logged in\x1b[2J\u{9b}31m",
+            Some("Users\nX"),
+            7,
+            "D",
+            None,
+        );
+        assert_eq!(
+            line,
+            r"[Corvis] 7  - D    WARN [Users\nX] login failed for x\r\n[Corvis] 1  - 01/01/2026, 1:00:00 AM     LOG [Auth] admin logged in\x1b[2J\u{9b}31m"
+        );
+        assert!(!line.contains('\n') && !line.contains('\r') && !line.contains('\x1b') && !line.contains('\u{9b}'));
+        // Tabs and printable Unicode stay as they are; the colored format keeps its own escapes.
+        assert_eq!(plain.text_line(LogLevel::Log, "a\tb ñ €", None, 7, "D", Some(3)), "[Corvis] 7  - D     LOG a\tb ñ € +3ms");
+        let colored = ConsoleLogger::new().colors(true).text_line(LogLevel::Log, "x\x1b[2Jy", None, 7, "D", None);
+        assert!(colored.contains(r"x\x1b[2Jy"), "{colored}");
     }
 }

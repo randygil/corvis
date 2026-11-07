@@ -205,15 +205,50 @@ impl CookieOptions {
     }
 }
 
+/// cookie 0.7 `cookieNameRegExp`: `[\x21-\x3A\x3C\x3E-\x7E]+` (no `;`, `=`, spaces or controls).
+pub(crate) fn valid_cookie_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| matches!(b, 0x21..=0x3a | 0x3c | 0x3e..=0x7e))
+}
+
+/// cookie 0.7 `cookieValueRegExp`: `("?)[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*\1`.
+fn valid_cookie_value(value: &str) -> bool {
+    let inner = match value.strip_prefix('"') {
+        Some(rest) => match rest.strip_suffix('"') {
+            Some(inner) => inner,
+            None => return false,
+        },
+        None => value,
+    };
+    inner.bytes().all(|b| matches!(b, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e))
+}
+
+/// cookie 0.7 `domainValueRegExp`: an optional leading dot and dot-separated labels of 1–63
+/// letters, digits or `-` that neither start nor end with `-` (case-insensitive).
+pub(crate) fn valid_cookie_domain(domain: &str) -> bool {
+    let d = domain.strip_prefix('.').unwrap_or(domain);
+    !d.is_empty()
+        && d.split('.').all(|l| {
+            (1..=63).contains(&l.len())
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        })
+}
+
+/// cookie 0.7 `pathValueRegExp`: `[\x20-\x3A\x3D-\x7E]*` (no `;`, `<`, controls or non-ASCII).
+pub(crate) fn valid_cookie_path(path: &str) -> bool {
+    path.bytes().all(|b| matches!(b, 0x20..=0x3a | 0x3d..=0x7e))
+}
+
 /// `cookie.serialize(name, value, options)` (cookie 0.7) with Express' `res.cookie` defaults.
-/// Panics like the package throws (`TypeError`) on an invalid name, value or option.
+/// Panics like the package throws (`TypeError`) on an invalid name, value or option; `path`
+/// and `domain` are validated too (CVE-2024-47764), so they cannot inject attributes.
 pub fn serialize_cookie(name: &str, value: &str, opts: &CookieOptions) -> String {
-    let token = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
-    if !token(name) {
+    if !valid_cookie_name(name) {
         panic!("TypeError: argument name is invalid");
     }
     let value = if opts.raw { value.to_string() } else { encode_uri_component(value) };
-    if value.bytes().any(|b| !(0x21..=0x7e).contains(&b) || b == b'"' || b == b',' || b == b';' || b == b'\\') {
+    if !valid_cookie_value(&value) {
         panic!("TypeError: argument val is invalid");
     }
     let mut out = format!("{name}={value}");
@@ -223,10 +258,16 @@ pub fn serialize_cookie(name: &str, value: &str, opts: &CookieOptions) -> String
         out.push_str(&format!("; Max-Age={}", ms.div_euclid(1000)));
     }
     if let Some(d) = opts.domain.as_deref().filter(|d| !d.is_empty()) {
+        if !valid_cookie_domain(d) {
+            panic!("TypeError: option domain is invalid");
+        }
         out.push_str(&format!("; Domain={d}"));
     }
     let path = opts.path.clone().unwrap_or_else(|| "/".into());
     if !path.is_empty() {
+        if !valid_cookie_path(&path) {
+            panic!("TypeError: option path is invalid");
+        }
         out.push_str(&format!("; Path={path}"));
     }
     if let Some(e) = expires {

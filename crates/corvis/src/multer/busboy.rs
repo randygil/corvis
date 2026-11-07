@@ -2,8 +2,9 @@
 //! `multer`): boundary search, part headers (including RFC 2231/5987 `filename*`), field and file
 //! size limits, `files`/`fields`/`parts` limits and the same error messages.
 //!
-//! The request body is already buffered by the server, so the parser runs over the whole body
-//! and produces the list of events busboy would emit, in the same order.
+//! The body is pushed chunk by chunk while it is read from the socket ([`StreamParser`]) and the
+//! parser produces the events busboy would emit, in the same order, so the limits are enforced
+//! during the read.
 
 use bytes::{Bytes, BytesMut};
 
@@ -112,50 +113,125 @@ pub(crate) fn boundary_of(content_type: Option<&[u8]>) -> Result<Vec<u8>, Config
         .ok_or(ConfigError::BoundaryNotFound)
 }
 
-/// Parses the multipart body.
+/// Parses a whole multipart body at once (same events as feeding it to [`StreamParser`]).
+#[cfg(test)]
 pub(crate) fn parse(body: &Bytes, boundary: &[u8], cfg: &Config<'_>) -> Vec<Event> {
-    // busboy writes a CRLF first ("just in case there is no preamble").
-    let mut hay = BytesMut::with_capacity(body.len() + 2);
-    hay.extend_from_slice(b"\r\n");
-    hay.extend_from_slice(body);
-    let hay = hay.freeze();
-    let mut needle = Vec::with_capacity(boundary.len() + 4);
-    needle.extend_from_slice(b"\r\n--");
-    needle.extend_from_slice(boundary);
+    let mut p = StreamParser::new(boundary, cfg);
+    p.push(body.clone());
+    let mut events = p.take_events();
+    events.extend(p.finish());
+    events
+}
 
-    let mut p = Parser::new(cfg);
-    let finder = memchr::memmem::Finder::new(&needle);
-    let mut pos = 0usize;
-    while pos <= hay.len() && !p.ignore {
-        match finder.find(&hay[pos..]) {
-            Some(off) => {
-                let m = pos + off;
-                p.on_chunk(&hay, pos, m, true);
-                pos = m + needle.len();
-            }
-            None => {
-                if pos < hay.len() {
-                    p.on_chunk(&hay, pos, hay.len(), false);
+/// Incremental multipart parser (busboy + `streamsearch`): the body is pushed chunk by chunk as
+/// it arrives from the socket and the events are drained after each chunk, so the caller can
+/// stop reading as soon as a limit is hit. Only the last `boundary.len() + 3` bytes (a possible
+/// partial boundary) are kept between chunks; file contents are kept until their part ends.
+pub(crate) struct StreamParser<'a> {
+    p: Parser<'a>,
+    needle: Vec<u8>,
+    /// Bytes of the previous chunk that may start a boundary.
+    tail: BytesMut,
+    finished: bool,
+}
+
+impl<'a> StreamParser<'a> {
+    pub(crate) fn new(boundary: &[u8], cfg: &'a Config<'a>) -> Self {
+        let mut needle = Vec::with_capacity(boundary.len() + 4);
+        needle.extend_from_slice(b"\r\n--");
+        needle.extend_from_slice(boundary);
+        // busboy writes a CRLF first ("just in case there is no preamble").
+        let mut tail = BytesMut::with_capacity(needle.len());
+        tail.extend_from_slice(b"\r\n");
+        StreamParser { p: Parser::new(cfg), needle, tail, finished: false }
+    }
+
+    /// `true` once the closing boundary was seen: the rest of the body (epilogue) is ignored.
+    pub(crate) fn is_complete(&self) -> bool {
+        self.p.ignore
+    }
+
+    /// Feeds the next chunk of the body.
+    pub(crate) fn push(&mut self, chunk: Bytes) {
+        if self.p.ignore || self.finished {
+            return;
+        }
+        let data = if self.tail.is_empty() {
+            chunk
+        } else {
+            let mut d = BytesMut::with_capacity(self.tail.len() + chunk.len());
+            d.extend_from_slice(&self.tail);
+            d.extend_from_slice(&chunk);
+            self.tail.clear();
+            d.freeze()
+        };
+        let finder = memchr::memmem::Finder::new(&self.needle);
+        let mut pos = 0usize;
+        while !self.p.ignore {
+            match finder.find(&data[pos..]) {
+                Some(off) => {
+                    let m = pos + off;
+                    self.p.on_chunk(&data, pos, m, true);
+                    pos = m + self.needle.len();
                 }
-                break;
+                None => {
+                    // The last `needle.len() - 1` bytes may be the start of a boundary split
+                    // across chunks: keep them for the next push.
+                    let keep = (self.needle.len() - 1).min(data.len() - pos);
+                    let emit_end = data.len() - keep;
+                    if emit_end > pos {
+                        self.p.on_chunk(&data, pos, emit_end, false);
+                    }
+                    if !self.p.ignore {
+                        self.tail.extend_from_slice(&data[emit_end..]);
+                    }
+                    break;
+                }
             }
         }
     }
-    // `_final`: an incomplete form is an error; otherwise check the end state.
-    if !p.complete {
-        p.events.push(Event::Error(UNEXPECTED_END_OF_FORM));
-    } else if p.hparser_active {
-        p.events.push(Event::Error(MALFORMED_PART_HEADER));
-    } else if p.file.is_some() {
-        p.events.push(Event::Error(UNEXPECTED_END_OF_FILE));
+
+    /// Stops keeping the contents of file `id` (a file skipped by `fileFilter`): its size still
+    /// counts for `limits.fileSize`, but `FileEnd` carries no data.
+    pub(crate) fn discard_file(&mut self, id: usize) {
+        if let Some(f) = self.p.file.as_mut().filter(|f| f.id == id) {
+            f.discard = true;
+            f.chunks.clear();
+        }
     }
-    p.events
+
+    /// The events produced so far.
+    pub(crate) fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.p.events)
+    }
+
+    /// End of the body (busboy `_final`): flushes the pending bytes and checks the end state.
+    pub(crate) fn finish(&mut self) -> Vec<Event> {
+        if !self.finished {
+            self.finished = true;
+            if !self.p.ignore && !self.tail.is_empty() {
+                let data = std::mem::take(&mut self.tail).freeze();
+                self.p.on_chunk(&data, 0, data.len(), false);
+            }
+            let p = &mut self.p;
+            if !p.complete {
+                p.events.push(Event::Error(UNEXPECTED_END_OF_FORM));
+            } else if p.hparser_active {
+                p.events.push(Event::Error(MALFORMED_PART_HEADER));
+            } else if p.file.is_some() {
+                p.events.push(Event::Error(UNEXPECTED_END_OF_FILE));
+            }
+        }
+        self.take_events()
+    }
 }
 
 struct CurrentFile {
     id: usize,
     size: u64,
     chunks: Vec<Bytes>,
+    /// Skipped by `fileFilter`: the data is counted but not kept.
+    discard: bool,
 }
 
 struct Parser<'a> {
@@ -288,15 +364,13 @@ impl<'a> Parser<'a> {
                     let actual = ((end - start) as u64).min(limit - file.size) as usize;
                     let chunk = data.slice(start..start + actual);
                     file.size += actual as u64;
+                    if !chunk.is_empty() && !file.discard {
+                        file.chunks.push(chunk);
+                    }
                     if file.size == limit {
-                        if !chunk.is_empty() {
-                            file.chunks.push(chunk);
-                        }
                         let id = file.id;
                         self.events.push(Event::FileLimit { id });
                         self.skip_part = true;
-                    } else {
-                        file.chunks.push(chunk);
                     }
                 } else if let Some(field) = self.field.as_mut() {
                     let limit = Self::limit(self.cfg.limits.field_size, 1024 * 1024);
@@ -319,7 +393,8 @@ impl<'a> Parser<'a> {
                     0 => Bytes::new(),
                     1 => file.chunks.into_iter().next().unwrap(),
                     _ => {
-                        let mut b = BytesMut::with_capacity(file.size as usize);
+                        let len = file.chunks.iter().map(|c| c.len()).sum();
+                        let mut b = BytesMut::with_capacity(len);
                         for c in &file.chunks {
                             b.extend_from_slice(c);
                         }
@@ -404,7 +479,7 @@ impl<'a> Parser<'a> {
             self.files += 1;
             let id = self.next_file_id;
             self.next_file_id += 1;
-            self.file = Some(CurrentFile { id, size: 0, chunks: Vec::new() });
+            self.file = Some(CurrentFile { id, size: 0, chunks: Vec::new(), discard: false });
             self.events.push(Event::FileStart {
                 id,
                 name: self.part_name.clone(),
@@ -942,6 +1017,62 @@ mod tests {
         let cfg = Config { limits: &limits, preserve_path: false, def_param_charset: "latin1" };
         let ev = parse(&Bytes::from(raw), b"XX", &cfg);
         assert!(matches!(&ev[0], Event::FileStart { filename: Some(f), .. } if f == "Ã±.png"));
+    }
+
+    fn describe(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e {
+                Event::FileEnd { id, data } => format!("FileEnd {id} {:?}", &data[..]),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// Feeding the body in chunks of any size yields exactly the events of the whole body.
+    #[test]
+    fn streaming_is_split_invariant() {
+        let bodies = [
+            "--XX\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhola\r\n--XX\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x.txt\"\r\nContent-Type: text/plain\r\n\r\nfile\r\nbody --X\r\n--XX\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n\r\n--XX--\r\nepilogue",
+            "preamble\r\n--XX\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.bin\"\r\n\r\n1234567890\r\n--XX--",
+            "--XX\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhola",
+            "--XX\r\nBad Header\r\n\r\nx\r\n--XX--",
+            "--XX\r\nContent-Disposition: form-data; name=\"a\"\r\n\tfolded\r\n\r\nv\r\n--XX-x\r\n--XX--",
+        ];
+        let limit_sets = [Limits::default(), Limits { file_size: Some(4), field_size: Some(3), parts: Some(2), ..Default::default() }];
+        for body in bodies {
+            for limits in &limit_sets {
+                let cfg = Config { limits, preserve_path: false, def_param_charset: "latin1" };
+                let whole = describe(&parse(&Bytes::from(body.to_string()), b"XX", &cfg));
+                for size in 1..=body.len() {
+                    let mut p = StreamParser::new(b"XX", &cfg);
+                    let mut events = Vec::new();
+                    for chunk in body.as_bytes().chunks(size) {
+                        p.push(Bytes::copy_from_slice(chunk));
+                        events.extend(p.take_events());
+                    }
+                    events.extend(p.finish());
+                    assert_eq!(describe(&events), whole, "chunk size {size} of {body:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn discarded_file_keeps_no_data() {
+        let limits = Limits::default();
+        let cfg = Config { limits: &limits, preserve_path: false, def_param_charset: "latin1" };
+        let mut p = StreamParser::new(b"XX", &cfg);
+        p.push(Bytes::from_static(b"--XX\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a\"\r\n\r\nAAAAAAAAAA"));
+        let id = match p.take_events().first() {
+            Some(Event::FileStart { id, .. }) => *id,
+            other => panic!("{other:?}"),
+        };
+        p.discard_file(id);
+        p.push(Bytes::from_static(b"BBBB\r\n--XX--"));
+        let mut ev = p.take_events();
+        ev.extend(p.finish());
+        assert!(matches!(&ev[0], Event::FileEnd { data, .. } if data.is_empty()), "{ev:?}");
     }
 
     #[test]

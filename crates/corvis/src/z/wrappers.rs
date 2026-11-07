@@ -1298,7 +1298,16 @@ impl ZLazy {
 }
 impl ZodType for ZLazy {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
-        self.get().check(input, ctx)
+        // Recursion only happens through `z.lazy`, so this is where the depth is bounded.
+        let max = ctx.max_depth();
+        if ctx.depth >= max {
+            ctx.add(ZodIssueCode::Custom, super::core::too_deep_message(max), Map::new());
+            return Err(());
+        }
+        ctx.depth += 1;
+        let r = self.get().check(input, ctx);
+        ctx.depth -= 1;
+        r
     }
     fn type_name(&self) -> String {
         "lazy".into()
@@ -1306,7 +1315,11 @@ impl ZodType for ZLazy {
     fn object_shape(&self) -> Option<&ZObject> {
         self.get().as_object()
     }
-    fn run_v4(&self, p: Payload, ctx: &RunCtx) -> Payload {
+    fn run_v4(&self, mut p: Payload, ctx: &RunCtx) -> Payload {
+        let Some(_guard) = ctx.enter() else {
+            p.push(super::core::too_deep_issue(ctx.max_depth));
+            return p;
+        };
         self.get().run(p, ctx)
     }
     fn optin(&self) -> bool {

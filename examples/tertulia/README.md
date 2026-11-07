@@ -20,8 +20,11 @@ probar de punta a punta el soporte de WebSockets del framework:
 ## Cómo ejecutarlo
 
 ```bash
-cargo run -p tertulia
+JWT_SECRET="$(openssl rand -hex 32)" cargo run -p tertulia
 ```
+
+`JWT_SECRET` es obligatoria: sin ella la aplicación no arranca (no hay un secreto por defecto,
+porque cualquiera que lo conozca podría firmar tokens de moderador).
 
 Abre <http://127.0.0.1:5150> en dos navegadores (o una ventana normal y otra privada), entra con dos
 apodos distintos y únete a la misma sala. Entra como `admin` para ver las acciones de moderación:
@@ -33,12 +36,15 @@ Variables de entorno (también se leen de un `.env`):
 |---|---|---|
 | `PORT` | `5150` | Puerto (siempre en `127.0.0.1`) |
 | `DATABASE_URL` | `file:./tertulia.db` | SQLite; `sqlite::memory:` para no guardar nada |
-| `JWT_SECRET` / `JWT_EXPIRES_IN` | `tertulia-dev-secret` / `12h` | Firma de los tokens |
+| `JWT_SECRET` | (obligatoria) | Secreto con el que se firman los tokens; usa un valor aleatorio largo |
+| `JWT_EXPIRES_IN` | `12h` | Vigencia de los tokens (formato de `ms`: `12h`, `1.5h`, `2 days`) |
 | `MODERATORS` | `admin` | Apodos con rol `moderator`, separados por comas |
 | `STATS_INTERVAL_MS` | `2000` | Cada cuánto emite el stream SSE |
 
 El login no pide contraseña: cualquier apodo válido (2 a 20 caracteres `A-Z a-z 0-9 _ . -`) recibe un
-token. Es una demo.
+token, y quien entre con un apodo de `MODERATORS` (por defecto `admin`, sin distinguir mayúsculas)
+obtiene el rol `moderator`. **Es una demo: no la expongas tal cual.** Una aplicación real debe
+verificar credenciales antes de emitir el token.
 
 ## Protocolo del gateway `/chat`
 

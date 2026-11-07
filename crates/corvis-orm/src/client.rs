@@ -34,6 +34,12 @@ pub struct OrmClientOptions {
     pub omit: std::collections::HashMap<String, Vec<String>>,
     /// Default options of interactive transactions (`transactionOptions`).
     pub transaction_options: TransactionOptions,
+    /// Maximum nesting of the query arguments (objects and lists, the arguments object being
+    /// level 1). Deeper arguments are rejected with a validation error before they are walked,
+    /// so a hostile `where` cannot overflow the stack. Default
+    /// [`OrmClientOptions::DEFAULT_MAX_QUERY_DEPTH`] (125, the same limit as the reference
+    /// query engine).
+    pub max_query_depth: usize,
 }
 
 impl OrmClientOptions {
@@ -45,7 +51,16 @@ impl OrmClientOptions {
             acquire_timeout: None,
             omit: Default::default(),
             transaction_options: TransactionOptions::default(),
+            max_query_depth: Self::DEFAULT_MAX_QUERY_DEPTH,
         }
+    }
+    /// Default of [`OrmClientOptions::max_query_depth`].
+    pub const DEFAULT_MAX_QUERY_DEPTH: usize = 125;
+    /// Maximum nesting of query arguments (see [`OrmClientOptions::max_query_depth`]).
+    /// Raising it much beyond the default can overflow the stack with hostile input.
+    pub fn max_query_depth(mut self, depth: usize) -> Self {
+        self.max_query_depth = depth;
+        self
     }
     /// Default `{ maxWait, timeout, isolationLevel }` of interactive transactions.
     pub fn transaction_options(mut self, o: impl Into<TransactionOptions>) -> Self {
@@ -109,9 +124,10 @@ fn dialect_of(url: &str) -> Result<Dialect> {
     } else if u.starts_with("postgres://") || u.starts_with("postgresql://") {
         Ok(Dialect::Postgres)
     } else {
-        Err(OrmError::init(format!(
-            "error: Error validating datasource `db`: the URL must start with the protocol `file:`, `sqlite:`, `postgresql://` or `postgres://`. Got `{u}`."
-        )))
+        // The URL is not echoed: it usually carries the password.
+        Err(OrmError::init(
+            "error: Error validating datasource `db`: the URL must start with the protocol `file:`, `sqlite:`, `postgresql://` or `postgres://`.",
+        ))
     }
 }
 
@@ -237,13 +253,20 @@ impl OrmClient {
         }
     }
 
-    /// Fails like the reference query engine when a parameter cannot be converted (an `Int` out of range).
+    /// Fails like the reference query engine when a parameter cannot be converted: an `Int`
+    /// out of range, or a `Decimal` that does not fit a `NUMERIC` (it would be truncated).
     fn check_params(sql: &Sql) -> Result<()> {
-        match sql.params.iter().enumerate().find_map(|(i, p)| match p {
-            SqlValue::OutOfRange(v) => Some((i, *v)),
-            _ => None,
-        }) {
-            Some((i, v)) => Err(OrmError::int_overflow(i, v)),
+        fn bad(p: &SqlValue, i: usize) -> Option<OrmError> {
+            match p {
+                SqlValue::OutOfRange(v) => Some(OrmError::int_overflow(i, *v)),
+                SqlValue::Decimal(d) if !d.fits_numeric() => Some(OrmError::conversion(i, crate::decimal::NUMERIC_OVERFLOW)),
+                SqlValue::Cast(v, _) => bad(v, i),
+                SqlValue::Array(items, _) => items.iter().find_map(|x| bad(x, i)),
+                _ => None,
+            }
+        }
+        match sql.params.iter().enumerate().find_map(|(i, p)| bad(p, i)) {
+            Some(e) => Err(e),
             None => Ok(()),
         }
     }
@@ -389,9 +412,10 @@ impl OrmClient {
         match (state.finish().await, &result) {
             (Some(tx), Ok(_)) => tx.commit().await?,
             (Some(tx), Err(_)) => tx.rollback().await?,
-            // Expired (already rolled back by the timer): the commit fails.
-            (None, Ok(_)) if state.is_expired() => return Err(E::from(state.closed_error("commit"))),
-            (None, _) => {}
+            // The connection is gone: the timer rolled the transaction back. Never report
+            // success for work that was not committed.
+            (None, Ok(_)) => return Err(E::from(state.closed_error("commit"))),
+            (None, Err(_)) => {}
         }
         result
     }
@@ -457,11 +481,11 @@ impl OrmClient {
         let state = self.begin_tx(options).await?;
         let client = OrmClient { inner: self.inner.clone(), tx: Some(state.clone()) };
         let result = batch.run(client).await;
-        if let Some(tx) = state.finish().await {
-            match &result {
-                Ok(_) => tx.commit().await?,
-                Err(_) => tx.rollback().await?,
-            }
+        match (state.finish().await, &result) {
+            (Some(tx), Ok(_)) => tx.commit().await?,
+            (Some(tx), Err(_)) => tx.rollback().await?,
+            (None, Ok(_)) => return Err(state.closed_error("commit")),
+            (None, Err(_)) => {}
         }
         result
     }
@@ -567,15 +591,25 @@ impl OrmClient {
 }
 
 fn init_error(e: sqlx::Error, url: &str) -> OrmError {
-    let redacted = match url.find('@') {
-        Some(at) => match url.find("://") {
-            Some(p) => format!("{}://***{}", &url[..p], &url[at..]),
-            None => url.to_string(),
-        },
-        None => url.to_string(),
-    };
     OrmError::Initialization(crate::error::InitializationError {
-        message: format!("Can't reach database server at `{redacted}`: {e}"),
+        message: format!("Can't reach database server at `{}`: {e}", server_of(url)),
         error_code: Some("P1001".into()),
     })
+}
+
+/// `host:port` of a connection URL (like `P1001` of the reference client), never the user,
+/// the password or the query string. SQLite URLs give the file.
+pub(crate) fn server_of(url: &str) -> String {
+    let u = url.trim();
+    if u.starts_with("file:") || u.starts_with("sqlite:") {
+        return u.split('?').next().unwrap_or(u).to_string();
+    }
+    let rest = u.split_once("://").map(|(_, r)| r).unwrap_or("");
+    // Authority: up to the first `/`, `?` or `#`; the host follows the last `@`.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    if host.is_empty() {
+        return "<unknown host>".to_string();
+    }
+    if host.contains(':') && !host.ends_with(']') { host.to_string() } else { format!("{host}:5432") }
 }

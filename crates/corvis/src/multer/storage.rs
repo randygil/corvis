@@ -84,6 +84,12 @@ impl DiskStorageOptions {
 }
 
 /// `diskStorage(...)`: writes the file to `destination/filename`.
+///
+/// Unlike multer, the final name is checked before writing (`400 Invalid file name`): it must
+/// stay inside `destination` (no `..` that climbs out of it, no absolute path or drive) and, on
+/// Windows, must not open an alternate data stream (`name.txt:stream`) or a device (`CON`,
+/// `NUL`, `COM1`, ...). This matters when the name comes from `file.originalname`, which the
+/// client chooses.
 pub struct DiskStorage {
     destination: Destination,
     filename: Option<PathFn>,
@@ -121,6 +127,7 @@ impl StorageEngine for DiskStorage {
                 raw.iter().map(|b| format!("{b:02x}")).collect()
             }
         };
+        check_file_name(&filename, cfg!(windows))?;
         let final_path = node_path_join(&destination, &filename);
         tokio::fs::write(&final_path, &data).await.map_err(HttpException::internal)?;
         let mut m = Map::new();
@@ -141,6 +148,53 @@ impl StorageEngine for DiskStorage {
         }
         Ok(())
     }
+}
+
+/// The name returned by `filename` (it may contain sub-folders) must resolve inside the
+/// destination and, on Windows, be a plain file name.
+fn check_file_name(name: &str, windows: bool) -> Result<(), HttpException> {
+    let invalid = || crate::http::BadRequestException::new("Invalid file name");
+    let is_sep = |c: char| c == '/' || (windows && c == '\\');
+    if name.starts_with(is_sep) || name.ends_with(is_sep) {
+        return Err(invalid());
+    }
+    let mut depth: usize = 0;
+    let mut last = "";
+    for seg in name.split(is_sep) {
+        match seg {
+            "" | "." => {}
+            ".." => depth = depth.checked_sub(1).ok_or_else(invalid)?,
+            s => {
+                if windows && !is_windows_file_name(s) {
+                    return Err(invalid());
+                }
+                depth += 1;
+                last = s;
+            }
+        }
+    }
+    if depth == 0 || last.is_empty() {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+/// A path segment Windows writes as a regular file: no drive / stream separator (`:`), no
+/// reserved characters, no trailing dot or space and no device name (`CON`, `nul.txt`, `COM1`).
+pub(crate) fn is_windows_file_name(seg: &str) -> bool {
+    if seg.chars().any(|c| matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*' | '\\' | '/') || (c as u32) < 0x20) {
+        return false;
+    }
+    if seg.ends_with(['.', ' ']) {
+        return false;
+    }
+    let stem = seg.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && matches!(stem.as_bytes()[3], b'0'..=b'9'))
+        || ((stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(&stem[3..], "\u{b9}" | "\u{b2}" | "\u{b3}"));
+    !reserved
 }
 
 /// Node's `path.join(a, b)` for the current platform (`path.win32` on Windows, `path.posix` elsewhere):
@@ -199,7 +253,36 @@ fn normalize(path: &str, windows: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize;
+    use super::{check_file_name, is_windows_file_name, normalize};
+
+    #[test]
+    fn windows_names_reject_streams_and_devices() {
+        for bad in ["normal.txt:evil", "a:b", "CON", "con.txt", "NUL", "nul.tar.gz", "COM1", "lpt9.log", "AUX ", "x.", "a?b", "a*b", "a|b", "a<b", "x\u{1}", "COM\u{b9}"] {
+            assert!(!is_windows_file_name(bad), "{bad:?}");
+        }
+        for ok in ["normal.txt", "123-CONTRACT.pdf", "console.log", "COM10", "LPT", ".env", "a b.png"] {
+            assert!(is_windows_file_name(ok), "{ok:?}");
+        }
+        assert!(check_file_name("123-normal.txt:evil", true).is_err());
+        assert!(check_file_name("123-normal.txt:evil", false).is_ok());
+        assert!(check_file_name("123-CON", true).is_ok());
+        assert!(check_file_name("CON", true).is_err());
+    }
+
+    #[test]
+    fn names_must_stay_inside_the_destination() {
+        for bad in ["../../escape.txt", "a/../../x", "/etc/passwd", "..", ".", "", "a/..", "dir/"] {
+            assert!(check_file_name(bad, false).is_err(), "{bad:?}");
+        }
+        for bad in ["..\\..\\x", "C:\\Windows\\Temp\\x", "\\\\server\\share\\x", "C:x"] {
+            assert!(check_file_name(bad, true).is_err(), "{bad:?}");
+        }
+        for ok in ["file.png", "sub/file.png", "a/../b.png", "./x"] {
+            assert!(check_file_name(ok, false).is_ok(), "{ok:?}");
+        }
+        // On POSIX a backslash is part of the name, not a separator.
+        assert!(check_file_name("..\\x", false).is_ok());
+    }
 
     #[test]
     fn path_join_matches_node() {

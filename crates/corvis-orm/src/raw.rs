@@ -189,8 +189,9 @@ arg_impl! {
     u8 => BigInt, |v| SqlValue::Int(*v as i64);
     u16 => BigInt, |v| SqlValue::Int(*v as i64);
     u32 => BigInt, |v| SqlValue::Int(*v as i64);
-    u64 => BigInt, |v| SqlValue::Int(*v as i64);
-    usize => BigInt, |v| SqlValue::Int(*v as i64);
+    // Beyond i64 the value is bound as `numeric`, never wrapped to a negative number.
+    u64 => BigInt, |v| i64::try_from(*v).map(SqlValue::Int).unwrap_or_else(|_| SqlValue::Decimal(crate::Decimal::from(*v)));
+    usize => BigInt, |v| i64::try_from(*v).map(SqlValue::Int).unwrap_or_else(|_| SqlValue::Decimal(crate::Decimal::from(*v)));
     isize => BigInt, |v| SqlValue::Int(*v as i64);
     f32 => Float, |v| SqlValue::Float(*v as f64);
     f64 => Float, |v| SqlValue::Float(*v);

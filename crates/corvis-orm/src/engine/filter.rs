@@ -15,6 +15,9 @@ const JSON_OPS: &[&str] = &[
     "array_starts_with", "array_ends_with", "lt", "lte", "gt", "gte",
 ];
 
+/// Longest `in` list written with one parameter per item (see [`Engine::push_in_list`]).
+const IN_LIST_INLINE_MAX: usize = 1000;
+
 fn escape_like(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -250,15 +253,20 @@ impl Engine {
                         continue;
                     }
                     col(q);
-                    q.push(if op == "in" { " IN (" } else { " NOT IN (" });
-                    for (j, item) in items.iter().enumerate() {
-                        if j > 0 {
-                            q.push(", ");
+                    if ci {
+                        q.push(if op == "in" { " IN (" } else { " NOT IN (" });
+                        for (j, item) in items.iter().enumerate() {
+                            if j > 0 {
+                                q.push(", ");
+                            }
+                            let v = self.value(f, item, false)?;
+                            bind(q, v);
                         }
-                        let v = self.value(f, item, false)?;
-                        bind(q, v);
+                        q.push(")");
+                    } else {
+                        let vals = items.iter().map(|item| self.value(f, item, false)).collect::<Result<Vec<_>>>()?;
+                        self.push_in_list(q, vals, f.kind, op == "notIn");
                     }
-                    q.push(")");
                 }
                 "lt" | "lte" | "gt" | "gte" => {
                     let v = self.value(f, val, false)?;
@@ -315,6 +323,50 @@ impl Engine {
         Ok(())
     }
 
+    /// ` IN (...)` / ` NOT IN (...)` after the left operand. Long lists go in one parameter
+    /// (`= ANY($1)` on Postgres, `IN (SELECT value FROM json_each(?))` on SQLite) instead of one
+    /// parameter per item, which would exceed the parameter limit of the database (32766 in
+    /// SQLite, 65535 in Postgres) and fail the query.
+    pub(crate) fn push_in_list(&self, q: &mut Sql, vals: Vec<SqlValue>, kind: FieldKind, negate: bool) {
+        if vals.len() <= IN_LIST_INLINE_MAX || kind == FieldKind::Bytes {
+            q.push(if negate { " NOT IN (" } else { " IN (" });
+            for (j, v) in vals.into_iter().enumerate() {
+                if j > 0 {
+                    q.push(", ");
+                }
+                q.bind(v);
+            }
+            q.push(")");
+            return;
+        }
+        match self.dialect() {
+            Dialect::Postgres => {
+                let cast = vals.iter().find_map(|v| match v {
+                    SqlValue::Cast(_, c) => Some(c.clone()),
+                    _ => None,
+                });
+                let raw: Vec<SqlValue> = vals
+                    .into_iter()
+                    .map(|v| match v {
+                        SqlValue::Cast(inner, _) => *inner,
+                        other => other,
+                    })
+                    .collect();
+                let arr = SqlValue::Array(raw, kind);
+                let arr = match cast {
+                    Some(c) => SqlValue::Cast(Box::new(arr), format!("{c}[]")),
+                    None => arr,
+                };
+                q.push(if negate { " <> ALL(" } else { " = ANY(" }).bind(arr).push(")");
+            }
+            Dialect::Sqlite => {
+                let json = Value::Array(vals.iter().map(crate::db::sql_value_json).collect()).to_string();
+                q.push(if negate { " NOT IN (SELECT value FROM json_each(" } else { " IN (SELECT value FROM json_each(" });
+                q.bind(SqlValue::Text(json)).push("))");
+            }
+        }
+    }
+
     fn string_match(&self, q: &mut Sql, alias: &str, f: &FieldMeta, op: &str, s: &str, insensitive: bool) {
         let pattern = match op {
             "contains" => format!("%{}%", escape_like(s)),
@@ -331,7 +383,7 @@ impl Engine {
                 q.bind(SqlValue::Text(pattern)).push(") ESCAPE '\\'");
             }
             // SQLite's LIKE is case-insensitive: use exact string functions instead.
-            (Dialect::Sqlite, false) => match op {
+            (Dialect::Sqlite, false) => match if s.is_empty() { "contains" } else { op } {
                 "contains" => {
                     q.push("INSTR(").col(alias, f.column).push(", ");
                     q.bind(SqlValue::Text(s.to_string())).push(") > 0");
@@ -599,15 +651,31 @@ impl Engine {
                         q.push(") = 'string' AND ");
                         self.json_at(q, alias, f, p, true);
                         q.push(if insensitive { " ILIKE " } else { " LIKE " }).bind(SqlValue::Text(pattern)).push(")");
-                    } else {
-                        if insensitive {
-                            q.push("LOWER(");
-                        }
+                    } else if insensitive {
+                        q.push("LOWER(");
                         self.json_at(q, alias, f, p, true);
-                        if insensitive {
-                            q.push(") LIKE LOWER(").bind(SqlValue::Text(pattern)).push(") ESCAPE '\\'");
-                        } else {
-                            q.push(" GLOB ").bind(SqlValue::Text(pattern.replace("\\%", "%").replace("\\_", "_").replace('%', "*")));
+                        q.push(") LIKE LOWER(").bind(SqlValue::Text(pattern)).push(") ESCAPE '\\'");
+                    } else {
+                        // Exact, case-sensitive string functions (like `String` columns): a
+                        // GLOB pattern would turn `*`, `?` and `[` of the input into wildcards.
+                        let needle = || SqlValue::Text(s.to_string());
+                        // An empty needle matches every string (`SUBSTR(x, -0)` would not).
+                        match if s.is_empty() { "string_contains" } else { op.as_str() } {
+                            "string_contains" => {
+                                q.push("INSTR(");
+                                self.json_at(q, alias, f, p, true);
+                                q.push(", ").bind(needle()).push(") > 0");
+                            }
+                            "string_starts_with" => {
+                                q.push("SUBSTR(");
+                                self.json_at(q, alias, f, p, true);
+                                q.push(", 1, LENGTH(").bind(needle()).push(")) = ").bind(needle());
+                            }
+                            _ => {
+                                q.push("SUBSTR(");
+                                self.json_at(q, alias, f, p, true);
+                                q.push(", -LENGTH(").bind(needle()).push(")) = ").bind(needle());
+                            }
                         }
                     }
                 }

@@ -1,6 +1,6 @@
 # Corvis
 
-**Corvis** (por Corviknight) es un framework backend modular para Rust: módulos, inyección
+**Corvis** es un framework backend modular para Rust: módulos, inyección
 de dependencias, controladores con decoradores, pipes, guards, interceptors, filtros de
 excepción, middleware, lifecycle hooks, testing, CLI y los módulos más usados (config, JWT,
 eventos, schedule, cache, throttler, health, serve-static, WebSockets).
@@ -73,6 +73,7 @@ async fn main() -> corvis::Result<()> {
 - [ORM (`corvis-orm`)](#orm-corvis-orm)
 - [OpenAPI y Swagger (`corvis-swagger`)](#openapi-y-swagger-corvis-swagger)
 - [Rendimiento](#rendimiento)
+- [Seguridad](#seguridad)
 - [Limitaciones conocidas](#limitaciones-conocidas)
 
 ## Estructura del repositorio
@@ -204,6 +205,7 @@ formato habitual, por ejemplo
 | `HttpAdapterHost`, `app.getHttpServer()`, `server.on('upgrade')` | `Arc<HttpAdapterHost>` inyectable, `app.get_http_server()`, `server.on_upgrade(...)` + `corvis::ws` |
 | `app.enableVersioning({ type: URI })` | `app.enable_versioning(VersioningOptions::uri().default_version("1"))` (también header y media type) |
 | `app.enableShutdownHooks()` | `app.enable_shutdown_hooks()` |
+| `server.headersTimeout`, `requestTimeout`, `keepAliveTimeout`, `maxConnections` | `app.set_server_options(ServerOptions::new().keep_alive_timeout(..)...)` (ver [Seguridad](#transporte-http-y-subidas-de-archivos)) |
 | `app.get(CatsService)` | `app.get::<CatsService>()?` |
 | `app.listen(3000)` | `app.listen("127.0.0.1:3000").await` (acepta puerto, `&str` o `SocketAddr`) |
 | `OnModuleInit`, `OnApplicationBootstrap`, `OnModuleDestroy`, `BeforeApplicationShutdown`, `OnApplicationShutdown` | mismos traits; se detectan automáticamente al implementarlos |
@@ -482,6 +484,7 @@ impl ChatGateway {
 | `throw new WsException('msg')` / `new WsException({ ... })` | `Err(WsException::new("msg"))` / `Err(WsException::object(json!({ ... })))`; `WsException::get_error(&e)` |
 | `server.emit`, `server.to(room).emit`, `client.join/leave` | `server.emit(..)`, `server.to(room).except(id).emit(..)`, `client.join(room)`, `client.rooms()`, `server.clients()` |
 | `client.close()` / `client.close(code, reason)` | `client.disconnect()` / `client.disconnect_with(4401, "Unauthorized")` |
+| `@WebSocketGateway({ maxPayload, verifyClient })`, `client.bufferedAmount` | `server.set_options(GatewayOptions::default().max_payload(n).verify_client(..))` en `after_init`, `client.buffered_amount()` |
 
 Semántica:
 
@@ -512,11 +515,13 @@ Semántica:
   `message` siempre ve la sala unida, pero si el handler hace `await` antes de `client.join`,
   el siguiente puede empezar antes de que termine. Un pánico en un handler se responde como
   error interno y no cierra la conexión.
-- **Autenticación al conectar**: el handshake de un gateway siempre se acepta. Verifica el
-  token en `handle_connection` (el navegador no puede mandar headers, usa `?token=`) y, si no
-  es válido, `client.disconnect_with(4401, "Unauthorized")`. Los frames que lleguen después de
-  `disconnect()` ya no se despachan. Para rechazar en el handshake con `401` usa un listener
-  `upgrade` con `corvis::ws` (ver abajo).
+- **Autenticación al conectar**: verifica el token en `handle_connection` (el navegador no
+  puede mandar headers, usa `?token=`) y, si no es válido,
+  `client.disconnect_with(4401, "Unauthorized")`. El cliente sale de `server.clients()` en el
+  acto, los frames que lleguen después ya no se despachan y, si no contesta el cierre en
+  `close_timeout` (30 s), se corta la conexión. Para rechazar en el handshake usa
+  `GatewayOptions::verify_client` (`401`) o `allowed_origins` (`403`), o un listener `upgrade`
+  con `corvis::ws` (ver abajo). Límites y opciones: ver [Seguridad](#autenticación-configuración-y-websockets).
 - Cada aplicación tiene su propio `WsServer` por gateway, así que dos apps en el mismo proceso
   (por ejemplo en tests) no comparten clientes. `WsServer::for_path(path)` devuelve el del
   último gateway inicializado en esa ruta; lo recomendable es inyectar el gateway.
@@ -597,6 +602,7 @@ client.send_and_wait(r#"{"kind":"EMIT"}"#).await?; // como ws.send(data, cb): es
 | `ws.readyState`, `ws.protocol` | `ws.ready_state()` (`ReadyState::{Connecting, Open, Closing, Closed}`), `ws.protocol()` |
 | `ws.close(code, reason)`, `ws.terminate()`, `ws.ping()` | `ws.close(Some(1000), "bye")?`, `ws.terminate()`, `ws.ping(data)`; `ws.closed().await` devuelve `(code, reason)` |
 | `wss.clients`, `wss.close()`, `{ maxPayload, clientTracking, handleProtocols }` | `wss.clients()`, `wss.close()`, `WebSocketServerOptions::default().max_payload(n)...` |
+| `ws.bufferedAmount` | `ws.buffered_amount()` (con tope `max_buffered_amount`) |
 
 Semántica:
 
@@ -612,7 +618,9 @@ Semántica:
 - Registra los listeners del socket dentro del callback de `handle_upgrade`: los frames se
   empiezan a leer cuando el callback termina, así que no se pierde ninguno.
 - `on_close` recibe `1005` si el cliente cerró sin código y `1006` si la conexión se cortó o
-  se usó `terminate()`. Si el cliente no responde a `close()` en 30 s, se destruye el socket.
+  se usó `terminate()`. Si el cliente no responde a `close()` en 30 s (`close_timeout`), se
+  destruye el socket. `send` tiene un tope de bytes pendientes (`max_buffered_amount`, ver
+  [Seguridad](#autenticación-configuración-y-websockets)).
 - Para protocolos que no son WebSocket, `req.switch_protocols(headers)` responde `101` y
   devuelve el stream crudo (`AsyncRead + AsyncWrite`).
 
@@ -675,9 +683,14 @@ async fn pdf(&self, #[param("id", ParseUUIDPipe)] id: String) -> StreamableFile 
         .r#type("application/pdf")
         .disposition(format!("inline; filename=\"{id}.pdf\"")))
     // también: StreamableFile::new(buf).content_type(..).filename(..),
-    // StreamableFile::from_stream(stream, StreamableFileOptions::new().length(n))
+    // StreamableFile::from_stream(stream, StreamableFileOptions::new().length(n)),
+    // StreamableFile::from_path("informe.pdf").await? (se lee del disco por partes)
 }
 ```
+
+`.filename(nombre)` arma `Content-Disposition` con el paquete `content-disposition`, igual que
+`res.attachment(nombre)`: escapa las comillas, usa solo el nombre base y agrega `filename*` si el
+nombre no es latin1.
 
 Como en el adaptador de Express, sus cabeceras solo se escriben si la respuesta no las
 tiene ya (`#[header(...)]` gana), el `Content-Length` se completa solo para datos en
@@ -701,16 +714,30 @@ router de Express 5:
 - JSON: modo estricto (solo `{` o `[` arriba), cuerpo vacío = `{}`, BOM ignorado y los mismos
   mensajes de error de `JSON.parse` de V8 (`Expected property name or '}' in JSON at position 1
   (line 1 column 2)`, `Unexpected token '"', ""x"" is not valid JSON`, ...). Responde
-  `400 { "message": ..., "error": "Bad Request", "statusCode": 400 }`.
+  `400 { "message": ..., "error": "Bad Request", "statusCode": 400 }`. A diferencia de Express, la
+  profundidad de anidamiento está limitada a 256 niveles (ver [Seguridad](#seguridad)).
 - urlencoded: `qs.parse` con las opciones de body-parser (objetos y arrays anidados, profundidad
   32 → `400 The input exceeded the depth`, 1000 parámetros → `413 too many parameters`).
 - Límite de 100kb por parser → `413 { "statusCode": 413, "message": "request entity too large" }`.
   `app.use_body_parser("json", 10 * 1024 * 1024)` equivale a `app.useBodyParser('json', { limit })`;
   `app.disable_body_parser()` desactiva el parseo de cuerpos (`bodyParser: false`).
-- Charset no soportado → `415 unsupported charset "LATIN1"`.
+- El cuerpo se lee solo hasta el límite del parser que lo va a procesar: un JSON o urlencoded que
+  anuncia un `Content-Length` mayor responde 413 sin leerlo. Los demás tipos se leen hasta el límite
+  de transporte (`app.set_body_limit`, 1 MiB por defecto) para que `req.raw_body()` siga disponible.
+  Los cuerpos `multipart/*` no se leen aquí (ver [Subida de archivos](#subida-de-archivos-multer)). Un
+  cuerpo que no se puede leer (cliente que corta, *chunked* mal formado) responde
+  `400 request aborted` y uno que no llega a tiempo, `408 Request Timeout`.
+- Charset no soportado → `415 unsupported charset "LATIN1"`. `Content-Type` y `Content-Encoding` se
+  leen como latin1, igual que Node: cualquier `Content-Encoding` distinto de `identity`, incluidos los
+  que tienen bytes no ASCII, responde `415 unsupported content encoding`.
 - Los errores del parser pasan por CORS y por los filtros globales, como un `next(err)` de Express.
 - `req.query` usa el parser `simple` de Express 5 (`node:querystring`: `a[]=1` conserva la clave
-  `a[]`). `app.set_query_parser(QueryParser::Extended)` usa `qs` como Express 4.
+  `a[]`; como mucho 1000 pares, contando repetidos y vacíos). `app.set_query_parser(QueryParser::Extended)`
+  usa `qs` como Express 4.
+- `req.cookies()` sigue a `cookie-parser`: si un nombre se repite gana el primero, se quitan las
+  comillas que envuelven el valor y solo se decodifican los valores con `%` (si el escape no es
+  válido se conserva el valor crudo).
+- `req.hostname()` conserva los literales IPv6 (`Host: [::1]:3000` → `[::1]`).
 - Rutas sin distinguir mayúsculas (`/CATS` = `/cats`) y con una sola barra final opcional
   (`/cats/` sí, `/cats//` no). Los parámetros se decodifican con `decodeURIComponent`; uno mal
   codificado responde `400 Failed to decode param '%E0%A4%A'`.
@@ -761,7 +788,8 @@ async fn login(&self, #[body] b: Value, #[res(passthrough)] res: Res) -> HttpRes
   `text/html` o vacío).
 - `cookie` serializa como el paquete `cookie` 0.7 con los valores por defecto de Express
   (`Path=/`, `max_age` en milisegundos que también fija `Expires`, valor con
-  `encodeURIComponent`). `clear_cookie` envía `Expires` en 1970.
+  `encodeURIComponent`). `clear_cookie` envía `Expires` en 1970. Como el paquete, valida el
+  nombre, el valor, `path` y `domain` y lanza (`panic`, que termina en un `500`) si no son válidos.
 - Los interceptors y filtros pueden leerlo con `ctx.switch_to_http().get_response()`.
 
 Las pruebas (`crates/corvis/tests/res.rs`) comparan 17 respuestas con las que captura de una
@@ -840,8 +868,22 @@ Semántica (igual que Express):
 - Igual que busboy, un archivo que **alcanza** `file_size` (no solo el que lo supera) da
   `File too large`, y `filename` se decodifica como latin1 salvo que llegue como `filename*=UTF-8''...`
   o se use `def_param_charset("utf8")`.
-- Los cuerpos multipart no tienen el límite de tamaño del body-parser JSON, como en Express:
-  solo aplican los `limits` de multer.
+- Como multer sobre Express, el cuerpo multipart lo lee el interceptor, después de los guards, y
+  solo en las rutas que lo usan: una request `multipart/*` a una ruta sin interceptor, inexistente o
+  rechazada por un guard se responde sin leer el cuerpo. La lectura es en *streaming*: los `limits`
+  (`file_size`, `files`, `fields`, `parts`, `field_size`) cortan la subida en cuanto se alcanzan, sin
+  leer el resto.
+- El cuerpo completo está limitado por `MulterOptions::body_limit(bytes)` (10 MiB por defecto, o
+  `file_size × files + 1 MiB` si `limits` pide más) → `413 request entity too large`, antes de leer
+  si el `Content-Length` ya lo supera. multer no tiene este límite; Corvis lo necesita porque cada
+  archivo se guarda en memoria hasta que lo recibe la *storage*. Si subes varios archivos grandes en
+  una misma request, súbelo de forma explícita.
+- `server.request_timeout` (300 s por defecto) también limita la lectura del cuerpo multipart → `408`.
+- Si un pipe (`ParseFilePipe`) o el handler fallan después del interceptor, los archivos que la
+  *storage* ya escribió se borran (`StorageEngine::remove_file`). multer los deja en disco;
+  `MulterOptions::remove_files_on_error(false)` recupera ese comportamiento.
+- Un handler o middleware que quiera procesar el cuerpo multipart por su cuenta lo lee con
+  `corvis::multer::read_body(&req, límite).await?`; `req.raw_body()` está vacío en esas requests.
 - `FileTypeValidator` detecta el tipo real por *magic numbers* (como el paquete `file-type`):
   imágenes, PDF, ZIP y Office, audio, video, fuentes y comprimidos, entre otros. Para tipos de
   texto sin firma usa `fallback_to_mimetype(true)` o `skip_magic_numbers_validation(true)`.
@@ -869,10 +911,14 @@ app.use_middleware(corvis::serve_static(std::env::current_dir()?.join("uploads")
   con barra final sirve `index.html` o sigue de largo.
 - Los archivos llevan `Accept-Ranges: bytes`, `Cache-Control: public, max-age=N`, `Last-Modified`,
   un `ETag` débil (`W/"<tamaño hex>-<mtime hex>"`) y el `Content-Type` de `mime-types`. También
-  responde GET condicionales (`304`, `412`) y rangos simples (`206`, `416`).
+  responde GET condicionales (`304`, `412`) y rangos simples (`206`, `416`). El cuerpo se lee del
+  disco por partes (solo el rango pedido), nunca el archivo completo en memoria.
 - Opciones: `fallthrough`, `redirect`, `max_age` (ms), `immutable`, `index`, `dotfiles`
-  (`Dotfiles::{Allow, Deny, Ignore}`), `etag`, `last_modified`, `accept_ranges`, `cache_control` y
-  `extensions`.
+  (`Dotfiles::{Allow, Deny, Ignore}`), `etag`, `last_modified`, `accept_ranges`, `cache_control`,
+  `extensions` y `follow_symlinks` (ver [Seguridad](#archivos-estáticos-y-respuestas)).
+- `ServeStaticModule::for_root` usa este mismo middleware, como `@nestjs/serve-static` usa
+  `express.static`: *dotfiles* ignorados por defecto, `Range`, `ETag` y la redirección `301` de los
+  directorios. `ServeStaticOptions` agrega `.dotfiles(..)` y `.follow_symlinks(..)`.
 
 Dos piezas relacionadas con el ciclo de la respuesta:
 
@@ -987,6 +1033,24 @@ Diferencias propias de Rust:
 - `z.map`, `z.set`, `z.symbol`, `z.file`, `z.promise`, `z.function` y `z.instanceof` no
   existen porque describen valores que no viajan en JSON. De los locales solo están `en` (por
   defecto) y `es`; otros idiomas se agregan con `locale_error` y `z::error_fn`.
+- Profundidad de los schemas recursivos (`z.lazy`, `z.json()`): como mucho 128 niveles por
+  parse. Ver [Seguridad](#validación-swagger-cli-y-dependencias).
+
+Comportamientos heredados de zod y de su integración con Node que conviene tener presentes:
+
+- Los guards y los interceptors ven el cuerpo **sin validar**: el pipe valida el argumento del
+  handler, y su salida no reemplaza `req.body`.
+- Un parámetro cuyo tipo no tiene schema (`zod_dto!`) pasa sin validar por `ZodValidationPipe::auto()`.
+- `.strict()` no reporta la clave `__proto__`: la descarta en silencio, igual que zod. Con claves
+  duplicadas en el JSON gana la última.
+- `z::coerce::number()` convierte `""` y `null` en `0`; `z::coerce::boolean()` es `Boolean(x)`, así
+  que `"false"` da `true` (para textos usa `z::stringbool()`).
+- `z::url()` acepta cualquier esquema, incluidos `javascript:` y `file:`: para enlaces que se van a
+  mostrar o seguir usa `z::http_url()` o `UrlOptions { protocol, .. }`.
+- `z::jwt()` solo comprueba la forma del token; no verifica la firma.
+- Única divergencia conocida: un número que no cabe en un `f64` (`1e309`) llega como `null` (JSON no
+  tiene `Infinity`), así que `z::number().nullable()` lo acepta; en Node sería `Infinity` y zod lo
+  rechazaría.
 
 ### DTOs, pipes y serialización con zod
 
@@ -1155,7 +1219,8 @@ scalar::mount(&mut app, "/reference", ApiReferenceOptions::new().document(&docum
   decoradores de TypeScript (el orden decide el de las respuestas).
 - `SwaggerModule::setup` registra rutas planas de Express (no salen en los logs `Mapped`, no pasan
   por guards): la página, `swagger-ui-init.js`, `-json` y `-yaml`. Los archivos de
-  `swagger-ui-dist` se sirven desde `custom_swagger_ui_path` o, si no se indica, se redirigen al
+  `swagger-ui-dist` se sirven desde `custom_swagger_ui_path` (solo archivos dentro de esa carpeta,
+  ver [Seguridad](#validación-swagger-cli-y-dependencias)) o, si no se indica, se redirigen al
   mismo archivo en jsDelivr.
 - La página de Scalar es la misma que genera `@scalar/client-side-rendering` 0.3 (con su tema por
   defecto) y responde cualquier método bajo la ruta montada, como `app.use(path, ...)`.
@@ -1193,6 +1258,237 @@ Todas las mediciones terminaron con 0 errores y 0 respuestas non-2xx.
 - **La fila del POST tuvo más varianza entre corridas**: 57k–100k req/s.
 - **En memoria**, Corvis usa ~15–35 veces menos.
 
+## Seguridad
+
+### Entrada HTTP: profundidad, IP del cliente y parsers
+
+- **Profundidad de los cuerpos JSON.** Un JSON con más de 256 niveles de anidamiento responde
+  `400 { "message": "Maximum nesting depth of 256 exceeded in JSON at position 256 (line 1 column 257)", ... }`.
+  Express no tiene este límite, pero Corvis lo necesita: `serde_json::Value` se libera, se clona y se
+  serializa de forma recursiva, y unos pocos kB de `[[[...]]]` desbordarían la pila y abortarían el
+  proceso. El límite se cambia con `app.set_body_parser_max_depth(n)` (o `BodyParserOptions::max_depth`).
+  También acota la profundidad de los cuerpos urlencoded, que por defecto es 32 como en body-parser.
+  `corvis::http::json_parse::parse` aplica el mismo límite; para otro valor usa `parse_utf16_with_depth`.
+- **`req.ip()` y `trust proxy`.** Por defecto, `req.ip()` (y `#[ip]`, y el `ThrottlerGuard`) devuelve la
+  dirección del socket e ignora `X-Forwarded-For`, igual que Express con `trust proxy` en `false`. Si
+  la aplicación está detrás de un proxy inverso, configúralo con la semántica de `proxy-addr`:
+
+  ```rust
+  use corvis::TrustProxy;
+
+  app.set_trust_proxy(1);                                          // un proxy delante (saltos)
+  app.set_trust_proxy(TrustProxy::parse("loopback, 10.0.0.0/8")?); // direcciones o subredes
+  app.set_trust_proxy(true);                                       // todos los saltos
+  ```
+
+  `X-Forwarded-For` se recorre de derecha a izquierda empezando por el socket: la primera dirección
+  en la que no se confía es la del cliente. `req.ips()` devuelve la cadena de confianza (cliente
+  primero) y `req.hostname()` usa `X-Forwarded-Host` solo si se confía en el socket. Las listas
+  aceptan IPs, CIDR (`fc00::/7`), máscaras (`10.0.0.0/255.0.0.0`) y los nombres `loopback`,
+  `linklocal` y `uniquelocal`. Usa `true` solo si todas las peticiones pasan por un proxy que
+  reescribe `X-Forwarded-For`; si no, cualquier cliente elige su IP y puede saltarse el throttler.
+- **Escapes `%XX`.** Los parámetros de ruta, `qs` y las cookies exigen dos dígitos hexadecimales: `%+A`
+  no es un escape válido (en una ruta responde `400 Failed to decode param`).
+
+### Transporte HTTP y subidas de archivos
+
+- **Cuerpos multipart.** Un `Content-Type: multipart/*` ya no desactiva los límites: el servidor no
+  lee esos cuerpos, solo un interceptor de archivos lo hace, después de los guards y en *streaming*,
+  con los `limits` de multer aplicados durante la lectura y un tope total `body_limit` (10 MiB por
+  defecto). Una request a una ruta inexistente o protegida ya no puede retener cientos de MB.
+- **Timeouts del servidor.** Por defecto son los de Node: 60 s para recibir las cabeceras
+  (`headers_timeout`), 300 s para recibir el cuerpo (`request_timeout`, responde `408`) y 5 s de
+  inactividad entre requests de una conexión *keep-alive* (`keep_alive_timeout`). Una conexión que no
+  envía nada o que gotea las cabeceras se cierra. Las requests en curso (un handler lento, una
+  respuesta SSE) no cuentan como inactividad. Se configuran con `ServerOptions`:
+
+  ```rust
+  use std::time::Duration;
+  use corvis::ServerOptions;
+
+  app.set_server_options(
+      ServerOptions::new()
+          .headers_timeout(Duration::from_secs(30))
+          .request_timeout(Duration::from_secs(120))
+          .keep_alive_timeout(Duration::from_secs(10))
+          .max_connections(10_000)  // por defecto sin tope; las demás esperan en la cola de accept
+          .max_header_size(16 * 1024) // por defecto 32 KiB (431 si se supera)
+          .h2c(false),              // HTTP/2 sin TLS (prior knowledge); activo por defecto
+  );
+  ```
+
+  `None` desactiva cada timeout (`.request_timeout(None)`).
+- **Cabeceras.** La cabecera de una request HTTP/1 está limitada a 32 KiB (hyper aceptaba ~400 KiB;
+  Node, 16 KiB) y responde `431`.
+- **Nombres de campo multipart.** `x[1000000]=v` no reserva un array de un millón de `null`: cada
+  request puede crear como mucho 1000 huecos y un índice que necesita más convierte ese array en un
+  objeto (`{ "1000000": "v" }`), como hace `qs`. Los nombres con más de 32 niveles de corchetes
+  (`a[b][b]...`) se guardan como una clave literal, para que un cuerpo pequeño no construya un valor
+  tan profundo que desborde la pila. `limits.field_nesting_depth(n)` cambia ese tope (hasta 256) y
+  además responde con error, como multer.
+- **Límites recomendados.** Como en busboy, sin `limits` no hay tope de partes, campos ni archivos
+  (solo `body_limit` y `field_size` de 1 MiB). En rutas públicas fija los que la ruta necesita, por
+  ejemplo `Limits::new().file_size(5 * 1024 * 1024).files(1).fields(20).parts(25)`.
+- **Disk storage.** Antes de escribir, el nombre que devuelve `filename` se valida y, si no cumple,
+  responde `400 Invalid file name`: debe quedar dentro de `destination` (sin `..` que salga de ella,
+  sin rutas absolutas ni unidades) y, en Windows, no puede abrir un flujo alternativo de NTFS
+  (`nombre.txt:flujo`), usar un dispositivo reservado (`CON`, `NUL`, `COM1`, `nul.txt`...),
+  caracteres `<>"|?*` ni terminar en punto o espacio. Aun así, no uses `file.originalname` tal cual
+  como nombre en disco: genera el nombre en el servidor.
+- **`preserve_path(true)`.** `originalname` conserva la ruta que manda el cliente (`../../x`,
+  `C:\...`). La disk storage rechaza los nombres que salen del destino, pero una `StorageEngine`
+  propia debe validarlo por su cuenta.
+- **Archivos huérfanos.** Si `ParseFilePipe` o el handler rechazan la request, los archivos ya escritos
+  se borran (ver `remove_files_on_error`). Para no escribir archivos inválidos, usa `limits.file_size`
+  y `file_filter`, que actúan antes de la *storage*.
+- **`FileTypeValidator`.** Mira solo la firma (*magic number*) del inicio del archivo, como
+  `file-type`: un archivo políglota (cabecera GIF seguida de HTML) pasa como imagen, y
+  `fallback_to_mimetype(true)` confía en el `mimetype` que manda el cliente. No garantiza que el
+  contenido sea inocuo: sirve las subidas con un `Content-Type` fijo,
+  `Content-Disposition: attachment` y `X-Content-Type-Options: nosniff`, y evita
+  `fallback_to_mimetype` para tipos sensibles.
+
+### Archivos estáticos y respuestas
+
+- **Sin lectura completa por petición.** `serve_static`, `ServeStaticModule` y
+  `StreamableFile::from_path` leen el archivo por partes de hasta 64 KiB con `seek` + `take`. Un
+  `Range: bytes=0-0` sobre un archivo de 256 MiB ya no reserva 256 MiB.
+- ***Dotfiles* contra los nombres reales.** Además de mirar los segmentos de la URL, la política de
+  *dotfiles* se vuelve a aplicar a los nombres que hay en disco bajo la raíz canónica. En Windows, los
+  nombres cortos 8.3 (`ENV~1` → `.env`, `GIT~1` → `.git`) y los puntos finales (`ENV~1.`) responden
+  lo mismo que `.env`: 404 con `Ignore`, 403 con `Deny`. Un enlace dentro de la raíz que apunta a un
+  *dotfile* también cuenta como *dotfile*. Con `Dotfiles::Allow` (y `follow_symlinks(true)`) no se
+  hace ninguna comprobación extra.
+- **Flujos alternativos de NTFS.** En Windows no se sirve ningún segmento con `:` (`a.txt:hidden`,
+  `a.txt::$DATA`): responde 404.
+- **Enlaces simbólicos y uniones.** Por defecto se siguen, como en Express.
+  `serve_static(raíz).follow_symlinks(false)` (o `ServeStaticOptions::follow_symlinks(false)`)
+  responde 404 a cualquier ruta que pase por un enlace o unión, o cuya ruta canónica quede fuera de
+  la raíz canónica.
+- **SSE.** `MessageEvent` divide `data` por `\r\n`, `\r` y `\n`, y quita CR y LF de `event` e `id`,
+  como Nest 11. Un texto del usuario no puede inyectar campos ni eventos.
+- **Cookies salientes.** `res.cookie`, `serialize_cookie` y `Cookie` (`Response::with_cookie`)
+  validan como `cookie` 0.7 (CVE-2024-47764). Un nombre, `path`, `domain` o `same_site` inválido
+  provoca un `panic` con el `TypeError` del paquete, que termina en un `500` genérico sin la cookie.
+  `Cookie::try_to_string()` devuelve el error sin `panic`.
+- **Redirecciones.** `Response::redirect` y `Redirect::to` codifican `Location` con `encodeurl`, como
+  `res.redirect`. Siguen aceptando URLs absolutas, así que redirigir a una URL que manda el cliente
+  sigue siendo una redirección abierta: valídala en la aplicación.
+- **Logger.** En modo texto, `ConsoleLogger` escapa CR y LF (`\r`, `\n`), los demás controles C0 y DEL
+  (`\x1b`) y los C1 (`\u{9b}`) del mensaje y del contexto. Un dato del usuario no puede falsificar
+  líneas ni enviar secuencias ANSI a la terminal. Un mensaje de varias líneas sale en una sola. El
+  modo JSON no cambia.
+
+### Autenticación, configuración y WebSockets
+
+- **`.env` sin expansión.** `ConfigModule` lee los `.env` con la gramática de `dotenv` de Node
+  (`corvis::config::parse_dotenv`): comentarios con `#` (un `#` sin comillas corta el valor, como en
+  Node), comillas simples, dobles o invertidas, valores de varias líneas y `\n` dentro de comillas
+  dobles. Los valores se toman tal cual: `JWT_SECRET=pa$$w0rd` vale `pa$$w0rd`. `$VAR`, `${VAR}`,
+  `${VAR:-defecto}` y `\$` solo se expanden con `expand_variables: true` (`dotenv-expand`), y solo en
+  los valores que vienen de archivos; los del entorno del proceso se usan literales.
+- **JWT.** `JwtService` rechaza firmar y verificar sin clave (`secretOrPrivateKey must have a value`).
+  `expires_in` sigue la gramática de `ms` (`"1.5h"`, `"2 days"`, `"-1h"`, `"1y"`; un número sin
+  unidad son segundos, como siempre en Corvis) y un valor que no se entiende hace fallar `sign` en vez
+  de emitir un token sin `exp`. `verify` valida `nbf` (`jwt not active`), trata `exp` como Node
+  (caducado cuando `ahora >= exp`) y rechaza `exp`, `nbf` o `iat` que no sean números. Para `RS*`,
+  `PS*`, `ES*` y `EdDSA` usa `JwtModuleOptions::new("").algorithm(..).private_key(pem).public_key(pem)`
+  (como `@nestjs/jwt`, un `secret` no vacío tiene prioridad sobre las claves).
+- **Middleware con comodines.** `for_routes("admin*")` y `exclude(..)` comparan sin distinguir
+  mayúsculas, igual que el router, y un `*` dentro de un segmento cubre el resto de la ruta
+  (`/admin(.*)` de Express): `/api/ADMINpanel` y `/api/admin/users/1` pasan por el middleware.
+- **Throttler.** `ThrottlerStorage` guarda `sha256(clave)`, borra los contadores vencidos en cada
+  petición y no supera 100 000 contadores (`ThrottlerStorage::new(..).with_max_entries(n)` +
+  `ThrottlerModule::for_root_storage(..)`); al llenarse descarta el que antes vence. La clave usa
+  `req.ip()`, así que detrás de un proxy hay que configurar `trust proxy` (ver arriba).
+- **Gateways.** Un handshake se valida como en `ws` (`405` si no es `GET`, `400` con una
+  `Sec-WebSocket-Key` o `Sec-WebSocket-Version` inválidas). `disconnect()` saca al cliente de
+  `server.clients()` en el acto y, si no contesta el cierre en 30 s, destruye la conexión TCP. Las
+  opciones se fijan con `server.set_options(GatewayOptions::default()...)`, normalmente en
+  `after_init`:
+
+  | Opción | Por defecto | Efecto |
+  |---|---|---|
+  | `max_payload` | 1 MiB | Mensajes más grandes cierran con `1009` (`ws` usa 100 MiB) |
+  | `max_buffered_amount` | 8 MiB | Bytes pendientes de envío por cliente; al superarlo se descartan y se cierra con `1008` |
+  | `max_inflight` | 32 | Handlers simultáneos por conexión; en el tope se deja de leer el socket |
+  | `close_timeout` | 30 s | Espera del cierre antes de cortar el TCP |
+  | `allowed_origins` | sin lista | Con lista, un `Origin` que no está responde `403` (protege de CSWSH a los gateways con cookies) |
+  | `verify_client` | ninguno | `verifyClient`: devolver `false` responde `401` |
+
+  `client.buffered_amount()` devuelve los bytes pendientes. Los pings los responde tungstenite (un
+  solo pong pendiente). Un `panic` en `handle_connection` cierra con `1011`, y uno en
+  `handle_disconnect` se registra. En ambos casos el cliente sale de `clients()`.
+- **`corvis::ws`.** `WebSocketServerOptions` agrega `max_buffered_amount` (8 MiB: `send` falla con
+  `WS_ERR_BUFFER_FULL` y se cierra con `1008`), `close_timeout` (30 s, también cuando el par no lee)
+  y `max_unread_bytes` (16 MiB sin leer en `messages()` antes de dejar de leer el socket).
+  `ws.buffered_amount()` equivale a `bufferedAmount`. Un listener o el callback de `handle_upgrade`
+  que entra en `panic` se registra y cierra el socket con `1011`; el socket sale de `wss.clients()` y
+  `on_close` se emite siempre.
+- **Lo que no cubren los guards globales.** `use_global_guards` y `Provider::app_guard` solo protegen
+  rutas de controladores (en Nest, un `APP_GUARD` también llega a los gateways; aquí no). No se aplican
+  a los gateways (decláralos con `#[use_guards]` en el
+  gateway o en cada handler), a los listeners `upgrade` de `corvis::ws`, a los archivos estáticos
+  (`serve_static`, `ServeStaticModule`) ni a las rutas de Swagger/Scalar. Un archivo estático con la
+  misma ruta que un endpoint protegido se sirve antes que el endpoint. Protege esas superficies por
+  separado (middleware, `verify_client`, otra raíz de estáticos).
+
+### Validación, Swagger, CLI y dependencias
+
+- **Profundidad de los schemas recursivos.** `z.lazy` y `z.json()` admiten como mucho 128 niveles
+  de anidamiento por parse. Pasado ese límite, el parse no sigue recursando: devuelve un issue
+  `custom` con el mensaje `Too deeply nested: the input exceeds the maximum depth of 128` en la ruta
+  del primer valor que lo supera (sin `input`, para no copiar el subárbol). zod no tiene este
+  límite: en Node.js el parse lanza `RangeError: Maximum call stack size exceeded`; en Rust un
+  desbordamiento de pila aborta el proceso entero, así que el límite es obligatorio. Las uniones no
+  lo envuelven en `invalid_union`, así que llega tal cual al `400` de `ZodValidationPipe`. Se cambia
+  con `z::configure(|c| c.max_depth = n)` (global, `z::DEFAULT_MAX_DEPTH` = 128) o por parse con
+  `ParseOptions::new().max_depth(n)`. Con 128 niveles hay margen: un árbol recursivo típico necesita
+  ~670 niveles para agotar los 2 MiB de pila de un worker de tokio en release (~220 en debug).
+- **Coste lineal.** Objetos, records, arrays y tuplas mueven cada valor a su hijo en lugar de copiar
+  el subárbol en cada nivel (antes, 3000 niveles tardaban minutos; ahora, milisegundos), y
+  `z.json()` valida una entrada JSON en una sola pasada con el mismo resultado que la unión de
+  `z.lazy` de zod. Solo se copia un valor cuando un issue lo necesita.
+- **Expresiones regulares.** Los patrones sin lookarounds ni backreferences (incluidos los que usan
+  `\b`) se ejecutan con el crate `regex`, en tiempo lineal. Los que los necesitan siguen en el motor
+  con backtracking de `fancy-regex`, igual que en V8, con un tope de 1 000 000 de pasos por `test`:
+  al alcanzarlo el texto se considera no válido y se registra un `WARN` de `[JsRegex]`. Evita
+  backreferences y lookarounds en los `.regex()` que se aplican a texto del cliente.
+- **`#[array_unique]`** compara con una tabla hash (lineal) en lugar de por pares.
+- **`custom_swagger_ui_path`.** Solo se sirven archivos que están dentro de la carpeta, como
+  `express.static`: la ruta se decodifica y cada segmento debe ser un nombre de archivo simple (sin
+  segmentos vacíos, `.`/`..`, dotfiles, `\`, `:`, caracteres de control ni nombres de dispositivo de
+  Windows como `CON` o `NUL`); la ruta canónica (enlaces simbólicos y nombres cortos 8.3 resueltos)
+  tiene que seguir dentro de la carpeta y ser un archivo. Cualquier otra cosa pasa al siguiente
+  handler (`404`).
+- **Contenido del documento en las páginas.** En la página de Scalar, el JSON de la configuración
+  (que incluye el documento) escapa `<`, `>`, `&`, U+2028 y U+2029, así que ningún texto del documento
+  puede cerrar el `<script>`. En `swagger-ui-init.js` el marcador `{"$js": "..."}` solo se convierte en
+  código dentro de `swagger_options` (`customOptions`); dentro del documento es un dato más. Las
+  funciones `$js` de la configuración de Scalar se siguen emitiendo como código (las escribe el
+  desarrollador).
+- **CLI.** `corvis new` y `corvis g` aceptan nombres `^[A-Za-z][A-Za-z0-9_-]*$`; `--path` debe ser un
+  nombre de módulo (`^[A-Za-z_][A-Za-z0-9_]*$`), `--corvis-version` un requisito de versión de Cargo y
+  `--corvis-path` no puede tener comillas ni caracteres de control. Así nada se escribe fuera de
+  `src/` ni se inyecta texto en los archivos generados.
+- **Dependencias.** `cargo deny check` usa `deny.toml` (avisos de RustSec, licencias permitidas,
+  solo crates.io) y `cargo audit` usa `.cargo/audit.toml`, que ignora RUSTSEC-2023-0071 (`rsa`) con
+  su justificación: `rsa` solo llega a `Cargo.lock` a través de `sqlx-mysql`, que nunca se compila.
+  Las librerías del workspace declaran `#![forbid(unsafe_code)]`.
+
+### ORM (`corvis-orm`)
+
+- Postgres con TLS (feature `tls-rustls`, activa por defecto); en producción usa
+  `sslmode=verify-full`. Los errores de conexión solo muestran `host:puerto`.
+- Los argumentos de consulta con más de 125 niveles se rechazan (`max_query_depth`); en los
+  `WhereUniqueInput` los campos únicos solo aceptan el valor; `Decimal`, `BigInt`, `Bytes`, `take` y
+  `limit` fuera de rango son errores, nunca valores truncados.
+- `update`, `delete` y los `*Many` repiten su `where` en el `UPDATE`/`DELETE`: la concurrencia
+  optimista (`where: { id, version }`) tiene un solo ganador.
+- Pasar el JSON de una request directamente a una consulta le da al cliente todos los operadores,
+  `select` e `include`: detalles en
+  [`crates/corvis-orm/README.md`](crates/corvis-orm/README.md#seguridad).
+
 ## Limitaciones conocidas
 
 - **Scope REQUEST**: no existe. Para datos por request usa `req.insert`/`req.get` (las
@@ -1201,8 +1497,9 @@ Todas las mediciones terminaron con 0 errores y 0 respuestas non-2xx.
 - **Body parser**: los cuerpos comprimidos (`Content-Encoding: gzip`, `deflate`, `br`) se rechazan con
   `415 unsupported content encoding`; Express los descomprime. Un error del parser se responde antes
   de los middlewares globales de `app.use()`, que en Express corren antes del parser.
-- **Subida de archivos**: el cuerpo `multipart/form-data` se lee completo en memoria antes de
-  que corra el interceptor (no hay streaming hacia el disco); usa `limits` para acotarlo.
+- **Subida de archivos**: el cuerpo se lee en *streaming*, pero cada archivo se guarda en memoria
+  hasta que termina su parte y se entrega entero a la *storage* (no hay streaming hacia el disco).
+  Por eso el cuerpo está limitado por `body_limit` (10 MiB por defecto).
 - **Pipes sobre JSON**: los pipes reciben y devuelven `serde_json::Value`. El valor final
   se deserializa en el tipo del parámetro.
 - **Orden de los atributos**: los atributos de clase (`#[use_guards]`, `#[set_metadata]`,

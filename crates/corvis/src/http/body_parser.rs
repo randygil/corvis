@@ -10,6 +10,9 @@
 //! - urlencoded: `qs.parse` with body-parser's options (depth 32 with `strictDepth`, array limit
 //!   `max(100, params)`, 1000 parameters); the charset must be `utf-8` or `iso-8859-1`.
 //! - Limit of 100kb per parser (`app.useBodyParser(type, { limit })`).
+//! - Nesting depth limited to [`BodyParserOptions::max_depth`] (256 by default): deeper JSON is a
+//!   400. body-parser has no such limit, but a deep `serde_json::Value` overflows the stack when
+//!   it is dropped, cloned or serialized (recursively), aborting the process.
 //!
 //! Errors are answered like on the Express platform: a JSON `SyntaxError` becomes
 //! `BadRequestException(err.message)`; other `http-errors` (413, 415, 400) are answered by the
@@ -25,7 +28,8 @@ use super::json_parse;
 /// `body-parser`'s default limit (`100kb`).
 pub const DEFAULT_BODY_LIMIT: usize = 100 * 1024;
 
-/// Options of the body parsers registered by the platform (`app.useBodyParser`).
+/// Options of the body parsers registered by the platform (`app.useBodyParser`) and of the
+/// other request parsers (`query parser`, `trust proxy`).
 #[derive(Debug, Clone)]
 pub struct BodyParserOptions {
     /// `false` = [`CorvisApplication::disable_body_parser`](crate::CorvisApplication::disable_body_parser): bodies are never parsed.
@@ -36,6 +40,13 @@ pub struct BodyParserOptions {
     pub urlencoded_limit: usize,
     /// Express' `query parser` setting used for `req.query`.
     pub query_parser: QueryParser,
+    /// Maximum nesting depth of a JSON body (default [`json_parse::DEFAULT_MAX_DEPTH`], 256);
+    /// deeper bodies are answered with 400. It also caps the depth of urlencoded bodies (32,
+    /// like body-parser).
+    pub max_depth: usize,
+    /// Express' `trust proxy` setting used by `req.ip()`, `req.ips()` and `req.hostname()`
+    /// (default: trust no proxy, the socket address is the client).
+    pub trust_proxy: super::proxy_addr::TrustProxy,
 }
 
 /// `app.set('query parser', ...)`.
@@ -57,6 +68,8 @@ impl Default for BodyParserOptions {
             json_limit: DEFAULT_BODY_LIMIT,
             urlencoded_limit: DEFAULT_BODY_LIMIT,
             query_parser: QueryParser::Simple,
+            max_depth: json_parse::DEFAULT_MAX_DEPTH,
+            trust_proxy: super::proxy_addr::TrustProxy::default(),
         }
     }
 }
@@ -72,10 +85,11 @@ pub(crate) fn parse_body(headers: &HeaderMap, body: &Bytes, options: &BodyParser
     if !options.enabled || !has_body(headers, body) {
         return Ok(Value::Null);
     }
-    let Some(ct) = headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) else {
+    // Node reads header values as latin1: a non-ASCII byte must not make the header vanish.
+    let Some(ct) = headers.get(http::header::CONTENT_TYPE).map(|v| latin1(v.as_bytes())) else {
         return Ok(Value::Null);
     };
-    let Some(media) = MediaType::parse(ct) else {
+    let Some(media) = MediaType::parse(&ct) else {
         return Ok(Value::Null);
     };
     let kind = match media.essence.as_str() {
@@ -91,11 +105,13 @@ pub(crate) fn parse_body(headers: &HeaderMap, body: &Bytes, options: &BodyParser
     if !valid_charset {
         return Err(http_error(415, format!("unsupported charset \"{}\"", charset.to_uppercase())));
     }
+    // `(headers['content-encoding'] || 'identity').toLowerCase()`: any value other than
+    // `identity` (non-ASCII ones included) is a 415, never a body parsed in clear.
     let encoding = headers
         .get(http::header::CONTENT_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("identity")
-        .to_ascii_lowercase();
+        .map(|v| latin1(v.as_bytes()).to_lowercase())
+        .filter(|e| !e.is_empty())
+        .unwrap_or_else(|| "identity".into());
     if encoding != "identity" {
         return Err(http_error(415, format!("unsupported content encoding \"{encoding}\"")));
     }
@@ -109,9 +125,14 @@ pub(crate) fn parse_body(headers: &HeaderMap, body: &Bytes, options: &BodyParser
     let text = decode(body, &charset)
         .ok_or_else(|| http_error(415, format!("unsupported charset \"{}\"", charset.to_uppercase())))?;
     match kind {
-        Kind::Json => parse_json(&text),
-        Kind::Urlencoded => parse_urlencoded(&text, &charset),
+        Kind::Json => parse_json(&text, options.max_depth),
+        Kind::Urlencoded => parse_urlencoded(&text, &charset, options.max_depth),
     }
+}
+
+/// A header value as Node exposes it (each byte is one latin1 character).
+pub(crate) fn latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| b as char).collect()
 }
 
 enum Kind {
@@ -231,7 +252,7 @@ fn decode(body: &[u8], charset: &str) -> Option<Vec<u16>> {
     Some(if units.first() == Some(&0xFEFF) { units[1..].to_vec() } else { units })
 }
 
-fn parse_json(text: &[u16]) -> Result<Value, HttpException> {
+fn parse_json(text: &[u16], max_depth: usize) -> Result<Value, HttpException> {
     if text.is_empty() {
         return Ok(Value::Object(Map::new()));
     }
@@ -239,10 +260,10 @@ fn parse_json(text: &[u16]) -> Result<Value, HttpException> {
     if first != Some(b'{' as u16) && first != Some(b'[' as u16) {
         return Err(BadRequestException::new(json_parse::strict_violation(text, first).message));
     }
-    json_parse::parse_utf16(text).map_err(|e| BadRequestException::new(e.message))
+    json_parse::parse_utf16_with_depth(text, max_depth).map_err(|e| BadRequestException::new(e.message))
 }
 
-fn parse_urlencoded(text: &[u16], charset: &str) -> Result<Value, HttpException> {
+fn parse_urlencoded(text: &[u16], charset: &str, max_depth: usize) -> Result<Value, HttpException> {
     let text = json_parse::utf16_to_string(text);
     if text.is_empty() {
         return Ok(Value::Object(Map::new()));
@@ -251,7 +272,9 @@ fn parse_urlencoded(text: &[u16], charset: &str) -> Result<Value, HttpException>
     if params > 1000 {
         return Err(http_error(413, "too many parameters"));
     }
-    let options = qs::Options { array_limit: params.max(100), depth: 32, parameter_limit: 1000, latin1: charset == "iso-8859-1", strict_depth: true };
+    // qs nests one level per `[...]` segment below `depth`, plus the root key and the leaf.
+    let depth = 32.min(max_depth.saturating_sub(2));
+    let options = qs::Options { array_limit: params.max(100), depth, parameter_limit: 1000, latin1: charset == "iso-8859-1", strict_depth: true };
     qs::parse(&text, &options).map_err(|_| http_error(400, "The input exceeded the depth"))
 }
 
@@ -373,14 +396,21 @@ pub(crate) mod qs {
         Qv::Arr(result)
     }
 
+    /// The byte encoded by `%XX` at `b[i..]`. Both `X` must be hexadecimal digits, like in
+    /// JavaScript (`u8::from_str_radix` alone would also take `%+A`).
+    pub(crate) fn percent_byte(b: &[u8], i: usize) -> Option<u8> {
+        let h = b.get(i + 1..i + 3)?;
+        if b.get(i) != Some(&b'%') || !h.iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()
+    }
+
     /// `decodeURIComponent(s)`; `None` when it throws `URIError`.
-    fn decode_uri_component(s: &str) -> Option<String> {
+    pub(crate) fn decode_uri_component(s: &str) -> Option<String> {
         let b = s.as_bytes();
         let mut out: Vec<u8> = Vec::with_capacity(b.len());
-        let hex = |i: usize| -> Option<u8> {
-            let h = b.get(i + 1..i + 3)?;
-            u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()
-        };
+        let hex = |i: usize| percent_byte(b, i);
         let mut i = 0;
         while i < b.len() {
             if b[i] != b'%' {
@@ -423,7 +453,7 @@ pub(crate) mod qs {
             let mut i = 0;
             while i < b.len() {
                 if b[i] == b'%' {
-                    if let Some(v) = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    if let Some(v) = percent_byte(b, i) {
                         out.push(v as char);
                         i += 3;
                         continue;
@@ -745,6 +775,16 @@ pub(crate) mod qs {
             let deep = format!("a{}=1", "[b]".repeat(33));
             assert!(parse(&deep, &Options { array_limit: 100, depth: 32, parameter_limit: 1000, latin1: false, strict_depth: true }).is_err());
         }
+
+        #[test]
+        fn percent_escapes_need_hex_digits() {
+            // `%+A` is not an escape (`decodeURIComponent` throws, qs keeps the raw text).
+            assert_eq!(p("a=%+A&b=%2B&c=%-1"), r#"{"a":"% A","b":"+","c":"%-1"}"#);
+            assert_eq!(decode_uri_component("%+A"), None);
+            assert_eq!(decode_uri_component("%0A%e2%9c%93"), Some("\n✓".into()));
+            let latin1 = Options { array_limit: 100, depth: 32, parameter_limit: 1000, latin1: true, strict_depth: true };
+            assert_eq!(parse("a=%+A&b=%E9", &latin1).unwrap().to_string(), "{\"a\":\"% A\",\"b\":\"é\"}");
+        }
     }
 }
 
@@ -757,9 +797,61 @@ mod tests {
         if let Some(ct) = ct {
             h.insert(http::header::CONTENT_TYPE, ct.parse().unwrap());
         }
+        run_with(h, body, &BodyParserOptions::default())
+    }
+
+    fn run_with(mut h: HeaderMap, body: &str, options: &BodyParserOptions) -> Result<Value, (u16, Value)> {
         h.insert(http::header::CONTENT_LENGTH, body.len().into());
-        parse_body(&h, &Bytes::from(body.to_string()), &BodyParserOptions::default())
-            .map_err(|e| (e.status().as_u16(), e.get_response().clone()))
+        parse_body(&h, &Bytes::from(body.to_string()), options).map_err(|e| (e.status().as_u16(), e.get_response().clone()))
+    }
+
+    fn raw_headers(pairs: &[(http::HeaderName, &[u8])]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(k.clone(), http::HeaderValue::from_bytes(v).unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn json_depth() {
+        let nested = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        assert_eq!(run(Some("application/json"), &nested(256)).unwrap().to_string(), nested(256));
+        let (s, b) = run(Some("application/json"), &nested(257)).unwrap_err();
+        assert_eq!(s, 400);
+        assert_eq!(b["message"], "Maximum nesting depth of 256 exceeded in JSON at position 256 (line 1 column 257)");
+        let (s, _) = run(Some("application/json"), &nested(50_000)).unwrap_err();
+        assert_eq!(s, 400);
+        let options = BodyParserOptions { max_depth: 3, ..Default::default() };
+        let ct = || raw_headers(&[(http::header::CONTENT_TYPE, b"application/json")]);
+        assert!(run_with(ct(), r#"{"a":[{}]}"#, &options).is_ok());
+        assert_eq!(run_with(ct(), r#"{"a":[{"b":[]}]}"#, &options).unwrap_err().0, 400);
+        // The depth also caps urlencoded bodies (root key + segments + leaf).
+        let form = || raw_headers(&[(http::header::CONTENT_TYPE, b"application/x-www-form-urlencoded")]);
+        assert!(run_with(form(), "a[b]=1", &options).is_ok());
+        assert_eq!(run_with(form(), "a[b][c]=1", &options).unwrap_err().0, 400);
+    }
+
+    #[test]
+    fn non_ascii_headers() {
+        // A non-ASCII Content-Encoding is not "absent": 415 like body-parser (latin1 + lowercase).
+        for ce in [&b"gzip\xff"[..], b"z\xc2\x9b2J", b"\xe9", b"IDENTITY\xff"] {
+            let h = raw_headers(&[(http::header::CONTENT_TYPE, b"application/json"), (http::header::CONTENT_ENCODING, ce)]);
+            let (s, b) = run_with(h, "{}", &BodyParserOptions::default()).unwrap_err();
+            assert_eq!(s, 415, "{ce:?}");
+            assert!(b["message"].as_str().unwrap().starts_with("unsupported content encoding"), "{b}");
+        }
+        let h = raw_headers(&[(http::header::CONTENT_TYPE, b"application/x-www-form-urlencoded"), (http::header::CONTENT_ENCODING, b"br\xff")]);
+        assert_eq!(run_with(h, "a=1", &BodyParserOptions::default()).unwrap_err().0, 415);
+        let h = raw_headers(&[(http::header::CONTENT_TYPE, b"application/json"), (http::header::CONTENT_ENCODING, b"Identity")]);
+        assert!(run_with(h, "{}", &BodyParserOptions::default()).is_ok());
+        // A quoted non-ASCII charset is read as latin1 and rejected like body-parser.
+        let h = raw_headers(&[(http::header::CONTENT_TYPE, b"application/json; charset=\"\xe9\"")]);
+        let (s, b) = run_with(h, "{}", &BodyParserOptions::default()).unwrap_err();
+        assert_eq!((s, b["message"].as_str().unwrap()), (415, "unsupported charset \"É\""));
+        // An unquoted one makes the header invalid: the body is not parsed.
+        let h = raw_headers(&[(http::header::CONTENT_TYPE, b"application/json; charset=utf-8\xff")]);
+        assert_eq!(run_with(h, "{}", &BodyParserOptions::default()).unwrap(), Value::Null);
     }
 
     #[test]

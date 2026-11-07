@@ -373,7 +373,7 @@ impl Engine {
         }
         self.order_sql(&mut q, "t0", &order, reverse);
         if distinct.is_none() {
-            self.limit_sql(&mut q, take.map(|t| t.abs()), skip);
+            self.limit_sql(&mut q, take.map(|t| t.checked_abs().unwrap_or(i64::MAX)), skip);
         }
         let rows = self.client.fetch(&q, Some(model)).await?;
         let mut records = self.decode_scalars(model, rows.rows);
@@ -456,14 +456,9 @@ impl Engine {
         let tk = r.target_fields[0];
         let mut q = Sql::new(self.dialect());
         q.push("SELECT ").col("j", join.parent_column).push(", ").col("j", join.target_column);
-        q.push(" FROM ").table(join.schema, &join.table).push(" AS j WHERE ").col("j", join.parent_column).push(" IN (");
-        for (i, k) in parent_keys.iter().enumerate() {
-            if i > 0 {
-                q.push(", ");
-            }
-            q.bind(self.value(pk, k, false)?);
-        }
-        q.push(")");
+        q.push(" FROM ").table(join.schema, &join.table).push(" AS j WHERE ").col("j", join.parent_column);
+        let vals = parent_keys.iter().map(|k| self.value(pk, k, false)).collect::<Result<Vec<_>>>()?;
+        self.push_in_list(&mut q, vals, pk.kind, false);
         let rows = self.client.fetch(&q, None).await?;
         let d = self.dialect();
         Ok(rows
@@ -670,14 +665,9 @@ impl Engine {
             let tf = r.target_fields[0];
             q.push("SELECT ").col("j", join.parent_column).push(", COUNT(*) FROM ").table(join.schema, &join.table).push(" AS j");
             q.push(" INNER JOIN ").table(r.target.schema, r.target.table).push(" AS t0 ON ").col("t0", tf.column).push(" = ").col("j", join.target_column);
-            q.push(" WHERE ").col("j", join.parent_column).push(" IN (");
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 {
-                    q.push(", ");
-                }
-                q.bind(self.value(pf, &k[0], false)?);
-            }
-            q.push(")");
+            q.push(" WHERE ").col("j", join.parent_column);
+            let vals = keys.iter().map(|k| self.value(pf, &k[0], false)).collect::<Result<Vec<_>>>()?;
+            self.push_in_list(&mut q, vals, pf.kind, false);
             if let Some(w) = w {
                 q.push(" AND ");
                 self.where_sql(&mut q, r.target, "t0", w)?;
@@ -698,14 +688,9 @@ impl Engine {
         }
         q.push("COUNT(*) FROM ").table(r.target.schema, r.target.table).push(" AS t0 WHERE ");
         if r.target_fields.len() == 1 {
-            q.col("t0", r.target_fields[0].column).push(" IN (");
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 {
-                    q.push(", ");
-                }
-                q.bind(self.value(r.target_fields[0], &k[0], false)?);
-            }
-            q.push(")");
+            q.col("t0", r.target_fields[0].column);
+            let vals = keys.iter().map(|k| self.value(r.target_fields[0], &k[0], false)).collect::<Result<Vec<_>>>()?;
+            self.push_in_list(&mut q, vals, r.target_fields[0].kind, false);
         } else {
             q.push("(");
             for (i, k) in keys.iter().enumerate() {

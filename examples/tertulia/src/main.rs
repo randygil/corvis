@@ -4,7 +4,9 @@
 //! ```
 //!
 //! Environment: `PORT` (default 5150), `DATABASE_URL` (default `file:./tertulia.db`),
-//! `JWT_SECRET`, `MODERATORS` (default `admin`), `STATS_INTERVAL_MS` (default 2000).
+//! `JWT_SECRET` (required), `MODERATORS` (default `admin`), `STATS_INTERVAL_MS` (default 2000).
+//!
+//! The login is a password-less demo: do not expose this example as is.
 
 use corvis::prelude::*;
 

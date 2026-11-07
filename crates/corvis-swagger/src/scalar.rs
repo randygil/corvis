@@ -101,6 +101,24 @@ fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// Makes JSON safe inside an inline `<script>`: `<`, `>` and `&` become `<`, `>` and
+/// `&` (a string can never close the tag or open a comment) and U+2028/U+2029 are escaped.
+/// They only occur inside JSON strings, where the escapes denote the same characters.
+pub(crate) fn escape_inline_json(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        match c {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn nonce_attribute(nonce: Option<&str>) -> String {
     match nonce {
         Some(n) if !n.is_empty() => format!(" nonce=\"{}\"", escape_html(n).replace('"', "&quot;")),
@@ -121,7 +139,9 @@ fn is_function(v: &Value) -> Option<&str> {
     o.get("$js")?.as_str()
 }
 
-/// `serializeConfigToJs(configuration)`.
+/// `serializeConfigToJs(configuration)`. The JSON part goes through [`escape_inline_json`] (the
+/// document is embedded in the page); `{"$js": ...}` values are configuration functions written
+/// by the developer and are emitted as they are.
 pub fn serialize_config_to_js(configuration: &Map<String, Value>) -> String {
     let mut rest = Map::new();
     let mut function_props = Vec::new();
@@ -130,7 +150,7 @@ pub fn serialize_config_to_js(configuration: &Map<String, Value>) -> String {
             function_props.push(format!("\"{k}\": {code}"));
         } else if let Value::Array(items) = v {
             if items.iter().any(|i| is_function(i).is_some()) {
-                let parts: Vec<String> = items.iter().map(|i| is_function(i).map(str::to_string).unwrap_or_else(|| js::stringify(i))).collect();
+                let parts: Vec<String> = items.iter().map(|i| is_function(i).map(str::to_string).unwrap_or_else(|| escape_inline_json(&js::stringify(i)))).collect();
                 function_props.push(format!("\"{k}\": [{}]", parts.join(", ")));
             } else {
                 rest.insert(k.clone(), v.clone());
@@ -139,7 +159,7 @@ pub fn serialize_config_to_js(configuration: &Map<String, Value>) -> String {
             rest.insert(k.clone(), v.clone());
         }
     }
-    let json = js::stringify_pretty(&Value::Object(rest), 2);
+    let json = escape_inline_json(&js::stringify_pretty(&Value::Object(rest), 2));
     let indented = json.split('\n').enumerate().map(|(i, l)| if i == 0 { l.to_string() } else { format!("      {l}") }).collect::<Vec<_>>().join("\n");
     if function_props.is_empty() {
         return indented;

@@ -22,6 +22,8 @@ use crate::meta::{DefaultValue, FieldKind, FieldMeta, ModelMeta, ResolvedRelatio
 pub(crate) async fn run(client: OrmClient, model: &'static ModelMeta, action: &'static str, args: Value) -> Result<Value> {
     let e = Engine { client, action, root: model };
     let mut args = args;
+    // Before anything walks the arguments recursively (`strip_undefined`, `where_sql`, ...).
+    check_depth(&e, args_depth_limit(&e.client), &mut args)?;
     strip_undefined(&mut args);
     let args = match args {
         Value::Null => Map::new(),
@@ -55,6 +57,54 @@ pub(crate) async fn run(client: OrmClient, model: &'static ModelMeta, action: &'
         "groupBy" => e.group_by_action(model, args).await,
         other => Err(e.err(format!("Unknown action `{other}`"))),
     }
+}
+
+fn args_depth_limit(client: &OrmClient) -> usize {
+    client.options().max_query_depth
+}
+
+/// `true` when `v` nests objects / lists deeper than `max` levels (`v` itself is level 1).
+/// Iterative, so it is safe on any input.
+pub(crate) fn exceeds_depth(v: &Value, max: usize) -> bool {
+    let mut stack: Vec<(&Value, usize)> = vec![(v, 1)];
+    while let Some((v, depth)) = stack.pop() {
+        let children: Box<dyn Iterator<Item = &Value>> = match v {
+            Value::Object(m) => Box::new(m.values()),
+            Value::Array(a) => Box::new(a.iter()),
+            _ => continue,
+        };
+        if depth > max {
+            return true;
+        }
+        stack.extend(children.filter(|c| c.is_object() || c.is_array()).map(|c| (c, depth + 1)));
+    }
+    false
+}
+
+/// Drops a value without recursion (the default `Drop` of a deeply nested `Value` recurses).
+pub(crate) fn drop_flat(v: Value) {
+    let mut stack = vec![v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Object(m) => stack.extend(m.into_iter().map(|(_, x)| x)),
+            Value::Array(a) => stack.extend(a),
+            _ => {}
+        }
+    }
+}
+
+/// Rejects query arguments nested deeper than `max` (the reference query engine fails the same
+/// way, at its JSON recursion limit).
+fn check_depth(e: &Engine, max: usize, args: &mut Value) -> Result<()> {
+    if !exceeds_depth(args, max) {
+        return Ok(());
+    }
+    drop_flat(std::mem::take(args));
+    Err(depth_error(e, max))
+}
+
+fn depth_error(e: &Engine, max: usize) -> OrmError {
+    e.err(format!("Query arguments are nested too deeply: the maximum depth is {max} (`max_query_depth`)."))
 }
 
 /// The value of [`crate::undefined`]: JS `undefined` inside query arguments.
@@ -265,7 +315,7 @@ impl Engine {
                     Value::Number(n) => match n.as_i64() {
                         Some(i) => i,
                         None => match n.as_f64() {
-                            Some(x) if x.fract() == 0.0 => x as i64,
+                            Some(x) if x.fract() == 0.0 && fits_i64(x) => x as i64,
                             _ => return Err(bad()),
                         },
                     },
@@ -278,12 +328,15 @@ impl Engine {
                     Err(_) => SqlValue::OutOfRange(i),
                 }
             }
+            // Out of the 64-bit range is an error, never a saturated value.
             FieldKind::BigInt => match v {
                 Value::Number(n) => match n.as_i64() {
                     Some(i) => SqlValue::Int(i),
                     None => match n.as_f64() {
-                        Some(x) if x.fract() == 0.0 => SqlValue::Int(x as i64),
-                        _ => return Err(bad()),
+                        Some(x) if x.fract() == 0.0 && fits_i64(x) && !n.is_u64() => SqlValue::Int(x as i64),
+                        _ => {
+                            return Err(self.err(format!("Argument `{}`: Invalid value provided. Expected BigInt, provided Float.", f.name)));
+                        }
                     },
                 },
                 // BigInt may come as a string (`"123"`, JSON-safe).
@@ -298,18 +351,15 @@ impl Engine {
                 _ => return Err(bad()),
             },
             FieldKind::Decimal => {
-                let d = match v {
-                    Value::Number(n) => match (n.as_i64(), n.as_u64()) {
-                        (Some(i), _) => crate::Decimal::from(i),
-                        (_, Some(u)) => crate::Decimal::from(u),
-                        _ => crate::Decimal::from(n.as_f64().ok_or_else(bad)?),
-                    },
-                    Value::String(s) => crate::Decimal::parse(s).map_err(|_| {
-                        self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name))
-                    })?,
-                    _ => return Err(bad()),
-                };
-                if self.dialect() == Dialect::Postgres { SqlValue::Decimal(d) } else { SqlValue::Text(d.to_fixed_plain()) }
+                let d = self.decimal_input(f, v)?;
+                // A value that does not fit a NUMERIC stays a `Decimal`: running the query fails
+                // with a conversion error (`check_params`), as in the reference engine, before
+                // anything tries to print it.
+                if self.dialect() == Dialect::Postgres || !d.fits_numeric() {
+                    SqlValue::Decimal(d)
+                } else {
+                    SqlValue::Text(d.to_fixed_plain())
+                }
             }
             FieldKind::Boolean => SqlValue::Bool(v.as_bool().ok_or_else(bad)?),
             FieldKind::String => {
@@ -367,7 +417,9 @@ impl Engine {
             }
             FieldKind::Json => SqlValue::Json(v.clone()),
             FieldKind::Bytes => match v {
-                Value::Array(a) => SqlValue::Bytes(a.iter().map(|x| x.as_u64().map(|b| b as u8).ok_or_else(bad)).collect::<Result<_>>()?),
+                Value::Array(a) => {
+                    SqlValue::Bytes(a.iter().map(|x| x.as_u64().and_then(|b| u8::try_from(b).ok()).ok_or_else(bad)).collect::<Result<_>>()?)
+                }
                 Value::Object(o) if o.get("$type").and_then(|t| t.as_str()) == Some("Bytes") => {
                     let s = o.get("value").and_then(|x| x.as_str()).ok_or_else(bad)?;
                     SqlValue::Bytes(crate::util::base64_decode(s).ok_or_else(bad)?)
@@ -377,6 +429,56 @@ impl Engine {
             },
             FieldKind::Relation => return Err(self.err(format!("`{}` is a relation, not a scalar", f.name))),
         })
+    }
+
+    /// A `Decimal` argument (number or decimal string).
+    fn decimal_input(&self, f: &FieldMeta, v: &Value) -> Result<crate::Decimal> {
+        Ok(match v {
+            Value::Number(n) => match (n.as_i64(), n.as_u64()) {
+                (Some(i), _) => crate::Decimal::from(i),
+                (_, Some(u)) => crate::Decimal::from(u),
+                _ => crate::Decimal::from(n.as_f64().ok_or_else(|| {
+                    self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided Float.", f.name))
+                })?),
+            },
+            Value::String(s) => crate::Decimal::parse(s).map_err(|_| {
+                self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name))
+            })?,
+            other => {
+                return Err(self.err(format!(
+                    "Argument `{}`: Invalid value provided. Expected Decimal, provided {}.",
+                    f.name,
+                    json_type(other)
+                )));
+            }
+        })
+    }
+
+    /// A value written to a column (`data` of creates, updates and upserts).
+    ///
+    /// Postgres enforces the precision and scale of `NUMERIC(p, s)` columns itself. SQLite has
+    /// no such type (corvis-orm stores decimals as exact text), so a `Decimal` is checked
+    /// against the column it stands for, `@db.Decimal(p, s)` or the default `Decimal(65, 30)`:
+    /// it is rounded to `s` decimal places like Postgres does, and a value whose integer part
+    /// does not fit is rejected. This also bounds what a short input such as `"1e100000"` stores.
+    pub(crate) fn data_value(&self, f: &FieldMeta, v: &Value) -> Result<SqlValue> {
+        if self.dialect() != Dialect::Sqlite || f.kind != FieldKind::Decimal || f.list || !(v.is_string() || v.is_number()) {
+            return self.value(f, v, false);
+        }
+        let d = self.decimal_input(f, v)?;
+        if !d.is_finite() {
+            return self.value(f, v, false);
+        }
+        let (p, s) = decimal_precision(f);
+        let r = d.to_decimal_places_with(s, crate::Decimal::ROUND_HALF_UP);
+        if !r.is_zero() && r.abs().gte(crate::Decimal::from(10).pow(p as i64 - s as i64)) {
+            return Err(self.err(format!(
+                "Argument `{}`: Invalid value provided. A Decimal({p}, {s}) value must round to an absolute value less than 10^{}.",
+                f.name,
+                p - s
+            )));
+        }
+        Ok(SqlValue::Text(r.to_fixed_plain()))
     }
 
     /// Value generated for a field missing from `data` on create.
@@ -441,13 +543,27 @@ impl Engine {
     /// Returns the where with compound keys expanded into plain fields.
     pub(crate) fn check_unique_where(&self, model: &'static ModelMeta, w: &Value) -> Result<Value> {
         let obj = self.obj(w, "where", &format!("{}WhereUniqueInput", model.name))?;
-        let given = |v: &Value| match v {
-            Value::Null => false,
-            Value::Object(o) => o.get("equals").is_some_and(|x| !x.is_null()),
-            _ => true,
-        };
+        // Unique fields (`@id`, `@unique` and the members of a compound key) only take the value
+        // itself, never a filter object or `null`, like the reference client: otherwise
+        // `{ email, resetToken: { not: "" } }` turns a lookup by two secrets into a lookup by one.
+        let is_unique = |f: &FieldMeta| f.is_scalar() && !f.list && (f.is_unique || (f.is_id && !model.has_compound_pk()));
+        for (k, v) in obj {
+            if let Some(f) = model.field(k) {
+                if is_unique(f) {
+                    self.unique_value(f, v)?;
+                }
+            } else if let Some(fields) = model.compound_unique(k)
+                && let Value::Object(o) = v
+            {
+                for f in &fields {
+                    if let Some(x) = o.get(f.name) {
+                        self.unique_value(f, x)?;
+                    }
+                }
+            }
+        }
         let has_unique = obj.iter().any(|(k, v)| {
-            model.field(k).is_some_and(|f| (f.is_unique || (f.is_id && !model.has_compound_pk())) && f.is_scalar() && given(v))
+            model.field(k).is_some_and(|f| is_unique(f) && !v.is_null())
                 || (model.field(k).is_none() && model.compound_unique(k).is_some() && v.is_object())
         });
         if !has_unique {
@@ -465,6 +581,41 @@ impl Engine {
         }
         Ok(Value::Object(self.expand_compound(model, obj)?))
     }
+}
+
+impl Engine {
+    /// The value of a unique field in a `WhereUniqueInput`: a scalar of its type, like the
+    /// reference client (``Argument `email`: Invalid value provided. Expected String, provided Object.``).
+    fn unique_value(&self, f: &FieldMeta, v: &Value) -> Result<()> {
+        match v {
+            Value::Null => Err(self.err(format!("Argument `{}` must not be null.", f.name))),
+            Value::Object(_) | Value::Array(_) => {
+                let expected = match (f.kind, f.enum_meta()) {
+                    (FieldKind::Enum, Some(e)) => e.name,
+                    (k, _) => k.schema_name(),
+                };
+                Err(self.err(format!("Argument `{}`: Invalid value provided. Expected {expected}, provided {}.", f.name, json_type(v))))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// `true` when an integral `f64` is inside the `i64` range (`as i64` would saturate otherwise).
+fn fits_i64(x: f64) -> bool {
+    (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&x)
+}
+
+/// `(precision, scale)` of a `Decimal` column: `@db.Decimal(p, s)` or the default `(65, 30)`.
+fn decimal_precision(f: &FieldMeta) -> (u32, u32) {
+    let parsed = f.native_type.filter(|_| f.native_name() == Some("Decimal")).and_then(|t| {
+        let args = t.split_once('(')?.1.trim_end_matches(')');
+        let mut it = args.split(',').map(|x| x.trim().parse::<u32>());
+        let p = it.next()?.ok()?;
+        let s = it.next().and_then(|x| x.ok()).unwrap_or(0);
+        (s <= p).then_some((p, s))
+    });
+    parsed.unwrap_or((65, 30))
 }
 
 /// The message of a UUID parse error, worded like the `uuid` crate used by the reference query engine.
@@ -531,6 +682,9 @@ pub(crate) fn key_of(values: &[&Value]) -> String {
 /// Compiles a `where` argument to SQL (debugging / tests).
 pub(crate) fn where_to_sql(client: &OrmClient, model: &'static ModelMeta, w: &Value) -> Result<(String, Vec<SqlValue>)> {
     let e = Engine { client: client.clone(), action: "findMany", root: model };
+    if exceeds_depth(w, args_depth_limit(client)) {
+        return Err(depth_error(&e, args_depth_limit(client)));
+    }
     let mut q = crate::db::Sql::new(client.dialect());
     e.where_sql(&mut q, model, "t0", w)?;
     Ok((q.text, q.params))

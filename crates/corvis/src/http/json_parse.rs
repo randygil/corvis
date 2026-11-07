@@ -11,7 +11,12 @@
 //!
 //! The parser is a port of `src/json/json-parser.cc` (V8 13.6): same tokenizer, same error sites
 //! and same positions (UTF-16 code units, like JavaScript strings). It is iterative, so deeply
-//! nested input does not overflow the stack.
+//! nested input does not overflow the stack while parsing.
+//!
+//! Unlike V8, the nesting depth is limited ([`DEFAULT_MAX_DEPTH`], or the `max_depth` given to
+//! [`parse_utf16_with_depth`]): `serde_json::Value` is dropped, cloned and serialized
+//! recursively, so an unbounded tree (a few kB of `[[[...]]]`) would overflow the stack later and
+//! abort the process.
 //!
 //! The parsed value follows JavaScript semantics where `serde_json::Value` can express them:
 //! object keys are ordered like a JS object (array-index keys first, ascending, then insertion
@@ -38,16 +43,28 @@ impl std::fmt::Display for JsonParseError {
 
 impl std::error::Error for JsonParseError {}
 
-/// `JSON.parse(text)`.
+/// Maximum nesting depth (objects and arrays) accepted by [`parse`] and [`parse_utf16`], and the
+/// default of `BodyParserOptions::max_depth`.
+pub const DEFAULT_MAX_DEPTH: usize = 256;
+
+/// `JSON.parse(text)`, with at most [`DEFAULT_MAX_DEPTH`] levels of nesting.
 pub fn parse(text: &str) -> Result<Value, JsonParseError> {
     let units: Vec<u16> = text.encode_utf16().collect();
     parse_utf16(&units)
 }
 
 /// `JSON.parse(text)` over a JavaScript string given as UTF-16 code units (it may contain
-/// lone surrogates, like strings decoded by `iconv-lite`).
+/// lone surrogates, like strings decoded by `iconv-lite`), with at most [`DEFAULT_MAX_DEPTH`]
+/// levels of nesting.
 pub fn parse_utf16(src: &[u16]) -> Result<Value, JsonParseError> {
-    Parser { src, pos: 0, next: Token::Eos }.parse_json()
+    parse_utf16_with_depth(src, DEFAULT_MAX_DEPTH)
+}
+
+/// [`parse_utf16`] with a custom nesting limit: opening an object or array deeper than
+/// `max_depth` levels fails with `Maximum nesting depth of <max_depth> exceeded in JSON at
+/// position <n> (line <l> column <c>)`.
+pub fn parse_utf16_with_depth(src: &[u16], max_depth: usize) -> Result<Value, JsonParseError> {
+    Parser { src, pos: 0, next: Token::Eos, max_depth }.parse_json()
 }
 
 const K_END: i32 = -1;
@@ -243,6 +260,7 @@ struct Parser<'a> {
     src: &'a [u16],
     pos: usize,
     next: Token,
+    max_depth: usize,
 }
 
 type PResult<T> = Result<T, JsonParseError>;
@@ -327,6 +345,17 @@ impl<'a> Parser<'a> {
         JsonParseError { message, position: pos }
     }
 
+    /// Opening a container at nesting level `depth` (1 = top level).
+    fn check_depth(&self, depth: usize) -> PResult<()> {
+        if depth <= self.max_depth {
+            return Ok(());
+        }
+        let pos = self.pos.min(self.src.len());
+        let (line, column) = self.file_location(pos);
+        let message = format!("Maximum nesting depth of {} exceeded in JSON at position {pos} (line {line} column {column})", self.max_depth);
+        Err(JsonParseError { message, position: pos })
+    }
+
     /// `IsSpecialString` + `GetErrorMessageWithEllipses`.
     fn unexpected_token_message(&self, pos: usize) -> String {
         let src = self.src;
@@ -401,6 +430,7 @@ impl<'a> Parser<'a> {
                     Value::Null
                 }
                 Token::LBrace => {
+                    self.check_depth(stack.len() + 1)?;
                     self.advance();
                     if self.check(Token::RBrace) {
                         Value::Object(Map::new())
@@ -413,6 +443,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Token::LBrack => {
+                    self.check_depth(stack.len() + 1)?;
                     self.advance();
                     if self.check(Token::RBrack) {
                         Value::Array(Vec::new())
@@ -672,6 +703,25 @@ mod tests {
         assert_eq!(msg(""), "Unexpected end of JSON input");
         assert_eq!(msg("undefined"), "\"undefined\" is not valid JSON");
         assert_eq!(msg("{\r\n\"a\":1,\r\n\r\n}"), "Expected double-quoted property name in JSON at position 13 (line 4 column 1)");
+    }
+
+    #[test]
+    fn depth_limit() {
+        let nested = |n: usize, open: &str, close: &str| format!("{}{}", open.repeat(n), close.repeat(n));
+        assert!(parse(&nested(DEFAULT_MAX_DEPTH, "[", "]")).is_ok());
+        assert!(parse(&format!("{}1{}", "{\"a\":".repeat(DEFAULT_MAX_DEPTH), "}".repeat(DEFAULT_MAX_DEPTH))).is_ok());
+        assert_eq!(
+            msg(&nested(DEFAULT_MAX_DEPTH + 1, "[", "]")),
+            "Maximum nesting depth of 256 exceeded in JSON at position 256 (line 1 column 257)"
+        );
+        // An empty container counts as a level too.
+        assert!(parse(&format!("{}{{}}{}", "[".repeat(DEFAULT_MAX_DEPTH), "]".repeat(DEFAULT_MAX_DEPTH))).is_err());
+        let units: Vec<u16> = nested(3, "[", "]").encode_utf16().collect();
+        assert!(parse_utf16_with_depth(&units, 3).is_ok());
+        assert_eq!(parse_utf16_with_depth(&units, 2).unwrap_err().position, 2);
+        // 100 000 levels are rejected without building (and later dropping) the tree.
+        assert!(parse(&nested(100_000, "[", "]")).is_err());
+        assert!(parse(&format!("{}1{}", "{\"a\":".repeat(100_000), "}".repeat(100_000))).is_err());
     }
 
     #[test]

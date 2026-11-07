@@ -11,7 +11,7 @@ categories = ["web-programming::http-server"]
 
 [dependencies]
 corvis = { workspace = true }
-corvis-swagger-macros = { path = "../corvis-swagger-macros" }
+corvis-swagger-macros = { path = "../corvis-swagger-macros", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 regex = "1"

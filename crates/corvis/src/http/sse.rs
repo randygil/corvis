@@ -43,13 +43,17 @@ impl MessageEvent {
         self
     }
 
+    /// The event as written on the wire (Nest 11 `SseStream`): `event`/`id` lose their CR and
+    /// LF, and `data` gets one `data:` line per line, splitting on `\r\n`, `\r` and `\n` (the
+    /// three line endings of an event stream), so a value cannot start another field or event.
     pub fn to_frame(&self) -> String {
+        let strip = |s: &str| s.replace(['\r', '\n'], "");
         let mut out = String::new();
         if let Some(e) = &self.event {
-            out.push_str(&format!("event: {e}\n"));
+            out.push_str(&format!("event: {}\n", strip(e)));
         }
         if let Some(id) = &self.id {
-            out.push_str(&format!("id: {id}\n"));
+            out.push_str(&format!("id: {}\n", strip(id)));
         }
         if let Some(r) = self.retry {
             out.push_str(&format!("retry: {r}\n"));
@@ -58,8 +62,19 @@ impl MessageEvent {
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        for line in data.split('\n') {
-            out.push_str(&format!("data: {line}\n"));
+        let mut rest = data.as_str();
+        loop {
+            match rest.find(['\r', '\n']) {
+                Some(i) => {
+                    out.push_str(&format!("data: {}\n", &rest[..i]));
+                    let skip = if rest[i..].starts_with("\r\n") { 2 } else { 1 };
+                    rest = &rest[i + skip..];
+                }
+                None => {
+                    out.push_str(&format!("data: {rest}\n"));
+                    break;
+                }
+            }
         }
         out.push('\n');
         out

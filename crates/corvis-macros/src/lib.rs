@@ -1,5 +1,7 @@
 //! Procedural macros ("decorators") for corvis.
 
+#![forbid(unsafe_code)]
+
 mod controller;
 mod gateway;
 mod handlers;

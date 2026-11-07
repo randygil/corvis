@@ -221,7 +221,12 @@ impl<'a> MiddlewareConfigProxy<'a> {
 }
 
 /// Express-like path pattern matching used by middleware routes.
-/// Supports literals, `:param`, `*` and `(.*)` wildcards.
+///
+/// Supports literals, `:param` / `{param}`, whole-segment wildcards (`*`, `(.*)`, `*name`,
+/// `{*name}`, matching zero or more segments) and `*` inside a segment (`admin*`, `ab*cd`,
+/// `*.json`), which matches any characters including `/`, like Express' `/admin(.*)`.
+/// Literals are compared ignoring ASCII case, the same rule the router uses to pick the
+/// handler, so a middleware cannot be skipped by changing the case of the path.
 pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
     let pattern = pattern.trim_matches('/');
     let path = path.trim_matches('/');
@@ -230,28 +235,65 @@ pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
     }
     let pat: Vec<&str> = if pattern.is_empty() { vec![] } else { pattern.split('/').collect() };
     let segs: Vec<&str> = if path.is_empty() { vec![] } else { path.split('/').collect() };
+    fn is_named_wildcard(p: &str) -> bool {
+        let name = p.strip_prefix('*').or_else(|| p.strip_prefix("{*").and_then(|r| r.strip_suffix('}')));
+        name.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+    }
     fn rec(pat: &[&str], segs: &[&str]) -> bool {
         match pat.first() {
             None => segs.is_empty(),
-            Some(p) if *p == "*" || *p == "(.*)" || p.starts_with("{*") || (p.starts_with('*') && p.len() > 1) => {
-                (0..=segs.len()).any(|i| rec(&pat[1..], &segs[i..]))
+            Some(p) if *p == "*" || *p == "(.*)" || is_named_wildcard(p) => (0..=segs.len()).any(|i| rec(&pat[1..], &segs[i..])),
+            // `*` inside a segment: the glob may extend over the following segments.
+            Some(p) if p.contains('*') && !p.starts_with(':') => {
+                if pat.len() == 1 {
+                    return !segs.is_empty() && glob_matches(p, &segs.join("/"));
+                }
+                let mut candidate = String::new();
+                for (n, s) in segs.iter().enumerate() {
+                    if n > 0 {
+                        candidate.push('/');
+                    }
+                    candidate.push_str(s);
+                    if glob_matches(p, &candidate) && rec(&pat[1..], &segs[n + 1..]) {
+                        return true;
+                    }
+                }
+                false
             }
             Some(p) => match segs.first() {
                 None => false,
                 Some(s) => {
-                    let ok = if p.starts_with(':') || (p.starts_with('{') && p.ends_with('}')) {
-                        true
-                    } else if let Some(prefix) = p.strip_suffix('*') {
-                        s.starts_with(prefix)
-                    } else {
-                        p.eq_ignore_ascii_case(s)
-                    };
+                    let ok = p.starts_with(':') || (p.starts_with('{') && p.ends_with('}')) || p.eq_ignore_ascii_case(s);
                     ok && rec(&pat[1..], &segs[1..])
                 }
             },
         }
     }
     rec(&pat, &segs)
+}
+
+/// `*` matches any run of characters (`/` included); everything else is compared ignoring
+/// ASCII case. Greedy matching with backtracking to the last `*` (linear for one `*`).
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    let (p, t) = (pattern.as_bytes(), text.as_bytes());
+    let (mut pi, mut ti) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if pi < p.len() && p[pi].eq_ignore_ascii_case(&t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if let Some((sp, st)) = star {
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&b| b == b'*')
 }
 
 #[cfg(test)]
@@ -268,5 +310,22 @@ mod tests {
         assert!(path_matches("cats/:id", "/cats/1"));
         assert!(path_matches("*", "/anything/here"));
         assert!(path_matches("api/*", "/api"));
+    }
+
+    /// Wildcards inside a segment follow Express (`admin*` = `/admin(.*)`): case-insensitive,
+    /// like the router, and spanning the rest of the path.
+    #[test]
+    fn segment_wildcards_match_like_the_router() {
+        for path in ["/api/adminpanel", "/api/ADMINpanel", "/api/Adminpanel/", "/api/admin", "/api/admin/users/1", "/API/ADMIN-x/y"] {
+            assert!(path_matches("api/admin*", path), "{path}");
+        }
+        assert!(!path_matches("api/admin*", "/api/user"));
+        assert!(!path_matches("api/admin*", "/api/xadmin"));
+        assert!(path_matches("ab*cd", "/abXYcd"));
+        assert!(path_matches("ab*cd", "/AB/x/CD"));
+        assert!(!path_matches("ab*cd", "/abcde"));
+        assert!(path_matches("files/*.json", "/files/a/b.JSON"));
+        assert!(path_matches("CATS", "/cats"));
+        assert!(path_matches("cats/:id/Toys", "/Cats/1/toys"));
     }
 }
