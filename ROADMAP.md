@@ -37,6 +37,8 @@ Close what the security audit left open and get the project ready to grow: fuzzi
 | #10 | Crate packaging | S | `e0-crate-packaging` |
 | #11 | Reserve the names on crates.io _(decision)_ | S | `e0-reserve-the-names-on-crates-io` |
 | #12 | Reproducible benchmark: port vs original | M | `e0-reproducible-benchmark-port-vs-original` |
+| #106 | Smaller and faster dev builds | S | `e0-smaller-and-faster-dev-builds` |
+| #107 | Crate documentation MCP for agents _(decision)_ | S | `e0-crate-documentation-mcp-for-agents` |
 
 ### E13 · Core fixes from the documentation review — #13
 

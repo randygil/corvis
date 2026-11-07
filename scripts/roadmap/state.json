@@ -1,0 +1,733 @@
+{
+  "milestones": {
+    "F0": 1,
+    "F1": 2,
+    "F2": 3,
+    "F3": 4
+  },
+  "epics": {
+    "E0": {
+      "number": 1,
+      "id": 6263830733,
+      "title": "[E0] Foundations for publishing"
+    },
+    "E13": {
+      "number": 13,
+      "id": 6263837773,
+      "title": "[E13] Core fixes from the documentation review"
+    },
+    "E1": {
+      "number": 24,
+      "id": 6263844271,
+      "title": "[E1] Route posture: no route left unprotected by mistake"
+    },
+    "E2": {
+      "number": 30,
+      "id": 6263847683,
+      "title": "[E2] Socket.IO"
+    },
+    "E3": {
+      "number": 39,
+      "id": 6263852819,
+      "title": "[E3] Authentication strategies (Passport style)"
+    },
+    "E4": {
+      "number": 48,
+      "id": 6263858020,
+      "title": "[E4] BullMQ-compatible queues"
+    },
+    "E5": {
+      "number": 58,
+      "id": 6263863475,
+      "title": "[E5] Mail"
+    },
+    "E6": {
+      "number": 64,
+      "id": 6263866772,
+      "title": "[E6] File storage"
+    },
+    "E7": {
+      "number": 70,
+      "id": 6263870326,
+      "title": "[E7] CQRS"
+    },
+    "E8": {
+      "number": 76,
+      "id": 6263873773,
+      "title": "[E8] Reliability patterns"
+    },
+    "E9": {
+      "number": 83,
+      "id": 6263877779,
+      "title": "[E9] MongoDB"
+    },
+    "E10": {
+      "number": 90,
+      "id": 6263881504,
+      "title": "[E10] Deployment on AWS Lambda"
+    },
+    "E11": {
+      "number": 96,
+      "id": 6263884554,
+      "title": "[E11] corvis-orm as a standalone product"
+    },
+    "E12": {
+      "number": 102,
+      "id": 6263887774,
+      "title": "[E12] Migration tool"
+    }
+  },
+  "tasks": {
+    "2": {
+      "epic": "E0",
+      "title": "Finish fuzzing: serve_static end to end and ORM filters",
+      "change": "e0-finish-fuzzing-serve-static-end-to-end-and-orm-filters",
+      "size": "S",
+      "kind": "task"
+    },
+    "3": {
+      "epic": "E0",
+      "title": "English README",
+      "change": "e0-english-readme",
+      "size": "S",
+      "kind": "task"
+    },
+    "4": {
+      "epic": "E0",
+      "title": "Bilingual documentation site (English primary, Spanish translation)",
+      "change": "e0-bilingual-documentation-site-english-primary-spanish",
+      "size": "L",
+      "kind": "task"
+    },
+    "5": {
+      "epic": "E0",
+      "title": "Publish the documentation site",
+      "change": "e0-publish-the-documentation-site",
+      "size": "S",
+      "kind": "task"
+    },
+    "6": {
+      "epic": "E0",
+      "title": "CI in GitHub Actions",
+      "change": "e0-ci-in-github-actions",
+      "size": "M",
+      "kind": "task"
+    },
+    "7": {
+      "epic": "E0",
+      "title": "Rename the folder nestrs → corvis",
+      "change": "e0-rename-the-folder-nestrs-corvis",
+      "size": "S",
+      "kind": "task"
+    },
+    "8": {
+      "epic": "E0",
+      "title": "Decide compatible vs strict mode",
+      "change": "e0-decide-compatible-vs-strict-mode",
+      "size": "S",
+      "kind": "spike"
+    },
+    "9": {
+      "epic": "E0",
+      "title": "Typed API as the main path",
+      "change": "e0-typed-api-as-the-main-path",
+      "size": "M",
+      "kind": "task"
+    },
+    "10": {
+      "epic": "E0",
+      "title": "Crate packaging",
+      "change": "e0-crate-packaging",
+      "size": "S",
+      "kind": "task"
+    },
+    "11": {
+      "epic": "E0",
+      "title": "Reserve the names on crates.io",
+      "change": "e0-reserve-the-names-on-crates-io",
+      "size": "S",
+      "kind": "decision"
+    },
+    "12": {
+      "epic": "E0",
+      "title": "Reproducible benchmark: port vs original",
+      "change": "e0-reproducible-benchmark-port-vs-original",
+      "size": "M",
+      "kind": "task"
+    },
+    "14": {
+      "epic": "E13",
+      "title": "DI: misleading messages and no-op attributes",
+      "change": "e13-di-misleading-messages-and-no-op-attributes",
+      "size": "S",
+      "kind": "task"
+    },
+    "15": {
+      "epic": "E13",
+      "title": "DI test coverage",
+      "change": "e13-di-test-coverage",
+      "size": "M",
+      "kind": "task"
+    },
+    "16": {
+      "epic": "E13",
+      "title": "Standalone application context runs events and scheduled jobs",
+      "change": "e13-standalone-application-context-runs-events-and-scheduled",
+      "size": "S",
+      "kind": "task"
+    },
+    "17": {
+      "epic": "E13",
+      "title": "Enhancers and routing edge cases",
+      "change": "e13-enhancers-and-routing-edge-cases",
+      "size": "M",
+      "kind": "task"
+    },
+    "18": {
+      "epic": "E13",
+      "title": "Consistent units and options that do nothing",
+      "change": "e13-consistent-units-and-options-that-do-nothing",
+      "size": "S",
+      "kind": "task"
+    },
+    "19": {
+      "epic": "E13",
+      "title": "Honest health checks",
+      "change": "e13-honest-health-checks",
+      "size": "S",
+      "kind": "task"
+    },
+    "20": {
+      "epic": "E13",
+      "title": "CLI defaults that contradict the docs",
+      "change": "e13-cli-defaults-that-contradict-the-docs",
+      "size": "S",
+      "kind": "task"
+    },
+    "21": {
+      "epic": "E13",
+      "title": "Fix the examples",
+      "change": "e13-fix-the-examples",
+      "size": "S",
+      "kind": "task"
+    },
+    "22": {
+      "epic": "E13",
+      "title": "Remove the remaining brand mentions",
+      "change": "e13-remove-the-remaining-brand-mentions",
+      "size": "S",
+      "kind": "task"
+    },
+    "23": {
+      "epic": "E13",
+      "title": "Missing core features users expect",
+      "change": "e13-missing-core-features-users-expect",
+      "size": "L",
+      "kind": "spike"
+    },
+    "25": {
+      "epic": "E1",
+      "title": "Route posture design",
+      "change": "e1-route-posture-design",
+      "size": "S",
+      "kind": "spike"
+    },
+    "26": {
+      "epic": "E1",
+      "title": "`#[public]` metadata and startup check",
+      "change": "e1-public-metadata-and-startup-check",
+      "size": "M",
+      "kind": "task"
+    },
+    "27": {
+      "epic": "E1",
+      "title": "Route posture for WebSockets and SSE",
+      "change": "e1-route-posture-for-websockets-and-sse",
+      "size": "S",
+      "kind": "task"
+    },
+    "28": {
+      "epic": "E1",
+      "title": "Posture report in the CLI",
+      "change": "e1-posture-report-in-the-cli",
+      "size": "S",
+      "kind": "task"
+    },
+    "29": {
+      "epic": "E1",
+      "title": "Route posture docs and example",
+      "change": "e1-route-posture-docs-and-example",
+      "size": "S",
+      "kind": "task"
+    },
+    "31": {
+      "epic": "E2",
+      "title": "Spike: Engine.IO v4 / Socket.IO v5 in Rust",
+      "change": "e2-spike-engine-io-v4-socket-io-v5-in-rust",
+      "size": "S",
+      "kind": "spike"
+    },
+    "32": {
+      "epic": "E2",
+      "title": "Engine.IO: handshake, polling, upgrade and heartbeat",
+      "change": "e2-engine-io-handshake-polling-upgrade-and-heartbeat",
+      "size": "L",
+      "kind": "task"
+    },
+    "33": {
+      "epic": "E2",
+      "title": "Socket.IO: namespaces, events and acks",
+      "change": "e2-socket-io-namespaces-events-and-acks",
+      "size": "M",
+      "kind": "task"
+    },
+    "34": {
+      "epic": "E2",
+      "title": "Rooms and broadcast",
+      "change": "e2-rooms-and-broadcast",
+      "size": "M",
+      "kind": "task"
+    },
+    "35": {
+      "epic": "E2",
+      "title": "IoAdapter for gateways",
+      "change": "e2-ioadapter-for-gateways",
+      "size": "M",
+      "kind": "task"
+    },
+    "36": {
+      "epic": "E2",
+      "title": "Redis adapter for multiple instances",
+      "change": "e2-redis-adapter-for-multiple-instances",
+      "size": "M",
+      "kind": "task"
+    },
+    "37": {
+      "epic": "E2",
+      "title": "Differential tests against Node socket.io",
+      "change": "e2-differential-tests-against-node-socket-io",
+      "size": "M",
+      "kind": "task"
+    },
+    "38": {
+      "epic": "E2",
+      "title": "Socket.IO docs and example",
+      "change": "e2-socket-io-docs-and-example",
+      "size": "S",
+      "kind": "task"
+    },
+    "40": {
+      "epic": "E3",
+      "title": "Strategy module design",
+      "change": "e3-strategy-module-design",
+      "size": "S",
+      "kind": "spike"
+    },
+    "41": {
+      "epic": "E3",
+      "title": "Local strategy and password hashing",
+      "change": "e3-local-strategy-and-password-hashing",
+      "size": "M",
+      "kind": "task"
+    },
+    "42": {
+      "epic": "E3",
+      "title": "JWT strategy",
+      "change": "e3-jwt-strategy",
+      "size": "M",
+      "kind": "task"
+    },
+    "43": {
+      "epic": "E3",
+      "title": "Generic OAuth2, Google and GitHub",
+      "change": "e3-generic-oauth2-google-and-github",
+      "size": "L",
+      "kind": "task"
+    },
+    "44": {
+      "epic": "E3",
+      "title": "Sessions and signed cookies",
+      "change": "e3-sessions-and-signed-cookies",
+      "size": "M",
+      "kind": "task"
+    },
+    "45": {
+      "epic": "E3",
+      "title": "API key strategy and custom strategies",
+      "change": "e3-api-key-strategy-and-custom-strategies",
+      "size": "S",
+      "kind": "task"
+    },
+    "46": {
+      "epic": "E3",
+      "title": "Authentication security review",
+      "change": "e3-authentication-security-review",
+      "size": "S",
+      "kind": "task"
+    },
+    "47": {
+      "epic": "E3",
+      "title": "Authentication docs and example",
+      "change": "e3-authentication-docs-and-example",
+      "size": "S",
+      "kind": "task"
+    },
+    "49": {
+      "epic": "E4",
+      "title": "Spike: BullMQ data format in Redis",
+      "change": "e4-spike-bullmq-data-format-in-redis",
+      "size": "M",
+      "kind": "spike"
+    },
+    "50": {
+      "epic": "E4",
+      "title": "Redis connection and BullModule",
+      "change": "e4-redis-connection-and-bullmodule",
+      "size": "S",
+      "kind": "task"
+    },
+    "51": {
+      "epic": "E4",
+      "title": "Queue: add, add_bulk and job options",
+      "change": "e4-queue-add-add-bulk-and-job-options",
+      "size": "M",
+      "kind": "task"
+    },
+    "52": {
+      "epic": "E4",
+      "title": "Workers: `#[processor]` and `#[process]`",
+      "change": "e4-workers-processor-and-process",
+      "size": "L",
+      "kind": "task"
+    },
+    "53": {
+      "epic": "E4",
+      "title": "Queue events and QueueEvents",
+      "change": "e4-queue-events-and-queueevents",
+      "size": "S",
+      "kind": "task"
+    },
+    "54": {
+      "epic": "E4",
+      "title": "Repeatable jobs and rate limiting",
+      "change": "e4-repeatable-jobs-and-rate-limiting",
+      "size": "M",
+      "kind": "task"
+    },
+    "55": {
+      "epic": "E4",
+      "title": "Flows (FlowProducer)",
+      "change": "e4-flows-flowproducer",
+      "size": "M",
+      "kind": "task"
+    },
+    "56": {
+      "epic": "E4",
+      "title": "Interoperability tests with Node BullMQ",
+      "change": "e4-interoperability-tests-with-node-bullmq",
+      "size": "M",
+      "kind": "task"
+    },
+    "57": {
+      "epic": "E4",
+      "title": "Queues docs and example",
+      "change": "e4-queues-docs-and-example",
+      "size": "S",
+      "kind": "task"
+    },
+    "59": {
+      "epic": "E5",
+      "title": "MailerModule with SMTP transport",
+      "change": "e5-mailermodule-with-smtp-transport",
+      "size": "M",
+      "kind": "task"
+    },
+    "60": {
+      "epic": "E5",
+      "title": "Templates and attachments",
+      "change": "e5-templates-and-attachments",
+      "size": "M",
+      "kind": "task"
+    },
+    "61": {
+      "epic": "E5",
+      "title": "Test transport",
+      "change": "e5-test-transport",
+      "size": "S",
+      "kind": "task"
+    },
+    "62": {
+      "epic": "E5",
+      "title": "Deferred sending through a queue",
+      "change": "e5-deferred-sending-through-a-queue",
+      "size": "S",
+      "kind": "task"
+    },
+    "63": {
+      "epic": "E5",
+      "title": "Mail docs and example",
+      "change": "e5-mail-docs-and-example",
+      "size": "S",
+      "kind": "task"
+    },
+    "65": {
+      "epic": "E6",
+      "title": "StorageService with local disk and S3",
+      "change": "e6-storageservice-with-local-disk-and-s3",
+      "size": "M",
+      "kind": "task"
+    },
+    "66": {
+      "epic": "E6",
+      "title": "S3 storage engine for multer",
+      "change": "e6-s3-storage-engine-for-multer",
+      "size": "M",
+      "kind": "task"
+    },
+    "67": {
+      "epic": "E6",
+      "title": "Signed URLs and streaming downloads",
+      "change": "e6-signed-urls-and-streaming-downloads",
+      "size": "S",
+      "kind": "task"
+    },
+    "68": {
+      "epic": "E6",
+      "title": "Tests against MinIO",
+      "change": "e6-tests-against-minio",
+      "size": "S",
+      "kind": "task"
+    },
+    "69": {
+      "epic": "E6",
+      "title": "File storage docs and example",
+      "change": "e6-file-storage-docs-and-example",
+      "size": "S",
+      "kind": "task"
+    },
+    "71": {
+      "epic": "E7",
+      "title": "CommandBus, QueryBus and EventBus",
+      "change": "e7-commandbus-querybus-and-eventbus",
+      "size": "M",
+      "kind": "task"
+    },
+    "72": {
+      "epic": "E7",
+      "title": "AggregateRoot and EventPublisher",
+      "change": "e7-aggregateroot-and-eventpublisher",
+      "size": "M",
+      "kind": "task"
+    },
+    "73": {
+      "epic": "E7",
+      "title": "Sagas",
+      "change": "e7-sagas",
+      "size": "M",
+      "kind": "task"
+    },
+    "74": {
+      "epic": "E7",
+      "title": "Parity with the original module",
+      "change": "e7-parity-with-the-original-module",
+      "size": "S",
+      "kind": "task"
+    },
+    "75": {
+      "epic": "E7",
+      "title": "CQRS docs and example",
+      "change": "e7-cqrs-docs-and-example",
+      "size": "S",
+      "kind": "task"
+    },
+    "77": {
+      "epic": "E8",
+      "title": "Idempotency",
+      "change": "e8-idempotency",
+      "size": "M",
+      "kind": "task"
+    },
+    "78": {
+      "epic": "E8",
+      "title": "Transactional outbox",
+      "change": "e8-transactional-outbox",
+      "size": "M",
+      "kind": "task"
+    },
+    "79": {
+      "epic": "E8",
+      "title": "Distributed locks",
+      "change": "e8-distributed-locks",
+      "size": "S",
+      "kind": "task"
+    },
+    "80": {
+      "epic": "E8",
+      "title": "Retries with backoff and circuit breaker",
+      "change": "e8-retries-with-backoff-and-circuit-breaker",
+      "size": "M",
+      "kind": "task"
+    },
+    "81": {
+      "epic": "E8",
+      "title": "Signed outgoing webhooks",
+      "change": "e8-signed-outgoing-webhooks",
+      "size": "M",
+      "kind": "task"
+    },
+    "82": {
+      "epic": "E8",
+      "title": "Reliability patterns docs",
+      "change": "e8-reliability-patterns-docs",
+      "size": "S",
+      "kind": "task"
+    },
+    "84": {
+      "epic": "E9",
+      "title": "Spike: Mongoose-style module or MongoDB connector for corvis-orm",
+      "change": "e9-spike-mongoose-style-module-or-mongodb-connector-for",
+      "size": "S",
+      "kind": "spike"
+    },
+    "85": {
+      "epic": "E9",
+      "title": "Connection and model registration",
+      "change": "e9-connection-and-model-registration",
+      "size": "M",
+      "kind": "task"
+    },
+    "86": {
+      "epic": "E9",
+      "title": "Schemas, validation and hooks",
+      "change": "e9-schemas-validation-and-hooks",
+      "size": "M",
+      "kind": "task"
+    },
+    "87": {
+      "epic": "E9",
+      "title": "Queries, populate and transactions",
+      "change": "e9-queries-populate-and-transactions",
+      "size": "L",
+      "kind": "task"
+    },
+    "88": {
+      "epic": "E9",
+      "title": "MongoDB differential tests",
+      "change": "e9-mongodb-differential-tests",
+      "size": "M",
+      "kind": "task"
+    },
+    "89": {
+      "epic": "E9",
+      "title": "MongoDB docs and example",
+      "change": "e9-mongodb-docs-and-example",
+      "size": "S",
+      "kind": "task"
+    },
+    "91": {
+      "epic": "E10",
+      "title": "HTTP adapter for Lambda",
+      "change": "e10-http-adapter-for-lambda",
+      "size": "M",
+      "kind": "task"
+    },
+    "92": {
+      "epic": "E10",
+      "title": "Cold start",
+      "change": "e10-cold-start",
+      "size": "S",
+      "kind": "task"
+    },
+    "93": {
+      "epic": "E10",
+      "title": "Non-HTTP events",
+      "change": "e10-non-http-events",
+      "size": "M",
+      "kind": "task"
+    },
+    "94": {
+      "epic": "E10",
+      "title": "Deployment template",
+      "change": "e10-deployment-template",
+      "size": "S",
+      "kind": "task"
+    },
+    "95": {
+      "epic": "E10",
+      "title": "Lambda deployment docs",
+      "change": "e10-lambda-deployment-docs",
+      "size": "S",
+      "kind": "task"
+    },
+    "97": {
+      "epic": "E11",
+      "title": "Decouple corvis-orm from corvis",
+      "change": "e11-decouple-corvis-orm-from-corvis",
+      "size": "M",
+      "kind": "task"
+    },
+    "98": {
+      "epic": "E11",
+      "title": "README and compatibility table",
+      "change": "e11-readme-and-compatibility-table",
+      "size": "S",
+      "kind": "task"
+    },
+    "99": {
+      "epic": "E11",
+      "title": "Generator and migrations documented",
+      "change": "e11-generator-and-migrations-documented",
+      "size": "S",
+      "kind": "task"
+    },
+    "100": {
+      "epic": "E11",
+      "title": "Example with Axum, without Corvis",
+      "change": "e11-example-with-axum-without-corvis",
+      "size": "S",
+      "kind": "task"
+    },
+    "101": {
+      "epic": "E11",
+      "title": "Integrations with other frameworks",
+      "change": "e11-integrations-with-other-frameworks",
+      "size": "S",
+      "kind": "decision"
+    },
+    "103": {
+      "epic": "E12",
+      "title": "Extract apidiff as a publishable tool",
+      "change": "e12-extract-apidiff-as-a-publishable-tool",
+      "size": "M",
+      "kind": "task"
+    },
+    "104": {
+      "epic": "E12",
+      "title": "Step-by-step migration guide",
+      "change": "e12-step-by-step-migration-guide",
+      "size": "M",
+      "kind": "task"
+    },
+    "105": {
+      "epic": "E12",
+      "title": "Case study with benchmark",
+      "change": "e12-case-study-with-benchmark",
+      "size": "S",
+      "kind": "task"
+    },
+    "106": {
+      "epic": "E0",
+      "title": "Smaller and faster dev builds",
+      "change": "e0-smaller-and-faster-dev-builds",
+      "size": "S",
+      "kind": "task"
+    },
+    "107": {
+      "epic": "E0",
+      "title": "Crate documentation MCP for agents",
+      "change": "e0-crate-documentation-mcp-for-agents",
+      "size": "S",
+      "kind": "decision"
+    }
+  }
+}
