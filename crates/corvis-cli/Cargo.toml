@@ -1,0 +1,11 @@
+[package]
+name = "corvis-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "corvis"
+path = "src/main.rs"
+
+[dependencies]

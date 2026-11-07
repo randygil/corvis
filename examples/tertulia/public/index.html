@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tertulia</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="login" class="login">
+    <h1>Tertulia</h1>
+    <p>Chat en tiempo real con salas, presencia e indicadores de escritura, hecho con Corvis.</p>
+    <form id="login-form">
+      <label for="username">Tu apodo</label>
+      <input id="username" name="username" autocomplete="nickname" minlength="2" maxlength="20" required
+             pattern="[A-Za-z0-9_.\-]+" placeholder="ana">
+      <button type="submit">Entrar</button>
+      <p class="hint">Entra como <code>admin</code> para moderar (anuncios y borrar historial).</p>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </main>
+
+  <div id="app" class="app" hidden>
+    <aside class="sidebar">
+      <header class="me">
+        <strong id="me-name"></strong>
+        <span id="me-role" class="role"></span>
+        <button id="logout" type="button" class="link">Salir</button>
+      </header>
+      <h2>Salas</h2>
+      <ul id="rooms" class="rooms"></ul>
+      <form id="create-room" class="stack">
+        <label for="room-name">Nueva sala</label>
+        <input id="room-name" placeholder="nombre-de-sala" pattern="[a-z0-9][a-z0-9\-]*" maxlength="24" required>
+        <input id="room-topic" placeholder="Tema (opcional)" maxlength="120">
+        <button type="submit">Crear</button>
+        <p id="create-error" class="error" role="alert"></p>
+      </form>
+      <footer id="stats" class="stats" aria-live="polite">Conectando estadísticas…</footer>
+    </aside>
+
+    <section class="chat" aria-label="Conversación">
+      <header class="chat-head">
+        <div>
+          <h2 id="room-title">Elige una sala</h2>
+          <p id="room-topic-line" class="topic"></p>
+        </div>
+        <div class="head-actions">
+          <span id="connection" class="connection">Desconectado</span>
+          <button id="leave" type="button" hidden>Salir de la sala</button>
+          <button id="clear" type="button" class="danger" hidden>Borrar historial</button>
+        </div>
+      </header>
+      <p id="members" class="members"></p>
+      <div id="banner" class="banner" hidden></div>
+      <ol id="messages" class="messages" aria-live="polite">
+        <li class="empty">Únete a una sala de la izquierda para leer y escribir.</li>
+      </ol>
+      <p id="typing" class="typing" aria-live="polite"></p>
+      <form id="composer" class="composer">
+        <input id="text" placeholder="Escribe un mensaje" maxlength="500" autocomplete="off" disabled>
+        <button id="send" type="submit" class="primary" disabled>Enviar</button>
+      </form>
+      <form id="announce" class="announce" hidden>
+        <input id="announce-text" placeholder="Anuncio para la sala (REST → WebSocket)" maxlength="280">
+        <button type="submit">Anunciar</button>
+      </form>
+      <p id="chat-error" class="error" role="alert"></p>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

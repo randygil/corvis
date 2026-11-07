@@ -1,0 +1,725 @@
+{
+  "Corvis: prelude": {
+    "prefix": ["cv-use", "corvis-use"],
+    "description": "use corvis::prelude::*",
+    "body": ["use corvis::prelude::*;", "$0"]
+  },
+  "Corvis: main (bootstrap)": {
+    "prefix": ["cv-main", "corvis-main"],
+    "description": "#[corvis::main] with CorvisFactory::create, global pipes and app.listen",
+    "body": [
+      "#[corvis::main]",
+      "async fn main() -> corvis::Result<()> {",
+      "    let mut app = CorvisFactory::create::<${1:AppModule}>().await?;",
+      "    app.set_global_prefix(\"${2:api}\");",
+      "    app.use_global_pipes(${3:ValidationPipe::new().whitelist(true)});",
+      "    app.enable_shutdown_hooks();",
+      "$0",
+      "    let port: u16 = app.get::<ConfigService>()?.get_or(\"PORT\", ${4:3000});",
+      "    app.listen(port).await",
+      "}"
+    ]
+  },
+  "Corvis: module": {
+    "prefix": ["cv-module", "corvis-module"],
+    "description": "#[module(imports, controllers, providers, exports)] (@Module)",
+    "body": [
+      "#[module(",
+      "    imports = [$2],",
+      "    controllers = [${1:Cats}Controller],",
+      "    providers = [${1}Service],",
+      "    exports = [${1}Service],",
+      ")]",
+      "pub struct ${1}Module;$0"
+    ]
+  },
+  "Corvis: empty module": {
+    "prefix": ["cv-module-empty", "corvis-module-empty"],
+    "description": "#[module] without metadata",
+    "body": ["#[module]", "pub struct ${1:Cats}Module;$0"]
+  },
+  "Corvis: global module": {
+    "prefix": ["cv-module-global", "corvis-module-global"],
+    "description": "#[module(global, ...)] (@Global() @Module)",
+    "body": [
+      "#[module(",
+      "    global,",
+      "    providers = [${2:${1:Shared}Service}],",
+      "    exports = [${2}],",
+      ")]",
+      "pub struct ${1}Module;$0"
+    ]
+  },
+  "Corvis: dynamic module (for_root)": {
+    "prefix": ["cv-dynamic-module", "corvis-dynamic-module"],
+    "description": "Module with a for_root(...) -> DynamicModule (static forRoot(): DynamicModule)",
+    "body": [
+      "#[module]",
+      "pub struct ${1:Database}Module;",
+      "",
+      "impl ${1}Module {",
+      "    pub fn for_root(${2:url}: String) -> DynamicModule {",
+      "        DynamicModule::new::<Self>()",
+      "            .provider(Provider::use_value(\"${3:DATABASE_URL}\", ${2}))",
+      "            .export(\"${3}\")",
+      "            .global(${4:true})",
+      "    }",
+      "}$0"
+    ]
+  },
+  "Corvis: CorvisModule middleware configuration": {
+    "prefix": ["cv-configure", "corvis-configure"],
+    "description": "impl CorvisModule { configure(consumer) } applying a middleware",
+    "body": [
+      "impl CorvisModule for ${1:App}Module {",
+      "    fn configure(&self, consumer: &mut MiddlewareConsumer) {",
+      "        consumer.apply::<${2:Logger}Middleware>().for_routes(\"${3:*}\");",
+      "    }",
+      "}$0"
+    ]
+  },
+  "Corvis: controller (CRUD)": {
+    "prefix": ["cv-controller", "corvis-controller"],
+    "description": "#[controller] struct with an injected service and a #[routes] impl with CRUD handlers",
+    "body": [
+      "#[controller(\"${2:cats}\")]",
+      "pub struct ${1:Cats}Controller {",
+      "    ${3:cats}_service: Arc<${1}Service>,",
+      "}",
+      "",
+      "#[routes]",
+      "impl ${1}Controller {",
+      "    #[post]",
+      "    async fn create(&self, #[body] dto: ${4:Value}) -> HttpResult<Value> {",
+      "        Ok(json!(dto))",
+      "    }",
+      "",
+      "    #[get]",
+      "    async fn find_all(&self) -> HttpResult<Value> {",
+      "        ${0:Ok(json!([]))}",
+      "    }",
+      "",
+      "    #[get(\":id\")]",
+      "    async fn find_one(&self, #[param(\"id\", ParseIntPipe)] id: u32) -> HttpResult<Value> {",
+      "        Ok(json!({ \"id\": id }))",
+      "    }",
+      "",
+      "    #[patch(\":id\")]",
+      "    async fn update(&self, #[param(\"id\", ParseIntPipe)] id: u32, #[body] dto: ${4}) -> HttpResult<Value> {",
+      "        Ok(json!({ \"id\": id, \"changes\": dto }))",
+      "    }",
+      "",
+      "    #[delete(\":id\")]",
+      "    #[http_code(HttpStatus::NO_CONTENT)]",
+      "    async fn remove(&self, #[param(\"id\", ParseIntPipe)] id: u32) -> HttpResult<()> {",
+      "        let _ = id;",
+      "        Ok(())",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: controller (empty)": {
+    "prefix": ["cv-controller-empty", "corvis-controller-empty"],
+    "description": "#[controller] with an empty #[routes] impl",
+    "body": [
+      "#[controller(\"${2:cats}\")]",
+      "pub struct ${1:Cats}Controller {}",
+      "",
+      "#[routes]",
+      "impl ${1}Controller {",
+      "    #[get]",
+      "    fn ${3:find_all}(&self) -> &'static str {",
+      "        ${0:\"This action returns all ${2}\"}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: GET route": {
+    "prefix": ["cv-get", "corvis-get"],
+    "description": "#[get] handler (@Get())",
+    "body": [
+      "#[get${1:(\"${2:path}\")}]",
+      "async fn ${3:find_all}(&self) -> HttpResult<${4:Value}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis: GET :id route": {
+    "prefix": ["cv-get-id", "corvis-get-id"],
+    "description": "#[get(\":id\")] handler with #[param(\"id\", ParseIntPipe)]",
+    "body": [
+      "#[get(\":${1:id}\")]",
+      "async fn ${2:find_one}(&self, #[param(\"${1}\", ParseIntPipe)] ${1}: ${3:u32}) -> HttpResult<${4:Value}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis: POST route": {
+    "prefix": ["cv-post", "corvis-post"],
+    "description": "#[post] handler with a #[body] DTO (@Post() + @Body())",
+    "body": [
+      "#[post${1:(\"${2:path}\")}]",
+      "async fn ${3:create}(&self, #[body] ${4:dto}: ${5:Value}) -> HttpResult<${6:Value}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis: PUT route": {
+    "prefix": ["cv-put", "corvis-put"],
+    "description": "#[put(\":id\")] handler with #[param] and #[body]",
+    "body": [
+      "#[put(\":${1:id}\")]",
+      "async fn ${2:replace}(&self, #[param(\"${1}\", ParseIntPipe)] ${1}: ${3:u32}, #[body] ${4:dto}: ${5:Value}) -> HttpResult<${6:Value}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis: PATCH route": {
+    "prefix": ["cv-patch", "corvis-patch"],
+    "description": "#[patch(\":id\")] handler with #[param] and #[body]",
+    "body": [
+      "#[patch(\":${1:id}\")]",
+      "async fn ${2:update}(&self, #[param(\"${1}\", ParseIntPipe)] ${1}: ${3:u32}, #[body] ${4:dto}: ${5:Value}) -> HttpResult<${6:Value}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis: DELETE route": {
+    "prefix": ["cv-delete", "corvis-delete"],
+    "description": "#[delete(\":id\")] handler returning 204",
+    "body": [
+      "#[delete(\":${1:id}\")]",
+      "#[http_code(HttpStatus::NO_CONTENT)]",
+      "async fn ${2:remove}(&self, #[param(\"${1}\", ParseIntPipe)] ${1}: ${3:u32}) -> HttpResult<()> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis: GET route with query DTO": {
+    "prefix": ["cv-get-query", "corvis-get-query"],
+    "description": "#[get] handler with #[query] (@Query())",
+    "body": [
+      "#[get]",
+      "async fn ${1:find_all}(&self, #[query] ${2:query}: ${3:ListQuery}) -> HttpResult<${4:Value}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis: guarded route with roles": {
+    "prefix": ["cv-route-roles", "corvis-route-roles"],
+    "description": "Route with #[set_metadata(ROLES_KEY, [...])] and #[use_guards(...)]",
+    "body": [
+      "#[${1|get,post,put,patch,delete|}(\"${2:path}\")]",
+      "#[set_metadata(${3:ROLES_KEY}, [\"${4:admin}\"])]",
+      "#[use_guards(${5:RolesGuard})]",
+      "async fn ${6:handler}(&self) -> HttpResult<${7:Value}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis: #[body] parameter": {
+    "prefix": ["cv-body", "corvis-body"],
+    "description": "#[body] parameter (@Body())",
+    "body": ["#[body] ${1:dto}: ${2:CreateCatDto}"]
+  },
+  "Corvis: #[param] parameter": {
+    "prefix": ["cv-param", "corvis-param"],
+    "description": "#[param(\"id\", ParseIntPipe)] parameter (@Param('id', ParseIntPipe))",
+    "body": ["#[param(\"${1:id}\"${2:, ParseIntPipe})] ${1}: ${3:u32}"]
+  },
+  "Corvis: #[query] parameter": {
+    "prefix": ["cv-query", "corvis-query"],
+    "description": "#[query] parameter (@Query())",
+    "body": ["#[query] ${1:query}: ${2:ListQuery}"]
+  },
+  "Corvis: #[headers] parameter": {
+    "prefix": ["cv-header-param", "corvis-header-param"],
+    "description": "#[headers(\"authorization\")] parameter (@Headers('authorization'))",
+    "body": ["#[headers(\"${1:authorization}\")] ${2:authorization}: Option<String>"]
+  },
+  "Corvis: #[body] with ZodValidationPipe": {
+    "prefix": ["cv-body-zod", "corvis-body-zod"],
+    "description": "#[body(ZodValidationPipe::new(schema))] parameter",
+    "body": ["#[body(ZodValidationPipe::new(${1:create_cat_schema}()))] ${2:dto}: ${3:CreateCatDto}"]
+  },
+  "Corvis: injectable service": {
+    "prefix": ["cv-service", "corvis-service"],
+    "description": "#[injectable] provider with a Logger field (@Injectable())",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:Cats}Service {",
+      "    #[init(Logger::new(\"${1}Service\"))]",
+      "    logger: Logger,",
+      "}",
+      "",
+      "impl ${1}Service {",
+      "    pub async fn ${2:find_all}(&self) -> HttpResult<${3:Vec<Value>}> {",
+      "        self.logger.log(\"${2}\");",
+      "        ${0:todo!()}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: injected dependency field": {
+    "prefix": ["cv-dep", "corvis-dep"],
+    "description": "Arc<T> field resolved by the container (constructor injection)",
+    "body": ["${1:cats_service}: Arc<${2:CatsService}>,"]
+  },
+  "Corvis: #[inject(\"TOKEN\")] field": {
+    "prefix": ["cv-inject", "corvis-inject"],
+    "description": "Field injected by custom token (@Inject('TOKEN'))",
+    "body": ["#[inject(\"${1:API_KEY}\")]", "${2:api_key}: Arc<${3:String}>,"]
+  },
+  "Corvis: Provider::use_value": {
+    "prefix": ["cv-use-value", "corvis-use-value"],
+    "description": "Value provider ({ provide, useValue })",
+    "body": ["Provider::use_value(\"${1:API_KEY}\", ${2:\"secret\".to_string()})"]
+  },
+  "Corvis: Provider::use_factory": {
+    "prefix": ["cv-use-factory", "corvis-use-factory"],
+    "description": "Async factory provider ({ provide, useFactory, inject })",
+    "body": [
+      "Provider::use_factory(\"${1:DATABASE_URL}\", |ctx| async move {",
+      "    let config = ctx.get::<ConfigService>().await?;",
+      "    Ok(config.get_or(\"${2:DATABASE_URL}\", ${3:\"sqlite::memory:\".to_string()}))",
+      "})"
+    ]
+  },
+  "Corvis: guard": {
+    "prefix": ["cv-guard", "corvis-guard"],
+    "description": "#[injectable] guard implementing CanActivate",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:Auth}Guard;",
+      "",
+      "#[async_trait]",
+      "impl CanActivate for ${1}Guard {",
+      "    async fn can_activate(&self, context: &ExecutionContext) -> Result<bool, HttpException> {",
+      "        let ${2:authorization} = context.request().header(\"${3:authorization}\");",
+      "        ${0:Ok(${2}.is_some())}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: roles guard (Reflector)": {
+    "prefix": ["cv-roles-guard", "corvis-roles-guard"],
+    "description": "Guard reading #[set_metadata] roles with Reflector::get_all_and_override",
+    "body": [
+      "pub const ${1:ROLES}_KEY: &str = \"${2:roles}\";",
+      "",
+      "#[injectable]",
+      "pub struct ${3:Roles}Guard {",
+      "    reflector: Arc<Reflector>,",
+      "}",
+      "",
+      "#[async_trait]",
+      "impl CanActivate for ${3}Guard {",
+      "    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {",
+      "        let required: Option<Vec<String>> = self.reflector.get_all_and_override(${1}_KEY, &[ctx.get_handler(), ctx.get_class()]);",
+      "        let Some(required) = required else { return Ok(true) };",
+      "        let user = ctx.request().user_as::<${4:Value}>();",
+      "        let role = user.as_ref().and_then(|u| u.get(\"${5:role}\")).and_then(Value::as_str);",
+      "        Ok(role.is_some_and(|r| required.iter().any(|x| x == r)))",
+      "    }",
+      "}$0"
+    ]
+  },
+  "Corvis: interceptor": {
+    "prefix": ["cv-interceptor", "corvis-interceptor"],
+    "description": "CorvisInterceptor that transforms the handler's response",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:Transform}Interceptor;",
+      "",
+      "#[async_trait]",
+      "impl CorvisInterceptor for ${1}Interceptor {",
+      "    async fn intercept(&self, _context: &ExecutionContext, next: CallHandler) -> HandlerResult {",
+      "        let response = next.handle().await?;",
+      "        ${0:Ok(response.map_data(|data| json!({ \"data\": data \\})))}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: pipe": {
+    "prefix": ["cv-pipe", "corvis-pipe"],
+    "description": "PipeTransform over serde_json::Value",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:Trim}Pipe;",
+      "",
+      "#[async_trait]",
+      "impl PipeTransform for ${1}Pipe {",
+      "    async fn transform(&self, value: Value, _metadata: &ArgumentMetadata) -> Result<Value, HttpException> {",
+      "        ${0:Ok(value)}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: exception filter": {
+    "prefix": ["cv-filter", "corvis-filter"],
+    "description": "ExceptionFilter with catches() (@Catch) and a JSON response",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:Http}ExceptionFilter;",
+      "",
+      "#[async_trait]",
+      "impl ExceptionFilter for ${1}ExceptionFilter {",
+      "    fn catches(&self, exception: &HttpException) -> bool {",
+      "        ${2:!exception.is_internal()}",
+      "    }",
+      "",
+      "    async fn catch(&self, exception: HttpException, host: &ArgumentsHost) -> Response {",
+      "        let request = host.switch_to_http().get_request();",
+      "        let status = exception.get_status();",
+      "        Response::json(json!({",
+      "            \"statusCode\": status,",
+      "            \"message\": exception.message(),",
+      "            \"path\": request.url(),$0",
+      "        }))",
+      "        .with_status(status)",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: middleware": {
+    "prefix": ["cv-middleware", "corvis-middleware"],
+    "description": "CorvisMiddleware (use_(req, next))",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:Logger}Middleware {",
+      "    #[init(Logger::new(\"${2:HTTP}\"))]",
+      "    logger: Logger,",
+      "}",
+      "",
+      "#[async_trait]",
+      "impl CorvisMiddleware for ${1}Middleware {",
+      "    async fn use_(&self, req: Request, next: Next) -> HandlerResult {",
+      "        let line = format!(\"{} {}\", req.method(), req.url());",
+      "        let res = next.run(req).await;",
+      "        self.logger.log(line);",
+      "        res$0",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: custom parameter (FromContext)": {
+    "prefix": ["cv-param-decorator", "corvis-param-decorator"],
+    "description": "Custom parameter decorator via FromContext (createParamDecorator)",
+    "body": [
+      "pub struct ${1:CurrentUser}(pub ${2:Value});",
+      "",
+      "#[async_trait]",
+      "impl FromContext for ${1} {",
+      "    async fn from_context(ctx: &ExecutionContext) -> Result<Self, HttpException> {",
+      "        ctx.request().user_as::<${2}>().map(${1}).ok_or_else(|| UnauthorizedException.into())",
+      "    }",
+      "}$0"
+    ]
+  },
+  "Corvis: lifecycle hook (OnModuleInit)": {
+    "prefix": ["cv-on-module-init", "corvis-on-module-init"],
+    "description": "impl OnModuleInit (detected automatically)",
+    "body": [
+      "#[async_trait]",
+      "impl ${2|OnModuleInit,OnApplicationBootstrap,OnModuleDestroy|} for ${1:Cats}Service {",
+      "    async fn ${2/On(Module|Application)(Init|Bootstrap|Destroy)/on_${1:/downcase}_${2:/downcase}/}(&self) -> corvis::Result<()> {",
+      "        ${0:Ok(())}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: event listener (#[on_event])": {
+    "prefix": ["cv-on-event", "corvis-on-event"],
+    "description": "#[handlers] impl with #[on_event] (@OnEvent)",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:OrderCreated}Listener {",
+      "    #[init(Logger::new(\"${1}Listener\"))]",
+      "    logger: Logger,",
+      "}",
+      "",
+      "#[handlers]",
+      "impl ${1}Listener {",
+      "    #[on_event(\"${2:order.created}\")]",
+      "    async fn ${3:handle}(&self, event: ${4:Value}) {",
+      "        ${0:self.logger.log(format!(\"${2}: {event:?\\}\"));}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: scheduled task (#[cron])": {
+    "prefix": ["cv-cron", "corvis-cron"],
+    "description": "#[handlers] impl with #[cron] / #[interval] (cron expressions and fixed intervals)",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:Tasks}Service {",
+      "    #[init(Logger::new(\"${1}Service\"))]",
+      "    logger: Logger,",
+      "}",
+      "",
+      "#[handlers]",
+      "impl ${1}Service {",
+      "    #[cron(CronExpression::${2|EVERY_MINUTE,EVERY_10_SECONDS,EVERY_HOUR,EVERY_DAY_AT_MIDNIGHT|}, name = \"${3:job}\")]",
+      "    async fn ${4:handle_cron}(&self) {",
+      "        ${0:self.logger.debug(\"${3} ran\");}",
+      "    }",
+      "",
+      "    #[interval(\"${5:poll}\", ${6:10_000})]",
+      "    async fn ${7:handle_interval}(&self) {",
+      "        self.logger.debug(\"${5} ran\");",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: WebSocket gateway": {
+    "prefix": ["cv-gateway", "corvis-gateway"],
+    "description": "#[websocket_gateway] with #[subscribe_message] (@WebSocketGateway)",
+    "body": [
+      "#[corvis::websocket_gateway(path = \"/${2:events}\")]",
+      "pub struct ${1:Events}Gateway {",
+      "    #[websocket_server]",
+      "    server: corvis::WsServer,",
+      "}",
+      "",
+      "#[handlers]",
+      "impl ${1}Gateway {",
+      "    #[subscribe_message(\"${3:message}\")]",
+      "    fn ${4:handle_message}(&self, #[message_body] payload: Value) -> Value {",
+      "        ${0:payload}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis: class-validator DTO": {
+    "prefix": ["cv-dto", "corvis-dto"],
+    "description": "#[derive(Validate)] DTO (class-validator)",
+    "body": [
+      "#[derive(Debug, Clone, serde::Deserialize, Validate)]",
+      "pub struct ${1:CreateCat}Dto {",
+      "    #[is_string]",
+      "    #[is_not_empty]",
+      "    #[max_length(${3:50})]",
+      "    pub ${2:name}: String,",
+      "    #[is_optional]",
+      "    #[is_email]",
+      "    pub ${4:email}: Option<String>,$0",
+      "}"
+    ]
+  },
+  "Corvis: zod DTO (zod_dto!)": {
+    "prefix": ["cv-zod-dto", "corvis-zod-dto"],
+    "description": "Struct + zod_dto!(Dto, z::object! { ... }) (createZodDto)",
+    "body": [
+      "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]",
+      "pub struct ${1:CreateCat}Dto {",
+      "    pub ${2:name}: String,",
+      "    pub ${3:age}: Option<u32>,",
+      "}",
+      "",
+      "corvis::zod_dto!(${1}Dto, z::${4|object,strict_object,loose_object|}! {",
+      "    ${2}: z::string().trim().min(1),",
+      "    ${3}: z::int().nonnegative().optional(),$0",
+      "});"
+    ]
+  },
+  "Corvis: zod schema function": {
+    "prefix": ["cv-zod-schema", "corvis-zod-schema"],
+    "description": "fn returning a z::object! schema",
+    "body": [
+      "pub fn ${1:create_cat}_schema() -> z::ZObject {",
+      "    z::object! {",
+      "        ${2:name}: z::string().min(1),",
+      "        ${3:email}: z::email(),$0",
+      "    }",
+      "    .strict()",
+      "}"
+    ]
+  },
+  "Corvis: z::object!": {
+    "prefix": ["cv-zod-object", "corvis-zod-object"],
+    "description": "z::object! { field: schema } expression",
+    "body": ["z::object! {", "    ${1:name}: z::${2:string}()$3,$0", "}"]
+  },
+  "Corvis: zod query schema in a route": {
+    "prefix": ["cv-zod-query", "corvis-zod-query"],
+    "description": "#[get] with #[query(ZodValidationPipe::new(z::object! { ... }))] and coerce",
+    "body": [
+      "#[get]",
+      "async fn ${1:list}(&self, #[query(ZodValidationPipe::new(z::object! {",
+      "    page: z::coerce::number().int().min(1).default(1),",
+      "    limit: z::coerce::number().int().min(1).max(100).default(20),",
+      "}))] ${2:query}: ${3:ListQuery}) -> HttpResult<${4:Value}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis ORM: model": {
+    "prefix": ["cv-model", "corvis-model"],
+    "description": "#[derive(Model)] struct (model with table mapping). Needs use corvis_orm::prelude::*",
+    "body": [
+      "#[derive(Debug, Clone, Serialize, Deserialize, Model)]",
+      "#[serde(rename_all = \"camelCase\")]",
+      "#[model(table = \"${2:users}\")]",
+      "pub struct ${1:User} {",
+      "    #[id]",
+      "    #[default(autoincrement)]",
+      "    pub id: i64,",
+      "    #[unique]",
+      "    pub ${3:email}: String,",
+      "    pub ${4:name}: Option<String>,",
+      "    #[default(now)]",
+      "    pub created_at: corvis_orm::DateTime,$0",
+      "}"
+    ]
+  },
+  "Corvis ORM: service with OrmService": {
+    "prefix": ["cv-orm-service", "corvis-orm-service"],
+    "description": "#[injectable] service with db: Arc<OrmService> (import OrmModule in the module)",
+    "body": [
+      "#[injectable]",
+      "pub struct ${1:Users}Service {",
+      "    db: Arc<corvis_orm::OrmService>,",
+      "}",
+      "",
+      "impl ${1}Service {",
+      "    pub async fn find_all(&self) -> Result<Vec<${2:User}>, corvis_orm::OrmError> {",
+      "        self.db.${3:user}().find_many(json!({ \"orderBy\": { \"id\": \"desc\" }, \"take\": ${4:20} })).await",
+      "    }",
+      "",
+      "    pub async fn find_one(&self, id: i64) -> Result<Option<${2}>, corvis_orm::OrmError> {",
+      "        self.db.${3}().find_unique(json!({ \"where\": { \"id\": id } })).await",
+      "    }$0",
+      "}"
+    ]
+  },
+  "Corvis ORM: find_many": {
+    "prefix": ["cv-find-many", "corvis-find-many"],
+    "description": "db.model().find_many({ where, orderBy, take, skip })",
+    "body": [
+      "self.db.${1:user}().find_many(json!({",
+      "    \"where\": { \"${2:email}\": { \"${3|contains,startsWith,endsWith,equals|}\": ${4:\"@corvis.dev\"}${5:, \"mode\": \"insensitive\"} } },",
+      "    \"orderBy\": { \"${6:id}\": \"${7|desc,asc|}\" },",
+      "    \"skip\": ${8:0},",
+      "    \"take\": ${9:20},",
+      "})).await?$0"
+    ]
+  },
+  "Corvis ORM: find_unique": {
+    "prefix": ["cv-find-unique", "corvis-find-unique"],
+    "description": "db.model().find_unique({ where: { id } }) -> Option<M>",
+    "body": ["self.db.${1:user}().${2|find_unique,find_unique_or_throw,find_first|}(json!({ \"where\": { \"${3:id}\": ${4:id} }${5:, \"include\": { \"${6:posts}\": true \\}} })).await?$0"]
+  },
+  "Corvis ORM: create": {
+    "prefix": ["cv-create", "corvis-create"],
+    "description": "db.model().create({ data })",
+    "body": ["self.db.${1:user}().create(json!({ \"data\": { ${2:\"email\": email} } })).await?$0"]
+  },
+  "Corvis ORM: update": {
+    "prefix": ["cv-update", "corvis-update"],
+    "description": "db.model().update({ where, data })",
+    "body": ["self.db.${1:user}().update(json!({ \"where\": { \"id\": ${2:id} }, \"data\": { ${3:\"name\": name} } })).await?$0"]
+  },
+  "Corvis ORM: upsert": {
+    "prefix": ["cv-upsert", "corvis-upsert"],
+    "description": "db.model().upsert({ where, create, update })",
+    "body": [
+      "self.db.${1:user}().upsert(json!({",
+      "    \"where\": { \"${2:email}\": ${3:email} },",
+      "    \"create\": { ${4:\"email\": email} },",
+      "    \"update\": { ${5:\"name\": name} },",
+      "})).await?$0"
+    ]
+  },
+  "Corvis ORM: delete": {
+    "prefix": ["cv-delete-record", "corvis-delete-record"],
+    "description": "db.model().delete({ where })",
+    "body": ["self.db.${1:user}().delete(json!({ \"where\": { \"id\": ${2:id} } })).await?$0"]
+  },
+  "Corvis ORM: count": {
+    "prefix": ["cv-count", "corvis-count"],
+    "description": "db.model().count({ where })",
+    "body": ["self.db.${1:user}().count(json!({ \"where\": { ${2:\"name\": { \"not\": null \\}} } })).await?$0"]
+  },
+  "Corvis ORM: interactive transaction": {
+    "prefix": ["cv-transaction", "corvis-transaction"],
+    "description": "db._transaction(|tx| async move { ... }): interactive transaction",
+    "body": [
+      "self.db._transaction(|tx| async move {",
+      "    let ${2:user} = tx.${1:user}().create(json!({ \"data\": { ${3:\"email\": \"ana@corvis.dev\"} } })).await?;",
+      "    $0",
+      "    Ok::<_, corvis_orm::OrmError>(${2})",
+      "}).await?"
+    ]
+  },
+  "Corvis Swagger: documented controller": {
+    "prefix": ["cv-api-controller", "corvis-api-controller"],
+    "description": "Controller with #[api_tags], #[api_operation] and response decorators. Needs use corvis_swagger::*",
+    "body": [
+      "#[controller(\"${2:cats}\")]",
+      "#[api_tags(\"${2}\")]",
+      "#[api_bearer_auth]",
+      "pub struct ${1:Cats}Controller {}",
+      "",
+      "#[routes]",
+      "impl ${1}Controller {",
+      "    #[get(\":id\")]",
+      "    #[api_operation(summary = \"${3:Find one}\")]",
+      "    #[api_ok_response(type = ${4:CatDto})]",
+      "    #[api_not_found_response(description = \"${5:Not found}\")]",
+      "    async fn find_one(&self, #[param(\"id\", ParseIntPipe)] id: u32) -> HttpResult<${4}> {",
+      "        let _ = id;",
+      "        ${0:todo!()}",
+      "    }",
+      "}"
+    ]
+  },
+  "Corvis Swagger: documented route": {
+    "prefix": ["cv-api-route", "corvis-api-route"],
+    "description": "Route with #[api_operation] and #[api_*_response] attributes",
+    "body": [
+      "#[${1|get,post,put,patch,delete|}(\"${2:path}\")]",
+      "#[api_operation(summary = \"${3:Summary}\")]",
+      "#[api_ok_response(type = ${4:CatDto})]",
+      "async fn ${5:handler}(&self) -> HttpResult<${4}> {",
+      "    ${0:todo!()}",
+      "}"
+    ]
+  },
+  "Corvis Swagger: setup in main": {
+    "prefix": ["cv-swagger-setup", "corvis-swagger-setup"],
+    "description": "DocumentBuilder + SwaggerModule::create_document + SwaggerModule::setup",
+    "body": [
+      "let config = corvis_swagger::DocumentBuilder::new()",
+      "    .set_title(\"${1:API}\")",
+      "    .set_version(\"${2:1.0}\")",
+      "    .add_bearer_auth()",
+      "    .build();",
+      "let document = corvis_swagger::SwaggerModule::create_document(&app, &config);",
+      "corvis_swagger::SwaggerModule::setup(\"${3:docs}\", &mut app, document);$0"
+    ]
+  },
+  "Corvis: test module": {
+    "prefix": ["cv-test", "corvis-test"],
+    "description": "#[corvis::test] with Test::create_testing_module and request(&app)",
+    "body": [
+      "#[cfg(test)]",
+      "mod tests {",
+      "    use super::*;",
+      "    use corvis::testing::{Test, request};",
+      "",
+      "    #[corvis::test]",
+      "    async fn ${1:responds}() {",
+      "        let module = Test::create_testing_module()",
+      "            .controller::<${2:Cats}Controller>()",
+      "            .provider::<${2}Service>()",
+      "            .compile()",
+      "            .await",
+      "            .unwrap();",
+      "        let mut app = module.create_corvis_application();",
+      "        app.init().await.unwrap();",
+      "        request(&app).get(\"/${3:cats}\").send().await.expect_status(${4:200});$0",
+      "    }",
+      "}"
+    ]
+  }
+}

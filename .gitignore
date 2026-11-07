@@ -1,0 +1,19 @@
+/target
+**/target
+*.swp
+.env
+.idea/
+.vscode/
+
+# Benchmark
+bench/target
+bench/nest-app/node_modules
+bench/nest-app/dist
+bench/raw
+bench/logs
+
+# Bases SQLite creadas por los ejemplos al ejecutarse
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

@@ -1,0 +1,14 @@
+[package]
+name = "tertulia"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+corvis = { path = "../../crates/corvis" }
+corvis-orm = { path = "../../crates/corvis-orm" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"

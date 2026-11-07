@@ -1,0 +1,16 @@
+[package]
+name = "corvis-macros"
+description = "Procedural macros (decorators) for the corvis framework."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits", "visit-mut"] }
+quote = "1"
+proc-macro2 = "1"

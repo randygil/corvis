@@ -1,0 +1,41 @@
+[package]
+name = "corvis-orm"
+description = "ORM for Corvis: models with #[derive(Model)], JSON query arguments, db push, migrations compatible with schema.prisma projects and an OrmModule/OrmService integration."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["orm", "sqlx", "corvis", "database", "postgres"]
+
+[features]
+default = ["corvis"]
+# OrmModule / OrmService / OrmExceptionFilter and logging through the corvis logger.
+corvis = ["dep:corvis"]
+
+[dependencies]
+corvis = { workspace = true, optional = true }
+corvis-orm-macros = { path = "../corvis-orm-macros" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+futures = "0.3"
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "chrono", "json", "uuid"] }
+
+[dev-dependencies]
+serde = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+tokio = { workspace = true }
+
+[[test]]
+name = "corvis_module"
+required-features = ["corvis"]

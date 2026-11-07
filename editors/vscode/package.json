@@ -1,0 +1,471 @@
+{
+  "name": "corvis-vscode",
+  "displayName": "Corvis",
+  "description": "Snippets, CLI commands, highlighting and an app explorer for Corvis, the modular web framework for Rust.",
+  "version": "0.1.0",
+  "publisher": "randygil",
+  "author": {
+    "name": "Randy Gil",
+    "email": "r.gilcamejo@gmail.com"
+  },
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/randygil/corvis",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/randygil/corvis/issues"
+  },
+  "homepage": "https://github.com/randygil/corvis/tree/main/editors/vscode#readme",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Snippets",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "corvis",
+    "rust",
+    "orm",
+    "zod",
+    "web framework"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:rust",
+    "workspaceContains:**/Cargo.toml"
+  ],
+  "contributes": {
+    "snippets": [
+      {
+        "language": "rust",
+        "path": "./snippets/corvis.code-snippets"
+      }
+    ],
+    "grammars": [
+      {
+        "scopeName": "corvis.injection",
+        "path": "./syntaxes/corvis.injection.tmLanguage.json",
+        "injectTo": [
+          "source.rust"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "corvis.generate",
+        "title": "Generate…",
+        "category": "Corvis",
+        "icon": "$(add)"
+      },
+      {
+        "command": "corvis.generate.resource",
+        "title": "Generate Resource (CRUD)…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.module",
+        "title": "Generate Module…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.controller",
+        "title": "Generate Controller…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.service",
+        "title": "Generate Service…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.guard",
+        "title": "Generate Guard…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.interceptor",
+        "title": "Generate Interceptor…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.pipe",
+        "title": "Generate Pipe…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.filter",
+        "title": "Generate Exception Filter…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.middleware",
+        "title": "Generate Middleware…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.generate.gateway",
+        "title": "Generate WebSocket Gateway…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.new",
+        "title": "New Project…",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.start",
+        "title": "Start Application",
+        "category": "Corvis",
+        "icon": "$(play)"
+      },
+      {
+        "command": "corvis.startWatch",
+        "title": "Start Application (watch)",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.build",
+        "title": "Build Application (release)",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.info",
+        "title": "Show Project Info",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.goToRoute",
+        "title": "Go to Route…",
+        "category": "Corvis",
+        "icon": "$(search)"
+      },
+      {
+        "command": "corvis.refresh",
+        "title": "Refresh Explorer",
+        "category": "Corvis",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "corvis.copyRoutePath",
+        "title": "Copy Route Path",
+        "category": "Corvis",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "corvis.showOutput",
+        "title": "Show Output",
+        "category": "Corvis"
+      },
+      {
+        "command": "corvis.revealLocation",
+        "title": "Reveal Location",
+        "category": "Corvis"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "corvis.explorer.generate",
+        "label": "Corvis"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "submenu": "corvis.explorer.generate",
+          "when": "explorerResourceIsFolder && corvis.isCorvisProject",
+          "group": "2_workspace@10"
+        }
+      ],
+      "corvis.explorer.generate": [
+        {
+          "command": "corvis.generate",
+          "group": "0_generate@0"
+        },
+        {
+          "command": "corvis.generate.resource",
+          "group": "1_schematics@1"
+        },
+        {
+          "command": "corvis.generate.module",
+          "group": "1_schematics@2"
+        },
+        {
+          "command": "corvis.generate.controller",
+          "group": "1_schematics@3"
+        },
+        {
+          "command": "corvis.generate.service",
+          "group": "1_schematics@4"
+        },
+        {
+          "command": "corvis.generate.guard",
+          "group": "2_enhancers@1"
+        },
+        {
+          "command": "corvis.generate.interceptor",
+          "group": "2_enhancers@2"
+        },
+        {
+          "command": "corvis.generate.pipe",
+          "group": "2_enhancers@3"
+        },
+        {
+          "command": "corvis.generate.filter",
+          "group": "2_enhancers@4"
+        },
+        {
+          "command": "corvis.generate.middleware",
+          "group": "2_enhancers@5"
+        },
+        {
+          "command": "corvis.generate.gateway",
+          "group": "3_other@1"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "corvis.generate",
+          "when": "view == corvis.modules",
+          "group": "navigation@1"
+        },
+        {
+          "command": "corvis.goToRoute",
+          "when": "view == corvis.routes",
+          "group": "navigation@1"
+        },
+        {
+          "command": "corvis.refresh",
+          "when": "view == corvis.modules || view == corvis.routes",
+          "group": "navigation@2"
+        },
+        {
+          "command": "corvis.start",
+          "when": "view == corvis.modules",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "corvis.copyRoutePath",
+          "when": "viewItem == corvis.route",
+          "group": "inline"
+        },
+        {
+          "command": "corvis.copyRoutePath",
+          "when": "viewItem == corvis.route",
+          "group": "1_copy"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "corvis.revealLocation",
+          "when": "false"
+        },
+        {
+          "command": "corvis.copyRoutePath",
+          "when": "false"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "corvis",
+          "title": "Corvis",
+          "icon": "media/corvis-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "corvis": [
+        {
+          "id": "corvis.modules",
+          "name": "Modules",
+          "when": "corvis.isCorvisProject"
+        },
+        {
+          "id": "corvis.routes",
+          "name": "Routes",
+          "when": "corvis.isCorvisProject"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "corvis.modules",
+        "contents": "No Corvis modules found in this workspace yet.\n[Generate a resource](command:corvis.generate.resource)\n[Create a new project](command:corvis.new)"
+      }
+    ],
+    "colors": [
+      {
+        "id": "corvis.attribute.di",
+        "description": "Corvis DI attributes: #[module], #[controller], #[injectable], #[routes], #[handlers].",
+        "defaults": {
+          "dark": "#C586C0",
+          "light": "#AF00DB",
+          "highContrast": "#D7A6FF",
+          "highContrastLight": "#8A00B0"
+        }
+      },
+      {
+        "id": "corvis.attribute.http",
+        "description": "Corvis route attributes: #[get], #[post], #[put], #[patch], #[delete], #[sse]...",
+        "defaults": {
+          "dark": "#4EC9B0",
+          "light": "#267F99",
+          "highContrast": "#4EC9B0",
+          "highContrastLight": "#185E73"
+        }
+      },
+      {
+        "id": "corvis.attribute.enhancer",
+        "description": "Corvis enhancer attributes: #[use_guards], #[use_interceptors], #[use_pipes], #[use_filters], #[set_metadata]...",
+        "defaults": {
+          "dark": "#DCDCAA",
+          "light": "#795E26",
+          "highContrast": "#DCDCAA",
+          "highContrastLight": "#5E4A1D"
+        }
+      },
+      {
+        "id": "corvis.attribute.param",
+        "description": "Corvis parameter attributes: #[body], #[param], #[query], #[headers]...",
+        "defaults": {
+          "dark": "#9CDCFE",
+          "light": "#001080",
+          "highContrast": "#9CDCFE",
+          "highContrastLight": "#001080"
+        }
+      },
+      {
+        "id": "corvis.attribute.event",
+        "description": "Corvis handler attributes: #[on_event], #[cron], #[interval], #[timeout], #[subscribe_message].",
+        "defaults": {
+          "dark": "#CE9178",
+          "light": "#A31515",
+          "highContrast": "#CE9178",
+          "highContrastLight": "#A31515"
+        }
+      },
+      {
+        "id": "corvis.attribute.swagger",
+        "description": "corvis-swagger attributes: #[api_tags], #[api_operation], #[api_ok_response]...",
+        "defaults": {
+          "dark": "#B5CEA8",
+          "light": "#098658",
+          "highContrast": "#B5CEA8",
+          "highContrastLight": "#096D48"
+        }
+      },
+      {
+        "id": "corvis.attribute.validation",
+        "description": "class-validator style attributes of #[derive(Validate)] DTOs.",
+        "defaults": {
+          "dark": "#D7BA7D",
+          "light": "#8A6100",
+          "highContrast": "#D7BA7D",
+          "highContrastLight": "#6E4D00"
+        }
+      },
+      {
+        "id": "corvis.attribute.orm",
+        "description": "corvis-orm model attributes: #[id], #[unique], #[relation], #[updated_at]...",
+        "defaults": {
+          "dark": "#D7BA7D",
+          "light": "#8A6100",
+          "highContrast": "#D7BA7D",
+          "highContrastLight": "#6E4D00"
+        }
+      },
+      {
+        "id": "corvis.routeHint",
+        "description": "Inline hint with the full path of a route handler.",
+        "defaults": {
+          "dark": "#8B949E",
+          "light": "#6E7781",
+          "highContrast": "#C0C0C0",
+          "highContrastLight": "#4D4D4D"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Corvis",
+      "properties": {
+        "corvis.cli.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `corvis` executable. Leave empty to use `corvis` from `PATH` (or `~/.cargo/bin`), falling back to `cargo run -p corvis-cli` inside `#corvis.frameworkPath#`."
+        },
+        "corvis.frameworkPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Folder of the Corvis repository (the one that contains `crates/corvis-cli`). Used to run the CLI with `cargo run` when it is not installed. Leave empty to detect it from the workspace or from the `corvis = { path = ... }` dependency in `Cargo.toml`."
+        },
+        "corvis.generate.flat": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Preselect `--flat` (create the file in `src/` without a feature folder) when generating."
+        },
+        "corvis.generate.spec": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Keep the generated `#[cfg(test)]` module. When disabled, `--no-spec` is preselected."
+        },
+        "corvis.generate.openGeneratedFile": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the main generated file after running a schematic."
+        },
+        "corvis.decorations.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Color Corvis attributes with editor decorations. TextMate colors are overridden by semantic highlighting (rust-analyzer); decorations are not. Colors can be changed with `workbench.colorCustomizations` (`corvis.attribute.*`)."
+        },
+        "corvis.routeHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the full route (`GET /api/v1/cats/:id`) next to each `#[get]`, `#[post]`... attribute."
+        },
+        "corvis.explorer.exclude": {
+          "type": "string",
+          "default": "**/{target,node_modules,.git}/**",
+          "description": "Glob of files ignored when indexing modules, controllers and routes."
+        }
+      }
+    },
+    "taskDefinitions": [
+      {
+        "type": "corvis",
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Arguments passed to the corvis CLI, e.g. \"start --watch\"."
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test test/parser.test.mjs",
+    "verify-snippets": "node scripts/verify-snippets.mjs",
+    "package": "npx --yes @vscode/vsce package --out dist/"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.90.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,1055 @@
+//! Schema objects of the document generator: maps model properties (`#[derive(ApiSchema)]`,
+//! `#[api_property]`) and types to OpenAPI schemas and registers the referenced models.
+//!
+//! Types are JSON values (see [`crate::types`]): `{"$ctor": "String"}`, `{"$model": key}`,
+//! a type name string (`"string"`), an array (`[T]`) or an object literal.
+
+use serde_json::{Value, json};
+
+use crate::decorators::{enum_type, enum_values, type_is_array_tuple};
+use crate::js::{self, Obj};
+use crate::types::{self, ModelKind};
+
+/// `components.schemas` being built.
+pub type Schemas = Obj;
+
+// --- type classification -----------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+pub(crate) enum Ty<'a> {
+    Undefined,
+    Str(&'a str),
+    Ctor(&'a str),
+    Model(&'a str),
+    Arr,
+    Obj(&'a Obj),
+    Other,
+}
+
+pub(crate) fn ty(v: Option<&Value>) -> Ty<'_> {
+    match v {
+        None | Some(Value::Null) => Ty::Undefined,
+        Some(Value::String(s)) => Ty::Str(s),
+        Some(Value::Array(_)) => Ty::Arr,
+        Some(v @ Value::Object(o)) => {
+            if let Some(c) = types::as_ctor(Some(v)) {
+                Ty::Ctor(c)
+            } else if let Some(m) = types::as_model(Some(v)) {
+                Ty::Model(m)
+            } else {
+                Ty::Obj(o)
+            }
+        }
+        Some(_) => Ty::Other,
+    }
+}
+
+fn is_function(t: Ty) -> bool {
+    matches!(t, Ty::Ctor(_) | Ty::Model(_))
+}
+
+fn is_builtin(t: Ty) -> bool {
+    matches!(t, Ty::Ctor("String" | "Boolean" | "Number" | "Object" | "Array"))
+}
+
+fn is_primitive(t: Ty) -> bool {
+    matches!(t, Ty::Ctor("String" | "Boolean" | "Number"))
+}
+
+fn is_const_enum_object(t: Ty) -> bool {
+    match t {
+        Ty::Obj(o) => !o.is_empty() && o.values().all(|v| v.is_string() || v.is_number()),
+        _ => false,
+    }
+}
+
+fn is_object_literal(t: Ty) -> bool {
+    matches!(t, Ty::Obj(_))
+}
+
+/// `swaggerTypesMapper.mapTypeToOpenAPIType(type.name)`.
+pub(crate) fn map_type_to_openapi(name: &str) -> Option<String> {
+    let mut c = name.chars();
+    let first = c.next()?;
+    Some(first.to_lowercase().collect::<String>() + c.as_str())
+}
+
+fn type_name(t: Ty<'_>) -> Option<&str> {
+    match t {
+        Ty::Ctor(c) => Some(c),
+        Ty::Str(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// `#/components/schemas/<name>`.
+pub fn get_schema_path(name: &str) -> String {
+    format!("#/components/schemas/{name}")
+}
+
+/// `getSchemaPath(model)` for a type value.
+pub(crate) fn schema_path_of(t: &Value) -> String {
+    match ty(Some(t)) {
+        Ty::Str(s) => get_schema_path(s),
+        Ty::Model(k) => get_schema_path(&model_info(k).map(|m| m.name).unwrap_or_default()),
+        Ty::Ctor(c) => get_schema_path(c),
+        _ => get_schema_path(""),
+    }
+}
+
+// --- @ApiProperty ------------------------------------------------------------------------
+
+/// `createApiPropertyDecorator(options)` + `createPropertyDecorator(API_MODEL_PROPERTIES, ...)`
+/// for a property whose declared type is `design_type` (no metadata stored before).
+pub fn create_api_property(options: &Obj, design_type: Option<Value>) -> Obj {
+    let mut o = options.clone();
+    type_is_array_tuple(&mut o);
+    let enum_array = js::truthy(o.get("isArray")) && o.get("enum").is_some_and(|e| !e.is_null());
+    if enum_array {
+        o.insert("type".into(), js::s("array"));
+        let values = enum_values(&o["enum"]);
+        o.insert("items".into(), json!({ "type": enum_type(&values), "enum": values }));
+        js::delete(&mut o, "enum");
+    } else if o.get("enum").is_some_and(|e| !e.is_null()) {
+        let values = enum_values(&o["enum"]);
+        o.insert("enum".into(), Value::Array(values.clone()));
+        if !js::truthy(o.get("type")) {
+            o.insert("type".into(), js::s(enum_type(&values)));
+        }
+    }
+    if let Some(Value::Array(a)) = o.get("type").cloned() {
+        let inner = a.first().cloned().unwrap_or(Value::Null);
+        let inner_type = match ty(Some(&inner)) {
+            Ty::Ctor(c) => map_type_to_openapi(c).map(Value::String).unwrap_or(Value::Null),
+            Ty::Model(k) => Value::String(map_type_to_openapi(&model_info(k).map(|m| m.class_name).unwrap_or_default()).unwrap_or_default()),
+            _ => inner,
+        };
+        o.insert("type".into(), js::s("array"));
+        o.insert("items".into(), json!({ "type": "array", "items": { "type": inner_type } }));
+    }
+    // createPropertyDecorator: `{ type: designType, ...pickBy(metadata, negate(isUndefined)) }`
+    let mut out = Obj::new();
+    out.insert("type".into(), design_type.unwrap_or(Value::Null));
+    for (k, v) in o {
+        if !v.is_null() || k != "type" {
+            out.insert(k, v);
+        }
+    }
+    if out.get("type").is_some_and(Value::is_null) {
+        js::delete(&mut out, "type");
+    }
+    out
+}
+
+/// Property metadata generated by `#[derive(ApiSchema)]`: `@ApiProperty(options)` on a field
+/// whose Rust type gives the design type (`Vec<T>` -> `T` + `isArray`, like the
+/// OpenAPI compiler plugin; `Option<T>` -> `required: false` unless given).
+pub fn property_metadata(options: Obj, design: Value, optional: bool) -> Value {
+    let (design, design_array) = match design {
+        Value::Array(a) if !options.contains_key("type") => (a.into_iter().next().unwrap_or(Value::Null), true),
+        d => (d, false),
+    };
+    let mut out = create_api_property(&options, Some(design));
+    if design_array && !out.contains_key("isArray") {
+        // Lazy CLI type `() => [T]`: getTypeIsArrayTuple -> [T, true]
+        match out.get("type").cloned() {
+            Some(Value::Array(a)) => {
+                out.insert("type".into(), a.into_iter().next().unwrap_or(Value::Null));
+                out.insert("isArray".into(), Value::Bool(true));
+            }
+            _ => {
+                out.insert("isArray".into(), Value::Bool(true));
+            }
+        }
+    }
+    if optional && !out.contains_key("required") {
+        out.insert("required".into(), Value::Bool(false));
+    }
+    Value::Object(out)
+}
+
+// --- models ------------------------------------------------------------------------------
+
+/// What the document generator reads from a model class.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModelInfo {
+    /// `type.name` (class name).
+    pub class_name: String,
+    /// `components.schemas` key (`@ApiSchema({ name })` or the class name).
+    pub name: String,
+    pub schema_properties: Obj,
+    pub extensions: Obj,
+    /// `API_MODEL_PROPERTIES` of every property, in declaration order.
+    pub properties: Vec<(String, Obj)>,
+    pub extra_models: Vec<Value>,
+}
+
+pub(crate) fn model_info(key: &str) -> Option<ModelInfo> {
+    let entry = types::lookup_model(key)?;
+    Some(match entry.kind {
+        ModelKind::ApiSchema(r) => {
+            let def = (r.def)();
+            ModelInfo {
+                class_name: entry.name.clone(),
+                name: if def.name.is_empty() { entry.name.clone() } else { def.name.clone() },
+                schema_properties: def.schema_properties.clone(),
+                extensions: def.extensions.clone(),
+                properties: def.properties.iter().map(|(k, v)| (k.clone(), js::obj_of(v))).collect(),
+                extra_models: def.extra_models.iter().map(|m| types::api_schema_marker(*m)).collect(),
+            }
+        }
+        ModelKind::Zod { schema, io } => {
+            let props = crate::zod::open_api_metadata_factory(schema(), io);
+            ModelInfo {
+                class_name: entry.name.clone(),
+                name: entry.name.clone(),
+                properties: props
+                    .into_iter()
+                    .map(|(k, meta)| {
+                        // applyMetadataFactory -> createApiPropertyDecorator(metadata[key], false)
+                        let design = meta.get("type").cloned();
+                        let first = create_api_property(&meta, design);
+                        // `getModelProperties` runs `applyMetadataFactory` on every exploration, so
+                        // the decorator is applied again with existing metadata
+                        // (`{ ...newMetadata, ...existing }`): the keys end up in the factory's
+                        // order (`default` before `type`, like zod's JSON Schema).
+                        let mut ordered = Obj::new();
+                        for key in meta.keys() {
+                            if let Some(v) = first.get(key) {
+                                ordered.insert(key.clone(), v.clone());
+                            }
+                        }
+                        for (key, v) in first {
+                            if !ordered.contains_key(&key) {
+                                ordered.insert(key, v);
+                            }
+                        }
+                        (k, ordered)
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+        }
+        ModelKind::Opaque => ModelInfo { class_name: entry.name.clone(), name: entry.name.clone(), ..Default::default() },
+    })
+}
+
+/// Port of `SchemaObjectFactory`.
+pub struct SchemaObjectFactory;
+
+const SCHEMA_OPTIONS_KEYS: [&str; 25] = [
+    "properties",
+    "patternProperties",
+    "additionalProperties",
+    "minimum",
+    "maximum",
+    "maxProperties",
+    "minItems",
+    "minProperties",
+    "maxItems",
+    "minLength",
+    "maxLength",
+    "exclusiveMaximum",
+    "exclusiveMinimum",
+    "uniqueItems",
+    "multipleOf",
+    "title",
+    "format",
+    "pattern",
+    "nullable",
+    "default",
+    "example",
+    "oneOf",
+    "anyOf",
+    "type",
+    "items",
+];
+
+fn keys_to_remove() -> Vec<&'static str> {
+    let mut k = vec!["isArray", "enum", "enumName", "enumSchema", "$ref", "selfRequired"];
+    k.extend(SCHEMA_OPTIONS_KEYS);
+    k
+}
+
+fn is_body(p: &Obj) -> bool {
+    p.get("in").and_then(Value::as_str) == Some("body")
+}
+
+fn name_or_key(m: &Obj, key: &str) -> Value {
+    match m.get("name") {
+        Some(v) if js::truthy(Some(v)) => v.clone(),
+        _ => js::s(key),
+    }
+}
+
+/// `obj[key] = value` where `value` may be `undefined` (then the key disappears from JSON).
+fn set_opt(o: &mut Obj, key: &str, v: Option<Value>) {
+    match v {
+        Some(v) => {
+            o.insert(key.to_string(), v);
+        }
+        None => {
+            js::delete(o, key);
+        }
+    }
+}
+
+impl SchemaObjectFactory {
+    /// `createFromModel(parameters, schemas)`.
+    pub fn create_from_model(parameters: Vec<Obj>, schemas: &mut Schemas) -> Vec<Obj> {
+        let mut out = Vec::new();
+        for param in parameters {
+            let t = ty(param.get("type"));
+            if !is_body(&param) && js::truthy(param.get("enumName")) {
+                out.push(Self::create_enum_param(param, schemas));
+                continue;
+            }
+            if is_primitive(t) {
+                out.push(param);
+                continue;
+            }
+            if matches!(t, Ty::Ctor("Array")) {
+                out.push(Self::map_array_ctor_param(param));
+                continue;
+            }
+            if !is_body(&param) {
+                out.extend(Self::create_query_or_param_schema(param, schemas));
+                continue;
+            }
+            out.push(Self::get_custom_type(param, schemas));
+        }
+        out
+    }
+
+    fn get_custom_type(param: Obj, schemas: &mut Schemas) -> Obj {
+        let model_name = Self::explore_model_schema(param.get("type").unwrap_or(&Value::Null), schemas, &mut Vec::new());
+        let name = match param.get("name") {
+            Some(v) if js::truthy(Some(v)) => v.clone(),
+            _ => js::s(model_name.clone()),
+        };
+        let mut schema = param.get("schema").and_then(Value::as_object).cloned().unwrap_or_default();
+        schema.insert("$ref".into(), js::s(get_schema_path(&model_name)));
+        let is_array = js::truthy(param.get("isArray"));
+        let mut p = js::omit(&param, &["isArray"]);
+        p.insert("name".into(), name);
+        if is_array {
+            p.insert("schema".into(), json!({ "type": "array", "items": Value::Object(schema) }));
+        } else {
+            p.insert("schema".into(), Value::Object(schema));
+        }
+        p
+    }
+
+    fn create_query_or_param_schema(param: Obj, schemas: &mut Schemas) -> Vec<Obj> {
+        let t = ty(param.get("type"));
+        if matches!(t, Ty::Ctor("Date")) {
+            let mut o = js::obj_of(&json!({ "format": "date-time" }));
+            js::assign(&mut o, &param);
+            o.insert("type".into(), js::s("string"));
+            return vec![o];
+        }
+        if matches!(t, Ty::Ctor("BigInt")) {
+            let mut o = js::obj_of(&json!({ "format": "int64" }));
+            js::assign(&mut o, &param);
+            o.insert("type".into(), js::s("integer"));
+            return vec![o];
+        }
+        if is_function(t) {
+            if js::truthy(param.get("name")) {
+                let mut custom = Self::get_custom_type(param, schemas);
+                let mut keys: Vec<&str> = SCHEMA_OPTIONS_KEYS.to_vec();
+                keys.push("allOf");
+                let mut from_param = Obj::new();
+                for key in keys {
+                    if key == "type" || key == "items" {
+                        continue;
+                    }
+                    let in_schema = custom.get("schema").and_then(Value::as_object).is_some_and(|s| s.contains_key(key));
+                    if custom.contains_key(key) && !in_schema {
+                        from_param.insert(key.into(), custom[key].clone());
+                        js::delete(&mut custom, key);
+                    }
+                }
+                if !from_param.is_empty() {
+                    let existing = custom.get("schema").and_then(Value::as_object).cloned().unwrap_or_default();
+                    if existing.contains_key("$ref") {
+                        let r = existing["$ref"].clone();
+                        let rest = js::omit(&existing, &["$ref", "allOf"]);
+                        let rest_param = js::omit(&from_param, &["allOf"]);
+                        let mut all_of: Vec<Value> = existing.get("allOf").and_then(Value::as_array).cloned().unwrap_or_default();
+                        all_of.extend(from_param.get("allOf").and_then(Value::as_array).cloned().unwrap_or_default());
+                        all_of.push(json!({ "$ref": r }));
+                        let mut s = js::spread(&[&rest, &rest_param]);
+                        s.insert("allOf".into(), Value::Array(all_of));
+                        custom.insert("schema".into(), Value::Object(s));
+                    } else {
+                        let mut merged = js::spread(&[&existing, &from_param]);
+                        if let (Some(Value::Array(a)), Some(Value::Array(b))) = (existing.get("allOf"), from_param.get("allOf")) {
+                            let mut all = a.clone();
+                            all.extend(b.iter().cloned());
+                            merged.insert("allOf".into(), Value::Array(all));
+                        }
+                        custom.insert("schema".into(), Value::Object(merged));
+                    }
+                }
+                return vec![custom];
+            }
+            let Some(props) = Self::extract_properties_from_type(param.get("type").unwrap_or(&Value::Null), schemas, &mut Vec::new())
+            else {
+                return vec![param];
+            };
+            return props
+                .into_iter()
+                .map(|property| {
+                    let mut p = js::omit(&property, &["isArray", "enumName", "enumSchema", "selfRequired"]);
+                    p.insert("in".into(), js::s("query"));
+                    let required = if property.contains_key("selfRequired") {
+                        property["selfRequired"].clone()
+                    } else if let Some(Value::Bool(b)) = property.get("required") {
+                        Value::Bool(*b)
+                    } else {
+                        Value::Bool(true)
+                    };
+                    p.insert("required".into(), required);
+                    let mut keys: Vec<&str> = SCHEMA_OPTIONS_KEYS.to_vec();
+                    keys.push("allOf");
+                    for key in keys {
+                        if let Some(v) = property.get(key) {
+                            let mut s = p.get("schema").and_then(Value::as_object).cloned().unwrap_or_default();
+                            s.insert(key.into(), v.clone());
+                            p.insert("schema".into(), Value::Object(s));
+                            js::delete(&mut p, key);
+                        }
+                    }
+                    p
+                })
+                .collect();
+        }
+        if is_const_enum_object(t) {
+            let values = enum_values(param.get("type").unwrap_or(&Value::Null));
+            let mut p = param.clone();
+            p.insert("schema".into(), json!({ "type": enum_type(&values), "enum": values }));
+            set_opt(&mut p, "selfRequired", param.get("required").cloned());
+            return vec![p];
+        }
+        if is_object_literal(t) {
+            let name = param.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+            let lit = Self::create_from_object_literal(&name, param.get("type").and_then(Value::as_object).unwrap(), schemas);
+            let mut p = param.clone();
+            if js::truthy(param.get("isArray")) {
+                p.insert("schema".into(), json!({ "type": "array", "items": Value::Object(js::omit(&lit, &["name"])) }));
+            } else {
+                let mut s = Obj::new();
+                s.insert("type".into(), lit["type"].clone());
+                s.insert("properties".into(), lit["properties"].clone());
+                s.insert("required".into(), lit["required"].clone());
+                p.insert("schema".into(), Value::Object(s));
+            }
+            set_opt(&mut p, "selfRequired", param.get("required").cloned());
+            return vec![p];
+        }
+        vec![param]
+    }
+
+    /// `extractPropertiesFromType(type, schemas, pendingSchemasRefs)`.
+    pub(crate) fn extract_properties_from_type(t: &Value, schemas: &mut Schemas, pending: &mut Vec<String>) -> Option<Vec<Obj>> {
+        let info = match ty(Some(t)) {
+            Ty::Model(k) => model_info(k)?,
+            // Built-in constructors have a prototype without decorated properties.
+            Ty::Ctor(c) => ModelInfo { class_name: c.to_string(), name: c.to_string(), ..Default::default() },
+            _ => return None,
+        };
+        for m in &info.extra_models {
+            Self::explore_model_schema(m, schemas, pending);
+        }
+        let mut out = Vec::new();
+        for (key, meta) in &info.properties {
+            let mut property = Self::merge_property_with_metadata(key, meta.clone(), schemas, pending);
+            let declared = ["oneOf", "anyOf", "allOf"].into_iter().find(|c| property.contains_key(*c));
+            if let Some(comb) = declared {
+                let has_declared = ["oneOf", "anyOf", "allOf"].iter().any(|c| meta.contains_key(*c));
+                if property.get("type").and_then(Value::as_str) == Some("array") || js::truthy(property.get("isArray")) {
+                    let v = property.get(comb).cloned().unwrap_or(Value::Null);
+                    let mut items = Obj::new();
+                    items.insert(comb.into(), v);
+                    property.insert("items".into(), Value::Object(items));
+                    js::delete(&mut property, comb);
+                } else if has_declared {
+                    js::delete(&mut property, "type");
+                }
+            }
+            out.push(property);
+        }
+        Some(out)
+    }
+
+    /// `exploreModelSchema(type, schemas, pendingSchemasRefs)`: registers the model in
+    /// `schemas` and returns its name.
+    pub fn explore_model_schema(t: &Value, schemas: &mut Schemas, pending: &mut Vec<String>) -> String {
+        let Some(props) = Self::extract_properties_from_type(t, schemas, pending) else {
+            return String::new();
+        };
+        let info = match ty(Some(t)) {
+            Ty::Model(k) => model_info(k).unwrap_or_default(),
+            Ty::Ctor(c) => ModelInfo { class_name: c.to_string(), name: c.to_string(), ..Default::default() },
+            _ => ModelInfo::default(),
+        };
+        let mut properties = Obj::new();
+        for p in &props {
+            let name = p.get("name").map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            });
+            let mut omit = vec!["name", "isArray", "enumName", "enumSchema", "selfRequired"];
+            if !matches!(p.get("required"), Some(Value::Array(_))) {
+                omit.push("required");
+            }
+            // keyBy(properties, 'name'): later properties with the same name win (same position).
+            properties.insert(name.unwrap_or_else(|| "undefined".into()), Value::Object(js::omit(p, &omit)));
+        }
+        let mut def = Obj::new();
+        def.insert("type".into(), js::s("object"));
+        def.insert("properties".into(), Value::Object(properties));
+        js::assign(&mut def, &info.extensions);
+        js::assign(&mut def, &info.schema_properties);
+        let required: Vec<Value> = props
+            .iter()
+            .filter(|p| {
+                if p.contains_key("selfRequired") {
+                    loose_ne_false(p.get("selfRequired"))
+                } else {
+                    loose_ne_false(p.get("required")) && !matches!(p.get("required"), Some(Value::Array(_)))
+                }
+            })
+            .filter_map(|p| p.get("name").cloned())
+            .collect();
+        if !required.is_empty() {
+            def.insert("required".into(), Value::Array(required));
+        }
+        let def = Value::Object(def);
+        if let Some(existing) = schemas.get(&info.name) {
+            if !js::deep_equal(existing, &def) {
+                corvis::Logger::new("Logger").warn(format!(
+                    "Duplicate DTO detected: \"{}\" is defined multiple times with different schemas.\nConsider using unique class names or applying @ApiExtraModels() decorator with custom schema names.\nNote: This will throw an error in the next major version.",
+                    info.name
+                ));
+            }
+        }
+        schemas.insert(info.name.clone(), def);
+        info.name
+    }
+
+    fn merge_property_with_metadata(key: &str, metadata: Obj, schemas: &mut Schemas, pending: &mut Vec<String>) -> Obj {
+        let metadata = js::omit(&metadata, &["link"]);
+        if matches!(metadata.get("type"), Some(Value::Array(_))) {
+            return Self::create_from_nested_array(key, &metadata, schemas, pending);
+        }
+        Self::create_schema_metadata(key, metadata, schemas, pending, None)
+    }
+
+    fn create_enum_param(param: Obj, schemas: &mut Schemas) -> Obj {
+        let enum_name = param.get("enumName").and_then(Value::as_str).unwrap_or("").to_string();
+        let r = get_schema_path(&enum_name);
+        let schema = param.get("schema").and_then(Value::as_object);
+        if !schemas.contains_key(&enum_name) {
+            let e = if let Some(e) = param.get("enum") {
+                Some(e.clone())
+            } else if let Some(s) = schema {
+                if let Some(items) = s.get("items") { items.get("enum").cloned() } else { s.get("enum").cloned() }
+            } else if js::truthy(param.get("isArray")) && param.get("items").is_some() {
+                param["items"].get("enum").cloned()
+            } else {
+                None
+            };
+            let t = if js::truthy(param.get("isArray")) {
+                schema.and_then(|s| s.get("items")).and_then(|i| i.get("type")).cloned()
+            } else {
+                schema.and_then(|s| s.get("type")).cloned()
+            }
+            .filter(|v| !v.is_null())
+            .unwrap_or_else(|| js::s("string"));
+            let mut def = Obj::new();
+            def.insert("type".into(), t);
+            set_opt(&mut def, "enum", e);
+            if let Some(Value::Object(es)) = param.get("enumSchema") {
+                js::assign(&mut def, es);
+            }
+            if let Some(n) = param.get("x-enumNames").filter(|v| js::truthy(Some(v))) {
+                def.insert("x-enumNames".into(), n.clone());
+            }
+            schemas.insert(enum_name.clone(), Value::Object(def));
+        } else if let Some(Value::Object(es)) = param.get("enumSchema") {
+            let mut cur = js::obj_of(&schemas[&enum_name]);
+            js::assign(&mut cur, es);
+            schemas.insert(enum_name.clone(), Value::Object(cur));
+        }
+        let new_schema = if js::truthy(param.get("isArray")) || schema.is_some_and(|s| js::truthy(s.get("items"))) {
+            json!({ "type": "array", "items": { "$ref": r } })
+        } else {
+            json!({ "$ref": r })
+        };
+        let mut p = param.clone();
+        p.insert("schema".into(), new_schema);
+        js::omit(&p, &["isArray", "items", "enumName", "enum", "x-enumNames", "enumSchema"])
+    }
+
+    fn create_enum_schema_type(key: &str, metadata: &Obj, schemas: &mut Schemas) -> Obj {
+        if !js::truthy(metadata.get("enumName")) {
+            let mut o = metadata.clone();
+            o.insert("name".into(), name_or_key(metadata, key));
+            return o;
+        }
+        let enum_name = metadata["enumName"].as_str().unwrap_or("").to_string();
+        let r = get_schema_path(&enum_name);
+        let is_array = js::truthy(metadata.get("isArray"));
+        let enum_type = if is_array { metadata.get("items").and_then(|i| i.get("type")).cloned() } else { metadata.get("type").cloned() }
+            .filter(|v| !v.is_null())
+            .unwrap_or_else(|| js::s("string"));
+        if !schemas.contains_key(&enum_name) {
+            let mut def = Obj::new();
+            def.insert("type".into(), enum_type);
+            if let Some(Value::Object(es)) = metadata.get("enumSchema") {
+                js::assign(&mut def, es);
+            }
+            let e = if is_array && metadata.get("items").is_some() {
+                metadata["items"].get("enum").cloned()
+            } else {
+                metadata.get("enum").cloned()
+            };
+            set_opt(&mut def, "enum", e);
+            set_opt(&mut def, "description", metadata.get("description").cloned());
+            set_opt(&mut def, "x-enumNames", metadata.get("x-enumNames").cloned());
+            schemas.insert(enum_name.clone(), Value::Object(def));
+        } else {
+            let mut cur = js::obj_of(&schemas[&enum_name]);
+            if let Some(Value::Object(es)) = metadata.get("enumSchema") {
+                js::assign(&mut cur, es);
+            }
+            if let Some(n) = metadata.get("x-enumNames").filter(|v| js::truthy(Some(v))) {
+                cur.insert("x-enumNames".into(), n.clone());
+            }
+            schemas.insert(enum_name.clone(), Value::Object(cur));
+        }
+        let mut o = metadata.clone();
+        o.insert("name".into(), name_or_key(metadata, key));
+        o.insert("type".into(), js::s(if is_array { "array" } else { "string" }));
+        let combinator = ["oneOf", "anyOf"].into_iter().find(|k| matches!(metadata.get(*k), Some(Value::Array(_))));
+        if is_array {
+            o.insert("items".into(), json!({ "$ref": r }));
+        } else if let Some(c) = combinator {
+            let mut list = metadata[c].as_array().cloned().unwrap_or_default();
+            list.push(json!({ "$ref": r }));
+            o.insert(c.into(), Value::Array(list));
+        } else {
+            o.insert("allOf".into(), json!([{ "$ref": r }]));
+        }
+        let mut omit = vec!["enum", "enumName", "enumSchema", "x-enumNames"];
+        if !is_array {
+            omit.push("type");
+        }
+        js::omit(&o, &omit)
+    }
+
+    fn create_not_built_in_type_reference(key: &str, metadata: &Obj, t: &Value, schemas: &mut Schemas, pending: &mut Vec<String>) -> Obj {
+        let info = match ty(Some(t)) {
+            Ty::Model(k) => model_info(k),
+            Ty::Ctor(c) => Some(ModelInfo { class_name: c.to_string(), name: c.to_string(), ..Default::default() }),
+            _ => None,
+        };
+        let Some(info) = info else {
+            let error_in = pending.last().map(|p| format!("in \"{p}\" ")).unwrap_or_default();
+            panic!(
+                "A circular dependency has been detected {error_in}(property key: \"{key}\"). To resolve this, use a lazy resolver for the property type (\"type: () => ClassType\") on each side of the relationship, or break the cycle by introducing a reference via @ApiExtraModels."
+            );
+        };
+        let mut name = info.name.clone();
+        if !schemas.contains_key(&name) && !pending.contains(&name) {
+            pending.push(name.clone());
+            name = Self::explore_model_schema(t, schemas, pending);
+            pending.pop();
+        }
+        let r = get_schema_path(&name);
+        if js::truthy(metadata.get("isArray")) {
+            return Self::transform_to_array_schema_property(metadata, key, &json!({ "$ref": r }));
+        }
+        let valid = js::omit(metadata, &["type", "isArray", "required", "name"]);
+        let mut out = Obj::new();
+        out.insert("name".into(), name_or_key(metadata, key));
+        set_opt(&mut out, "required", metadata.get("required").cloned());
+        if !valid.is_empty() {
+            js::assign(&mut out, &valid);
+            if js::truthy(valid.get("nullable")) {
+                out.insert("type".into(), js::s("object"));
+            }
+            out.insert("allOf".into(), json!([{ "$ref": r }]));
+            return out;
+        }
+        out.insert("$ref".into(), js::s(r));
+        out
+    }
+
+    fn transform_to_array_schema_property(metadata: &Obj, key: &str, t: &Value) -> Obj {
+        let modifier_keys = ["format", "maximum", "maxLength", "minimum", "minLength", "pattern"];
+        let moved = js::pick(metadata, &modifier_keys);
+        let mut remove = vec!["type", "enum"];
+        remove.extend(modifier_keys);
+        let mut host = js::omit(metadata, &remove);
+        host.insert("name".into(), name_or_key(metadata, key));
+        host.insert("type".into(), js::s("array"));
+        let mut items = if let Some(Value::Object(i)) = metadata.get("items") {
+            js::spread(&[i, &moved])
+        } else if let Value::String(s) = t {
+            let mut o = Obj::new();
+            o.insert("type".into(), js::s(s.clone()));
+            js::assign(&mut o, &moved);
+            o
+        } else {
+            js::spread(&[&js::obj_of(t), &moved])
+        };
+        items.retain(|_, v| !v.is_null());
+        host.insert("items".into(), Value::Object(items));
+        host
+    }
+
+    fn map_array_ctor_param(param: Obj) -> Obj {
+        let mut p = js::omit(&param, &["type"]);
+        p.insert("schema".into(), json!({ "type": "array", "items": { "type": "string" } }));
+        p
+    }
+
+    fn create_from_object_literal(key: &str, literal: &Obj, schemas: &mut Schemas) -> Obj {
+        let mut properties = Obj::new();
+        let mut required = Vec::new();
+        for (k, v) in literal {
+            let mut meta = js::obj_of(v);
+            if js::truthy(meta.get("isArray")) && js::truthy(meta.get("enum")) {
+                meta.insert("type".into(), js::s("array"));
+                let values = enum_values(&meta["enum"]);
+                let item_type = meta.get("items").and_then(|i| i.get("type")).cloned().filter(|v| !v.is_null()).unwrap_or_else(|| js::s(enum_type(&values)));
+                meta.insert("items".into(), json!({ "type": item_type, "enum": values }));
+                js::delete(&mut meta, "enum");
+            } else if js::truthy(meta.get("enum")) {
+                let values = enum_values(&meta["enum"]);
+                meta.insert("enum".into(), Value::Array(values.clone()));
+                if !js::truthy(meta.get("type")) {
+                    meta.insert("type".into(), js::s(enum_type(&values)));
+                }
+            }
+            let pm = if matches!(meta.get("type"), Some(Value::Array(_))) {
+                Self::create_from_nested_array(k, &meta, schemas, &mut Vec::new())
+            } else {
+                Self::create_schema_metadata(k, meta, schemas, &mut Vec::new(), None)
+            };
+            if js::truthy(pm.get("required")) {
+                required.push(js::s(k.clone()));
+            }
+            properties.insert(k.clone(), Value::Object(js::omit(&pm, &["isArray", "name", "required"])));
+        }
+        let mut o = Obj::new();
+        o.insert("name".into(), js::s(key));
+        o.insert("type".into(), js::s("object"));
+        o.insert("properties".into(), Value::Object(properties));
+        o.insert("required".into(), Value::Array(required));
+        o
+    }
+
+    fn create_from_nested_array(key: &str, metadata: &Obj, schemas: &mut Schemas, pending: &mut Vec<String>) -> Obj {
+        fn recurse(key: &str, metadata: &Obj, t: &Value, schemas: &mut Schemas, pending: &mut Vec<String>) -> Obj {
+            match t {
+                Value::Array(a) => {
+                    let inner = recurse(key, metadata, a.first().unwrap_or(&Value::Null), schemas, pending);
+                    let mut o = Obj::new();
+                    o.insert("name".into(), js::s(key));
+                    o.insert("type".into(), js::s("array"));
+                    o.insert("items".into(), Value::Object(inner));
+                    o
+                }
+                other => {
+                    let m = SchemaObjectFactory::create_schema_metadata(key, metadata.clone(), schemas, pending, Some(other.clone()));
+                    js::omit(&m, &["isArray", "name"])
+                }
+            }
+        }
+        recurse(key, metadata, metadata.get("type").unwrap_or(&Value::Null), schemas, pending)
+    }
+
+    fn create_schema_metadata(key: &str, metadata: Obj, schemas: &mut Schemas, pending: &mut Vec<String>, nested: Option<Value>) -> Obj {
+        let type_ref = nested.filter(|v| js::truthy(Some(v))).or_else(|| metadata.get("type").cloned()).unwrap_or(Value::Null);
+        let t = ty(Some(&type_ref));
+        if js::truthy(metadata.get("enum")) && matches!(t, Ty::Ctor("Object")) {
+            let values = enum_values(&metadata["enum"]);
+            let et = enum_type(&values);
+            if js::truthy(metadata.get("isArray")) {
+                let mut m = metadata.clone();
+                m.insert("items".into(), json!({ "type": et, "enum": values }));
+                return Self::transform_to_array_schema_property(&m, key, &json!({ "type": et, "enum": values }));
+            }
+            let mut m = metadata.clone();
+            m.insert("type".into(), js::s(et));
+            m.insert("enum".into(), Value::Array(values));
+            return Self::create_schema_metadata(key, m, schemas, pending, Some(js::s(et)));
+        }
+        if is_const_enum_object(t) {
+            let values = enum_values(&type_ref);
+            let et = enum_type(&values);
+            let mut m = metadata.clone();
+            m.insert("type".into(), js::s(et));
+            m.insert("enum".into(), Value::Array(values));
+            return Self::create_schema_metadata(key, m, schemas, pending, Some(js::s(et)));
+        }
+        if let Ty::Obj(lit) = t {
+            let lit = lit.clone();
+            let schema = Self::create_from_object_literal(key, &lit, schemas);
+            if js::truthy(metadata.get("isArray")) {
+                let mut o = Obj::new();
+                o.insert("name".into(), schema["name"].clone());
+                o.insert("type".into(), js::s("array"));
+                o.insert("items".into(), Value::Object(js::omit(&schema, &["name"])));
+                set_opt(&mut o, "selfRequired", metadata.get("required").cloned());
+                return o;
+            }
+            let mut o = schema;
+            set_opt(&mut o, "selfRequired", metadata.get("required").cloned());
+            return o;
+        }
+        if let Ty::Str(s) = t {
+            let is_enum = js::truthy(metadata.get("enum"))
+                || (js::truthy(metadata.get("isArray")) && metadata.get("items").and_then(|i| i.get("enum")).is_some_and(|e| js::truthy(Some(e))));
+            if is_enum {
+                return Self::create_enum_schema_type(key, &metadata, schemas);
+            }
+            if js::truthy(metadata.get("isArray")) {
+                return Self::transform_to_array_schema_property(&metadata, key, &js::s(s));
+            }
+            let mut o = metadata.clone();
+            o.insert("name".into(), name_or_key(&metadata, key));
+            return o;
+        }
+        if matches!(t, Ty::Ctor("Date")) {
+            if js::truthy(metadata.get("isArray")) {
+                let format = metadata.get("format").filter(|f| js::truthy(Some(f))).cloned().unwrap_or_else(|| js::s("date-time"));
+                return Self::transform_to_array_schema_property(&metadata, key, &json!({ "format": format, "type": "string" }));
+            }
+            let mut o = js::obj_of(&json!({ "format": "date-time" }));
+            js::assign(&mut o, &metadata);
+            o.insert("type".into(), js::s("string"));
+            o.insert("name".into(), name_or_key(&metadata, key));
+            return o;
+        }
+        if matches!(t, Ty::Ctor("BigInt")) {
+            let mut o = js::obj_of(&json!({ "format": "int64" }));
+            js::assign(&mut o, &metadata);
+            o.insert("type".into(), js::s("integer"));
+            o.insert("name".into(), name_or_key(&metadata, key));
+            return o;
+        }
+        if !is_builtin(t) {
+            return Self::create_not_built_in_type_reference(key, &metadata, &type_ref, schemas, pending);
+        }
+        let item_type = type_name(t).and_then(map_type_to_openapi);
+        if js::truthy(metadata.get("isArray")) {
+            let mut it = Obj::new();
+            set_opt(&mut it, "type", item_type.map(Value::String));
+            return Self::transform_to_array_schema_property(&metadata, key, &Value::Object(it));
+        }
+        if item_type.as_deref() == Some("array") {
+            if ["oneOf", "anyOf", "allOf"].iter().any(|c| metadata.contains_key(*c)) {
+                let mut o = metadata.clone();
+                js::delete(&mut o, "type");
+                o.insert("name".into(), name_or_key(&metadata, key));
+                return o;
+            }
+            return Self::transform_to_array_schema_property(&metadata, key, &json!({ "type": "string" }));
+        }
+        let mut o = metadata.clone();
+        o.insert("name".into(), name_or_key(&metadata, key));
+        set_opt(&mut o, "type", item_type.map(Value::String));
+        o
+    }
+}
+
+/// `value != false` with JavaScript loose equality (`undefined != false` is `true`).
+fn loose_ne_false(v: Option<&Value>) -> bool {
+    match v {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
+        Some(Value::String(s)) => s.trim() != "" && s.trim().parse::<f64>().map(|f| f != 0.0).unwrap_or(true),
+        Some(Value::Array(a)) => !(a.is_empty() || (a.len() == 1 && loose_ne_false_scalar(&a[0]))),
+        Some(Value::Object(_)) => true,
+    }
+}
+
+fn loose_ne_false_scalar(v: &Value) -> bool {
+    // [x] == false  <=>  String(x) == "0" or ""
+    match v {
+        Value::Number(n) => n.as_f64() == Some(0.0),
+        Value::String(s) => s.is_empty() || s == "0",
+        Value::Bool(b) => !*b,
+        Value::Null => true,
+        _ => false,
+    }
+}
+
+// --- SwaggerTypesMapper --------------------------------------------------------------------
+
+/// Port of `SwaggerTypesMapper`.
+pub struct SwaggerTypesMapper;
+
+impl SwaggerTypesMapper {
+    pub fn schema_options_keys() -> &'static [&'static str] {
+        &SCHEMA_OPTIONS_KEYS
+    }
+
+    fn schema_options(param: &Obj) -> Obj {
+        js::pick(param, &SCHEMA_OPTIONS_KEYS)
+    }
+
+    /// `mapParamTypes(parameters)`.
+    pub fn map_param_types(parameters: Vec<Obj>) -> Vec<Obj> {
+        let remove = keys_to_remove();
+        parameters
+            .into_iter()
+            .map(|mut param| {
+                if param.get("schema").is_some_and(|s| js::truthy(Some(s))) || param.contains_key("content") {
+                    if matches!(param.get("required"), Some(Value::Array(_))) && param.contains_key("schema") {
+                        let req = param["required"].clone();
+                        if let Some(Value::Object(s)) = param.get_mut("schema") {
+                            s.insert("required".into(), req);
+                        }
+                        js::delete(&mut param, "required");
+                    }
+                    if param.contains_key("selfRequired") {
+                        let v = param["selfRequired"].clone();
+                        set_opt(&mut param, "required", if v.is_null() { None } else { Some(v) });
+                    }
+                    return js::omit(&param, &remove);
+                }
+                let type_name = type_name(ty(param.get("type"))).and_then(map_type_to_openapi);
+                let mut with_type = param.clone();
+                set_opt(&mut with_type, "type", type_name.clone().map(Value::String));
+                if js::truthy(with_type.get("isArray"))
+                    && with_type.get("items").and_then(|i| i.get("enum")).is_some_and(|e| js::truthy(Some(e)))
+                {
+                    let mut out = js::omit(&with_type, &remove);
+                    let mut schema = Self::schema_options(&with_type);
+                    schema.insert("type".into(), js::s("array"));
+                    schema.insert("items".into(), with_type.get("items").cloned().unwrap_or(Value::Null));
+                    out.insert("schema".into(), Value::Object(schema));
+                    return out;
+                }
+                if js::truthy(with_type.get("isArray")) {
+                    return Self::map_array_type(&with_type, &remove);
+                }
+                let mut out = js::omit(&param, &remove);
+                let mut schema = Self::schema_options(&param);
+                if let Some(Value::Object(s)) = param.get("schema") {
+                    js::assign(&mut schema, s);
+                }
+                set_opt(&mut schema, "enum", with_type.get("enum").cloned());
+                set_opt(&mut schema, "type", type_name.map(Value::String));
+                set_opt(&mut schema, "$ref", with_type.get("$ref").cloned());
+                schema.retain(|_, v| !v.is_null());
+                out.insert("schema".into(), Value::Object(schema));
+                out
+            })
+            .collect()
+    }
+
+    fn map_array_type(param: &Obj, remove: &[&str]) -> Obj {
+        let modifier_keys = ["format", "maximum", "minimum", "pattern"];
+        let items = match param.get("items") {
+            Some(i) if js::truthy(Some(i)) => js::obj_of(i),
+            _ => {
+                let mut o = param.get("schema").and_then(Value::as_object).cloned().unwrap_or_default();
+                set_opt(&mut o, "enum", param.get("enum").cloned());
+                let t = param.get("type").and_then(Value::as_str).and_then(map_type_to_openapi);
+                set_opt(&mut o, "type", t.map(Value::String));
+                o
+            }
+        };
+        let modifiers = js::pick(param, &modifier_keys);
+        let mut out = js::omit(param, remove);
+        let mut schema = js::omit(&Self::schema_options(param), &modifier_keys);
+        schema.insert("type".into(), js::s("array"));
+        let item = match items.get("type") {
+            Some(Value::String(s)) => {
+                let mut o = Obj::new();
+                o.insert("type".into(), js::s(s.clone()));
+                js::assign(&mut o, &modifiers);
+                o
+            }
+            Some(Value::Object(t)) => js::spread(&[t, &modifiers]),
+            _ => modifiers.clone(),
+        };
+        schema.insert("items".into(), Value::Object(item));
+        out.insert("schema".into(), Value::Object(schema));
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn primitive_param() {
+        let p = js::obj_of(&json!({ "type": { "$ctor": "String" }, "name": "id", "required": true, "in": "path" }));
+        let mut schemas = Obj::new();
+        let ps = SchemaObjectFactory::create_from_model(vec![p], &mut schemas);
+        let out = SwaggerTypesMapper::map_param_types(ps);
+        assert_eq!(
+            js::stringify(&Value::Object(out[0].clone())),
+            r#"{"name":"id","required":true,"in":"path","schema":{"type":"string"}}"#
+        );
+    }
+
+    #[test]
+    fn query_with_number_and_minimum() {
+        let p = js::obj_of(&json!({ "name": "page", "required": false, "in": "query", "type": { "$ctor": "Number" }, "minimum": 1 }));
+        let out = SwaggerTypesMapper::map_param_types(SchemaObjectFactory::create_from_model(vec![p], &mut Obj::new()));
+        assert_eq!(
+            js::stringify(&Value::Object(out[0].clone())),
+            r#"{"name":"page","required":false,"in":"query","schema":{"minimum":1,"type":"number"}}"#
+        );
+    }
+
+    #[test]
+    fn array_query() {
+        let p = js::obj_of(&json!({ "name": "ids", "required": true, "in": "query", "type": { "$ctor": "String" }, "isArray": true }));
+        // String is primitive: createFromModel keeps it, mapParamTypes maps the array.
+        let out = SwaggerTypesMapper::map_param_types(SchemaObjectFactory::create_from_model(vec![p], &mut Obj::new()));
+        assert_eq!(
+            js::stringify(&Value::Object(out[0].clone())),
+            r#"{"name":"ids","required":true,"in":"query","schema":{"type":"array","items":{"type":"string"}}}"#
+        );
+    }
+
+    #[test]
+    fn api_property_metadata() {
+        let m = property_metadata(js::obj_of(&json!({ "description": "d" })), json!({ "$ctor": "String" }), true);
+        assert_eq!(js::stringify(&m), r#"{"type":{"$ctor":"String"},"description":"d","required":false}"#);
+        let m = property_metadata(Obj::new(), json!([{ "$ctor": "Number" }]), false);
+        assert_eq!(js::stringify(&m), r#"{"type":{"$ctor":"Number"},"isArray":true}"#);
+        let m = property_metadata(js::obj_of(&json!({ "enum": ["a", "b"] })), json!({ "$ctor": "String" }), false);
+        assert_eq!(js::stringify(&m), r#"{"type":"string","enum":["a","b"]}"#);
+    }
+
+    #[test]
+    fn builtin_property_schemas() {
+        let mut schemas = Obj::new();
+        let m = SchemaObjectFactory::create_schema_metadata("n", js::obj_of(&json!({ "type": { "$ctor": "Number" }, "minimum": 0 })), &mut schemas, &mut Vec::new(), None);
+        assert_eq!(js::stringify(&Value::Object(m)), r#"{"type":"number","minimum":0,"name":"n"}"#);
+        let m = SchemaObjectFactory::create_schema_metadata("t", js::obj_of(&json!({ "type": { "$ctor": "String" }, "isArray": true })), &mut schemas, &mut Vec::new(), None);
+        assert_eq!(js::stringify(&Value::Object(m)), r#"{"isArray":true,"name":"t","type":"array","items":{"type":"string"}}"#);
+        let m = SchemaObjectFactory::create_schema_metadata("d", js::obj_of(&json!({ "type": { "$ctor": "Date" } })), &mut schemas, &mut Vec::new(), None);
+        assert_eq!(js::stringify(&Value::Object(m)), r#"{"format":"date-time","type":"string","name":"d"}"#);
+    }
+
+    #[test]
+    fn loose_equality() {
+        assert!(loose_ne_false(None));
+        assert!(!loose_ne_false(Some(&json!(false))));
+        assert!(loose_ne_false(Some(&json!(true))));
+    }
+}

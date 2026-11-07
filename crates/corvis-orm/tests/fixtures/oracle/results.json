@@ -1,0 +1,5293 @@
+[
+ {
+  "label": "create.basic",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "ana@x.io",
+    "name": "Ana",
+    "role": "ADMIN",
+    "roles": [
+     "ADMIN",
+     "MEMBER"
+    ],
+    "tags": [
+     "a",
+     "b"
+    ],
+    "scores": [
+     1,
+     2,
+     3
+    ],
+    "balance": "10.5",
+    "ratio": 0.25,
+    "big": 9007199254740991,
+    "birthday": "1990-05-06T13:00:00.000Z",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "data": {
+     "z": 1,
+     "a": [
+      1,
+      2
+     ],
+     "s": "x"
+    },
+    "meta": {
+     "k": "v"
+    }
+   }
+  },
+  "result": {
+   "id": 1,
+   "email": "ana@x.io",
+   "name": "Ana",
+   "role": "ADMIN",
+   "roles": [
+    "ADMIN",
+    "MEMBER"
+   ],
+   "tags": [
+    "a",
+    "b"
+   ],
+   "scores": [
+    1,
+    2,
+    3
+   ],
+   "balance": "10.5",
+   "ratio": 0.25,
+   "big": 9007199254740991,
+   "birthday": "1990-05-06T00:00:00.000Z",
+   "createdAt": "2024-01-01T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:31.869Z",
+   "data": {
+    "a": [
+     1,
+     2
+    ],
+    "s": "x",
+    "z": 1
+   },
+   "meta": {
+    "k": "v"
+   },
+   "active": true,
+   "managerId": null
+  }
+ },
+ {
+  "label": "create.defaults",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "bob@x.io",
+    "createdAt": "2024-01-02T00:00:00.000Z"
+   }
+  },
+  "result": {
+   "id": 2,
+   "email": "bob@x.io",
+   "name": null,
+   "role": "MEMBER",
+   "roles": [],
+   "tags": [],
+   "scores": [],
+   "balance": "0",
+   "ratio": null,
+   "big": 0,
+   "birthday": null,
+   "createdAt": "2024-01-02T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:31.895Z",
+   "data": null,
+   "meta": {},
+   "active": true,
+   "managerId": null
+  }
+ },
+ {
+  "label": "create.nested",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "carl@x.io",
+    "name": "Carl",
+    "createdAt": "2024-01-03T00:00:00.000Z",
+    "manager": {
+     "connect": {
+      "id": 1
+     }
+    },
+    "profile": {
+     "create": {
+      "bio": "hello"
+     }
+    },
+    "posts": {
+     "create": [
+      {
+       "title": "P1",
+       "views": 10,
+       "createdAt": "2024-02-01T00:00:00.000Z",
+       "comments": {
+        "create": [
+         {
+          "text": "c1"
+         },
+         {
+          "text": "c2"
+         }
+        ]
+       }
+      },
+      {
+       "title": "P2",
+       "body": "body",
+       "published": true,
+       "views": 5,
+       "createdAt": "2024-02-02T00:00:00.000Z"
+      }
+     ]
+    },
+    "wallets": {
+     "create": [
+      {
+       "id": "00000000-0000-4000-8000-000000000001",
+       "currency": "USD",
+       "amount": "100.12345678"
+      },
+      {
+       "id": "00000000-0000-4000-8000-000000000002",
+       "currency": "VES",
+       "amount": 3.5,
+       "label": "bs"
+      }
+     ]
+    },
+    "groups": {
+     "create": [
+      {
+       "id": "10000000-0000-4000-8000-000000000001",
+       "name": "g1"
+      }
+     ]
+    }
+   },
+   "include": {
+    "profile": true,
+    "posts": {
+     "include": {
+      "comments": true
+     },
+     "orderBy": {
+      "id": "asc"
+     }
+    },
+    "wallets": {
+     "orderBy": {
+      "currency": "asc"
+     }
+    },
+    "groups": true,
+    "manager": true
+   }
+  },
+  "result": {
+   "id": 3,
+   "email": "carl@x.io",
+   "name": "Carl",
+   "role": "MEMBER",
+   "roles": [],
+   "tags": [],
+   "scores": [],
+   "balance": "0",
+   "ratio": null,
+   "big": 0,
+   "birthday": null,
+   "createdAt": "2024-01-03T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:31.898Z",
+   "data": null,
+   "meta": {},
+   "active": true,
+   "managerId": 1,
+   "profile": {
+    "id": 1,
+    "bio": "hello",
+    "userId": 3
+   },
+   "posts": [
+    {
+     "id": 1,
+     "title": "P1",
+     "body": null,
+     "published": false,
+     "views": 10,
+     "authorId": 3,
+     "createdAt": "2024-02-01T00:00:00.000Z",
+     "comments": [
+      {
+       "id": 1,
+       "text": "c1",
+       "postId": 1
+      },
+      {
+       "id": 2,
+       "text": "c2",
+       "postId": 1
+      }
+     ]
+    },
+    {
+     "id": 2,
+     "title": "P2",
+     "body": "body",
+     "published": true,
+     "views": 5,
+     "authorId": 3,
+     "createdAt": "2024-02-02T00:00:00.000Z",
+     "comments": []
+    }
+   ],
+   "wallets": [
+    {
+     "id": "00000000-0000-4000-8000-000000000001",
+     "userId": 3,
+     "currency": "USD",
+     "amount": "100.12345678",
+     "label": null
+    },
+    {
+     "id": "00000000-0000-4000-8000-000000000002",
+     "userId": 3,
+     "currency": "VES",
+     "amount": "3.5",
+     "label": "bs"
+    }
+   ],
+   "groups": [
+    {
+     "id": "10000000-0000-4000-8000-000000000001",
+     "name": "g1"
+    }
+   ],
+   "manager": {
+    "id": 1,
+    "email": "ana@x.io",
+    "name": "Ana",
+    "role": "ADMIN",
+    "roles": [
+     "ADMIN",
+     "MEMBER"
+    ],
+    "tags": [
+     "a",
+     "b"
+    ],
+    "scores": [
+     1,
+     2,
+     3
+    ],
+    "balance": "10.5",
+    "ratio": 0.25,
+    "big": 9007199254740991,
+    "birthday": "1990-05-06T00:00:00.000Z",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2026-11-07T14:01:31.869Z",
+    "data": {
+     "a": [
+      1,
+      2
+     ],
+     "s": "x",
+     "z": 1
+    },
+    "meta": {
+     "k": "v"
+    },
+    "active": true,
+    "managerId": null
+   }
+  }
+ },
+ {
+  "label": "create.m2m_connect",
+  "model": "post",
+  "action": "create",
+  "args": {
+   "data": {
+    "title": "P3",
+    "createdAt": "2024-02-03T00:00:00.000Z",
+    "author": {
+     "connect": {
+      "email": "ana@x.io"
+     }
+    },
+    "categories": {
+     "create": [
+      {
+       "name": "tech"
+      },
+      {
+       "name": "news"
+      }
+     ]
+    }
+   },
+   "include": {
+    "categories": {
+     "orderBy": {
+      "name": "asc"
+     }
+    },
+    "author": {
+     "select": {
+      "email": true
+     }
+    }
+   }
+  },
+  "result": {
+   "id": 3,
+   "title": "P3",
+   "body": null,
+   "published": false,
+   "views": 0,
+   "authorId": 1,
+   "createdAt": "2024-02-03T00:00:00.000Z",
+   "categories": [
+    {
+     "id": 2,
+     "name": "news"
+    },
+    {
+     "id": 1,
+     "name": "tech"
+    }
+   ],
+   "author": {
+    "email": "ana@x.io"
+   }
+  }
+ },
+ {
+  "label": "create.connectOrCreate",
+  "model": "post",
+  "action": "create",
+  "args": {
+   "data": {
+    "title": "P4",
+    "createdAt": "2024-02-04T00:00:00.000Z",
+    "categories": {
+     "connectOrCreate": [
+      {
+       "where": {
+        "name": "tech"
+       },
+       "create": {
+        "name": "tech"
+       }
+      },
+      {
+       "where": {
+        "name": "life"
+       },
+       "create": {
+        "name": "life"
+       }
+      }
+     ]
+    }
+   },
+   "include": {
+    "categories": true
+   }
+  },
+  "result": {
+   "id": 4,
+   "title": "P4",
+   "body": null,
+   "published": false,
+   "views": 0,
+   "authorId": null,
+   "createdAt": "2024-02-04T00:00:00.000Z",
+   "categories": [
+    {
+     "id": 1,
+     "name": "tech"
+    },
+    {
+     "id": 3,
+     "name": "life"
+    }
+   ]
+  }
+ },
+ {
+  "label": "create.group2",
+  "model": "group",
+  "action": "create",
+  "args": {
+   "data": {
+    "id": "10000000-0000-4000-8000-000000000002",
+    "name": "g2",
+    "users": {
+     "connect": [
+      {
+       "id": 1
+      },
+      {
+       "id": 2
+      }
+     ]
+    }
+   },
+   "include": {
+    "users": {
+     "select": {
+      "id": true
+     }
+    }
+   }
+  },
+  "result": {
+   "id": "10000000-0000-4000-8000-000000000002",
+   "name": "g2",
+   "users": [
+    {
+     "id": 1
+    },
+    {
+     "id": 2
+    }
+   ]
+  }
+ },
+ {
+  "label": "create.pair",
+  "model": "pair",
+  "action": "create",
+  "args": {
+   "data": {
+    "a": "x",
+    "b": 1,
+    "label": "x1"
+   }
+  },
+  "result": {
+   "a": "x",
+   "b": 1,
+   "label": "x1"
+  }
+ },
+ {
+  "label": "create.entry_compound_connect",
+  "model": "entry",
+  "action": "create",
+  "args": {
+   "data": {
+    "amount": "1.5",
+    "wallet": {
+     "connect": {
+      "id": "00000000-0000-4000-8000-000000000001"
+     }
+    },
+    "pair": {
+     "connect": {
+      "a_b": {
+       "a": "x",
+       "b": 1
+      }
+     }
+    }
+   },
+   "include": {
+    "pair": true
+   }
+  },
+  "result": {
+   "id": 1,
+   "walletId": "00000000-0000-4000-8000-000000000001",
+   "pairA": "x",
+   "pairB": 1,
+   "amount": "1.5",
+   "pair": {
+    "a": "x",
+    "b": 1,
+    "label": "x1"
+   }
+  }
+ },
+ {
+  "label": "create.rate",
+  "model": "rate",
+  "action": "create",
+  "args": {
+   "data": {
+    "date": "2024-05-01T00:00:00.000Z",
+    "source": "bcv",
+    "value": "36.5",
+    "at": "2024-05-01T12:30:00.123Z"
+   }
+  },
+  "result": {
+   "date": "2024-05-01T00:00:00.000Z",
+   "source": "bcv",
+   "value": "36.5",
+   "at": "2024-05-01T12:30:00.123Z"
+  }
+ },
+ {
+  "label": "createMany",
+  "model": "rate",
+  "action": "createMany",
+  "args": {
+   "data": [
+    {
+     "date": "2024-05-02T00:00:00.000Z",
+     "source": "bcv",
+     "value": 37
+    },
+    {
+     "date": "2024-05-02T00:00:00.000Z",
+     "source": "p2p",
+     "value": "38.25"
+    }
+   ]
+  },
+  "result": {
+   "count": 2
+  }
+ },
+ {
+  "label": "createMany.skipDuplicates",
+  "model": "rate",
+  "action": "createMany",
+  "args": {
+   "data": [
+    {
+     "date": "2024-05-02T00:00:00.000Z",
+     "source": "bcv",
+     "value": 1
+    },
+    {
+     "date": "2024-05-03T00:00:00.000Z",
+     "source": "bcv",
+     "value": "39"
+    }
+   ],
+   "skipDuplicates": true
+  },
+  "result": {
+   "count": 1
+  }
+ },
+ {
+  "label": "createManyAndReturn",
+  "model": "category",
+  "action": "createManyAndReturn",
+  "args": {
+   "data": [
+    {
+     "name": "a1"
+    },
+    {
+     "name": "a2"
+    }
+   ]
+  },
+  "result": [
+   {
+    "id": 4,
+    "name": "a1"
+   },
+   {
+    "id": 5,
+    "name": "a2"
+   }
+  ]
+ },
+ {
+  "label": "createManyAndReturn.select",
+  "model": "category",
+  "action": "createManyAndReturn",
+  "args": {
+   "data": [
+    {
+     "name": "a3"
+    }
+   ],
+   "select": {
+    "name": true
+   }
+  },
+  "result": [
+   {
+    "name": "a3"
+   }
+  ]
+ },
+ {
+  "label": "findMany.all",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 1,
+    "email": "ana@x.io",
+    "name": "Ana",
+    "role": "ADMIN",
+    "roles": [
+     "ADMIN",
+     "MEMBER"
+    ],
+    "tags": [
+     "a",
+     "b"
+    ],
+    "scores": [
+     1,
+     2,
+     3
+    ],
+    "balance": "10.5",
+    "ratio": 0.25,
+    "big": 9007199254740991,
+    "birthday": "1990-05-06T00:00:00.000Z",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2026-11-07T14:01:31.869Z",
+    "data": {
+     "a": [
+      1,
+      2
+     ],
+     "s": "x",
+     "z": 1
+    },
+    "meta": {
+     "k": "v"
+    },
+    "active": true,
+    "managerId": null
+   },
+   {
+    "id": 2,
+    "email": "bob@x.io",
+    "name": null,
+    "role": "MEMBER",
+    "roles": [],
+    "tags": [],
+    "scores": [],
+    "balance": "0",
+    "ratio": null,
+    "big": 0,
+    "birthday": null,
+    "createdAt": "2024-01-02T00:00:00.000Z",
+    "updatedAt": "2026-11-07T14:01:31.895Z",
+    "data": null,
+    "meta": {},
+    "active": true,
+    "managerId": null
+   },
+   {
+    "id": 3,
+    "email": "carl@x.io",
+    "name": "Carl",
+    "role": "MEMBER",
+    "roles": [],
+    "tags": [],
+    "scores": [],
+    "balance": "0",
+    "ratio": null,
+    "big": 0,
+    "birthday": null,
+    "createdAt": "2024-01-03T00:00:00.000Z",
+    "updatedAt": "2026-11-07T14:01:31.898Z",
+    "data": null,
+    "meta": {},
+    "active": true,
+    "managerId": 1
+   }
+  ]
+ },
+ {
+  "label": "findUnique.email",
+  "model": "user",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "email": "ana@x.io"
+   }
+  },
+  "result": {
+   "id": 1,
+   "email": "ana@x.io",
+   "name": "Ana",
+   "role": "ADMIN",
+   "roles": [
+    "ADMIN",
+    "MEMBER"
+   ],
+   "tags": [
+    "a",
+    "b"
+   ],
+   "scores": [
+    1,
+    2,
+    3
+   ],
+   "balance": "10.5",
+   "ratio": 0.25,
+   "big": 9007199254740991,
+   "birthday": "1990-05-06T00:00:00.000Z",
+   "createdAt": "2024-01-01T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:31.869Z",
+   "data": {
+    "a": [
+     1,
+     2
+    ],
+    "s": "x",
+    "z": 1
+   },
+   "meta": {
+    "k": "v"
+   },
+   "active": true,
+   "managerId": null
+  }
+ },
+ {
+  "label": "findUnique.missing",
+  "model": "user",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "id": 999
+   }
+  },
+  "result": null
+ },
+ {
+  "label": "findUniqueOrThrow.missing",
+  "model": "user",
+  "action": "findUniqueOrThrow",
+  "args": {
+   "where": {
+    "id": 999
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2025",
+   "meta": {
+    "modelName": "User",
+    "cause": "No record was found for a query."
+   },
+   "message": "\nInvalid `prisma.user.findUniqueOrThrow()` invocation:\n\n\nAn operation failed because it depends on one or more records that were required but not found. No record was found for a query."
+  }
+ },
+ {
+  "label": "findFirstOrThrow.missing",
+  "model": "user",
+  "action": "findFirstOrThrow",
+  "args": {
+   "where": {
+    "name": "nobody"
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2025",
+   "meta": {
+    "modelName": "User",
+    "cause": "No record was found for a query."
+   },
+   "message": "\nInvalid `prisma.user.findFirstOrThrow()` invocation:\n\n\nAn operation failed because it depends on one or more records that were required but not found. No record was found for a query."
+  }
+ },
+ {
+  "label": "findUnique.compound",
+  "model": "wallet",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "userId_currency": {
+     "userId": 3,
+     "currency": "VES"
+    }
+   }
+  },
+  "result": {
+   "id": "00000000-0000-4000-8000-000000000002",
+   "userId": 3,
+   "currency": "VES",
+   "amount": "3.5",
+   "label": "bs"
+  }
+ },
+ {
+  "label": "findUnique.compound_id",
+  "model": "rate",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "date_source": {
+     "date": "2024-05-02T00:00:00.000Z",
+     "source": "p2p"
+    }
+   }
+  },
+  "result": {
+   "date": "2024-05-02T00:00:00.000Z",
+   "source": "p2p",
+   "value": "38.25",
+   "at": null
+  }
+ },
+ {
+  "label": "findUnique.compound_pair",
+  "model": "pair",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "a_b": {
+     "a": "x",
+     "b": 1
+    }
+   },
+   "include": {
+    "entries": true
+   }
+  },
+  "result": {
+   "a": "x",
+   "b": 1,
+   "label": "x1",
+   "entries": [
+    {
+     "id": 1,
+     "walletId": "00000000-0000-4000-8000-000000000001",
+     "pairA": "x",
+     "pairB": 1,
+     "amount": "1.5"
+    }
+   ]
+  }
+ },
+ {
+  "label": "select.nested",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": "carl@x.io"
+   },
+   "select": {
+    "name": true,
+    "id": true,
+    "posts": {
+     "select": {
+      "title": true,
+      "_count": {
+       "select": {
+        "comments": true
+       }
+      }
+     },
+     "orderBy": {
+      "title": "desc"
+     }
+    },
+    "_count": {
+     "select": {
+      "posts": true,
+      "wallets": true
+     }
+    }
+   }
+  },
+  "result": [
+   {
+    "name": "Carl",
+    "id": 3,
+    "posts": [
+     {
+      "title": "P2",
+      "_count": {
+       "comments": 0
+      }
+     },
+     {
+      "title": "P1",
+      "_count": {
+       "comments": 2
+      }
+     }
+    ],
+    "_count": {
+     "posts": 2,
+     "wallets": 2
+    }
+   }
+  ]
+ },
+ {
+  "label": "include.order",
+  "model": "user",
+  "action": "findFirst",
+  "args": {
+   "where": {
+    "email": "carl@x.io"
+   },
+   "include": {
+    "wallets": true,
+    "profile": true,
+    "_count": true
+   }
+  },
+  "result": {
+   "id": 3,
+   "email": "carl@x.io",
+   "name": "Carl",
+   "role": "MEMBER",
+   "roles": [],
+   "tags": [],
+   "scores": [],
+   "balance": "0",
+   "ratio": null,
+   "big": 0,
+   "birthday": null,
+   "createdAt": "2024-01-03T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:31.898Z",
+   "data": null,
+   "meta": {},
+   "active": true,
+   "managerId": 1,
+   "wallets": [
+    {
+     "id": "00000000-0000-4000-8000-000000000001",
+     "userId": 3,
+     "currency": "USD",
+     "amount": "100.12345678",
+     "label": null
+    },
+    {
+     "id": "00000000-0000-4000-8000-000000000002",
+     "userId": 3,
+     "currency": "VES",
+     "amount": "3.5",
+     "label": "bs"
+    }
+   ],
+   "profile": {
+    "id": 1,
+    "bio": "hello",
+    "userId": 3
+   },
+   "_count": {
+    "reports": 0,
+    "posts": 2,
+    "groups": 1,
+    "wallets": 2
+   }
+  }
+ },
+ {
+  "label": "include.optional_null",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "title": "P4"
+   },
+   "include": {
+    "author": true
+   }
+  },
+  "result": [
+   {
+    "id": 4,
+    "title": "P4",
+    "body": null,
+    "published": false,
+    "views": 0,
+    "authorId": null,
+    "createdAt": "2024-02-04T00:00:00.000Z",
+    "author": null
+   }
+  ]
+ },
+ {
+  "label": "include.nested_where",
+  "model": "user",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "id": 3
+   },
+   "include": {
+    "posts": {
+     "where": {
+      "published": true
+     }
+    }
+   }
+  },
+  "result": {
+   "id": 3,
+   "email": "carl@x.io",
+   "name": "Carl",
+   "role": "MEMBER",
+   "roles": [],
+   "tags": [],
+   "scores": [],
+   "balance": "0",
+   "ratio": null,
+   "big": 0,
+   "birthday": null,
+   "createdAt": "2024-01-03T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:31.898Z",
+   "data": null,
+   "meta": {},
+   "active": true,
+   "managerId": 1,
+   "posts": [
+    {
+     "id": 2,
+     "title": "P2",
+     "body": "body",
+     "published": true,
+     "views": 5,
+     "authorId": 3,
+     "createdAt": "2024-02-02T00:00:00.000Z"
+    }
+   ]
+  }
+ },
+ {
+  "label": "include.take_skip",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "orderBy": {
+    "id": "asc"
+   },
+   "include": {
+    "comments": {
+     "take": 1,
+     "skip": 1,
+     "orderBy": {
+      "id": "asc"
+     }
+    }
+   }
+  },
+  "result": [
+   {
+    "id": 1,
+    "title": "P1",
+    "body": null,
+    "published": false,
+    "views": 10,
+    "authorId": 3,
+    "createdAt": "2024-02-01T00:00:00.000Z",
+    "comments": [
+     {
+      "id": 2,
+      "text": "c2",
+      "postId": 1
+     }
+    ]
+   },
+   {
+    "id": 2,
+    "title": "P2",
+    "body": "body",
+    "published": true,
+    "views": 5,
+    "authorId": 3,
+    "createdAt": "2024-02-02T00:00:00.000Z",
+    "comments": []
+   },
+   {
+    "id": 3,
+    "title": "P3",
+    "body": null,
+    "published": false,
+    "views": 0,
+    "authorId": 1,
+    "createdAt": "2024-02-03T00:00:00.000Z",
+    "comments": []
+   },
+   {
+    "id": 4,
+    "title": "P4",
+    "body": null,
+    "published": false,
+    "views": 0,
+    "authorId": null,
+    "createdAt": "2024-02-04T00:00:00.000Z",
+    "comments": []
+   }
+  ]
+ },
+ {
+  "label": "include.self",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "orderBy": {
+    "id": "asc"
+   },
+   "select": {
+    "id": true,
+    "manager": {
+     "select": {
+      "id": true
+     }
+    },
+    "reports": {
+     "select": {
+      "id": true
+     }
+    }
+   }
+  },
+  "result": [
+   {
+    "id": 1,
+    "manager": null,
+    "reports": [
+     {
+      "id": 3
+     }
+    ]
+   },
+   {
+    "id": 2,
+    "manager": null,
+    "reports": []
+   },
+   {
+    "id": 3,
+    "manager": {
+     "id": 1
+    },
+    "reports": []
+   }
+  ]
+ },
+ {
+  "label": "include.m2m",
+  "model": "category",
+  "action": "findMany",
+  "args": {
+   "orderBy": {
+    "name": "asc"
+   },
+   "include": {
+    "posts": {
+     "select": {
+      "title": true
+     },
+     "orderBy": {
+      "title": "asc"
+     }
+    },
+    "_count": true
+   }
+  },
+  "result": [
+   {
+    "id": 4,
+    "name": "a1",
+    "posts": [],
+    "_count": {
+     "posts": 0
+    }
+   },
+   {
+    "id": 5,
+    "name": "a2",
+    "posts": [],
+    "_count": {
+     "posts": 0
+    }
+   },
+   {
+    "id": 6,
+    "name": "a3",
+    "posts": [],
+    "_count": {
+     "posts": 0
+    }
+   },
+   {
+    "id": 3,
+    "name": "life",
+    "posts": [
+     {
+      "title": "P4"
+     }
+    ],
+    "_count": {
+     "posts": 1
+    }
+   },
+   {
+    "id": 2,
+    "name": "news",
+    "posts": [
+     {
+      "title": "P3"
+     }
+    ],
+    "_count": {
+     "posts": 1
+    }
+   },
+   {
+    "id": 1,
+    "name": "tech",
+    "posts": [
+     {
+      "title": "P3"
+     },
+     {
+      "title": "P4"
+     }
+    ],
+    "_count": {
+     "posts": 2
+    }
+   }
+  ]
+ },
+ {
+  "label": "omit",
+  "model": "user",
+  "action": "findFirst",
+  "args": {
+   "where": {
+    "id": 1
+   },
+   "omit": {
+    "email": true,
+    "data": true,
+    "meta": true
+   }
+  },
+  "result": {
+   "id": 1,
+   "name": "Ana",
+   "role": "ADMIN",
+   "roles": [
+    "ADMIN",
+    "MEMBER"
+   ],
+   "tags": [
+    "a",
+    "b"
+   ],
+   "scores": [
+    1,
+    2,
+    3
+   ],
+   "balance": "10.5",
+   "ratio": 0.25,
+   "big": 9007199254740991,
+   "birthday": "1990-05-06T00:00:00.000Z",
+   "createdAt": "2024-01-01T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:31.869Z",
+   "active": true,
+   "managerId": null
+  }
+ },
+ {
+  "label": "omit.include",
+  "model": "user",
+  "action": "findFirst",
+  "args": {
+   "where": {
+    "id": 3
+   },
+   "omit": {
+    "createdAt": true
+   },
+   "include": {
+    "profile": {
+     "omit": {
+      "bio": true
+     }
+    }
+   }
+  },
+  "result": {
+   "id": 3,
+   "email": "carl@x.io",
+   "name": "Carl",
+   "role": "MEMBER",
+   "roles": [],
+   "tags": [],
+   "scores": [],
+   "balance": "0",
+   "ratio": null,
+   "big": 0,
+   "birthday": null,
+   "updatedAt": "2026-11-07T14:01:31.898Z",
+   "data": null,
+   "meta": {},
+   "active": true,
+   "managerId": 1,
+   "profile": {
+    "id": 1,
+    "userId": 3
+   }
+  }
+ },
+ {
+  "label": "distinct",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "distinct": [
+    "published"
+   ],
+   "orderBy": {
+    "id": "asc"
+   },
+   "select": {
+    "published": true,
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "published": false,
+    "id": 1
+   },
+   {
+    "published": true,
+    "id": 2
+   }
+  ]
+ },
+ {
+  "label": "cursor",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "cursor": {
+    "id": 2
+   },
+   "skip": 1,
+   "take": 2,
+   "orderBy": {
+    "id": "asc"
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   },
+   {
+    "id": 4
+   }
+  ]
+ },
+ {
+  "label": "cursor.desc",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "cursor": {
+    "id": 3
+   },
+   "take": 2,
+   "orderBy": {
+    "id": "desc"
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   },
+   {
+    "id": 2
+   }
+  ]
+ },
+ {
+  "label": "take.negative",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "take": -2,
+   "orderBy": {
+    "id": "asc"
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   },
+   {
+    "id": 4
+   }
+  ]
+ },
+ {
+  "label": "orderBy.enum",
+  "model": "wallet",
+  "action": "findMany",
+  "args": {
+   "orderBy": {
+    "currency": "desc"
+   },
+   "select": {
+    "currency": true
+   }
+  },
+  "result": [
+   {
+    "currency": "VES"
+   },
+   {
+    "currency": "USD"
+   }
+  ]
+ },
+ {
+  "label": "orderBy.relation",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "orderBy": [
+    {
+     "author": {
+      "email": "asc"
+     }
+    },
+    {
+     "id": "asc"
+    }
+   ],
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   },
+   {
+    "id": 1
+   },
+   {
+    "id": 2
+   },
+   {
+    "id": 4
+   }
+  ]
+ },
+ {
+  "label": "orderBy.relation_count",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "orderBy": [
+    {
+     "comments": {
+      "_count": "desc"
+     }
+    },
+    {
+     "id": "asc"
+    }
+   ],
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   },
+   {
+    "id": 2
+   },
+   {
+    "id": 3
+   },
+   {
+    "id": 4
+   }
+  ]
+ },
+ {
+  "label": "orderBy.nulls",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "orderBy": [
+    {
+     "name": {
+      "sort": "asc",
+      "nulls": "first"
+     }
+    }
+   ],
+   "select": {
+    "id": true,
+    "name": true
+   }
+  },
+  "result": [
+   {
+    "id": 2,
+    "name": null
+   },
+   {
+    "id": 1,
+    "name": "Ana"
+   },
+   {
+    "id": 3,
+    "name": "Carl"
+   }
+  ]
+ },
+ {
+  "label": "where.in",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "id": {
+     "in": [
+      1,
+      3
+     ]
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.notIn",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "id": {
+     "notIn": [
+      1
+     ]
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 2
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.not_null",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "name": {
+     "not": null
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.null",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "name": null
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 2
+   }
+  ]
+ },
+ {
+  "label": "where.not_value",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "name": {
+     "not": "Ana"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.contains_insensitive",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "name": {
+     "contains": "AR",
+     "mode": "insensitive"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.startsWith",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "a"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.equals_insensitive",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "equals": "ANA@X.IO",
+     "mode": "insensitive"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.OR_NOT",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "OR": [
+     {
+      "name": "Ana"
+     },
+     {
+      "name": "Carl"
+     }
+    ],
+    "NOT": [
+     {
+      "id": 3
+     }
+    ]
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.AND_empty",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "AND": [
+     {},
+     {
+      "id": 1
+     }
+    ]
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.OR_empty",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "OR": []
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": []
+ },
+ {
+  "label": "where.NOT_OR",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "NOT": {
+     "OR": [
+      {
+       "id": 1
+      },
+      {
+       "id": 2
+      }
+     ]
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.decimal_gte",
+  "model": "wallet",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "amount": {
+     "gte": "50"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": "00000000-0000-4000-8000-000000000001"
+   }
+  ]
+ },
+ {
+  "label": "where.date_range",
+  "model": "rate",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "date": {
+     "gte": "2024-05-02T00:00:00.000Z",
+     "lte": "2024-05-02T23:59:59.000Z"
+    }
+   },
+   "orderBy": {
+    "source": "asc"
+   }
+  },
+  "result": [
+   {
+    "date": "2024-05-02T00:00:00.000Z",
+    "source": "bcv",
+    "value": "37",
+    "at": null
+   },
+   {
+    "date": "2024-05-02T00:00:00.000Z",
+    "source": "p2p",
+    "value": "38.25",
+    "at": null
+   }
+  ]
+ },
+ {
+  "label": "where.enum_in",
+  "model": "wallet",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "currency": {
+     "in": [
+      "USD",
+      "USDT"
+     ]
+    }
+   },
+   "select": {
+    "currency": true
+   }
+  },
+  "result": [
+   {
+    "currency": "USD"
+   }
+  ]
+ },
+ {
+  "label": "where.list_has",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "tags": {
+     "has": "a"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.list_hasSome",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "roles": {
+     "hasSome": [
+      "MEMBER",
+      "GUEST"
+     ]
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.list_hasEvery",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "scores": {
+     "hasEvery": [
+      1,
+      3
+     ]
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.list_isEmpty",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "tags": {
+     "isEmpty": true
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 2
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.list_equals",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "tags": {
+     "equals": [
+      "a",
+      "b"
+     ]
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.json_equals",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "meta": {
+     "equals": {
+      "k": "v"
+     }
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.json_path",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "path": [
+      "s"
+     ],
+     "equals": "x"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.json_string_contains",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "path": [
+      "s"
+     ],
+     "string_contains": "x"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.json_array_contains",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "path": [
+      "a"
+     ],
+     "array_contains": [
+      2
+     ]
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   }
+  ]
+ },
+ {
+  "label": "where.json_not",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "meta": {
+     "not": {
+      "k": "v"
+     }
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 2
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.json_dbnull",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "equals": {
+      "$type": "DbNull"
+     }
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 2
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.rel_some",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "posts": {
+     "some": {
+      "published": true
+     }
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.rel_none",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "posts": {
+     "none": {}
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 2
+   }
+  ]
+ },
+ {
+  "label": "where.rel_every",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "posts": {
+     "every": {
+      "views": {
+       "gt": 1
+      }
+     }
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 2
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.rel_is",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "author": {
+     "is": {
+      "name": "Carl"
+     }
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   },
+   {
+    "id": 2
+   }
+  ]
+ },
+ {
+  "label": "where.rel_direct",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "author": {
+     "name": "Ana"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.rel_isNot_null",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "author": {
+     "isNot": null
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   },
+   {
+    "id": 2
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "where.rel_null",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "author": null
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": [
+   {
+    "id": 4
+   }
+  ]
+ },
+ {
+  "label": "where.m2m_some",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "categories": {
+     "some": {
+      "name": "tech"
+     }
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 3
+   },
+   {
+    "id": 4
+   }
+  ]
+ },
+ {
+  "label": "where.compound_in_where",
+  "model": "wallet",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "userId_currency": {
+     "userId": 3,
+     "currency": "USD"
+    }
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.wallet.findMany()` invocation:\n\n{\n  where: {\n    userId_currency: {\n    ~~~~~~~~~~~~~~~\n      userId: 3,\n      currency: \"USD\"\n    },\n?   AND?: WalletWhereInput | WalletWhereInput[],\n?   OR?: WalletWhereInput[],\n?   NOT?: WalletWhereInput | WalletWhereInput[],\n?   id?: UuidFilter | String,\n?   userId?: IntFilter | Int,\n?   currency?: EnumCurrencyFilter | Currency,\n?   amount?: DecimalFilter | Decimal,\n?   label?: StringNullableFilter | String | Null,\n?   user?: UserScalarRelationFilter | UserWhereInput,\n?   entries?: EntryListRelationFilter\n  },\n  select: {\n    id: true\n  }\n}\n\nUnknown argument `userId_currency`. Available options are marked with ?."
+  }
+ },
+ {
+  "label": "where.nested_relation",
+  "model": "comment",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "post": {
+     "author": {
+      "email": {
+       "contains": "carl"
+      }
+     }
+    }
+   },
+   "select": {
+    "id": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "id": 1
+   },
+   {
+    "id": 2
+   }
+  ]
+ },
+ {
+  "label": "count",
+  "model": "user",
+  "action": "count",
+  "args": {},
+  "result": 3
+ },
+ {
+  "label": "count.where",
+  "model": "post",
+  "action": "count",
+  "args": {
+   "where": {
+    "published": false
+   }
+  },
+  "result": 3
+ },
+ {
+  "label": "count.select",
+  "model": "user",
+  "action": "count",
+  "args": {
+   "select": {
+    "_all": true,
+    "name": true,
+    "ratio": true
+   }
+  },
+  "result": {
+   "_all": 3,
+   "name": 2,
+   "ratio": 1
+  }
+ },
+ {
+  "label": "aggregate",
+  "model": "post",
+  "action": "aggregate",
+  "args": {
+   "_sum": {
+    "views": true
+   },
+   "_avg": {
+    "views": true
+   },
+   "_min": {
+    "views": true,
+    "title": true
+   },
+   "_max": {
+    "createdAt": true
+   },
+   "_count": {
+    "_all": true,
+    "body": true
+   }
+  },
+  "result": {
+   "_sum": {
+    "views": 15
+   },
+   "_avg": {
+    "views": 3.75
+   },
+   "_min": {
+    "views": 0,
+    "title": "P1"
+   },
+   "_max": {
+    "createdAt": "2024-02-04T00:00:00.000Z"
+   },
+   "_count": {
+    "_all": 4,
+    "body": 1
+   }
+  }
+ },
+ {
+  "label": "aggregate.decimal",
+  "model": "wallet",
+  "action": "aggregate",
+  "args": {
+   "_sum": {
+    "amount": true
+   },
+   "_avg": {
+    "amount": true
+   },
+   "_max": {
+    "amount": true
+   }
+  },
+  "result": {
+   "_sum": {
+    "amount": "103.62345678"
+   },
+   "_avg": {
+    "amount": "51.81172839"
+   },
+   "_max": {
+    "amount": "100.12345678"
+   }
+  }
+ },
+ {
+  "label": "aggregate.empty",
+  "model": "wallet",
+  "action": "aggregate",
+  "args": {
+   "where": {
+    "currency": "USDT"
+   },
+   "_sum": {
+    "amount": true
+   },
+   "_count": true,
+   "_avg": {
+    "amount": true
+   }
+  },
+  "result": {
+   "_sum": {
+    "amount": null
+   },
+   "_count": 0,
+   "_avg": {
+    "amount": null
+   }
+  }
+ },
+ {
+  "label": "aggregate.bigint",
+  "model": "user",
+  "action": "aggregate",
+  "args": {
+   "_sum": {
+    "big": true
+   },
+   "_avg": {
+    "big": true
+   },
+   "_min": {
+    "big": true
+   }
+  },
+  "result": {
+   "_sum": {
+    "big": 9007199254740991
+   },
+   "_avg": {
+    "big": 3002399751580330.5
+   },
+   "_min": {
+    "big": 0
+   }
+  }
+ },
+ {
+  "label": "aggregate.count_true",
+  "model": "post",
+  "action": "aggregate",
+  "args": {
+   "_count": true
+  },
+  "result": {
+   "_count": 4
+  }
+ },
+ {
+  "label": "groupBy",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "_count": {
+    "_all": true,
+    "body": true
+   },
+   "_sum": {
+    "views": true
+   },
+   "orderBy": {
+    "published": "asc"
+   }
+  },
+  "result": [
+   {
+    "_count": {
+     "_all": 3,
+     "body": 0
+    },
+    "_sum": {
+     "views": 10
+    },
+    "published": false
+   },
+   {
+    "_count": {
+     "_all": 1,
+     "body": 1
+    },
+    "_sum": {
+     "views": 5
+    },
+    "published": true
+   }
+  ]
+ },
+ {
+  "label": "groupBy.having",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "authorId"
+   ],
+   "_sum": {
+    "views": true
+   },
+   "having": {
+    "views": {
+     "_sum": {
+      "gt": 5
+     }
+    }
+   },
+   "orderBy": {
+    "authorId": "asc"
+   }
+  },
+  "result": [
+   {
+    "_sum": {
+     "views": 15
+    },
+    "authorId": 3
+   }
+  ]
+ },
+ {
+  "label": "groupBy.order_count",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "authorId"
+   ],
+   "_count": {
+    "authorId": true
+   },
+   "orderBy": {
+    "_count": {
+     "authorId": "desc"
+    }
+   },
+   "take": 1
+  },
+  "result": [
+   {
+    "_count": {
+     "authorId": 2
+    },
+    "authorId": 3
+   }
+  ]
+ },
+ {
+  "label": "groupBy.multi",
+  "model": "rate",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "date",
+    "source"
+   ],
+   "_max": {
+    "value": true
+   },
+   "orderBy": [
+    {
+     "date": "asc"
+    },
+    {
+     "source": "asc"
+    }
+   ]
+  },
+  "result": [
+   {
+    "_max": {
+     "value": "36.5"
+    },
+    "date": "2024-05-01T00:00:00.000Z",
+    "source": "bcv"
+   },
+   {
+    "_max": {
+     "value": "37"
+    },
+    "date": "2024-05-02T00:00:00.000Z",
+    "source": "bcv"
+   },
+   {
+    "_max": {
+     "value": "38.25"
+    },
+    "date": "2024-05-02T00:00:00.000Z",
+    "source": "p2p"
+   },
+   {
+    "_max": {
+     "value": "39"
+    },
+    "date": "2024-05-03T00:00:00.000Z",
+    "source": "bcv"
+   }
+  ]
+ },
+ {
+  "label": "groupBy.enum",
+  "model": "wallet",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "currency"
+   ],
+   "_sum": {
+    "amount": true
+   },
+   "_count": {
+    "_all": true
+   },
+   "orderBy": {
+    "currency": "asc"
+   }
+  },
+  "result": [
+   {
+    "_sum": {
+     "amount": "100.12345678"
+    },
+    "_count": {
+     "_all": 1
+    },
+    "currency": "USD"
+   },
+   {
+    "_sum": {
+     "amount": "3.5"
+    },
+    "_count": {
+     "_all": 1
+    },
+    "currency": "VES"
+   }
+  ]
+ },
+ {
+  "label": "aggregate.minmax_types",
+  "model": "user",
+  "action": "aggregate",
+  "args": {
+   "_min": {
+    "role": true,
+    "birthday": true,
+    "active": true,
+    "balance": true,
+    "email": true
+   },
+   "_max": {
+    "createdAt": true,
+    "ratio": true,
+    "role": true
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.aggregate()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"42883\", message: \"function min(boolean) does not exist\", severity: \"ERROR\", detail: None, column: None, hint: Some(\"No function matches the given name and argument types. You might need to add explicit type casts.\") }), transient: false })"
+  }
+ },
+ {
+  "label": "aggregate.minmax_types2",
+  "model": "user",
+  "action": "aggregate",
+  "args": {
+   "_min": {
+    "role": true,
+    "birthday": true,
+    "balance": true,
+    "email": true,
+    "big": true
+   },
+   "_max": {
+    "createdAt": true,
+    "ratio": true,
+    "role": true,
+    "name": true
+   }
+  },
+  "result": {
+   "_min": {
+    "role": "ADMIN",
+    "birthday": "1990-05-06T00:00:00.000Z",
+    "balance": "0",
+    "email": "ana@x.io",
+    "big": 0
+   },
+   "_max": {
+    "createdAt": "2024-01-03T00:00:00.000Z",
+    "ratio": 0.25,
+    "role": "MEMBER",
+    "name": "Carl"
+   }
+  }
+ },
+ {
+  "label": "aggregate.sum_float",
+  "model": "user",
+  "action": "aggregate",
+  "args": {
+   "_sum": {
+    "ratio": true,
+    "balance": true
+   },
+   "_avg": {
+    "ratio": true,
+    "balance": true
+   }
+  },
+  "result": {
+   "_sum": {
+    "ratio": 0.25,
+    "balance": "10.5"
+   },
+   "_avg": {
+    "ratio": 0.25,
+    "balance": "3.5"
+   }
+  }
+ },
+ {
+  "label": "aggregate.order_take",
+  "model": "post",
+  "action": "aggregate",
+  "args": {
+   "orderBy": {
+    "views": "desc"
+   },
+   "take": 2,
+   "_sum": {
+    "views": true
+   },
+   "_count": {
+    "_all": true
+   }
+  },
+  "result": {
+   "_sum": {
+    "views": 15
+   },
+   "_count": {
+    "_all": 2
+   }
+  }
+ },
+ {
+  "label": "aggregate.cursor",
+  "model": "post",
+  "action": "aggregate",
+  "args": {
+   "cursor": {
+    "id": 2
+   },
+   "orderBy": {
+    "id": "asc"
+   },
+   "_count": true,
+   "_max": {
+    "id": true
+   }
+  },
+  "result": {
+   "_count": 3,
+   "_max": {
+    "id": 4
+   }
+  }
+ },
+ {
+  "label": "aggregate.empty_groups",
+  "model": "post",
+  "action": "aggregate",
+  "args": {
+   "_sum": {},
+   "_count": {
+    "_all": false
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.aggregate()` invocation:\n\n{\n  select: {\n    _sum: {\n      select: {\n?       id?: true,\n?       views?: true,\n?       authorId?: true\n      }\n    },\n    _count: {\n      select: {\n        _all: false\n      }\n    }\n  }\n}\n\nThe `select` statement for type PostSumAggregateOutputType must not be empty. Available options are marked with ?."
+  }
+ },
+ {
+  "label": "count.take",
+  "model": "post",
+  "action": "count",
+  "args": {
+   "take": 2,
+   "skip": 1,
+   "where": {}
+  },
+  "result": 2
+ },
+ {
+  "label": "count.cursor",
+  "model": "post",
+  "action": "count",
+  "args": {
+   "cursor": {
+    "id": 3
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": 2
+ },
+ {
+  "label": "count.select_order",
+  "model": "user",
+  "action": "count",
+  "args": {
+   "select": {
+    "ratio": true,
+    "_all": true
+   }
+  },
+  "result": {
+   "ratio": 1,
+   "_all": 3
+  }
+ },
+ {
+  "label": "groupBy.having_scalar",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "having": {
+    "published": true
+   },
+   "_count": {
+    "_all": true
+   }
+  },
+  "result": [
+   {
+    "_count": {
+     "_all": 1
+    },
+    "published": true
+   }
+  ]
+ },
+ {
+  "label": "groupBy.having_count",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "authorId"
+   ],
+   "_count": {
+    "_all": true
+   },
+   "having": {
+    "id": {
+     "_count": {
+      "gte": 2
+     }
+    }
+   },
+   "orderBy": {
+    "authorId": "asc"
+   }
+  },
+  "result": [
+   {
+    "_count": {
+     "_all": 2
+    },
+    "authorId": 3
+   }
+  ]
+ },
+ {
+  "label": "groupBy.having_or",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "authorId"
+   ],
+   "_avg": {
+    "views": true
+   },
+   "having": {
+    "OR": [
+     {
+      "views": {
+       "_avg": {
+        "gt": 6
+       }
+      }
+     },
+     {
+      "authorId": null
+     }
+    ]
+   },
+   "orderBy": {
+    "authorId": "asc"
+   }
+  },
+  "result": [
+   {
+    "_avg": {
+     "views": 7.5
+    },
+    "authorId": 3
+   },
+   {
+    "_avg": {
+     "views": 0
+    },
+    "authorId": null
+   }
+  ]
+ },
+ {
+  "label": "groupBy.having_not_by",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "authorId"
+   ],
+   "having": {
+    "views": {
+     "gt": 1
+    }
+   },
+   "_count": true
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2019",
+   "meta": {
+    "modelName": "Post",
+    "details": "Every field used in `having` filters must either be an aggregation filter or be included in the selection of the query. Missing fields: views"
+   },
+   "message": "\nInvalid `prisma.post.groupBy()` invocation:\n\n\nInput error. Every field used in `having` filters must either be an aggregation filter or be included in the selection of the query. Missing fields: views"
+  }
+ },
+ {
+  "label": "groupBy.having_decimal",
+  "model": "wallet",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "currency"
+   ],
+   "_sum": {
+    "amount": true
+   },
+   "having": {
+    "amount": {
+     "_sum": {
+      "gt": "50"
+     }
+    }
+   }
+  },
+  "result": [
+   {
+    "_sum": {
+     "amount": "100.12345678"
+    },
+    "currency": "USD"
+   }
+  ]
+ },
+ {
+  "label": "groupBy.order_sum",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "_sum": {
+    "views": true
+   },
+   "orderBy": {
+    "_sum": {
+     "views": "desc"
+    }
+   }
+  },
+  "result": [
+   {
+    "_sum": {
+     "views": 10
+    },
+    "published": false
+   },
+   {
+    "_sum": {
+     "views": 5
+    },
+    "published": true
+   }
+  ]
+ },
+ {
+  "label": "groupBy.take_skip",
+  "model": "rate",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "source"
+   ],
+   "_count": {
+    "_all": true
+   },
+   "orderBy": {
+    "source": "asc"
+   },
+   "skip": 1,
+   "take": 1
+  },
+  "result": [
+   {
+    "_count": {
+     "_all": 1
+    },
+    "source": "p2p"
+   }
+  ]
+ },
+ {
+  "label": "groupBy.count_true",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "_count": true,
+   "orderBy": {
+    "published": "desc"
+   }
+  },
+  "result": [
+   {
+    "_count": 1,
+    "published": true
+   },
+   {
+    "_count": 3,
+    "published": false
+   }
+  ]
+ },
+ {
+  "label": "groupBy.missing_order_field",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "orderBy": {
+    "views": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2019",
+   "meta": {
+    "modelName": "Post",
+    "details": "Every field used for orderBy must be included in the by-arguments of the query. Missing fields: views"
+   },
+   "message": "\nInvalid `prisma.post.groupBy()` invocation:\n\n\nInput error. Every field used for orderBy must be included in the by-arguments of the query. Missing fields: views"
+  }
+ },
+ {
+  "label": "groupBy.decimal_avg_min_enum",
+  "model": "wallet",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "userId"
+   ],
+   "_avg": {
+    "amount": true
+   },
+   "_min": {
+    "currency": true
+   }
+  },
+  "result": [
+   {
+    "_avg": {
+     "amount": "51.81172839"
+    },
+    "_min": {
+     "currency": "USD"
+    },
+    "userId": 3
+   }
+  ]
+ },
+ {
+  "label": "createMany.avg_rates",
+  "model": "rate",
+  "action": "createMany",
+  "args": {
+   "data": [
+    {
+     "date": "2024-07-01T00:00:00.000Z",
+     "source": "avg",
+     "value": 1
+    },
+    {
+     "date": "2024-07-02T00:00:00.000Z",
+     "source": "avg",
+     "value": 1
+    },
+    {
+     "date": "2024-07-03T00:00:00.000Z",
+     "source": "avg",
+     "value": 2
+    }
+   ]
+  },
+  "result": {
+   "count": 3
+  }
+ },
+ {
+  "label": "aggregate.decimal_avg_repeat",
+  "model": "rate",
+  "action": "aggregate",
+  "args": {
+   "where": {
+    "source": "avg"
+   },
+   "_avg": {
+    "value": true
+   },
+   "_sum": {
+    "value": true
+   }
+  },
+  "result": {
+   "_avg": {
+    "value": "1.3333333333333333"
+   },
+   "_sum": {
+    "value": "4"
+   }
+  }
+ },
+ {
+  "label": "groupBy.decimal_avg_repeat",
+  "model": "rate",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "source"
+   ],
+   "where": {
+    "source": "avg"
+   },
+   "_avg": {
+    "value": true
+   }
+  },
+  "result": [
+   {
+    "_avg": {
+     "value": "1.3333333333333333"
+    },
+    "source": "avg"
+   }
+  ]
+ },
+ {
+  "label": "update.increment",
+  "model": "post",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 1
+   },
+   "data": {
+    "views": {
+     "increment": 3
+    }
+   },
+   "select": {
+    "views": true
+   }
+  },
+  "result": {
+   "views": 13
+  }
+ },
+ {
+  "label": "update.decimal_ops",
+  "model": "wallet",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": "00000000-0000-4000-8000-000000000001"
+   },
+   "data": {
+    "amount": {
+     "decrement": "0.12345678"
+    }
+   },
+   "select": {
+    "amount": true
+   }
+  },
+  "result": {
+   "amount": "100"
+  }
+ },
+ {
+  "label": "update.decimal_multiply",
+  "model": "wallet",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": "00000000-0000-4000-8000-000000000002"
+   },
+   "data": {
+    "amount": {
+     "multiply": 2
+    }
+   },
+   "select": {
+    "amount": true
+   }
+  },
+  "result": {
+   "amount": "7"
+  }
+ },
+ {
+  "label": "update.list_push",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 1
+   },
+   "data": {
+    "tags": {
+     "push": "c"
+    },
+    "scores": {
+     "set": [
+      9
+     ]
+    }
+   },
+   "select": {
+    "tags": true,
+    "scores": true
+   }
+  },
+  "result": {
+   "tags": [
+    "a",
+    "b",
+    "c"
+   ],
+   "scores": [
+    9
+   ]
+  }
+ },
+ {
+  "label": "update.list_push_many",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 1
+   },
+   "data": {
+    "tags": {
+     "push": [
+      "d",
+      "e"
+     ]
+    }
+   },
+   "select": {
+    "tags": true
+   }
+  },
+  "result": {
+   "tags": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e"
+   ]
+  }
+ },
+ {
+  "label": "update.json_dbnull",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 1
+   },
+   "data": {
+    "data": {
+     "$type": "DbNull"
+    }
+   },
+   "select": {
+    "data": true
+   }
+  },
+  "result": {
+   "data": null
+  }
+ },
+ {
+  "label": "update.json_jsonnull",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 2
+   },
+   "data": {
+    "data": {
+     "$type": "JsonNull"
+    }
+   },
+   "select": {
+    "data": true
+   }
+  },
+  "result": {
+   "data": null
+  }
+ },
+ {
+  "label": "update.compound",
+  "model": "wallet",
+  "action": "update",
+  "args": {
+   "where": {
+    "userId_currency": {
+     "userId": 3,
+     "currency": "VES"
+    }
+   },
+   "data": {
+    "label": "bolivares"
+   },
+   "select": {
+    "label": true
+   }
+  },
+  "result": {
+   "label": "bolivares"
+  }
+ },
+ {
+  "label": "update.compound_id",
+  "model": "rate",
+  "action": "update",
+  "args": {
+   "where": {
+    "date_source": {
+     "date": "2024-05-01T00:00:00.000Z",
+     "source": "bcv"
+    }
+   },
+   "data": {
+    "value": {
+     "increment": 1
+    }
+   }
+  },
+  "result": {
+   "date": "2024-05-01T00:00:00.000Z",
+   "source": "bcv",
+   "value": "37.5",
+   "at": "2024-05-01T12:30:00.123Z"
+  }
+ },
+ {
+  "label": "update.nested",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 3
+   },
+   "data": {
+    "name": "Carlos",
+    "profile": {
+     "update": {
+      "bio": "updated"
+     }
+    },
+    "posts": {
+     "updateMany": {
+      "where": {
+       "published": false
+      },
+      "data": {
+       "views": 0
+      }
+     }
+    }
+   },
+   "include": {
+    "profile": true,
+    "posts": {
+     "select": {
+      "views": true
+     },
+     "orderBy": {
+      "id": "asc"
+     }
+    }
+   }
+  },
+  "result": {
+   "id": 3,
+   "email": "carl@x.io",
+   "name": "Carlos",
+   "role": "MEMBER",
+   "roles": [],
+   "tags": [],
+   "scores": [],
+   "balance": "0",
+   "ratio": null,
+   "big": 0,
+   "birthday": null,
+   "createdAt": "2024-01-03T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:32.080Z",
+   "data": null,
+   "meta": {},
+   "active": true,
+   "managerId": 1,
+   "profile": {
+    "id": 1,
+    "bio": "updated",
+    "userId": 3
+   },
+   "posts": [
+    {
+     "views": 0
+    },
+    {
+     "views": 5
+    }
+   ]
+  }
+ },
+ {
+  "label": "update.nested_upsert",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 1
+   },
+   "data": {
+    "profile": {
+     "upsert": {
+      "create": {
+       "bio": "new"
+      },
+      "update": {
+       "bio": "upd"
+      }
+     }
+    }
+   },
+   "include": {
+    "profile": true
+   }
+  },
+  "result": {
+   "id": 1,
+   "email": "ana@x.io",
+   "name": "Ana",
+   "role": "ADMIN",
+   "roles": [
+    "ADMIN",
+    "MEMBER"
+   ],
+   "tags": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e"
+   ],
+   "scores": [
+    9
+   ],
+   "balance": "10.5",
+   "ratio": 0.25,
+   "big": 9007199254740991,
+   "birthday": "1990-05-06T00:00:00.000Z",
+   "createdAt": "2024-01-01T00:00:00.000Z",
+   "updatedAt": "2026-11-07T14:01:32.067Z",
+   "data": null,
+   "meta": {
+    "k": "v"
+   },
+   "active": true,
+   "managerId": null,
+   "profile": {
+    "id": 2,
+    "bio": "new",
+    "userId": 1
+   }
+  }
+ },
+ {
+  "label": "update.m2m_set",
+  "model": "post",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 3
+   },
+   "data": {
+    "categories": {
+     "set": [
+      {
+       "name": "life"
+      }
+     ]
+    }
+   },
+   "include": {
+    "categories": true
+   }
+  },
+  "result": {
+   "id": 3,
+   "title": "P3",
+   "body": null,
+   "published": false,
+   "views": 0,
+   "authorId": 1,
+   "createdAt": "2024-02-03T00:00:00.000Z",
+   "categories": [
+    {
+     "id": 3,
+     "name": "life"
+    }
+   ]
+  }
+ },
+ {
+  "label": "update.m2m_disconnect",
+  "model": "group",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": "10000000-0000-4000-8000-000000000002"
+   },
+   "data": {
+    "users": {
+     "disconnect": [
+      {
+       "id": 2
+      }
+     ]
+    }
+   },
+   "include": {
+    "users": {
+     "select": {
+      "id": true
+     }
+    }
+   }
+  },
+  "result": {
+   "id": "10000000-0000-4000-8000-000000000002",
+   "name": "g2",
+   "users": [
+    {
+     "id": 1
+    }
+   ]
+  }
+ },
+ {
+  "label": "update.disconnect_optional",
+  "model": "post",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 3
+   },
+   "data": {
+    "author": {
+     "disconnect": true
+    }
+   },
+   "select": {
+    "authorId": true
+   }
+  },
+  "result": {
+   "authorId": null
+  }
+ },
+ {
+  "label": "update.missing",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 999
+   },
+   "data": {
+    "name": "x"
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2025",
+   "meta": {
+    "modelName": "User",
+    "cause": "No record was found for an update."
+   },
+   "message": "\nInvalid `prisma.user.update()` invocation:\n\n\nAn operation failed because it depends on one or more records that were required but not found. No record was found for an update."
+  }
+ },
+ {
+  "label": "updateMany",
+  "model": "post",
+  "action": "updateMany",
+  "args": {
+   "where": {
+    "published": false
+   },
+   "data": {
+    "body": "draft"
+   }
+  },
+  "result": {
+   "count": 3
+  }
+ },
+ {
+  "label": "updateMany.none",
+  "model": "post",
+  "action": "updateMany",
+  "args": {
+   "where": {
+    "id": 999
+   },
+   "data": {
+    "body": "x"
+   }
+  },
+  "result": {
+   "count": 0
+  }
+ },
+ {
+  "label": "updateManyAndReturn",
+  "model": "category",
+  "action": "updateManyAndReturn",
+  "args": {
+   "where": {
+    "name": {
+     "startsWith": "a"
+    }
+   },
+   "data": {
+    "name": {
+     "set": "zz"
+    }
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2002",
+   "meta": {
+    "modelName": "Category",
+    "target": [
+     "name"
+    ]
+   },
+   "message": "\nInvalid `prisma.category.updateManyAndReturn()` invocation:\n\n\nUnique constraint failed on the fields: (`name`)"
+  }
+ },
+ {
+  "label": "upsert.create",
+  "model": "rate",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "date_source": {
+     "date": "2024-06-01T00:00:00.000Z",
+     "source": "bcv"
+    }
+   },
+   "create": {
+    "date": "2024-06-01T00:00:00.000Z",
+    "source": "bcv",
+    "value": "40"
+   },
+   "update": {
+    "value": "41"
+   }
+  },
+  "result": {
+   "date": "2024-06-01T00:00:00.000Z",
+   "source": "bcv",
+   "value": "40",
+   "at": null
+  }
+ },
+ {
+  "label": "upsert.update",
+  "model": "rate",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "date_source": {
+     "date": "2024-06-01T00:00:00.000Z",
+     "source": "bcv"
+    }
+   },
+   "create": {
+    "date": "2024-06-01T00:00:00.000Z",
+    "source": "bcv",
+    "value": "40"
+   },
+   "update": {
+    "value": "41"
+   }
+  },
+  "result": {
+   "date": "2024-06-01T00:00:00.000Z",
+   "source": "bcv",
+   "value": "41",
+   "at": null
+  }
+ },
+ {
+  "label": "upsert.unique",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "tech"
+   },
+   "create": {
+    "name": "tech"
+   },
+   "update": {}
+  },
+  "result": {
+   "id": 1,
+   "name": "tech"
+  }
+ },
+ {
+  "label": "err.P2002",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "ana@x.io"
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2002",
+   "meta": {
+    "modelName": "User",
+    "target": [
+     "email"
+    ]
+   },
+   "message": "\nInvalid `prisma.user.create()` invocation:\n\n\nUnique constraint failed on the fields: (`email`)"
+  }
+ },
+ {
+  "label": "err.P2002_compound",
+  "model": "wallet",
+  "action": "create",
+  "args": {
+   "data": {
+    "id": "00000000-0000-4000-8000-000000000009",
+    "userId": 3,
+    "currency": "USD",
+    "amount": 1
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2002",
+   "meta": {
+    "modelName": "Wallet",
+    "target": [
+     "userId",
+     "currency"
+    ]
+   },
+   "message": "\nInvalid `prisma.wallet.create()` invocation:\n\n\nUnique constraint failed on the fields: (`userId`,`currency`)"
+  }
+ },
+ {
+  "label": "err.P2002_compound_id",
+  "model": "rate",
+  "action": "create",
+  "args": {
+   "data": {
+    "date": "2024-05-01T00:00:00.000Z",
+    "source": "bcv",
+    "value": 1
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2002",
+   "meta": {
+    "modelName": "Rate",
+    "target": [
+     "date",
+     "source"
+    ]
+   },
+   "message": "\nInvalid `prisma.rate.create()` invocation:\n\n\nUnique constraint failed on the fields: (`date`,`source`)"
+  }
+ },
+ {
+  "label": "err.P2003",
+  "model": "post",
+  "action": "create",
+  "args": {
+   "data": {
+    "title": "x",
+    "authorId": 999
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2003",
+   "meta": {
+    "modelName": "Post",
+    "constraint": "Post_authorId_fkey"
+   },
+   "message": "\nInvalid `prisma.post.create()` invocation:\n\n\nForeign key constraint violated on the constraint: `Post_authorId_fkey`"
+  }
+ },
+ {
+  "label": "err.P2025_delete",
+  "model": "user",
+  "action": "delete",
+  "args": {
+   "where": {
+    "id": 999
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2025",
+   "meta": {
+    "modelName": "User",
+    "cause": "No record was found for a delete."
+   },
+   "message": "\nInvalid `prisma.user.delete()` invocation:\n\n\nAn operation failed because it depends on one or more records that were required but not found. No record was found for a delete."
+  }
+ },
+ {
+  "label": "err.P2025_connect",
+  "model": "post",
+  "action": "create",
+  "args": {
+   "data": {
+    "title": "x",
+    "author": {
+     "connect": {
+      "id": 999
+     }
+    }
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2025",
+   "meta": {
+    "modelName": "Post",
+    "cause": "No 'User' record (needed to inline the relation on 'Post' record(s)) was found for a nested connect on one-to-many relation 'PostToUser'."
+   },
+   "message": "\nInvalid `prisma.post.create()` invocation:\n\n\nAn operation failed because it depends on one or more records that were required but not found. No 'User' record (needed to inline the relation on 'Post' record(s)) was found for a nested connect on one-to-many relation 'PostToUser'."
+  }
+ },
+ {
+  "label": "err.P2025_nested_update",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "id": 2
+   },
+   "data": {
+    "profile": {
+     "update": {
+      "bio": "x"
+     }
+    }
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2025",
+   "meta": {
+    "modelName": "User",
+    "cause": "No 'Profile' record was found for a nested update on one-to-one relation 'ProfileToUser'."
+   },
+   "message": "\nInvalid `prisma.user.update()` invocation:\n\n\nAn operation failed because it depends on one or more records that were required but not found. No 'Profile' record was found for a nested update on one-to-one relation 'ProfileToUser'."
+  }
+ },
+ {
+  "label": "err.P2014",
+  "model": "profile",
+  "action": "update",
+  "args": {
+   "where": {
+    "userId": 3
+   },
+   "data": {
+    "user": {
+     "disconnect": true
+    }
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.profile.update()` invocation:\n\n{\n  where: {\n    userId: 3\n  },\n  data: {\n    user: {\n      disconnect: true,\n      ~~~~~~~~~~\n?     create?: UserCreateWithoutProfileInput | UserUncheckedCreateWithoutProfileInput,\n?     connectOrCreate?: UserCreateOrConnectWithoutProfileInput,\n?     upsert?: UserUpsertWithoutProfileInput,\n?     connect?: UserWhereUniqueInput,\n?     update?: UserUpdateToOneWithWhereWithoutProfileInput | UserUpdateWithoutProfileInput | UserUncheckedUpdateWithoutProfileInput\n    }\n  }\n}\n\nUnknown argument `disconnect`. Did you mean `connect`? Available options are marked with ?."
+  }
+ },
+ {
+  "label": "err.P2023_uuid",
+  "model": "wallet",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "id": "not-a-uuid"
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2023",
+   "meta": {
+    "modelName": "Wallet",
+    "message": "Error creating UUID, invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `n` at 1"
+   },
+   "message": "\nInvalid `prisma.wallet.findUnique()` invocation:\n\n\nInconsistent column data: Error creating UUID, invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `n` at 1"
+  }
+ },
+ {
+  "label": "err.validation_unknown_arg",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "nope": 1
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    nope: 1,\n    ~~~~\n?   AND?: UserWhereInput | UserWhereInput[],\n?   OR?: UserWhereInput[],\n?   NOT?: UserWhereInput | UserWhereInput[],\n?   id?: IntFilter | Int,\n?   email?: StringFilter | String,\n?   name?: StringNullableFilter | String | Null,\n?   role?: EnumRoleFilter | Role,\n?   roles?: EnumRoleNullableListFilter,\n?   tags?: StringNullableListFilter,\n?   scores?: IntNullableListFilter,\n?   balance?: DecimalFilter | Decimal,\n?   ratio?: FloatNullableFilter | Float | Null,\n?   big?: BigIntFilter | BigInt,\n?   birthday?: DateTimeNullableFilter | DateTime | Null,\n?   createdAt?: DateTimeFilter | DateTime,\n?   updatedAt?: DateTimeFilter | DateTime,\n?   data?: JsonNullableFilter,\n?   meta?: JsonFilter,\n?   active?: BoolFilter | Boolean,\n?   managerId?: IntNullableFilter | Int | Null,\n?   manager?: UserNullableScalarRelationFilter | UserWhereInput | Null,\n?   reports?: UserListRelationFilter,\n?   posts?: PostListRelationFilter,\n?   profile?: ProfileNullableScalarRelationFilter | ProfileWhereInput | Null,\n?   groups?: GroupListRelationFilter,\n?   wallets?: WalletListRelationFilter\n  }\n}\n\nUnknown argument `nope`. Did you mean `name`? Available options are marked with ?."
+  }
+ },
+ {
+  "label": "err.validation_missing",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "name": "x"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.create()` invocation:\n\n{\n  data: {\n    name: \"x\",\n+   email: String\n  }\n}\n\nArgument `email` is missing."
+  }
+ },
+ {
+  "label": "err.validation_type",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "id": "abc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    id: \"abc\"\n        ~~~~~\n  }\n}\n\nArgument `id`: Invalid value provided. Expected IntFilter or Int, provided String."
+  }
+ },
+ {
+  "label": "err.validation_enum",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "role": "BOSS"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    role: \"BOSS\"\n          ~~~~~~\n  }\n}\n\nInvalid value for argument `role`. Expected Role."
+  }
+ },
+ {
+  "label": "err.validation_select_include",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "select": {
+    "id": true
+   },
+   "include": {
+    "posts": true
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  select: {\n  ~~~~~~\n    id: true\n  },\n  include: {\n  ~~~~~~~\n    posts: true\n  }\n}\n\nPlease either use `include` or `select`, but not both at the same time."
+  }
+ },
+ {
+  "label": "err.int_overflow",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "views": 3000000000
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.findMany()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(Error { kind: ToSql(0), cause: Some(Error { kind: ConversionError(\"Unable to fit integer value '3000000000' into an INT4 (32-bit signed integer).\"), original_code: None, original_message: None }) }), transient: false })"
+  }
+ },
+ {
+  "label": "err.check",
+  "model": "comment",
+  "action": "create",
+  "args": {
+   "data": {
+    "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "postId": 2
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.comment.create()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"23514\", message: \"new row for relation \\\"Comment\\\" violates check constraint \\\"Comment_text_check\\\"\", severity: \"ERROR\", detail: Some(\"Failing row contains (3, xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..., 2).\"), column: None, hint: None }), transient: false })"
+  }
+ },
+ {
+  "label": "err.trigger",
+  "model": "category",
+  "action": "create",
+  "args": {
+   "data": {
+    "name": "forbidden"
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.category.create()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"P0001\", message: \"CATEGORY_FORBIDDEN: forbidden\", severity: \"ERROR\", detail: None, column: None, hint: Some(\"pick another name\") }), transient: false })"
+  }
+ },
+ {
+  "label": "err.int_overflow_create",
+  "model": "post",
+  "action": "create",
+  "args": {
+   "data": {
+    "title": "x",
+    "views": 3000000000
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.create()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(Error { kind: ToSql(2), cause: Some(Error { kind: ConversionError(\"Unable to fit integer value '3000000000' into an INT4 (32-bit signed integer).\"), original_code: None, original_message: None }) }), transient: false })"
+  }
+ },
+ {
+  "label": "err.P2023_uuid_len",
+  "model": "wallet",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "id": "0000"
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2023",
+   "meta": {
+    "modelName": "Wallet",
+    "message": "Error creating UUID, invalid length: expected length 32 for simple format, found 4"
+   },
+   "message": "\nInvalid `prisma.wallet.findUnique()` invocation:\n\n\nInconsistent column data: Error creating UUID, invalid length: expected length 32 for simple format, found 4"
+  }
+ },
+ {
+  "label": "err.P2023_uuid_groups",
+  "model": "wallet",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "id": "00000000-0000-4000-8000-0000000000"
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2023",
+   "meta": {
+    "modelName": "Wallet",
+    "message": "Error creating UUID, invalid group length in group 4: expected 12, found 10"
+   },
+   "message": "\nInvalid `prisma.wallet.findUnique()` invocation:\n\n\nInconsistent column data: Error creating UUID, invalid group length in group 4: expected 12, found 10"
+  }
+ },
+ {
+  "label": "delete",
+  "model": "comment",
+  "action": "delete",
+  "args": {
+   "where": {
+    "id": 1
+   }
+  },
+  "result": {
+   "id": 1,
+   "text": "c1",
+   "postId": 1
+  }
+ },
+ {
+  "label": "delete.cascade",
+  "model": "post",
+  "action": "delete",
+  "args": {
+   "where": {
+    "id": 1
+   },
+   "include": {
+    "comments": true
+   }
+  },
+  "result": {
+   "id": 1,
+   "title": "P1",
+   "body": "draft",
+   "published": false,
+   "views": 0,
+   "authorId": 3,
+   "createdAt": "2024-02-01T00:00:00.000Z",
+   "comments": [
+    {
+     "id": 2,
+     "text": "c2",
+     "postId": 1
+    }
+   ]
+  }
+ },
+ {
+  "label": "deleteMany",
+  "model": "rate",
+  "action": "deleteMany",
+  "args": {
+   "where": {
+    "source": "p2p"
+   }
+  },
+  "result": {
+   "count": 1
+  }
+ },
+ {
+  "label": "deleteMany.all_entries",
+  "model": "entry",
+  "action": "deleteMany",
+  "args": {},
+  "result": {
+   "count": 1
+  }
+ },
+ {
+  "label": "raw.select",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT id, email, balance, big, birthday, created_at, \"updatedAt\" IS NOT NULL AS has_updated, roles, data FROM users WHERE id = $1",
+   3
+  ],
+  "result": [
+   {
+    "id": 3,
+    "email": "carl@x.io",
+    "balance": "0",
+    "big": 0,
+    "birthday": null,
+    "created_at": "2024-01-03T00:00:00.000Z",
+    "has_updated": true,
+    "roles": null,
+    "data": null
+   }
+  ]
+ },
+ {
+  "label": "raw.types",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT 1::int AS i, 2::bigint AS b, 1.5::numeric AS n, 2.5::float8 AS f, 'x'::text AS t, true AS bo, '2024-01-02'::date AS d, '2024-01-02 03:04:05.678'::timestamp AS ts, '2024-01-02 03:04:05.678+00'::timestamptz AS tz, '{\"a\":1}'::jsonb AS j, '00000000-0000-4000-8000-000000000001'::uuid AS u, ARRAY[1,2]::int[] AS arr, NULL AS nul, count(*) AS cnt FROM users"
+  ],
+  "result": [
+   {
+    "i": 1,
+    "b": 2,
+    "n": "1.5",
+    "f": 2.5,
+    "t": "x",
+    "bo": true,
+    "d": "2024-01-02T00:00:00.000Z",
+    "ts": "2024-01-02T03:04:05.678Z",
+    "tz": "2024-01-02T03:04:05.678Z",
+    "j": {
+     "a": 1
+    },
+    "u": "00000000-0000-4000-8000-000000000001",
+    "arr": [
+     1,
+     2
+    ],
+    "nul": null,
+    "cnt": 3
+   }
+  ]
+ },
+ {
+  "label": "raw.enum_cast",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT currency, amount FROM \"Wallet\" WHERE \"userId\" = $1 AND currency = $2::\"Currency\" FOR UPDATE",
+   3,
+   "VES"
+  ],
+  "result": [
+   {
+    "currency": "VES",
+    "amount": "7"
+   }
+  ]
+ },
+ {
+  "label": "raw.execute",
+  "model": "$raw",
+  "action": "executeRawUnsafe",
+  "args": [
+   "UPDATE \"Post\" SET views = views + 1 WHERE views >= $1",
+   0
+  ],
+  "result": 3
+ },
+ {
+  "label": "raw.error",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT * FROM nope"
+  ],
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2010",
+   "meta": {
+    "code": "42P01",
+    "message": "relation \"nope\" does not exist"
+   },
+   "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nRaw query failed. Code: `42P01`. Message: `relation \"nope\" does not exist`"
+  }
+ },
+ {
+  "label": "raw.error_unique",
+  "model": "$raw",
+  "action": "executeRawUnsafe",
+  "args": [
+   "INSERT INTO \"Category\" (name) VALUES ($1)",
+   "tech"
+  ],
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2010",
+   "meta": {
+    "code": "23505",
+    "message": "Key (name)=(tech) already exists."
+   },
+   "message": "\nInvalid `prisma.$executeRawUnsafe()` invocation:\n\n\nRaw query failed. Code: `23505`. Message: `Key (name)=(tech) already exists.`"
+  }
+ },
+ {
+  "label": "raw.error_trigger",
+  "model": "$raw",
+  "action": "executeRawUnsafe",
+  "args": [
+   "INSERT INTO \"Category\" (name) VALUES ($1)",
+   "forbidden"
+  ],
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2010",
+   "meta": {
+    "code": "P0001",
+    "message": "ERROR: CATEGORY_FORBIDDEN: forbidden\nHINT: pick another name"
+   },
+   "message": "\nInvalid `prisma.$executeRawUnsafe()` invocation:\n\n\nRaw query failed. Code: `P0001`. Message: `ERROR: CATEGORY_FORBIDDEN: forbidden\nHINT: pick another name`"
+  }
+ },
+ {
+  "label": "raw.error_fk",
+  "model": "$raw",
+  "action": "executeRawUnsafe",
+  "args": [
+   "INSERT INTO \"Comment\" (text, \"postId\") VALUES ($1, $2)",
+   "x",
+   999
+  ],
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2010",
+   "meta": {
+    "code": "23503",
+    "message": "insert or update on table \"Comment\" violates foreign key constraint \"Comment_postId_fkey\""
+   },
+   "message": "\nInvalid `prisma.$executeRawUnsafe()` invocation:\n\n\nRaw query failed. Code: `23503`. Message: `insert or update on table \"Comment\" violates foreign key constraint \"Comment_postId_fkey\"`"
+  }
+ },
+ {
+  "label": "raw.error_notnull",
+  "model": "$raw",
+  "action": "executeRawUnsafe",
+  "args": [
+   "INSERT INTO \"Comment\" (text) VALUES ($1)",
+   "x"
+  ],
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2010",
+   "meta": {
+    "code": "23502",
+    "message": "Failing row contains (5, x, null)."
+   },
+   "message": "\nInvalid `prisma.$executeRawUnsafe()` invocation:\n\n\nRaw query failed. Code: `23502`. Message: `Failing row contains (5, x, null).`"
+  }
+ },
+ {
+  "label": "raw.error_check",
+  "model": "$raw",
+  "action": "executeRawUnsafe",
+  "args": [
+   "INSERT INTO \"Comment\" (text, \"postId\") VALUES (repeat($1, 200), 2)",
+   "x"
+  ],
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2010",
+   "meta": {
+    "code": "23514",
+    "message": "ERROR: new row for relation \"Comment\" violates check constraint \"Comment_text_check\"\nDETAIL: Failing row contains (6, xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..., 2)."
+   },
+   "message": "\nInvalid `prisma.$executeRawUnsafe()` invocation:\n\n\nRaw query failed. Code: `23514`. Message: `ERROR: new row for relation \"Comment\" violates check constraint \"Comment_text_check\"\nDETAIL: Failing row contains (6, xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx..., 2).`"
+  }
+ },
+ {
+  "label": "raw.error_syntax",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELEC 1"
+  ],
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2010",
+   "meta": {
+    "code": "42601",
+    "message": "ERROR: syntax error at or near \"SELEC\""
+   },
+   "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nRaw query failed. Code: `42601`. Message: `ERROR: syntax error at or near \"SELEC\"`"
+  }
+ },
+ {
+  "label": "rawt.select",
+  "model": "$raw",
+  "action": "queryRaw",
+  "args": [
+   [
+    "SELECT id, email FROM users WHERE id = ",
+    " AND \"created_at\" >= ",
+    ""
+   ],
+   3,
+   {
+    "$date": "2024-01-01T00:00:00.000Z"
+   }
+  ],
+  "result": [
+   {
+    "id": 3,
+    "email": "carl@x.io"
+   }
+  ]
+ },
+ {
+  "label": "rawt.types",
+  "model": "$raw",
+  "action": "queryRaw",
+  "args": [
+   [
+    "SELECT ",
+    "::numeric + 1 AS n, ",
+    "::int AS i, ",
+    "::text AS s"
+   ],
+   {
+    "$decimal": "1.25"
+   },
+   7,
+   "hi"
+  ],
+  "result": [
+   {
+    "n": "2.25",
+    "i": 7,
+    "s": "hi"
+   }
+  ]
+ },
+ {
+  "label": "rawt.array",
+  "model": "$raw",
+  "action": "queryRaw",
+  "args": [
+   [
+    "SELECT id FROM users WHERE id = ANY(",
+    ") ORDER BY id"
+   ],
+   [
+    1,
+    3
+   ]
+  ],
+  "result": [
+   {
+    "id": 1
+   },
+   {
+    "id": 3
+   }
+  ]
+ },
+ {
+  "label": "rawt.param_types",
+  "model": "$raw",
+  "action": "queryRaw",
+  "args": [
+   [
+    "SELECT pg_typeof(",
+    ")::text AS t1, pg_typeof(",
+    ")::text AS t2, pg_typeof(",
+    ")::text AS t3, pg_typeof(",
+    ")::text AS t4, pg_typeof(",
+    ")::text AS t5, pg_typeof(",
+    ")::text AS t6, pg_typeof(",
+    ")::text AS t7"
+   ],
+   {
+    "$date": "2024-01-01T00:00:00.000Z"
+   },
+   5,
+   1.5,
+   "x",
+   {
+    "$decimal": "2.5"
+   },
+   true,
+   {
+    "$json": {
+     "a": 1
+    }
+   }
+  ],
+  "result": [
+   {
+    "t1": "timestamp with time zone",
+    "t2": "bigint",
+    "t3": "numeric",
+    "t4": "text",
+    "t5": "numeric",
+    "t6": "boolean",
+    "t7": "jsonb"
+   }
+  ]
+ },
+ {
+  "label": "rawt.json",
+  "model": "$raw",
+  "action": "queryRaw",
+  "args": [
+   [
+    "SELECT ",
+    "::jsonb AS j"
+   ],
+   {
+    "$json": {
+     "a": [
+      1,
+      2
+     ]
+    }
+   }
+  ],
+  "result": [
+   {
+    "j": {
+     "a": [
+      1,
+      2
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "label": "rawt.counts",
+  "model": "$raw",
+  "action": "queryRaw",
+  "args": [
+   [
+    "SELECT count(*) AS c, sum(views) AS s, avg(views) AS a FROM \"Post\""
+   ]
+  ],
+  "result": [
+   {
+    "c": 3,
+    "s": 8,
+    "a": "2.6666666666666667"
+   }
+  ]
+ },
+ {
+  "label": "rawt.execute",
+  "model": "$raw",
+  "action": "executeRaw",
+  "args": [
+   [
+    "UPDATE \"Post\" SET views = views + ",
+    " WHERE id = ",
+    ""
+   ],
+   1,
+   2
+  ],
+  "result": 1
+ },
+ {
+  "label": "rawt.error",
+  "model": "$raw",
+  "action": "queryRaw",
+  "args": [
+   [
+    "SELECT * FROM \"Wallet\" WHERE id = ",
+    ""
+   ],
+   "not-a-uuid"
+  ],
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2010",
+   "meta": {
+    "code": "42883",
+    "message": "ERROR: operator does not exist: uuid = text\nHINT: No operator matches the given name and argument types. You might need to add explicit type casts."
+   },
+   "message": "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nRaw query failed. Code: `42883`. Message: `ERROR: operator does not exist: uuid = text\nHINT: No operator matches the given name and argument types. You might need to add explicit type casts.`"
+  }
+ },
+ {
+  "label": "seq.before",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT last_value, is_called FROM \"Category_id_seq\""
+  ],
+  "result": [
+   {
+    "last_value": 9,
+    "is_called": true
+   }
+  ]
+ },
+ {
+  "label": "upsert.native_insert",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "up1"
+   },
+   "create": {
+    "name": "up1"
+   },
+   "update": {
+    "name": "up1"
+   }
+  },
+  "result": {
+   "id": 10,
+   "name": "up1"
+  }
+ },
+ {
+  "label": "upsert.native_conflict",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "up1"
+   },
+   "create": {
+    "name": "up1"
+   },
+   "update": {
+    "name": "up1"
+   }
+  },
+  "result": {
+   "id": 10,
+   "name": "up1"
+  }
+ },
+ {
+  "label": "seq.after_native",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT last_value, is_called FROM \"Category_id_seq\""
+  ],
+  "result": [
+   {
+    "last_value": 11,
+    "is_called": true
+   }
+  ]
+ },
+ {
+  "label": "upsert.fallback_values_differ",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "up1"
+   },
+   "create": {
+    "name": "other"
+   },
+   "update": {
+    "name": "up1"
+   }
+  },
+  "result": {
+   "id": 10,
+   "name": "up1"
+  }
+ },
+ {
+  "label": "upsert.fallback_empty_update",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "up1"
+   },
+   "create": {
+    "name": "up1"
+   },
+   "update": {}
+  },
+  "result": {
+   "id": 10,
+   "name": "up1"
+  }
+ },
+ {
+  "label": "upsert.fallback_include",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "up1"
+   },
+   "create": {
+    "name": "up1"
+   },
+   "update": {
+    "name": "up1"
+   },
+   "include": {
+    "posts": true
+   }
+  },
+  "result": {
+   "id": 10,
+   "name": "up1",
+   "posts": []
+  }
+ },
+ {
+  "label": "upsert.fallback_count",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "up1"
+   },
+   "create": {
+    "name": "up1"
+   },
+   "update": {
+    "name": "up1"
+   },
+   "include": {
+    "_count": true
+   }
+  },
+  "result": {
+   "id": 10,
+   "name": "up1",
+   "_count": {
+    "posts": 0
+   }
+  }
+ },
+ {
+  "label": "seq.after_fallbacks",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT last_value, is_called FROM \"Category_id_seq\""
+  ],
+  "result": [
+   {
+    "last_value": 11,
+    "is_called": true
+   }
+  ]
+ },
+ {
+  "label": "upsert.native_select",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "up1"
+   },
+   "create": {
+    "name": "up1"
+   },
+   "update": {
+    "name": "up1"
+   },
+   "select": {
+    "id": true
+   }
+  },
+  "result": {
+   "id": 10
+  }
+ },
+ {
+  "label": "upsert.native_by_id",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "id": 1
+   },
+   "create": {
+    "id": 1,
+    "name": "x1"
+   },
+   "update": {
+    "name": "tech"
+   }
+  },
+  "result": {
+   "id": 1,
+   "name": "tech"
+  }
+ },
+ {
+  "label": "upsert.fallback_two_uniques",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "id": 1,
+    "name": "tech"
+   },
+   "create": {
+    "id": 1,
+    "name": "tech"
+   },
+   "update": {
+    "name": "tech"
+   }
+  },
+  "result": {
+   "id": 1,
+   "name": "tech"
+  }
+ },
+ {
+  "label": "seq.after_by_id",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT last_value, is_called FROM \"Category_id_seq\""
+  ],
+  "result": [
+   {
+    "last_value": 12,
+    "is_called": true
+   }
+  ]
+ },
+ {
+  "label": "category.after_upserts",
+  "model": "category",
+  "action": "create",
+  "args": {
+   "data": {
+    "name": "after"
+   }
+  },
+  "result": {
+   "id": 13,
+   "name": "after"
+  }
+ },
+ {
+  "label": "upsert.native_increment",
+  "model": "user",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "email": "ana@x.io"
+   },
+   "create": {
+    "email": "ana@x.io"
+   },
+   "update": {
+    "big": {
+     "increment": 1
+    },
+    "tags": {
+     "push": "z"
+    }
+   },
+   "select": {
+    "id": true,
+    "big": true,
+    "tags": true
+   }
+  },
+  "result": {
+   "id": 1,
+   "big": "9007199254740992",
+   "tags": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "z"
+   ]
+  }
+ },
+ {
+  "label": "seq.users",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT last_value, is_called FROM users_id_seq"
+  ],
+  "result": [
+   {
+    "last_value": 5,
+    "is_called": true
+   }
+  ]
+ },
+ {
+  "label": "upsert.native_compound",
+  "model": "wallet",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "userId_currency": {
+     "userId": 3,
+     "currency": "USD"
+    }
+   },
+   "create": {
+    "id": "00000000-0000-4000-8000-0000000000aa",
+    "userId": 3,
+    "currency": "USD",
+    "amount": 1
+   },
+   "update": {
+    "label": "native"
+   },
+   "select": {
+    "id": true,
+    "label": true
+   }
+  },
+  "result": {
+   "id": "00000000-0000-4000-8000-000000000001",
+   "label": "native"
+  }
+ },
+ {
+  "label": "upsert.fallback_nested",
+  "model": "profile",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "userId": 1
+   },
+   "create": {
+    "bio": "b",
+    "user": {
+     "connect": {
+      "id": 1
+     }
+    }
+   },
+   "update": {
+    "bio": "c"
+   }
+  },
+  "result": {
+   "id": 2,
+   "bio": "c",
+   "userId": 1
+  }
+ },
+ {
+  "label": "upsert.profile_native_insert",
+  "model": "profile",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "userId": 2
+   },
+   "create": {
+    "bio": "p2",
+    "userId": 2
+   },
+   "update": {
+    "bio": "p2b"
+   }
+  },
+  "result": {
+   "id": 3,
+   "bio": "p2",
+   "userId": 2
+  }
+ },
+ {
+  "label": "upsert.profile_native_conflict",
+  "model": "profile",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "userId": 2
+   },
+   "create": {
+    "bio": "p2",
+    "userId": 2
+   },
+   "update": {
+    "bio": "p2b"
+   }
+  },
+  "result": {
+   "id": 3,
+   "bio": "p2b",
+   "userId": 2
+  }
+ },
+ {
+  "label": "seq.profile",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT last_value, is_called FROM \"Profile_id_seq\""
+  ],
+  "result": [
+   {
+    "last_value": 4,
+    "is_called": true
+   }
+  ]
+ },
+ {
+  "label": "upsert.native_compound_id",
+  "model": "rate",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "date_source": {
+     "date": "2024-05-01T00:00:00.000Z",
+     "source": "bcv"
+    }
+   },
+   "create": {
+    "date": "2024-05-01T00:00:00.000Z",
+    "source": "bcv",
+    "value": "1"
+   },
+   "update": {
+    "value": {
+     "increment": "0.5"
+    }
+   }
+  },
+  "result": {
+   "date": "2024-05-01T00:00:00.000Z",
+   "source": "bcv",
+   "value": "38",
+   "at": "2024-05-01T12:30:00.123Z"
+  }
+ },
+ {
+  "label": "upsert.native_unique_violation",
+  "model": "category",
+  "action": "upsert",
+  "args": {
+   "where": {
+    "name": "up1"
+   },
+   "create": {
+    "name": "up1"
+   },
+   "update": {
+    "name": "tech"
+   }
+  },
+  "error": {
+   "name": "PrismaClientKnownRequestError",
+   "code": "P2002",
+   "meta": {
+    "modelName": "Category",
+    "target": [
+     "name"
+    ]
+   },
+   "message": "\nInvalid `prisma.category.upsert()` invocation:\n\n\nUnique constraint failed on the fields: (`name`)"
+  }
+ },
+ {
+  "label": "seq.final",
+  "model": "$raw",
+  "action": "queryRawUnsafe",
+  "args": [
+   "SELECT last_value, is_called FROM \"Category_id_seq\""
+  ],
+  "result": [
+   {
+    "last_value": 14,
+    "is_called": true
+   }
+  ]
+ }
+]

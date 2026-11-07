@@ -1,0 +1,264 @@
+[
+ {
+  "method": "GET",
+  "path": "redirect",
+  "headers": {},
+  "status": 302,
+  "h": {
+   "set-cookie": [
+    "sid=1; Path=/; HttpOnly"
+   ],
+   "x-powered-by": "Express",
+   "location": "/?auth=expired",
+   "vary": "Accept",
+   "content-type": "text/plain; charset=utf-8",
+   "content-length": "36"
+  },
+  "body": "Found. Redirecting to /?auth=expired"
+ },
+ {
+  "method": "GET",
+  "path": "redirect",
+  "headers": {
+   "accept": "text/html"
+  },
+  "status": 302,
+  "h": {
+   "set-cookie": [
+    "sid=1; Path=/; HttpOnly"
+   ],
+   "x-powered-by": "Express",
+   "location": "/?auth=expired",
+   "vary": "Accept",
+   "content-type": "text/html; charset=utf-8",
+   "content-length": "43"
+  },
+  "body": "<p>Found. Redirecting to /?auth=expired</p>"
+ },
+ {
+  "method": "GET",
+  "path": "redirect",
+  "headers": {
+   "accept": "application/json"
+  },
+  "status": 302,
+  "h": {
+   "set-cookie": [
+    "sid=1; Path=/; HttpOnly"
+   ],
+   "x-powered-by": "Express",
+   "location": "/?auth=expired",
+   "vary": "Accept",
+   "content-length": "0"
+  },
+  "body": ""
+ },
+ {
+  "method": "HEAD",
+  "path": "redirect",
+  "headers": {},
+  "status": 302,
+  "h": {
+   "set-cookie": [
+    "sid=1; Path=/; HttpOnly"
+   ],
+   "x-powered-by": "Express",
+   "location": "/?auth=expired",
+   "vary": "Accept",
+   "content-type": "text/plain; charset=utf-8",
+   "content-length": "36"
+  },
+  "body": ""
+ },
+ {
+  "method": "GET",
+  "path": "redirect-enc",
+  "headers": {},
+  "status": 302,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "location": "/a%20b/%C3%B1?x=%3C1%3E",
+   "vary": "Accept",
+   "content-type": "text/plain; charset=utf-8",
+   "content-length": "45"
+  },
+  "body": "Found. Redirecting to /a%20b/%C3%B1?x=%3C1%3E"
+ },
+ {
+  "method": "POST",
+  "path": "login",
+  "headers": {},
+  "status": 204,
+  "h": {
+   "set-cookie": [
+    "sid=2; Path=/; HttpOnly; SameSite=Lax; Max-Age=60"
+   ],
+   "x-powered-by": "Express"
+  },
+  "body": ""
+ },
+ {
+  "method": "POST",
+  "path": "login-fail",
+  "headers": {},
+  "status": 401,
+  "h": {
+   "set-cookie": [
+    "try=1"
+   ],
+   "x-powered-by": "Express",
+   "content-type": "application/json; charset=utf-8",
+   "content-length": "70",
+   "etag": "W/\"46-AfDiViHtG/JQQUqXioufkHpXuKQ\""
+  },
+  "body": "{\"message\":\"Clave incorrecta\",\"error\":\"Unauthorized\",\"statusCode\":401}"
+ },
+ {
+  "method": "GET",
+  "path": "send-text",
+  "headers": {},
+  "status": 201,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "content-type": "text/html; charset=utf-8",
+   "content-length": "4",
+   "etag": "W/\"4-mYALhdM4PjovtF630AZqSHmp2tA\""
+  },
+  "body": "hola"
+ },
+ {
+  "method": "GET",
+  "path": "json",
+  "headers": {},
+  "status": 200,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "content-type": "application/json; charset=utf-8",
+   "content-length": "23",
+   "etag": "W/\"17-3xGzuSfOJHSvH1lWw3wvdBVIjqg\""
+  },
+  "body": "{\"a\":1,\"b\":[true,null]}"
+ },
+ {
+  "method": "GET",
+  "path": "end",
+  "headers": {},
+  "status": 200,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "content-type": "text/plain; charset=windows-1252",
+   "content-disposition": "attachment; filename=\"r.txt\"",
+   "content-length": "2"
+  },
+  "body": "AÑ"
+ },
+ {
+  "method": "GET",
+  "path": "send-status",
+  "headers": {},
+  "status": 418,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "content-type": "text/plain; charset=utf-8",
+   "content-length": "12",
+   "etag": "W/\"c-2UDTmC4hdG5PUA+z8oDkrgejuV8\""
+  },
+  "body": "I'm a Teapot"
+ },
+ {
+  "method": "GET",
+  "path": "cookie",
+  "headers": {},
+  "status": 200,
+  "h": {
+   "set-cookie": [
+    "a=b%20c; Path=/; HttpOnly; SameSite=Lax",
+    "old=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+   ],
+   "x-powered-by": "Express",
+   "content-type": "text/html; charset=utf-8",
+   "content-length": "2",
+   "etag": "W/\"2-eoX0dku9ba8cNUXvu/DyeabcC+s\""
+  },
+  "body": "ok"
+ },
+ {
+  "method": "POST",
+  "path": "pass",
+  "headers": {},
+  "status": 202,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "x-a": "1",
+   "content-type": "application/json; charset=utf-8",
+   "content-length": "11",
+   "etag": "W/\"b-Ai2R8hgEarLmHKwesT1qcY913ys\""
+  },
+  "body": "{\"ok\":true}"
+ },
+ {
+  "method": "GET",
+  "path": "later",
+  "headers": {},
+  "status": 200,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "content-type": "application/json; charset=utf-8",
+   "content-length": "10",
+   "etag": "W/\"a-FQy9IrEuWnSDrZlIA6O88hrrAt8\""
+  },
+  "body": "{\"late\":1}"
+ },
+ {
+  "method": "GET",
+  "path": "attachment",
+  "headers": {},
+  "status": 200,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "content-type": "application/pdf",
+   "content-disposition": "attachment; filename=\"informe 2026.pdf\"",
+   "content-length": "3",
+   "etag": "W/\"3-ZrJ0F9N+AkxGUmwvbTWKdU/FUvM\""
+  },
+  "body": "xyz"
+ },
+ {
+  "method": "GET",
+  "path": "buffer",
+  "headers": {},
+  "status": 200,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "content-type": "application/octet-stream",
+   "content-length": "3",
+   "etag": "W/\"3-zhWAKoxejp2w/68QEw7yZSlunqQ\""
+  },
+  "body": "raw"
+ },
+ {
+  "method": "GET",
+  "path": "handled-throw",
+  "headers": {},
+  "status": 401,
+  "h": {
+   "set-cookie": [],
+   "x-powered-by": "Express",
+   "x-h": "h",
+   "x-before": "1",
+   "content-type": "application/json; charset=utf-8",
+   "content-length": "43",
+   "etag": "W/\"2b-dGnJzt6gv1nJjX6DJ9RztDWptng\""
+  },
+  "body": "{\"message\":\"Unauthorized\",\"statusCode\":401}"
+ }
+]

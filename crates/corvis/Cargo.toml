@@ -1,0 +1,52 @@
+[package]
+name = "corvis"
+description = "A progressive Rust framework for building efficient and scalable server-side applications: modules, dependency injection, guards, interceptors and pipes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["web", "framework", "http", "dependency-injection"]
+categories = ["web-programming::http-server"]
+
+[dependencies]
+corvis-macros = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = "2"
+futures = "0.3"
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server", "server-auto", "server-graceful", "tokio", "http1", "http2"] }
+matchit = "0.8"
+form_urlencoded = "1"
+percent-encoding = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+regex = "1"
+dotenvy = "0.15"
+chrono-tz = { version = "0.10", features = ["case-insensitive"] }
+indexmap = "2"
+jsonwebtoken = { version = "9", optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
+base64 = "0.22"
+fancy-regex = "0.20"
+url = "2"
+unicode-normalization = "0.1"
+rand = "0.8"
+sha1 = "0.10"
+memchr = "2"
+
+[features]
+default = ["jwt", "websockets"]
+jwt = ["dep:jsonwebtoken"]
+websockets = ["dep:tokio-tungstenite"]
+
+[dev-dependencies]
+serde = { workspace = true }
+tokio-tungstenite = "0.24"

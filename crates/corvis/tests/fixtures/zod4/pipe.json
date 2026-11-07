@@ -1,0 +1,200 @@
+{
+ "pipeSchemaOk": {
+  "ok": {
+   "email": "a@b.co",
+   "password": "x",
+   "role": "user"
+  }
+ },
+ "pipeSchemaFail": {
+  "status": 400,
+  "body": {
+   "statusCode": 400,
+   "message": "Validation failed",
+   "errors": [
+    {
+     "origin": "string",
+     "code": "invalid_format",
+     "format": "email",
+     "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+     "path": [
+      "email"
+     ],
+     "message": "Invalid email address"
+    },
+    {
+     "origin": "string",
+     "code": "too_small",
+     "minimum": 1,
+     "inclusive": true,
+     "path": [
+      "password"
+     ],
+     "message": "Too small: expected string to have >=1 characters"
+    },
+    {
+     "code": "unrecognized_keys",
+     "keys": [
+      "extra"
+     ],
+     "path": [],
+     "message": "Unrecognized key: \"extra\""
+    }
+   ]
+  },
+  "name": "ZodValidationException"
+ },
+ "pipeDtoFail": {
+  "status": 400,
+  "body": {
+   "statusCode": 400,
+   "message": "Validation failed",
+   "errors": [
+    {
+     "expected": "string",
+     "code": "invalid_type",
+     "path": [
+      "email"
+     ],
+     "message": "Invalid input: expected string, received undefined"
+    },
+    {
+     "expected": "string",
+     "code": "invalid_type",
+     "path": [
+      "password"
+     ],
+     "message": "Invalid input: expected string, received undefined"
+    }
+   ]
+  },
+  "name": "ZodValidationException"
+ },
+ "pipeDtoUndefined": {
+  "status": 400,
+  "body": {
+   "statusCode": 400,
+   "message": "Validation failed",
+   "errors": [
+    {
+     "expected": "object",
+     "code": "invalid_type",
+     "path": [],
+     "message": "Invalid input: expected object, received undefined"
+    }
+   ]
+  },
+  "name": "ZodValidationException"
+ },
+ "pipeNoDto": {
+  "ok": {
+   "a": 1
+  }
+ },
+ "pipeQueryOk": {
+  "ok": {
+   "page": 3,
+   "includeInactive": true
+  }
+ },
+ "pipeQueryFail": {
+  "status": 400,
+  "body": {
+   "statusCode": 400,
+   "message": "Validation failed",
+   "errors": [
+    {
+     "origin": "number",
+     "code": "too_small",
+     "minimum": 1,
+     "inclusive": true,
+     "path": [
+      "page"
+     ],
+     "message": "Too small: expected number to be >=1"
+    },
+    {
+     "code": "invalid_value",
+     "expected": "stringbool",
+     "values": [
+      "true",
+      "1",
+      "yes",
+      "on",
+      "y",
+      "enabled",
+      "false",
+      "0",
+      "no",
+      "off",
+      "n",
+      "disabled"
+     ],
+     "path": [
+      "includeInactive"
+     ],
+     "message": "Invalid option: expected one of \"true\"|\"1\"|\"yes\"|\"on\"|\"y\"|\"enabled\"|\"false\"|\"0\"|\"no\"|\"off\"|\"n\"|\"disabled\""
+    }
+   ]
+  },
+  "name": "ZodValidationException"
+ },
+ "pipeThrown": {
+  "status": 400,
+  "body": {
+   "statusCode": 400,
+   "message": "Validation failed"
+  },
+  "name": "ZodValidationException"
+ },
+ "strictNoDto": {
+  "status": 500,
+  "body": {
+   "message": "Internal Server Error",
+   "statusCode": 500
+  },
+  "name": "ZodSchemaDeclarationException"
+ },
+ "customException": {
+  "status": 400,
+  "body": {
+   "custom": true,
+   "count": 2
+  },
+  "name": "BadRequestException"
+ },
+ "validateFail": {
+  "status": 400,
+  "body": {
+   "statusCode": 400,
+   "message": "Validation failed",
+   "errors": [
+    {
+     "expected": "string",
+     "code": "invalid_type",
+     "path": [
+      "email"
+     ],
+     "message": "Invalid input: expected string, received number"
+    },
+    {
+     "expected": "string",
+     "code": "invalid_type",
+     "path": [
+      "password"
+     ],
+     "message": "Invalid input: expected string, received undefined"
+    }
+   ]
+  },
+  "name": "ZodValidationException"
+ },
+ "serializationException": {
+  "status": 500,
+  "body": {
+   "message": "Internal Server Error",
+   "statusCode": 500
+  },
+  "name": "ZodSerializationException"
+ }
+}

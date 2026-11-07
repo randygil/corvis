@@ -1,0 +1,126 @@
+//! # corvis-orm
+//!
+//! The ORM of [corvis](https://github.com/randygil/corvis), built on sqlx
+//! (SQLite and PostgreSQL).
+//!
+//! - Models are plain structs with `#[derive(Model)]` (the `schema.prisma` equivalent).
+//! - The client offers `find_many`, `find_unique`, `create`,
+//!   `update`, `upsert`, `delete`, `*_many`, `count`, `aggregate`, `group_by`, with
+//!   JSON query arguments (`json!({ "where": ..., "include": ... })`) or typed helpers.
+//! - `db.db_push::<(User, Post)>()` creates tables, unique indexes and foreign keys.
+//! - Errors carry the standard `P2xxx` codes (`P2002`, `P2025`, ...) or are a
+//!   [`QueryValidationError`] for invalid arguments.
+//! - [`OrmModule`] / [`OrmService`] / [`OrmExceptionFilter`] integrate
+//!   it with corvis: an injectable client and a filter that maps errors to HTTP responses.
+//!
+//! ```ignore
+//! use corvis_orm::prelude::*;
+//!
+//! #[derive(Debug, Clone, Serialize, Deserialize, Model)]
+//! pub struct User {
+//!     #[id] #[default(autoincrement)] pub id: i64,
+//!     #[unique] pub email: String,
+//!     pub name: Option<String>,
+//!     #[relation(has_many)] #[serde(default, skip_serializing_if = "Option::is_none")]
+//!     pub posts: Option<Vec<Post>>,
+//! }
+//!
+//! let db = OrmClient::new("sqlite::memory:")?;
+//! db.db_push::<(User, Post)>().await?;
+//! let users: Vec<User> = db.user().find_many(json!({ "include": { "posts": true } })).await?;
+//! let same = db.user().find_many(()).include(user::posts::include()).exec().await?;
+//! ```
+
+mod client;
+mod datetime;
+mod db;
+pub mod decimal;
+mod engine;
+mod error;
+mod meta;
+mod migrate;
+#[cfg(feature = "corvis")]
+mod module;
+pub mod codegen;
+pub mod psl;
+mod query;
+mod raw;
+mod schema;
+mod transaction;
+pub mod serde_helpers;
+pub mod util;
+
+pub use client::{OrmClient, OrmClientOptions};
+pub use datetime::DateTime;
+pub use migrate::{MigrateStatus, MigrationInfo};
+pub use db::{Dialect, SqlValue};
+pub use decimal::{Decimal, DecimalConfig, DecimalCtor, DecimalError, Rounding};
+pub use error::{
+    CLIENT_VERSION, InitializationError, KnownRequestError, UnknownRequestError,
+    QueryValidationError, OrmError, Result,
+};
+pub use meta::{
+    DefaultValue, EnumMeta, EnumValueMeta, FieldKind, FieldMeta, IndexMeta, JoinTable, Model, ModelMeta, ModelSet, OrmEnum,
+    ReferentialAction, RelationKind, RelationMeta, ResolvedRelation, ScalarType, UniqueMeta, UnsupportedMeta, m2m_relation_name,
+    resolve_relation,
+};
+#[cfg(feature = "corvis")]
+pub use module::{ORM_MODULE_OPTIONS, OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};
+pub use query::{
+    Action, Args, BatchPayload, DataArg, Delegate, IncludeParam, OrderByParam, Query, SelectParam, SetParam, SortOrder,
+    WhereArg, WhereParam, and, data_object, not, or, to_json, where_object,
+};
+
+pub use raw::{Bytes, RawArg, RawSql, ToSqlArg};
+pub use transaction::{Batch, BatchQuery, IsolationLevel, TransactionOptions};
+
+pub use corvis_orm_macros::{Model, OrmEnum, sql};
+pub use serde;
+pub use serde_json;
+
+/// Query actions (the `A` of `Query<M, A>`).
+pub mod actions {
+    pub use crate::query::{
+        Aggregate, Count, Create, CreateMany, Delete, DeleteMany, FindFirst, FindFirstOrThrow, FindMany, FindUnique,
+        FindUniqueOrThrow, GroupBy, Update, UpdateMany, Upsert,
+    };
+}
+
+/// `use corvis_orm::prelude::*;`
+pub mod prelude {
+    pub use crate::{
+        BatchPayload, DateTime, Decimal, DecimalConfig, DecimalCtor, IsolationLevel, Model, OrmClient, OrmEnum, OrmError,
+        RawSql, SortOrder, TransactionOptions, or_undefined, sql, undefined,
+    };
+    #[cfg(feature = "corvis")]
+    pub use crate::{OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};
+    pub use serde::{Deserialize, Serialize};
+    pub use serde_json::{Value, json};
+}
+
+/// JS `undefined` for query arguments built with `json!`: the key (or list item) is
+/// dropped before the query runs, so it means "not given", unlike `null`.
+///
+/// ```ignore
+/// db.transaction().find_many(json!({
+///     "where": { "createdAt": { "gte": corvis_orm::or_undefined(from), "lte": corvis_orm::or_undefined(to) },
+///                "currency": corvis_orm::undefined() }
+/// })).await?;
+/// ```
+pub fn undefined() -> serde_json::Value {
+    serde_json::Value::String(engine::UNDEFINED.to_string())
+}
+
+/// `Some(v)` -> `v`, `None` -> [`undefined()`] (`value ?? undefined`).
+pub fn or_undefined<T: serde::Serialize>(v: Option<T>) -> serde_json::Value {
+    match v {
+        Some(v) => serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+        None => undefined(),
+    }
+}
+
+/// Compiles a `where` object into the SQL condition used for the client's
+/// database (placeholders included). Useful to inspect the generated SQL.
+pub fn debug_sql(client: &OrmClient, model: &'static ModelMeta, r#where: &serde_json::Value) -> Result<String> {
+    engine::where_to_sql(client, model, r#where).map(|(sql, _)| sql)
+}

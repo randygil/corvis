@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/corvis",
+    "crates/corvis-macros",
+    "crates/corvis-cli",
+    "crates/corvis-orm",
+    "crates/corvis-orm-macros",
+    "crates/corvis-swagger",
+    "crates/corvis-swagger-macros",
+    "examples/*",
+    "bench/corvis-app",
+
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Randy Gil <r.gilcamejo@gmail.com>"]
+repository = "https://github.com/randygil/corvis"
+
+[workspace.dependencies]
+corvis = { path = "crates/corvis" }
+corvis-macros = { path = "crates/corvis-macros" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+anyhow = "1"

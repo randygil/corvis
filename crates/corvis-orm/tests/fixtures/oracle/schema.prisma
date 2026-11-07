@@ -1,0 +1,130 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "./client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER @map("member")
+  GUEST
+
+  @@map("role_t")
+}
+
+enum Currency {
+  USD
+  VES
+  USDT
+}
+
+model User {
+  id        Int       @id @default(autoincrement())
+  email     String    @unique
+  name      String?
+  role      Role      @default(MEMBER)
+  roles     Role[]
+  tags      String[]  @default([])
+  scores    Int[]
+  balance   Decimal   @default(0) @db.Decimal(20, 2)
+  ratio     Float?
+  big       BigInt    @default(0)
+  birthday  DateTime? @db.Date
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt
+  data      Json?
+  meta      Json      @default("{}") @db.JsonB
+  active    Boolean   @default(true)
+  managerId Int?
+  manager   User?     @relation("mgr", fields: [managerId], references: [id])
+  reports   User[]    @relation("mgr")
+  posts     Post[]
+  profile   Profile?
+  groups    Group[]
+  wallets   Wallet[]
+
+  @@map("users")
+}
+
+model Profile {
+  id     Int    @id @default(autoincrement())
+  bio    String
+  userId Int    @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Post {
+  id         Int        @id @default(autoincrement())
+  title      String
+  body       String?
+  published  Boolean    @default(false)
+  views      Int        @default(0)
+  authorId   Int?
+  author     User?      @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  categories Category[]
+  comments   Comment[]
+  createdAt  DateTime   @default(now())
+}
+
+model Comment {
+  id     Int    @id @default(autoincrement())
+  text   String
+  postId Int
+  post   Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+}
+
+model Category {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  posts Post[]
+}
+
+model Group {
+  id    String @id @db.Uuid
+  name  String
+  users User[]
+}
+
+model Wallet {
+  id       String   @id @db.Uuid
+  userId   Int
+  currency Currency
+  amount   Decimal  @db.Decimal(20, 8)
+  label    String?
+  user     User     @relation(fields: [userId], references: [id])
+  entries  Entry[]
+
+  @@unique([userId, currency])
+}
+
+model Pair {
+  a       String
+  b       Int
+  label   String
+  entries Entry[]
+
+  @@id([a, b])
+}
+
+model Entry {
+  id       Int     @id @default(autoincrement())
+  walletId String  @db.Uuid
+  wallet   Wallet  @relation(fields: [walletId], references: [id])
+  pairA    String?
+  pairB    Int?
+  pair     Pair?   @relation(fields: [pairA, pairB], references: [a, b])
+  amount   Decimal @db.Decimal(20, 8)
+}
+
+model Rate {
+  date   DateTime @db.Date
+  source String
+  value  Decimal  @db.Decimal(24, 8)
+  at     DateTime? @db.Timestamptz
+
+  @@id([date, source])
+}

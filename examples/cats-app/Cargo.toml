@@ -1,0 +1,9 @@
+[package]
+name = "cats-app"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+corvis = { path = "../../crates/corvis" }
+serde = { version = "1", features = ["derive"] }
