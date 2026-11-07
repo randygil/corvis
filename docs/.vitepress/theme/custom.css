@@ -200,7 +200,7 @@ body {
   background: var(--cv-amber-soft);
 }
 
-.cv-status[data-status='parcial'] {
+.cv-status[data-status='partial'] {
   color: var(--cv-verdigris);
   background: var(--cv-verdigris-soft);
 }

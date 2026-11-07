@@ -1,5 +1,5 @@
 ---
-status: documentado
+status: documented
 ---
 
 # Ciclo de vida de la petición

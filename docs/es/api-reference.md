@@ -1,5 +1,5 @@
 ---
-status: documentado
+status: documented
 ---
 
 # Referencia de la API

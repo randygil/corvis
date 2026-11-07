@@ -1,5 +1,5 @@
 ---
-status: documentado
+status: documented
 ---
 
 # Corvis frente a Fastify, Express y Hono

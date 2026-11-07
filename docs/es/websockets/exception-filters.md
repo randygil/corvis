@@ -1,5 +1,5 @@
 ---
-status: parcial
+status: partial
 ---
 
 # Filtros de excepción

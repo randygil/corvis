@@ -2,15 +2,21 @@
 import { computed } from 'vue'
 import { useData } from 'vitepress'
 
-const { frontmatter } = useData()
+const { frontmatter, lang } = useData()
 
-const labels: Record<string, string> = {
-  parcial: 'Soporte parcial',
-  'no-disponible': 'No disponible todavía',
+const labels: Record<string, Record<string, string>> = {
+  en: {
+    partial: 'Partial support',
+    unavailable: 'Not available yet',
+  },
+  es: {
+    partial: 'Soporte parcial',
+    unavailable: 'No disponible todavía',
+  },
 }
 
-const status = computed(() => String(frontmatter.value.status ?? 'documentado'))
-const label = computed(() => labels[status.value])
+const status = computed(() => String(frontmatter.value.status ?? 'documented'))
+const label = computed(() => (labels[lang.value.startsWith('es') ? 'es' : 'en'] ?? labels.en)[status.value])
 </script>
 
 <template>

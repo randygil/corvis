@@ -1,14 +1,52 @@
-import { defineConfig } from 'vitepress'
-import { sidebar } from './sidebar.mts'
+import { defineConfig, type DefaultTheme } from 'vitepress'
+import { nav, sidebar } from './sidebar.mts'
 
 const repo = 'https://github.com/randygil/corvis'
 
+const en: DefaultTheme.Config = {
+  nav: nav('en'),
+  sidebar: { '/': sidebar('en') },
+  outline: { level: [2, 3], label: 'On this page' },
+  docFooter: { prev: 'Previous page', next: 'Next page' },
+  darkModeSwitchLabel: 'Appearance',
+  lightModeSwitchTitle: 'Switch to light theme',
+  darkModeSwitchTitle: 'Switch to dark theme',
+  sidebarMenuLabel: 'Menu',
+  returnToTopLabel: 'Return to top',
+  langMenuLabel: 'Change language',
+  notFound: {
+    title: 'Page not found',
+    quote: 'This path does not exist in the documentation.',
+    linkText: 'Back to the introduction',
+  },
+  footer: { message: 'Released under the MIT License.' },
+}
+
+const es: DefaultTheme.Config = {
+  nav: nav('es'),
+  sidebar: { '/es/': sidebar('es') },
+  outline: { level: [2, 3], label: 'En esta página' },
+  docFooter: { prev: 'Anterior', next: 'Siguiente' },
+  darkModeSwitchLabel: 'Tema',
+  lightModeSwitchTitle: 'Cambiar a tema claro',
+  darkModeSwitchTitle: 'Cambiar a tema oscuro',
+  sidebarMenuLabel: 'Menú',
+  returnToTopLabel: 'Volver arriba',
+  langMenuLabel: 'Idioma',
+  notFound: {
+    title: 'Página no encontrada',
+    quote: 'Esta ruta no existe en la documentación.',
+    linkText: 'Volver a la introducción',
+    link: '/es/',
+  },
+  footer: { message: 'Publicado bajo la licencia MIT.' },
+}
+
 export default defineConfig({
-  lang: 'es',
   title: 'Corvis',
-  description: 'Framework backend modular para Rust: módulos, inyección de dependencias, controladores, pipes, guards e interceptors.',
   cleanUrls: true,
   lastUpdated: false,
+  srcExclude: ['README.md', 'scripts/**'],
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
     ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
@@ -24,48 +62,45 @@ export default defineConfig({
   markdown: {
     theme: { light: 'github-light', dark: 'vitesse-dark' },
   },
+  locales: {
+    root: {
+      label: 'English',
+      lang: 'en',
+      description:
+        'Modular backend framework for Rust: modules, dependency injection, controllers, pipes, guards and interceptors.',
+      themeConfig: en,
+    },
+    es: {
+      label: 'Español',
+      lang: 'es',
+      link: '/es/',
+      description:
+        'Framework backend modular para Rust: módulos, inyección de dependencias, controladores, pipes, guards e interceptors.',
+      themeConfig: es,
+    },
+  },
   themeConfig: {
     logo: '/logo.svg',
     siteTitle: 'Corvis',
-    nav: [
-      { text: 'Guía', link: '/first-steps', activeMatch: '^/(first-steps|controllers|providers|modules|middleware|exception-filters|pipes|guards|interceptors|custom-decorators)' },
-      { text: 'Fundamentos', link: '/fundamentals/custom-providers', activeMatch: '^/fundamentals/' },
-      { text: 'WebSockets', link: '/websockets/gateways', activeMatch: '^/websockets/' },
-      { text: 'OpenAPI', link: '/openapi/introduction', activeMatch: '^/openapi/' },
-      { text: 'CLI', link: '/cli/overview', activeMatch: '^/cli/' },
-    ],
-    sidebar: { '/': sidebar },
-    outline: { level: [2, 3], label: 'En esta página' },
     socialLinks: [{ icon: 'github', link: repo }],
     search: {
       provider: 'local',
       options: {
-        translations: {
-          button: { buttonText: 'Buscar', buttonAriaLabel: 'Buscar' },
-          modal: {
-            noResultsText: 'Sin resultados para',
-            resetButtonTitle: 'Limpiar búsqueda',
-            displayDetails: 'Mostrar detalles',
-            backButtonTitle: 'Cerrar',
-            footer: { selectText: 'seleccionar', navigateText: 'navegar', closeText: 'cerrar' },
+        locales: {
+          es: {
+            translations: {
+              button: { buttonText: 'Buscar', buttonAriaLabel: 'Buscar' },
+              modal: {
+                noResultsText: 'Sin resultados para',
+                resetButtonTitle: 'Limpiar búsqueda',
+                displayDetails: 'Mostrar detalles',
+                backButtonTitle: 'Cerrar',
+                footer: { selectText: 'seleccionar', navigateText: 'navegar', closeText: 'cerrar' },
+              },
+            },
           },
         },
       },
-    },
-    docFooter: { prev: 'Anterior', next: 'Siguiente' },
-    darkModeSwitchLabel: 'Tema',
-    lightModeSwitchTitle: 'Cambiar a tema claro',
-    darkModeSwitchTitle: 'Cambiar a tema oscuro',
-    sidebarMenuLabel: 'Menú',
-    returnToTopLabel: 'Volver arriba',
-    langMenuLabel: 'Idioma',
-    notFound: {
-      title: 'Página no encontrada',
-      quote: 'Esta ruta no existe en la documentación.',
-      linkText: 'Volver a la introducción',
-    },
-    footer: {
-      message: 'Publicado bajo la licencia MIT.',
     },
   },
 })

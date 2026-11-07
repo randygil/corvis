@@ -1,5 +1,5 @@
 ---
-status: documentado
+status: documented
 ---
 
 # Subida de archivos y streaming

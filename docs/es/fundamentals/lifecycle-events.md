@@ -1,5 +1,5 @@
 ---
-status: documentado
+status: documented
 ---
 
 # Eventos del ciclo de vida

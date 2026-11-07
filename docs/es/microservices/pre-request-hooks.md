@@ -1,5 +1,5 @@
 ---
-status: no-disponible
+status: unavailable
 ---
 
 # Hooks previos a la petición

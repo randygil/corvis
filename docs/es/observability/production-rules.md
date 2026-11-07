@@ -1,5 +1,5 @@
 ---
-status: no-disponible
+status: unavailable
 ---
 
 # Reglas de producción

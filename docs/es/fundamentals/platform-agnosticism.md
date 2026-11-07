@@ -1,5 +1,5 @@
 ---
-status: parcial
+status: partial
 ---
 
 # Independencia de la plataforma

@@ -1,5 +1,5 @@
 ---
-status: parcial
+status: partial
 ---
 
 # HTTPS y varios servidores

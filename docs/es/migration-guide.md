@@ -1,5 +1,5 @@
 ---
-status: documentado
+status: documented
 ---
 
 # Guía de migración
