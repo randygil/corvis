@@ -17,3 +17,8 @@ bench/logs
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Sitio de documentación (VitePress)
+docs/node_modules
+docs/.vitepress/cache
+docs/.vitepress/dist

@@ -1,0 +1,42 @@
+schema: spec-driven
+
+context: |
+  Language: English
+  All artifacts must be written in English.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Project: Corvis, a modular backend framework for Rust (modules, dependency injection, controllers,
+  guards, pipes, interceptors, exception filters, middleware, WebSockets) plus corvis-orm, an ORM with
+  the Prisma Client query API that reads `schema.prisma`. Cargo workspace: crates/corvis,
+  corvis-macros, corvis-orm, corvis-orm-macros, corvis-swagger, corvis-swagger-macros, corvis-cli;
+  examples in examples/; documentation site (VitePress, English primary, Spanish translation) in docs/.
+
+  Positioning: migrating Node.js backends built on the NestJS + Prisma model to Rust with verified
+  behavioral parity. When a feature has an original Node library (socket.io, BullMQ, passport,
+  @nestjs/cqrs, mongoose, multer...), the spec states which behavior must match it, and verification
+  includes a differential test against that library (same inputs to both, compare outputs/state).
+  Security over parity: when the original behavior is a vulnerability, diverge and document it.
+
+  Public naming: do not use the words "Nest", "NestJS" or "Prisma" in public APIs, docs or error
+  messages; nominative phrases such as "compatible with schema.prisma" or naming the Node library a
+  differential test runs against are allowed.
+
+  Tracking: every change maps to one GitHub issue in randygil/corvis. The change name is the issue's
+  kebab-case slug, and proposal.md links the issue. Epics are parent issues; a change implements one
+  task issue.
+
+  Definition of done for every change: builds with no warnings; cargo clippy and
+  cargo test --workspace pass; regression tests for the new behavior; docs page (English, plus Spanish
+  translation) and an example for user-facing features; the three port apps keep 0 differences in
+  apidiff.
+
+  Constraints: never add Claude/AI attribution to commits, docs or release notes. Use the shared
+  Cargo target dir (nestrs/target); never create per-task target dirs (they filled the disk once).
+
+rules:
+  proposal:
+    - Link the GitHub issue the change implements.
+    - State what is out of scope.
+  tasks:
+    - Break tasks into steps that can be verified independently (one session of work or less each).
+    - End with the definition-of-done checks (warnings, clippy, tests, docs EN+ES, apidiff of the ports).
