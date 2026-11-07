@@ -48,5 +48,6 @@ jwt = ["dep:jsonwebtoken"]
 websockets = ["dep:tokio-tungstenite"]
 
 [dev-dependencies]
+proptest = "1"
 serde = { workspace = true }
 tokio-tungstenite = "0.24"

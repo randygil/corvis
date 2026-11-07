@@ -51,6 +51,8 @@ pub mod multer;
 pub mod openapi;
 pub mod router;
 pub mod testing;
+#[cfg(test)]
+mod fuzz_tests;
 pub mod validation;
 pub mod z;
 
