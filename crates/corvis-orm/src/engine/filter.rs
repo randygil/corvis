@@ -34,6 +34,19 @@ fn json_wrap(v: &Value) -> String {
     Value::Array(vec![v.clone()]).to_string()
 }
 
+/// The SQLite JSON path (`$."a"[0]`) of a filter path.
+fn sqlite_json_path(p: Option<&[String]>) -> String {
+    let mut path = String::from("$");
+    for s in p.unwrap_or(&[]) {
+        if s.parse::<usize>().is_ok() {
+            path.push_str(&format!("[{s}]"));
+        } else {
+            path.push_str(&format!(".\"{}\"", s.replace('"', "\\\"")));
+        }
+    }
+    path
+}
+
 /// The `DbNull` / `JsonNull` / `AnyNull` sentinels (`{ "$type": ... }`).
 fn null_sentinel(v: &Value) -> Option<&str> {
     v.as_object().filter(|o| o.len() == 1).and_then(|o| o.get("$type")).and_then(|t| t.as_str()).filter(|t| matches!(*t, "DbNull" | "JsonNull" | "AnyNull"))
@@ -528,14 +541,7 @@ impl Engine {
                 q.push(&format!("'{}'", lit.replace('\'', "''"))).push(")");
             }
             (Dialect::Sqlite, p) => {
-                let mut path = String::from("$");
-                for s in p.unwrap_or(&[]) {
-                    if s.parse::<usize>().is_ok() {
-                        path.push_str(&format!("[{s}]"));
-                    } else {
-                        path.push_str(&format!(".\"{}\"", s.replace('"', "\\\"")));
-                    }
-                }
+                let path = sqlite_json_path(p);
                 if as_text || path != "$" {
                     q.push("json_extract(").col(alias, f.column).push(", ").bind(SqlValue::Text(path)).push(")");
                 } else {
@@ -554,6 +560,58 @@ impl Engine {
                 q.push("json(").bind(SqlValue::Text(v.to_string())).push(")");
             }
         }
+    }
+
+    /// SQLite: `json_type(col, path)` (NULL when the path does not exist).
+    fn sqlite_json_type(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[String]>) {
+        q.push("json_type(").col(alias, f.column).push(", ").bind(SqlValue::Text(sqlite_json_path(p))).push(")");
+    }
+
+    /// SQLite: true when the value at `path` has the same JSON type as `val` (numbers are one
+    /// type), like `jsonb` comparisons never match across types. Without it `json_extract`
+    /// would compare an integer with a string or `true` with `1`.
+    fn sqlite_json_same_type(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[String]>, val: &Value) {
+        self.sqlite_json_type(q, alias, f, p);
+        q.push(match val {
+            Value::Number(_) => " IN ('integer', 'real')",
+            Value::String(_) => " = 'text'",
+            Value::Bool(true) => " = 'true'",
+            Value::Bool(false) => " = 'false'",
+            Value::Array(_) => " = 'array'",
+            Value::Object(_) => " = 'object'",
+            Value::Null => " = 'null'",
+        });
+    }
+
+    /// SQLite `equals` / `not` / ordering of the JSON value at `path` against `val`, comparing
+    /// `json_extract(col, path)` with `json_extract(json(?), '$')` (the same representation: SQL
+    /// integer, real or unquoted text) and only between values of the same JSON type. A missing
+    /// path is NULL (it matches neither the filter nor its negation, like SQL on `jsonb`); `not` matches
+    /// every existing value that is not equal, other types included.
+    fn sqlite_json_compare(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[String]>, val: &Value, op: &str) {
+        let neg = op == "not";
+        if val.is_null() {
+            // JSON null: `json_extract` cannot tell it from a missing path.
+            if neg {
+                self.sqlite_json_type(q, alias, f, p);
+                q.push(" <> 'null'");
+            } else {
+                self.sqlite_json_same_type(q, alias, f, p, val);
+            }
+            return;
+        }
+        q.push(if neg { "NOT (" } else { "(" });
+        self.sqlite_json_same_type(q, alias, f, p, val);
+        q.push(" AND json_extract(").col(alias, f.column).push(", ").bind(SqlValue::Text(sqlite_json_path(p))).push(")");
+        q.push(match op {
+            "lt" => " < ",
+            "lte" => " <= ",
+            "gt" => " > ",
+            "gte" => " >= ",
+            _ => " = ",
+        });
+        q.push("json_extract(json(").bind(SqlValue::Text(val.to_string())).push("), '$')");
+        q.push(")");
     }
 
     /// Json filters (`equals`, `not`, `path`, `string_*`, `array_*`, comparisons).
@@ -603,6 +661,20 @@ impl Engine {
             match op.as_str() {
                 "equals" | "not" => {
                     let neg = op == "not";
+                    if !pg && null_sentinel(val) != Some("DbNull") {
+                        match null_sentinel(val) {
+                            None => self.sqlite_json_compare(q, alias, f, p, val, op),
+                            Some("JsonNull") => self.sqlite_json_compare(q, alias, f, p, &Value::Null, op),
+                            Some(_) => {
+                                // AnyNull
+                                q.push(if neg { "NOT " } else { "" }).push("(");
+                                q.col(alias, f.column).push(" IS NULL OR ");
+                                self.sqlite_json_compare(q, alias, f, p, &Value::Null, "equals");
+                                q.push(")");
+                            }
+                        }
+                        continue;
+                    }
                     match null_sentinel(val) {
                         Some("DbNull") => {
                             q.col(alias, f.column).push(if neg { " IS NOT NULL" } else { " IS NULL" });
@@ -652,10 +724,15 @@ impl Engine {
                         self.json_at(q, alias, f, p, true);
                         q.push(if insensitive { " ILIKE " } else { " LIKE " }).bind(SqlValue::Text(pattern)).push(")");
                     } else if insensitive {
-                        q.push("LOWER(");
+                        q.push("(");
+                        self.sqlite_json_type(q, alias, f, p);
+                        q.push(" = 'text' AND LOWER(");
                         self.json_at(q, alias, f, p, true);
-                        q.push(") LIKE LOWER(").bind(SqlValue::Text(pattern)).push(") ESCAPE '\\'");
+                        q.push(") LIKE LOWER(").bind(SqlValue::Text(pattern)).push(") ESCAPE '\\')");
                     } else {
+                        q.push("(");
+                        self.sqlite_json_type(q, alias, f, p);
+                        q.push(" = 'text' AND ");
                         // Exact, case-sensitive string functions (like `String` columns): a
                         // GLOB pattern would turn `*`, `?` and `[` of the input into wildcards.
                         let needle = || SqlValue::Text(s.to_string());
@@ -677,6 +754,7 @@ impl Engine {
                                 q.push(", -LENGTH(").bind(needle()).push(")) = ").bind(needle());
                             }
                         }
+                        q.push(")");
                     }
                 }
                 "array_contains" | "array_starts_with" | "array_ends_with" => {
@@ -707,19 +785,35 @@ impl Engine {
                         }
                     } else {
                         let items = if val.is_array() && op == "array_contains" { val.as_array().unwrap().clone() } else { vec![val.clone()] };
-                        let mut path = String::from("$");
-                        for s in p.unwrap_or(&[]) {
-                            path.push_str(&format!(".\"{s}\""));
-                        }
+                        let path = sqlite_json_path(p);
                         match op.as_str() {
                             "array_contains" => {
                                 q.push("(");
-                                for (j, it) in items.iter().enumerate() {
-                                    if j > 0 {
-                                        q.push(" AND ");
+                                self.sqlite_json_type(q, alias, f, p);
+                                q.push(" = 'array'");
+                                for it in items.iter() {
+                                    q.push(" AND EXISTS (SELECT 1 FROM json_each(").col(alias, f.column).push(", ").bind(SqlValue::Text(path.clone()));
+                                    // Same type and value; objects and arrays come back from `json_each` as JSON text.
+                                    q.push(") WHERE ");
+                                    match it {
+                                        Value::Null => {
+                                            q.push("type = 'null'");
+                                        }
+                                        Value::Array(_) | Value::Object(_) => {
+                                            q.push(if it.is_array() { "type = 'array'" } else { "type = 'object'" });
+                                            q.push(" AND value = json_extract(json(").bind(SqlValue::Text(it.to_string())).push("), '$')");
+                                        }
+                                        _ => {
+                                            q.push("type ").push(match it {
+                                                Value::Number(_) => "IN ('integer', 'real')",
+                                                Value::String(_) => "= 'text'",
+                                                Value::Bool(true) => "= 'true'",
+                                                _ => "= 'false'",
+                                            });
+                                            q.push(" AND value = json_extract(json(").bind(SqlValue::Text(it.to_string())).push("), '$')");
+                                        }
                                     }
-                                    q.push("EXISTS (SELECT 1 FROM json_each(").col(alias, f.column).push(", ").bind(SqlValue::Text(path.clone()));
-                                    q.push(") WHERE json_quote(value) = json(").bind(SqlValue::Text(it.to_string())).push(") OR value = json(").bind(SqlValue::Text(it.to_string())).push("))");
+                                    q.push(")");
                                 }
                                 q.push(")");
                             }
@@ -738,9 +832,16 @@ impl Engine {
                         "gt" => " > ",
                         _ => " >= ",
                     };
-                    self.json_at(q, alias, f, p, false);
-                    q.push(sym);
-                    self.json_literal(q, val);
+                    if pg {
+                        self.json_at(q, alias, f, p, false);
+                        q.push(sym);
+                        self.json_literal(q, val);
+                    } else if val.is_null() {
+                        // Nothing is ordered against JSON null.
+                        q.push("1 = 0");
+                    } else {
+                        self.sqlite_json_compare(q, alias, f, p, val, op);
+                    }
                 }
                 other => return Err(self.unknown_argument(other, JSON_OPS.iter().copied())),
             }

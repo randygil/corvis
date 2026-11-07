@@ -40,6 +40,34 @@ fn multipart_body() -> impl Strategy<Value = Vec<u8>> {
     prop::collection::vec(multipart_piece(), 0..48).prop_map(|parts| parts.concat())
 }
 
+/// A body made of complete parts (fields and files, some with awkward content) and a closing boundary.
+fn well_formed_body() -> impl Strategy<Value = Vec<u8>> {
+    let content = prop::collection::vec(
+        prop_oneof![
+            3 => prop::sample::select(vec!["a", "hello", "\r\n", "\r", "\n", "-", "--", "--X", "\r\n--Xy", "\r\n--", " "]).prop_map(|s| s.as_bytes().to_vec()),
+            1 => prop::collection::vec(any::<u8>(), 0..8),
+        ],
+        0..8,
+    )
+    .prop_map(|v| v.concat());
+    let part = (prop::sample::select(vec!["f", "a[b]", "up", ""]), prop::option::of(prop::sample::select(vec!["a.txt", "../x.bin", ""])), content)
+        .prop_map(|(name, file, data)| {
+            let mut out = format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"").into_bytes();
+            if let Some(f) = file {
+                out.extend_from_slice(format!("; filename=\"{f}\"\r\nContent-Type: application/octet-stream").as_bytes());
+            }
+            out.extend_from_slice(b"\r\n\r\n");
+            out.extend_from_slice(&data);
+            out.extend_from_slice(b"\r\n");
+            out
+        });
+    prop::collection::vec(part, 0..6).prop_map(|parts| {
+        let mut body = parts.concat();
+        body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+        body
+    })
+}
+
 fn limits() -> impl Strategy<Value = Limits> {
     (
         prop::option::of(0u64..64),
@@ -117,6 +145,38 @@ proptest! {
         ct.extend_from_slice(&piece);
         // Like busboy, an empty boundary (`boundary=""`) is accepted; the parse test covers it.
         let _ = busboy::boundary_of(Some(&ct));
+    }
+
+    /// Pushing a body in random chunks (as the socket delivers it) gives the same events as pushing it
+    /// whole. Only compared when the whole body parses without an error event: busboy itself behaves
+    /// differently on error paths depending on where the chunks end, and Corvis matches busboy there.
+    #[test]
+    fn chunked_parsing_equals_whole_parsing(
+        (body, boundary) in prop_oneof![
+            6 => well_formed_body().prop_map(|b| (b, BOUNDARY)),
+            1 => (multipart_body(), prop::sample::select(vec![BOUNDARY, "", "-", "X"])),
+        ],
+        limits in limits(),
+        splits in prop::collection::vec(any::<prop::sample::Index>(), 0..12),
+    ) {
+        let cfg = Config { limits: &limits, preserve_path: false, def_param_charset: "latin1" };
+        let whole = busboy::parse(&Bytes::from(body.clone()), boundary.as_bytes(), &cfg);
+        if whole.iter().any(|e| matches!(e, Event::Error(_))) {
+            return Ok(());
+        }
+        let mut cuts: Vec<usize> = splits.iter().map(|i| i.index(body.len() + 1)).collect();
+        cuts.sort_unstable();
+        let mut p = busboy::StreamParser::new(boundary.as_bytes(), &cfg);
+        let mut events = Vec::new();
+        let mut last = 0;
+        for cut in cuts.into_iter().chain([body.len()]) {
+            p.push(Bytes::from(body[last..cut].to_vec()));
+            events.extend(p.take_events());
+            last = cut;
+        }
+        events.extend(p.finish());
+        prop_assert!(!events.iter().any(|e| matches!(e, Event::Error(_))), "chunked parse failed where the whole parse did not: {events:?}");
+        prop_assert_eq!(format!("{events:?}"), format!("{whole:?}"));
     }
 
     /// Field names nest at most `max_depth` levels and arrays never grow past the hole budget,

@@ -10,11 +10,13 @@
 
 - [x] 2.1 Add `crates/corvis/tests/fuzz_static.rs`: served folder with `a.txt`, `sub/b.txt`, `.env`, `.git/config` and an `outside/secret.txt` sibling; an app built once with `serve_static` mounts using the default policy, `deny` and `allow`; a `TestRunner` over generated URI-valid paths; verify with `cargo test -p corvis --test fuzz_static`
 - [x] 2.2 Assert the `http/static-files` scenarios per case (no secret text in any body, no dotfile text outside the `allow` mount, every request answered with a status below 500); fix small local issues it finds (for example an I/O error on a malformed path surfacing as a 500 instead of a 4xx) with a regression test, or open an issue for larger ones; verify the test passes
+  - Review follow-up: root mount and `ServeStaticModule` (`spa_fallback`, `exclude`) mounts added, raw backslashes generated, and the generator now fails if it produces an invalid URI instead of skipping it.
 
 ## 3. ORM filters
 
 - [x] 3.1 Add `crates/corvis-orm/tests/fuzz_filters.rs`: in-memory SQLite with a seeded model, generated `where` arguments (real and unknown fields, operators, injection-shaped values); verify with `cargo test -p corvis-orm --test fuzz_filters`
 - [x] 3.2 Assert the `orm/query-filters` scenarios (no panic, no database syntax error, exact `equals` results, table unchanged after the run); fix small local issues with a regression test, or open an issue for larger ones; verify the test passes
+  - Review follow-up: fixed SQLite JSON `path` filters (`equals`, `not`, `lt`/`lte`/`gt`/`gte`, `string_*`, `array_contains`, JSON null) in `engine/filter.rs`, which compared `json_extract` output with quoted JSON text; regression tests in `tests/json_filters.rs` and a differential property against a Rust evaluation in `tests/fuzz_filters.rs`. The error oracle now only allows the `P2000` / `P2023` known-request codes and requires a validation error for unknown keys.
 
 ## 4. Long run and documentation
 

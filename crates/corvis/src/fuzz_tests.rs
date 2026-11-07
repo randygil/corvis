@@ -166,6 +166,27 @@ proptest! {
         let _ = parse_duration_secs(&junk);
     }
 
+    /// Correctly signed tokens are still rejected when they use another HMAC algorithm with the
+    /// configured secret (algorithm confusion) or HS256 with another key.
+    #[test]
+    fn jwt_rejects_valid_signatures_of_other_algorithms_and_keys(
+        alg in prop::sample::select(vec![jsonwebtoken::Algorithm::HS384, jsonwebtoken::Algorithm::HS512]),
+        sub in "[a-z0-9]{1,16}",
+        other_key in "[ -~]{1,32}",
+    ) {
+        use jsonwebtoken::{EncodingKey, Header, encode};
+        let svc = JwtService::new(JwtModuleOptions::new("fuzz-secret"));
+        let claims = json!({ "sub": sub, "admin": true });
+        let confused = encode(&Header::new(alg), &claims, &EncodingKey::from_secret(b"fuzz-secret")).unwrap();
+        prop_assert!(svc.verify::<Value>(&confused).is_err(), "accepted {alg:?} token {confused}");
+        prop_assume!(other_key != "fuzz-secret");
+        let wrong_key = encode(&Header::new(jsonwebtoken::Algorithm::HS256), &claims, &EncodingKey::from_secret(other_key.as_bytes())).unwrap();
+        prop_assert!(svc.verify::<Value>(&wrong_key).is_err(), "accepted token signed with {other_key:?}");
+        // Control: the same claims signed with the configured key and algorithm verify.
+        let good = encode(&Header::new(jsonwebtoken::Algorithm::HS256), &claims, &EncodingKey::from_secret(b"fuzz-secret")).unwrap();
+        prop_assert!(svc.verify::<Value>(&good).is_ok());
+    }
+
     /// Changing any character of the signed header or payload invalidates the token.
     #[test]
     fn jwt_detects_tampering(sub in "[a-z0-9]{1,16}", pick in any::<prop::sample::Index>(), with in prop::sample::select(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".to_vec())) {
@@ -198,11 +219,13 @@ proptest! {
     #[test]
     fn trust_proxy_is_total_and_bounded(
         spec in "[0-9a-f.:/, a-z]{0,40}",
-        trust in prop::sample::select(vec!["loopback", "uniquelocal", "10.0.0.0/8, 127.0.0.1", "::1/128", "1", "2", "all"]),
+        trust in prop::sample::select(vec!["none", "loopback", "uniquelocal", "10.0.0.0/8, 127.0.0.1", "::1/128", "1", "2", "0", "all"]),
+        socket in prop::sample::select(vec!["127.0.0.1", "8.8.8.8", "10.1.2.3", "::1", "192.168.0.7", "2001:db8::1"]),
         xff in prop::collection::vec("[0-9a-f.:, \\[\\]]{0,24}", 0..6),
     ) {
         let _ = TrustProxy::parse(&spec);
         let trust = match trust {
+            "none" => TrustProxy::None,
             "all" => TrustProxy::All,
             n if n.parse::<usize>().is_ok() => TrustProxy::Hops(n.parse().unwrap()),
             list => TrustProxy::parse(list).unwrap(),
@@ -215,8 +238,15 @@ proptest! {
                 h.append("x-forwarded-for", hv);
             }
         }
-        let addrs = all_addrs("127.0.0.1".into(), &h, &trust);
-        prop_assert_eq!(addrs.first().map(String::as_str), Some("127.0.0.1"));
+        let addrs = all_addrs(socket.into(), &h, &trust);
+        prop_assert_eq!(addrs.first().map(String::as_str), Some(socket));
         prop_assert!(addrs.len() <= entries + 1, "{} addresses from {entries} entries", addrs.len());
+        // Spoofing: a forwarded address only counts when every hop before it is trusted.
+        if trust == TrustProxy::None {
+            prop_assert_eq!(addrs.len(), 1, "X-Forwarded-For used without trusting any proxy");
+        }
+        for (i, a) in addrs.iter().enumerate().take(addrs.len() - 1) {
+            prop_assert!(trust.trusts(a, i), "hop {i} ({a}) is not trusted but the chain goes past it: {addrs:?}");
+        }
     }
 }

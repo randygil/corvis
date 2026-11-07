@@ -46,12 +46,22 @@ impl Drop for Fixture {
 }
 
 async fn build_app(fx: &Fixture) -> CorvisApplication {
-    let module = Test::create_testing_module().with_logger(false).compile().await.unwrap();
+    let module = Test::create_testing_module()
+        .import_dynamic(ServeStaticModule::for_root(vec![
+            ServeStaticOptions::new(fx.root.to_string_lossy()).serve_root("/mod").spa_fallback(true).exclude(&["/mod/api/(.*)"]),
+            ServeStaticOptions::new(fx.root.to_string_lossy()).serve_root("/modplain"),
+        ]))
+        .with_logger(false)
+        .compile()
+        .await
+        .unwrap();
     let mut app = module.create_corvis_application();
     let root = fx.root.clone();
     app.use_middleware(serve_static(&root).mount("/static"));
     app.use_middleware(serve_static(&root).mount("/allow").dotfiles(Dotfiles::Allow));
     app.use_middleware(serve_static(&root).mount("/deny").dotfiles(Dotfiles::Deny).fallthrough(false));
+    // A mount at the root answers every path that no other mount took.
+    app.use_middleware(serve_static(&root));
     app.init().await.unwrap();
     app
 }
@@ -65,7 +75,7 @@ fn segment() -> impl Strategy<Value = String> {
         ".env", ".env.", ".env%20", ".ENV", ".git", ".git%2fconfig", "config", "GIT~1.", "a.txt", "sub", "b.txt", "index.html",
         "outside", "secret.txt", "public", "static", "allow", "deny", "", "", "*", "?", "%3f", "%23", "~", "$", "..;", "...",
         "....//", "%2e%2e%2f", "%2e%2e%5c", "..%2f", "..%5c", "%2e%2e%2foutside%2fsecret.txt", "..%5coutside%5csecret.txt",
-        "%C3%A9", "%E2%80%AE",
+        "%C3%A9", "%E2%80%AE", r"\", r"..\outside\secret.txt", r"a.txt\", r"..\..\", r".env\", r"C:\x", r"\\host\share",
     ]);
     prop_oneof![
         8 => fixed.prop_map(String::from),
@@ -74,7 +84,7 @@ fn segment() -> impl Strategy<Value = String> {
 }
 
 fn request_path() -> impl Strategy<Value = String> {
-    let mount = prop::sample::select(vec!["/static", "/allow", "/deny", "/static/", "/allow//", "/Static", "", "/"]);
+    let mount = prop::sample::select(vec!["/static", "/allow", "/deny", "/mod", "/modplain", "/mod/api", "/static/", "/allow//", "/Static", "", "/"]);
     let segments = prop::collection::vec(segment(), 0..8);
     let query = prop::sample::select(vec!["", "", "", "?x=1", "?", "?a=../outside"]);
     (mount, segments, query).prop_map(|(m, s, q)| format!("{m}/{}{q}", s.join("/")))
@@ -108,19 +118,17 @@ fn run_property(strategy: impl Strategy<Value = String>) {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     let app = rt.block_on(build_app(&fx));
     let cases = std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
-    let checked = std::sync::atomic::AtomicU32::new(0);
     let mut runner = TestRunner::new(config(cases));
     let result = runner.run(&strategy, |path| {
-        prop_assume!(is_valid_uri(&path));
-        checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The test client turns an invalid URI into `/`, which would test nothing: a generator
+        // that produces one is a bug of the test, not a case to skip.
+        prop_assert!(is_valid_uri(&path), "the generator produced an invalid URI: {path:?}");
         let c = request(&app);
         rt.block_on(check(&c, &path)).map_err(TestCaseError::fail)
     });
     if let Err(e) = result {
         panic!("{e}");
     }
-    // Generated paths must be valid URIs, otherwise the client turns them into `/` and nothing is tested.
-    assert!(checked.into_inner() >= cases * 9 / 10, "too many generated paths were discarded");
 }
 
 #[test]
@@ -161,6 +169,16 @@ fn known_hostile_paths() {
         "/allow/C:/x",
         "/allow/../outside/secret.txt",
         "/static//..//outside//secret.txt",
+        r"/static/..\outside\secret.txt",
+        r"/static/.env\",
+        r"/deny/..\.env",
+        r"/allow/..\..\outside\secret.txt",
+        r"/mod/..\outside\secret.txt",
+        "/mod/%00",
+        "/mod/api/x",
+        "/modplain/C:/x",
+        "/../outside/secret.txt",
+        "/%2e%2e/outside/secret.txt",
     ];
     rt.block_on(async {
         let c = request(&app);
