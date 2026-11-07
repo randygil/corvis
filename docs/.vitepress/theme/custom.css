@@ -1,0 +1,255 @@
+/*
+ * Tema de Corvis: verde verdín sobre papel cálido, titulares con serifa y un acento ámbar.
+ */
+
+:root {
+  --cv-ink: #17201f;
+  --cv-paper: #fbfaf6;
+  --cv-paper-2: #f3f1ea;
+  --cv-line: #e2ded2;
+  --cv-verdigris: #0f6b62;
+  --cv-verdigris-2: #0b5850;
+  --cv-verdigris-soft: rgba(15, 107, 98, 0.1);
+  --cv-amber: #b45d12;
+  --cv-amber-soft: rgba(180, 93, 18, 0.12);
+
+  --vp-font-family-base: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --cv-font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+
+  --vp-c-brand-1: var(--cv-verdigris);
+  --vp-c-brand-2: var(--cv-verdigris-2);
+  --vp-c-brand-3: var(--cv-verdigris);
+  --vp-c-brand-soft: var(--cv-verdigris-soft);
+
+  --vp-c-bg: var(--cv-paper);
+  --vp-c-bg-alt: var(--cv-paper-2);
+  --vp-c-bg-elv: #ffffff;
+  --vp-c-bg-soft: var(--cv-paper-2);
+  --vp-c-divider: var(--cv-line);
+  --vp-c-gutter: var(--cv-line);
+  --vp-c-text-1: var(--cv-ink);
+  --vp-c-text-2: #4a5552;
+  --vp-c-text-3: #6d7774;
+
+  --vp-c-tip-1: var(--cv-verdigris);
+  --vp-c-tip-soft: var(--cv-verdigris-soft);
+  --vp-c-warning-1: var(--cv-amber);
+  --vp-c-warning-soft: var(--cv-amber-soft);
+
+  --vp-code-block-bg: #f1efe7;
+  --vp-code-bg: rgba(15, 107, 98, 0.08);
+  --vp-code-color: #0b4f48;
+
+  --vp-sidebar-bg-color: var(--cv-paper-2);
+  --vp-layout-max-width: 1500px;
+}
+
+:root:not(.light).dark,
+.dark {
+  --cv-ink: #e9ece8;
+  --cv-paper: #101615;
+  --cv-paper-2: #141c1b;
+  --cv-line: #24302e;
+  --cv-verdigris: #52c2b0;
+  --cv-verdigris-2: #7ed6c8;
+  --cv-verdigris-soft: rgba(82, 194, 176, 0.14);
+  --cv-amber: #f0a24a;
+  --cv-amber-soft: rgba(240, 162, 74, 0.14);
+
+  --vp-c-bg-elv: #18211f;
+  --vp-c-text-2: #b3bdb9;
+  --vp-c-text-3: #8a9591;
+  --vp-code-block-bg: #0b1110;
+  --vp-code-bg: rgba(82, 194, 176, 0.12);
+  --vp-code-color: #9fe3d7;
+}
+
+body {
+  background: var(--vp-c-bg);
+}
+
+/* Barra superior: franja de color en lugar de una barra oscura. */
+.VPNav {
+  border-top: 4px solid var(--cv-verdigris);
+}
+
+.VPNavBar .title {
+  font-family: var(--cv-font-display);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+/* Titulares con serifa. */
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  font-family: var(--cv-font-display);
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+
+.vp-doc h1 {
+  font-size: 2.35rem;
+  line-height: 1.15;
+}
+
+.vp-doc h2 {
+  border-top: none;
+  padding-top: 8px;
+  margin-top: 48px;
+}
+
+.vp-doc h2::before {
+  content: '';
+  display: block;
+  width: 36px;
+  height: 3px;
+  margin-bottom: 14px;
+  border-radius: 2px;
+  background: var(--cv-amber);
+}
+
+.vp-doc p,
+.vp-doc li {
+  line-height: 1.75;
+}
+
+.vp-doc a {
+  text-underline-offset: 3px;
+}
+
+/* Barra lateral: secciones en versalitas y elemento activo con una pestaña a la izquierda. */
+.VPSidebar {
+  border-right: 1px solid var(--cv-line);
+}
+
+.VPSidebarItem.level-0 > .item > .text,
+.VPSidebarItem.level-0 > .item > .link > .text {
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--vp-c-text-2);
+}
+
+.VPSidebarItem.level-0.is-link > .item > .link > .text {
+  color: var(--vp-c-text-1);
+}
+
+.VPSidebarItem.level-1 .item {
+  border-left: 2px solid transparent;
+  padding-left: 10px;
+  margin-left: -12px;
+}
+
+.VPSidebarItem.level-1.is-active > .item {
+  border-left-color: var(--cv-verdigris);
+}
+
+.VPSidebarItem.level-1.is-active > .item .text {
+  font-weight: 600;
+}
+
+/* Bloques de código con borde y sin la sombra por defecto. */
+.vp-doc div[class*='language-'] {
+  border: 1px solid var(--cv-line);
+  border-radius: 10px;
+}
+
+/* Contenedores personalizados. */
+.custom-block {
+  border-radius: 10px;
+  border-width: 0 0 0 4px;
+  border-style: solid;
+}
+
+.custom-block.tip {
+  border-color: var(--cv-verdigris);
+}
+
+.custom-block.warning {
+  border-color: var(--cv-amber);
+}
+
+.custom-block.info {
+  border-color: var(--vp-c-text-3);
+}
+
+/* Tablas más densas. */
+.vp-doc table {
+  font-size: 0.92rem;
+}
+
+.vp-doc th {
+  background: var(--cv-paper-2);
+}
+
+/* Insignia de estado de la página (frontmatter `status`). */
+.cv-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+  padding: 4px 12px 4px 10px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--cv-amber);
+  background: var(--cv-amber-soft);
+}
+
+.cv-status[data-status='parcial'] {
+  color: var(--cv-verdigris);
+  background: var(--cv-verdigris-soft);
+}
+
+.cv-status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Portada (introducción): primer párrafo destacado. */
+.cv-lead {
+  font-size: 1.15rem;
+  line-height: 1.7;
+  color: var(--vp-c-text-2);
+}
+
+.cv-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin: 24px 0;
+}
+
+.cv-cards a {
+  display: block;
+  padding: 16px 18px;
+  border: 1px solid var(--cv-line);
+  border-radius: 12px;
+  background: var(--vp-c-bg-elv);
+  text-decoration: none;
+  color: var(--vp-c-text-1);
+  transition: border-color 0.15s ease;
+}
+
+.cv-cards a:hover,
+.cv-cards a:focus-visible {
+  border-color: var(--cv-verdigris);
+}
+
+.cv-cards strong {
+  display: block;
+  font-family: var(--cv-font-display);
+  font-size: 1.05rem;
+  margin-bottom: 4px;
+}
+
+.cv-cards span {
+  font-size: 0.9rem;
+  color: var(--vp-c-text-2);
+}
