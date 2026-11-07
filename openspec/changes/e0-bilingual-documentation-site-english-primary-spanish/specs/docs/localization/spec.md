@@ -86,12 +86,13 @@ theme switch, 404 page, footer and the page status badge) SHALL be shown in the 
 - **THEN** the search interface is in Spanish and results come from Spanish pages
 
 ### Requirement: English pages are fully in English
-English pages SHALL contain no Spanish prose: headings, text, tables, admonition titles, and the comments and
-user-facing strings in code examples MUST be in English. Code identifiers, commands and crate names stay unchanged.
+English pages SHALL contain no Spanish prose: headings, text, tables, admonition titles, and the comments, example
+strings and placeholder names in code examples MUST be in English. API names, commands and crate names stay unchanged.
 
 #### Scenario: Code example comments
 - **WHEN** an English page shows a code example that has comments or example strings
-- **THEN** they are written in English and the code is otherwise identical to the Spanish page's example
+- **THEN** they are written in English, placeholder names such as `MiGuard` or `mi-app` read `MyGuard` or `my-app`,
+  and the code is otherwise identical to the Spanish page's example
 
 ### Requirement: Public naming rule holds in both languages
 Pages in both languages MUST NOT use the words "Nest", "NestJS" or "Prisma", except in nominative phrases such as

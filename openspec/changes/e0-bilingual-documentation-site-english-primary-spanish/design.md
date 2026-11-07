@@ -51,8 +51,8 @@ See proposal.md for motivation; requirements are in `specs/docs/localization/spe
    `StatusBadge.vue` keeps a label table per language and picks it with `useData().lang`. Alternative: keep the Spanish
    keys; rejected because English sources would carry Spanish metadata and the parity check compares the keys.
 7. **Translation rules.** English pages mirror the Spanish ones block by block: same headings in the same order and
-   level, same admonitions, tables and code blocks. Code is copied verbatim except comments and example strings, which
-   are translated. Meaning is kept; errors found are listed for new issues instead of fixed. Terminology: keep the
+   level, same admonitions, tables and code blocks. Code is copied verbatim except comments, example strings and placeholder
+   names (`MiGuard` → `MyGuard`, `mi-app` → `my-app`), which are translated; route strings and API names stay. Meaning is kept; errors found are listed for new issues instead of fixed. Terminology: keep the
    framework terms the API uses (module, provider, controller, guard, pipe, interceptor, middleware, exception filter,
    gateway) and the Spanish site's existing choices (it already keeps "providers", "guards", "pipes", "interceptors"
    in English). The translation is split by section into batches of about 25–45 pages, delegated to the `docs-writer`
