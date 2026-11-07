@@ -100,10 +100,10 @@ proptest! {
         // A latin1 value can double its size when it becomes UTF-8.
         prop_assert!(kept <= 2 * body.len(), "kept {kept} bytes from a {}-byte body", body.len());
         for e in &events {
-            if let Event::FileStart { filename: Some(name), .. } = e {
-                if !preserve_path {
-                    prop_assert!(!name.contains('/') && !name.contains('\\'), "filename kept a path: {name:?}");
-                }
+            if let Event::FileStart { filename: Some(name), .. } = e
+                && !preserve_path
+            {
+                prop_assert!(!name.contains('/') && !name.contains('\\'), "filename kept a path: {name:?}");
             }
         }
     }

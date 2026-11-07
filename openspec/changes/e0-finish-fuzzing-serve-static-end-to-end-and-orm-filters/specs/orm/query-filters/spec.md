@@ -9,8 +9,8 @@ influence becomes parameters, a validation error or a result, never an injected 
 
 ### Requirement: Filters never produce SQL syntax errors
 For any `where` argument built from field names, operators and values (including quotes, comment markers, statement
-separators and unknown keys), a query SHALL return results or a validation or known-request error. It MUST NOT fail with
-a database syntax error and MUST NOT crash.
+separators and unknown keys), a query SHALL return results, a validation or known-request error, or the value-out-of-range error the original
+client also raises for integers that do not fit the column. It MUST NOT fail with a database syntax error or crash.
 
 #### Scenario: Injection-shaped values
 - **WHEN** a `findMany` runs with filters whose values contain `'`, `"`, `;`, `--`, `/*` or `DROP TABLE`
