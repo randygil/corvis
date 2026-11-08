@@ -3,10 +3,8 @@
 Implements [randygil/corvis#8](https://github.com/randygil/corvis/issues/8) (epic
 [#1](https://github.com/randygil/corvis/issues/1)).
 
-> **Status: decision pending maintainer approval.** This is a spike. design.md lays out the options and recommends
-> one (option C, per-behavior secure defaults, no global mode). The spec delta and the tasks are written for the
-> recommended option; if the maintainer picks another one, update this change with `/opsx:update` before
-> `/opsx:apply`. Task 1.1 records the decision.
+> **Status: decided (2026-11-08).** The maintainer approved option C (per-behavior secure defaults, no global
+> mode); design.md, "Review notes", records the decision and the answers to the open questions.
 
 ## Why
 

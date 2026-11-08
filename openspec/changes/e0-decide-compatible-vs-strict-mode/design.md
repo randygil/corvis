@@ -165,7 +165,7 @@ connection (§6.3), so hyper is within the RFC; the risk is a front proxy that d
 ## Open questions
 
 1. **Approve option C** (no global mode; per-behavior secure defaults; `insecure_http_parser` opt-out for the wire
-   format only)? Recommendation: yes. Pending maintainer approval.
+   format only)? Recommendation: yes. Approved (see Review notes).
 2. **Busboy configuration errors** (`Malformed content type`, `Unsupported content type: ...`) answer `500` like the
    original. Keep parity, or answer `400`/`415` and document it as a deliberate divergence? Recommendation: keep for
    now; revisit with the route posture work (E1), which is where client-triggered 5xx matter most.
@@ -176,9 +176,13 @@ connection (§6.3), so hyper is within the RFC; the risk is a front proxy that d
 
 ## Review notes (2026-11-08)
 
-- **Pending maintainer decision** (this issue is marked "needs approval" in #111): option C as recommended, the
-  name `insecure_http_parser`, busboy configuration errors staying 500, and whether h2c stays on by default. Not
-  implemented until the maintainer answers.
+- **Maintainer decision (2026-11-08):**
+  1. Option C is approved: no global compatible/strict mode; per-behavior secure defaults as in decision 2.
+  2. Busboy configuration errors (`Malformed content type`, `Unsupported content type: ...`) keep answering `500` for
+     parity; revisit with the route posture work (E1).
+  3. The follow-up issue for the protocol-level strictness goes in epic #1.
+  4. The opt-out is named `insecure_http_parser`, mirroring Node's `insecureHTTPParser`.
+  5. h2c stays enabled by default in this change; whether to keep it on is decided in a separate issue.
 - Parity note for the decision: answering 400 for the multipart nesting limit diverges from the original version used
   by the consi port (11.1.28 answers 500) while matching the versions used by facten and houseplan.
 - The follow-up issue for the protocol-level strictness (bare LF and the other chunked cases) goes in epic #1 once the

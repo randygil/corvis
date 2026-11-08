@@ -2,7 +2,7 @@
 
 ## 1. Decision
 
-- [ ] 1.1 Maintainer reviews design.md (decisions 1 and 2, open questions 1-4) and records the outcome in a
+- [x] 1.1 Maintainer reviews design.md (decisions 1 and 2, open questions 1-4) and records the outcome in a
   "Review notes" section at the end of design.md; if an option other than C is chosen, revise the proposal, spec
   delta and these tasks with `/opsx:update` before continuing; verify proposal.md no longer says "pending maintainer
   approval"
