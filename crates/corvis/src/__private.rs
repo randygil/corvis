@@ -32,6 +32,12 @@ impl<T: ?Sized> Probe<T> {
     }
 }
 
+impl<T: ?Sized> Default for Probe<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Field injection: `Arc<T>` / `Option<Arc<T>>` / `ModuleRef` are injected,
 // anything else falls back to `Default`.

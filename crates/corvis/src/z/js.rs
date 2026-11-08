@@ -109,11 +109,10 @@ pub fn to_js_string(v: &Value) -> String {
         Value::Null => "null".into(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                if (i as f64).abs() < 9.007_199_254_740_992e15 {
+            if let Some(i) = n.as_i64()
+                && (i as f64).abs() < 9.007_199_254_740_992e15 {
                     return i.to_string();
                 }
-            }
             num_to_string(json_f64(n))
         }
         Value::String(s) => s.clone(),
@@ -582,7 +581,7 @@ fn parse_legacy_date(s: &str) -> f64 {
     } else {
         y
     };
-    if !(1..=12).contains(&m) || d < 1 || d > 31 {
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return f64::NAN;
     }
     let (mut h, mi, sec, ms) = time.unwrap_or((0, 0, 0, 0));

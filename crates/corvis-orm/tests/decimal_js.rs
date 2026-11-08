@@ -134,6 +134,6 @@ fn operators_and_serde() {
     assert_eq!(n.to_string(), "0.1");
     assert!(Decimal::parse("abc").unwrap_err().to_string().contains("[DecimalError] Invalid argument: abc"));
     assert_eq!(Decimal::max([Decimal::from(1), Decimal::from(5), Decimal::from(-2)]).to_string(), "5");
-    assert!(Decimal::from(1).div(0).to_string() == "Infinity");
+    assert!(Decimal::from(1).div(0) == "Infinity");
     assert!(Decimal::from(0).div(0).is_nan());
 }

@@ -12,15 +12,20 @@ use super::module_ref::ModuleRef;
 use super::provider::{Instance, Scope, downcast};
 use super::token::Token;
 
+type LifecycleHook<T> = fn(Arc<T>) -> BoxFuture<'static, crate::Result<()>>;
+type ShutdownHook<T> = fn(Arc<T>, Option<String>) -> BoxFuture<'static, crate::Result<()>>;
+type HandlersFn<T> = fn(Arc<T>) -> Vec<crate::discovery::DiscoveredHandler>;
+type GatewayFn<T> = fn(Arc<T>) -> crate::discovery::GatewayInfo;
+
 /// Typed lifecycle hooks detected at compile time by the `#[injectable]` family of macros.
 pub struct Hooks<T> {
-    pub on_module_init: Option<fn(Arc<T>) -> BoxFuture<'static, crate::Result<()>>>,
-    pub on_application_bootstrap: Option<fn(Arc<T>) -> BoxFuture<'static, crate::Result<()>>>,
-    pub on_module_destroy: Option<fn(Arc<T>) -> BoxFuture<'static, crate::Result<()>>>,
-    pub before_application_shutdown: Option<fn(Arc<T>, Option<String>) -> BoxFuture<'static, crate::Result<()>>>,
-    pub on_application_shutdown: Option<fn(Arc<T>, Option<String>) -> BoxFuture<'static, crate::Result<()>>>,
-    pub handlers: Option<fn(Arc<T>) -> Vec<crate::discovery::DiscoveredHandler>>,
-    pub gateway: Option<fn(Arc<T>) -> crate::discovery::GatewayInfo>,
+    pub on_module_init: Option<LifecycleHook<T>>,
+    pub on_application_bootstrap: Option<LifecycleHook<T>>,
+    pub on_module_destroy: Option<LifecycleHook<T>>,
+    pub before_application_shutdown: Option<ShutdownHook<T>>,
+    pub on_application_shutdown: Option<ShutdownHook<T>>,
+    pub handlers: Option<HandlersFn<T>>,
+    pub gateway: Option<GatewayFn<T>>,
 }
 
 impl<T> Default for Hooks<T> {

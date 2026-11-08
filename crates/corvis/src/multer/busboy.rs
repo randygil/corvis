@@ -60,8 +60,11 @@ pub(crate) struct Config<'a> {
     pub def_param_charset: &'a str,
 }
 
+/// (type, subtype, parameters)
+pub(crate) type ParsedContentType = (String, String, Vec<(String, String)>);
+
 /// Parses `Content-Type` like busboy (`parseContentType`). Parameter values are latin1 strings.
-pub(crate) fn parse_content_type(s: &[u8]) -> Option<(String, String, Vec<(String, String)>)> {
+pub(crate) fn parse_content_type(s: &[u8]) -> Option<ParsedContentType> {
     if s.is_empty() {
         return None;
     }
@@ -450,19 +453,17 @@ impl<'a> Parser<'a> {
         } else if let Some(f) = param("filename").filter(|f| !f.is_empty()) {
             filename = Some(f);
         }
-        if let Some(f) = filename.as_mut() {
-            if !self.cfg.preserve_path {
+        if let Some(f) = filename.as_mut()
+            && !self.cfg.preserve_path {
                 *f = basename(f);
             }
-        }
-        if let Some(ct) = get("content-type") {
-            if let Some((t, s, p)) = parse_content_type(ct) {
+        if let Some(ct) = get("content-type")
+            && let Some((t, s, p)) = parse_content_type(ct) {
                 part_type = format!("{t}/{s}");
                 if let Some((_, cs)) = p.iter().find(|(k, _)| k == "charset") {
                     self.part_charset = cs.to_lowercase();
                 }
             }
-        }
         if let Some(enc) = get("content-transfer-encoding") {
             part_encoding = latin1(enc).to_lowercase();
         }
@@ -734,8 +735,8 @@ fn parse_params(
             return None;
         }
         let name = &s[name_start..i];
-        let value: String;
-        if extended && name.last() == Some(&b'*') {
+        
+        let value: String = if extended && name.last() == Some(&b'*') {
             // Extended value: charset'lang'percent-encoded.
             i += 1;
             let cs_start = i;
@@ -769,8 +770,8 @@ fn parse_params(
                 let c = s[i];
                 if !is_extended_value(c) {
                     if c == b'%' {
-                        if i + 2 < s.len() {
-                            if let (Some(h), Some(l)) = (hex(s[i + 1]), hex(s[i + 2])) {
+                        if i + 2 < s.len()
+                            && let (Some(h), Some(l)) = (hex(s[i + 1]), hex(s[i + 2])) {
                                 let b = (h << 4) + l;
                                 bytes.push(b);
                                 i += 3;
@@ -781,7 +782,6 @@ fn parse_params(
                                 }
                                 continue;
                             }
-                        }
                         return None;
                     }
                     break;
@@ -789,7 +789,7 @@ fn parse_params(
                 bytes.push(c);
                 i += 1;
             }
-            value = decode_param(&bytes, &charset, encode)?;
+            decode_param(&bytes, &charset, encode)?
         } else {
             i += 1;
             if i == s.len() {
@@ -848,8 +848,8 @@ fn parse_params(
                 }
                 raw.extend_from_slice(&s[vs..i]);
             }
-            value = decode(raw, 2)?;
-        }
+            decode(raw, 2)?
+        };
         let name = latin1(name).to_lowercase();
         if !params.iter().any(|(k, _)| *k == name) {
             params.push((name, value));
@@ -909,7 +909,7 @@ fn normalize_charset(c: &str) -> String {
 }
 
 fn utf16le(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     String::from_utf16_lossy(&units)
 }
 
@@ -968,10 +968,10 @@ mod tests {
     #[test]
     fn token_tables_match_busboy() {
         // Spot checks against the TOKEN / CHARSET / EXTENDED_VALUE tables of busboy.
-        for c in [b'"', b'(', b')', b',', b'/', b':', b';', b'<', b'=', b'>', b'?', b'@', b'[', b'\\', b']', b'{', b'}', b' '] {
+        for c in *b"\"(),/:;<=>?@[\\]{} " {
             assert!(!is_token(c), "{}", c as char);
         }
-        for c in [b'!', b'#', b'$', b'%', b'&', b'\'', b'*', b'+', b'-', b'.', b'^', b'_', b'`', b'|', b'~', b'a', b'Z', b'0'] {
+        for c in *b"!#$%&'*+-.^_`|~aZ0" {
             assert!(is_token(c), "{}", c as char);
         }
         assert!(!is_charset(b'\'') && is_charset(b'%') && is_charset(b'{') && !is_charset(b'|') && !is_charset(b'*'));

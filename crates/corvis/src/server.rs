@@ -133,13 +133,11 @@ pub(crate) fn into_hyper(resp: Response, head: bool) -> hyper::Response<ResBody>
         }
     };
     // An empty type (`res.end()` without a `Content-Type`) writes no header, like Node.
-    if let Some(ct) = content_type.filter(|ct| !ct.is_empty()) {
-        if !headers.contains_key(http::header::CONTENT_TYPE) {
-            if let Ok(v) = http::HeaderValue::from_str(&ct) {
+    if let Some(ct) = content_type.filter(|ct| !ct.is_empty())
+        && !headers.contains_key(http::header::CONTENT_TYPE)
+            && let Ok(v) = http::HeaderValue::from_str(&ct) {
                 headers.insert(http::header::CONTENT_TYPE, v);
             }
-        }
-    }
     // `X-Powered-By`, ETag, ... are added by `http::express::finalize` (see `handle`).
     let bodyless = status == http::StatusCode::NO_CONTENT || status == http::StatusCode::NOT_MODIFIED || status.is_informational();
     if head && !bodyless && !headers.contains_key(http::header::CONTENT_LENGTH) {
@@ -237,6 +235,7 @@ fn read_limit(headers: &http::HeaderMap, transport: usize, parser: &crate::http:
 ///   only on routes that use it, after the guards).
 /// - Other bodies are read up to the limit of the parser that accepts them (`json` /
 ///   `urlencoded`) or up to the transport limit (`body_limit`), and within `request_timeout`.
+#[allow(clippy::result_large_err)] // internal: the error is the ready-made rejection `Response`
 pub(crate) async fn from_hyper(
     req: hyper::Request<Incoming>,
     remote: Option<SocketAddr>,
@@ -538,15 +537,14 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for TimedIo<S> {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let this = &mut *self;
         let r = Pin::new(&mut this.io).poll_write(cx, buf);
-        if let Poll::Ready(Ok(n)) = r {
-            if n > 0 {
+        if let Poll::Ready(Ok(n)) = r
+            && n > 0 {
                 this.sync();
                 // A response still being flushed is progress, not idleness.
                 if let Phase::KeepAlive(_) = this.phase {
                     this.phase = Phase::KeepAlive(Instant::now());
                 }
             }
-        }
         r
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -562,14 +560,13 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for TimedIo<S> {
     ) -> Poll<io::Result<usize>> {
         let this = &mut *self;
         let r = Pin::new(&mut this.io).poll_write_vectored(cx, bufs);
-        if let Poll::Ready(Ok(n)) = r {
-            if n > 0 {
+        if let Poll::Ready(Ok(n)) = r
+            && n > 0 {
                 this.sync();
                 if let Phase::KeepAlive(_) = this.phase {
                     this.phase = Phase::KeepAlive(Instant::now());
                 }
             }
-        }
         r
     }
     fn is_write_vectored(&self) -> bool {

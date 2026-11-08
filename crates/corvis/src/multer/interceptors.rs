@@ -179,11 +179,10 @@ impl Upload<'_> {
                 };
                 // Parts without a file name are not files for multer.
                 let Some(filename) = filename.filter(|f| !f.is_empty()) else { return Ok(Some(id)) };
-                if let Some(max) = limits.field_name_size {
-                    if fieldname.encode_utf16().count() as u64 > max {
+                if let Some(max) = limits.field_name_size
+                    && fieldname.encode_utf16().count() as u64 > max {
                         return Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFieldKey, None)));
                     }
-                }
                 let info = FileInfo { fieldname: fieldname.clone(), originalname: filename, encoding, mimetype: mime_type };
                 let slot = self.appender.insert(&fieldname);
                 let filter = if self.setup.fields.is_some() {
@@ -385,16 +384,14 @@ fn handle_field(
     if value_truncated {
         return Err(MulterError::new(MulterErrorCode::LimitFieldValue, Some(name)));
     }
-    if let Some(max) = limits.field_name_size {
-        if name.encode_utf16().count() as u64 > max {
+    if let Some(max) = limits.field_name_size
+        && name.encode_utf16().count() as u64 > max {
             return Err(MulterError::new(MulterErrorCode::LimitFieldKey, None));
         }
-    }
-    if let Some(depth) = limits.field_nesting_depth {
-        if name.matches('[').count() as u64 > depth {
+    if let Some(depth) = limits.field_nesting_depth
+        && name.matches('[').count() as u64 > depth {
             return Err(MulterError::new(MulterErrorCode::LimitFieldNesting, Some(name)));
         }
-    }
     let max_depth = limits
         .field_nesting_depth
         .map_or(super::append_field::DEFAULT_MAX_FIELD_DEPTH, |d| usize::try_from(d).unwrap_or(usize::MAX));

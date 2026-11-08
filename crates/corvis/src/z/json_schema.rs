@@ -320,11 +320,10 @@ impl JsonSchemaGen {
             out.shift_remove("examples");
             out.shift_remove("default");
         }
-        if self.io_input() {
-            if let Some(p) = out.get("_prefault").cloned() {
+        if self.io_input()
+            && let Some(p) = out.get("_prefault").cloned() {
                 out.entry("default").or_insert(p);
             }
-        }
         out.shift_remove("_prefault");
         self.seen[i].schema = out;
         Ok(placeholder(i))
@@ -384,13 +383,12 @@ impl JsonSchemaGen {
         let mut ids: HashMap<String, usize> = HashMap::new();
         for i in 0..self.seen.len() {
             if let Some(id) = self.meta_id(i) {
-                if let Some(&other) = ids.get(&id) {
-                    if self.seen[other].node.id() != self.seen[i].node.id() {
+                if let Some(&other) = ids.get(&id)
+                    && self.seen[other].node.id() != self.seen[i].node.id() {
                         return Err(format!(
                             "Duplicate schema id \"{id}\" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together."
                         ));
                     }
-                }
                 ids.insert(id, i);
             }
         }
@@ -481,15 +479,14 @@ impl JsonSchemaGen {
             if self.seen[i].parent == Some(r) {
                 schema.retain(|k, _| k == "$ref" || k == "allOf" || cached.contains_key(k));
             }
-            if ref_schema.contains_key("$ref") {
-                if let Some(def) = &self.seen[r].def {
+            if ref_schema.contains_key("$ref")
+                && let Some(def) = &self.seen[r].def {
                     let def = def.clone();
                     schema.retain(|k, v| k == "$ref" || k == "allOf" || def.get(k) != Some(v));
                 }
-            }
         }
-        if let Some(p) = self.seen[i].parent {
-            if Some(p) != ref_idx {
+        if let Some(p) = self.seen[i].parent
+            && Some(p) != ref_idx {
                 self.flatten_ref(p);
                 if let Some(pr) = self.seen[p].schema.get("$ref").cloned() {
                     schema.insert("$ref".into(), pr);
@@ -498,7 +495,6 @@ impl JsonSchemaGen {
                     }
                 }
             }
-        }
         if let Some(f) = self.opts.override_fn.clone() {
             let node = self.seen[i].node.clone();
             let path = self.seen[i].path.clone();

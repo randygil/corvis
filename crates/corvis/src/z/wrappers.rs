@@ -709,15 +709,14 @@ pub(crate) fn refine_issue(params: &RefineParams, input: Val) -> RawIssue {
 impl ZodType for ZRefine {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
         let out = self.inner.check(input, ctx)?;
-        if let Some(v) = &out {
-            if !(self.check)(v) {
+        if let Some(v) = &out
+            && !(self.check)(v) {
                 let base = ctx.path.len();
                 ctx.path.extend(self.params.path.iter().cloned());
                 ctx.add(ZodIssueCode::Custom, self.params.message.clone().unwrap_or_else(|| "Invalid input".into()), Map::new());
                 ctx.path.truncate(base);
                 return Err(());
             }
-        }
         Ok(out)
     }
     fn type_name(&self) -> String {

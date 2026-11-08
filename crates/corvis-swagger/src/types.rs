@@ -175,6 +175,12 @@ pub mod probe {
         }
     }
 
+    impl<T: ?Sized> Default for Probe<T> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     pub trait ModelProbe {
         fn __swagger_type_marker(&self) -> Value;
     }

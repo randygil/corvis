@@ -84,15 +84,14 @@ fn parse_path(key: &str, max_depth: usize) -> Vec<Step> {
                 continue;
             }
             // /^\[([^\]]+)\]/
-            if let Some(close) = inner.find(']') {
-                if close > 0 {
+            if let Some(close) = inner.find(']')
+                && close > 0 {
                     let name = &inner[..close];
                     pos += close + 2;
                     steps.last_mut().unwrap().next_is_array = false;
                     steps.push(Step { key: Key::Object(name.to_string()), append: false, next_is_array: false, last: false });
                     continue;
                 }
-            }
         }
         return failure();
     }

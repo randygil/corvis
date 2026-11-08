@@ -195,7 +195,7 @@ impl Container {
         let core = scanner.new_node("InternalCoreModule".into(), TypeId::of::<InternalCoreModule>());
         scanner.modules[core].global = true;
         scanner.modules[core].internal = true;
-        scanner.add_provider(core, Provider::value(crate::common::reflector::Reflector::default()));
+        scanner.add_provider(core, Provider::value(crate::common::reflector::Reflector));
         scanner.modules[core].exports.push(ResolvedExport::Token(Token::of::<crate::common::reflector::Reflector>()));
         scanner.add_provider(core, Provider::value(crate::http_adapter::HttpAdapterHost::new()));
         scanner.modules[core].exports.push(ResolvedExport::Token(Token::of::<crate::http_adapter::HttpAdapterHost>()));
@@ -335,11 +335,10 @@ impl Container {
         async move {
             let key = (owner, provider.token.clone());
             let transient = provider.scope == Scope::Transient;
-            if !transient {
-                if let Some(i) = self.instances.lock().unwrap().get(&key) {
+            if !transient
+                && let Some(i) = self.instances.lock().unwrap().get(&key) {
                     return Ok(i.clone());
                 }
-            }
             if path.iter().any(|k| k == &key) {
                 let mut chain: Vec<String> = path.iter().map(|(_, t)| t.display_name()).collect();
                 chain.push(provider.token.display_name());
@@ -377,11 +376,10 @@ impl Container {
     ) -> BoxFuture<'static, Result<Arc<T>, DiError>> {
         async move {
             let key = (module, Token::of::<T>());
-            if let Some(i) = self.instances.lock().unwrap().get(&key) {
-                if let Some(t) = downcast::<T>(i) {
+            if let Some(i) = self.instances.lock().unwrap().get(&key)
+                && let Some(t) = downcast::<T>(i) {
                     return Ok(t);
                 }
-            }
             let ctx = ResolveCtx {
                 container: self.clone(),
                 module,
@@ -432,11 +430,10 @@ impl Container {
         }
         let order = self.order.lock().unwrap();
         for key in order.iter() {
-            if &key.1 == token {
-                if let Some(i) = map.get(key) {
+            if &key.1 == token
+                && let Some(i) = map.get(key) {
                     return Some(i.clone());
                 }
-            }
         }
         map.iter().find(|((_, t), _)| t == token).map(|(_, i)| i.clone())
     }
@@ -473,11 +470,10 @@ impl Container {
                 }
                 targets.push((p.token.clone(), p.hooks.clone()));
             }
-            if let Some(mt) = &node.module_token {
-                if let Some(p) = node.provider(mt) {
+            if let Some(mt) = &node.module_token
+                && let Some(p) = node.provider(mt) {
                     targets.push((mt.clone(), p.hooks.clone()));
                 }
-            }
             for (token, hooks) in targets {
                 let Some(inst) = self.instance(m, &token) else { continue };
                 match kind {

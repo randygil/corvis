@@ -312,8 +312,8 @@ fn db_error_parts(e: &sqlx::Error, d: Dialect) -> (String, String) {
         sqlx::Error::Database(db) => {
             let code = db.code().map(|c| c.to_string()).unwrap_or_default();
             let mut message = db.message().to_string();
-            if d == Dialect::Postgres {
-                if let Some(pg) = db.try_downcast_ref::<sqlx::postgres::PgDatabaseError>() {
+            if d == Dialect::Postgres
+                && let Some(pg) = db.try_downcast_ref::<sqlx::postgres::PgDatabaseError>() {
                     message = format!("ERROR: {}", pg.message());
                     if let Some(detail) = pg.detail() {
                         message.push_str(&format!("
@@ -324,7 +324,6 @@ DETAIL: {detail}"));
 HINT: {hint}"));
                     }
                 }
-            }
             (code, message)
         }
         other => (String::new(), other.to_string()),

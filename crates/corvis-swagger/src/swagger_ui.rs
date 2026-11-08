@@ -83,14 +83,13 @@ pub fn build_swagger_html(base_url: &str, o: &SwaggerUiHtmlOptions<'_>) -> Strin
 fn extract_functions(v: &mut Value, fns: &mut Vec<(String, String)>) {
     match v {
         Value::Object(o) => {
-            if o.len() == 1 {
-                if let Some(Value::String(code)) = o.get("$js") {
+            if o.len() == 1
+                && let Some(Value::String(code)) = o.get("$js") {
                     let placeholder = format!("corvis-swagger-fn-{}", fns.len());
                     fns.push((placeholder.clone(), code.clone()));
                     *v = Value::String(placeholder);
                     return;
                 }
-            }
             for (_, x) in o.iter_mut() {
                 extract_functions(x, fns);
             }

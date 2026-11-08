@@ -864,11 +864,10 @@ impl WebSocketServer {
         if let Ok(v) = HeaderValue::from_str(&accept) {
             headers.insert("sec-websocket-accept", v);
         }
-        if let Some(p) = &protocol {
-            if let Ok(v) = HeaderValue::from_str(p) {
+        if let Some(p) = &protocol
+            && let Ok(v) = HeaderValue::from_str(p) {
                 headers.insert("sec-websocket-protocol", v);
             }
-        }
         let Ok(upgraded) = req.switch_protocols(headers) else {
             Logger::new("WebSocketServer").warn("handleUpgrade() was called for an upgrade request that was already handled");
             return;
@@ -878,9 +877,11 @@ impl WebSocketServer {
         tokio::spawn(async move {
             let Ok(io) = upgraded.await else { return };
             let options = &server.inner.options;
-            let mut config = WebSocketConfig::default();
-            config.max_message_size = Some(options.max_payload);
-            config.max_frame_size = Some(options.max_payload);
+            let config = WebSocketConfig {
+                max_message_size: Some(options.max_payload),
+                max_frame_size: Some(options.max_payload),
+                ..WebSocketConfig::default()
+            };
             let stream = WebSocketStream::from_raw_socket(io, Role::Server, Some(config)).await;
             let (control, rx) = mpsc::unbounded_channel();
             let ws = WebSocket {

@@ -98,7 +98,7 @@ impl ResController {
     #[header("X-H", "h")]
     fn handled_throw(&self, #[res] res: Res) -> Result<(), HttpException> {
         res.set_header("X-Before", "1");
-        Err(UnauthorizedException::default().into())
+        Err(UnauthorizedException.into())
     }
 }
 

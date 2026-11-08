@@ -529,11 +529,10 @@ impl BodySource {
                     None => return Ok(None),
                     Some(Err(_)) => return Err(crate::server::request_aborted_error()),
                     Some(Ok(f)) => {
-                        if let Ok(data) = f.into_data() {
-                            if !data.is_empty() {
+                        if let Ok(data) = f.into_data()
+                            && !data.is_empty() {
                                 return Ok(Some(data));
                             }
-                        }
                     }
                 }
             },

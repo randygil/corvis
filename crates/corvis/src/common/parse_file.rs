@@ -31,11 +31,13 @@ enum ErrorMessage {
     Fn(ErrorMessageFn),
 }
 
+type SizeMessage = Result<String, Arc<dyn Fn(u64) -> String + Send + Sync>>;
+
 /// `new MaxFileSizeValidator({ maxSize, message?, errorMessage? })`. Valid when `file.size < maxSize`.
 #[derive(Clone)]
 pub struct MaxFileSizeValidator {
     max_size: u64,
-    message: Option<Result<String, Arc<dyn Fn(u64) -> String + Send + Sync>>>,
+    message: Option<SizeMessage>,
     error_message: Option<ErrorMessage>,
 }
 
