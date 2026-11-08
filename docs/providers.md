@@ -94,9 +94,7 @@ pub struct CatsService {
 A default provider is a singleton shared among all its consumers through `Arc`, so it receives `&self`. State that changes goes inside a `Mutex`, `RwLock`, atomics, or an `Arc` of shared state, like `cats: Mutex<Vec<Cat>>` in the example above.
 :::
 
-::: info `#[optional]`
-The `#[optional]` attribute is accepted on fields but changes nothing: what makes a dependency optional is the `Option<Arc<T>>` type.
-:::
+To make a dependency optional, declare the field as `Option<Arc<T>>`: it is `None` when no provider is visible. The `#[optional]` attribute does not exist and is rejected at compile time.
 
 ## Tokens
 

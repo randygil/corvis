@@ -25,10 +25,12 @@ No deferred reference is needed for modules. That the graph allows it doesn't me
 If `OrdersService` has an `Arc<InvoicesService>` field and `InvoicesService` has an `Arc<OrdersService>` field, neither can be built before the other. Corvis detects it at startup and returns an error with the full chain:
 
 ```text
-A circular dependency has been detected: OrdersService -> InvoicesService -> OrdersService.
+A circular dependency has been detected: OrdersService -> InvoicesService -> OrdersService. Break the cycle: move the shared logic into a third
+provider, resolve one side lazily with ModuleRef (not in its constructor), or communicate through
+EventEmitter. See "Circular dependencies" in the docs.
 ```
 
-There is no deferred-reference mechanism on fields (`forwardRef` in other containers). The error message mentions `forwardRef()` as a legacy of those containers, but Corvis has no such function: use one of the following solutions.
+There is no deferred-reference mechanism on fields (`forwardRef` in other containers): use one of the following solutions.
 
 ### 1. Extract the shared part
 

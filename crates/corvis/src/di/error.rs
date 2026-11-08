@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-/// Errors raised by the dependency injection container. The messages mirror
-/// the usual wording of dependency injection containers in the Node.js ecosystem.
+/// Errors raised by the dependency injection container.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum DiError {
     #[error(
-        "Corvis can't resolve dependencies of the {requester} ({deps}). Please make sure that the argument {token} at index [{index}] is available in the {module} context.\n\nPotential solutions:\n- Is {module} a valid module?\n- If {token} is a provider, is it part of the current {module}?\n- If {token} is exported from a separate @Module, is that module imported within {module}?\n  #[module(imports = [ /* the Module containing {token} */ ])]"
+        "Corvis can't resolve dependencies of the {requester} ({deps}). Please make sure that the argument {token} at index [{index}] is available in the {module} context.\n\nPotential solutions:\n- Is {module} a valid module?\n- If {token} is a provider, is it part of the current {module}?\n- If {token} is exported from a separate #[module], is that module imported within {module}?\n  #[module(imports = [ /* the Module containing {token} */ ])]"
     )]
     UnknownDependencies { requester: String, deps: String, token: String, index: usize, module: String },
 
@@ -13,7 +12,7 @@ pub enum DiError {
     NotFound { token: String },
 
     #[error(
-        "A circular dependency has been detected: {chain}. Please, make sure that each side of a bidirectional relationship is decorated with \"forwardRef()\" (or refactor the dependency graph)."
+        "A circular dependency has been detected: {chain}. Break the cycle: move the shared logic into a third provider, resolve one side lazily with ModuleRef (not in its constructor), or communicate through EventEmitter. See \"Circular dependencies\" in the docs."
     )]
     Circular { chain: String },
 

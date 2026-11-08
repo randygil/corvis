@@ -27,7 +27,8 @@ pub(crate) fn downcast<T: ?Sized + Send + Sync + 'static>(instance: &Instance) -
     instance.downcast_ref::<Arc<T>>().cloned()
 }
 
-/// Injection scope: `Default` (singleton), `Request` or `Transient`.
+/// Injection scope: `Default` (singleton, the default) or `Transient`. There is no request scope: carry
+/// per-request data on the `Request` (see the injection scopes guide).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {
     /// A single instance shared across the entire application (singleton).
@@ -37,7 +38,20 @@ pub enum Scope {
     Transient,
 }
 
-pub(crate) type Factory = Arc<dyn Fn(ResolveCtx) -> BoxFuture<'static, Result<Instance, DiError>> + Send + Sync>;
+/// What a provider factory returns: the instance consumers receive and, when that instance is a view of a
+/// concrete class (`use_class_as`), the concrete `Arc<T>` that hooks, handlers and gateways run against.
+pub(crate) struct Built {
+    pub instance: Instance,
+    pub hook_target: Option<Instance>,
+}
+
+impl From<Instance> for Built {
+    fn from(instance: Instance) -> Self {
+        Built { instance, hook_target: None }
+    }
+}
+
+pub(crate) type Factory = Arc<dyn Fn(ResolveCtx) -> BoxFuture<'static, Result<Built, DiError>> + Send + Sync>;
 pub(crate) type ErasedHook = Arc<dyn Fn(Instance) -> BoxFuture<'static, crate::Result<()>> + Send + Sync>;
 pub(crate) type ErasedSignalHook = Arc<dyn Fn(Instance, Option<String>) -> BoxFuture<'static, crate::Result<()>> + Send + Sync>;
 
@@ -138,7 +152,7 @@ impl Provider {
         let factory: Factory = Arc::new(|ctx: ResolveCtx| {
             async move {
                 let value = T::construct(ctx).await?;
-                Ok(erase(Arc::new(value)))
+                Ok(erase(Arc::new(value)).into())
             }
             .boxed()
         });
@@ -149,18 +163,20 @@ impl Provider {
     }
 
     /// `{ provide: token, useClass: T }` exposed as a trait object `U`
-    /// (e.g. `Provider::use_class_as::<PgRepo, dyn Repo>("REPO", |r| r)`).
+    /// (e.g. `Provider::use_class_as::<PgRepo, dyn Repo>("REPO", |r| r)`). The hooks of `T` (lifecycle hooks,
+    /// `#[handlers]`, gateway metadata) run on the concrete instance, as with [`Provider::use_class`].
     pub fn use_class_as<T: Injectable, U: ?Sized + Send + Sync + 'static>(token: impl Into<Token>, cast: fn(Arc<T>) -> Arc<U>) -> Self {
         let token = token.into();
         let factory: Factory = Arc::new(move |ctx: ResolveCtx| {
             async move {
-                let value = T::construct(ctx).await?;
-                Ok(erase(cast(Arc::new(value))))
+                let concrete = Arc::new(T::construct(ctx).await?);
+                Ok(Built { instance: erase(cast(concrete.clone())), hook_target: Some(erase(concrete)) })
             }
             .boxed()
         });
         let mut p = Self::new(token, crate::di::token::short_type_name(std::any::type_name::<T>()), factory);
         p.scope = T::scope();
+        p.hooks = ErasedHooks::from_typed(T::hooks());
         p
     }
 
@@ -182,7 +198,7 @@ impl Provider {
         let name = token.display_name();
         let factory: Factory = Arc::new(move |_ctx| {
             let instance = instance.clone();
-            async move { Ok(instance) }.boxed()
+            async move { Ok(instance.into()) }.boxed()
         });
         Self::new(token, name, factory)
     }
@@ -217,7 +233,7 @@ impl Provider {
             let token = token_for_err.clone();
             async move {
                 match factory(ctx).await {
-                    Ok(v) => Ok(erase(v)),
+                    Ok(v) => Ok(erase(v).into()),
                     Err(e) => match e.downcast::<DiError>() {
                         Ok(di) => Err(di),
                         Err(e) => Err(DiError::Factory { token: token.display_name(), cause: Arc::new(e) }),
@@ -236,7 +252,7 @@ impl Provider {
         let name = token.display_name();
         let f: Factory = Arc::new(move |ctx: ResolveCtx| {
             let existing = existing.clone();
-            async move { ctx.resolve_instance(existing).await }.boxed()
+            async move { ctx.resolve_instance(existing).await.map(Built::from) }.boxed()
         });
         Self::new(token, name, f)
     }

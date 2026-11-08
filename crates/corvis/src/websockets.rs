@@ -550,7 +550,7 @@ pub(crate) async fn build_gateways(
     for module in &container.modules {
         for p in &module.providers {
             let Some(gw) = &p.hooks.gateway else { continue };
-            let Some(instance) = container.instance(module.id, &p.token) else { continue };
+            let Some(instance) = container.hook_instance(module.id, &p.token) else { continue };
             let Some(info) = gw(instance.clone()) else { continue };
             let ctx = ResolveCtx::for_module(container.clone(), module.id);
             let c = &info.enhancers;

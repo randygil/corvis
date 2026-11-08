@@ -391,4 +391,39 @@ async fn missing_dependency_message() {
     let msg = err.to_string();
     assert!(msg.contains("Corvis can't resolve dependencies of the NeedsCats (?)"), "{msg}");
     assert!(msg.contains("argument CatsService at index [0] is available in the BrokenModule context"), "{msg}");
+    assert!(msg.contains("#[module("), "{msg}");
+    assert!(!msg.contains("@Module"), "{msg}");
+}
+
+#[injectable]
+pub struct AService {
+    _b: Arc<BService>,
+}
+#[injectable]
+pub struct BService {
+    _a: Arc<AService>,
+}
+#[module(providers = [AService, BService])]
+pub struct CycleModule;
+
+#[corvis::test]
+async fn circular_dependency_message() {
+    let err = Test::create_testing_module().import::<CycleModule>().compile().await.err().unwrap();
+    let msg = err.to_string();
+    assert!(msg.contains("A circular dependency has been detected: AService -> BService -> AService"), "{msg}");
+    assert!(msg.contains("ModuleRef"), "{msg}");
+    assert!(!msg.contains("forwardRef"), "{msg}");
+}
+
+#[corvis::test]
+async fn optional_dependency_by_type_is_none() {
+    #[injectable]
+    pub struct MaybeCats {
+        cats: Option<Arc<CatsService>>,
+    }
+    #[module(providers = [MaybeCats])]
+    pub struct MaybeModule;
+
+    let module = Test::create_testing_module().import::<MaybeModule>().compile().await.unwrap();
+    assert!(module.get::<MaybeCats>().unwrap().cats.is_none());
 }

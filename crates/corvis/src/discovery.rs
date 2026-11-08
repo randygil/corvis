@@ -92,7 +92,7 @@ pub(crate) fn discover(container: &Arc<Container>) -> Vec<Discovered> {
         let providers = module.providers.iter().chain(module.controllers.iter().map(|c| &c.provider));
         for p in providers {
             let Some(explore) = &p.hooks.handlers else { continue };
-            let Some(instance) = container.instance(module.id, &p.token) else { continue };
+            let Some(instance) = container.hook_instance(module.id, &p.token) else { continue };
             let type_id = match &p.token {
                 crate::di::Token::Type { id, .. } => *id,
                 _ => std::any::TypeId::of::<()>(),
