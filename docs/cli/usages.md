@@ -103,6 +103,33 @@ corvis build [--release]
 
 Runs `cargo build` (debug profile), or `cargo build --release` with `--release` (or `--prod`). It prints the profile first: `Building the debug profile ...` or `Building the release profile`.
 
+## `corvis posture`
+
+```bash
+corvis posture [--json] [--release] [--timeout <seconds>] [-- <program arguments>]
+```
+
+Prints the route posture report of the application in the current project: every route with its guards, or `public`, or the exemption and its reason, and `UNPROTECTED` for a route that has none of them. It works whatever posture mode the application uses (off, warn or enforce) and is meant for code review and CI.
+
+It runs `cargo build` (with `--release` if given) and then `cargo run` with `CORVIS_ROUTE_POSTURE_REPORT` set to `text` (`json` with `--json`). The application computes the report when it initializes, after the routes are compiled and before any initialization hook runs or any socket is bound, prints it and exits. The application is never left listening. It needs the same environment as `corvis start` (for example a reachable database if a provider connects while the application is created), because the providers are created before the report is computed. Raw `upgrade` listeners registered in hooks are not counted.
+
+| Output | Where |
+|---|---|
+| The report (table, or JSON with `--json`) | stdout, and nothing else |
+| Cargo output and the application's log lines | stderr |
+
+The application writes the report between the lines `----- BEGIN CORVIS ROUTE POSTURE REPORT -----` and `----- END CORVIS ROUTE POSTURE REPORT -----` because its logs share stdout; the command removes those lines, so `corvis posture --json | jq .` works.
+
+| Exit status | Meaning |
+|---|---|
+| `0` | The report was printed and nothing is unprotected |
+| `1` | The report was printed and at least one route is unprotected |
+| `2` | There is no report: the build failed, the application failed to start (the message shows its exit code), the timeout passed, or the arguments were invalid |
+
+`--timeout <seconds>` (default 120) is how long the application gets, once it is running, to print the report. If it never reaches initialization (for example it blocks before calling `listen`), the command stops it and exits with 2. The build is not subject to the timeout. The flags of `corvis` are read only before the first `--`; everything after goes to your program. `--watch` is not supported.
+
+New projects created with `corvis new` call `require_route_posture()` in `main` and mark their `GET /` route `#[public]`, so `corvis posture` exits with 0 for them.
+
 ## `corvis info`
 
 Shows the operating system and architecture, `rustc --version`, `cargo --version` and the CLI version. Useful to attach to a bug report.
