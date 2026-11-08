@@ -82,6 +82,7 @@ const tree: Entry[] = [
     ['Encryption and hashing', 'Cifrado y hashing', '/security/encryption-and-hashing'],
     ['Security headers', 'Cabeceras de seguridad', '/security/helmet'],
     ['CORS', 'CORS', '/security/cors'],
+    ['HTTP parsing', 'Análisis de HTTP', '/security/http-parsing'],
     ['CSRF protection', 'Protección CSRF', '/security/csrf'],
     ['Rate limiting', 'Límite de peticiones', '/security/rate-limiting'],
   ]),

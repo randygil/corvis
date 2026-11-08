@@ -15,7 +15,8 @@ Esta página reúne lo que se puede configurar de ese servidor.
 ## Protocolos
 
 - HTTP/1.1 y HTTP/2 sin TLS con *prior knowledge* (h2c), activo por defecto.
-  `ServerOptions::new().h2c(false)` acepta solo HTTP/1.x.
+  `ServerOptions::new().h2c(false)` acepta solo HTTP/1.x. Si h2c sigue activo por defecto se decide en el issue
+  #144; consulta [Análisis de HTTP y compatibilidad](/es/security/http-parsing).
 - No hay HTTPS: termina TLS en un proxy inverso. Ver [HTTPS y varios servidores](/es/faq/multiple-servers).
 - Upgrades a WebSocket, con gateways o con `corvis::ws`. Ver [Gateways](/es/websockets/gateways).
 

@@ -77,6 +77,12 @@ impl FilesController {
         body
     }
 
+    #[post("nesting")]
+    #[use_interceptors(NoFilesInterceptor::new().limits(Limits::new().field_nesting_depth(2)))]
+    fn nesting(&self, #[body] body: Value) -> Value {
+        body
+    }
+
     #[post("disk")]
     #[use_interceptors(FileInterceptor::new("file").storage(disk_storage(
         DiskStorageOptions::new()
@@ -224,6 +230,20 @@ async fn multer_errors_map_to_http_exceptions() {
     // NoFilesInterceptor rejects files.
     let r = request(&app).post("/files/none").field("a", "1").attach("doc", "x", "a.txt").send().await;
     r.expect_status(400).expect_json(json!({ "message": "Unexpected field - doc", "error": "Bad Request", "statusCode": 400 }));
+}
+
+/// Requirement `http/request-parsing`: the nesting limit is a client error, as in current multer integrations.
+#[corvis::test]
+async fn field_nesting_limit_answers_400() {
+    let app = app().await;
+    let r = request(&app).post("/files/nesting").field("a[b][c][d]", "v").send().await;
+    r.expect_status(400).expect_json(json!({
+        "message": "Field name nesting too deep - a[b][c][d]",
+        "error": "Bad Request",
+        "statusCode": 400
+    }));
+    let r = request(&app).post("/files/nesting").field("a[b][c]", "v").send().await;
+    r.expect_status(201).expect_json(json!({ "a": { "b": { "c": "v" } } }));
 }
 
 #[corvis::test]

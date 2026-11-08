@@ -361,13 +361,11 @@ pub(crate) fn transform_multer_error(e: MulterError) -> HttpException {
     use MulterErrorCode::*;
     match e.code {
         LimitFileSize => PayloadTooLargeException::new(e.message()),
-        LimitFileCount | LimitFieldKey | LimitFieldValue | LimitFieldCount | LimitUnexpectedFile | LimitPartCount | MissingFieldName => {
-            match &e.field {
-                Some(f) => BadRequestException::new(format!("{} - {}", e.message(), f)),
-                None => BadRequestException::new(e.message()),
-            }
-        }
-        LimitFieldNesting => HttpException::internal(e),
+        LimitFileCount | LimitFieldKey | LimitFieldValue | LimitFieldCount | LimitUnexpectedFile | LimitPartCount | LimitFieldNesting
+        | MissingFieldName => match &e.field {
+            Some(f) => BadRequestException::new(format!("{} - {}", e.message(), f)),
+            None => BadRequestException::new(e.message()),
+        },
     }
 }
 
