@@ -26,7 +26,7 @@
 - [x] 5.2 `cargo fmt --all` then `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`
 - [x] 5.3 `CORVIS_ORM_PG_REQUIRED=1 cargo test --workspace`
 - [x] 5.4 `node scripts/check-naming.mjs`
-- [ ] 5.5 Runtime code changed (`engine/filter.rs`): run the `corvis-parity` check and verify the three ports keep 0 differences (left to the maintainer)
+- [x] 5.5 Runtime code changed (`engine/filter.rs`): run the `corvis-parity` check and verify the three ports keep 0 differences (left to the maintainer) (maintainer batch run on batch/phase03-c cd79e44: consi 832/832, facten 727/727, houseplan 598/598 quiet-hours count; routes identical, databases equivalent)
 
 ## Workflow follow-up
 

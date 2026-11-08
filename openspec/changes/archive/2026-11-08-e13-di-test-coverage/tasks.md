@@ -85,9 +85,9 @@
   the mapping in the PR description)
 - [x] 9.5 Docs: pages updated in `docs/` and `docs/es/` per task 8.2 (or recorded as unchanged); `npm run docs:check`
   in `docs/` passes
-- [ ] 9.6 If task 8.1 changed framework runtime code, run the `corvis-parity` check and verify the three port apps keep
-  0 apidiff differences; otherwise record that only tests changed (PENDING: task 8.1 changed `di/container.rs` and
-  `di/provider.rs` for aliases of transient providers; the parity check was not run by the implementer)
+- [x] 9.6 If task 8.1 changed framework runtime code, run the `corvis-parity` check and verify the three port apps keep
+  0 apidiff differences; otherwise record that only tests changed (task 8.1 changed `di/container.rs` and
+  `di/provider.rs` for aliases of transient providers; maintainer batch run on batch/phase03-c cd79e44: consi 832/832, facten 727/727, houseplan 598/598 quiet-hours count; routes identical, databases equivalent)
 
 ## Workflow follow-up
 

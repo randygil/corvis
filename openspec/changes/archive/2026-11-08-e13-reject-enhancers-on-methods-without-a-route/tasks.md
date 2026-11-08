@@ -28,7 +28,7 @@
 - [x] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 5.3 `cargo test --workspace` passes, including the regression tests of groups 1 and 3 (`cargo test --doc -p corvis` runs the `compile_fail` doctests)
 - [x] 5.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 5.5 corvis-parity: only macro expansion changes for methods that do not compile anymore, and no framework runtime code changes, so the three port apps are not affected; confirm by building them (`cargo build` in each port, as in the `corvis-parity` skill, step 1). Run the full apidiff check only if group 2 ended up touching code that methods with a route or handler attribute go through (not run by the implementer: the maintainer runs it; the ports' own path dependency does not point at this worktree)
+- [x] 5.5 corvis-parity: only macro expansion changes for methods that do not compile anymore, and no framework runtime code changes, so the three port apps are not affected; confirm by building them (`cargo build` in each port, as in the `corvis-parity` skill, step 1). Run the full apidiff check only if group 2 ended up touching code that methods with a route or handler attribute go through (not run by the implementer: the maintainer runs it; the ports' own path dependency does not point at this worktree) (maintainer batch run on batch/phase03-c cd79e44: consi 832/832, facten 727/727, houseplan 598/598 quiet-hours count; routes identical, databases equivalent)
 
 ## Workflow follow-up
 
