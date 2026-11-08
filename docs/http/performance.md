@@ -38,7 +38,9 @@ app.set_server_options(
 ```
 
 Each timeout accepts `None` to disable it, for example `.request_timeout(None)`. When
-`max_connections` is reached, new connections wait in the `accept` queue.
+`max_connections` is reached, new connections wait in the `accept` queue. Open WebSocket connections count until
+they close, and so does a socket for up to 2 s after an early error response (`413`, `431`, ...) while the server
+lets the client read it before closing. With a cap, give your gateways a heartbeat so dead clients do not hold slots.
 
 ## Request bodies
 

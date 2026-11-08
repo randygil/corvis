@@ -371,6 +371,146 @@ async fn oversized_head_is_rejected() {
     assert!(r.starts_with("HTTP/1.1 431"), "{r:?}");
 }
 
+/// Before: the server closed the socket while the rest of the oversized request was still
+/// arriving, which Windows turns into a reset that discards the 431 the client had not read yet.
+/// The client keeps sending past the head, so unread input is guaranteed when the server answers.
+#[corvis::test]
+async fn early_error_response_survives_unread_input() {
+    let addr = serve(None).await;
+    for _ in 0..5 {
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        s.write_all(&oversized_head()).await.unwrap();
+        // Input that arrives after the server has answered; errors only mean it already closed.
+        let _ = s.write_all(&vec![b'b'; 256 * 1024]).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = s.write_all(&vec![b'b'; 64 * 1024]).await;
+        let r = read_head(&mut s, Duration::from_secs(5)).await;
+        assert!(r.starts_with("HTTP/1.1 431"), "{r:?}");
+    }
+}
+
+const GET_SLOW: &[u8] = b"GET /t/slow HTTP/1.1\r\nHost: x\r\n\r\n";
+
+/// Keeps writing `chunk` every `pause` (as fast as the socket takes it when `pause` is zero) until the
+/// server closes or `limit` passes. Returns how long the writes lasted.
+async fn send_until_closed(s: &mut TcpStream, chunk: &[u8], pause: Duration, limit: Duration) -> Duration {
+    let started = Instant::now();
+    while started.elapsed() < limit {
+        match tokio::time::timeout(Duration::from_secs(3), s.write_all(chunk)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => break,
+            Err(_) => panic!("write blocked: the server stopped reading but kept the connection"),
+        }
+        if !pause.is_zero() {
+            tokio::time::sleep(pause).await;
+        }
+    }
+    started.elapsed()
+}
+
+fn oversized_head() -> Vec<u8> {
+    let big = "a".repeat(40 * 1024);
+    format!("GET /t/slow HTTP/1.1\r\nHost: x\r\nX-Big: {big}\r\n\r\n").into_bytes()
+}
+
+/// Time until a client queued behind a full `max_connections(1)` server is served, counted from `since`.
+async fn queued_client_served_after(addr: std::net::SocketAddr, since: Instant) -> Duration {
+    let mut next = TcpStream::connect(addr).await.unwrap();
+    // An unknown route answers at once, so the time measured is the wait for the permit.
+    next.write_all(b"GET /t/none-such HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+    let r = read_head(&mut next, Duration::from_secs(8)).await;
+    assert!(r.starts_with("HTTP/1.1 404"), "{r:?}");
+    since.elapsed()
+}
+
+/// The drain after an early error response is bounded in bytes: a peer that keeps sending as fast
+/// as it can is cut off within a few seconds.
+#[corvis::test]
+async fn drain_after_an_early_error_response_is_bounded_in_bytes() {
+    let addr = serve(None).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(&oversized_head()).await.unwrap();
+    let took = send_until_closed(&mut s, &[b'b'; 64 * 1024], Duration::ZERO, Duration::from_secs(8)).await;
+    assert!(took < Duration::from_secs(5), "server kept draining an endless sender for {took:?}");
+}
+
+/// ...and in time: a slow trickle after the 431 does not keep the connection (and its permit) past
+/// the drain time cap.
+#[corvis::test]
+async fn drain_after_an_early_error_response_is_bounded_in_time() {
+    let addr = serve(Some(ServerOptions::new().max_connections(1))).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(&oversized_head()).await.unwrap();
+    let started = Instant::now();
+    let trickle = tokio::spawn(async move {
+        let _ = send_until_closed(&mut s, b"b", Duration::from_millis(50), Duration::from_secs(8)).await;
+        s
+    });
+    let served = queued_client_served_after(addr, started).await;
+    assert!(served >= Duration::from_millis(1500), "drained for only {served:?}");
+    assert!(served < Duration::from_millis(3500), "permit held for {served:?}");
+    drop(trickle.await.unwrap());
+}
+
+/// hyper's own header read timeout closes a connection that stays quiet after its first response:
+/// no drain, so the permit is free right after `headers_timeout`.
+#[corvis::test]
+async fn idle_keep_alive_connection_released_without_drain() {
+    let addr = serve(Some(
+        ServerOptions::new().max_connections(1).headers_timeout(Duration::from_secs(1)).keep_alive_timeout(Duration::from_secs(10)),
+    ))
+    .await;
+    let mut first = TcpStream::connect(addr).await.unwrap();
+    first.write_all(GET_SLOW).await.unwrap();
+    assert!(read_head(&mut first, Duration::from_secs(5)).await.starts_with("HTTP/1.1 200"));
+    let served = queued_client_served_after(addr, Instant::now()).await;
+    assert!(served < Duration::from_millis(1500), "permit released after {served:?}");
+    drop(first);
+}
+
+/// A slowloris on the second request of a keep-alive connection is closed at `headers_timeout`
+/// without a drain.
+#[corvis::test]
+async fn slowloris_on_keep_alive_connection_released_without_drain() {
+    let addr = serve(Some(
+        ServerOptions::new().max_connections(1).headers_timeout(Duration::from_secs(1)).keep_alive_timeout(Duration::from_secs(10)),
+    ))
+    .await;
+    let mut first = TcpStream::connect(addr).await.unwrap();
+    first.write_all(GET_SLOW).await.unwrap();
+    assert!(read_head(&mut first, Duration::from_secs(5)).await.starts_with("HTTP/1.1 200"));
+    let started = Instant::now();
+    let drip = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        for b in b"GET /t/slow HTTP/1.1\r\nHost: x\r\nX-Slow: " {
+            if first.write_all(&[*b]).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        first
+    });
+    let served = queued_client_served_after(addr, started).await;
+    assert!(served < Duration::from_millis(1500), "permit released after {served:?}");
+    drop(drip.await.unwrap());
+}
+
+/// An upgrade listener that destroys the socket leaves nothing to protect: the connection closes at once.
+#[corvis::test]
+async fn destroyed_upgrade_socket_is_closed_without_drain() {
+    let mut app = app().await;
+    app.get_http_server().on_upgrade(|u| u.destroy());
+    app.set_server_options(ServerOptions::new().max_connections(1));
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    std::mem::forget(app);
+    let mut first = TcpStream::connect(addr).await.unwrap();
+    first.write_all(b"GET /x HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: foo\r\n\r\n").await.unwrap();
+    // The client stays quiet; the server must close and free the permit on its own.
+    let served = queued_client_served_after(addr, Instant::now()).await;
+    assert!(served < Duration::from_millis(1000), "permit released after {served:?}");
+    drop(first);
+}
+
 // ---------------------------------------------------------------------------
 // Timeouts (slowloris)
 // ---------------------------------------------------------------------------
