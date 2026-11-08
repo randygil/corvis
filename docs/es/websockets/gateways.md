@@ -95,7 +95,7 @@ Un gateway que no está en `providers` de algún módulo no se monta. Como es un
 
 La ruta se normaliza: se añade la `/` inicial si falta y se quita la final. El prefijo global (`app.set_global_prefix`) **no** se aplica a los gateways: en tertulia la API REST vive en `/api/...` y el chat en `/chat`.
 
-Debajo de `#[websocket_gateway]` puedes poner `#[use_guards(...)]`, `#[use_interceptors(...)]`, `#[use_pipes(...)]` y `#[set_metadata(clave, valor)]`; se aplican a todos los handlers del gateway. Como en los controladores, deben ir **debajo** del atributo principal porque Rust procesa los atributos en orden. `#[use_filters]` no está soportado en gateways y produce un error de compilación (ver [Filtros de excepción](/es/websockets/exception-filters)).
+Debajo de `#[websocket_gateway]` puedes poner `#[use_guards(...)]`, `#[use_interceptors(...)]`, `#[use_pipes(...)]`, `#[use_filters(...)]` y `#[set_metadata(clave, valor)]`; se aplican a todos los handlers del gateway. Como en los controladores, deben ir **debajo** del atributo principal porque Rust procesa los atributos en orden (ver [Filtros de excepción](/es/websockets/exception-filters) para `#[use_filters]`).
 
 ### `#[handlers]` y `#[subscribe_message]`
 
@@ -288,7 +288,22 @@ Los handlers de una misma conexión **empiezan** en el orden en que llegaron sus
 
 ## Enhancers globales
 
-`app.use_global_guards`, `use_global_pipes`, `use_global_interceptors` y los providers `Provider::app_guard`, `app_pipe` y `app_interceptor` **solo** se aplican a las rutas HTTP. Un gateway debe declarar sus propios enhancers. Por eso tertulia repite `#[use_pipes(ZodValidationPipe::auto())]` en el gateway aunque ya lo registró como pipe global.
+Los guards, interceptors y pipes globales (`app.use_global_guards`, `use_global_interceptors`, `use_global_pipes` y los providers `Provider::app_guard`, `app_interceptor` y `app_pipe`) se aplican a todos los handlers de mensajes, como en el framework original. Corren antes que los enhancers del gateway y del handler: primero los globales, después los del gateway y al final los del handler (los registrados con `Provider::app_*` van delante de los de `use_global_*`). Los filtros de excepción globales **no** se aplican a los gateways; declara filtros con `#[use_filters]` (ver [Filtros de excepción](/es/websockets/exception-filters)).
+
+Cosas a tener en cuenta:
+
+- Un guard global que solo conoce HTTP (por ejemplo, lee un token bearer de `ctx.switch_to_http()`) rechaza o rompe todos los mensajes. Distingue los transportes con `ctx.get_type()` (`ContextType::Ws`), o marca el gateway con metadatos que el guard revise, como `#[set_metadata(IS_PUBLIC_KEY, true)]` debajo de `#[websocket_gateway]`.
+- Un interceptor global también ve contextos WebSocket, así que uno que lee la petición HTTP o escribe cabeceras debe comprobar antes `ctx.get_type()`.
+- Un pipe global como `ZodValidationPipe::auto()` corre en cada `#[message_body]`. Repetirlo en el gateway, como hace tertulia, hace que corra dos veces, lo cual es inofensivo para pipes de validación.
+- Un `ThrottlerGuard` global cuenta los mensajes por IP del handshake y por handler.
+
+Las aplicaciones que adoptan los gateways de forma gradual pueden mantener los enhancers globales solo en HTTP con una llamada antes de `init()` (o `listen`):
+
+```rust
+app.apply_global_enhancers_to_gateways(false);
+```
+
+Con `false`, un handler ejecuta solo los enhancers de su gateway y los suyos. Llamarla después de inicializar la aplicación registra una advertencia y no cambia nada.
 
 ## Probar un gateway
 

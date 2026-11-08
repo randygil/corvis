@@ -165,3 +165,14 @@ query arguments and shows the typed helpers second. Many other uses are legitima
   imports cannot clash with user types.
 - `HttpError` for WebSocket and event handlers is out of scope.
 - The `HttpResult<Option<T>>` (`null`) vs `Option<T>` (empty body) inconsistency is filed as a separate issue.
+
+## Security review
+
+- `HttpError` 5xx without a custom `body()` answers the generic internal-error body, is marked internal (so it is
+  logged) and never sends its `Display` text; a custom `body()` is sent as written. To tell "custom" from "default",
+  `body()` returns `Option<ExceptionBody>` (default `None`) instead of an `ExceptionBody` defaulting to `Display`.
+  A status below 400 is treated as 500.
+- `update_many_and_return` without a `where` updates and loads the whole table, as in the reference client. Parity is
+  kept; the method docs and the ORM docs carry a warning. `From<Data<T>>` stays available for every delegate action:
+  `Args` is not typed by action, so restricting it to the create actions would need a separate argument type for
+  `create`/`create_many`. Passing `Data` where a `where` is required (`update`, `delete`) fails the engine validation; `update_many(Data(..))` is the same unfiltered write as `update_many(json!({ "data": .. }))`.

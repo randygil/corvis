@@ -83,15 +83,20 @@ pub struct LoggingInterceptor;
 impl CorvisInterceptor for LoggingInterceptor {
     async fn intercept(&self, context: &ExecutionContext, next: CallHandler) -> HandlerResult {
         let start = std::time::Instant::now();
-        let req = context.request();
-        let method = req.method().to_string();
-        let url = req.url();
+        // In a gateway the request is the handshake, whose URL may carry a token in its query: log
+        // the handler instead.
+        let line = if context.get_type() == super::context::ContextType::Http {
+            let req = context.request();
+            format!("{} {}", req.method(), req.url())
+        } else {
+            format!("WS {}.{}", context.get_class().name, context.get_handler().name)
+        };
         let result = next.handle().await;
         let status = match &result {
             Ok(r) => r.status().map(|s| s.as_u16()).unwrap_or(200),
             Err(e) => e.get_status(),
         };
-        crate::logger::Logger::new("LoggingInterceptor").log(format!("{method} {url} {status} - {}ms", start.elapsed().as_millis()));
+        crate::logger::Logger::new("LoggingInterceptor").log(format!("{line} {status} - {}ms", start.elapsed().as_millis()));
         result
     }
 }

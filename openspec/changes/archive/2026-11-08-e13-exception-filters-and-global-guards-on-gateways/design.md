@@ -170,3 +170,49 @@ version)**
    review note; no opt-in for global filters on gateways in this change.
 2. Filter order inside one `#[use_filters(A, B)]` follows whatever #17 settles for HTTP (which follows the original).
 3. `apply_global_enhancers_to_gateways(false)` is accepted as the switch name; #27 uses it.
+
+## Implementation notes
+
+- **Task 1.1, original framework (checked with `@nestjs/core`, `@nestjs/websockets` and `@nestjs/platform-ws` 12.4.0, the
+  line the port apps use, Node 24, `ws` adapter).** Fixture: `crates/corvis/tests/fixtures/ws_gateways/`.
+  - Global guards (`useGlobalGuards` and `APP_GUARD`) run on gateway messages: a denying one answers
+    `{ event: "exception", data: { status: "error", message: "Forbidden resource" } }` and the handler does not run;
+    order is global guard, then gateway guard, then handler. A guard can tell the transports apart with
+    `getType() === "ws"`.
+  - Global pipes and interceptors (`useGlobal*` and `APP_PIPE`, `APP_INTERCEPTOR`) apply; the order recorded is
+    interceptor, pipe, handler.
+  - Global filters (`useGlobalFilters` and `APP_FILTER`) are never called for a gateway: the built-in frame answers.
+  - Handler filters win over gateway filters, and a guard refusal reaches the gateway filter.
+  - Inside one `@UseFilters(First, Second)` the original tries `Second` first. Corvis HTTP routes try `First` first; per
+    review note 2 gateways follow HTTP, so this is a recorded difference (the replay test asserts it explicitly).
+  - **Version finding:** `@nestjs/websockets` 11.2.1 does not apply global guards, pipes or interceptors to gateways (its
+    socket module builds the context creators without the application config); 12.4.0 does. The fixture pins 12.4.0.
+  - The `ws` adapter only sends the built-in `exception` frame for `WsException`s and unknown errors in the shape above;
+    frames carry a `cause` field in some versions, which the fixture strips and Corvis does not send.
+- **Open questions 1 to 3** are settled by the review notes above: global filters stay HTTP-only, filters inside one
+  attribute use declaration order like HTTP routes, and the switch is `apply_global_enhancers_to_gateways`.
+- **`ExceptionFilter::filter_name`.** The spec asks for an error that names the filter; the trait had no name, so it gains
+  a defaulted `filter_name()` (the type name). Existing filters keep compiling.
+- **Deviation from the task order.** The runtime changes were written before the regression tests (1.2), so the tests were
+  not seen failing on the old code; they exercise the new behavior (`tests/ws_enhancers.rs`, 22 tests, including the
+  fixture replay of 3.4 and the macro unit tests of 1.3 in `crates/corvis-macros/src/handlers.rs`). The tests live in a new
+  binary because the logger is process-wide.
+- **Behavior note for the replay.** The fixture's `global_guard_ws_only` scenario covers `ctx.get_type()`; the HTTP side of
+  that scenario (403) is covered by `a_guard_can_tell_the_transports_apart`.
+
+### Security review
+
+- **Global `CacheInterceptor` on gateways (medium-high).** It decided cacheability and the key from `ctx.request()`, the
+  handshake (always a `GET` on one URL), so messages of different events and users shared one cached reply and handlers
+  were skipped. It now passes non-HTTP contexts through uncached. Test: `the_cache_interceptor_never_caches_gateway_messages`.
+- **Audit of the other built-in interceptors and guards.** `TimeoutInterceptor` does not read the request.
+  `ZodSerializerInterceptor` works from handler metadata and the reply, so it behaves the same on a message. The multer
+  interceptors return early when the handshake is not multipart, which it never is. `ThrottlerGuard` keys on the handshake IP
+  plus gateway and handler names, which is the documented per-IP, per-handler counting. Only the cache and logging
+  interceptors needed a change.
+- **`LoggingInterceptor` (low).** It logged the handshake URL, with any query token, per message. In a WebSocket context it
+  logs `WS <Gateway>.<handler>`. Test: `the_logging_interceptor_logs_the_handler_not_the_handshake_url`.
+- **Panicking `catches` (low).** The filter lookup now runs under `catch_unwind`; a panic counts as "does not catch" and is
+  logged. Test: `a_filter_whose_catches_panics_does_not_catch`.
+- **Catch-all filters (info).** The exception filters page warns that copying `exception.message()` into a frame exposes
+  internal error text.

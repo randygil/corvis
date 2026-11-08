@@ -57,9 +57,7 @@ pub fn expand(args: TokenStream, mut item: ItemStruct) -> syn::Result<TokenStrea
                 enhancers.push(quote!(.set_metadata(#k, #v)));
                 continue;
             }
-            "use_filters" => {
-                return Err(syn::Error::new_spanned(&attr, "#[use_filters] is not supported on WebSocket gateways"));
-            }
+            "use_filters" => "filter",
             _ => {
                 keep.push(attr);
                 continue;

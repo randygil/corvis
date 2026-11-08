@@ -35,6 +35,11 @@ pub trait ExceptionFilter: Send + Sync + 'static {
     }
 
     async fn catch(&self, exception: HttpException, host: &ArgumentsHost) -> Response;
+
+    /// The name used in log lines about this filter (its type name by default).
+    fn filter_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 /// The built-in global exception filter. Extend it by delegating to it

@@ -193,6 +193,20 @@ impl CorvisApplication {
         self
     }
 
+    /// Whether global guards, interceptors and pipes (`use_global_*` and the `Provider::app_*`
+    /// ones) also run on WebSocket gateway handlers. `true` by default; `false` keeps them
+    /// HTTP-only. Global exception filters never apply to gateways. Must be called before
+    /// `init()`: gateways are built once.
+    pub fn apply_global_enhancers_to_gateways(&mut self, apply: bool) -> &mut Self {
+        if self.initialized {
+            Logger::new("CorvisApplication")
+                .warn("apply_global_enhancers_to_gateways() has no effect after the application was initialized");
+        } else {
+            self.config.router.gateway_global_enhancers = apply;
+        }
+        self
+    }
+
     /// `app.useGlobalPipes(new ValidationPipe())`.
     pub fn use_global_pipes(&mut self, pipe: impl PipeTransform) -> &mut Self {
         self.config.router.global_pipes.push(Arc::new(pipe));

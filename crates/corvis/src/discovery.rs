@@ -27,6 +27,7 @@ pub struct WsEnhancers {
     pub guards: Vec<crate::common::enhancer::GuardRef>,
     pub interceptors: Vec<crate::common::enhancer::InterceptorRef>,
     pub pipes: Vec<crate::common::enhancer::PipeRef>,
+    pub filters: Vec<crate::common::enhancer::FilterRef>,
     pub metadata: Vec<(String, Value)>,
     /// The `#[message_body]` parameters of a handler, in order (`kind` is `Body`).
     pub params: Vec<crate::router::controller::ParamDef>,
@@ -43,6 +44,10 @@ impl WsEnhancers {
     }
     pub fn pipe(mut self, p: crate::common::enhancer::PipeRef) -> Self {
         self.pipes.push(p);
+        self
+    }
+    pub fn filter(mut self, f: crate::common::enhancer::FilterRef) -> Self {
+        self.filters.push(f);
         self
     }
     pub fn set_metadata(mut self, key: impl Into<String>, value: impl serde::Serialize) -> Self {

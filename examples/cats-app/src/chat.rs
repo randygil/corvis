@@ -1,10 +1,17 @@
 //! WebSocket gateway. Try it with `websocat ws://localhost:3000/chat` and send
 //! `{"event":"join","data":"lobby"}` then `{"event":"message","data":"hi"}`.
+//!
+//! The gateway is public: the global `AuthGuard` runs on every message (global guards apply to
+//! gateways) and lets the targets marked with `IS_PUBLIC_KEY` through, so no token is needed. The
+//! global `ThrottlerGuard` also counts the messages (100 per minute per IP and handler).
 
 use corvis::prelude::*;
 use corvis::{OnGatewayConnection, OnGatewayDisconnect, WsClient, WsResponse, WsServer, websocket_gateway};
 
+use crate::common::decorators::IS_PUBLIC_KEY;
+
 #[websocket_gateway(path = "/chat")]
+#[set_metadata(IS_PUBLIC_KEY, true)]
 pub struct ChatGateway {
     #[websocket_server]
     server: WsServer,

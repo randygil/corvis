@@ -23,7 +23,9 @@ zod_dto!(CreateUserDto, create_user_schema());
 /// `PartialType(CreateUserDto)` → `createUserSchema.partial()`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateUserDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 

@@ -69,5 +69,5 @@ Los DTOs con schema (`zod_dto!`) y `ZodValidationPipe` también se reutilizan: e
 
 - **Un solo servidor HTTP**, como se explicó arriba.
 - **Sin microservicios**: `ContextType` tiene una variante `Rpc`, pero ningún transporte la produce. Ver [Microservicios](/es/microservices/basics).
-- **Enhancers globales**: `use_global_*` y `Provider::app_*` solo se aplican a las rutas HTTP, no a los gateways. Declara los enhancers del gateway en el propio gateway.
-- **Filtros de excepción**: no se aplican a los gateways (ver [WebSockets: filtros de excepción](/es/websockets/exception-filters)).
+- **Enhancers globales**: los guards, interceptors y pipes globales (`use_global_*`, `Provider::app_*`) también se aplican a los gateways; `app.apply_global_enhancers_to_gateways(false)` los mantiene solo en HTTP.
+- **Filtros de excepción**: los globales no se aplican a los gateways; usa `#[use_filters]` ahí (ver [WebSockets: filtros de excepción](/es/websockets/exception-filters)).

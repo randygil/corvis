@@ -137,6 +137,36 @@ impl HttpException {
         e
     }
 
+    /// Exception of a domain error that declares its own status (see [`HttpError`]).
+    ///
+    /// - Below 400 the status becomes 500: an error cannot answer 1xx, 2xx or 3xx.
+    /// - A 4xx answers `err.body()` (the `Display` text by default) in the format of the built-in
+    ///   exceptions, and is not internal.
+    /// - A 5xx without a custom `body()` answers the generic body of an internal error and is internal,
+    ///   so the error is logged and its text never reaches the client. A custom `body()` is sent as written.
+    ///
+    /// `err` is always kept as the cause.
+    pub fn from_http_error<E: HttpError>(err: E) -> Self {
+        let mut status = err.status();
+        if status.as_u16() < 400 {
+            status = StatusCode::INTERNAL_SERVER_ERROR;
+        }
+        let custom = err.body();
+        let mut e = match custom {
+            None if status.is_server_error() => {
+                let generic = if status == StatusCode::INTERNAL_SERVER_ERROR { "Internal server error" } else { reason(status) };
+                let mut e = Self::new(json!({ "statusCode": status.as_u16(), "message": generic }), status);
+                e.message = err.to_string();
+                e.internal = true;
+                e
+            }
+            None => Self::with_error(ExceptionBody::Message(err.to_string()), reason(status), status),
+            Some(body) => Self::with_error(body, reason(status), status),
+        };
+        e.cause = Some(Arc::new(err));
+        e
+    }
+
     /// 500 for unexpected errors: `{ statusCode: 500, message: "Internal server error" }`.
     pub fn internal(cause: impl std::error::Error + Send + Sync + 'static) -> Self {
         let mut e = Self::new(json!({ "statusCode": 500, "message": "Internal server error" }), StatusCode::INTERNAL_SERVER_ERROR);
@@ -248,6 +278,37 @@ impl fmt::Display for HttpException {
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for HttpException {
     fn from(e: E) -> Self {
         HttpException::internal(e)
+    }
+}
+
+/// A domain error that knows its HTTP status.
+///
+/// A handler declared as `Result<T, AppError>` answers with that status when it returns `Err`; inside a
+/// handler returning [`HttpResult`](crate::HttpResult), `.http()?` ([`ResultHttpExt`]) does the same.
+/// For a 4xx the default body is the `Display` text in the format of the built-in exceptions.
+///
+/// For a 5xx without a custom [`HttpError::body`] the client gets the generic internal-error body (the
+/// `Display` text is not sent) and the error is logged like any unexpected error, with the exception
+/// marked internal. A custom `body()` is sent as written, so keep internal details out of it. A status
+/// below 400 is treated as 500.
+pub trait HttpError: std::error::Error + Send + Sync + 'static {
+    /// The response status.
+    fn status(&self) -> StatusCode;
+
+    /// A custom response body, or `None` (the default) for the standard one: the `Display` text for a
+    /// 4xx, the generic internal-error body for a 5xx.
+    fn body(&self) -> Option<ExceptionBody> {
+        None
+    }
+}
+
+/// `result.http()?` for errors that implement [`HttpError`].
+pub trait ResultHttpExt<T> {
+    fn http(self) -> Result<T, HttpException>;
+}
+impl<T, E: HttpError> ResultHttpExt<T> for Result<T, E> {
+    fn http(self) -> Result<T, HttpException> {
+        self.map_err(HttpException::from_http_error)
     }
 }
 
@@ -390,5 +451,108 @@ mod tests {
         assert!(e.cause_is::<std::io::Error>());
         let e: HttpException = NotFoundException.into();
         assert_eq!(e.get_status(), 404);
+    }
+
+    #[derive(Debug)]
+    enum AppError {
+        CatNotFound(u32),
+        Gone,
+        Boom,
+        Internal,
+        Teapot503,
+        Ok200,
+    }
+    impl fmt::Display for AppError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                AppError::CatNotFound(id) => write!(f, "Cat #{id} not found"),
+                AppError::Gone => write!(f, "gone"),
+                AppError::Boom => write!(f, "boom"),
+                AppError::Internal => write!(f, "db: password authentication failed"),
+                AppError::Teapot503 => write!(f, "later"),
+                AppError::Ok200 => write!(f, "fine"),
+            }
+        }
+    }
+    impl std::error::Error for AppError {}
+    impl HttpError for AppError {
+        fn status(&self) -> StatusCode {
+            match self {
+                AppError::CatNotFound(_) => StatusCode::NOT_FOUND,
+                AppError::Gone => StatusCode::GONE,
+                AppError::Boom => StatusCode::BAD_GATEWAY,
+                AppError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+                AppError::Teapot503 => StatusCode::SERVICE_UNAVAILABLE,
+                AppError::Ok200 => StatusCode::OK,
+            }
+        }
+        fn body(&self) -> Option<ExceptionBody> {
+            match self {
+                AppError::Gone => Some(ExceptionBody::Object(json!({ "code": "CAT_GONE", "statusCode": 410 }))),
+                AppError::Teapot503 => Some(ExceptionBody::Object(json!({ "code": "LATER", "statusCode": 503 }))),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn http_error_default_body() {
+        let e = HttpException::from_http_error(AppError::CatNotFound(42));
+        assert_eq!(e.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            serde_json::to_string(e.get_response()).unwrap(),
+            r#"{"message":"Cat #42 not found","error":"Not Found","statusCode":404}"#
+        );
+        assert_eq!(e.message(), "Cat #42 not found");
+    }
+
+    #[test]
+    fn http_error_custom_body() {
+        let e = HttpException::from_http_error(AppError::Gone);
+        assert_eq!(e.status(), StatusCode::GONE);
+        assert_eq!(serde_json::to_string(e.get_response()).unwrap(), r#"{"code":"CAT_GONE","statusCode":410}"#);
+    }
+
+    #[test]
+    fn http_error_4xx_is_not_internal_and_keeps_the_cause() {
+        let e = HttpException::from_http_error(AppError::CatNotFound(1));
+        assert!(!e.is_internal());
+        assert!(matches!(e.downcast_cause::<AppError>(), Some(AppError::CatNotFound(1))));
+    }
+
+    #[test]
+    fn http_error_5xx_hides_the_display_text_and_is_internal() {
+        let e = HttpException::from_http_error(AppError::Boom);
+        assert_eq!(e.status(), StatusCode::BAD_GATEWAY);
+        assert!(e.is_internal());
+        assert_eq!(serde_json::to_string(e.get_response()).unwrap(), r#"{"statusCode":502,"message":"Bad Gateway"}"#);
+        assert_eq!(e.message(), "boom", "the operator still sees the error text");
+        assert!(matches!(e.downcast_cause::<AppError>(), Some(AppError::Boom)));
+        let e = HttpException::from_http_error(AppError::Internal);
+        assert_eq!(serde_json::to_string(e.get_response()).unwrap(), r#"{"statusCode":500,"message":"Internal server error"}"#);
+    }
+
+    #[test]
+    fn http_error_5xx_with_a_custom_body_sends_it() {
+        let e = HttpException::from_http_error(AppError::Teapot503);
+        assert_eq!(e.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!e.is_internal());
+        assert_eq!(serde_json::to_string(e.get_response()).unwrap(), r#"{"code":"LATER","statusCode":503}"#);
+    }
+
+    #[test]
+    fn http_error_below_400_answers_500() {
+        let e = HttpException::from_http_error(AppError::Ok200);
+        assert_eq!(e.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(e.is_internal());
+        assert_eq!(serde_json::to_string(e.get_response()).unwrap(), r#"{"statusCode":500,"message":"Internal server error"}"#);
+    }
+
+    #[test]
+    fn result_http_ext_converts_the_error() {
+        let ok: Result<u8, AppError> = Ok(1);
+        assert_eq!(ok.http().unwrap(), 1);
+        let err: Result<u8, AppError> = Err(AppError::CatNotFound(1));
+        assert_eq!(err.http().unwrap_err().get_status(), 404);
     }
 }

@@ -1,0 +1,13 @@
+node v24.13.0 llhttp 9.3.0
+bare LF request line and headers => HTTP/1.1 400 Bad Request
+header block ended by CRLF LF => HTTP/1.1 400 Bad Request
+bare CR inside a header line => HTTP/1.1 400 Bad Request
+chunk size with leading zeros (26 digits) => HTTP/1.1 200 OK
+chunk size over 64 bits => HTTP/1.1 400 Bad Request
+space after chunk size => HTTP/1.1 400 Bad Request
+tab after chunk size => HTTP/1.1 400 Bad Request
+space before chunk extension => HTTP/1.1 400 Bad Request
+bare LF in chunked framing => HTTP/1.1 400 Bad Request
+bare LF inside a trailer line => HTTP/1.1 400 Bad Request
+Content-Length and Transfer-Encoding => HTTP/1.1 400 Bad Request
+chunk extension containing LF => HTTP/1.1 400 Bad Request

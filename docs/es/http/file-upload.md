@@ -95,7 +95,7 @@ async fn upload(&self, #[param("id")] id: String, #[uploaded_file] file: Uploade
 | `.fields(n)`, `.parts(n)` | `400` con el mensaje de multer |
 | `.field_size(bytes)` | `400 Field value too long - <campo>` (1 MiB por defecto) |
 | `.field_name_size(bytes)` | Longitud máxima del nombre de un campo |
-| `.field_nesting_depth(n)` | Profundidad de corchetes en los nombres de campo |
+| `.field_nesting_depth(n)` | `400 Field name nesting too deep - <field>` cuando un nombre tiene más de `n` corchetes |
 
 Los demás errores multipart llevan los mismos cuerpos que la app de referencia: `400 Field name missing`,
 `400 Multipart: Boundary not found`, `400 Multipart: Unexpected end of form` y
@@ -129,7 +129,7 @@ Los nombres de campo también tienen tope: `x[1000000]=v` no reserva un array de
 petición puede crear como mucho 1000 huecos y un índice que necesita más convierte ese array en un objeto
 (`{ "1000000": "v" }`), como hace `qs`. Los nombres con más de 32 niveles de corchetes (`a[b][b]...`) se
 guardan como una clave literal, para que un cuerpo pequeño no construya un valor tan profundo que desborde
-la pila. `limits.field_nesting_depth(n)` cambia ese tope (hasta 256) y además responde con error, como multer.
+la pila. `limits.field_nesting_depth(n)` cambia ese tope (hasta 256) y además responde `400 Field name nesting too deep - <field>`. Consulta [Análisis de HTTP y compatibilidad](/es/security/http-parsing).
 
 ### Opciones por módulo
 

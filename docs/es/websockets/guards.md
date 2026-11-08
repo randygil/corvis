@@ -27,7 +27,7 @@ impl ChatGateway {
 
 Los guards del gateway corren primero y después los del handler, en el orden en que aparecen. Si uno devuelve `Ok(false)`, el cliente recibe `{ "event": "exception", "data": { "status": "error", "message": "Forbidden resource" } }`. Si devuelve `Err(...)`, recibe ese error (ver [Gateways](/es/websockets/gateways#errores-wsexception)).
 
-Los guards globales (`app.use_global_guards`, `Provider::app_guard`) solo protegen rutas de controladores. No se aplican a los gateways (declara los guards con `#[use_guards]` en el gateway o en cada handler), a los listeners `upgrade` de [`corvis::ws`](/es/websockets/adapter), a los archivos estáticos (`serve_static`, `ServeStaticModule`) ni a las rutas de Swagger/Scalar. Un archivo estático con la misma ruta que un endpoint protegido se sirve antes que el endpoint. Protege esas superficies por separado (middleware, `verify_client`, otra raíz de estáticos).
+Los guards globales (`app.use_global_guards`, `Provider::app_guard`) también corren en cada mensaje de un gateway, antes que los guards del gateway y del handler. Un guard escrito para HTTP puede distinguir los transportes con `ctx.get_type()`, o dejar pasar un gateway marcado con `#[set_metadata(...)]`; `app.apply_global_enhancers_to_gateways(false)` mantiene los guards globales solo en HTTP (ver [Gateways](/es/websockets/gateways#enhancers-globales)). No cubren los listeners `upgrade` de [`corvis::ws`](/es/websockets/adapter), los archivos estáticos (`serve_static`, `ServeStaticModule`) ni las rutas de Swagger/Scalar. Un archivo estático con la misma ruta que un endpoint protegido se sirve antes que el endpoint. Protege esas superficies por separado (middleware, `verify_client`, otra raíz de estáticos).
 
 ## El contexto en un gateway
 

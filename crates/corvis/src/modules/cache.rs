@@ -173,6 +173,11 @@ pub struct CacheInterceptor {
 #[async_trait]
 impl CorvisInterceptor for CacheInterceptor {
     async fn intercept(&self, ctx: &ExecutionContext, next: CallHandler) -> HandlerResult {
+        // Only HTTP requests are cached: in a gateway `ctx.request()` is the handshake (always a
+        // `GET` on one URL), which would mix the replies of different messages and clients.
+        if ctx.get_type() != crate::common::context::ContextType::Http {
+            return next.handle().await;
+        }
         let req = ctx.request();
         if req.method() != http::Method::GET {
             return next.handle().await;

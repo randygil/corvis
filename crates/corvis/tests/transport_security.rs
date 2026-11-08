@@ -366,6 +366,37 @@ async fn malformed_chunked_body_is_not_reported_as_too_large() {
     assert!(r.is_empty() || r.starts_with("HTTP/1.1 400"), "{r:?}");
 }
 
+// Chunked framing kept on purpose (requirements of `http/request-parsing`, see `docs/security/http-parsing.md`).
+async fn chunked_json(body: &[u8]) -> String {
+    let addr = serve(None).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let mut req =
+        b"POST /t/json HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            .to_vec();
+    req.extend_from_slice(body);
+    s.write_all(&req).await.unwrap();
+    read_head(&mut s, Duration::from_secs(5)).await
+}
+
+#[corvis::test]
+async fn chunk_size_with_leading_zeros_is_accepted() {
+    let r = chunked_json(b"00000000000000000000000002\r\n{}\r\n0\r\n\r\n").await;
+    assert!(r.starts_with("HTTP/1.1 201"), "{r:?}");
+    assert!(r.ends_with("{}"), "{r:?}");
+}
+
+#[corvis::test]
+async fn chunk_size_over_64_bits_is_rejected() {
+    let r = chunked_json(b"10000000000000002\r\n{}\r\n0\r\n\r\n").await;
+    assert!(r.is_empty() || r.starts_with("HTTP/1.1 400"), "{r:?}");
+}
+
+#[corvis::test]
+async fn bare_lf_in_chunked_framing_is_rejected() {
+    let r = chunked_json(b"2\n{}\n0\n\n").await;
+    assert!(r.is_empty() || r.starts_with("HTTP/1.1 400"), "{r:?}");
+}
+
 /// Before: hyper accepted ~400 KiB of headers (Node: 16 KiB).
 #[corvis::test]
 async fn oversized_head_is_rejected() {

@@ -24,7 +24,7 @@
 //! }
 //! ```
 
-use chrono::{DateTime, Utc};
+use corvis_orm::DateTime;
 use corvis_orm::prelude::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Model)]
@@ -38,7 +38,7 @@ pub struct User {
     pub email: String,
     pub name: Option<String>,
     #[default(now)]
-    pub created_at: DateTime<Utc>,
+    pub created_at: DateTime,
     #[relation(has_many)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub posts: Option<Vec<Post>>,
@@ -58,9 +58,9 @@ pub struct Post {
     #[default(0)]
     pub views: i64,
     #[default(now)]
-    pub created_at: DateTime<Utc>,
+    pub created_at: DateTime,
     #[updated_at]
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: DateTime,
     pub author_id: i64,
     #[relation(belongs_to, fields = "author_id", on_delete = "Cascade")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -68,7 +68,24 @@ pub struct Post {
 }
 
 /// `{ data, meta }` envelope for paginated lists.
-pub fn paginated(data: Value, total: i64, page: u32, limit: u32) -> Value {
-    let pages = if limit == 0 { 0 } else { (total as f64 / limit as f64).ceil() as i64 };
-    json!({ "data": data, "meta": { "total": total, "page": page, "limit": limit, "totalPages": pages } })
+#[derive(Debug, Serialize)]
+pub struct Paginated<T> {
+    pub data: Vec<T>,
+    pub meta: PageMeta,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageMeta {
+    pub total: i64,
+    pub page: u32,
+    pub limit: u32,
+    pub total_pages: i64,
+}
+
+impl<T> Paginated<T> {
+    pub fn new(data: Vec<T>, total: i64, page: u32, limit: u32) -> Self {
+        let total_pages = if limit == 0 { 0 } else { (total as f64 / limit as f64).ceil() as i64 };
+        Paginated { data, meta: PageMeta { total, page, limit, total_pages } }
+    }
 }

@@ -4,7 +4,7 @@ status: documented
 
 # Interceptors
 
-Los [interceptors](/es/interceptors) envuelven la ejecución de un handler de mensajes igual que la de una ruta HTTP: corren código antes, llaman a `next.handle().await` y pueden inspeccionar o transformar el resultado. Se declaran con `#[use_interceptors(...)]` debajo de `#[websocket_gateway]` (todos los handlers) o encima de un `#[subscribe_message]` (solo ese). Los interceptors globales no se aplican a los gateways.
+Los [interceptors](/es/interceptors) envuelven la ejecución de un handler de mensajes igual que la de una ruta HTTP: corren código antes, llaman a `next.handle().await` y pueden inspeccionar o transformar el resultado. Se declaran con `#[use_interceptors(...)]` debajo de `#[websocket_gateway]` (todos los handlers) o encima de un `#[subscribe_message]` (solo ese). Los interceptors globales (`app.use_global_interceptors`, `Provider::app_interceptor`) también se aplican a los gateways y envuelven a los del gateway y del handler; ven contextos WebSocket, así que comprueba `ctx.get_type()` antes de leer la petición HTTP. `app.apply_global_enhancers_to_gateways(false)` los mantiene solo en HTTP (ver [Gateways](/es/websockets/gateways#enhancers-globales)). El `CacheInterceptor` integrado nunca cachea mensajes de gateways (los deja pasar), y el `LoggingInterceptor` registra `WS <Gateway>.<handler>` en lugar de la URL del handshake, que puede llevar un token.
 
 El orden dentro de un mensaje es: guards → interceptors (antes) → pipes → handler → interceptors (después).
 

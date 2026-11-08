@@ -136,7 +136,26 @@ fn me(&self, user: ChatUser) -> ChatUser {
 
 ## Respuestas
 
-El valor de retorno del handler se convierte en la respuesta:
+El valor de retorno del handler se convierte en la respuesta. Lo habitual es devolver un struct que deriva `Serialize`: el framework lo responde como JSON con los campos en el orden de declaración.
+
+```rust
+#[derive(Serialize)]
+struct CatDto {
+    id: u32,
+    name: String,
+}
+
+#[get(":id")]
+async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<CatDto> {
+    Ok(self.cats_service.find_dto(id)?)
+}
+```
+
+```json
+{ "id": 1, "name": "Tom" }
+```
+
+Un struct produce los mismos bytes que el objeto `json!` equivalente, y además tiene un nombre y un tipo que el compilador comprueba. `Value` sigue disponible cuando la forma es realmente dinámica (ver la tabla).
 
 | Tipo devuelto | Respuesta |
 |---|---|
@@ -172,7 +191,16 @@ fn remove(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<()> {
 }
 ```
 
-`#[http_code(...)]` acepta un número o una constante de `HttpStatus` (`HttpStatus::CREATED`, `HttpStatus::NOT_FOUND`, ...). Para un estado que depende de la lógica, devuelve una tupla `(código, valor)` o un `Response` con `.with_status(...)`.
+`#[http_code(...)]` acepta un número o una constante de `HttpStatus` (`HttpStatus::CREATED`, `HttpStatus::NOT_FOUND`, ...). También funciona con un handler que devuelve un struct. Para un estado que depende de la lógica, devuelve una tupla `(código, Json(valor))` (la tupla necesita `Json` alrededor de un struct simple) o un `Response` con `.with_status(...)`:
+
+```rust
+#[post("jobs")]
+async fn start(&self) -> (u16, Json<JobDto>) {
+    (HttpStatus::ACCEPTED, Json(JobDto { id: 7 }))
+}
+```
+
+El estado puede ser un `u16` (las constantes de `HttpStatus` son `u16`) o un `StatusCode`.
 
 ### Cabeceras
 
@@ -212,7 +240,7 @@ fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Cat> {
 { "message": "Cat #42 not found", "error": "Not Found", "statusCode": 404 }
 ```
 
-Cualquier `Result` cuyo error se convierta en `HttpException` o en `anyhow::Error` sirve; un error que no es una `HttpException` produce un `500` genérico y queda registrado en el log. La lista de excepciones y cómo personalizarlas está en [Filtros de excepción](/es/exception-filters).
+Cualquier `Result` cuyo error se convierta en `HttpException` o en `anyhow::Error` sirve; un error que no es una `HttpException` produce un `500` genérico y queda registrado en el log. Para darle un estado a tu propio tipo de error, implementa `HttpError` y devuelve `Result<T, AppError>` directamente (ver [Errores de dominio](/es/exception-filters#errores-de-dominio)). La lista de excepciones y cómo personalizarlas está en [Filtros de excepción](/es/exception-filters).
 
 ## Handlers asíncronos
 
@@ -220,7 +248,7 @@ Un handler `async fn` puede esperar cualquier futuro. Corvis lo ejecuta en el ru
 
 ```rust
 #[get]
-async fn list(&self) -> HttpResult<Value> {
+async fn list(&self) -> HttpResult<Vec<RoomWithMembers>> {
     let rooms = self.rooms.list().await?;
     Ok(self.chat.with_members(rooms))
 }
@@ -272,9 +300,18 @@ Prefiere devolver valores. Con `#[res]` en modo completo pierdes la conversión 
 ```rust
 #[get(":id")]
 #[version("2")]
-fn find_one_v2(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Value> {
+fn find_one_v2(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<CatV2Dto> {
     let cat = self.cats_service.find_one(id)?;
-    Ok(json!({ "cat": cat, "apiVersion": 2 }))
+    Ok(CatV2Dto { cat, api_version: 2 })
+}
+```
+
+```rust
+#[derive(Serialize)]
+pub struct CatV2Dto {
+    pub cat: Cat,
+    #[serde(rename = "apiVersion")]
+    pub api_version: u32,
 }
 ```
 
@@ -312,7 +349,7 @@ pub struct RoomsController {
 #[routes]
 impl RoomsController {
     #[get]
-    async fn list(&self) -> HttpResult<Value> {
+    async fn list(&self) -> HttpResult<Vec<RoomWithMembers>> {
         let rooms = self.rooms.list().await?;
         Ok(self.chat.with_members(rooms))
     }
@@ -326,10 +363,10 @@ impl RoomsController {
     #[post(":room/announcements")]
     #[set_metadata(ROLES_KEY, [MODERATOR])]
     #[use_guards(AuthGuard, RolesGuard)]
-    async fn announce(&self, #[param("room")] room: String, #[body] dto: AnnouncementDto, user: ChatUser) -> HttpResult<Value> {
+    async fn announce(&self, #[param("room")] room: String, #[body] dto: AnnouncementDto, user: ChatUser) -> HttpResult<Delivery> {
         self.find(&room).await?;
         let delivered = self.chat.announce(&room, &user, &dto.text);
-        Ok(json!({ "room": room, "delivered": delivered }))
+        Ok(Delivery { room, delivered })
     }
 }
 ```

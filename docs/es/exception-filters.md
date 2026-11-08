@@ -23,7 +23,7 @@ fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Cat> {
 { "message": "Cat #42 not found", "error": "Not Found", "statusCode": 404 }
 ```
 
-`HttpResult<T>` es un alias de `Result<T, HttpException>`. El operador `?` funciona con cualquier error que se convierta en `HttpException`.
+`HttpResult<T>` es un alias de `Result<T, HttpException>`. El operador `?` funciona con cualquier error que se convierta en `HttpException`: una `HttpException` se queda como está y cualquier otro `std::error::Error` se convierte en un `500` (ver [Errores inesperados](#errores-inesperados)). Para darle un estado a tu propio tipo de error, ver [Errores de dominio](#errores-de-dominio).
 
 ### Construir una excepción
 
@@ -97,6 +97,81 @@ Si un handler propaga con `?` un error que no es una `HttpException` (un `std::i
 El cliente no ve el mensaje original. El filtro por defecto lo registra en el log con el contexto `ExceptionsHandler`, incluida la cadena de causas. Lo mismo ocurre con un `panic` dentro de un handler: se captura y se responde como `500`.
 
 `HttpException::http_error(estado, mensaje)` representa un error con estado propio que tampoco es intencional, como el `413` o el `415` del body parser: responde `{ statusCode, message }` con ese estado, pero `is_internal()` es `true`, así que un filtro propio que captura todo lo trata como un error desconocido.
+
+## Errores de dominio
+
+Una aplicación suele tener su propio enum de errores. Implementa `HttpError` en él para decir qué estado responde cada variante; no hace falta `map_err` en cada llamada ni un filtro.
+
+```rust
+use corvis::StatusCode;
+use corvis::prelude::*;
+
+#[derive(Debug, thiserror::Error)]
+pub enum AppError {
+    #[error("Cat #{0} not found")]
+    CatNotFound(u32),
+    #[error("Cat #{0} already exists")]
+    CatExists(u32),
+}
+
+impl HttpError for AppError {
+    fn status(&self) -> StatusCode {
+        match self {
+            AppError::CatNotFound(_) => StatusCode::NOT_FOUND,
+            AppError::CatExists(_) => StatusCode::CONFLICT,
+        }
+    }
+}
+```
+
+`HttpError` exige `std::error::Error + Send + Sync + 'static`. `status()` es el único método obligatorio.
+
+### Devolver el error desde un handler
+
+Un handler declarado como `Result<T, AppError>` responde con el estado del error cuando devuelve `Err`:
+
+```rust
+#[get(":id")]
+async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> Result<CatDto, AppError> {
+    self.cats_service.find_one(id)
+}
+```
+
+```json
+{ "message": "Cat #42 not found", "error": "Not Found", "statusCode": 404 }
+```
+
+Para un `4xx` el cuerpo por defecto es el texto de `Display` con el formato de las [excepciones incluidas](#excepciones-incluidas). Para un `5xx` es el cuerpo genérico de error interno (`{ "statusCode": 500, "message": "Internal server error" }`, con la frase del estado para otros `5xx`) y el error se registra como cualquier error inesperado, así que un `Display` con texto de la base de datos o del driver nunca llega al cliente. Sobrescribe `body()`, que devuelve `Option<ExceptionBody>`, para enviar otra cosa, por ejemplo un código que los clientes puedan evaluar:
+
+```rust
+fn body(&self) -> Option<ExceptionBody> {
+    Some(ExceptionBody::Object(json!({ "code": "CAT_EXISTS", "statusCode": 409 })))
+}
+```
+
+El objeto se envía tal cual, también para un `5xx`: no pongas detalles internos en él. `ExceptionBody` lo exporta `corvis`, no el prelude. Un estado menor que 400 es un error del tipo y se responde como `500`.
+
+### Usar `?` dentro de un handler con `HttpResult`
+
+Dentro de un handler que devuelve `HttpResult<T>`, un `?` simple sobre un `AppError` sigue la conversión genérica y responde `500`. Llama antes a `.http()` (el trait `ResultHttpExt`, que está en el prelude):
+
+```rust
+#[get(":id")]
+async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<CatDto> {
+    let cat = self.cats_service.find_one(id).http()?;
+    Ok(CatDto::from(cat))
+}
+```
+
+`.http()` también sirve cuando el handler mezcla errores de varios tipos: cada `Result` se convierte donde se crea.
+
+### Qué lleva la excepción
+
+- El error queda como causa de la excepción, así que un [filtro propio](#filtros-propios) todavía puede leerlo con `exception.downcast_cause::<AppError>()`.
+- Un `4xx` no es interno: `is_internal()` es `false`. Un `5xx` sin `body()` propio es interno (`is_internal()` es `true`), así que se registra con el contexto `ExceptionsHandler`, y un filtro general que omite las excepciones internas no lo ve. Un `5xx` con `body()` propio no es interno.
+- El texto de `Display` llega al cliente solo en un `4xx` con el cuerpo por defecto y en un `body()` propio. No pongas detalles internos (SQL, rutas de archivos, URLs de servicios) en ninguno de los dos.
+
+Los errores que no implementan `HttpError` conservan su comportamiento: `Result<T, std::io::Error>` y `anyhow::Result<T>` responden `500`, y `HttpResult<T>` con una excepción incluida responde el estado de esa excepción. `HttpError` se aplica solo a los handlers HTTP; los handlers de WebSocket y de eventos no lo usan.
 
 ## Filtros propios
 
@@ -205,5 +280,5 @@ Si ninguno la atiende, responde el filtro por defecto.
 Las excepciones que se producen fuera de una ruta (en un middleware, el `404` de una ruta inexistente, un error del body parser) solo pasan por los filtros globales.
 
 ::: info Gateways
-Los filtros no se aplican a los gateways de WebSocket. Ver [WebSockets: filtros de excepción](/es/websockets/exception-filters).
+Los filtros globales no se aplican a los gateways de WebSocket; declara `#[use_filters]` en el gateway o en el handler. Ver [WebSockets: filtros de excepción](/es/websockets/exception-filters).
 :::

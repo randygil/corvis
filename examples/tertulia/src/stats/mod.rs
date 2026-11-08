@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use corvis::prelude::*;
+use serde::Serialize;
 
 use crate::chat::ChatGateway;
 use crate::rooms::RoomsService;
@@ -14,20 +15,35 @@ pub struct StatsController {
     config: Arc<ConfigService>,
 }
 
-async fn snapshot(chat: &ChatGateway, rooms: &RoomsService) -> Value {
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Snapshot {
+    connections: usize,
+    online_users: Vec<String>,
+    messages: i64,
+    rooms: Vec<RoomStats>,
+}
+
+#[derive(Debug, Serialize)]
+struct RoomStats {
+    name: String,
+    members: usize,
+}
+
+async fn snapshot(chat: &ChatGateway, rooms: &RoomsService) -> Snapshot {
     let list = rooms.list().await.unwrap_or_default();
-    json!({
-        "connections": chat.connections(),
-        "onlineUsers": chat.online_users(),
-        "messages": rooms.message_count().await.unwrap_or(0),
-        "rooms": list.iter().map(|r| json!({ "name": r.name, "members": chat.members(&r.name).len() })).collect::<Vec<_>>(),
-    })
+    Snapshot {
+        connections: chat.connections(),
+        online_users: chat.online_users(),
+        messages: rooms.message_count().await.unwrap_or(0),
+        rooms: list.into_iter().map(|r| RoomStats { members: chat.members(&r.name).len(), name: r.name }).collect(),
+    }
 }
 
 #[routes]
 impl StatsController {
     #[get]
-    async fn get(&self) -> Value {
+    async fn get(&self) -> Snapshot {
         snapshot(&self.chat, &self.rooms).await
     }
 
@@ -41,7 +57,7 @@ impl StatsController {
                 corvis::tokio::time::sleep(every).await;
             }
             let data = snapshot(&chat, &rooms).await;
-            Some((MessageEvent::new(data).event("stats").id(n.to_string()), (chat, rooms, n + 1)))
+            Some((MessageEvent::new(json!(data)).event("stats").id(n.to_string()), (chat, rooms, n + 1)))
         });
         Sse::new(events)
     }

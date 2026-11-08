@@ -187,3 +187,4 @@ connection (§6.3), so hyper is within the RFC; the risk is a front proxy that d
   by the consi port (11.1.28 answers 500) while matching the versions used by facten and houseplan.
 - The follow-up issue for the protocol-level strictness (bare LF and the other chunked cases) goes in epic #1 once the
   decision is taken.
+- Follow-up issue for the protocol-level strictness: #146 (epic #1), opened from `follow-up-issue.md`.

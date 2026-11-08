@@ -160,6 +160,29 @@ impl SortOrder {
     }
 }
 
+fn merge_count(prev: &mut Map<String, Value>, next: Map<String, Value>) {
+    for (k, v) in next {
+        match (prev.get_mut(&k), v) {
+            (Some(Value::Object(a)), Value::Object(b)) if k == "select" => a.extend(b),
+            (_, v) => {
+                prev.insert(k, v);
+            }
+        }
+    }
+}
+
+/// A model plus the relation counts requested with `<model>::<relation>::count()`:
+/// `db.user().find_many(()).include(user::posts::count()).exec_as::<Vec<user::WithCount>>()`.
+///
+/// It reads and writes the model fields followed by `_count`, like the engine's JSON.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WithCount<M, C> {
+    #[serde(flatten)]
+    pub model: M,
+    #[serde(rename = "_count")]
+    pub count: C,
+}
+
 /// `{ count }` returned by `createMany`, `updateMany` and `deleteMany`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchPayload {
@@ -169,12 +192,36 @@ pub struct BatchPayload {
 /// Arguments of a query: a JSON object or typed params.
 pub struct Args<M> {
     pub(crate) value: Value,
+    pub(crate) error: Option<OrmError>,
     _m: PhantomData<fn() -> M>,
 }
 
 impl<M> Args<M> {
     fn new(value: Value) -> Self {
-        Args { value, _m: PhantomData }
+        Args { value, error: None, _m: PhantomData }
+    }
+}
+
+/// A serializable value (usually a DTO) used as the data of a write:
+/// `db.user().create(Data(&dto))` and `.data(Data(&dto))`.
+///
+/// Fields the value skips when serializing (`skip_serializing_if`) are not sent. When the value fails to
+/// serialize, the query fails with a validation error before running any SQL.
+pub struct Data<T>(pub T);
+
+fn serialize_data<T: Serialize>(d: &Data<T>) -> (Value, Option<OrmError>) {
+    match serde_json::to_value(&d.0) {
+        Ok(v) => (v, None),
+        Err(e) => {
+            (Value::Null, Some(OrmError::validation(format!("Failed to serialize `{}` as query data: {e}", std::any::type_name::<T>()))))
+        }
+    }
+}
+
+impl<M, T: Serialize> From<Data<T>> for Args<M> {
+    fn from(d: Data<T>) -> Self {
+        let (value, error) = serialize_data(&d);
+        Args { value: serde_json::json!({ "data": value }), error, _m: PhantomData }
     }
 }
 
@@ -210,15 +257,21 @@ impl<M> From<Vec<Vec<SetParam<M>>>> for Args<M> {
 }
 
 /// `data` of `update`/`create`: JSON or typed params.
-pub struct DataArg<M>(Value, PhantomData<fn() -> M>);
+pub struct DataArg<M>(Value, Option<OrmError>, PhantomData<fn() -> M>);
 impl<M> From<Value> for DataArg<M> {
     fn from(v: Value) -> Self {
-        DataArg(v, PhantomData)
+        DataArg(v, None, PhantomData)
     }
 }
 impl<M> From<Vec<SetParam<M>>> for DataArg<M> {
     fn from(p: Vec<SetParam<M>>) -> Self {
-        DataArg(data_object(p), PhantomData)
+        DataArg(data_object(p), None, PhantomData)
+    }
+}
+impl<M, T: Serialize> From<Data<T>> for DataArg<M> {
+    fn from(d: Data<T>) -> Self {
+        let (value, error) = serialize_data(&d);
+        DataArg(value, error, PhantomData)
     }
 }
 
@@ -283,12 +336,16 @@ actions! {
     FindUniqueOrThrow = "findUniqueOrThrow" => |v| -> M { deser(v) };
     /// `create` → `M`
     Create = "create" => |v| -> M { deser(v) };
+    /// `createManyAndReturn` → `Vec<M>`
+    CreateManyAndReturn = "createManyAndReturn" => |v| -> Vec<M> { deser(v) };
     /// `createMany` → `{ count }`
     CreateMany = "createMany" => |v| -> BatchPayload { deser(v) };
     /// `update` → `M` (P2025 when missing)
     Update = "update" => |v| -> M { deser(v) };
     /// `updateMany` → `{ count }`
     UpdateMany = "updateMany" => |v| -> BatchPayload { deser(v) };
+    /// `updateManyAndReturn` → `Vec<M>`
+    UpdateManyAndReturn = "updateManyAndReturn" => |v| -> Vec<M> { deser(v) };
     /// `upsert` → `M`
     Upsert = "upsert" => |v| -> M { deser(v) };
     /// `delete` → `M` (P2025 when missing)
@@ -308,12 +365,20 @@ actions! {
 pub struct Query<M, A> {
     client: OrmClient,
     args: Value,
+    error: Option<OrmError>,
     _p: PhantomData<fn() -> (M, A)>,
 }
 
 impl<M: Model, A: Action<M>> Query<M, A> {
     pub(crate) fn new(client: OrmClient, args: Value) -> Self {
-        Query { client, args, _p: PhantomData }
+        Query { client, args, error: None, _p: PhantomData }
+    }
+
+    fn with_error(mut self, error: Option<OrmError>) -> Self {
+        if self.error.is_none() {
+            self.error = error;
+        }
+        self
     }
 
     fn args_mut(&mut self) -> Option<&mut Map<String, Value>> {
@@ -406,7 +471,13 @@ impl<M: Model, A: Action<M>> Query<M, A> {
         if let Some(m) = self.args_mut() {
             let inc = m.entry("include").or_insert_with(|| Value::Object(Map::new()));
             if let Value::Object(o) = inc {
-                o.insert(i.key, i.value);
+                match (o.get_mut(&i.key), i.value) {
+                    // Several `_count` includes become one `_count: { select: { a: true, b: true } }`.
+                    (Some(Value::Object(prev)), Value::Object(next)) if i.key == "_count" => merge_count(prev, next),
+                    (_, value) => {
+                        o.insert(i.key, value);
+                    }
+                }
             }
         }
         self
@@ -426,17 +497,20 @@ impl<M: Model, A: Action<M>> Query<M, A> {
 
     /// `data` (update, updateMany, create).
     pub fn data(self, d: impl Into<DataArg<M>>) -> Self {
-        self.arg("data", d.into().0)
+        let d = d.into();
+        self.arg("data", d.0).with_error(d.1)
     }
 
     /// `create` branch of an `upsert`.
     pub fn create(self, d: impl Into<DataArg<M>>) -> Self {
-        self.arg("create", d.into().0)
+        let d = d.into();
+        self.arg("create", d.0).with_error(d.1)
     }
 
     /// `update` branch of an `upsert`.
     pub fn update(self, d: impl Into<DataArg<M>>) -> Self {
-        self.arg("update", d.into().0)
+        let d = d.into();
+        self.arg("update", d.0).with_error(d.1)
     }
 
     /// `skipDuplicates: true` (createMany).
@@ -451,6 +525,9 @@ impl<M: Model, A: Action<M>> Query<M, A> {
 
     /// Runs the query returning the raw JSON result.
     pub async fn exec_json(self) -> Result<Value> {
+        if let Some(e) = self.error {
+            return Err(e);
+        }
         crate::engine::run(self.client, M::meta(), A::NAME, self.args).await
     }
 
@@ -468,7 +545,7 @@ impl<M: Model, A: Action<M>> Query<M, A> {
 impl<M: Model, A: Action<M>> crate::transaction::BatchQuery for Query<M, A> {
     type Output = A::Output;
     fn exec_on(self, client: OrmClient) -> Pin<Box<dyn Future<Output = Result<A::Output>> + Send + 'static>> {
-        Box::pin(Query::<M, A>::new(client, self.args).exec())
+        Box::pin(Query::<M, A>::new(client, self.args).with_error(self.error).exec())
     }
 }
 
@@ -498,7 +575,8 @@ macro_rules! delegate_ops {
         $(
             $(#[$doc])*
             pub fn $fn(&self, args: impl Into<Args<M>>) -> Query<M, $action> {
-                Query::new(self.client.clone(), args.into().value)
+                let args = args.into();
+                Query::new(self.client.clone(), args.value).with_error(args.error)
             }
         )*
     };
@@ -528,10 +606,17 @@ impl<M: Model> Delegate<M> {
         create => Create;
         /// The `createMany` action: `{ data: [...], skipDuplicates }`.
         create_many => CreateMany;
+        /// The `createManyAndReturn` action: like `createMany`, returning the created rows.
+        create_many_and_return => CreateManyAndReturn;
         /// The `update` action: `{ where, data }`.
         update => Update;
         /// The `updateMany` action: `{ where, data }`.
         update_many => UpdateMany;
+        /// The `updateManyAndReturn` action: like `updateMany`, returning the updated rows.
+        ///
+        /// Warning: without a `where` it updates every row of the table and returns all of them, held in
+        /// memory at once. Always pass a filter, and bound it when the matching set can be large.
+        update_many_and_return => UpdateManyAndReturn;
         /// The `upsert` action: `{ where, create, update }`.
         upsert => Upsert;
         /// The `delete` action: `{ where }`.
