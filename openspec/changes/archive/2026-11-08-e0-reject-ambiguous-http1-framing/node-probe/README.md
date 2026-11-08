@@ -20,3 +20,8 @@ Known difference that is not a parsing difference: for `pipelined-valid-then-bar
 parses the whole read before the first response is written and destroys the socket on the error, so the valid first
 request gets no response. hyper answers requests one at a time, so after this change Corvis answers `200`, then
 `400` (or closes). The Rust test checks that the second request is not processed, not the exact sequence.
+
+Node 22 was not probed: only Node v24.13.0 is installed on the machine that ran this change (the consi and facten
+originals run on Node 22, which also ships llhttp 9, so the same statuses are likely but unmeasured). Regenerate the
+fixture and run `node probe.mjs` on Node 22 when it is available. On Windows with Git Bash, pass the path as
+`MSYS_NO_PATHCONV=1 node probe.mjs --json --path /t/echo`, otherwise the shell rewrites `/t/echo` into a drive path.

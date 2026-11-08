@@ -14,9 +14,16 @@ This page gathers what can be configured on that server.
 
 ## Protocols
 
-- HTTP/1.1 and HTTP/2 without TLS with *prior knowledge* (h2c), enabled by default.
-  `ServerOptions::new().h2c(false)` accepts HTTP/1.x only. Whether h2c stays on by default is tracked in issue
-  #144; see [HTTP parsing and compatibility](/security/http-parsing).
+- The server accepts HTTP/1.1 only, like Node's `http` module. `ServerOptions::new().h2c(true)` also accepts HTTP/2
+  without TLS by prior knowledge (h2c), for a proxy or platform configured to send it (Caddy `h2c://`, Traefik
+  `scheme=h2c`, nginx `grpc_pass`, Cloud Run with an `h2c` port). With h2c on, one connection carries up to 200
+  concurrent requests, `max_connections` limits connections rather than requests, the HTTP/2 header limit is 16 KiB,
+  and `max_header_size` applies to HTTP/1 only. With h2c off, a prior-knowledge connection is closed without a
+  response. See [HTTP parsing and compatibility](/security/http-parsing).
+- HTTP/1 requests with ambiguous framing (bare LF line endings, whitespace after a chunk size, `Content-Length` with
+  `Transfer-Encoding`) are answered with `400` and the connection is closed.
+  `ServerOptions::new().insecure_http_parser(true)` accepts them again for legacy clients and logs a warning at
+  startup; see [HTTP parsing and compatibility](/security/http-parsing).
 - There is no HTTPS: terminate TLS in a reverse proxy. See [HTTPS and multiple servers](/faq/multiple-servers).
 - WebSocket upgrades, with gateways or with `corvis::ws`. See [Gateways](/websockets/gateways).
 
@@ -92,4 +99,6 @@ register listeners for the `upgrade` event. See [HTTP adapter](/faq/http-adapter
 
 The repository's `bench/` directory contains a reproducible benchmark (`bash bench/run.sh`)
 against an equivalent Node.js application. The results and the measurement environment are in
-[Corvis versus Fastify, Express and Hono](/faq/corvis-vs-fastify-express-hono).
+[Corvis versus Fastify, Express and Hono](/faq/corvis-vs-fastify-express-hono). A real application measured
+against its Node.js original is in
+[Benchmark: a migrated application versus its original](/faq/port-vs-original-benchmark).

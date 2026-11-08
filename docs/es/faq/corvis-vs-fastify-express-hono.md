@@ -55,6 +55,9 @@ Cómo leer estos números:
 Para repetirlo en tu máquina: `bash bench/run.sh`. Los resultados detallados se escriben en
 `bench/results.md`.
 
+Para una aplicación real en lugar de cuatro endpoints triviales, mira
+[Benchmark: una aplicación migrada frente a su original](/es/faq/port-vs-original-benchmark).
+
 ## Cuándo no es la mejor opción
 
 - Si tu equipo trabaja en TypeScript y no quiere introducir Rust.

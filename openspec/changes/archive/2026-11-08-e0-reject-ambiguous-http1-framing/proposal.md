@@ -5,8 +5,8 @@ Implements [randygil/corvis#146](https://github.com/randygil/corvis/issues/146) 
 (`openspec/changes/archive/2026-11-08-e0-decide-compatible-vs-strict-mode/`, design.md decisions 2 and 3): option C,
 secure defaults per behavior, with `insecure_http_parser` as the opt-out for the wire format only.
 
-> **Status: proposed, pending maintainer review.** design.md decision 1 recommends an approach that #8 had set aside
-> (validating the framing in Corvis' own connection reader); task 1.1 records the maintainer's choice.
+> **Status: approved (2026-11-08).** The maintainer approved the framing check in `TimedIo` (design.md decision 1,
+> option 3); see design.md, "Review notes".
 
 ## Why
 
@@ -77,10 +77,10 @@ None.
 ## Out of scope
 
 - Upstream patches to httparse or hyper. design.md decision 1 describes what they would need. Opening issues or PRs
-  upstream is the maintainer's call (open question 3).
+  upstream is tracked as a separate issue (#148).
 - Two more inputs where Node is stricter than Corvis: two identical `Content-Length` headers and
   `Transfer-Encoding: chunked, chunked`. Both have one possible reading, so they are not ambiguous framing. Listed in
-  the docs; whether to reject them is open question 2.
+  the docs; the review decided not to reject them in this change.
 - `HTTP/1.0` with `Transfer-Encoding`: hyper answers `400`, Node accepts it. Corvis keeps being stricter.
 - HTTP/2 (h2c): binary framing, not affected. Whether h2c stays on by default is issue #144.
 - Header size and header count limits: unchanged (`431`).

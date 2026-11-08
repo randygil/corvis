@@ -1,0 +1,256 @@
+{
+  "server": "node v24.13.0 llhttp 9.3.0",
+  "path": "/t/echo",
+  "cases": [
+    {
+      "id": "ok-get",
+      "label": "valid GET",
+      "request": "GET /t/echo HTTP/1.1\r\nHost: x\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        200,
+        200
+      ]
+    },
+    {
+      "id": "bare-lf-head",
+      "label": "bare LF request line and headers",
+      "request": "GET /t/echo HTTP/1.1\nHost: x\n\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "bare-lf-request-line",
+      "label": "bare LF after the request line only",
+      "request": "GET /t/echo HTTP/1.1\nHost: x\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "crlf-lf-head-end",
+      "label": "header block ended by CRLF LF",
+      "request": "GET /t/echo HTTP/1.1\r\nHost: x\r\n\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "lf-crlf-head-end",
+      "label": "last header ended by LF, then CRLF",
+      "request": "GET /t/echo HTTP/1.1\r\nHost: x\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "bare-cr-header",
+      "label": "bare CR inside a header line",
+      "request": "GET /t/echo HTTP/1.1\r\nHost: x\rX: y\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "leading-crlf",
+      "label": "empty line (CRLF) before the request line",
+      "request": "\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        200,
+        200
+      ]
+    },
+    {
+      "id": "leading-lf",
+      "label": "empty line (bare LF) before the request line",
+      "request": "\nGET /t/echo HTTP/1.1\r\nHost: x\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        200,
+        200
+      ]
+    },
+    {
+      "id": "obs-fold",
+      "label": "obsolete line folding in a header",
+      "request": "GET /t/echo HTTP/1.1\r\nHost: x\r\nX-A: b\r\n c\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "chunked-ok",
+      "label": "valid chunked body",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        200,
+        200
+      ]
+    },
+    {
+      "id": "chunk-leading-zeros",
+      "label": "chunk size with leading zeros (26 digits)",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n00000000000000000000000002\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        200,
+        200
+      ]
+    },
+    {
+      "id": "chunk-overflow",
+      "label": "chunk size over 64 bits",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n10000000000000002\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "chunk-size-space",
+      "label": "space after chunk size",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2 \r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "chunk-size-tab",
+      "label": "tab after chunk size",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2\t\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "chunk-size-space-ext",
+      "label": "space before chunk extension",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2 ;a=b\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "chunk-ext-ok",
+      "label": "chunk extension without whitespace",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2;a=b\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        200,
+        200
+      ]
+    },
+    {
+      "id": "chunk-ext-lf",
+      "label": "chunk extension containing LF",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2;a=b\nc\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "chunked-bare-lf",
+      "label": "bare LF in the chunked framing",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2\nhi\n0\n\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "trailer-ok",
+      "label": "valid trailer field",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\nX-A: b\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        200,
+        200
+      ]
+    },
+    {
+      "id": "trailer-bare-lf",
+      "label": "bare LF inside a trailer line (two fields)",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\nX-A: b\nX-C: d\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "trailer-bare-lf-end",
+      "label": "bare LF LF inside the trailer section",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\nX-A: b\n\nGARBAGE\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "cl-then-te",
+      "label": "Content-Length, then Transfer-Encoding: chunked",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "te-then-cl",
+      "label": "Transfer-Encoding: chunked, then Content-Length",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n2\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "dup-cl-identical",
+      "label": "two identical Content-Length headers",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\nhiGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "te-chunked-twice",
+      "label": "Transfer-Encoding: chunked, chunked",
+      "request": "POST /t/echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked, chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    },
+    {
+      "id": "http10-te",
+      "label": "HTTP/1.0 request with Transfer-Encoding: chunked",
+      "request": "POST /t/echo HTTP/1.0\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\n",
+      "pipelined": false,
+      "statuses": [
+        200
+      ]
+    },
+    {
+      "id": "pipelined-valid-then-bare-lf",
+      "label": "valid GET, then a pipelined GET with bare LF",
+      "request": "GET /t/echo HTTP/1.1\r\nHost: x\r\n\r\nGET /t/echo HTTP/1.1\nHost: x\n\nGET /t/echo HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+      "pipelined": true,
+      "statuses": [
+        400
+      ]
+    }
+  ]
+}

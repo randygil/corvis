@@ -6,37 +6,73 @@ status: documented
 
 Corvis does not have a global "compatible" or "strict" mode. Each behavior that matters for security has its own
 treatment, with the safe choice as the default. This page lists what Corvis accepts and rejects on the wire and in
-multipart bodies, how that compares with Node's `http` module, and what is planned to change.
+multipart bodies, how that compares with Node's `http` module, and how to turn the stricter checks off.
 
-The HTTP/1 wire format is parsed by hyper (and `httparse` for the request head), not by Corvis. The Node figures below
-come from a raw-socket probe against `http.createServer` on Node 24.13 (`llhttp` 9.3.0).
+The HTTP/1 wire format is parsed by hyper (and `httparse` for the request head). hyper and `httparse` have no option
+to refuse the ambiguous inputs below, so Corvis puts a small framing check in front of hyper on every connection (see
+[How the check works](#how-the-check-works)). The Node figures below come from a raw-socket probe against
+`http.createServer` on Node 24.13 (`llhttp` 9.3.0).
 
 ## What Corvis does
 
 | Input | Corvis | Node `http` | Status |
 |---|---|---|---|
-| Request line or headers ending in a bare LF | accepted | `400` | planned to be rejected |
-| Header block ended by `CRLF LF` | accepted | `400` | planned to be rejected |
+| Request line or headers ending in a bare LF | `400`, connection closed | `400` | rejected (`insecure_http_parser` accepts it) |
+| Header block ended by `CRLF LF` (or the last header ended by `LF CRLF`) | `400`, connection closed | `400` | rejected (`insecure_http_parser` accepts it) |
+| Empty line (CRLF or bare LF) before the request line | ignored | ignored | kept |
 | Bare CR inside a header line | rejected | `400` | kept |
+| Obsolete line folding in a header | rejected | `400` | kept |
 | Chunk size with leading zeros (`0002`) | accepted | accepted | kept |
 | Chunk size that does not fit in 64 bits | rejected | `400` | kept |
-| Whitespace after a chunk size (`2 \r\n`) | accepted | `400` | planned to be rejected |
+| Whitespace after a chunk size (`2 \r\n`, `2\t\r\n`, `2 ;a=b\r\n`) | rejected | `400` | rejected (`insecure_http_parser` accepts it) |
 | Bare LF in the chunked framing (`2\nhi\n0\n\n`) | rejected | `400` | kept |
 | Chunk extension containing LF | rejected | `400` | kept |
-| `Content-Length` and `Transfer-Encoding: chunked` together | processed as chunked, connection closed afterwards | `400` | planned to be rejected |
+| Bare LF inside the trailer section of a chunked body (`0\r\nX-A: b\n\nGARBAGE\r\n\r\n`) | rejected | `400` | rejected (`insecure_http_parser` accepts it) |
+| `Content-Length` and `Transfer-Encoding` together, in either order | `400`, connection closed | `400` | rejected (`insecure_http_parser` processes it as chunked and closes the connection afterwards) |
+| Two identical `Content-Length` headers | accepted | `400` | accepted: one possible reading, so not ambiguous; a difference from Node |
+| `Transfer-Encoding: chunked, chunked` | accepted | `400` | accepted: one possible reading, so not ambiguous; a difference from Node |
+| `HTTP/1.0` request with `Transfer-Encoding` | `400` | accepted | kept (stricter than Node) |
 | `field_nesting_depth` exceeded in multipart | `400 Field name nesting too deep - <field>` | n/a | changed |
 | Busboy configuration errors (`Malformed content type`, `Unsupported content type: ...`) | `500` | `500` | kept for parity |
 
-"Kept" means the behavior is covered by a regression test. "Planned" means a follow-up change (#146, Foundations epic
-#1) will reject it by default and add an opt-out named `insecure_http_parser`, after Node's `insecureHTTPParser`
-option. The opt-out does not exist yet.
+Every row is covered by a regression test. The rows that name `insecure_http_parser` changed in issue #146
+(Foundations epic #1): before it, Corvis accepted those inputs. A rejected request gets a `400` and the connection is
+closed, and nothing sent after it on that connection is processed, so a proxy that read the same bytes differently
+cannot get a second request past Corvis.
 
-## Until the stricter parser lands
+Clients are not affected unless they hand-write requests: Node's `http`, browsers, curl, reqwest and proxies always
+end lines with CRLF, never put whitespace after a chunk size and never send both length headers.
 
-Corvis accepts a bare LF as a line ending in the request head. RFC 9112 allows a recipient to do that, but it is a
-risk when a proxy in front of Corvis reads the same bytes differently. If Corvis sits behind a proxy or load balancer,
-let the proxy normalize requests (most do, and reject bare LF themselves). No request smuggling was found with common
-proxies.
+## How the check works
+
+A small state machine reads each connection before hyper does and follows where every request starts and ends: the
+head, then the body by `Content-Length` or by chunks (sizes, extensions, trailers), then the next head. It refuses the
+four inputs above and passes everything else to hyper unchanged. Header syntax, limits and status codes stay with
+hyper. Inputs it does not fully understand (a `Transfer-Encoding` that does not end in `chunked`, differing or invalid
+`Content-Length` values, `HTTP/1.0` with `Transfer-Encoding`, an unknown HTTP version, a head over the size limit) are
+handed to hyper as they are and nothing after that request is read, so hyper answers them as before. After a request
+with an `Upgrade` header the bytes that follow are held until the request is answered, because after a `101` they are
+not HTTP. A property test replays generated and mutated pipelined streams through the check and through hyper and fails
+if they disagree on where a request ends.
+
+## Turning the checks off
+
+`ServerOptions::new().insecure_http_parser(true)` turns off the four checks and only those: bare LF line endings in
+the head and in trailers, whitespace after a chunk size, and `Content-Length` together with `Transfer-Encoding`. It is
+named after Node's `insecureHTTPParser`, and it is narrower: inputs that hyper itself rejects (a bare CR, a chunk size
+over 64 bits, a bare LF in the chunk framing, an LF in a chunk extension, obsolete line folding, a bad
+`Transfer-Encoding`) stay rejected, and h2c, timeouts and size limits are not touched. Corvis logs one warning when the
+server starts listening with it on.
+
+```rust
+use corvis::ServerOptions;
+
+app.set_server_options(ServerOptions::new().insecure_http_parser(true));
+```
+
+Use it only for legacy clients that cannot be fixed (devices that send bare LF, for example). With it on, a bare LF
+is a line ending again, which is a risk when a proxy in front of Corvis reads the same bytes differently: let the
+proxy normalize requests (most do, and reject bare LF themselves).
 
 ## Multipart limits
 
@@ -60,7 +96,7 @@ purpose; keep that in mind for error-rate alerts. This is revisited with the rou
   Set them on each call.
 - CORS: a regular expression origin is unanchored, like JavaScript's `regex.test`, and `reflect_origin()` with
   `credentials(true)` reflects any origin. See [CORS](/security/cors).
-- HTTP/2 without TLS (h2c) is on by default, and Node's `http` module does not speak it. Whether it stays on by
-  default is tracked in issue #144; `ServerOptions::new().h2c(false)` turns it off today. See
-  [Performance](/http/performance).
+- HTTP/2 without TLS (h2c) is off by default, like Node's `http` module, which does not speak it.
+  `ServerOptions::new().h2c(true)` turns it on for a proxy or platform configured to send it; the HTTP/2 limits then
+  differ from the HTTP/1 ones. See [Performance](/http/performance).
 - The request head is limited to 32 KiB by default (Node: 16 KiB); `ServerOptions` has `max_header_size`.

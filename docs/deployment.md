@@ -60,7 +60,7 @@ Inside a container you need to listen on all interfaces (`0.0.0.0`), not on `127
 
 ## Behind a reverse proxy
 
-Corvis serves unencrypted HTTP/1.1 and HTTP/2; it **does not terminate TLS**. In production, put it behind a reverse proxy or load balancer (nginx, Caddy, Traefik, your provider's) that handles HTTPS.
+Corvis serves unencrypted HTTP/1.1 (HTTP/2 with `h2c(true)`); it **does not terminate TLS**. In production, put it behind a reverse proxy or load balancer (nginx, Caddy, Traefik, your provider's) that handles HTTPS.
 
 Behind a proxy, the socket IP is the proxy's. For `req.ip()`, `#[ip]`, and the `ThrottlerGuard` to see the client's, say whom to trust:
 
@@ -93,7 +93,7 @@ app.set_server_options(
 
 Each timeout accepts `None` to disable it (`.request_timeout(None)`). Connections beyond `max_connections` wait in the `accept` queue. An HTTP/1 request head is limited to 32 KiB (Node uses 16 KiB). A connection that sends nothing or drips its headers is closed, while requests in progress (a slow handler, an SSE response) do not count as idle.
 
-`ServerOptions::h2c(false)` disables HTTP/2 without TLS if your proxy doesn't use it. Call `set_server_options` before `listen`. See [Keep-alive connections](/faq/keep-alive-connections).
+`ServerOptions::h2c(true)` enables HTTP/2 without TLS if your proxy is configured to send it (off by default). Call `set_server_options` before `listen`. See [Keep-alive connections](/faq/keep-alive-connections).
 
 ## Graceful shutdown
 

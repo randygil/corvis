@@ -215,6 +215,7 @@ const tree: Entry[] = [
   ]),
   group('FAQ', 'Preguntas frecuentes', [
     ['Corvis vs Fastify, Express and Hono', 'Corvis frente a Fastify, Express y Hono', '/faq/corvis-vs-fastify-express-hono'],
+    ['Benchmark: a migrated application versus its original', 'Benchmark: una aplicación migrada frente a su original', '/faq/port-vs-original-benchmark'],
     ['Serverless', 'Serverless', '/faq/serverless'],
     ['Cloudflare Workers', 'Cloudflare Workers', '/faq/cloudflare-workers'],
     ['HTTP adapter', 'Adaptador HTTP', '/faq/http-adapter'],

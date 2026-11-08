@@ -26,9 +26,11 @@ use tokio::time::{Instant, Sleep};
 use crate::http::{Body, HttpException, Request, Response};
 use crate::router::{AppShared, dispatch};
 
+mod h1_framing;
+
 pub(crate) type ResBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
-/// Options of the HTTP server: timeouts, connection and header limits, h2c.
+/// Options of the HTTP server: timeouts, connection and header limits, opt-in h2c.
 ///
 /// The defaults follow Node's `http.Server` (`headersTimeout` 60 s, `requestTimeout` 300 s,
 /// `keepAliveTimeout` 5 s) and protect against slow clients (slowloris) that would otherwise keep
@@ -47,6 +49,7 @@ pub struct ServerOptions {
     pub(crate) max_connections: Option<usize>,
     pub(crate) max_header_size: usize,
     pub(crate) h2c: bool,
+    pub(crate) insecure_http_parser: bool,
 }
 
 impl Default for ServerOptions {
@@ -57,7 +60,8 @@ impl Default for ServerOptions {
             keep_alive_timeout: Some(Duration::from_secs(5)),
             max_connections: None,
             max_header_size: 32 * 1024,
-            h2c: true,
+            h2c: false,
+            insecure_http_parser: false,
         }
     }
 }
@@ -100,10 +104,26 @@ impl ServerOptions {
         self.max_header_size = bytes.max(8 * 1024);
         self
     }
-    /// HTTP/2 over cleartext with prior knowledge (h2c). Enabled by default; `false` accepts
-    /// only HTTP/1.x, like Node's `http` module.
+    /// HTTP/2 over cleartext with prior knowledge (h2c), for a proxy or platform configured to
+    /// send it. Disabled by default, like Node's `http` module, which accepts only HTTP/1.x; a
+    /// prior-knowledge connection is closed without a response. With it on, one connection carries
+    /// up to 200 concurrent requests, so `max_connections` limits connections rather than
+    /// requests, and the HTTP/2 header list limit is 16 KiB (`max_header_size` is HTTP/1 only).
     pub fn h2c(mut self, enabled: bool) -> Self {
         self.h2c = enabled;
+        self
+    }
+    /// Accept ambiguous HTTP/1 framing that Corvis rejects by default: bare LF line endings in the
+    /// request head and in chunked trailers, whitespace after a chunk size, and `Content-Length`
+    /// together with `Transfer-Encoding`. Named after Node's `insecureHTTPParser`. Default `false`.
+    /// Only for legacy clients that cannot be fixed; prefer a proxy that normalizes requests.
+    ///
+    /// It turns off those four checks and nothing else: inputs that hyper already rejects (a bare
+    /// CR, a chunk size over 64 bits, a bare LF in the chunk framing, an LF in a chunk extension,
+    /// obsolete line folding, a bad `Transfer-Encoding`) stay rejected, and h2c, timeouts and size
+    /// limits are not touched. Corvis logs a warning at startup when it is on.
+    pub fn insecure_http_parser(mut self, enabled: bool) -> Self {
+        self.insecure_http_parser = enabled;
         self
     }
 }
@@ -376,6 +396,9 @@ struct ConnState {
     inflight: AtomicUsize,
     /// Bumped when a request starts or ends.
     generation: AtomicU64,
+    /// Requests whose response is done (fully written or dropped). The framing check compares it
+    /// with the requests it forwarded to know when a connection has nothing in flight.
+    finished: AtomicU64,
     /// The connection was upgraded (WebSocket, ...): no idle timeouts.
     upgraded: AtomicBool,
     /// An upgrade listener destroyed the socket (or the upgrade was refused): nothing to protect.
@@ -403,6 +426,7 @@ impl InflightGuard {
 impl Drop for InflightGuard {
     fn drop(&mut self) {
         self.0.inflight.fetch_sub(1, Ordering::SeqCst);
+        self.0.finished.fetch_add(1, Ordering::SeqCst);
         self.0.generation.fetch_add(1, Ordering::SeqCst);
         if let Some(w) = self.0.waker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             w.wake();
@@ -440,6 +464,9 @@ enum Phase {
     KeepAlive(Instant),
 }
 
+/// hyper's `ignore_invalid_headers`; it must stay off while the framing check is on.
+const IGNORE_INVALID_HEADERS: bool = false;
+
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 /// The socket of a connection, with the `headersTimeout` / `keepAliveTimeout` of Node: while no
@@ -461,6 +488,13 @@ struct TimedIo {
     sleep: Option<Pin<Box<Sleep>>>,
     /// h2c disabled: bytes of the HTTP/2 preface matched so far (`None` = not a preface).
     preface: Option<usize>,
+    /// The HTTP/1 framing check; `None` with `insecure_http_parser(true)`.
+    framing: Option<Box<h1_framing::Framing>>,
+    /// Bytes the check released that did not fit in hyper's buffer yet, served before the socket.
+    queue: Vec<u8>,
+    queue_pos: usize,
+    /// The socket reported end of input.
+    sock_eof: bool,
 }
 
 /// Most input the server reads and discards after an early error response before closing.
@@ -539,6 +573,10 @@ impl TimedIo {
             seen_generation: 0,
             sleep: None,
             preface: if options.h2c { None } else { Some(0) },
+            framing: (!options.insecure_http_parser).then(|| Box::new(h1_framing::Framing::new(options.max_header_size.max(8 * 1024)))),
+            queue: Vec::new(),
+            queue_pos: 0,
+            sock_eof: false,
         }
     }
 
@@ -609,9 +647,113 @@ impl TimedIo {
     }
 }
 
+impl TimedIo {
+    /// Tells whether `done` holds; if not, registers the connection task to be woken when a request
+    /// finishes and looks again, so that a request finishing in between is not missed.
+    fn wait_for_requests(&mut self, cx: &mut Context<'_>, done: impl Fn(&ConnState) -> bool) -> bool {
+        if done(&self.state) {
+            return true;
+        }
+        *self.state.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+        done(&self.state)
+    }
+
+    /// `poll_read` with the framing check: bytes reach hyper only when the check let them through.
+    fn poll_read_checked(&mut self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        // A read into an empty buffer cannot tell end of input from "no room": do not read.
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        loop {
+            if self.queue_pos < self.queue.len() {
+                let n = buf.remaining().min(self.queue.len() - self.queue_pos);
+                buf.put_slice(&self.queue[self.queue_pos..self.queue_pos + n]);
+                self.queue_pos += n;
+                if self.queue_pos == self.queue.len() {
+                    self.queue.clear();
+                    self.queue_pos = 0;
+                    if self.queue.capacity() > 64 * 1024 {
+                        self.queue = Vec::new();
+                    }
+                }
+                return Poll::Ready(Ok(()));
+            }
+            let state = self.state.clone();
+            let sock_eof = self.sock_eof;
+            let fr = self.framing.as_mut().expect("the framing check is on");
+            if fr.is_holding() {
+                // After an `Upgrade` request the bytes may not be HTTP: wait for its answer.
+                let need = fr.heads();
+                // `finished` first, then `upgraded`: a 101 sets `upgraded` before its request finishes, so a request
+                // seen as finished here has its `upgraded` flag visible below and cannot be mistaken for a non-101.
+                let finished = state.finished.load(Ordering::SeqCst) >= need;
+                let released = state.upgraded.load(Ordering::SeqCst);
+                if released || finished {
+                    if released {
+                        fr.release(&mut self.queue);
+                    } else {
+                        fr.resume(&mut self.queue);
+                    }
+                    if sock_eof {
+                        fr.eof(&mut self.queue);
+                    }
+                    continue;
+                }
+                let full = fr.hold_full();
+                if self.wait_for_requests(cx, |s| s.upgraded.load(Ordering::SeqCst) || s.finished.load(Ordering::SeqCst) >= need) {
+                    continue;
+                }
+                if full || sock_eof {
+                    return self.poll_idle(cx);
+                }
+            } else if let Some(t) = fr.pending_terminal() {
+                if state.finished.load(Ordering::SeqCst) >= t.wait {
+                    fr.send_terminal(&mut self.queue);
+                    continue;
+                }
+                if self.wait_for_requests(cx, |s| s.finished.load(Ordering::SeqCst) >= t.wait) {
+                    continue;
+                }
+                return self.poll_idle(cx);
+            } else if fr.terminal_sent() || sock_eof {
+                return Poll::Ready(Ok(()));
+            }
+            let before = buf.filled().len();
+            match self.sock().poll_read(cx, buf) {
+                Poll::Pending => return self.poll_idle(cx),
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => {
+                    let n = buf.filled().len() - before;
+                    if n == 0 {
+                        self.sock_eof = true;
+                        if let Some(fr) = self.framing.as_mut() {
+                            fr.eof(&mut self.queue);
+                        }
+                        continue;
+                    }
+                    self.on_read(&buf.filled()[before..])?;
+                    let fr = self.framing.as_mut().expect("the framing check is on");
+                    let region = &buf.filled()[before..];
+                    let k = fr.passthrough_prefix(region);
+                    if k < n {
+                        fr.feed(&region[k..], &mut self.queue);
+                    }
+                    buf.set_filled(before + k);
+                    if k > 0 {
+                        return Poll::Ready(Ok(()));
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl AsyncRead for TimedIo {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let this = &mut *self;
+        if this.framing.is_some() {
+            return this.poll_read_checked(cx, buf);
+        }
         let before = buf.filled().len();
         match this.sock().poll_read(cx, buf) {
             Poll::Ready(Ok(())) => {
@@ -675,8 +817,12 @@ pub(crate) async fn serve(
     let options = Arc::new(options);
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
     let mut builder = auto::Builder::new(TokioExecutor::new());
+    // The framing check reads header lines the way httparse does by default: `ignore_invalid_headers` would let
+    // httparse skip lines the check has read (design.md, decision 4, of `e0-reject-ambiguous-http1-framing`).
+    debug_assert!(options.insecure_http_parser || !IGNORE_INVALID_HEADERS);
     builder
         .http1()
+        .ignore_invalid_headers(IGNORE_INVALID_HEADERS)
         .timer(TokioTimer::new())
         .header_read_timeout(options.headers_timeout)
         .max_buf_size(options.max_header_size.max(8 * 1024));
