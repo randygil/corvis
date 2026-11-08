@@ -10,7 +10,9 @@ original framework's Express adapter (`null` and `undefined` answer `res.send()`
 ### Requirement: A handler result with no value answers an empty body
 When a route handler's result carries no value (`None` from any `Option<T>`, with or without `HttpResult<_>` /
 `Result<_, E>`; `Value::Null`; or any `T: Serialize` whose JSON is `null`), the framework SHALL answer with an empty
-body and the status the handler would get with a body (`201` for `POST`, `200` otherwise, or `#[http_code]`).
+body and the status the handler would get with a body (`201` for `POST`, `200` otherwise, or `#[http_code]`). This is
+the one exception to the requirement "Typed handler return values are serialized as JSON": a `T: Serialize` is answered
+as its JSON except when that JSON is `null`, which is answered as no value, not as the text `null`.
 
 #### Scenario: Optional DTO with no value
 - **WHEN** a `#[get]` handler returns `HttpResult<Option<CatDto>>` with `Ok(None)`, where `CatDto` only derives
