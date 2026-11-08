@@ -171,6 +171,18 @@ HttpHealthIndicator::ping_check("api", "http://127.0.0.1:8080/ready").timeout(Du
 
 An orchestrator whose probe times out sooner than 5 seconds needs a lower limit here. The default cannot be changed for the whole application.
 
+## Panicking indicators
+
+An indicator that panics, whether when its check starts or while it runs, is reported `down` with `"message": "health indicator panicked"`, and the other indicators are still reported. The status is `503`, like any other failure:
+
+```json
+{ "status": "down", "message": "health indicator panicked" }
+```
+
+The panic message is not part of the response, because health endpoints are often public and a message can carry a connection string. It is written once to the error log, with the indicator key, under the `HealthCheckService` context.
+
+This differs from the original library, which does not catch an indicator that throws and answers a bare `500` without a health body. A `500` and a `503` are both unhealthy for an orchestrator, and the report now says which indicator failed.
+
 ## Limits
 
 - There are no built-in indicators for databases, disk or specific services: write them with `HealthIndicator::new`.
