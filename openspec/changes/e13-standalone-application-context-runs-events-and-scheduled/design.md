@@ -102,3 +102,9 @@ verified in the code:
   `consi-backend` `run-jobs` binary changes behavior in apidiff or the database comparison, stop and report before
   changing the port.
 - A Rust regression test is enough; no differential test against Node for this change.
+
+## Implementation notes
+
+- Decision 1 variant taken: no new `handlers_registered` flag. `discover` + `register_handlers` run inside `call_init_hooks`, right after `hooks_called` is set and before `OnModuleInit`, so the existing guard makes them run once. `init()` keeps calling `call_init_hooks()`; all init steps stay in `init()` so the failure wrapper of #123 can surround them. Note for #123: the flag is set before registration, so a failed registration leaves `hooks_called` true, as it already did for a failed hook.
+- Task 4.6 (corvis-parity run and the `run-jobs` follow-up decision) is not done by the implementer; the parity check is pending.
+- Tasks 1.1 and 1.2: the six new tests fail on the code before the change (verified) and pass after it.
