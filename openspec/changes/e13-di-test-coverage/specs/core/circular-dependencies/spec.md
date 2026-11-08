@@ -43,7 +43,8 @@ overflow the stack or panic.
 
 #### Scenario: Transient provider depending on itself
 - **WHEN** a transient provider `Node` has an `Arc<Node>` field and a singleton injects `Node`
-- **THEN** compilation fails with `DiError::Circular`
+- **THEN** compilation fails with `DiError::Circular`, and the chain ends with `Node -> Node` (it may start at
+  the singleton whose resolution entered the cycle)
 
 ### Requirement: Module import cycles are accepted
 Static modules that import each other, directly or through other modules, SHALL be scanned once each and the

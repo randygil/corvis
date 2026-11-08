@@ -148,3 +148,26 @@ the code:
   not validated at startup) are filed as separate issues in epic #13 and added to phase 0.3 of #111.
 - Capability names: `core/di` (#14, messages and attributes) and the per-page `core/*` capabilities here do not
   overlap; keep both.
+
+## Implementation notes
+
+- **Test count and layout**: 65 tests in `crates/corvis/tests/di/` (`transient` 9, `module_ref` 13, `custom_providers` 11,
+  `cycles` 9, `global_modules` 11, `dynamic_modules` 11, one smoke test). Transient implementations behind
+  `use_class_as` and the hooks of `use_class_as` are already covered by `crates/corvis/tests/di_use_class_as.rs` (#14)
+  and are not repeated.
+- **Fixed here (Decision 6)**: an alias (`Provider::use_existing`) of a transient provider was stored as a singleton and
+  kept the first transient instance, contradicting the review notes (an alias takes the scope of its target). `Provider`
+  now remembers `alias_of`, and `Container::is_transient` follows the alias chain (with a guard against alias cycles) in
+  `resolve_provider` and `instantiate_all`. Local to `crates/corvis/src/di/`, so the corvis-parity check is needed.
+  Regression tests: `custom_providers::an_alias_of_a_transient_provider_is_transient_too` and
+  `a_chain_of_aliases_ending_in_a_transient_provider_gives_new_instances`.
+- **Chain of a cycle entered from outside**: when the singleton that starts the resolution is not part of the cycle, the
+  `Circular` chain starts at that singleton (`NodeHolder -> Node -> Node`), so it does not start and end with the same
+  provider. The cycle is still named and the last link is the repeated provider. The spec scenario for the transient
+  self-dependency was written to match; a chain with only the cycle is a message change for a later issue.
+- **Not covered by tests, tracked elsewhere**: #112 (dynamic modules importing each other), #113 (cycles through
+  `ModuleRef::resolve` in a factory) and #114 (transient dependencies validated at startup). No test in this change
+  exercises them, so none is marked `#[ignore]`.
+- **Documentation**: custom providers (alias scope, target visibility, chained and exported aliases), injection scopes
+  (one instance per injection point) and dynamic modules (a dynamic provider overrides a static one with the same token),
+  in English and Spanish. The other pages already matched the tests.

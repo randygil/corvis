@@ -154,6 +154,8 @@ pub struct Provider {
     pub(crate) scope: Scope,
     pub(crate) hooks: ErasedHooks,
     pub(crate) enhancer: Option<GlobalEnhancer>,
+    /// Set by `use_existing`: the token this provider is an alias of.
+    pub(crate) alias_of: Option<Token>,
 }
 
 impl std::fmt::Debug for Provider {
@@ -164,7 +166,7 @@ impl std::fmt::Debug for Provider {
 
 impl Provider {
     fn new(token: Token, name: String, factory: Factory) -> Self {
-        Provider { token, name, factory, scope: Scope::Default, hooks: ErasedHooks::default(), enhancer: None }
+        Provider { token, name, factory, scope: Scope::Default, hooks: ErasedHooks::default(), enhancer: None, alias_of: None }
     }
 
     /// Standard class provider: `providers: [CatsService]`.
@@ -276,11 +278,14 @@ impl Provider {
         let token = token.into();
         let existing = existing.into();
         let name = token.display_name();
+        let target = existing.clone();
         let f: Factory = Arc::new(move |ctx: ResolveCtx| {
             let existing = existing.clone();
             async move { ctx.resolve_instance(existing).await.map(Built::from) }.boxed()
         });
-        Self::new(token, name, f)
+        let mut p = Self::new(token, name, f);
+        p.alias_of = Some(target);
+        p
     }
 
     /// Change the injection scope of the provider.
