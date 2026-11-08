@@ -28,3 +28,12 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 anyhow = "1"
+
+# Smaller and faster dev and test builds (the test profile inherits dev). Workspace crates keep line tables, so
+# panics and backtraces still show file:line; dependencies carry no debug info. To step into a dependency with a
+# debugger, comment out the package override. See CONTRIBUTING.md.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
