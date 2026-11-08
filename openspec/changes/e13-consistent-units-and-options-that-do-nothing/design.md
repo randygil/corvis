@@ -93,3 +93,9 @@ See proposal.md for motivation; the behavior is in the two spec deltas. Current 
   not part of this change.
 - `transform` is deprecated here; whether deprecated items are removed before the first crates.io release is decided
   in #10.
+
+## Implementation notes
+
+- `ValidationPipe::transform` carries `#[deprecated]` and sets the field inside a local `#[allow(deprecated)]` block; `ValidationPipeOptions` `Default` has `#[allow(deprecated)]`, so the workspace builds without warnings.
+- Regression tests live in `crates/corvis/tests/cookie_max_age.rs` and `crates/corvis/tests/validation_transform_option.rs`; the first-run failure check of task 1.1 was seen (`Max-Age=90500` before the change).
+- Task 4.5 (corvis-parity) is left unticked: it is run separately by the parity-verifier.

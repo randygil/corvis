@@ -108,12 +108,13 @@ pub struct ValidationPipeOptions {
     pub disable_error_messages: bool,
     pub stop_at_first_error: bool,
     pub error_http_status_code: u16,
-    /// Always on in corvis (values are deserialized into the declared Rust types);
-    /// kept for API familiarity.
+    /// Has no effect: values are always converted to the declared Rust type.
+    #[deprecated(note = "values are always converted to the declared type; this option has no effect")]
     pub transform: bool,
     pub exception_factory: Option<fn(Vec<ValidationError>) -> HttpException>,
 }
 
+#[allow(deprecated)]
 impl Default for ValidationPipeOptions {
     fn default() -> Self {
         ValidationPipeOptions {
@@ -154,8 +155,12 @@ impl ValidationPipe {
         self.options.forbid_non_whitelisted = v;
         self
     }
+    #[deprecated(note = "values are always converted to the declared type; this option has no effect")]
     pub fn transform(mut self, v: bool) -> Self {
-        self.options.transform = v;
+        #[allow(deprecated)]
+        {
+            self.options.transform = v;
+        }
         self
     }
     pub fn skip_missing_properties(mut self, v: bool) -> Self {

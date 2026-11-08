@@ -297,7 +297,7 @@ fn outgoing_cookie_attributes_are_validated() {
     assert_eq!(bad(Cookie::new("sid=x; Domain=evil", "abc")).as_deref(), Some("TypeError: argument name is invalid"));
     assert!(Cookie::new("sid", "abc").path("/; x").try_to_string().is_err());
     assert_eq!(
-        Cookie::new("sid", "a b").domain("app.example").max_age(60).http_only(true).secure(true).same_site("lax").to_string(),
+        Cookie::new("sid", "a b").domain("app.example").max_age(60_000).http_only(true).secure(true).same_site("lax").to_string(),
         "sid=a%20b; Path=/; Domain=app.example; Max-Age=60; HttpOnly; Secure; SameSite=lax"
     );
 }

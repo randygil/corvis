@@ -86,12 +86,13 @@ If the handler builds its own `Response`, add the cookie with `Cookie`:
 #[post("theme")]
 fn theme(&self) -> Response {
     Response::json(json!({ "ok": true }))
-        .with_cookie(Cookie::new("theme", "dark").http_only(true).max_age(3600))
+        .with_cookie(Cookie::new("theme", "dark").http_only(true).max_age(3_600_000))
 }
 ```
 
-Note: `Cookie::max_age` takes **seconds**, while `CookieOptions::max_age` takes
-milliseconds.
+Both APIs take `max_age` in **milliseconds**, like Express, and write `Max-Age` as whole seconds
+(rounded down). Before this change `Cookie::max_age` took seconds: `max_age(3600)` is now 3.6 seconds, so
+write `max_age(3_600_000)` for one hour.
 
 ## Validation
 

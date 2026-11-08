@@ -85,7 +85,7 @@ Useful details:
 | `disable_error_messages(true)` | Responds without the list of messages |
 | `error_http_status_code(422)` | Changes the status code (`400` by default) |
 | `exception_factory(f)` | `fn(Vec<ValidationError>) -> HttpException` to build your own response |
-| `transform(bool)` | Accepted for compatibility; in Corvis the conversion to the declared type always happens |
+| `transform(bool)` | **Deprecated**, no effect: in Corvis the conversion to the declared type always happens; remove the call |
 
 In `#[query]` and `#[param]` the pipe first converts numeric and boolean text according to the field's type (`"2"` becomes `2` in a `u32`). In `#[body]` there is no conversion: a JSON with `"age": "2"` fails on `#[is_int]`.
 
