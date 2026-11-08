@@ -65,8 +65,10 @@ fn print_help() {
         r#"Usage: corvis <command> [options]
 
 Commands:
-  new|n <name> [--corvis-path <dir>] [--corvis-version <v>] [--skip-git]
+  new|n <name> [--corvis-path <dir> | --corvis-version <req>] [--skip-git]
                                  Generate a new Corvis application.
+                                 Depends on corvis {} from crates.io unless --corvis-path or CORVIS_PATH
+                                 gives a local checkout.
   generate|g <schematic> <name> [--flat] [--path <dir>] [--no-spec]
                                  Generate a Corvis element.
   start [--watch] [--release] [-- args]
@@ -81,7 +83,8 @@ Schematics:
   module (mo)        controller (co)    service (s)        resource (res)
   guard (gu)         interceptor (itc)  pipe (pi)          filter (f)
   middleware (mi)    gateway (ga)
-"#
+"#,
+        framework_version()
     );
 }
 
@@ -142,29 +145,81 @@ fn positional(args: &[String]) -> Vec<String> {
 
 // ---------------------------------------------------------------------- new
 
-fn corvis_dependency(args: &[String]) -> Result<String, String> {
+/// Version of the framework the templates were written for: the CLI's own version without build metadata.
+fn framework_version() -> &'static str {
+    let v = env!("CARGO_PKG_VERSION");
+    v.split('+').next().unwrap_or(v)
+}
+
+fn normalize_path(path: &str) -> String {
+    path.trim_start_matches(r"\\?\").replace('\\', "/")
+}
+
+/// The path chosen by the environment alone: no dependency flag and a non-empty `CORVIS_PATH`.
+fn env_path_in_use(args: &[String], env_path: Option<&str>) -> Option<String> {
+    if flag(args, "--corvis-path") || flag(args, "--corvis-version") {
+        return None;
+    }
+    env_path.filter(|p| !p.is_empty()).map(normalize_path)
+}
+
+/// The inside of the `{ ... }` table of the `corvis` dependency. Precedence: both flags is an error, then
+/// `--corvis-version`, `--corvis-path`, a non-empty `CORVIS_PATH`, and last the CLI's own version.
+fn corvis_dependency(args: &[String], env_path: Option<String>) -> Result<String, String> {
+    if flag(args, "--corvis-path") && flag(args, "--corvis-version") {
+        return Err("--corvis-path and --corvis-version cannot be used together".into());
+    }
     if let Some(v) = opt(args, "--corvis-version") {
         names::validate_version_req(&v)?;
         return Ok(format!("version = \"{v}\""));
     }
-    let path = opt(args, "--corvis-path").or_else(|| std::env::var("CORVIS_PATH").ok()).unwrap_or_else(|| {
-        // Path of the framework this CLI was built from.
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("corvis");
-        p.canonicalize().unwrap_or(p).display().to_string()
-    });
-    let path = path.trim_start_matches(r"\\?\").replace('\\', "/");
+    let (path, source) = match opt(args, "--corvis-path") {
+        Some(p) => (p, "--corvis-path"),
+        None => match env_path.filter(|p| !p.is_empty()) {
+            Some(p) => (p, "CORVIS_PATH"),
+            None => return Ok(format!("version = \"{}\"", framework_version())),
+        },
+    };
+    let path = normalize_path(&path);
     // Written inside a TOML basic string.
     if path.chars().any(|c| c == '"' || c.is_control()) {
-        return Err(format!("invalid --corvis-path \"{}\"", path.escape_debug()));
+        return Err(format!("invalid {source} \"{}\"", path.escape_debug()));
     }
     Ok(format!("path = \"{path}\""))
+}
+
+/// The `crates/corvis` folder of the checkout this CLI was compiled from, when it still exists.
+fn build_checkout() -> Option<String> {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("corvis");
+    if !p.join("Cargo.toml").exists() {
+        return None;
+    }
+    Some(normalize_path(&p.canonicalize().unwrap_or(p).display().to_string()))
+}
+
+/// The `NOTE` lines printed after the generated files: a path taken from `CORVIS_PATH`, or the default
+/// version while the checkout the CLI was built from is still on disk.
+fn dependency_notes(env_path_used: Option<&str>, default_used: bool, checkout: Option<&str>) -> Vec<String> {
+    if let Some(dir) = env_path_used {
+        return vec![format!("using CORVIS_PATH={dir}")];
+    }
+    match checkout {
+        Some(dir) if default_used => vec![format!(
+            "corvis = \"{}\" comes from crates.io; to use the checkout this CLI was built from, pass --corvis-path {dir} or set CORVIS_PATH={dir}",
+            framework_version()
+        )],
+        _ => Vec::new(),
+    }
 }
 
 fn cmd_new(args: &[String]) -> Res {
     let pos = positional(args);
     let name = pos.first().ok_or("missing project name: corvis new <name>")?;
     names::validate_name(name)?;
-    let dependency = corvis_dependency(args)?;
+    let env_path = std::env::var("CORVIS_PATH").ok();
+    let dependency = corvis_dependency(args, env_path.clone())?;
+    let used_env = env_path_in_use(args, env_path.as_deref());
+    let default_used = !flag(args, "--corvis-version") && !flag(args, "--corvis-path") && used_env.is_none();
     let n = Names::new(name);
     let root = PathBuf::from(&n.kebab);
     if root.exists() {
@@ -181,6 +236,10 @@ fn cmd_new(args: &[String]) -> Res {
     write_file(&root.join("src/app_service.rs"), templates::APP_SERVICE)?;
     if !flag(args, "--skip-git") {
         let _ = Command::new("git").arg("init").arg("-q").current_dir(&root).status();
+    }
+    let checkout = if default_used { build_checkout() } else { None };
+    for note in dependency_notes(used_env.as_deref(), default_used, checkout.as_deref()) {
+        println!("{YELLOW}NOTE{RESET} {note}");
     }
     println!("\n🚀  Successfully created project {GREEN}{}{RESET}", n.kebab);
     println!("👉  Get started with the following commands:\n");
@@ -578,5 +637,48 @@ mod tests {
             assert!(err.contains(&format!("argument \"{bad}\"")) && err.contains("without --watch"), "{bad}: {err}");
         }
         assert_eq!(inv(&["--", "my app"], "run").unwrap(), v(&["run", "--", "my app"]));
+    }
+
+    fn dep(args: &[&str], env: Option<&str>) -> Result<String, String> {
+        corvis_dependency(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>(), env.map(String::from))
+    }
+
+    #[test]
+    fn dependency_defaults_to_the_cli_version() {
+        assert_eq!(dep(&[], None).unwrap(), format!("version = \"{}\"", framework_version()));
+        assert!(!framework_version().contains('+'));
+    }
+
+    #[test]
+    fn dependency_paths_come_from_the_flag_or_the_environment() {
+        assert_eq!(dep(&["--corvis-path", "/src/corvis"], None).unwrap(), "path = \"/src/corvis\"");
+        assert_eq!(dep(&[], Some("/env/corvis")).unwrap(), "path = \"/env/corvis\"");
+        assert_eq!(dep(&["--corvis-path", "/flag"], Some("/env")).unwrap(), "path = \"/flag\"");
+        assert_eq!(dep(&["--corvis-version", "0.2"], Some("/env")).unwrap(), "version = \"0.2\"");
+        assert_eq!(dep(&[], Some("")).unwrap(), format!("version = \"{}\"", framework_version()));
+    }
+
+    #[test]
+    fn dependency_rejects_conflicts_and_unsafe_paths() {
+        let err = dep(&["--corvis-path", "../corvis", "--corvis-version", "0.1"], None).unwrap_err();
+        assert!(err.contains("--corvis-path") && err.contains("--corvis-version"), "{err}");
+        let err = dep(&[], Some("a\"b")).unwrap_err();
+        assert!(err.contains("CORVIS_PATH"), "{err}");
+        let err = dep(&["--corvis-path", "a\"b"], None).unwrap_err();
+        assert!(err.contains("--corvis-path"), "{err}");
+    }
+
+    #[test]
+    fn notes_name_the_environment_or_the_build_checkout() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(dependency_notes(Some("/e"), false, None), a(&["using CORVIS_PATH=/e"]));
+        let n = dependency_notes(None, true, Some("/repo/crates/corvis"));
+        assert_eq!(n.len(), 1);
+        assert!(n[0].contains("--corvis-path /repo/crates/corvis") && n[0].contains("CORVIS_PATH=/repo/crates/corvis"));
+        assert!(dependency_notes(None, true, None).is_empty());
+        assert!(dependency_notes(None, false, Some("/x")).is_empty());
+        assert_eq!(env_path_in_use(&a(&["--corvis-path", "/f"]), Some("/e")), None);
+        assert_eq!(env_path_in_use(&[], Some("")), None);
+        assert_eq!(env_path_in_use(&[], Some("/e")), Some("/e".to_string()));
     }
 }

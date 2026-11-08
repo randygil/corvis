@@ -9,16 +9,19 @@ Reference for the `corvis` commands. Options start with `--` and can go in any p
 ## `corvis new`
 
 ```bash
-corvis new <name> [--corvis-path <path>] [--corvis-version <requirement>] [--skip-git]
+corvis new <name> [--corvis-path <path> | --corvis-version <requirement>] [--skip-git]
 ```
 
 Creates the project folder (the name in kebab-case) with `Cargo.toml`, `.env`, `.gitignore` and `src/` with `main.rs`, `app_module.rs`, `app_controller.rs` and `app_service.rs`. It fails if the folder already exists.
 
 | Option | Effect |
 |---|---|
-| `--corvis-path <path>` | Dependency `corvis = { path = "<path>" }`. Without it, `CORVIS_PATH` or the copy the CLI was built from is used |
-| `--corvis-version <requirement>` | Dependency `corvis = { version = "<requirement>" }` (a Cargo version requirement) |
+| (none) | Dependency `corvis = { version = "<CLI version>" }`, the published framework that matches the CLI. If `CORVIS_PATH` is set and not empty, its path is used instead |
+| `--corvis-path <path>` | Dependency `corvis = { path = "<path>" }`, for a local checkout. Beats `CORVIS_PATH` |
+| `--corvis-version <requirement>` | Dependency `corvis = { version = "<requirement>" }` (a Cargo version requirement). Beats `CORVIS_PATH` |
 | `--skip-git` | Does not run `git init` |
+
+`--corvis-path` and `--corvis-version` cannot be used together: the command fails and creates nothing. When the path comes from `CORVIS_PATH`, the command prints `NOTE using CORVIS_PATH=<path>`. When the default version is written and the checkout the CLI was built from still exists, it prints a `NOTE` with the `--corvis-path` value that would use it. Until the first release on crates.io, set `CORVIS_PATH` or pass `--corvis-path`.
 
 The name must start with a letter and contain only letters, digits, `-` and `_`. `--corvis-version` must be a Cargo version requirement (for example `0.1`, `^0.1.2` or `>=0.1, <0.3`) and `--corvis-path` cannot contain quotes or control characters. This way nothing is written outside `src/` and no text is injected into the generated files. `corvis generate` applies the same name rule.
 

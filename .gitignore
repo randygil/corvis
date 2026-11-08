@@ -7,7 +7,6 @@
 .vscode/
 
 # Benchmark
-bench/target
 bench/node-app/node_modules
 bench/node-app/dist
 bench/raw
