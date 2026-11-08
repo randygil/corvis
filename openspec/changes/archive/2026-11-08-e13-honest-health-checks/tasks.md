@@ -71,7 +71,7 @@
 
 ## Workflow follow-up
 
-- [ ] Archive the change with `/opsx:archive`
-- [ ] Close issue [#19](https://github.com/randygil/corvis/issues/19)
-- [ ] Tick #19 in its epic [#13](https://github.com/randygil/corvis/issues/13)
-- [ ] Move the card to Done in the Corvis Roadmap project
+- [x] Archive the change with `/opsx:archive`
+- [x] Close issue [#19](https://github.com/randygil/corvis/issues/19)
+- [x] Tick #19 in its epic [#13](https://github.com/randygil/corvis/issues/13)
+- [x] Move the card to Done in the Corvis Roadmap project

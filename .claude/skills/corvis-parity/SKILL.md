@@ -87,7 +87,14 @@ taskkill /F /IM houseplan-api.exe 2>$null
 Get-NetTCPConnection -State Listen -LocalPort 3001,3101,3200,3300,3399,4000,4001,4100,4191 -ErrorAction SilentlyContinue |
   Where-Object { $_.OwningProcess -gt 4 } |
   ForEach-Object { try { Stop-Process -Id $_.OwningProcess -Force -ErrorAction Stop } catch {} }
+# consi's helper scripts keep running after their server dies (restart-all.sh, start-corvis.sh, the webhook sink);
+# a leftover consi-backend.exe locks the release binary for the next build ("Acceso denegado", os error 5).
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -match 'restart-(all|nest)\.sh|start-corvis\.sh|start-nest2?\.sh|sink\.mjs|consi-backend\.exe' } |
+  ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }
 ```
+Then check that nothing listens on those ports and that no process command line mentions `consi-backend`,
+`facten-api` or `houseplan-api`.
 
 ## Reading a difference
 
