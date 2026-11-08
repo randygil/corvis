@@ -425,3 +425,7 @@ The security review found nothing exploitable. Findings and what was done:
      hyper as exactly the generated requests with no error status.
    - One integration test drives the real `TimedIo` and `auto::Builder` with a pipelined valid stream and a pipelined
      rejected stream, each cut at every byte (two writes with a pause between them).
+
+## Verification (2026-11-08)
+
+Parity on batch-k (1074274, 2026-11-08): consi 832/832, facten 727/727, houseplan 636/636, databases equivalent. Full workspace run: 965 passed, 1 known flake (`pg_pool_url::builder_wins_over_the_url`, #147; passed 3/3 alone). CI passed on Linux and Windows (run 42526801265). `npm run docs:check` passed.
