@@ -32,9 +32,19 @@ pub async fn fresh_db_at(base: &str, required: bool, name: &str) -> Option<Strin
         Ok(o) => o,
         Err(e) => return unavailable(base, required, "has an invalid URL", e),
     };
-    let mut c = match admin.connect().await {
-        Ok(c) => c,
-        Err(e) => return unavailable(base, required, "is not reachable", e),
+    // A refused connection means Postgres is down (skip, or panic when required); any other socket
+    // error is retried a few times first, so a transient error (Windows `WSAEINVAL`) cannot silently
+    // skip a test.
+    let mut attempt = 0;
+    let mut c = loop {
+        match admin.connect().await {
+            Ok(c) => break c,
+            Err(sqlx::Error::Io(e)) if e.kind() != std::io::ErrorKind::ConnectionRefused && attempt < 4 => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+            }
+            Err(e) => return unavailable(base, required, "is not reachable", e),
+        }
     };
     if let Err(e) = c.execute(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)").as_str()).await {
         return unavailable(base, required, &format!("could not drop database {db}"), e);

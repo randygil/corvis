@@ -38,6 +38,12 @@ async fn every_second_job_ticks_and_stops() {
     assert_eq!(n.load(Ordering::SeqCst), ticks);
 }
 
+// The first tick falls on the next whole second, so it comes between 0 and 1 s after `start`
+// (`t0`), then every second. The job runs for 4.5 s and the observation window is 3.5 s:
+//  - at least three ticks (t0, t0 + 1, t0 + 2 <= 3.0 s) fall inside the window, whatever `t0` is;
+//  - the first run is still going at the end of the window (it ends at t0 + 4.5 >= 4.5 s), so with
+//    `wait_for_completion` every tick after the first must have been skipped (exactly one start),
+//    and without it the overlapping ticks must have started their own runs (at least three).
 #[tokio::test]
 async fn wait_for_completion_skips_overlapping_ticks_and_default_overlaps() {
     for wait in [true, false] {
@@ -48,14 +54,14 @@ async fn wait_for_completion_skips_overlapping_ticks_and_default_overlaps() {
                 let s = s.clone();
                 async move {
                     s.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(2500)).await;
+                    tokio::time::sleep(Duration::from_millis(4500)).await;
                 }
             })
             .wait_for_completion(wait)
             .start(true),
         )
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(3100)).await;
+        tokio::time::sleep(Duration::from_millis(3500)).await;
         job.stop();
         let got = started.load(Ordering::SeqCst);
         if wait { assert_eq!(got, 1, "wait") } else { assert!(got >= 3, "overlap: {got}") }
