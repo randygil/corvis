@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 4b32b295aebf9bf46d614ede50fbd307cb46ba4c6556f0d81259551ceb42b97f # shrinks to specs = [ReqSpec { post: false, leading: 0, extra_headers: 0, kind: Plain, body: None }], mutations = [Header(Index(0), 6)], cuts = []
