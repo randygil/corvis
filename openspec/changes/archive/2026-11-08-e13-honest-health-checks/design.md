@@ -134,3 +134,7 @@ All health code lives in `crates/corvis/src/modules/health.rs` (148 lines), re-e
   that crate. `cargo deny check` passes.
 - `tokio` with `test-util` was added to the dev-dependencies of `corvis` for the paused-clock tests.
 - Task 7.5 (corvis-parity) is not run here: framework runtime code changed, so the parity check is still needed.
+
+## Follow-up fixes
+
+- 2026-11-08: the first GitHub CI run on Linux failed `check_rss_down_over_threshold`. `memory_stats` 1.2 decides on its first call between `/proc/self/smaps` and `/proc/self/statm`, and a call made concurrently with that first one can read `statm` with a page size of 0 and report 0 bytes. `check_rss` now makes the first reading once, alone (`std::sync::Once`), and treats an RSS of 0 as a failed reading (`down`, "rss could not be measured"). Tests: `zero_rss_is_a_failed_reading`, `concurrent_first_readings_are_never_zero`.
