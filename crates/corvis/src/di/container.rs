@@ -313,6 +313,25 @@ impl Container {
         None
     }
 
+    /// A provider is transient when its scope says so or when it is an alias (`use_existing`) of a transient one.
+    fn is_transient(&self, owner: ModuleId, provider: &Provider) -> bool {
+        let (mut owner, mut provider) = (owner, provider);
+        let mut seen = HashSet::new();
+        loop {
+            if provider.scope == Scope::Transient {
+                return true;
+            }
+            let Some(target) = &provider.alias_of else { return false };
+            if !seen.insert((owner, provider.token.clone())) {
+                return false;
+            }
+            match self.lookup(owner, target) {
+                Some((o, p)) => (owner, provider) = (o, p),
+                None => return false,
+            }
+        }
+    }
+
     pub(crate) fn resolve(
         self: Arc<Self>,
         module: ModuleId,
@@ -337,7 +356,7 @@ impl Container {
     ) -> BoxFuture<'static, Result<Instance, DiError>> {
         async move {
             let key = (owner, provider.token.clone());
-            let transient = provider.scope == Scope::Transient;
+            let transient = self.is_transient(owner, &provider);
             if !transient && let Some(i) = self.instances.lock().unwrap().get(&key) {
                 return Ok(i.clone());
             }
@@ -405,7 +424,7 @@ impl Container {
         for m in 0..self.modules.len() {
             let node = &self.modules[m];
             for p in node.providers.clone() {
-                if p.scope == Scope::Transient {
+                if self.is_transient(m, &p) {
                     continue;
                 }
                 self.clone().resolve_provider(m, p, Arc::new(Vec::new())).await?;

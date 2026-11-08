@@ -40,6 +40,16 @@ exports its token. An export of a token the module neither provides nor re-expor
 - **WHEN** `for_root` calls `.export("MISSING")` and no provider or import supplies `"MISSING"`
 - **THEN** compilation fails with `DiError::InvalidExport` naming `MailerModule`
 
+### Requirement: Dynamic providers override static ones with the same token
+When the static part and the `DynamicModule` register a provider with the same token, the one added by the
+`DynamicModule` SHALL be used.
+
+#### Scenario: Default replaced by for_root
+- **WHEN** `#[module]` registers `Provider::use_value("GREETING", "static")` and the import adds
+  `.provider(Provider::use_value("GREETING", "dynamic"))`
+- **THEN** a provider of that module injecting `"GREETING"` receives `"dynamic"`, and without the dynamic provider
+  it receives `"static"`
+
 ### Requirement: Each dynamic import is a separate module instance
 Every `DynamicModule` value that appears in an `imports` list SHALL create its own module node with its own provider
 instances.
