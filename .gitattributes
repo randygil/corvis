@@ -1,0 +1,8 @@
+# Files embedded with include_str!/include_bytes! or compared byte for byte by tests keep LF line endings on every
+# platform, whatever core.autocrlf says (served Swagger/Scalar pages must match the originals exactly).
+crates/*/src/assets/** text eol=lf
+crates/*/tests/fixtures/**/*.json text eol=lf
+crates/*/tests/fixtures/**/*.sql text eol=lf
+crates/*/tests/fixtures/**/*.pem text eol=lf
+crates/*/tests/fixtures/**/*.prisma text eol=lf
+crates/*/tests/fixtures/**/*.mjs text eol=lf

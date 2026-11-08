@@ -23,6 +23,8 @@ Rules:
 - Do not modify the repository. Proofs of concept go in the scratchpad directory, and any server you start must be
   stopped before you finish.
 - Cargo builds share one target dir (`CARGO_TARGET_DIR` from the project settings); never create another one.
+  When building a worktree, first run `cargo clean -p` for the workspace crates: other worktrees share the target
+  dir and their artifacts can otherwise be reused for yours.
 - Rate each finding honestly (critical/high/medium/low/info) with the concrete input that triggers it. Do not inflate
   severities and do not report style issues.
 
