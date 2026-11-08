@@ -84,3 +84,16 @@ The CLI is a single binary, `crates/corvis-cli/src/main.rs` (370 lines), with ha
 - Added from the review of #22: the corvis-orm CLI's default schema search does not include `db/schema.prisma`,
   although `docs/data/corvis-orm.md` uses that layout. Fix it here (task 4.1): append `db/schema.prisma` and
   `db/schema` after the existing paths, keep the existing order, list the search order in the help text.
+
+## Implementation notes
+
+- The README already said `corvis build  # cargo build (debug); add --release or --prod for an optimized build` (line
+  92, not 110) when this change was implemented; task 1.2 needed no edit. No other page describes `build` as release.
+- `start` without `--watch` also prints its profile (`Running the debug profile ...` / `Running the release profile`);
+  in watch mode no profile line is printed because `--release` is ignored there (see #127).
+- The `<dir>/<dir>_module.rs` step uses the last segment of `--path` when it contains `/` (for `--path a/b` it looks for
+  `src/a/b/b_module.rs`), the safest reading of "the module that owns the folder".
+- The NOTE about a fallback to `app_module.rs` is printed only when `app_module.rs` exists and is the target.
+- The corvis-orm default schema search is in `default_schema_in` with unit tests; the docs describe the extra
+  locations without naming the original tooling's folder (naming check).
+- `docs/node_modules` was installed with `npm ci` in the worktree (ignored by git) to run `docs:check`.

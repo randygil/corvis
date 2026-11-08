@@ -11,7 +11,7 @@ cargo install cargo-watch     # una sola vez
 corvis start --watch
 ```
 
-`corvis start --watch` ejecuta `cargo watch -x run`: vigila el proyecto, recompila cuando cambia un archivo y vuelve a lanzar el servidor. Sin la CLI, el comando equivalente es el mismo `cargo watch -x run`.
+`corvis start --watch` ejecuta `cargo watch -x run`: vigila el proyecto, recompila cuando cambia un archivo y vuelve a lanzar el servidor. Sin la CLI, el comando equivalente es el mismo `cargo watch -x run`. Si `cargo-watch` no está instalado, `corvis start --watch` se detiene con un mensaje que muestra `cargo install cargo-watch`.
 
 ## Tiempos de compilación
 

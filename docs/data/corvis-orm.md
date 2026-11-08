@@ -106,7 +106,7 @@ If you already have a `schema.prisma`, the `corvis-orm` binary writes the models
 cargo run -q -p corvis-orm --bin corvis-orm -- generate --schema db/schema.prisma --out src/models.rs
 ```
 
-The generated file is not edited by hand: you regenerate it. Options: `--no-docs` (does not copy the `///` comments) and `--derive <Trait>` (an extra derive for each model, can be repeated).
+The generated file is not edited by hand: you regenerate it. Without `--schema`, it looks for the schema in the usual places of a `schema.prisma` project first and, if there is none, in `db/schema.prisma` and then `db/schema` (`corvis-orm --help` lists the full order); the migrations folder defaults to `migrations` next to the schema. Options: `--no-docs` (does not copy the `///` comments) and `--derive <Trait>` (an extra derive for each model, can be repeated).
 
 ## Register the module
 

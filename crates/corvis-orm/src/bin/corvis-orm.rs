@@ -15,7 +15,9 @@ fn usage() -> &'static str {
 
 Commands:
   generate         Generate the Rust models from schema.prisma
-      --schema <path>        Schema file or folder (default: ./prisma/schema.prisma)
+      --schema <path>        Schema file or folder (default: the first that exists of
+                                 prisma/schema.prisma, schema.prisma, prisma/schema,
+                                 db/schema.prisma, db/schema)
       --out <file.rs>        Output file (default: ./src/models.rs)
       --no-docs              Do not copy /// comments
       --derive <Trait>       Extra derive for every model and enum (repeatable)
@@ -57,10 +59,16 @@ impl Args {
     }
 }
 
+const SCHEMA_SEARCH: [&str; 5] = ["prisma/schema.prisma", "schema.prisma", "prisma/schema", "db/schema.prisma", "db/schema"];
+
 fn default_schema() -> PathBuf {
-    for p in ["prisma/schema.prisma", "schema.prisma", "prisma/schema"] {
-        if Path::new(p).exists() {
-            return PathBuf::from(p);
+    default_schema_in(Path::new("."))
+}
+
+fn default_schema_in(base: &Path) -> PathBuf {
+    for p in SCHEMA_SEARCH {
+        if base.join(p).exists() {
+            return if base == Path::new(".") { PathBuf::from(p) } else { base.join(p) };
         }
     }
     PathBuf::from("prisma/schema.prisma")
@@ -175,4 +183,52 @@ fn migrate(sub: &str, args: &mut Args) -> Result<(), String> {
             other => Err(format!("unknown migrate subcommand `{other}` (deploy | status)")),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("corvis-orm-schema-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn finds_the_db_layout() {
+        let dir = temp("db");
+        std::fs::create_dir_all(dir.join("db/migrations")).unwrap();
+        std::fs::write(dir.join("db/schema.prisma"), "").unwrap();
+        assert_eq!(default_schema_in(&dir), dir.join("db/schema.prisma"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finds_a_db_schema_folder() {
+        let dir = temp("dbdir");
+        std::fs::create_dir_all(dir.join("db/schema")).unwrap();
+        assert_eq!(default_schema_in(&dir), dir.join("db/schema"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn first_search_entry_wins_over_db() {
+        let dir = temp("both");
+        let first = dir.join(SCHEMA_SEARCH[0]);
+        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(dir.join("db")).unwrap();
+        std::fs::write(&first, "").unwrap();
+        std::fs::write(dir.join("db/schema.prisma"), "").unwrap();
+        assert_eq!(default_schema_in(&dir), first);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn falls_back_to_the_prisma_path_when_nothing_exists() {
+        let dir = temp("none");
+        assert_eq!(default_schema_in(&dir), PathBuf::from("prisma/schema.prisma"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
