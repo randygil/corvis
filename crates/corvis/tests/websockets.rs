@@ -420,3 +420,179 @@ async fn disconnect_with_a_close_code_stops_dispatching() {
     }
     assert_eq!(n, 1);
 }
+
+// ---------------------------------------------------------------------------
+// One handler per event in a gateway.
+// ---------------------------------------------------------------------------
+
+mod duplicates {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use corvis::OnGatewayInit;
+    use corvis::testing::Test;
+
+    use super::*;
+
+    #[websocket_gateway(path = "/dup-chat")]
+    pub struct DupChatGateway {
+        #[websocket_server]
+        server: WsServer,
+    }
+
+    #[handlers]
+    impl DupChatGateway {
+        #[subscribe_message("message")]
+        fn on_message(&self) -> &'static str {
+            "first"
+        }
+
+        #[subscribe_message("message")]
+        fn on_message_v2(&self) -> &'static str {
+            "second"
+        }
+    }
+
+    #[module(providers = [DupChatGateway])]
+    pub struct DupChatModule;
+
+    #[websocket_gateway(path = "/dup-admin")]
+    pub struct DupAdminGateway {
+        #[websocket_server]
+        server: WsServer,
+    }
+
+    #[handlers]
+    impl DupAdminGateway {
+        #[subscribe_message("purge")]
+        #[use_guards(RoleGuard)]
+        fn purge(&self) -> &'static str {
+            "guarded"
+        }
+
+        #[subscribe_message("purge")]
+        fn purge_all(&self) -> &'static str {
+            "unguarded"
+        }
+    }
+
+    #[module(providers = [DupAdminGateway])]
+    pub struct DupAdminModule;
+
+    static AFTER_INIT_RAN: AtomicBool = AtomicBool::new(false);
+
+    #[websocket_gateway(path = "/dup-hooked")]
+    pub struct DupHookedGateway {
+        #[websocket_server]
+        server: WsServer,
+    }
+
+    #[async_trait]
+    impl OnGatewayInit for DupHookedGateway {
+        async fn after_init(&self, _server: WsServer) {
+            AFTER_INIT_RAN.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[handlers]
+    impl DupHookedGateway {
+        #[subscribe_message("message")]
+        fn first(&self) {}
+
+        #[subscribe_message("message")]
+        fn second(&self) {}
+    }
+
+    #[module(providers = [DupHookedGateway])]
+    pub struct DupHookedModule;
+
+    #[websocket_gateway(path = "/case")]
+    pub struct CaseGateway {
+        #[websocket_server]
+        server: WsServer,
+    }
+
+    #[handlers]
+    impl CaseGateway {
+        #[subscribe_message("message")]
+        fn lower(&self) -> &'static str {
+            "lower"
+        }
+
+        #[subscribe_message("Message")]
+        fn upper(&self) -> &'static str {
+            "upper"
+        }
+    }
+
+    #[websocket_gateway(path = "/ping-a")]
+    pub struct PingAGateway {
+        #[websocket_server]
+        server: WsServer,
+    }
+
+    #[handlers]
+    impl PingAGateway {
+        #[subscribe_message("ping")]
+        fn ping(&self) -> &'static str {
+            "a"
+        }
+    }
+
+    #[websocket_gateway(path = "/ping-b")]
+    pub struct PingBGateway {
+        #[websocket_server]
+        server: WsServer,
+    }
+
+    #[handlers]
+    impl PingBGateway {
+        #[subscribe_message("ping")]
+        fn ping(&self) -> &'static str {
+            "b"
+        }
+    }
+
+    #[module(providers = [CaseGateway, PingAGateway, PingBGateway])]
+    pub struct DistinctEventsModule;
+
+    async fn init_error<M: corvis::Module>() -> String {
+        let module = Test::create_testing_module().import::<M>().compile().await.unwrap();
+        let mut app = module.create_corvis_application();
+        app.init().await.unwrap_err().to_string()
+    }
+
+    #[corvis::test]
+    async fn two_handlers_for_one_event_fail_init() {
+        assert_eq!(
+            init_error::<DupChatModule>().await,
+            "DupChatGateway has more than one handler for the \"message\" event (on_message and on_message_v2); a gateway can have only one handler per event"
+        );
+    }
+
+    #[corvis::test]
+    async fn a_guarded_handler_cannot_be_shadowed_by_an_unguarded_one() {
+        assert_eq!(
+            init_error::<DupAdminModule>().await,
+            "DupAdminGateway has more than one handler for the \"purge\" event (purge and purge_all); a gateway can have only one handler per event"
+        );
+    }
+
+    #[corvis::test]
+    async fn after_init_does_not_run_for_a_gateway_with_duplicates() {
+        let err = init_error::<DupHookedModule>().await;
+        assert!(err.contains("DupHookedGateway has more than one handler for the \"message\" event (first and second)"), "{err}");
+        assert!(!AFTER_INIT_RAN.load(Ordering::SeqCst));
+    }
+
+    #[corvis::test]
+    async fn event_names_differing_in_case_and_events_shared_across_gateways_are_accepted() {
+        let mut app = CorvisFactory::create::<DistinctEventsModule>().await.unwrap();
+        let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+        for (path, event, expected) in
+            [("case", "message", "lower"), ("case", "Message", "upper"), ("ping-a", "ping", "a"), ("ping-b", "ping", "b")]
+        {
+            let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/{path}")).await.unwrap();
+            assert_eq!(ask(&mut ws, json!({ "event": event })).await, json!({ "event": event, "data": expected }));
+        }
+    }
+}
