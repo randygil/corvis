@@ -1,0 +1,81 @@
+# The long checks: fuzzing with 100,000 cases per property and `cargo audit` against the latest advisory database.
+#
+# Manual only (Actions > Nightly checks > Run workflow): the repository is private and Actions minutes are limited, so
+# there is no schedule trigger. Run it on main before a release, after a change to a parser, and every few weeks.
+name: Nightly checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: PROPTEST_CASES for each property
+        required: true
+        default: "100000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in step with ci.yml.
+  RUST_TOOLCHAIN: "1.99.0"
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: fuzz (long)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # Passed through the environment, never expanded into a script.
+      PROPTEST_CASES: ${{ inputs.cases }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Shared with the fuzz job of ci.yml.
+          shared-key: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Parsers, JWT, routes, multipart
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis --lib fuzz
+      - name: Static file serving
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis --test fuzz_static
+      - name: ORM where filters
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis-orm --test fuzz_filters
+      - name: Upload the proptest seeds
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-audit@0.22.2
+      - run: cargo audit
