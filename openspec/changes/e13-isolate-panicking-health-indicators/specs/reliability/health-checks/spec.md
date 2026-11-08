@@ -7,8 +7,7 @@
 started or awaited MUST be caught for that indicator only and reported as `down` with
 `"message": "health indicator panicked"`, in the same `{ "status", "info", "error", "details" }` body and with the
 same HTTP `503 Service Unavailable` as any other `down` indicator. The other indicators MUST still be run and reported
-with their own results. The panic payload MUST NOT appear in the response body; it SHALL be logged at error level with
-the indicator key.
+with their own results.
 
 #### Scenario: One indicator panics, the other is up
 - **WHEN** `check` runs `HealthIndicator::new("db", || async { Ok(json!({})) })` and
@@ -30,3 +29,12 @@ the indicator key.
 #### Scenario: Through an HTTP route
 - **WHEN** a controller route returns `self.health.check(..)` with one panicking indicator and the route is requested
 - **THEN** the response status is `503`, not `500`, and the body is the health body
+
+### Requirement: The panic payload stays out of the health response
+The payload of a caught indicator panic MUST NOT appear in the health response body. It SHALL be logged at error level
+together with the indicator key.
+
+#### Scenario: A panic message with a secret
+- **WHEN** an indicator panics with "connect failed: postgres://user:secret@db"
+- **THEN** the response body contains "health indicator panicked" and not "secret", and the error log contains the
+  indicator key and the panic message

@@ -24,9 +24,6 @@ through `listen()`, `listen_in_background()`, `handle()` or `TestingModule::init
 scheduled handlers again and MUST NOT run or skip lifecycle hooks. The first failing call SHALL return its original
 error unchanged.
 
-`InitFailedError` SHALL be a public type that implements `std::error::Error`, can be obtained with
-`anyhow::Error::downcast_ref::<InitFailedError>()`, and whose message states that the application failed to
-initialize earlier, includes the message of the first error, and says to create a new application.
 
 #### Scenario: Retry after a failing on_module_init
 - **WHEN** a provider's `on_module_init` returns `Err("database unavailable")` on the first `init()` and `init()` is
@@ -42,6 +39,17 @@ initialize earlier, includes the message of the first error, and says to create 
 #### Scenario: Implicit init through handle or listen
 - **WHEN** `init()` failed and the caller then uses `handle(request)` or `listen_in_background(addr)`
 - **THEN** both return an `InitFailedError` and no socket is bound
+
+
+### Requirement: InitFailedError describes the earlier failure
+`InitFailedError` SHALL be a public type that implements `std::error::Error` and can be obtained with
+`anyhow::Error::downcast_ref::<InitFailedError>()`. Its message MUST state that the application failed to initialize
+earlier, include the message of the first error, and say to create a new application.
+
+#### Scenario: Downcasting the second error
+- **WHEN** `init()` fails with "database unreachable" and `init()` is called again
+- **THEN** the second error downcasts to `InitFailedError` and its message contains "failed to initialize",
+  "database unreachable" and "create a new application"
 
 ### Requirement: A failed application cannot serve requests
 After `init()` failed, the application MUST NOT expose a request pipeline: `corvis::testing::request(&app)` SHALL
