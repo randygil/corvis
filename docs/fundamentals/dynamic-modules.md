@@ -75,6 +75,8 @@ pub struct UsersModule;
 
 `MailerService` receives `Arc<MailerOptions>` because the options are a provider of the same module. Whoever imports `MailerModule::for_root(...)` receives `MailerService` because it is in the static part's `exports`. The options remain private to the module, unless you export them too.
 
+If the static part and the `DynamicModule` register a provider with the same token, the one added by the `DynamicModule` wins. That makes it possible for `#[module]` to declare a default that `for_root` replaces.
+
 ## The `DynamicModule` API
 
 | Method | Effect |

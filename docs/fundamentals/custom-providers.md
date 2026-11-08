@@ -171,7 +171,9 @@ pub struct CatsReport {
 }
 ```
 
-The existing token is looked up from the module where the alias is registered, with the usual visibility rules.
+The existing token is looked up from the module where the alias is registered, with the usual visibility rules. If it is not visible from there, the application does not start (`NotFound`). An alias can point to another alias, and it can be exported like any provider (`exports = ["CATS"]`).
+
+An alias takes the scope of what it points to: an alias of a [transient](/fundamentals/injection-scopes) provider is transient too, so each consumer that injects the alias gets its own instance.
 
 ## Exporting custom providers
 

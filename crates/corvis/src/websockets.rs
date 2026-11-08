@@ -557,10 +557,16 @@ pub(crate) async fn build_gateways(
             let c_guards = resolve_all(&c.guards, &ctx).await?;
             let c_interceptors = resolve_all(&c.interceptors, &ctx).await?;
             let c_pipes = resolve_all(&c.pipes, &ctx).await?;
-            let mut handlers = HashMap::new();
+            let mut handlers: HashMap<String, Arc<CompiledWsHandler>> = HashMap::new();
             if let Some(explore) = &p.hooks.handlers {
                 for h in explore(instance) {
                     if let HandlerKind::WsMessage { event, call, enhancers } = h.kind {
+                        if let Some(earlier) = handlers.get(&event) {
+                            return Err(DiError::Other(format!(
+                                "{} has more than one handler for the \"{}\" event ({} and {}); a gateway can have only one handler per event",
+                                p.name, event, earlier.target.name, h.method_name
+                            )));
+                        }
                         logger.log(format!("{} subscribed to the \"{}\" message", p.name, event));
                         let mut guards = c_guards.clone();
                         guards.extend(resolve_all(&enhancers.guards, &ctx).await?);

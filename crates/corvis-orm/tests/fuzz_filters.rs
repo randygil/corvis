@@ -198,6 +198,16 @@ fn has_unknown_key(w: &Value) -> bool {
     }
 }
 
+/// True when a string or an object key anywhere in the value holds a NUL character.
+fn has_nul(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.contains('\0'),
+        Value::Array(a) => a.iter().any(has_nul),
+        Value::Object(o) => o.iter().any(|(k, v)| k.contains('\0') || has_nul(v)),
+        _ => false,
+    }
+}
+
 fn check_error(e: &corvis_orm::OrmError) -> Result<(), String> {
     let m = e.message().to_lowercase();
     if m.contains("syntax error") || m.contains("unrecognized token") || m.contains("unterminated") {
@@ -225,6 +235,10 @@ fn filters_never_break_the_query() {
         let args = if action == "count" { json!({ "where": w }) } else { json!({ "where": w, "take": 50 }) };
         let unknown = has_unknown_key(&args["where"]);
         match rt.block_on(q(&db, action, args.clone())) {
+            Ok(_) if has_nul(&args["where"]) => Err(TestCaseError::fail(format!("{action} {args}: a NUL character was accepted"))),
+            Err(e) if has_nul(&args["where"]) && !e.is_validation() => {
+                Err(TestCaseError::fail(format!("{action} {args}: a NUL character must be a validation error, got {e}")))
+            }
             Ok(_) if unknown => Err(TestCaseError::fail(format!("{action} {args}: unknown keys were accepted"))),
             Ok(_) => Ok(()),
             Err(e) => {
@@ -250,7 +264,13 @@ fn string_equals_matches_exactly() {
     let mut runner = TestRunner::new(config(cases()));
     let result = runner.run(&(hostile_string(), any::<bool>()), |(s, long_form)| {
         let filter = if long_form { json!({ "email": { "equals": s } }) } else { json!({ "email": s }) };
-        let rows = rt.block_on(q(&db, "findMany", json!({ "where": filter }))).map_err(|e| TestCaseError::fail(format!("{s:?}: {e}")))?;
+        let result = rt.block_on(q(&db, "findMany", json!({ "where": filter })));
+        if s.contains('\0') {
+            // NUL cannot be stored on Postgres, so no dialect accepts it in a filter.
+            prop_assert!(result.as_ref().is_err_and(|e| e.is_validation()), "{:?}: expected a validation error, got {:?}", s, result);
+            return Ok(());
+        }
+        let rows = result.map_err(|e| TestCaseError::fail(format!("{s:?}: {e}")))?;
         let rows = rows.as_array().unwrap();
         let expected = SEED_EMAILS.iter().filter(|e| **e == s).count();
         prop_assert_eq!(rows.len(), expected, "email = {:?}", s);

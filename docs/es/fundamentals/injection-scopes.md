@@ -35,7 +35,7 @@ o al registrarlo, sobre cualquier `Provider`:
 providers = [Provider::use_class::<OperationTimer>("TIMER").scope(Scope::Transient)]
 ```
 
-Cada provider que tenga un campo `Arc<OperationTimer>` recibe su propia instancia, y `ModuleRef::resolve::<OperationTimer>()` crea una nueva en cada llamada.
+Cada punto de inyección (cada campo `Arc<OperationTimer>`, incluso dos en el mismo struct) recibe su propia instancia, y `ModuleRef::resolve::<OperationTimer>()` crea una nueva en cada llamada.
 
 Consecuencias que conviene conocer:
 
