@@ -19,7 +19,8 @@
 - [x] 4.1 `cargo build --workspace --all-targets` with no warnings
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 4.3 `cargo test --workspace` passes, except the three CRLF failures of `corvis-swagger` tracked in #110 (`swagger_ui::tests::html`, `swagger_ui::tests::init_js`, `scalar::tests::page`)
-- [ ] 4.4 Non-test runtime code changed (mechanically): run the `corvis-parity` check and verify the three ports keep 0 differences (for the maintainer's parity-verifier, not the implementer)
+- [x] 4.4 Non-test runtime code changed (mechanically): run the `corvis-parity` check and verify the three ports keep 0 differences (for the maintainer's parity-verifier, not the implementer)
+  - Result: consi 832/832, facten 727/727, houseplan 598/598 (quiet-hours count, same as main), routes identical, databases equivalent. Re-verified serially after the shared-target issue: build 0 warnings, clippy clean, tests pass except the pre-existing flaky `transport_security` (#130).
 - [x] 4.5 Docs: tooling only, no user-facing change, no `docs/` page needed; confirm
 
 ## Workflow follow-up
