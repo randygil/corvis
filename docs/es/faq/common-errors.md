@@ -46,7 +46,7 @@ logic into a third provider, resolve one side lazily with ModuleRef (not in its 
 through EventEmitter. See "Circular dependencies" in the docs.
 ```
 
-Dos providers se piden mutuamente (directa o indirectamente). Hay que romper el ciclo (Corvis no tiene `forwardRef`). Opciones:
+Dos providers se piden mutuamente (directa o indirectamente). La cadena también puede pasar por una llamada a `ModuleRef` (`resolve` o `create`) hecha dentro de un constructor o factory. Hay que romper el ciclo (Corvis no tiene `forwardRef`). Opciones:
 
 - Extraer la lógica compartida a un tercer provider del que dependan ambos.
 - Comunicar uno de los lados con eventos (`EventEmitter`) en lugar de una llamada directa.

@@ -32,7 +32,7 @@ Other ways to get it:
 | `get_token::<T>(token)` | `Result<Arc<T>, DiError>` | The same, by token (`"TOKEN"` or `Token`). |
 | `get_token_in_context::<T>(token)` | `Result<Arc<T>, DiError>` | Only what is visible from the module: its providers, the exports of its imports, and the global modules. It is the same as what an `Arc<T>` field would see. |
 | `get_strict::<T>()` | `Result<Arc<T>, DiError>` | Only the providers registered in the module itself. |
-| `resolve::<T>().await` | `Result<Arc<T>, DiError>` | Resolves like injection; for a transient provider it creates a new instance. |
+| `resolve::<T>().await` | `Result<Arc<T>, DiError>` | Resolves like injection; for a transient provider it creates a new instance. Inside a constructor or factory, a cycle back to the provider being built fails with the circular-dependency error. |
 | `create::<T>().await` | `Result<T, DiError>` | Builds an `#[injectable]` that is **not** registered, injecting its fields from the module. It returns the value, not an `Arc`. |
 | `module_name()` | `String` | The module's name. |
 

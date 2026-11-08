@@ -80,7 +80,7 @@ pub struct InvoicesService {
 
 `ModuleRef::get` busca primero con las reglas de visibilidad del módulo y, si no lo encuentra, en toda la aplicación. Para respetar estrictamente la encapsulación usa `get_token_in_context`. Ver [Referencia al módulo](/es/fundamentals/module-ref).
 
-No llames a `get` dentro del constructor (por ejemplo en un `#[init(...)]`): durante la construcción el otro lado todavía no existe.
+No llames a `get` dentro del constructor (por ejemplo en un `#[init(...)]`): durante la construcción el otro lado todavía no existe. Llamar a `resolve` o `create` para el otro lado dentro de un constructor o factory se detecta: el arranque falla con el error de dependencia circular y la cadena completa (`OrdersService -> InvoicesService -> OrdersService`), igual que un ciclo entre campos. El trabajo que lances con `tokio::spawn` dentro de un constructor no queda cubierto por esa comprobación.
 
 ### 3. Comunicar con eventos
 

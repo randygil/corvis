@@ -18,6 +18,21 @@ use crate::router::controller::ControllerDef;
 
 pub type ModuleId = usize;
 
+/// The deepest resolution chain the container follows before it gives up. A chain this long that never repeats a
+/// provider is almost surely a runaway, so it is reported as a circular dependency instead of exhausting the stack.
+const MAX_RESOLUTION_DEPTH: usize = 256;
+
+tokio::task_local! {
+    /// The resolution path of the factory running on this task, read by `ModuleRef` so that a resolution started
+    /// from inside a constructor continues the path instead of starting a new one.
+    static RESOLUTION_PATH: Arc<Vec<(ModuleId, Token)>>;
+}
+
+/// The resolution path of the construction running on this task, empty outside any construction.
+pub(crate) fn current_resolution_path() -> Arc<Vec<(ModuleId, Token)>> {
+    RESOLUTION_PATH.try_with(Arc::clone).unwrap_or_default()
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum ResolvedExport {
     Token(Token),
@@ -398,6 +413,9 @@ impl Container {
                 chain.push(provider.token.display_name());
                 return Err(DiError::Circular { chain: chain.join(" -> ") });
             }
+            if path.len() >= MAX_RESOLUTION_DEPTH {
+                return Err(depth_error(&path, &provider.token));
+            }
             let mut new_path = (*path).clone();
             new_path.push(key.clone());
             let ctx = ResolveCtx {
@@ -407,7 +425,8 @@ impl Container {
                 deps: &[],
                 path: Arc::new(new_path),
             };
-            let Built { instance, hook_target } = (provider.factory)(ctx).await?;
+            let scoped_path = ctx.path.clone();
+            let Built { instance, hook_target } = RESOLUTION_PATH.scope(scoped_path, (provider.factory)(ctx)).await?;
             if transient {
                 return Ok(instance);
             }
@@ -435,14 +454,26 @@ impl Container {
             {
                 return Ok(t);
             }
+            // Continue the path of the construction this call runs in (empty outside any construction).
+            let mut path = (*current_resolution_path()).clone();
+            if path.contains(&key) {
+                let mut chain: Vec<String> = path.iter().map(|(_, t)| t.display_name()).collect();
+                chain.push(key.1.display_name());
+                return Err(DiError::Circular { chain: chain.join(" -> ") });
+            }
+            if path.len() >= MAX_RESOLUTION_DEPTH {
+                return Err(depth_error(&path, &key.1));
+            }
+            path.push(key.clone());
+            let path = Arc::new(path);
             let ctx = ResolveCtx {
                 container: self.clone(),
                 module,
                 requester: Arc::from(crate::di::token::short_type_name(std::any::type_name::<T>())),
                 deps: &[],
-                path: Arc::new(vec![key.clone()]),
+                path: path.clone(),
             };
-            let value = Arc::new(T::construct(ctx).await?);
+            let value = Arc::new(RESOLUTION_PATH.scope(path, T::construct(ctx)).await?);
             if T::scope() != Scope::Transient {
                 self.instances.lock().unwrap().entry(key).or_insert_with(|| erase(value.clone()));
             }
@@ -581,3 +612,12 @@ impl Container {
 }
 
 struct InternalCoreModule;
+
+/// The error for a chain longer than [`MAX_RESOLUTION_DEPTH`]: the last links of the chain and the provider that was
+/// about to be added.
+fn depth_error(path: &[(ModuleId, Token)], next: &Token) -> DiError {
+    let tail = path.len().saturating_sub(8);
+    let mut chain: Vec<String> = path[tail..].iter().map(|(_, t)| t.display_name()).collect();
+    chain.push(next.display_name());
+    DiError::Circular { chain: format!("... -> {}", chain.join(" -> ")) }
+}
