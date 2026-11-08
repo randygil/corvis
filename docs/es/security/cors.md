@@ -50,7 +50,7 @@ app.enable_cors(
 | `.origin("https://a.com")` | `origin: 'https://a.com'` | Un origen fijo. Llamarlo dos veces arma una lista; `"*"` es cualquier origen |
 | `.origins([...])` | `origin: [...]` | Lista de orígenes exactos |
 | `.origin_regex(Regex::new(...)?)` | `origin: /re/` | Añade una expresión regular a la lista (usa tu propia dependencia del crate `regex`) |
-| `.reflect_origin()` | `origin: true` | Refleja el origen de la petición |
+| `.reflect_origin()` | `origin: true` | Refleja el origen de la petición (ver [credenciales y orígenes abiertos](#credentials-and-open-origins)) |
 | `.origin_fn(\|origin\| ...)` | `origin: (origin, cb) => ...` | Decide por petición devolviendo un `CorsOrigin` |
 | `.origin_value(CorsOrigin::Disabled)` | `origin: false` | No envía cabeceras CORS |
 | `.methods([...])` | `methods` | `Access-Control-Allow-Methods` |
@@ -96,11 +96,24 @@ Las variantes de `CorsOrigin` son `Any`, `Reflect`, `Disabled`, `Fixed(String)`,
 - Las cabeceras CORS se añaden también a las respuestas de error, incluidas las del body parser.
 - Las cabeceras que fija el handler tienen prioridad sobre las de CORS.
 
-::: warning `credentials` y orígenes abiertos
+## Credenciales y orígenes abiertos {#credentials-and-open-origins}
+
 Con `credentials(true)` el navegador envía cookies. No lo combines con `reflect_origin()` u
 `origin_fn` que acepten cualquier origen: cualquier sitio podría hacer peticiones autenticadas en
-nombre del usuario. Usa una lista explícita.
-:::
+nombre del usuario y leer las respuestas. Usa una lista explícita con `origins([...])`.
+
+La combinación de `reflect_origin()` y `credentials(true)` es lo que hace el paquete `cors` con
+`origin: true, credentials: true`, así que Corvis la mantiene, pero registra una advertencia al
+iniciar la aplicación (contexto `CorsOptions`):
+
+```text
+CORS reflects the request origin (reflect_origin()) together with credentials(true): any website can send requests with the user's cookies to this application and read the responses. Allow an explicit list of origins with origins([...]) instead. See https://corvis.randygil.com/security/cors#credentials-and-open-origins
+```
+
+Es solo una advertencia: la aplicación arranca y responde exactamente igual que antes. No hay opción
+para silenciarla; para filtrarla usa un logger propio (`use_logger`) o `LoggerOption::Levels`. La
+comprobación no cubre `origin_fn`, porque su resultado solo se conoce en cada petición: asegúrate de
+que no devuelva `CorsOrigin::Reflect` para orígenes en los que no confías.
 
 ## WebSockets
 

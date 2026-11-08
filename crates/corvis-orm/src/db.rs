@@ -2,9 +2,16 @@
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, SecondsFormat, Utc};
 use serde_json::Value;
-use sqlx::postgres::{PgPool, PgRow, PgTypeKind};
+use std::sync::Arc;
+use std::time::Duration;
+
+use sqlx::TransactionManager;
+use sqlx::pool::PoolConnection;
+use sqlx::postgres::{PgConnection, PgPool, PgRow, PgTransactionManager, PgTypeKind};
 use sqlx::sqlite::{SqlitePool, SqliteRow};
 use sqlx::{Column, Postgres, Row, Sqlite, Transaction, TypeInfo, ValueRef};
+
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::decimal::Decimal;
 use crate::error::{OrmError, Result};
@@ -196,24 +203,143 @@ impl Sql {
 #[derive(Clone)]
 pub(crate) enum DbPool {
     Sqlite(SqlitePool),
-    Postgres(PgPool),
+    Postgres(PgHandle),
 }
 
 impl DbPool {
     pub(crate) async fn close(&self) {
         match self {
             DbPool::Sqlite(p) => p.close().await,
-            DbPool::Postgres(p) => p.close().await,
+            DbPool::Postgres(h) => {
+                // Requests still waiting for a slot fail at once instead of at their timeout.
+                h.slots.close();
+                h.pool.close().await
+            }
         }
     }
     pub(crate) async fn begin(&self) -> Result<DbTx> {
         Ok(match self {
             DbPool::Sqlite(p) => DbTx::Sqlite(p.begin().await?),
-            DbPool::Postgres(p) => {
-                let conn = acquire_pg(p).await?;
-                DbTx::Postgres(Transaction::begin(conn, None).await?)
+            DbPool::Postgres(h) => {
+                // The slot stays inside the `PgConn` while BEGIN runs, and until the connection is back in the pool.
+                let conn = acquire_pg(h).await??;
+                DbTx::Postgres(PgTx::begin(conn).await?)
             }
         })
+    }
+}
+
+/// A Postgres pool. The sqlx pool has one deadline for waiting for a free connection and for opening
+/// one; `slots` (as many permits as the pool has connections) is taken first, so the wait for a free
+/// connection is timed by `pool_timeout` and, once a request holds a slot, opening or checking a
+/// connection is timed by `connect_timeout`.
+#[derive(Clone)]
+pub(crate) struct PgHandle {
+    pub(crate) pool: PgPool,
+    pub(crate) slots: Arc<Semaphore>,
+    /// `None` = no limit.
+    pub(crate) pool_timeout: Option<Duration>,
+    /// `None` = no limit.
+    pub(crate) connect_timeout: Option<Duration>,
+    /// `host:port`, for messages.
+    pub(crate) server: Arc<str>,
+}
+
+/// A pooled connection together with the slot of the request that uses it.
+pub(crate) struct PgConn {
+    conn: Option<PoolConnection<Postgres>>,
+    slot: Option<OwnedSemaphorePermit>,
+}
+
+impl PgConn {
+    /// The raw connection, out of the pool, with the slot: the caller keeps the slot until the
+    /// connection is closed, so the server never sees more than `max_connections` of this client.
+    pub(crate) fn detach(mut self) -> (PgConnection, OwnedSemaphorePermit) {
+        let conn = self.conn.take().expect("connection present").detach();
+        (conn, self.slot.take().expect("slot present"))
+    }
+}
+
+impl std::ops::Deref for PgConn {
+    type Target = PgConnection;
+    fn deref(&self) -> &PgConnection {
+        self.conn.as_ref().expect("connection present")
+    }
+}
+
+impl std::ops::DerefMut for PgConn {
+    fn deref_mut(&mut self) -> &mut PgConnection {
+        self.conn.as_mut().expect("connection present")
+    }
+}
+
+impl Drop for PgConn {
+    fn drop(&mut self) {
+        let (Some(mut conn), Some(slot)) = (self.conn.take(), self.slot.take()) else { return };
+        // The slot is released only after the connection is back in the sqlx pool (its liveness
+        // check included), so the next request does not spend its `connect_timeout` waiting for that.
+        let back = conn.return_to_pool();
+        drop(conn);
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => {
+                rt.spawn(async move {
+                    back.await;
+                    drop(slot);
+                });
+            }
+            Err(_) => drop(slot),
+        }
+    }
+}
+
+/// An interactive transaction on Postgres. It owns the [`PgConn`], so when it is dropped (committed, rolled
+/// back, cancelled or timed out) the slot is released only after sqlx has finished the rollback and put the
+/// connection back, as for any other use of the connection.
+pub(crate) struct PgTx {
+    conn: PgConn,
+    open: bool,
+}
+
+impl PgTx {
+    async fn begin(mut conn: PgConn) -> std::result::Result<PgTx, sqlx::Error> {
+        PgTransactionManager::begin(&mut conn, None).await?;
+        Ok(PgTx { conn, open: true })
+    }
+    async fn commit(mut self) -> std::result::Result<(), sqlx::Error> {
+        let r = PgTransactionManager::commit(&mut self.conn).await;
+        if r.is_ok() {
+            self.open = false;
+        }
+        r
+    }
+    async fn rollback(mut self) -> std::result::Result<(), sqlx::Error> {
+        let r = PgTransactionManager::rollback(&mut self.conn).await;
+        if r.is_ok() {
+            self.open = false;
+        }
+        r
+    }
+}
+
+impl Drop for PgTx {
+    fn drop(&mut self) {
+        if self.open {
+            // Queues the ROLLBACK; the connection's own drop then waits for it before the slot is released.
+            PgTransactionManager::start_rollback(&mut self.conn);
+        }
+    }
+}
+
+impl std::ops::Deref for PgTx {
+    type Target = PgConnection;
+    fn deref(&self) -> &PgConnection {
+        &self.conn
+    }
+}
+
+impl std::ops::DerefMut for PgTx {
+    fn deref_mut(&mut self) -> &mut PgConnection {
+        &mut self.conn
     }
 }
 
@@ -248,14 +374,106 @@ where
     }
 }
 
-/// Takes a connection from the pool, repeating attempts that fail with a transient socket error.
-pub(crate) async fn acquire_pg(pool: &PgPool) -> std::result::Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
-    retry_connect(|| pool.acquire()).await
+/// The last error of the per-connection setup statement of one request, reported by the
+/// `after_connect` hook of the pool through [`report_setup_error`].
+#[derive(Default)]
+struct SetupFailure {
+    last: std::sync::Mutex<Option<String>>,
+    /// Notified when the error came from the database itself: the statement fails on every attempt.
+    fatal: Notify,
+}
+
+tokio::task_local! {
+    static SETUP: Arc<SetupFailure>;
+}
+
+/// Called by the `after_connect` hook when the setup statement fails. sqlx logs and retries
+/// any hook error until its deadline; this makes the error visible to the request that is opening
+/// the connection (the hook runs inline in that request's task). Without a request, it does nothing.
+pub(crate) fn report_setup_error(e: &sqlx::Error) {
+    let _ = SETUP.try_with(|s| {
+        *s.last.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
+        if matches!(e, sqlx::Error::Database(_)) {
+            s.fatal.notify_one();
+        }
+    });
+}
+
+/// `P1001` for a failure to get a connection.
+pub(crate) fn unreachable_error(server: &str, detail: impl std::fmt::Display) -> OrmError {
+    OrmError::Initialization(crate::error::InitializationError {
+        message: format!("Can't reach database server at `{server}`: {detail}"),
+        error_code: Some("P1001".into()),
+    })
+}
+
+/// `P1001` for a connection that was not obtained within `limit`.
+pub(crate) fn connect_timed_out(server: &str, limit: Duration, last: Option<String>) -> OrmError {
+    let mut detail = format!("no connection within {} s (`connect_timeout`)", limit.as_secs());
+    if let Some(l) = last {
+        detail.push_str("; last error: ");
+        detail.push_str(&l);
+    }
+    unreachable_error(server, detail)
+}
+
+/// Step 2 of [`acquire_pg`]: gets a connection from `acquire` within `connect_timeout`. A setup error
+/// that the database returned ends the wait at once; the other failures wait for the timeout. The
+/// outer `Err` is the `P1001` of the timeout or of the setup; the inner one is an ordinary driver error.
+pub(crate) async fn open_connection<T, F, Fut>(
+    server: &str,
+    connect_timeout: Option<Duration>,
+    acquire: F,
+) -> Result<std::result::Result<T, sqlx::Error>>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, sqlx::Error>>,
+{
+    let setup = Arc::new(SetupFailure::default());
+    let run = SETUP.scope(setup.clone(), async {
+        tokio::select! {
+            r = retry_connect(acquire) => Some(r),
+            _ = setup.fatal.notified() => None,
+        }
+    });
+    let outcome = match connect_timeout {
+        Some(limit) => match tokio::time::timeout(limit, run).await {
+            Ok(o) => o,
+            Err(_) => return Err(connect_timed_out(server, limit, last_error(&setup))),
+        },
+        None => run.await,
+    };
+    match (outcome, connect_timeout) {
+        // sqlx's own deadline (set to `connect_timeout`) may fire first.
+        (Some(Err(sqlx::Error::PoolTimedOut)), Some(limit)) => Err(connect_timed_out(server, limit, last_error(&setup))),
+        (Some(r), _) => Ok(r),
+        (None, _) => Err(unreachable_error(server, last_error(&setup).unwrap_or_default())),
+    }
+}
+
+fn last_error(s: &SetupFailure) -> Option<String> {
+    s.last.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+/// Takes a connection from the pool in two steps: a slot (waiting at most `pool_timeout`, `P2024`
+/// otherwise), then a connection (at most `connect_timeout`, `P1001` otherwise), repeating attempts
+/// that fail with a transient socket error. The slot stays with the returned connection.
+pub(crate) async fn acquire_pg(h: &PgHandle) -> Result<std::result::Result<PgConn, sqlx::Error>> {
+    let slot = match h.pool_timeout {
+        Some(limit) => match tokio::time::timeout(limit, h.slots.clone().acquire_owned()).await {
+            Ok(r) => r,
+            Err(_) => return Err(OrmError::from(sqlx::Error::PoolTimedOut)),
+        },
+        None => h.slots.clone().acquire_owned().await,
+    };
+    let Ok(slot) = slot else { return Ok(Err(sqlx::Error::PoolClosed)) };
+    let conn = open_connection(&h.server, h.connect_timeout, || h.pool.acquire()).await?;
+    Ok(conn.map(|c| PgConn { conn: Some(c), slot: Some(slot) }))
 }
 
 pub(crate) enum DbTx {
     Sqlite(Transaction<'static, Sqlite>),
-    Postgres(Transaction<'static, Postgres>),
+    Postgres(PgTx),
 }
 
 impl DbTx {
@@ -870,5 +1088,117 @@ mod connect_retry_tests {
             assert!(r.is_err());
             assert_eq!(calls.load(SeqCst), 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod setup_failure_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[derive(Debug)]
+    struct FakeDbError(&'static str);
+
+    impl std::fmt::Display for FakeDbError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for FakeDbError {}
+
+    impl sqlx::error::DatabaseError for FakeDbError {
+        fn message(&self) -> &str {
+            self.0
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    fn pending() -> impl std::future::Future<Output = std::result::Result<(), sqlx::Error>> {
+        std::future::pending()
+    }
+
+    #[tokio::test]
+    async fn setup_failure_from_the_database_ends_the_wait_at_once() {
+        let t = Instant::now();
+        let r = open_connection("db:5432", Some(Duration::from_secs(30)), || async {
+            report_setup_error(&sqlx::Error::Database(Box::new(FakeDbError("invalid byte sequence"))));
+            pending().await
+        })
+        .await;
+        let e = r.map(|_| ()).unwrap_err();
+        assert!(t.elapsed() < Duration::from_secs(1));
+        assert_eq!(e.code(), Some("P1001"));
+        assert!(e.message().starts_with("Can't reach database server at `db:5432`: "), "{e}");
+        assert!(e.message().contains("invalid byte sequence"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn setup_failure_from_the_database_ends_an_unlimited_wait() {
+        let r = open_connection("db:5432", None, || async {
+            report_setup_error(&sqlx::Error::Database(Box::new(FakeDbError("boom"))));
+            pending().await
+        })
+        .await;
+        assert!(r.map(|_| ()).unwrap_err().message().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn setup_failure_on_the_socket_is_retried_until_the_timeout_and_shown() {
+        let t = Instant::now();
+        let r = open_connection("db:5432", Some(Duration::from_millis(300)), || async {
+            report_setup_error(&sqlx::Error::Io(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset by peer")));
+            pending().await
+        })
+        .await;
+        let e = r.map(|_| ()).unwrap_err();
+        assert!(t.elapsed() >= Duration::from_millis(250) && t.elapsed() < Duration::from_secs(3));
+        assert_eq!(e.code(), Some("P1001"));
+        assert!(e.message().contains("no connection within 0 s (`connect_timeout`)"), "{e}");
+        assert!(e.message().contains("last error:") && e.message().contains("reset by peer"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn setup_failure_with_nothing_reported_ends_with_the_plain_timeout() {
+        let r = open_connection("db:5432", Some(Duration::from_millis(200)), pending).await;
+        let e = r.map(|_| ()).unwrap_err();
+        assert_eq!(e.message(), "Can't reach database server at `db:5432`: no connection within 0 s (`connect_timeout`)");
+    }
+
+    #[tokio::test]
+    async fn setup_failure_reports_of_other_requests_are_not_seen() {
+        // A report outside of any request is ignored, and a request never sees another request's error.
+        report_setup_error(&sqlx::Error::Database(Box::new(FakeDbError("elsewhere"))));
+        let slow = open_connection("db:5432", Some(Duration::from_millis(300)), pending);
+        let failing = open_connection("db:5432", Some(Duration::from_secs(30)), || async {
+            report_setup_error(&sqlx::Error::Database(Box::new(FakeDbError("mine"))));
+            pending().await
+        });
+        let (a, b) = tokio::join!(slow, failing);
+        let (a, b) = (a.map(|_| ()).unwrap_err(), b.map(|_| ()).unwrap_err());
+        assert!(!a.message().contains("mine") && !a.message().contains("elsewhere"), "{a}");
+        assert!(b.message().contains("mine"), "{b}");
+    }
+
+    #[tokio::test]
+    async fn setup_success_and_driver_errors_pass_through() {
+        let r = open_connection("db:5432", Some(Duration::from_secs(5)), || async { Ok::<_, sqlx::Error>(7) }).await;
+        assert_eq!(r.unwrap().unwrap(), 7);
+        let r = open_connection("db:5432", Some(Duration::from_secs(5)), || async { Err::<(), _>(sqlx::Error::PoolClosed) }).await;
+        assert!(matches!(r.unwrap(), Err(sqlx::Error::PoolClosed)));
+        // sqlx's own deadline, equal to ours, may fire first: still the connect error.
+        let r = open_connection("db:5432", Some(Duration::from_secs(5)), || async { Err::<(), _>(sqlx::Error::PoolTimedOut) }).await;
+        assert_eq!(r.map(|_| ()).unwrap_err().code(), Some("P1001"));
     }
 }

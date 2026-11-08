@@ -64,7 +64,8 @@ Commands:
                                  Generate a new Corvis application.
   generate|g <schematic> <name> [--flat] [--path <dir>] [--no-spec]
                                  Generate a Corvis element.
-  start [--watch] [-- args]      Run the application (cargo run / cargo watch).
+  start [--watch] [--release] [-- args]
+                                 Run the application (cargo run, or cargo watch -x "run ..." with --watch).
   build [--release]              Build the application (debug profile unless --release).
   info|i                         Display Corvis project details.
 
@@ -376,36 +377,70 @@ fn find_cargo_subcommand(name: &str) -> Option<PathBuf> {
     dirs.into_iter().map(|d| d.join(&file)).find(|f| f.is_file())
 }
 
+/// Builds the arguments given to `cargo` for `corvis start` (`sub == "run"`) or `corvis build`.
+/// `--watch`, `--release` and `--prod` are read only before the first `--`; everything after it
+/// belongs to the program.
+fn cargo_invocation(args: &[String], sub: &str) -> Result<Vec<String>, String> {
+    let (own, program) = match args.iter().position(|a| a == "--") {
+        Some(i) => (&args[..i], Some(&args[i + 1..])),
+        None => (args, None),
+    };
+    let release = flag(own, "--release") || flag(own, "--prod");
+    let watch = sub == "run" && flag(own, "--watch");
+    let program = program.unwrap_or(&[]);
+    if watch {
+        let mut line = String::from("run");
+        if release {
+            line.push_str(" --release");
+        }
+        if !program.is_empty() {
+            line.push_str(" --");
+            for a in program {
+                if !watch_safe(a) {
+                    return Err(format!(
+                        "argument \"{a}\" cannot be passed through cargo watch (it runs the command through a shell).                          Run \"corvis start\" without --watch, or run cargo watch directly with your shell's quoting."
+                    ));
+                }
+                line.push(' ');
+                line.push_str(a);
+            }
+        }
+        return Ok(vec!["watch".into(), "-x".into(), line]);
+    }
+    let mut out = vec![sub.to_string()];
+    if release {
+        out.push("--release".into());
+    }
+    if args.iter().any(|a| a == "--") {
+        out.push("--".into());
+        out.extend(program.iter().cloned());
+    }
+    Ok(out)
+}
+
+/// A program argument that a shell hands over unchanged: non-empty, letters, digits and `-_./:=,+@`.
+fn watch_safe(arg: &str) -> bool {
+    !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=,+@".contains(c))
+}
+
 fn cmd_cargo(args: &[String], sub: &str) -> Res {
-    let mut cmd;
-    let release = flag(args, "--release") || flag(args, "--prod");
-    let watch = sub == "run" && flag(args, "--watch");
+    let invocation = cargo_invocation(args, sub)?;
+    let watch = invocation.first().map(String::as_str) == Some("watch");
     if !watch {
+        let release = invocation.iter().take_while(|a| *a != "--").any(|a| a == "--release");
         let verb = if sub == "build" { "Building" } else { "Running" };
         if release {
             println!("{verb} the release profile");
         } else {
             println!("{verb} the debug profile (use --release for an optimized build)");
         }
+    } else if find_cargo_subcommand("watch").is_none() {
+        return Err(format!(
+            "cargo-watch is not installed: corvis start --watch runs \"cargo watch -x \\\"{}\\\"\".                 Install it with \"cargo install cargo-watch\", or run \"corvis start\" without --watch.",
+            invocation[2]
+        ));
     }
-    if watch {
-        if find_cargo_subcommand("watch").is_none() {
-            return Err("cargo-watch is not installed: corvis start --watch runs \"cargo watch -x run\".                 Install it with \"cargo install cargo-watch\", or run \"corvis start\" without --watch."
-                .into());
-        }
-        cmd = Command::new("cargo");
-        cmd.args(["watch", "-x", "run"]);
-    } else {
-        cmd = Command::new("cargo");
-        cmd.arg(sub);
-        if release {
-            cmd.arg("--release");
-        }
-        if let Some(i) = args.iter().position(|a| a == "--") {
-            cmd.arg("--").args(&args[i + 1..]);
-        }
-    }
-    let status = cmd.status().map_err(|e| format!("failed to run cargo: {e}"))?;
+    let status = Command::new("cargo").args(&invocation).status().map_err(|e| format!("failed to run cargo: {e}"))?;
     if status.success() { Ok(()) } else { Err(format!("cargo {sub} failed")) }
 }
 
@@ -490,5 +525,50 @@ mod tests {
         assert_eq!(find_cargo_subcommand("watch"), Some(file));
         assert_eq!(find_cargo_subcommand("corvis-no-such-subcommand"), None);
         let _ = fs::remove_dir_all(home);
+    }
+
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn inv(a: &[&str], sub: &str) -> Result<Vec<String>, String> {
+        cargo_invocation(&v(a), sub)
+    }
+
+    #[test]
+    fn builds_start_and_build_commands() {
+        assert_eq!(inv(&[], "run").unwrap(), v(&["run"]));
+        assert_eq!(inv(&["--release"], "run").unwrap(), v(&["run", "--release"]));
+        assert_eq!(inv(&["--prod"], "run").unwrap(), v(&["run", "--release"]));
+        assert_eq!(inv(&["--", "a", "b"], "run").unwrap(), v(&["run", "--", "a", "b"]));
+        assert_eq!(inv(&["--", "--release"], "run").unwrap(), v(&["run", "--", "--release"]));
+        assert_eq!(inv(&["--", "--watch"], "run").unwrap(), v(&["run", "--", "--watch"]));
+        assert_eq!(inv(&[], "build").unwrap(), v(&["build"]));
+        assert_eq!(inv(&["--release"], "build").unwrap(), v(&["build", "--release"]));
+        assert_eq!(inv(&["--", "x"], "build").unwrap(), v(&["build", "--", "x"]));
+    }
+
+    #[test]
+    fn builds_watch_commands() {
+        assert_eq!(inv(&["--watch"], "run").unwrap(), v(&["watch", "-x", "run"]));
+        assert_eq!(inv(&["--watch", "--release"], "run").unwrap(), v(&["watch", "-x", "run --release"]));
+        assert_eq!(
+            inv(&["--watch", "--prod", "--", "--port", "4000"], "run").unwrap(),
+            v(&["watch", "-x", "run --release -- --port 4000"])
+        );
+        assert_eq!(
+            inv(&["--watch", "--", "--config=./dev.toml", "--host", "127.0.0.1"], "run").unwrap(),
+            v(&["watch", "-x", "run -- --config=./dev.toml --host 127.0.0.1"])
+        );
+        assert_eq!(inv(&["--watch", "--", "http://localhost:3000/x"], "run").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn watch_rejects_shell_sensitive_arguments() {
+        for bad in ["my app", "", "a;b", "$HOME", "%PATH%", "a&b", "a|b", "\"q\""] {
+            let err = inv(&["--watch", "--", bad], "run").unwrap_err();
+            assert!(err.contains(&format!("argument \"{bad}\"")) && err.contains("without --watch"), "{bad}: {err}");
+        }
+        assert_eq!(inv(&["--", "my app"], "run").unwrap(), v(&["run", "--", "my app"]));
     }
 }

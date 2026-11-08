@@ -490,9 +490,9 @@ async fn cancelled_nested_writes_do_not_leak_timer_tasks() {
 #[tokio::test]
 async fn connection_errors_do_not_show_credentials() {
     for url in [
-        "postgres://app:p@ssw0rd@127.0.0.1:5299/db",
-        "postgres://127.0.0.1:5299/db?user=app&password=SuperSecreta",
-        "postgresql:/app:SuperSecreta@127.0.0.1:5299/db",
+        "postgres://app:p@ssw0rd@127.0.0.1:5299/db?connect_timeout=1",
+        "postgres://127.0.0.1:5299/db?user=app&password=SuperSecreta&connect_timeout=1",
+        "postgresql:/app:SuperSecreta@127.0.0.1:5299/db?connect_timeout=1",
         "mysql://app:SuperSecreta@127.0.0.1/db",
     ] {
         let mut opts = OrmClientOptions::new(url);
@@ -503,7 +503,7 @@ async fn connection_errors_do_not_show_credentials() {
         };
         assert!(!msg.contains("ssw0rd") && !msg.contains("SuperSecreta") && !msg.contains("app:"), "{url} -> {msg}");
     }
-    let mut opts = OrmClientOptions::new("postgres://app:p@ssw0rd@127.0.0.1:5299/db");
+    let mut opts = OrmClientOptions::new("postgres://app:p@ssw0rd@127.0.0.1:5299/db?connect_timeout=1");
     opts.acquire_timeout = Some(Duration::from_secs(2));
     let e = OrmClient::with_options(opts).unwrap().connect().await.unwrap_err();
     assert_eq!(e.code(), Some("P1001"));

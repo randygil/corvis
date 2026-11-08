@@ -185,6 +185,19 @@ impl CorsOptions {
         self.exposed_headers = h.into_iter().map(Into::into).collect();
         self
     }
+    /// The startup warning for the options that let any website make credentialed requests:
+    /// the request origin is reflected and credentials are allowed. `Any` is not reported (browsers
+    /// refuse `*` with credentials) and neither is `Dynamic` (its result is only known per request).
+    pub(crate) fn startup_warning(&self) -> Option<String> {
+        if self.credentials && matches!(self.origin, CorsOrigin::Reflect) {
+            Some(
+                "CORS reflects the request origin (reflect_origin()) together with credentials(true): any website can send                  requests with the user's cookies to this application and read the responses. Allow an explicit list of                  origins with origins([...]) instead. See https://corvis.randygil.com/security/cors#credentials-and-open-origins"
+                    .to_string(),
+            )
+        } else {
+            None
+        }
+    }
     pub fn credentials(mut self, v: bool) -> Self {
         self.credentials = v;
         self
@@ -350,5 +363,25 @@ mod tests {
         assert!(matches!(CorsOptions::new().origin("http://a").origin, CorsOrigin::Fixed(_)));
         assert!(matches!(CorsOptions::new().origin("http://a").origin("http://b").origin, CorsOrigin::List(ref l) if l.len() == 2));
         assert!(matches!(CorsOptions::new().origins(["http://a"]).origin, CorsOrigin::List(ref l) if l.len() == 1));
+    }
+
+    #[test]
+    fn startup_warning_truth_table() {
+        let re = || regex::Regex::new(r"^https://a\.test$").unwrap();
+        let warn = |o: CorsOptions| o.startup_warning();
+        let w = warn(CorsOptions::new().reflect_origin().credentials(true)).unwrap();
+        assert!(w.contains("reflect_origin()") && w.contains("credentials(true)") && w.contains("origins([...])"));
+        assert!(w.contains("https://corvis.randygil.com/security/cors#credentials-and-open-origins"));
+        assert!(!w.contains('\n'));
+        assert!(warn(CorsOptions::new().origin_value(CorsOrigin::Reflect).credentials(true)).is_some());
+        assert!(warn(CorsOptions::new().reflect_origin()).is_none());
+        assert!(warn(CorsOptions::new().reflect_origin().credentials(false)).is_none());
+        assert!(warn(CorsOptions::new().credentials(true)).is_none());
+        assert!(warn(CorsOptions::new().origin("*").credentials(true)).is_none());
+        assert!(warn(CorsOptions::new().origin("http://a").credentials(true)).is_none());
+        assert!(warn(CorsOptions::new().origins(["http://a", "http://b"]).credentials(true)).is_none());
+        assert!(warn(CorsOptions::new().origin_regex(re()).credentials(true)).is_none());
+        assert!(warn(CorsOptions::new().origin_value(CorsOrigin::Disabled).credentials(true)).is_none());
+        assert!(warn(CorsOptions::new().origin_fn(|_| CorsOrigin::Reflect).credentials(true)).is_none());
     }
 }

@@ -129,3 +129,14 @@ fn start_watch_without_cargo_watch_explains_how_to_install_it() {
     assert!(text.contains("cargo install cargo-watch") && text.contains("without --watch"), "{text}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `cargo watch` runs the command through a shell, so an argument the shell would split or interpret is
+/// rejected before any Cargo process starts.
+#[test]
+fn start_watch_rejects_shell_arguments() {
+    let dir = sandbox("watch-args");
+    let (ok, out) = corvis(&dir.join("work"), &["start", "--watch", "--", "my app"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("my app") && out.contains("without --watch"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

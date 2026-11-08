@@ -474,6 +474,9 @@ impl CorvisApplication {
         self.config.router.global_filters.reverse();
         self.config.router.global_filters.extend(provider_filters.into_iter().rev());
         let router = build_router(&self.container, &self.config.router, self.log_routes).await?;
+        if let Some(warning) = self.config.cors.as_ref().and_then(CorsOptions::startup_warning) {
+            Logger::new("CorsOptions").warn(warning);
+        }
         let module_middleware = build_middleware(&self.container, &router, &self.config.router).await?;
         #[cfg(feature = "websockets")]
         let gateways = crate::websockets::build_gateways(&self.container, &self.config.router).await?;

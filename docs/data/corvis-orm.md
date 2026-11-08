@@ -160,28 +160,36 @@ The first argument of `for_root_async` and `for_root_from_config` says whether t
 The pool is sized and timed from the database URL, the same way the original client does it, so an app that keeps its `DATABASE_URL` keeps its pool:
 
 ```text
-postgresql://user:pass@host/db?connection_limit=5&pool_timeout=20
+postgresql://user:pass@host/db?connection_limit=5&pool_timeout=20&connect_timeout=10
 file:./dev.db?connection_limit=1
 ```
 
 | Parameter | Meaning | Default |
 |---|---|---|
 | `connection_limit` | Maximum number of pooled connections. An integer of at least 1 | `2 * physical CPU cores + 1` |
-| `pool_timeout` | Seconds a query waits for a free connection before it fails with `P2024`. `0` waits without limit | `10` |
+| `pool_timeout` | Seconds a query waits for a free connection of the pool before it fails with `P2024`. `0` waits without limit | `10` |
+| `connect_timeout` | Postgres only. Seconds to open a connection (connect, authentication, the `schema` setup statement and the liveness check of an idle connection) before the query fails with `P1001`. `0` waits without limit | `5` |
 
 - They work for Postgres and for file-backed SQLite (`file:` and `sqlite:`). They are removed from the URL before it reaches the driver; every other parameter (`sslmode`, `application_name`, `options`, ...) is kept as written.
 - In-memory SQLite always uses exactly one connection: `connection_limit` is accepted and ignored there. On SQLite, `pool_timeout` is applied only when it is a valid number; an invalid one is ignored, as the original client does.
 - A repeated parameter keeps its last value, and values can be percent-encoded.
-- An invalid value (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`) fails when the client is created, with an initialization error `P1013` that names the parameter and shows the value only when it is short and plain (letters, digits, `+ . _ -`), never the rest of the URL. `OrmClientOptions` prints its URL without the password in `Debug` output; a code `acquire_timeout` of `Duration::MAX` means no limit. The original client treats `connection_limit=0` as no limit; corvis-orm requires at least 1.
+- On SQLite, `connect_timeout` is removed from the URL and ignored, whatever its value: opening a file does not wait on a network.
+- An invalid value (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`, `connect_timeout=abc`) fails when the client is created, with an initialization error `P1013` that names the parameter and shows the value only when it is short and plain (letters, digits, `+ . _ -`), never the rest of the URL. `OrmClientOptions` prints its URL without the password in `Debug` output; a code `acquire_timeout` of `Duration::MAX` means no limit. The original client treats `connection_limit=0` as no limit; corvis-orm requires at least 1.
 - The pool size is at most 262143 (the largest value Postgres accepts for its own `max_connections`), in the URL and in code: the driver reserves one slot per connection up front, so a larger value would exhaust memory. `connection_limit=262144` fails with `P1013`, and `max_connections(0)` or `max_connections(n)` above the bound fails when the client is created.
 - Values set in code win over the URL: `OrmClientOptions::max_connections(n)` (and `OrmModuleOptions::max_connections(n)`) over `connection_limit`, and `OrmClientOptions::acquire_timeout` over `pool_timeout`. The URL wins over the defaults.
-- `pool_timeout=0` with an unreachable server is bounded only by the operating system's connection timeout.
+- `pool_timeout` and `acquire_timeout` bound only the wait for a free connection. Opening a connection is bounded by `connect_timeout` instead, so `pool_timeout=0` (wait without limit for a busy pool) never means waiting forever for a server that is down, silent or full: the query fails with `P1001` "Can't reach database server at `host:port`" after `connect_timeout`. The first connection of `connect()` and the checks of `migrate deploy` and `migrate status` are bounded the same way. `connect_timeout=0` removes the bound.
+- A connection that cannot be set up because the database rejects the `schema` statement (for example a name the database encoding cannot represent) fails at once with `P1001` and the database's message, instead of retrying until a timeout.
+- Differences from the original client: a refused connection is retried inside `connect_timeout` (the original fails at once), so an app that starts next to a database that is still booting keeps working; and every connection failure is reported as `P1001`, not with the original's per-cause codes (`P1000`, `P1003`, `P2037`): a role at its connection limit, which the original reports at once as "Too many database connections opened", fails with `P1001` after `connect_timeout`. A `connect_timeout` that does not fit 64 bits (`99999999999999999999`) is invalid, as in the original; one that fits but is larger than `4294967295` seconds means no limit.
 
 ::: warning Changed defaults
 Before this change the pool had 10 connections on Postgres and 5 on SQLite files, and a query waited up to 30 seconds for a connection. The defaults are now `2 * physical cores + 1` connections and 10 seconds. Set `connection_limit` and `pool_timeout` in the URL (or `max_connections` in code) to restore any previous value. With several connections on a SQLite file, writers can contend for the lock; use `connection_limit=1` when your app needs a single writer.
 :::
 
-Pool settings that newer client versions take in code (maximum size, connection timeout) map to `max_connections(n)` and `acquire_timeout`.
+::: warning Changed: `acquire_timeout` no longer bounds connecting
+A program that set `acquire_timeout` (or `pool_timeout`) to a few seconds to fail fast on an unreachable Postgres server now waits up to `connect_timeout` (5 seconds by default) instead. Add `?connect_timeout=2` to the URL to restore the old limit.
+:::
+
+Pool settings that newer client versions take in code map to `max_connections(n)` (maximum size) and `acquire_timeout` (wait for a free connection); their connection timeout maps to `connect_timeout` in the URL.
 
 ## Database schema
 

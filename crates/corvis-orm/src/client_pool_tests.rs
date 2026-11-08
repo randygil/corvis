@@ -134,3 +134,110 @@ async fn pool_sqlite_scheme_url_with_limit_connects() {
     let (n, _) = limits(OrmClientOptions::new(url)).await;
     assert_eq!(n, 1);
 }
+
+// ---- connect_timeout (Postgres), against a listener that accepts sockets and never answers ----
+
+/// A loopback listener that accepts connections and keeps them open without writing.
+async fn silent_server() -> (u16, tokio::task::JoinHandle<()>) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let h = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((s, _)) = l.accept().await {
+            held.push(s);
+        }
+    });
+    (port, h)
+}
+
+fn silent_url(port: u16, q: &str) -> String {
+    format!("postgres://u:topsecret@127.0.0.1:{port}/x{q}")
+}
+
+#[tokio::test]
+async fn connect_timeout_one_second_fails_with_p1001_although_pool_timeout_is_unlimited() {
+    let (port, _srv) = silent_server().await;
+    let c = OrmClient::new(silent_url(port, "?connect_timeout=1&pool_timeout=0")).unwrap();
+    let t = std::time::Instant::now();
+    let e = c.connect().await.unwrap_err();
+    assert!(t.elapsed() >= Duration::from_millis(900) && t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    assert_eq!(e.code(), Some("P1001"));
+    assert!(e.message().starts_with(&format!("Can't reach database server at `127.0.0.1:{port}`")), "{e}");
+    assert!(!e.message().contains("topsecret"), "{e}");
+    assert!(!c.is_connected().await);
+}
+
+#[tokio::test]
+async fn connect_timeout_default_is_five_seconds() {
+    let (port, _srv) = silent_server().await;
+    let c = OrmClient::new(silent_url(port, "?pool_timeout=0")).unwrap();
+    assert_eq!(c.connect_timeout(), Some(Duration::from_secs(5)));
+    let t = std::time::Instant::now();
+    let e = c.connect().await.unwrap_err();
+    assert!(t.elapsed() >= Duration::from_millis(4900) && t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+    assert_eq!(e.code(), Some("P1001"));
+}
+
+#[tokio::test]
+async fn connect_timeout_zero_has_no_limit() {
+    let (port, _srv) = silent_server().await;
+    let c = OrmClient::new(silent_url(port, "?connect_timeout=0&pool_timeout=0")).unwrap();
+    assert_eq!(c.connect_timeout(), None);
+    assert!(tokio::time::timeout(Duration::from_secs(3), c.connect()).await.is_err());
+    // A value above `u32::MAX` seconds is "no limit" too (sqlx cannot add it to the clock).
+    let c = OrmClient::new(silent_url(port, "?connect_timeout=18446744073709551615")).unwrap();
+    assert_eq!(c.connect_timeout(), None);
+}
+
+#[tokio::test]
+async fn connect_timeout_repeated_key_last_wins() {
+    let c = OrmClient::new("postgresql://h/db?connect_timeout=1&connect_timeout=3").unwrap();
+    assert_eq!(c.connect_timeout(), Some(Duration::from_secs(3)));
+    assert_eq!(c.inner.driver_url, "postgresql://h/db");
+}
+
+#[tokio::test]
+async fn connect_timeout_refused_port_with_unlimited_pool_timeout_fails() {
+    let c = OrmClient::new("postgres://u:p@127.0.0.1:1/x?pool_timeout=0&connect_timeout=1").unwrap();
+    let t = std::time::Instant::now();
+    let e = c.connect().await.unwrap_err();
+    assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
+    assert_eq!(e.code(), Some("P1001"));
+    assert!(e.message().starts_with("Can't reach database server at `127.0.0.1:1`"), "{e}");
+}
+
+#[tokio::test]
+async fn connect_timeout_is_not_the_acquire_timeout_in_code() {
+    // `acquire_timeout` bounds the wait for a slot only: a short one does not cut the connect.
+    let (port, _srv) = silent_server().await;
+    let mut o = OrmClientOptions::new(silent_url(port, "?connect_timeout=1"));
+    o.acquire_timeout = Some(Duration::from_millis(100));
+    let t = std::time::Instant::now();
+    let e = OrmClient::with_options(o).unwrap().connect().await.unwrap_err();
+    assert!(t.elapsed() >= Duration::from_millis(900), "{:?}", t.elapsed());
+    assert_eq!(e.code(), Some("P1001"));
+}
+
+#[tokio::test]
+async fn connect_timeout_migrate_deploy_is_bounded() {
+    let (port, _srv) = silent_server().await;
+    let dir = TempDir::new("migrate");
+    let c = OrmClient::new(silent_url(port, "?connect_timeout=1&pool_timeout=0")).unwrap();
+    let t = std::time::Instant::now();
+    let e = c.migrate_deploy(dir.path()).await.unwrap_err();
+    assert!(t.elapsed() >= Duration::from_millis(900) && t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    assert_eq!(e.code(), Some("P1001"));
+    assert!(e.message().starts_with(&format!("Can't reach database server at `127.0.0.1:{port}`")), "{e}");
+    assert!(!e.message().contains("topsecret"), "{e}");
+}
+
+#[tokio::test]
+async fn connect_timeout_is_ignored_on_sqlite() {
+    let dir = TempDir::new("sqlite-ct");
+    for v in ["abc", "1", "0", "-1", ""] {
+        let url = format!("file:{}/ct.db?connect_timeout={v}", dir.path());
+        let c = OrmClient::new(url).unwrap();
+        assert_eq!(c.inner.driver_url, format!("file:{}/ct.db", dir.path()));
+        c.connect().await.unwrap();
+    }
+}

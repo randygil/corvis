@@ -160,28 +160,36 @@ Opciones de `OrmModuleOptions`:
 El pool se dimensiona y se limita en tiempo desde la URL de la base de datos, igual que lo hace el cliente original, así que una app que conserva su `DATABASE_URL` conserva su pool:
 
 ```text
-postgresql://user:pass@host/db?connection_limit=5&pool_timeout=20
+postgresql://user:pass@host/db?connection_limit=5&pool_timeout=20&connect_timeout=10
 file:./dev.db?connection_limit=1
 ```
 
 | Parámetro | Significado | Por defecto |
 |---|---|---|
 | `connection_limit` | Número máximo de conexiones del pool. Un entero de al menos 1 | `2 * núcleos físicos de CPU + 1` |
-| `pool_timeout` | Segundos que una consulta espera una conexión libre antes de fallar con `P2024`. `0` espera sin límite | `10` |
+| `pool_timeout` | Segundos que una consulta espera una conexión libre del pool antes de fallar con `P2024`. `0` espera sin límite | `10` |
+| `connect_timeout` | Solo Postgres. Segundos para abrir una conexión (conectar, autenticar, la sentencia de preparación de `schema` y la comprobación de una conexión inactiva) antes de que la consulta falle con `P1001`. `0` espera sin límite | `5` |
 
 - Funcionan con Postgres y con SQLite en archivo (`file:` y `sqlite:`). Se quitan de la URL antes de que llegue al driver; el resto de parámetros (`sslmode`, `application_name`, `options`, ...) se conservan tal cual.
 - SQLite en memoria usa siempre exactamente una conexión: `connection_limit` se acepta y se ignora ahí. En SQLite, `pool_timeout` solo se aplica si es un número válido; uno inválido se ignora, como hace el cliente original.
 - Un parámetro repetido conserva su último valor, y los valores pueden ir codificados con porcentaje.
-- Un valor inválido (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`) falla al crear el cliente, con un error de inicialización `P1013` que nombra el parámetro y muestra el valor solo si es corto y simple (letras, dígitos, `+ . _ -`), nunca el resto de la URL. `OrmClientOptions` muestra su URL sin la contraseña en la salida de `Debug`; un `acquire_timeout` en código de `Duration::MAX` significa sin límite. El cliente original trata `connection_limit=0` como sin límite; corvis-orm exige al menos 1.
+- En SQLite, `connect_timeout` se quita de la URL y se ignora, sea cual sea su valor: abrir un archivo no espera a una red.
+- Un valor inválido (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`, `connect_timeout=abc`) falla al crear el cliente, con un error de inicialización `P1013` que nombra el parámetro y muestra el valor solo si es corto y simple (letras, dígitos, `+ . _ -`), nunca el resto de la URL. `OrmClientOptions` muestra su URL sin la contraseña en la salida de `Debug`; un `acquire_timeout` en código de `Duration::MAX` significa sin límite. El cliente original trata `connection_limit=0` como sin límite; corvis-orm exige al menos 1.
 - El tamaño del pool es como máximo 262143 (el mayor valor que Postgres acepta para su propio `max_connections`), en la URL y en código: el driver reserva un espacio por conexión por adelantado, así que un valor mayor agotaría la memoria. `connection_limit=262144` falla con `P1013`, y `max_connections(0)` o `max_connections(n)` por encima del límite falla al crear el cliente.
 - Los valores puestos en código tienen prioridad sobre la URL: `OrmClientOptions::max_connections(n)` (y `OrmModuleOptions::max_connections(n)`) sobre `connection_limit`, y `OrmClientOptions::acquire_timeout` sobre `pool_timeout`. La URL tiene prioridad sobre los valores por defecto.
-- `pool_timeout=0` con un servidor inalcanzable solo está limitado por el tiempo de conexión del sistema operativo.
+- `pool_timeout` y `acquire_timeout` limitan solo la espera de una conexión libre. Abrir una conexión lo limita `connect_timeout`, así que `pool_timeout=0` (esperar sin límite a un pool ocupado) nunca significa esperar para siempre a un servidor caído, mudo o lleno: la consulta falla con `P1001` "Can't reach database server at `host:port`" tras `connect_timeout`. La primera conexión de `connect()` y las comprobaciones de `migrate deploy` y `migrate status` tienen el mismo límite. `connect_timeout=0` quita el límite.
+- Una conexión que no se puede preparar porque la base de datos rechaza la sentencia de `schema` (por ejemplo un nombre que la codificación de la base no puede representar) falla al instante con `P1001` y el mensaje de la base de datos, en lugar de reintentar hasta un tiempo límite.
+- Diferencias con el cliente original: una conexión rechazada se reintenta dentro de `connect_timeout` (el original falla al instante), así que una app que arranca junto a una base de datos que aún está iniciando sigue funcionando; y todo fallo de conexión se informa como `P1001`, no con los códigos por causa del original (`P1000`, `P1003`, `P2037`): un rol en su límite de conexiones, que el original informa al instante como "Too many database connections opened", falla con `P1001` tras `connect_timeout`. Un `connect_timeout` que no cabe en 64 bits (`99999999999999999999`) es inválido, como en el original; uno que cabe pero supera `4294967295` segundos significa sin límite.
 
 ::: warning Valores por defecto cambiados
 Antes el pool tenía 10 conexiones en Postgres y 5 en archivos SQLite, y una consulta esperaba hasta 30 segundos por una conexión. Ahora los valores por defecto son `2 * núcleos físicos + 1` conexiones y 10 segundos. Define `connection_limit` y `pool_timeout` en la URL (o `max_connections` en código) para recuperar cualquier valor anterior. Con varias conexiones sobre un archivo SQLite, los escritores pueden competir por el bloqueo; usa `connection_limit=1` si tu app necesita un único escritor.
 :::
 
-Los ajustes de pool que las versiones más nuevas del cliente reciben en código (tamaño máximo, tiempo de conexión) equivalen a `max_connections(n)` y `acquire_timeout`.
+::: warning Cambio: `acquire_timeout` ya no limita la conexión
+Un programa que puso `acquire_timeout` (o `pool_timeout`) en pocos segundos para fallar rápido ante un servidor Postgres inalcanzable ahora espera hasta `connect_timeout` (5 segundos por defecto). Añade `?connect_timeout=2` a la URL para recuperar el límite anterior.
+:::
+
+Los ajustes de pool que las versiones más nuevas del cliente reciben en código equivalen a `max_connections(n)` (tamaño máximo) y `acquire_timeout` (espera de una conexión libre); su tiempo de conexión equivale a `connect_timeout` en la URL.
 
 ## Esquema de la base de datos
 
