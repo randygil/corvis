@@ -66,8 +66,8 @@
 - [x] 7.3 `cargo test --workspace` passes, including the new `crates/corvis/tests/health.rs` regression tests and the
   differential fixture test
 - [x] 7.4 Docs updated in English and Spanish (`docs/` and `docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 7.5 corvis-parity: the three port apps (consi, facten, houseplan) keep 0 apidiff differences (framework runtime
-  code changed, even though the ports do not use health checks)
+- [x] 7.5 corvis-parity: the three port apps (consi, facten, houseplan) keep 0 apidiff differences (framework runtime
+  code changed, even though the ports do not use health checks) (maintainer batch run on batch/phase03-a 085adae: consi 832/832, facten 727/727, houseplan 598/598 quiet-hours count; routes identical, databases equivalent)
 
 ## Workflow follow-up
 

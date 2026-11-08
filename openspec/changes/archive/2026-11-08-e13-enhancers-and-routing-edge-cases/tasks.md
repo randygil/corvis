@@ -30,9 +30,9 @@
 
 - [x] 5.1 `cargo build --workspace --all-targets` with no warnings
 - [x] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 5.3 `cargo test --workspace` passes, including the regression tests of group 1.2
+- [x] 5.3 `cargo test --workspace` passes, including the regression tests of group 1.2 (batch verification: 467 passed, 0 failed; the fuzz_filters NUL failure found here was filed and fixed as #141)
 - [x] 5.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (facten exercises `set_global_prefix_with_exclude` and two `app_guard`s)
+- [x] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (facten exercises `set_global_prefix_with_exclude` and two `app_guard`s) (maintainer batch run on batch/phase03-a 085adae: consi 832/832, facten 727/727, houseplan 598/598 quiet-hours count; routes identical, databases equivalent)
 
 ## Workflow follow-up
 

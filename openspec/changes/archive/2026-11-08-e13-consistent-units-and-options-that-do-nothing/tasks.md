@@ -24,7 +24,7 @@
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 4.3 `cargo test --workspace` passes, including the regression tests of 1.1 and 2.2
 - [x] 4.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 4.5 Framework runtime code changed (`Cookie` serialization): run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences
+- [x] 4.5 Framework runtime code changed (`Cookie` serialization): run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (maintainer batch run on batch/phase03-a 085adae: consi 832/832, facten 727/727, houseplan 598/598 quiet-hours count; routes identical, databases equivalent)
 
 ## Workflow follow-up
 
