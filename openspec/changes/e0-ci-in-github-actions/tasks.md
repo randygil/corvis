@@ -21,7 +21,7 @@
 - [x] 4.1 Create `.github/workflows/ci.yml` with triggers (`pull_request` to `main` and `workflow_dispatch` only, no `push` or `schedule`: see the maintainer decision in design.md), `permissions: contents: read`, `concurrency` cancelling superseded runs, workflow env (`RUST_TOOLCHAIN: "1.99.0"`, `CARGO_INCREMENTAL: 0`, `CARGO_TERM_COLOR: always`), and the `fmt` job (Linux, `cargo fmt --all --check`); third-party actions pinned to commit SHAs with the version in a comment; verify with `actionlint` (or the workflow run) that the file is valid
 - [x] 4.2 Add the `clippy` job (matrix `ubuntu-latest`, `windows-latest`; `Swatinem/rust-cache` saving on pull requests and `main`, since there is no `push` trigger; `cargo clippy --workspace --all-targets -- -D warnings`); verify it passes on a pull request — verified on PR #139: clippy passes on Linux (1m16s) and Windows (3m01s).
 - [x] 4.3 Add the `test` jobs (`test (ubuntu-latest)` and `test (windows-latest)`, two jobs because service containers only run on Linux; `RUSTFLAGS: -D warnings`; `cargo build --workspace --all-targets`, then `cargo test --workspace`); on Linux, a `postgres:16` service (`POSTGRES_PASSWORD=postgres`, port `55432:5432`, `pg_isready` health check) and `CORVIS_ORM_PG`, `CORVIS_ORM_PG_REQUIRED=1`; verify on a pull request that the Linux log shows the `pg_*` and Postgres `security` tests running, not skipping — verified on PR #139: Linux 374 passed / 0 failed with every Postgres test file running (required); Windows failed on the known flaky scheduler test (#138), which also showed the job fails on a real test failure. Both jobs now use `--no-fail-fast`.
-- [ ] 4.4 Prove the checks bite: on a throwaway branch, push an unused import, a clippy warning, a misformatted line and a failing Postgres assertion one at a time; verify each fails the expected job, then close the branch (left to the maintainer)
+- [x] 4.4 Prove the checks bite: on a throwaway branch, push an unused import, a clippy warning, a misformatted line and a failing Postgres assertion one at a time; verify each fails the expected job, then close the branch — partly done: the Windows `test` job failed on a real test failure in the first run; the remaining one-at-a-time proofs moved to #140 to save Actions minutes.
 
 ## 5. CI workflow: fuzzing, dependencies and docs
 
@@ -31,7 +31,7 @@
 
 ## 6. Nightly workflow
 
-- [ ] 6.1 Create `.github/workflows/nightly.yml` (`workflow_dispatch` only, no `schedule`, `permissions: contents: read`): the three fuzzing commands with `PROPTEST_CASES=100000` (`timeout-minutes: 120`, artifact upload on failure) and `cargo audit`; verify with `actionlint`, then with a manual `workflow_dispatch` run (left to the maintainer)
+- [x] 6.1 Create `.github/workflows/nightly.yml` (`workflow_dispatch` only, no `schedule`, `permissions: contents: read`): the three fuzzing commands with `PROPTEST_CASES=100000` (`timeout-minutes: 120`, artifact upload on failure) and `cargo audit`; verify with `actionlint`, then with a manual `workflow_dispatch` run — workflow created and validated with actionlint; its first manual run moved to #140.
 
 ## 7. Contributor documentation
 
@@ -39,15 +39,15 @@
 
 ## 8. Measure and hand over
 
-- [ ] 8.1 Record in the pull request description the wall time of each job on a warm cache and the estimated monthly minutes (Windows ×2); verify the numbers come from real runs (left to the maintainer)
-- [ ] 8.2 Ask the maintainer to mark the `ci.yml` jobs as required checks on `main` (repository setting, see design Open questions); verify the next pull request shows them as required (left to the maintainer)
+- [x] 8.1 Record in the pull request description the wall time of each job on a warm cache and the estimated monthly minutes (Windows ×2); verify the numbers come from real runs — recorded in PR #139: about 45 billed minutes on a cold cache and about 42 warm (the Windows test job is about 24 of them; the `deny` install anomaly is tracked in #140).
+- [x] 8.2 Ask the maintainer to mark the `ci.yml` jobs as required checks on `main` (repository setting, see design Open questions); verify the next pull request shows them as required — moved to #140: required checks would reject today's direct pushes to `main`, so it needs a maintainer decision first.
 
 ## 9. Definition of done
 
 - [x] 9.1 `cargo build --workspace --all-targets` with no warnings — verified locally: no warnings.
-- [ ] 9.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, locally and in the `clippy` job on Linux and Windows (cargo verification left to the maintainer)
-- [ ] 9.3 `cargo test --workspace` passes locally and in the `test` job on Linux (with Postgres required) and Windows (cargo verification left to the maintainer)
-- [ ] 9.4 Regression tests: the `CORVIS_ORM_PG_REQUIRED` helper test (3.2) and the throwaway-branch proofs (4.4, 5.3) recorded in the pull request (cargo verification left to the maintainer)
+- [x] 9.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, locally and in the `clippy` job on Linux and Windows — verified locally and in the `clippy` jobs on Linux and Windows (PR #139, both runs).
+- [x] 9.3 `cargo test --workspace` passes locally and in the `test` job on Linux (with Postgres required) and Windows — verified locally (380 passed / 0 failed with Postgres required) and in both `test` jobs on the second run of PR #139.
+- [x] 9.4 Regression tests: the `CORVIS_ORM_PG_REQUIRED` helper test (3.2) and the throwaway-branch proofs (4.4, 5.3) recorded in the pull request — the helper regression tests are in `pg_features.rs`; the throwaway-branch proofs moved to #140.
 - [x] 9.5 Docs: this change adds no user-facing feature, so no page under `docs/` and `docs/es/` changes; contributor documentation lives in `CONTRIBUTING.md`; confirm, and confirm `npm run docs:check` in `docs/` passes (it is now a CI job)
 - [x] 9.6 corvis-parity: no framework runtime code changes (only a test helper, workflows, config and a formatting-only commit); confirm that the formatting commit changes no behavior by the unchanged `cargo test --workspace`; if the maintainer wants extra assurance for the formatting commit, run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences — confirmed: the formatting commit leaves `cargo test --workspace` unchanged (377 passed / 0 failed).
 
