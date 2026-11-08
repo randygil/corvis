@@ -26,6 +26,8 @@ Common causes:
   export what they share.
 - You asked for `Arc<T>` of a type that is not registered in the `providers` of any module.
 - The token in `#[inject("TOKEN")]` does not match the one in `Provider::use_value("TOKEN", ...)`.
+- The provider is transient and nothing injects it yet: the dependencies of transient providers are checked at startup,
+  so the error appears even before the first resolution.
 
 If the dependency is optional, declare it as `Option<Arc<T>>`: you will receive `None` instead of the error.
 
@@ -46,7 +48,7 @@ logic into a third provider, resolve one side lazily with ModuleRef (not in its 
 through EventEmitter. See "Circular dependencies" in the docs.
 ```
 
-Two providers ask for each other (directly or indirectly). The cycle has to be broken (Corvis has no `forwardRef`). Options:
+Two providers ask for each other (directly or indirectly). The chain can also pass through a `ModuleRef` call (`resolve` or `create`) made inside a constructor or factory. The cycle has to be broken (Corvis has no `forwardRef`). Options:
 
 - Extract the shared logic into a third provider that both depend on.
 - Connect one of the sides with events (`EventEmitter`) instead of a direct call.
@@ -54,6 +56,16 @@ Two providers ask for each other (directly or indirectly). The cycle has to be b
   calling `self.module_ref.get::<T>()` when needed, not in the constructor).
 
 See [Circular dependencies](/fundamentals/circular-dependency).
+
+## "A circular import between dynamic modules has been detected"
+
+```text
+A circular import between dynamic modules has been detected: AModule -> BModule -> AModule. Each dynamic import
+(for example for_root()) creates a new module instance, so this cycle never ends. Move what both modules need
+into a separate module that both import, or remove one of the two imports.
+```
+
+Two modules import each other through `for_root()` (or any other `DynamicModule`), directly or through other modules. Every dynamic import creates a new instance, so the graph would never finish. Move what both modules need into a third module that both import, or remove one of the two imports. See [Dynamic modules are the exception](/fundamentals/circular-dependency#dynamic-modules-are-the-exception).
 
 ## "Corvis cannot export a provider/module that is not a part of the currently processed module"
 

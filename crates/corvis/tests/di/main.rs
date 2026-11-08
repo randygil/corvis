@@ -9,10 +9,13 @@ use corvis::testing::{Test, TestingModule, TestingModuleBuilder};
 
 mod custom_providers;
 mod cycles;
+mod dynamic_import_cycles;
 mod dynamic_modules;
 mod global_modules;
 mod module_ref;
+mod module_ref_cycles;
 mod transient;
+mod transient_validation;
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 

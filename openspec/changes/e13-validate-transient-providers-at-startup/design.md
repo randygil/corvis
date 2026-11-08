@@ -132,3 +132,33 @@ Current behavior, read in the code of this worktree:
 
 - `Dependencies` and `Dependency` are `#[doc(hidden)]` (macro support, not public API).
 - `OrmService` declares its dependencies if it is built through `Injectable`; otherwise leave it.
+
+## Implementation notes
+
+- **Aliases**: #15 added `Provider::alias_of`, so `DeclaredDeps` has only `Unknown` and `Fields`; an alias declares its
+  target through `alias_of` instead of a third variant. `validate_transient` follows `alias_of` first. A non-transient
+  alias of a transient target is transient too (`Container::is_transient` follows the chain), so it is validated.
+- **Hidden types**: `Dependencies`, `Dependency`, `Injectable::dependencies` and `InjectField::dependency` are
+  `#[doc(hidden)]` (review note). `OrmService` is a hand-written singleton and was left unchanged.
+- **Check location**: `Container::validate_transients` runs at the end of `Container::scan`, before the container is
+  returned, so it runs before any instantiation.
+- **Macro**: the field description uses the same `Probe` dispatch as construction. `#[inject(expr)]` on a non-`Arc`
+  field declares a required dependency on the token; no existing expression failed to compile in the workspace.
+- **Tests**: `transient_validation.rs` (15 tests) and a unit test in `provider.rs`. Resolving a transient provider
+  through the testing module needs the provider exported by its module, so the fixtures export it.
+- The corvis-parity task 6.6 is left for the maintainer.
+
+## Implementation notes
+
+- **Aliases**: #15 added `Provider::alias_of`, so `DeclaredDeps` has only `Unknown` and `Fields`; an alias declares its
+  target through `alias_of` instead of a third variant. `validate_transient` follows `alias_of` first. A non-transient
+  alias of a transient target is transient too (`Container::is_transient` follows the chain), so it is validated.
+- **Hidden types**: `Dependencies`, `Dependency`, `Injectable::dependencies` and `InjectField::dependency` are
+  `#[doc(hidden)]` (review note). `OrmService` is a hand-written singleton and was left unchanged.
+- **Check location**: `Container::validate_transients` runs at the end of `Container::scan`, before the container is
+  returned, so it runs before any instantiation.
+- **Macro**: the field description uses the same `Probe` dispatch as construction. `#[inject(expr)]` on a non-`Arc`
+  field declares a required dependency on the token; no existing expression failed to compile in the workspace.
+- **Tests**: `transient_validation.rs` (13 tests) and a unit test in `provider.rs`. Resolving a transient provider
+  through the testing module needs the provider exported by its module, so the fixtures export it.
+- The corvis-parity task 6.6 is left for the maintainer.

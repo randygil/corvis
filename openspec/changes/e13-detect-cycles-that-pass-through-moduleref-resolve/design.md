@@ -106,3 +106,17 @@ Current behavior, read in the code of this worktree (the issue cites older line 
 
 - Add a generous depth limit (256) as a safety net that returns the circular-dependency error.
 - Fix the trimmed resolution path of `construct_injectable` here if it is the same mechanism; otherwise file it.
+
+## Implementation notes
+
+- **Depth limit (review note)**: `MAX_RESOLUTION_DEPTH = 256` in `resolve_provider` and `construct_injectable`; the error is
+  `DiError::Circular` with the last eight links of the chain prefixed by `...`. In a debug build a chain of about 200
+  nested providers already overflows a 2 MB thread stack before the limit is reached, so the limit only protects
+  release builds and threads with larger stacks. The test runs on a thread with a 256 MB stack. It cannot catch cycles
+  closed from spawned tasks: they start a new path, so the depth never grows.
+- **construct_injectable (review note)**: it now starts from the task-local path of the construction it runs in
+  (empty otherwise), checks the path for a repeat of its own key and publishes its path. A guard or pipe built by type
+  inside a factory that needs the provider under construction is reported as a cycle (test
+  `a_class_constructed_by_type_inside_a_factory_keeps_the_path`).
+- **Failing tests first**: before the change the four construction scenarios abort the test binary with a stack overflow.
+- The corvis-parity task 5.6 is left for the maintainer.
