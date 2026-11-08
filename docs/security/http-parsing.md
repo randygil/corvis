@@ -27,8 +27,8 @@ come from a raw-socket probe against `http.createServer` on Node 24.13 (`llhttp`
 | `field_nesting_depth` exceeded in multipart | `400 Field name nesting too deep - <field>` | n/a | changed |
 | Busboy configuration errors (`Malformed content type`, `Unsupported content type: ...`) | `500` | `500` | kept for parity |
 
-"Kept" means the behavior is covered by a regression test. "Planned" means a follow-up change in the Foundations epic
-(#1) will reject it by default and add an opt-out named `insecure_http_parser`, after Node's `insecureHTTPParser`
+"Kept" means the behavior is covered by a regression test. "Planned" means a follow-up change (#146, Foundations epic
+#1) will reject it by default and add an opt-out named `insecure_http_parser`, after Node's `insecureHTTPParser`
 option. The opt-out does not exist yet.
 
 ## Until the stricter parser lands

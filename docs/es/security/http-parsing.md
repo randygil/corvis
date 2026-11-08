@@ -28,7 +28,7 @@ abajo salen de una sonda con sockets crudos contra `http.createServer` en Node 2
 | Errores de configuración de busboy (`Malformed content type`, `Unsupported content type: ...`) | `500` | `500` | se mantiene por paridad |
 
 "Se mantiene" significa que el comportamiento está cubierto por un test de regresión. "Se rechazará" significa que un
-cambio posterior de la épica Foundations (#1) lo rechazará por defecto y añadirá una opción para desactivarlo llamada
+cambio posterior (#146, épica Foundations #1) lo rechazará por defecto y añadirá una opción para desactivarlo llamada
 `insecure_http_parser`, por la opción `insecureHTTPParser` de Node. Esa opción todavía no existe.
 
 ## Hasta que llegue el analizador más estricto
