@@ -97,7 +97,7 @@ jobs:
       - name: Build with warnings denied
         run: cargo build --workspace --all-targets
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
   test-windows:
     name: test (windows-latest)
@@ -118,7 +118,7 @@ jobs:
       - name: Build with warnings denied
         run: cargo build --workspace --all-targets
       - name: Test (Postgres tests skip, no server)
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
   # The property-based suites with more cases than the 2,000 that `cargo test` runs. Dev profile, so debug
   # assertions and overflow checks stay on.
