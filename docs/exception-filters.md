@@ -23,7 +23,7 @@ fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Cat> {
 { "message": "Cat #42 not found", "error": "Not Found", "statusCode": 404 }
 ```
 
-`HttpResult<T>` is an alias of `Result<T, HttpException>`. The `?` operator works with any error that converts into `HttpException`.
+`HttpResult<T>` is an alias of `Result<T, HttpException>`. The `?` operator works with any error that converts into `HttpException`: an `HttpException` stays as it is and any other `std::error::Error` becomes a `500` (see [Unexpected errors](#unexpected-errors)). To give your own error type a status, see [Domain errors](#domain-errors).
 
 ### Building an exception
 
@@ -97,6 +97,81 @@ If a handler propagates with `?` an error that is not an `HttpException` (a `std
 The client does not see the original message. The default filter logs it with the `ExceptionsHandler` context, including the chain of causes. The same happens with a `panic` inside a handler: it is caught and answered as `500`.
 
 `HttpException::http_error(status, message)` represents an error with its own status that is also not intentional, like the `413` or `415` of the body parser: it responds `{ statusCode, message }` with that status, but `is_internal()` is `true`, so a custom catch-all filter treats it as an unknown error.
+
+## Domain errors
+
+An application usually has its own error enum. Implement `HttpError` on it to say which status each variant answers; no `map_err` at the call sites and no filter are needed.
+
+```rust
+use corvis::StatusCode;
+use corvis::prelude::*;
+
+#[derive(Debug, thiserror::Error)]
+pub enum AppError {
+    #[error("Cat #{0} not found")]
+    CatNotFound(u32),
+    #[error("Cat #{0} already exists")]
+    CatExists(u32),
+}
+
+impl HttpError for AppError {
+    fn status(&self) -> StatusCode {
+        match self {
+            AppError::CatNotFound(_) => StatusCode::NOT_FOUND,
+            AppError::CatExists(_) => StatusCode::CONFLICT,
+        }
+    }
+}
+```
+
+`HttpError` requires `std::error::Error + Send + Sync + 'static`. `status()` is the only required method.
+
+### Returning the error from a handler
+
+A handler declared as `Result<T, AppError>` answers with the error's status when it returns `Err`:
+
+```rust
+#[get(":id")]
+async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> Result<CatDto, AppError> {
+    self.cats_service.find_one(id)
+}
+```
+
+```json
+{ "message": "Cat #42 not found", "error": "Not Found", "statusCode": 404 }
+```
+
+The default body is the `Display` text in the format of the [built-in exceptions](#built-in-exceptions). Override `body()` to send something else, for example a code the clients can switch on:
+
+```rust
+fn body(&self) -> ExceptionBody {
+    ExceptionBody::Object(json!({ "code": "CAT_EXISTS", "statusCode": 409 }))
+}
+```
+
+The object is sent as it is. `ExceptionBody` is exported by `corvis`, not by the prelude.
+
+### Using `?` inside an `HttpResult` handler
+
+Inside a handler that returns `HttpResult<T>`, a plain `?` on an `AppError` still goes through the generic conversion and answers `500`. Call `.http()` first (the `ResultHttpExt` trait, in the prelude):
+
+```rust
+#[get(":id")]
+async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<CatDto> {
+    let cat = self.cats_service.find_one(id).http()?;
+    Ok(CatDto::from(cat))
+}
+```
+
+`.http()` is also what you use when the handler mixes errors of several kinds: each `Result` is converted where it is created.
+
+### What the exception carries
+
+- The error is attached as the exception's cause, so a [custom filter](#custom-filters) can still read it with `exception.downcast_cause::<AppError>()`.
+- `is_internal()` is `false`: the status was chosen on purpose, even for a `5xx`, so it is not logged as an unexpected error.
+- The `Display` text reaches the client. Do not put internal details (SQL, file paths, upstream URLs) in the `Display` of a `5xx` variant; give it a generic message or override `body()`.
+
+Errors that do not implement `HttpError` keep their behavior: `Result<T, std::io::Error>` and `anyhow::Result<T>` answer `500`, and `HttpResult<T>` with a built-in exception answers that exception's status. `HttpError` applies to HTTP handlers only; WebSocket and event handlers do not use it.
 
 ## Custom filters
 

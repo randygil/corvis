@@ -822,6 +822,19 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     // ----- typed helpers -----
     let mut field_mods = Vec::new();
+    let mut count_fields = Vec::new();
+    for f in &fields {
+        if let Some(rel) = &f.relation
+            && (rel.kind == "has_many" || rel.kind == "many_to_many")
+        {
+            let fid = &f.ident;
+            let api = &f.api_name;
+            count_fields.push(quote! {
+                #[serde(default, rename = #api, skip_serializing_if = "::core::option::Option::is_none")]
+                pub #fid: ::core::option::Option<i64>,
+            });
+        }
+    }
     for f in &fields {
         let fmod = &f.ident;
         let api = &f.api_name;
@@ -851,6 +864,10 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                     pub fn create(items: ::std::vec::Vec<::std::vec::Vec<::corvis_orm::SetParam<#target>>>) -> ::corvis_orm::SetParam<#name> {
                         let items: ::std::vec::Vec<::corvis_orm::serde_json::Value> = items.into_iter().map(::corvis_orm::data_object).collect();
                         ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "create": items }))
+                    }
+                    /// `include: { _count: { select: { posts: true } } }`; several of these merge into one `_count`.
+                    pub fn count() -> ::corvis_orm::IncludeParam<#name> {
+                        ::corvis_orm::IncludeParam::new("_count", ::corvis_orm::serde_json::json!({ "select": { #api: true } }))
                     }
                     /// Nested write: `posts: { connect: [...] }`.
                     pub fn connect(items: ::std::vec::Vec<::corvis_orm::WhereParam<#target>>) -> ::corvis_orm::SetParam<#name> {
@@ -1125,6 +1142,14 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             pub type OrderByParam = ::corvis_orm::OrderByParam<#name>;
             pub type IncludeParam = ::corvis_orm::IncludeParam<#name>;
             pub type SelectParam = ::corvis_orm::SelectParam<#name>;
+            /// The `_count` object of a query with `<relation>::count()` includes.
+            #[derive(Debug, Clone, Default, PartialEq, ::corvis_orm::serde::Serialize, ::corvis_orm::serde::Deserialize)]
+            #[serde(crate = "::corvis_orm::serde")]
+            pub struct Count {
+                #(#count_fields)*
+            }
+            /// The model with its relation counts: `.exec_as::<Vec<WithCount>>()`.
+            pub type WithCount = ::corvis_orm::WithCount<#name, Count>;
             #(#compound_fns)*
             #(#field_mods)*
         }

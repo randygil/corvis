@@ -137,6 +137,16 @@ impl HttpException {
         e
     }
 
+    /// Exception of a domain error that declares its own status (see [`HttpError`]). The body is
+    /// `err.body()` in the format of the built-in exceptions, `err` is kept as the cause and the
+    /// exception is not internal, whatever the status.
+    pub fn from_http_error<E: HttpError>(err: E) -> Self {
+        let status = err.status();
+        let mut e = Self::with_error(err.body(), reason(status), status);
+        e.cause = Some(Arc::new(err));
+        e
+    }
+
     /// 500 for unexpected errors: `{ statusCode: 500, message: "Internal server error" }`.
     pub fn internal(cause: impl std::error::Error + Send + Sync + 'static) -> Self {
         let mut e = Self::new(json!({ "statusCode": 500, "message": "Internal server error" }), StatusCode::INTERNAL_SERVER_ERROR);
@@ -248,6 +258,32 @@ impl fmt::Display for HttpException {
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for HttpException {
     fn from(e: E) -> Self {
         HttpException::internal(e)
+    }
+}
+
+/// A domain error that knows its HTTP status.
+///
+/// A handler declared as `Result<T, AppError>` answers with that status when it returns `Err`; inside a
+/// handler returning [`HttpResult`](crate::HttpResult), `.http()?` ([`ResultHttpExt`]) does the same.
+/// The default body is the `Display` text in the format of the built-in exceptions, so a 5xx error should
+/// not put internal details in its `Display` (or should override [`HttpError::body`]).
+pub trait HttpError: std::error::Error + Send + Sync + 'static {
+    /// The response status.
+    fn status(&self) -> StatusCode;
+
+    /// The response body; defaults to the `Display` text.
+    fn body(&self) -> ExceptionBody {
+        ExceptionBody::Message(self.to_string())
+    }
+}
+
+/// `result.http()?` for errors that implement [`HttpError`].
+pub trait ResultHttpExt<T> {
+    fn http(self) -> Result<T, HttpException>;
+}
+impl<T, E: HttpError> ResultHttpExt<T> for Result<T, E> {
+    fn http(self) -> Result<T, HttpException> {
+        self.map_err(HttpException::from_http_error)
     }
 }
 
@@ -390,5 +426,71 @@ mod tests {
         assert!(e.cause_is::<std::io::Error>());
         let e: HttpException = NotFoundException.into();
         assert_eq!(e.get_status(), 404);
+    }
+
+    #[derive(Debug)]
+    enum AppError {
+        CatNotFound(u32),
+        Gone,
+        Boom,
+    }
+    impl fmt::Display for AppError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                AppError::CatNotFound(id) => write!(f, "Cat #{id} not found"),
+                AppError::Gone => write!(f, "gone"),
+                AppError::Boom => write!(f, "boom"),
+            }
+        }
+    }
+    impl std::error::Error for AppError {}
+    impl HttpError for AppError {
+        fn status(&self) -> StatusCode {
+            match self {
+                AppError::CatNotFound(_) => StatusCode::NOT_FOUND,
+                AppError::Gone => StatusCode::GONE,
+                AppError::Boom => StatusCode::BAD_GATEWAY,
+            }
+        }
+        fn body(&self) -> ExceptionBody {
+            match self {
+                AppError::Gone => ExceptionBody::Object(json!({ "code": "CAT_GONE", "statusCode": 410 })),
+                other => ExceptionBody::Message(other.to_string()),
+            }
+        }
+    }
+
+    #[test]
+    fn http_error_default_body() {
+        let e = HttpException::from_http_error(AppError::CatNotFound(42));
+        assert_eq!(e.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            serde_json::to_string(e.get_response()).unwrap(),
+            r#"{"message":"Cat #42 not found","error":"Not Found","statusCode":404}"#
+        );
+        assert_eq!(e.message(), "Cat #42 not found");
+    }
+
+    #[test]
+    fn http_error_custom_body() {
+        let e = HttpException::from_http_error(AppError::Gone);
+        assert_eq!(e.status(), StatusCode::GONE);
+        assert_eq!(serde_json::to_string(e.get_response()).unwrap(), r#"{"code":"CAT_GONE","statusCode":410}"#);
+    }
+
+    #[test]
+    fn http_error_is_not_internal_and_keeps_the_cause() {
+        let e = HttpException::from_http_error(AppError::Boom);
+        assert_eq!(e.status(), StatusCode::BAD_GATEWAY);
+        assert!(!e.is_internal());
+        assert!(matches!(e.downcast_cause::<AppError>(), Some(AppError::Boom)));
+    }
+
+    #[test]
+    fn result_http_ext_converts_the_error() {
+        let ok: Result<u8, AppError> = Ok(1);
+        assert_eq!(ok.http().unwrap(), 1);
+        let err: Result<u8, AppError> = Err(AppError::CatNotFound(1));
+        assert_eq!(err.http().unwrap_err().get_status(), 404);
     }
 }

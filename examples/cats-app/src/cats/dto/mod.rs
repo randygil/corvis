@@ -1,6 +1,8 @@
 use corvis::Validate;
 use corvis_swagger::ApiSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+use super::entities::Cat;
 
 #[derive(Debug, Clone, Deserialize, Validate, ApiSchema)]
 pub struct CreateCatDto {
@@ -49,4 +51,18 @@ pub struct ListCatsQuery {
     pub limit: Option<u32>,
     #[is_optional]
     pub breed: Option<String>,
+}
+
+/// `GET /cats/count`.
+#[derive(Debug, Serialize)]
+pub struct CountDto {
+    pub count: usize,
+}
+
+/// `GET /v2/cats/:id`: the cat and the API version that answered.
+#[derive(Debug, Serialize)]
+pub struct CatV2Dto {
+    pub cat: Cat,
+    #[serde(rename = "apiVersion")]
+    pub api_version: u32,
 }

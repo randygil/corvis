@@ -1,6 +1,7 @@
 use corvis::JwtService;
 use corvis::prelude::*;
 
+use super::sign_in_dto::TokenDto;
 use crate::common::decorators::JwtPayload;
 use crate::users::UsersService;
 
@@ -11,13 +12,13 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    pub async fn sign_in(&self, username: &str, pass: &str) -> HttpResult<Value> {
+    pub async fn sign_in(&self, username: &str, pass: &str) -> HttpResult<TokenDto> {
         let user = self.users_service.find_one(username).await;
         let Some(user) = user.filter(|u| u.password == pass) else {
             return Err(UnauthorizedException.into());
         };
         let payload = JwtPayload { sub: user.user_id, username: user.username, roles: user.roles };
         let token = self.jwt_service.sign(&payload).map_err(HttpException::from_anyhow)?;
-        Ok(json!({ "access_token": token }))
+        Ok(TokenDto { access_token: token })
     }
 }

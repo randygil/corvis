@@ -29,6 +29,7 @@ use super::ws_logging_interceptor::WsLoggingInterceptor;
 use crate::auth::{AuthGuard, ChatUser, MODERATOR, ROLES_KEY, RolesGuard};
 use crate::firehose::FirehoseService;
 use crate::models::Room;
+use crate::rooms::RoomWithMembers;
 use crate::rooms::RoomsService;
 
 /// Close code sent to sockets without a valid token (4000-4999 are application codes).
@@ -128,7 +129,7 @@ impl ChatGateway {
     #[subscribe_message("rooms")]
     async fn rooms(&self) -> HttpResult<Value> {
         let rooms = self.rooms.list().await.http()?;
-        Ok(self.with_members(rooms))
+        Ok(json!(self.with_members(rooms)))
     }
 
     #[subscribe_message("ping")]
@@ -175,18 +176,14 @@ impl ChatGateway {
     }
 
     /// Rooms as JSON with their live `members`.
-    pub fn with_members(&self, rooms: Vec<Room>) -> Value {
-        Value::Array(
-            rooms
-                .into_iter()
-                .map(|r| {
-                    let members = self.members(&r.name);
-                    let mut v = serde_json::to_value(&r).unwrap_or(Value::Null);
-                    v["members"] = json!(members);
-                    v
-                })
-                .collect(),
-        )
+    pub fn with_members(&self, rooms: Vec<Room>) -> Vec<RoomWithMembers> {
+        rooms
+            .into_iter()
+            .map(|room| {
+                let members = self.members(&room.name);
+                RoomWithMembers { room, members }
+            })
+            .collect()
     }
 
     /// Pushes an announcement to everyone in `room`; returns how many sockets got it.
@@ -223,7 +220,7 @@ impl OnGatewayConnection for ChatGateway {
         };
         client.insert(user.clone());
         let rooms = match self.rooms.list().await {
-            Ok(rooms) => self.with_members(rooms),
+            Ok(rooms) => json!(self.with_members(rooms)),
             Err(_) => json!([]),
         };
         client.emit("welcome", json!({ "id": client.id(), "user": user, "rooms": rooms }));

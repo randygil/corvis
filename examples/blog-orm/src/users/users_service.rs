@@ -1,8 +1,8 @@
 use corvis::prelude::*;
-use corvis_orm::{OrmError, OrmService};
+use corvis_orm::{Data, OrmError, OrmService, SortOrder, or};
 
 use super::dto::{CreateUserDto, ListUsersQuery, UpdateUserDto};
-use crate::models::{User, UserDelegate, paginated, user};
+use crate::models::{Paginated, User, UserDelegate, user};
 
 #[injectable]
 pub struct UsersService {
@@ -10,35 +10,32 @@ pub struct UsersService {
 }
 
 impl UsersService {
+    /// `Data` writes a serializable DTO as the data of the query.
     pub async fn create(&self, dto: CreateUserDto) -> Result<User, OrmError> {
-        self.db.user().create(json!({ "data": dto })).await
+        self.db.user().create(Data(&dto)).await
     }
 
-    /// Paginated list with a post counter per user (JSON query arguments).
-    pub async fn find_all(&self, q: ListUsersQuery) -> Result<Value, OrmError> {
+    /// Paginated list with a post counter per user: `user::posts::count()` adds `_count`, and
+    /// `user::WithCount` reads it back next to the model fields.
+    pub async fn find_all(&self, q: ListUsersQuery) -> Result<Paginated<user::WithCount>, OrmError> {
         let page = q.page.unwrap_or(1);
         let limit = q.limit.unwrap_or(10);
         let filter = match &q.search {
-            Some(s) => json!({ "OR": [
-                { "email": { "contains": s, "mode": "insensitive" } },
-                { "name": { "contains": s, "mode": "insensitive" } }
-            ] }),
-            None => json!({}),
+            Some(s) => vec![or(vec![user::email::contains_insensitive(s.clone()), user::name::contains_insensitive(s.clone())])],
+            None => vec![],
         };
-        let total = self.db.user().count(json!({ "where": filter })).await?;
+        let total = self.db.user().count(filter.clone()).await?;
         let data = self
             .db
             .user()
-            .find_many(json!({
-                "where": filter,
-                "orderBy": { "id": "asc" },
-                "skip": (page - 1) * limit,
-                "take": limit,
-                "include": { "_count": { "select": { "posts": true } } }
-            }))
-            .exec_json()
+            .find_many(filter)
+            .order_by(user::id::order(SortOrder::Asc))
+            .skip(i64::from((page - 1) * limit))
+            .take(i64::from(limit))
+            .include(user::posts::count())
+            .exec_as::<Vec<user::WithCount>>()
             .await?;
-        Ok(paginated(data, total, page, limit))
+        Ok(Paginated::new(data, total, page, limit))
     }
 
     /// `findUniqueOrThrow` including the posts, newest first (typed style). P2025 -> 404.
@@ -50,18 +47,12 @@ impl UsersService {
             .await
     }
 
+    /// Only the fields the DTO carries change (`None` fields are skipped when serializing).
     pub async fn update(&self, id: i64, dto: UpdateUserDto) -> Result<User, OrmError> {
-        let mut data = Vec::new();
-        if let Some(email) = dto.email {
-            data.push(user::email::set(email));
-        }
-        if let Some(name) = dto.name {
-            data.push(user::name::set(name));
-        }
-        self.db.user().update(user::id::equals(id)).data(data).await
+        self.db.user().update(user::id::equals(id)).data(Data(&dto)).await
     }
 
     pub async fn remove(&self, id: i64) -> Result<User, OrmError> {
-        self.db.user().delete(json!({ "where": { "id": id } })).await
+        self.db.user().delete(user::id::equals(id)).await
     }
 }

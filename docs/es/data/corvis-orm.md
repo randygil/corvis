@@ -212,11 +212,11 @@ postgresql://user:pass@host/db?schema=tenant_a
 
 ## Usar `OrmService`
 
-`OrmService` implementa `Deref` hacia el cliente, así que los delegados de cada modelo se llaman directamente sobre él:
+`OrmService` implementa `Deref` hacia el cliente, así que los delegados de cada modelo se llaman directamente sobre él. Los helpers tipados que genera `#[derive(Model)]` (`room::name::equals`, `room::created_at::order`, `user::posts::count()`, ...) son la forma habitual de armar una consulta, y los resultados llegan como los tipos del modelo:
 
 ```rust
-use corvis_orm::{OrmError, OrmService};
-use crate::models::{Room, RoomDelegate};
+use corvis_orm::{OrmError, OrmService, SortOrder};
+use crate::models::{Room, RoomDelegate, room};
 
 #[injectable]
 pub struct RoomsService {
@@ -226,16 +226,16 @@ pub struct RoomsService {
 
 impl RoomsService {
     pub async fn list(&self) -> Result<Vec<Room>, OrmError> {
-        self.db.room().find_many(json!({ "orderBy": [{ "createdAt": "asc" }, { "name": "asc" }] })).await
+        self.db.room().find_many(()).order_by(room::created_at::order(SortOrder::Asc)).order_by(room::name::order(SortOrder::Asc)).await
     }
 
     pub async fn find(&self, name: &str) -> Result<Option<Room>, OrmError> {
-        self.db.room().find_unique(json!({ "where": { "name": name } })).await
+        self.db.room().find_unique(room::name::equals(name)).await
     }
 }
 ```
 
-La misma consulta se puede escribir con los helpers tipados. Así pagina `examples/blog-orm` los posts:
+Así pagina los posts `examples/blog-orm`:
 
 ```rust
 let posts = self
@@ -249,7 +249,73 @@ let posts = self
     .await?;
 ```
 
-Operaciones disponibles en cada delegado: `find_many`, `find_first`, `find_unique`, `find_first_or_throw`, `find_unique_or_throw`, `create`, `create_many`, `create_many_and_return`, `update`, `update_many`, `update_many_and_return`, `upsert`, `delete`, `delete_many`, `count`, `aggregate` y `group_by`. Cada consulta admite `.await` directo, `.exec()`, `.exec_json()` (el JSON tal cual) o `.exec_as::<T>()`.
+Las mismas consultas se pueden escribir con argumentos JSON. Son la vía de escape para lo que los helpers no cubren, y la forma que refleja el cliente de referencia:
+
+```rust
+self.db.room().find_many(json!({ "orderBy": [{ "createdAt": "asc" }, { "name": "asc" }] })).await
+self.db.room().find_unique(json!({ "where": { "name": name } })).await
+```
+
+Operaciones disponibles en cada delegado: `find_many`, `find_first`, `find_unique`, `find_first_or_throw`, `find_unique_or_throw`, `create`, `create_many`, `create_many_and_return`, `update`, `update_many`, `update_many_and_return`, `upsert`, `delete`, `delete_many`, `count`, `aggregate` y `group_by`. Toda consulta admite `.await` directo, `.exec()`, `.exec_json()` (el JSON tal cual) o `.exec_as::<T>()`. `create_many_and_return` y `update_many_and_return` devuelven las filas afectadas como `Vec<Modelo>`:
+
+```rust
+let created: Vec<User> = db.user().create_many_and_return(json!({ "data": [{ "email": "a@x.io" }, { "email": "b@x.io" }] })).await?;
+let published: Vec<Post> = db.post().update_many_and_return(json!({ "where": { "published": false }, "data": { "published": true } })).await?;
+```
+
+### Escribir un DTO
+
+`corvis_orm::Data` envuelve cualquier valor `Serialize` (o una referencia a uno) como datos de una escritura, así que un DTO validado no necesita `json!`:
+
+```rust
+use corvis_orm::Data;
+
+self.db.user().create(Data(&dto)).await;                                // { data: dto }
+self.db.user().update(user::id::equals(id)).data(Data(&patch)).await;   // actualizar desde un DTO parcial
+```
+
+Los campos que el valor omite al serializar no se envían, así que un DTO de parche cuyos campos `Option` usan `#[serde(skip_serializing_if = "Option::is_none")]` cambia solo los campos presentes. Si el valor no se puede serializar, la consulta falla con un error de validación que nombra el tipo, antes de ejecutar SQL. `Data` también funciona en las ramas `.create(...)` y `.update(...)` de un `upsert`. No forma parte del prelude, así que una importación con `*` no choca con tus propios tipos.
+
+### Conteo de relaciones
+
+`user::posts::count()` pide el número de posts de cada usuario (`include: { _count: { select: { posts: true } } }`). Varios `count()` en una misma consulta se fusionan en un solo `_count`. `#[derive(Model)]` también genera `user::Count`, un `Option<i64>` por cada relación a muchos, y `user::WithCount`, el modelo con sus conteos:
+
+```rust
+let users = db
+    .user()
+    .find_many(())
+    .include(user::posts::count())
+    .exec_as::<Vec<user::WithCount>>()
+    .await?;
+
+users[0].model.email; // los campos del modelo
+users[0].count.posts; // Some(3)
+```
+
+`WithCount<M, C>` serializa los campos del modelo seguidos de `_count`, que es lo que devuelve `.exec_json()`, así que `Paginated<user::WithCount>` o `Vec<user::WithCount>` pueden ser el tipo de retorno de un handler. Usa `corvis_orm::DateTime` para las fechas de los modelos si el JSON debe coincidir byte a byte con `.exec_json()`: se serializa como un `Date` de JavaScript.
+
+### Agregaciones tipadas
+
+`aggregate` y `group_by` devuelven JSON, porque su forma depende de los argumentos. Léelos en un struct propio con `.exec_as::<T>()`:
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct Totals {
+    #[serde(rename = "_count")]
+    count: CountAll,
+    #[serde(rename = "_sum")]
+    sum: ViewsSum,
+}
+
+let totals = self
+    .db
+    .post()
+    .aggregate(json!({ "_count": { "_all": true }, "_sum": { "views": true } }))
+    .exec_as::<Totals>()
+    .await?;
+```
+
+Un promedio llega como un número JSON que puede ser entero (`0`); léelo como `serde_json::Number` cuando la respuesta deba conservar el texto exacto del motor.
 
 ### Transacciones
 
@@ -297,7 +363,7 @@ async fn create(&self, #[body] dto: CreateUserDto) -> HttpResult<User> {
 }
 ```
 
-No existe `impl From<OrmError> for HttpException`: Corvis ya convierte cualquier `std::error::Error` en un `500`, y Rust no permite las dos implementaciones a la vez. Por eso `?` produce un `500` con el error como causa, y el filtro lo reinterpreta.
+No existe `impl From<OrmError> for HttpException`: Corvis ya convierte cualquier `std::error::Error` en un `500`, y Rust no permite las dos implementaciones a la vez. Por eso `?` produce un `500` con el error como causa, y el filtro lo reinterpreta. `OrmError` tampoco implementa [`HttpError`](/es/exception-filters#errores-de-dominio), así que un handler que devuelve `Result<T, OrmError>` directamente sigue respondiendo `500`; usa `.http()` o el filtro. Tus propios errores de dominio sí pueden implementar `HttpError` y devolverse directamente.
 
 ## Migraciones
 

@@ -132,7 +132,6 @@ dependencies = [
 name = "blog-orm"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "corvis",
  "corvis-orm",
  "serde",

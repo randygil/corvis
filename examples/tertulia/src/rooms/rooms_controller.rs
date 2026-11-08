@@ -1,6 +1,6 @@
 use corvis::prelude::*;
 
-use super::dto::{AnnouncementDto, CreateRoomDto, HistoryQuery};
+use super::dto::{AnnouncementDto, CreateRoomDto, Delivery, HistoryQuery, RoomWithMembers};
 use super::rooms_service::RoomsService;
 use crate::auth::{AuthGuard, ChatUser, MODERATOR, ROLES_KEY, RolesGuard};
 use crate::chat::ChatGateway;
@@ -18,7 +18,7 @@ pub struct RoomsController {
 impl RoomsController {
     /// `GET /api/rooms`: every room with the users connected to it right now.
     #[get]
-    async fn list(&self) -> HttpResult<Value> {
+    async fn list(&self) -> HttpResult<Vec<RoomWithMembers>> {
         let rooms = self.rooms.list().await?;
         Ok(self.chat.with_members(rooms))
     }
@@ -48,10 +48,10 @@ impl RoomsController {
     #[post(":room/announcements")]
     #[set_metadata(ROLES_KEY, [MODERATOR])]
     #[use_guards(AuthGuard, RolesGuard)]
-    async fn announce(&self, #[param("room")] room: String, #[body] dto: AnnouncementDto, user: ChatUser) -> HttpResult<Value> {
+    async fn announce(&self, #[param("room")] room: String, #[body] dto: AnnouncementDto, user: ChatUser) -> HttpResult<Delivery> {
         self.find(&room).await?;
         let delivered = self.chat.announce(&room, &user, &dto.text);
-        Ok(json!({ "room": room, "delivered": delivered }))
+        Ok(Delivery { room, delivered })
     }
 }
 

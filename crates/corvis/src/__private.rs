@@ -326,6 +326,37 @@ pub trait AnyhowKind {
 }
 impl<E: Into<anyhow::Error>> AnyhowKind for &E {}
 
+// Errors of route handlers returning a `Result`: `HttpError` first, then `Into<HttpException>`, then
+// anything convertible to `anyhow::Error`. The levels are told apart by the receiver depth of a `Probe`.
+pub struct ErrProbe<E>(std::marker::PhantomData<fn() -> E>);
+pub fn err_probe<E>(_: &E) -> ErrProbe<E> {
+    ErrProbe(std::marker::PhantomData)
+}
+pub struct HttpErrTag;
+impl HttpErrTag {
+    pub fn convert<E: crate::http::HttpError>(self, e: E) -> HttpException {
+        HttpException::from_http_error(e)
+    }
+}
+pub trait HttpErrKind {
+    fn __corvis_err_kind(&self) -> HttpErrTag {
+        HttpErrTag
+    }
+}
+impl<E: crate::http::HttpError> HttpErrKind for &ErrProbe<E> {}
+pub trait ExcErrKind {
+    fn __corvis_err_kind(&self) -> ExcTag {
+        ExcTag
+    }
+}
+impl<E: Into<HttpException>> ExcErrKind for &&ErrProbe<E> {}
+pub trait AnyhowErrKind {
+    fn __corvis_err_kind(&self) -> AnyhowTag {
+        AnyhowTag
+    }
+}
+impl<E: Into<anyhow::Error>> AnyhowErrKind for ErrProbe<E> {}
+
 // ---------------------------------------------------------------------------
 // Handler arguments.
 // ---------------------------------------------------------------------------

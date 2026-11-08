@@ -289,3 +289,63 @@ fn server_host_never_includes_credentials() {
     assert_eq!(pg::host("postgres://u:p@ss@db.internal:5432/app?sslmode=require"), "db.internal:5432");
     assert_eq!(pg::host("postgres://db.internal"), "db.internal");
 }
+
+#[derive(serde::Serialize)]
+struct NewUser {
+    email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    balance: String,
+}
+
+#[tokio::test]
+async fn typed_operations_data_and_counts_on_postgres() {
+    let Some(db) = setup("feat_typed_api", 5).await else { return };
+
+    // `createManyAndReturn` / `updateManyAndReturn` equal the untyped results.
+    let created = db.user().create_many_and_return(json!({ "data": [{ "email": "a@x.io" }, { "email": "b@x.io" }] })).await.unwrap();
+    assert_eq!(created.len(), 2);
+    assert!(created.iter().all(|u| u.id > 0));
+    let raw = db
+        .query_json(User::meta(), "createManyAndReturn", json!({ "data": [{ "email": "c@x.io" }, { "email": "d@x.io" }] }))
+        .await
+        .unwrap();
+    let typed =
+        db.user().create_many_and_return(json!({ "data": [{ "email": "e@x.io" }, { "email": "f@x.io" }] })).exec_json().await.unwrap();
+    assert_eq!(raw.as_array().unwrap().len(), typed.as_array().unwrap().len());
+    let updated = db
+        .user()
+        .update_many_and_return(json!({ "where": { "email": { "endsWith": "@x.io" } }, "data": { "name": "bulk" } }))
+        .await
+        .unwrap();
+    assert_eq!(updated.len(), 6);
+    assert!(updated.iter().all(|u| u.name.as_deref() == Some("bulk")));
+
+    // `Data` creates from a DTO and skips the absent fields.
+    let dto = NewUser { email: "ana@x.io".into(), name: None, balance: "12.50".into() };
+    let ana = db.user().create(corvis_orm::Data(&dto)).await.unwrap();
+    assert_eq!(ana.name, None);
+    assert_eq!(ana.balance.to_string(), "12.5");
+
+    // Relation counts: two counts merge and the typed result serializes like `.exec_json()`.
+    db.post().create(json!({ "data": { "title": "p1", "authorId": ana.id } })).await.unwrap();
+    db.post().create(json!({ "data": { "title": "p2", "authorId": ana.id } })).await.unwrap();
+    db.wallet()
+        .create(json!({ "data": { "id": "6f1c2b0e-7a53-4e0c-9d57-1f2b0c3a4d5e", "userId": ana.id, "currency": "USD", "amount": "1.5" } }))
+        .await
+        .unwrap();
+    let build = || {
+        db.user()
+            .find_many(json!({ "where": { "email": { "in": ["ana@x.io", "a@x.io"] } }, "orderBy": { "id": "asc" } }))
+            .include(user::posts::count())
+            .include(user::wallets::count())
+    };
+    let json = build().exec_json().await.unwrap();
+    let rows = build().exec_as::<Vec<user::WithCount>>().await.unwrap();
+    assert_eq!(rows.len(), 2);
+    let ana_row = rows.iter().find(|r| r.model.email == "ana@x.io").unwrap();
+    assert_eq!(ana_row.count.posts, Some(2));
+    assert_eq!(ana_row.count.wallets, Some(1));
+    assert_eq!(ana_row.model.balance.to_string(), "12.5");
+    assert_eq!(serde_json::to_string(&rows).unwrap(), serde_json::to_string(&json).unwrap());
+}

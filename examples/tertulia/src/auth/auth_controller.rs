@@ -2,7 +2,7 @@ use corvis::prelude::*;
 
 use super::auth_guard::AuthGuard;
 use super::auth_service::AuthService;
-use super::dto::LoginDto;
+use super::dto::{LoginDto, LoginResponse};
 use super::user::ChatUser;
 
 #[controller("auth")]
@@ -15,7 +15,7 @@ impl AuthController {
     /// `POST /api/auth/login { "username": "ana" }` -> `{ accessToken, user }`.
     #[post("login")]
     #[http_code(200)]
-    fn login(&self, #[body] dto: LoginDto) -> HttpResult<Value> {
+    fn login(&self, #[body] dto: LoginDto) -> HttpResult<LoginResponse> {
         self.auth_service.login(&dto.username)
     }
 

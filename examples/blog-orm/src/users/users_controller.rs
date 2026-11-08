@@ -3,7 +3,7 @@ use corvis_orm::OrmResultExt;
 
 use super::dto::{CreateUserDto, ListUsersQuery, UpdateUserDto};
 use super::users_service::UsersService;
-use crate::models::User;
+use crate::models::{Paginated, User, user};
 
 #[controller("users")]
 pub struct UsersController {
@@ -20,7 +20,7 @@ impl UsersController {
     }
 
     #[get]
-    async fn find_all(&self, #[query] query: ListUsersQuery) -> HttpResult<Value> {
+    async fn find_all(&self, #[query] query: ListUsersQuery) -> HttpResult<Paginated<user::WithCount>> {
         // `?` turns the OrmError into a 500 carrying it as cause; the global
         // `OrmExceptionFilter` maps it to the right status.
         Ok(self.users_service.find_all(query).await?)
