@@ -258,3 +258,43 @@ async fn raw_parameters_of_different_types_do_not_share_a_prepared_statement() {
         assert_eq!(db.query_raw(sql, vec![json!(7)]).await.unwrap()[0]["v"], json!(7), "{sql}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The helper itself: `CORVIS_ORM_PG_REQUIRED=1` (set by CI) turns a skip into a failure
+// ---------------------------------------------------------------------------------------------
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(s) => *s,
+        Err(p) => p.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_default(),
+    }
+}
+
+/// Runs `fresh_db_at` with the variable's policy set to "required" and returns the panic message.
+async fn required_failure(base: &'static str) -> String {
+    let err = tokio::spawn(pg::fresh_db_at(base, true, "required_check")).await.expect_err("a required server that is down must panic");
+    panic_message(err.into_panic())
+}
+
+#[tokio::test]
+async fn required_postgres_fails_instead_of_skipping() {
+    let base = "postgres://app:p4ss-w0rd@127.0.0.1:5299";
+    // Without the variable: skipped, as in a local run without a server.
+    assert!(pg::fresh_db_at(base, false, "required_check").await.is_none());
+
+    let msg = required_failure(base).await;
+    assert!(msg.contains("CORVIS_ORM_PG_REQUIRED=1") && msg.contains("CORVIS_ORM_PG)"), "{msg}");
+    assert!(msg.contains("127.0.0.1:5299") && msg.contains("is not reachable"), "{msg}");
+    assert!(!msg.contains("p4ss-w0rd") && !msg.contains("app:"), "{msg}");
+
+    let msg = required_failure("postgres://app:p4ss-w0rd@127.0.0.1:not-a-port").await;
+    assert!(msg.contains("has an invalid URL"), "{msg}");
+    assert!(!msg.contains("p4ss-w0rd") && !msg.contains("app:"), "{msg}");
+}
+
+#[test]
+fn server_host_never_includes_credentials() {
+    assert_eq!(pg::host("postgres://postgres:postgres@127.0.0.1:55432"), "127.0.0.1:55432");
+    assert_eq!(pg::host("postgres://u:p@ss@db.internal:5432/app?sslmode=require"), "db.internal:5432");
+    assert_eq!(pg::host("postgres://db.internal"), "db.internal");
+}
