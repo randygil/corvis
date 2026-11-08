@@ -134,9 +134,7 @@ pub struct UsersModule;
 
 El segundo argumento convierte `Arc<MemoryUserRepo>` en `Arc<dyn UserRepo>`; con `|r| r` basta. Para cambiar de implementación solo cambias esa línea (o la eliges en un [módulo dinámico](/es/fundamentals/dynamic-modules)).
 
-::: warning Hooks y `use_class_as`
-`use_class_as` conserva el scope de `T` pero no registra sus hooks del ciclo de vida: si `MemoryUserRepo` implementa `OnModuleInit`, ese hook no se ejecuta cuando se registra con `use_class_as`. Usa `use_class` o `Provider::class` si necesitas los hooks.
-:::
+`use_class_as` se comporta como `use_class` respecto de `T`: conserva su scope, y sus hooks del ciclo de vida, los `#[handlers]` (`#[on_event]`, `#[cron]`...) y los metadatos de gateway se ejecutan sobre la instancia concreta. Si `MemoryUserRepo` implementa `OnModuleInit`, el hook se ejecuta una vez y el estado que fija es visible a través del `Arc<dyn UserRepo>`. Igual que con `use_class`, los providers transient no tienen hooks de ciclo de vida.
 
 Con un valor ya construido, usa `use_value_arc`; con una fábrica, `use_factory_arc`:
 

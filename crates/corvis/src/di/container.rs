@@ -11,7 +11,7 @@ use futures::future::BoxFuture;
 use super::error::DiError;
 use super::injectable::{Injectable, ResolveCtx};
 use super::module::{ConfigureFn, ExportItem, ModuleDefinition, ModuleImport};
-use super::provider::{ErasedHooks, Instance, Provider, Scope, downcast, erase};
+use super::provider::{Built, ErasedHooks, Instance, Provider, Scope, downcast, erase};
 use super::token::Token;
 use crate::common::lifecycle::HookKind;
 use crate::router::controller::ControllerDef;
@@ -52,6 +52,8 @@ pub struct Container {
     pub(crate) globals: Vec<ModuleId>,
     pub(crate) root: ModuleId,
     instances: Mutex<HashMap<(ModuleId, Token), Instance>>,
+    /// Concrete instances behind `use_class_as` providers; hooks, handlers and gateways run on these.
+    hook_targets: Mutex<HashMap<(ModuleId, Token), Instance>>,
     order: Mutex<Vec<(ModuleId, Token)>>,
 }
 
@@ -241,7 +243,14 @@ impl Container {
         }
 
         let globals = modules.iter().filter(|m| m.global).map(|m| m.id).collect();
-        Ok(Arc::new(Container { modules, globals, root, instances: Mutex::new(HashMap::new()), order: Mutex::new(Vec::new()) }))
+        Ok(Arc::new(Container {
+            modules,
+            globals,
+            root,
+            instances: Mutex::new(HashMap::new()),
+            hook_targets: Mutex::new(HashMap::new()),
+            order: Mutex::new(Vec::new()),
+        }))
     }
 
     pub(crate) fn module_name(&self, id: ModuleId) -> String {
@@ -346,7 +355,7 @@ impl Container {
                 deps: &[],
                 path: Arc::new(new_path),
             };
-            let instance = (provider.factory)(ctx).await?;
+            let Built { instance, hook_target } = (provider.factory)(ctx).await?;
             if transient {
                 return Ok(instance);
             }
@@ -355,6 +364,9 @@ impl Container {
                 return Ok(existing.clone());
             }
             map.insert(key.clone(), instance.clone());
+            if let Some(target) = hook_target {
+                self.hook_targets.lock().unwrap().insert(key.clone(), target);
+            }
             self.order.lock().unwrap().push(key);
             Ok(instance)
         }
@@ -410,6 +422,15 @@ impl Container {
 
     pub(crate) fn instance(&self, module: ModuleId, token: &Token) -> Option<Instance> {
         self.instances.lock().unwrap().get(&(module, token.clone())).cloned()
+    }
+
+    /// The instance hooks run on: the concrete class behind a `use_class_as` provider, otherwise the instance.
+    pub(crate) fn hook_instance(&self, module: ModuleId, token: &Token) -> Option<Instance> {
+        let key = (module, token.clone());
+        if let Some(t) = self.hook_targets.lock().unwrap().get(&key) {
+            return Some(t.clone());
+        }
+        self.instances.lock().unwrap().get(&key).cloned()
     }
 
     /// Finds an already created instance anywhere in the application (`strict: false`).
@@ -468,7 +489,7 @@ impl Container {
                 targets.push((mt.clone(), p.hooks.clone()));
             }
             for (token, hooks) in targets {
-                let Some(inst) = self.instance(m, &token) else { continue };
+                let Some(inst) = self.hook_instance(m, &token) else { continue };
                 match kind {
                     HookKind::OnModuleInit => {
                         if let Some(h) = &hooks.on_module_init {

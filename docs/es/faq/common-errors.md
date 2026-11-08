@@ -41,11 +41,12 @@ fábrica) cuando el token no existe en el contexto consultado.
 ## Dependencias circulares
 
 ```text
-A circular dependency has been detected: AService -> BService -> AService. ...
+A circular dependency has been detected: AService -> BService -> AService. Break the cycle: move the shared
+logic into a third provider, resolve one side lazily with ModuleRef (not in its constructor), or communicate
+through EventEmitter. See "Circular dependencies" in the docs.
 ```
 
-Dos providers se piden mutuamente (directa o indirectamente). El mensaje sugiere `forwardRef()`,
-pero **Corvis no tiene `forwardRef`**: hay que romper el ciclo. Opciones:
+Dos providers se piden mutuamente (directa o indirectamente). Hay que romper el ciclo (Corvis no tiene `forwardRef`). Opciones:
 
 - Extraer la lógica compartida a un tercer provider del que dependan ambos.
 - Comunicar uno de los lados con eventos (`EventEmitter`) en lugar de una llamada directa.
@@ -81,6 +82,7 @@ mensaje incluye la causa. Un caso típico es una variable de entorno obligatoria
 | `request-scoped providers are not supported; use transient or default scope` | `#[injectable(scope = "request")]` no existe. Ver [Scopes de inyección](/es/fundamentals/injection-scopes) |
 | `unknown #[module] key; expected imports, controllers, providers, exports or global` | Una clave mal escrita en `#[module(...)]` |
 | `#[corvis::main] requires an async fn` | Falta `async` en `main` |
+| `#[optional] has no effect: declare the field as Option<Arc<T>> to make the dependency optional` | `#[optional]` en un campo. Escribe `cats: Option<Arc<CatsService>>` en su lugar |
 
 Un campo de un `#[injectable]` que no es `Arc<T>`, `Option<Arc<T>>` ni `ModuleRef` se inicializa con
 `Default`. Si su tipo no implementa `Default`, el error del compilador lo menciona: inicialízalo con

@@ -10,8 +10,8 @@ pub struct InjectableOptions {
     pub transient: bool,
 }
 
-/// Removes `#[inject]`, `#[optional]`, `#[init]`, `#[default]` from fields and
-/// returns the `impl Injectable` block.
+/// Removes `#[inject]`, `#[init]`, `#[default]` from fields and returns the `impl Injectable` block.
+/// `#[optional]` is rejected with a compile error: optionality comes from the `Option<Arc<T>>` field type.
 pub fn injectable_impl(item: &mut ItemStruct, opts: &InjectableOptions) -> syn::Result<TokenStream> {
     let name = &item.ident;
     let name_str = name.to_string();
@@ -32,7 +32,12 @@ pub fn injectable_impl(item: &mut ItemStruct, opts: &InjectableOptions) -> syn::
                     let args = attr_args(&attr)?;
                     token = args.into_iter().next();
                 }
-                "optional" => {}
+                "optional" => {
+                    return Err(syn::Error::new_spanned(
+                        &attr,
+                        "#[optional] has no effect: declare the field as Option<Arc<T>> to make the dependency optional",
+                    ));
+                }
                 "init" => {
                     let args = attr_args(&attr)?;
                     let e = args.into_iter().next().ok_or_else(|| syn::Error::new_spanned(&attr, "#[init(expr)] expects an expression"))?;
@@ -171,4 +176,35 @@ pub fn parse_injectable_args(args: TokenStream) -> syn::Result<InjectableOptions
         }
     }
     Ok(opts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(mut item: ItemStruct) -> syn::Result<TokenStream> {
+        injectable_impl(&mut item, &InjectableOptions { transient: false })
+    }
+
+    #[test]
+    fn optional_attribute_is_rejected() {
+        let item: ItemStruct = syn::parse_quote! {
+            struct NeedsCats {
+                #[optional]
+                cats: Arc<CatsService>,
+            }
+        };
+        let err = run(item).unwrap_err().to_string();
+        assert!(err.contains("Option<Arc<T>>"), "{err}");
+    }
+
+    #[test]
+    fn optional_by_type_is_accepted() {
+        let item: ItemStruct = syn::parse_quote! {
+            struct NeedsCats {
+                cats: Option<Arc<CatsService>>,
+            }
+        };
+        assert!(run(item).is_ok());
+    }
 }

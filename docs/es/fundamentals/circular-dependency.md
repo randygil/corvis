@@ -25,10 +25,14 @@ No hace falta ninguna referencia diferida para los módulos. Que el grafo lo adm
 Si `OrdersService` tiene un campo `Arc<InvoicesService>` e `InvoicesService` un campo `Arc<OrdersService>`, ninguno se puede construir antes que el otro. Corvis lo detecta al arrancar y devuelve un error con la cadena completa:
 
 ```text
-A circular dependency has been detected: OrdersService -> InvoicesService -> OrdersService.
+A circular dependency has been detected: OrdersService -> InvoicesService -> OrdersService. Break the cycle: move the shared logic into a third
+provider, resolve one side lazily with ModuleRef (not in its constructor), or communicate through
+EventEmitter. See "Circular dependencies" in the docs.
 ```
 
-No existe un mecanismo de referencia diferida en los campos (`forwardRef` en otros contenedores). El mensaje de error menciona `forwardRef()` por herencia de esos contenedores, pero en Corvis no hay tal función: usa una de las soluciones siguientes.
+El mensaje está en inglés, como el resto de los errores del framework: propone las tres soluciones de abajo.
+
+No existe un mecanismo de referencia diferida en los campos (`forwardRef` en otros contenedores): usa una de las soluciones siguientes.
 
 ### 1. Extraer la parte compartida
 
