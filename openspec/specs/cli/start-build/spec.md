@@ -1,7 +1,7 @@
 # cli/start-build Specification
 
 ## Purpose
-TBD - created by archiving change e13-cli-defaults-that-contradict-the-docs. Update Purpose after archive.
+How `corvis start` and `corvis build` pick the Cargo profile, run watch mode, and pass program arguments through.
 
 ## Requirements
 

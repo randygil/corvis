@@ -1,7 +1,7 @@
 # reliability/health-checks Specification
 
 ## Purpose
-TBD - created by archiving change e13-honest-health-checks. Update Purpose after archive.
+What the built-in health indicators check, how they time out and fail, and the shape of the health response.
 
 ## Requirements
 

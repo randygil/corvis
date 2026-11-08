@@ -1,7 +1,7 @@
 # infra/ci Specification
 
 ## Purpose
-TBD - created by archiving change e0-ci-in-github-actions. Update Purpose after archive.
+What the GitHub Actions CI runs, when it runs, on which platforms, and with which permissions.
 
 ## Requirements
 
