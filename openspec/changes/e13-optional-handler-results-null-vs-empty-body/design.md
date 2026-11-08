@@ -199,10 +199,7 @@ The scratch script is the starting point for the committed fixture (task 1.1); i
    small widening of the issue. Confirm it belongs here, or split it into its own issue.
 3. **houseplan `PlainJson`.** It becomes redundant. Remove it from the port after this lands (a port change, not part
    of this change), or keep it as is.
-</content>
-</invoke>
-<invoke name="Bash">
-<parameter name="command">cd /c/Users/Usuario/Devel/nestrs && sed -n 275,302p crates/corvis/src/__private.rs | head -30; sed -n 359,368p crates/corvis/src/z/pipe.rs
+
 ## Review notes (2026-11-08)
 
 1. Accept the recommended decision: every result without a value (`None` of any `Option`, `Value::Null`, a

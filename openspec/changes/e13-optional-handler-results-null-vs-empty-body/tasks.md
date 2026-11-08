@@ -78,9 +78,9 @@
 
 ## 6. Parity (not run by the implementer: the maintainer runs it)
 
-- [ ] 6.1 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff (not run by the implementer: the maintainer runs it)
+- [x] 6.1 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff (not run by the implementer: the maintainer runs it)
   differences; pay attention to houseplan `01-ledger.mjs` (`POST /api/transactions/3/undo`, "nothing left: null"),
-  which must still answer an empty body through `PlainJson`, and to consi's envelope (`"data": null`)
+  which must still answer an empty body through `PlainJson`, and to consi's envelope (`"data": null`) (maintainer batch run on batch/phase04-g d6f3ea0: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 - [x] 6.2 If #9 (`e0-typed-api-as-the-main-path`) is archived before this change, reconcile its `http/responses` (reconciled in the delta and design.md; #9 folder untouched)
   requirement "Typed handler return values are serialized as JSON" with the empty-body rule (a `T` whose JSON is
   `null` answers an empty body); if this change is archived first, leave the note for #9
@@ -90,9 +90,3 @@
 - Archive the change with `/opsx:archive` after review and the parity run.
 - Close issue #122, tick it in epic #13 and move its card to Done (see the `corvis-task` skill).
 - Optional port follow-up (not part of this change): remove houseplan's `PlainJson` null workaround once this lands.
-</content>
-</invoke>
-<invoke name="Bash">
-<parameter name="command">cd /c/Users/Usuario/Devel/nestrs && openspec validate e13-optional-handler-results-null-vs-empty-body 2>&1 | tail -20; ls crates/corvis/tests | grep -iE "cache|zod" ; ls crates | head</parameter>
-<parameter name="description">Validate the change and check referenced test files</parameter>
-</invoke>

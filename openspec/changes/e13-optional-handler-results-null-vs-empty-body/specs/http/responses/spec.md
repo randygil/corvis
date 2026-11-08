@@ -106,5 +106,3 @@ same status, `Content-Type`, `Content-Length`, `ETag`, `X-Powered-By` and body.
 - **WHEN** the fixture's Corvis app answers each recorded request on `127.0.0.1`
 - **THEN** every compared field equals the recorded one, or the difference is listed in the test as a known
   difference with its reason
-</content>
-</invoke>
