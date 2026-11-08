@@ -14,7 +14,7 @@ En un proyecto de Corvis no hay un archivo de scripts propio de la CLI: el proye
 | Compilar para producción | `corvis build --release` | `cargo build --release` |
 | Ejecutar los tests | | `cargo test` |
 
-`corvis start --watch` requiere `cargo-watch` (`cargo install cargo-watch`). Ver [Uso](/es/cli/usages#corvis-start).
+`corvis start --watch` requiere `cargo-watch` (`cargo install cargo-watch`). Si falta, el comando falla y explica cómo instalarlo. Ver [Uso](/es/cli/usages#corvis-start).
 
 ## Comandos propios
 

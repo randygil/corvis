@@ -63,7 +63,7 @@ src/
 
 Si `src/users/users_module.rs` existe (por ejemplo, porque antes ejecutaste `corvis g module users`), el servicio se registra en `UsersModule` en lugar de `AppModule`. La CLI agrega también las líneas `use` necesarias.
 
-La regla exacta es: se busca `src/<carpeta>/<nombre>_module.rs` y, si no existe, se usa `src/app_module.rs`. Por eso `corvis g controller profile --path users` busca `src/users/profile_module.rs` y, al no encontrarlo, registra el controlador en `AppModule` aunque exista `users_module.rs`; en ese caso muévelo a mano al módulo correcto.
+La regla exacta es: se registra en el primer archivo que exista entre `src/<carpeta>/<nombre>_module.rs`, `src/<carpeta>/<carpeta>_module.rs` y `src/app_module.rs` (con `--flat`, siempre `src/app_module.rs`). Así, `corvis g controller profile --path users` registra `ProfileController` en `UsersModule` cuando existe `src/users/users_module.rs`, y la CLI imprime la línea `UPDATE` con el archivo modificado. Si recurre a `AppModule` mientras la carpeta tiene otros archivos `*_module.rs`, imprime un `NOTE` con sus nombres para que muevas el registro si no era lo que querías.
 
 | Opción | Efecto |
 |---|---|
@@ -88,7 +88,9 @@ corvis start [--watch] [--release] [-- <argumentos del programa>]
 | `corvis start -- --mi-flag` | `cargo run -- --mi-flag` |
 | `corvis start --watch` | `cargo watch -x run` |
 
-`--watch` necesita [`cargo-watch`](https://crates.io/crates/cargo-watch) (`cargo install cargo-watch`). En ese modo se ignoran `--release` y los argumentos tras `--`.
+Sin `--watch`, el comando imprime antes el perfil que ejecuta (`Running the debug profile ...` o `Running the release profile`).
+
+`--watch` necesita [`cargo-watch`](https://crates.io/crates/cargo-watch) (`cargo install cargo-watch`). Antes de ejecutarlo, la CLI busca `cargo-watch` en los directorios de `PATH` y en `$CARGO_HOME/bin` (por defecto `~/.cargo/bin`); si no está, el comando falla con `cargo-watch is not installed` e indica ejecutar `cargo install cargo-watch` o usar `corvis start` sin `--watch`. En modo watch se ignoran `--release` y los argumentos tras `--`.
 
 ## `corvis build`
 
@@ -96,7 +98,7 @@ corvis start [--watch] [--release] [-- <argumentos del programa>]
 corvis build [--release]
 ```
 
-Ejecuta `cargo build`, o `cargo build --release` con `--release` (o `--prod`).
+Ejecuta `cargo build` (perfil debug), o `cargo build --release` con `--release` (o `--prod`). Antes imprime el perfil: `Building the debug profile ...` o `Building the release profile`.
 
 ## `corvis info`
 

@@ -65,7 +65,7 @@ Commands:
   generate|g <schematic> <name> [--flat] [--path <dir>] [--no-spec]
                                  Generate a Corvis element.
   start [--watch] [-- args]      Run the application (cargo run / cargo watch).
-  build [--release]              Build the application.
+  build [--release]              Build the application (debug profile unless --release).
   info|i                         Display Corvis project details.
 
 Schematics:
@@ -244,9 +244,17 @@ fn cmd_generate(args: &[String]) -> Res {
         // Register controllers / providers in the feature module (or AppModule).
         if let Some(key) = register {
             let use_path = if flat { format!("crate::{file_stem}::{type_name}") } else { format!("crate::{dir}::{type_name}") };
-            let feature_module = p.src.join(&dir).join(format!("{}_module.rs", n.snake));
-            let target = if !flat && feature_module.exists() { feature_module } else { p.src.join("app_module.rs") };
+            let target = registration_target(&p.src, &dir, &n.snake, flat);
             if target.exists() {
+                if !flat && target == p.src.join("app_module.rs") {
+                    let others = module_files_in(&p.src.join(&dir));
+                    if !others.is_empty() {
+                        println!(
+                            "{YELLOW}NOTE{RESET} registered in src/app_module.rs; src/{dir}/ has {} (move the registration there if that was intended)",
+                            others.join(", ")
+                        );
+                    }
+                }
                 update_file(&target, |s| {
                     let s = edit::add_to_module(s, key, &type_name)?;
                     Some(edit::add_use(&s, &format!("use {use_path};")))
@@ -272,6 +280,36 @@ fn cmd_generate(args: &[String]) -> Res {
         "resource" | "res" => generate_resource(&p, &n, &dir),
         other => Err(format!("unknown schematic \"{other}\"")),
     }
+}
+
+/// The module file that receives the registration of a generated element:
+/// `<dir>/<name>_module.rs`, then `<dir>/<dir>_module.rs`, then `app_module.rs`.
+fn registration_target(src: &Path, dir: &str, name_snake: &str, flat: bool) -> PathBuf {
+    if !flat {
+        let folder = src.join(dir);
+        let own = folder.join(format!("{name_snake}_module.rs"));
+        if own.exists() {
+            return own;
+        }
+        let folders = folder.join(format!("{}_module.rs", dir.rsplit('/').next().unwrap_or(dir)));
+        if folders.exists() {
+            return folders;
+        }
+    }
+    src.join("app_module.rs")
+}
+
+/// Names of the `*_module.rs` files directly inside `folder`, sorted.
+fn module_files_in(folder: &Path) -> Vec<String> {
+    let mut out: Vec<String> = fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with("_module.rs"))
+        .collect();
+    out.sort();
+    out
 }
 
 fn capitalize(s: &str) -> String {
@@ -325,15 +363,42 @@ fn generate_resource(p: &Project, n: &Names, dir: &str) -> Res {
 
 // ---------------------------------------------------------------------- start / build / info
 
+/// Looks for the `cargo-<name>` executable where Cargo finds external subcommands: the
+/// directories of `PATH` and `$CARGO_HOME/bin` (default `~/.cargo/bin`).
+fn find_cargo_subcommand(name: &str) -> Option<PathBuf> {
+    let file = format!("cargo-{name}{}", std::env::consts::EXE_SUFFIX);
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
+        let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") };
+        home.map(|h| PathBuf::from(h).join(".cargo"))
+    });
+    dirs.extend(cargo_home.map(|c| c.join("bin")));
+    dirs.into_iter().map(|d| d.join(&file)).find(|f| f.is_file())
+}
+
 fn cmd_cargo(args: &[String], sub: &str) -> Res {
     let mut cmd;
-    if sub == "run" && flag(args, "--watch") {
+    let release = flag(args, "--release") || flag(args, "--prod");
+    let watch = sub == "run" && flag(args, "--watch");
+    if !watch {
+        let verb = if sub == "build" { "Building" } else { "Running" };
+        if release {
+            println!("{verb} the release profile");
+        } else {
+            println!("{verb} the debug profile (use --release for an optimized build)");
+        }
+    }
+    if watch {
+        if find_cargo_subcommand("watch").is_none() {
+            return Err("cargo-watch is not installed: corvis start --watch runs \"cargo watch -x run\".                 Install it with \"cargo install cargo-watch\", or run \"corvis start\" without --watch."
+                .into());
+        }
         cmd = Command::new("cargo");
         cmd.args(["watch", "-x", "run"]);
     } else {
         cmd = Command::new("cargo");
         cmd.arg(sub);
-        if flag(args, "--release") || flag(args, "--prod") {
+        if release {
             cmd.arg("--release");
         }
         if let Some(i) = args.iter().position(|a| a == "--") {
@@ -363,4 +428,67 @@ fn cmd_info() {
     }
     println!("\n[Corvis CLI]");
     println!("Corvis CLI Version : {}", env!("CARGO_PKG_VERSION"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tree(tag: &str, files: &[&str]) -> PathBuf {
+        let src = std::env::temp_dir().join(format!("corvis-cli-unit-{}-{tag}", std::process::id())).join("src");
+        let _ = fs::remove_dir_all(src.parent().unwrap());
+        for f in files {
+            let path = src.join(f);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+        src
+    }
+
+    fn cleanup(src: &Path) {
+        let _ = fs::remove_dir_all(src.parent().unwrap());
+    }
+
+    #[test]
+    fn registers_in_the_folders_module() {
+        let src = tree("folder", &["app_module.rs", "users/users_module.rs"]);
+        assert_eq!(registration_target(&src, "users", "profile", false), src.join("users/users_module.rs"));
+        cleanup(&src);
+    }
+
+    #[test]
+    fn a_module_named_after_the_element_wins() {
+        let src = tree("named", &["app_module.rs", "users/users_module.rs", "users/profile_module.rs"]);
+        assert_eq!(registration_target(&src, "users", "profile", false), src.join("users/profile_module.rs"));
+        cleanup(&src);
+    }
+
+    #[test]
+    fn falls_back_to_app_module() {
+        let src = tree("none", &["app_module.rs", "users/mod.rs"]);
+        assert_eq!(registration_target(&src, "users", "profile", false), src.join("app_module.rs"));
+        cleanup(&src);
+    }
+
+    #[test]
+    fn default_folder_and_flat() {
+        let src = tree("default", &["app_module.rs", "users/users_module.rs"]);
+        assert_eq!(registration_target(&src, "users", "users", false), src.join("users/users_module.rs"));
+        assert_eq!(registration_target(&src, "users", "users", true), src.join("app_module.rs"));
+        cleanup(&src);
+    }
+
+    #[test]
+    fn finds_cargo_watch_in_cargo_home() {
+        let home = std::env::temp_dir().join(format!("corvis-cli-unit-{}-home", std::process::id()));
+        let bin = home.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let file = bin.join(format!("cargo-watch{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&file, "").unwrap();
+        // SAFETY: no other test in this binary reads or writes CARGO_HOME.
+        unsafe { std::env::set_var("CARGO_HOME", &home) };
+        assert_eq!(find_cargo_subcommand("watch"), Some(file));
+        assert_eq!(find_cargo_subcommand("corvis-no-such-subcommand"), None);
+        let _ = fs::remove_dir_all(home);
+    }
 }
