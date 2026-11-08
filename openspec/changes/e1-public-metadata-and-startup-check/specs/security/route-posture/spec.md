@@ -105,8 +105,23 @@ SHALL have the same effect as `#[public]`.
 
 ### Requirement: Exemptions match by method and full path
 An exemption SHALL match routes by HTTP method (or any method with `RequestMethod::All`) and by a pattern compared
-with the route's full path template (global prefix and version segment included), using the same pattern rules as
-middleware route matching.
+with the route's full path template (global prefix and version segment included), literally: a literal segment matches
+the same literal segment (ignoring ASCII case); `:x` or `{x}` matches only a `:param` or `{param}` segment of the
+template; `*` as a whole segment matches exactly one segment and `**` matches zero or more segments; `*` inside a
+segment never crosses a `/`. In warn and enforce mode, an exemption that matches only routes that are already
+protected or public MUST be logged as a warning.
+
+#### Scenario: Parameter exemption does not cover a literal sibling
+- **WHEN** an exemption for `GET /files/:id` is configured and the application also has an unguarded `GET /files/export-all`
+- **THEN** only `GET /files/:id` is accepted as exempt
+
+#### Scenario: Glob inside a segment
+- **WHEN** an exemption for `GET /health*` is configured
+- **THEN** it matches `/healthz` and does not match `/healthcare/records/:id`
+
+#### Scenario: Redundant exemption
+- **WHEN** an exemption matches only routes that already have an access guard or are public
+- **THEN** a warning names the exemption and `init()` continues
 
 #### Scenario: Route protected outside the framework
 - **WHEN** an exemption for `GET /metrics` with the reason "scraped from the private network only" is configured

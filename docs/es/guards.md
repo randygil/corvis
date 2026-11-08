@@ -149,16 +149,16 @@ async fn announce(&self, #[param("room")] room: String, #[body] dto: Announcemen
 
 ## Rutas públicas con un guard global
 
-`examples/cats-app` instala `AuthGuard` como guard global y marca las rutas públicas con un metadato:
+Una configuración típica instala un `AuthGuard` como guard global (`examples/cats-app` lo hace). Las rutas públicas se marcan con `#[public]`, que guarda la entrada de metadatos `PUBLIC_METADATA` (`"isPublic"`) con el valor `true`. El guard la lee con `Reflector`:
 
 ```rust
-pub const IS_PUBLIC_KEY: &str = "isPublic";
+use corvis::PUBLIC_METADATA;
 
 #[async_trait]
 impl CanActivate for AuthGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let is_public: bool =
-            self.reflector.get_all_and_override(IS_PUBLIC_KEY, &[ctx.get_handler(), ctx.get_class()]).unwrap_or(false);
+            self.reflector.get_all_and_override(PUBLIC_METADATA, &[ctx.get_handler(), ctx.get_class()]).unwrap_or(false);
         if is_public {
             return Ok(true);
         }
@@ -173,11 +173,80 @@ impl CanActivate for AuthGuard {
 
 ```rust
 #[get(":id")]
-#[set_metadata(IS_PUBLIC_KEY, true)]
+#[public]
 fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Cat> { ... }
 ```
 
 `request.set_user(..)` guarda el payload como JSON; se lee con `request.user_as::<JwtPayload>()`.
+
+`#[public]` va sobre un método de ruta dentro de `#[routes]` o debajo de `#[controller]` (todo el controlador es público). No recibe argumentos y no cambia cómo se atienden las peticiones: solo guarda la entrada de metadatos. El valor de la ruta gana sobre el del controlador, así que `#[set_metadata(PUBLIC_METADATA, false)]` en una ruta la vuelve privada dentro de un controlador público. Las aplicaciones que ya marcan rutas con `#[set_metadata(IS_PUBLIC_KEY, true)]` y `IS_PUBLIC_KEY = "isPublic"` siguen funcionando: es la misma clave.
+
+## Exigir un guard en cada ruta
+
+Olvidar `#[use_guards(...)]` pasa en silencio: la ruta funciona y queda abierta a todos. Puedes pedirle a la aplicación que verifique al arrancar que cada ruta de controlador tiene un guard, está marcada `#[public]` o está exenta:
+
+```rust
+let mut app = CorvisFactory::create::<AppModule>().await?;
+app.require_route_posture();
+app.listen(3000).await?;
+```
+
+En este modo `init()` (y por tanto `listen()`) falla antes de enlazar el servidor y antes de ejecutar cualquier hook de módulo, con un error que lista todas las rutas sin guard:
+
+```text
+Route posture check failed: 2 routes have no guard and are not marked #[public].
+  GET   /api/rooms                 RoomsController::list
+  POST  /api/rooms/:room/messages  RoomsController::post
+Add #[use_guards(...)] to the route or its controller (or register a global guard), mark it #[public] if it is meant to be open, or add an exemption with a reason. Guards that do not control access (ThrottlerGuard, ZodGuard) do not count.
+```
+
+(El mensaje del error está en inglés.) Los guards cuentan en cada nivel en que el router los ejecuta: `use_global_guards`, `Provider::app_guard`, el controlador y la ruta. Cada alias de ruta y cada versión de URI se revisa por separado.
+
+Para adoptarlo paso a paso, usa el modo de advertencia (warn), que registra la misma lista una vez y arranca con normalidad. Las rutas protegidas fuera del framework (un proxy inverso, una red privada) se pueden eximir, siempre con una razón:
+
+```rust
+use corvis::{RequestMethod, RoutePostureOptions};
+
+app.set_route_posture(
+    RoutePostureOptions::warn()
+        .exempt(RequestMethod::Get, "/metrics", "scraped from the private network only"),
+);
+```
+
+- El patrón de la exención se compara literalmente con la plantilla de ruta completa (prefijo global y versión incluidos), segmento a segmento: un segmento literal coincide con el mismo literal (sin distinguir mayúsculas), `:id` o `{id}` coincide solo con un segmento `:param` (así `/files/:id` no exime `/files/export-all`), `*` como segmento completo es exactamente un segmento (`/api/*/internal/*`), `**` es cero o más segmentos (`/metrics/**`) y `*` dentro de un segmento (`/health*`) nunca cruza un `/`. `RequestMethod::All` coincide con cualquier método; una ruta declarada con `#[all]` solo la cubre una exención `All`.
+- Una razón en blanco hace que `init()` falle. Una exención que no coincide con ninguna ruta registra una advertencia, y también la que coincide solo con rutas que ya tienen un guard o son públicas (aceptaría esas rutas en silencio si se quitara el guard).
+- Un guard que solo limita o valida peticiones no decide quién puede llamar a una ruta. `ThrottlerGuard` y `ZodGuard` no cuentan. Tu propio guard cuenta por defecto; sobrescribe `controls_access()` para que devuelva `false` cuando deja pasar todo salvo que esté configurado (un guard de roles sin roles, por ejemplo). Solo cambia la declaración, no cómo se ejecuta el guard.
+- `app.route_posture()` devuelve, después de `init()` y en cualquier modo (también apagado), la postura de cada ruta: método, ruta, controlador y handler, guards, y si está protegida, pública (y si el marcador está en el handler o en el controlador), exenta (con su razón) o sin protección. También lista los guards que contaron como control de acceso (`access_guards()`) y las exenciones redundantes. Implementa `Display` (una tabla) y `serde::Serialize`.
+- Llama a `require_route_posture()` o `set_route_posture()` antes de `init()` o `listen()`; después no tienen efecto.
+- Las rutas `#[sse]` se revisan como cualquier otra. Los handlers de mensajes de gateways todavía no se revisan.
+
+Contar un guard es una declaración, no una prueba de que autentique: la verificación no distingue un guard de autenticación real de uno que siempre devuelve `true`.
+
+### Guards globales que dejan pasar todo
+
+El riesgo es un guard global que deja pasar todo cuando no tiene nada que comprobar. Un guard de roles registrado con `Provider::app_guard::<RolesGuard>()` que devuelve `Ok(true)` cuando la ruta no tiene metadatos `roles` es el caso típico; también lo son los guards de tenant, CSRF, modo mantenimiento y feature flags. Por defecto cuenta como control de acceso, así que todas las rutas parecen protegidas y la verificación pasa aunque nadie se autentique. Sobrescribe `controls_access()` para que devuelva `false` en todo guard que no deniega por defecto:
+
+```rust
+#[async_trait]
+impl CanActivate for RolesGuard {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> { ... }
+
+    fn controls_access(&self) -> bool {
+        false
+    }
+}
+```
+
+Para detectar el caso, en modo warn y enforce la verificación registra una línea con los guards que contó, su alcance y cuántas rutas cubre cada uno, por ejemplo `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller CatsController, 5 routes)`. Un guard global que cubre todas las rutas y no es tu guard de autenticación es el que hay que revisar. Los mismos datos están en `app.route_posture().unwrap().access_guards()`.
+
+### Lo que la verificación no ve
+
+La verificación cubre solo las rutas de controladores. Estas superficies HTTP quedan fuera, así que protégelas por separado:
+
+- la interfaz de Swagger y Scalar y su documento JSON (se montan como middleware);
+- `ServeStaticModule` y `serve_static` (archivos estáticos);
+- cualquier middleware de `use_fn` o `configure` que responda sin llamar a `next`;
+- los listeners `upgrade` directos y los handshakes de WebSocket (los gateways los cubre una versión posterior).
 
 ## Guards en los tests
 

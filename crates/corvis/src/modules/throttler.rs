@@ -180,11 +180,25 @@ impl CanActivate for ThrottlerGuard {
         }
         Ok(true)
     }
+
+    fn controls_access(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn throttler_guard_does_not_control_access() {
+        let guard: Arc<dyn CanActivate> = Arc::new(ThrottlerGuard {
+            storage: Arc::new(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 3)])),
+            reflector: Arc::new(Reflector),
+        });
+        assert!(!guard.controls_access());
+        assert!(guard.guard_name().ends_with("ThrottlerGuard"));
+    }
 
     /// Keys are stored hashed (fixed size), expired counters are purged without waiting for
     /// 10 000 entries, and the table never grows past `max_entries`.

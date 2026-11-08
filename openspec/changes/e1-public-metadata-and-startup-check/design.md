@@ -234,3 +234,38 @@ below about current behavior was re-read in the code at commit `ccbef4b`.
 - The check placement before `build_middleware` (deviation from the spike, so no user `after_init` has run) is
   accepted.
 - Archive #26 before #27 (#27 modifies the capability #26 creates).
+
+## Implementation notes
+
+### Security review
+
+Findings of the security review of the implementation and what was done (additive API only; existing fields kept):
+
+1. **Pass-through global guard counts as protection (medium).** A global guard that lets everything through (a roles
+   guard that returns `Ok(true)` without `roles` metadata, tenant, CSRF, maintenance or feature-flag guards) marks every
+   route `Protected` because `controls_access()` defaults to `true`. Fix: in warn and enforce mode the check logs one
+   info line, `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller
+   CatsController, 5 routes)`, and the report gains `access_guards()` (`AccessGuardSummary { name, scope, routes }`,
+   `GuardScope::{Global, Controller, Route}`). To know the scope, `CompiledRoute` keeps how many of its guards are
+   global and how many are the controller's (`global_guard_count`, `controller_guard_count`). The docs describe the case
+   and say to override `controls_access()` to return `false` for guards that do not deny by default.
+2. **Exemptions matched more than they appear to (low).** They used the middleware matcher, where a `:x` pattern
+   segment matches any template segment and `*` inside a segment crosses `/`. Exemptions now use their own literal
+   matcher: literals match literals (ASCII case-insensitive), `:x` / `{x}` match only `:param` / `{param}` template
+   segments, `*` as a whole segment is exactly one segment, `**` is zero or more segments (a trailing `*` is one
+   segment, so `/metrics/*` no longer matches `/metrics`), and `*` inside a segment does not cross `/`. This replaces
+   decision 5's "same pattern rules as middleware"; the spec delta is updated. An exemption that matches only routes
+   that are already protected or public logs a warning and is listed by `redundant_exemptions()`.
+   - `host` on an exemption is not added: two controllers on the same path with different hosts are rare, and an
+     exemption would need its own semantics for routes without a host. Follow-up.
+3. **Surfaces the check does not see (low).** Documented in the guards page: Swagger/Scalar UI, `ServeStaticModule` and
+   `serve_static`, middleware that answers without calling `next`, raw `upgrade` listeners (gateways: #27).
+4. **Where `Public` comes from (informational).** `PostureEntry::public_source` (`PublicSource::{Handler, Controller}`)
+   and the table shows `public (handler)` / `public (controller)`.
+
+### Open follow-ups
+
+- A stricter mode that does not count unknown guards: only guards that explicitly opt in (an `access_guard` marker, or
+  `controls_access()` returning an enum with `Yes`, `No`, `Unknown`) would count, so a pass-through guard is never
+  trusted by default. Not implemented; the summary line and the docs are the mitigation for now.
+- `host` on exemptions (see above).

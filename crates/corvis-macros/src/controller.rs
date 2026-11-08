@@ -108,6 +108,10 @@ pub fn expand_controller(args: TokenStream, mut item: ItemStruct) -> syn::Result
                 let (k, v) = metadata_tokens(&attr_args(&attr)?)?;
                 builder.push(quote!(.set_metadata(#k, #v)));
             }
+            "public" => {
+                no_public_args(&attr)?;
+                builder.push(quote!(.set_metadata(::corvis::PUBLIC_METADATA, true)));
+            }
             "version" => {
                 let v = version_tokens(attr_args(&attr)?);
                 builder.push(quote!(.version(#v)));
@@ -168,9 +172,19 @@ const CONSUMED_ROUTE_ATTRS: &[&str] = &[
     "use_pipes",
     "use_filters",
     "set_metadata",
+    "public",
     "version",
     "apply_decorators",
 ];
+
+/// `#[public]` takes no arguments (`#[public()]` is accepted).
+fn no_public_args(attr: &syn::Attribute) -> syn::Result<()> {
+    match &attr.meta {
+        syn::Meta::Path(_) => Ok(()),
+        syn::Meta::List(list) if list.tokens.is_empty() => Ok(()),
+        _ => Err(syn::Error::new_spanned(attr, "`#[public]` takes no arguments")),
+    }
+}
 
 fn no_route_message(method: &str, attr: &str) -> String {
     let routes: Vec<String> = METHODS.iter().map(|(m, _)| format!("#[{m}]")).collect();
@@ -260,6 +274,10 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 "set_metadata" => {
                     let (k, v) = metadata_tokens(&attr_args(&attr)?)?;
                     builder.push(quote!(.set_metadata(#k, #v)));
+                }
+                "public" => {
+                    no_public_args(&attr)?;
+                    builder.push(quote!(.set_metadata(::corvis::PUBLIC_METADATA, true)));
                 }
                 "version" => {
                     let v = version_tokens(attr_args(&attr)?);
