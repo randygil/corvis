@@ -78,7 +78,7 @@ for (const r of rows) {
 md += '\n';
 
 // Relación Corvis vs Nest (Express) por escenario.
-const base = meta.frameworks.find((f) => f.id === 'nest-express');
+const base = meta.frameworks.find((f) => f.id === 'node-express');
 const mainCorvis = meta.frameworks.find((f) => f.id === 'corvis');
 if (base && mainCorvis) {
   md += '## Relación de throughput (respecto a NestJS + Express)\n\n';
@@ -127,7 +127,7 @@ md += 'En esta máquina, con cliente y servidor en el mismo equipo, el techo de 
 md += 'así que esa fila mide sobre todo el techo del entorno, no el límite de Corvis.\n';
 md += '- **Corvis (1 worker)** (`TOKIO_WORKER_THREADS=1`) es la comparación por núcleo, más justa frente a un proceso Node sin cluster.\n';
 md += '- req/min = req/s × 60 (extrapolado de la ventana medida).\n';
-md += '\n## Cómo reejecutar\n\n```bash\n# Desde la raíz del workspace, en Git Bash\nbash bench/run.sh\n\n# Parámetros opcionales (variables de entorno)\nCONNS=100 DURATION=15 WARMUP=5 OHA_THREADS=8 FRAMEWORKS="corvis corvis-1t nest-express nest-fastify" bash bench/run.sh\n```\n';
+md += '\n## Cómo reejecutar\n\n```bash\n# Desde la raíz del workspace, en Git Bash\nbash bench/run.sh\n\n# Parámetros opcionales (variables de entorno)\nCONNS=100 DURATION=15 WARMUP=5 OHA_THREADS=8 FRAMEWORKS="corvis corvis-1t node-express node-fastify" bash bench/run.sh\n```\n';
 
 fs.writeFileSync(outFile, md);
 console.log(`Escrito ${outFile}`);

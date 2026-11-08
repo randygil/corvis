@@ -1,8 +1,8 @@
 {
-  "name": "nest-bench-app",
+  "name": "node-bench-app",
   "version": "0.1.0",
   "private": true,
-  "description": "App mínima de NestJS para el benchmark de throughput contra Corvis",
+  "description": "App mínima de Node.js para el benchmark de throughput contra Corvis",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",

@@ -72,5 +72,5 @@ _RSS = working set de Windows (`tasklist`), muestreado varias veces durante cada
 bash bench/run.sh
 
 # Parámetros opcionales (variables de entorno)
-CONNS=100 DURATION=15 WARMUP=5 OHA_THREADS=8 FRAMEWORKS="corvis corvis-1t nest-express nest-fastify" bash bench/run.sh
+CONNS=100 DURATION=15 WARMUP=5 OHA_THREADS=8 FRAMEWORKS="corvis corvis-1t node-express node-fastify" bash bench/run.sh
 ```

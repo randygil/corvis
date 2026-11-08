@@ -7,8 +7,8 @@
 
 # Benchmark
 bench/target
-bench/nest-app/node_modules
-bench/nest-app/dist
+bench/node-app/node_modules
+bench/node-app/dist
 bench/raw
 bench/logs
 
