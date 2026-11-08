@@ -188,3 +188,14 @@ temp SQLite file). Where it settles the open questions, and where corvis-orm del
   (64 concurrent queries on 64 connections), on both providers. corvis-orm rejects both: sqlx preallocates its idle queue
   to the pool size, so an unbounded size is not representable, and a pool needs at least one connection. The decision 5
   rule (at least 1, at most `u32`) stays.
+
+## Implementation notes
+
+- **Deviation: the pool size has an upper bound.** The rule above ("at most `u32`") was too wide. sqlx 0.8.6
+  preallocates its idle queue with `ArrayQueue::new(max_connections as usize)`, so `connection_limit=4294967295` (or
+  `OrmClientOptions::max_connections(u32::MAX)`) made pool creation try to allocate hundreds of gigabytes and abort the
+  process. The size is now limited to 1..=262143, the largest value Postgres accepts for its own `max_connections`
+  (`MAX_POOL_SIZE` in `url_params.rs`). A larger URL value fails with the same `P1013` shape ("must be a positive
+  integer no greater than 262143"); a code-provided `max_connections` of 0 or above the cap fails in
+  `OrmClient::with_options` with an initialization error that names the field. The original accepts these values; corvis-orm
+  bounds them because of the preallocation.

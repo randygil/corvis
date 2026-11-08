@@ -173,6 +173,7 @@ file:./dev.db?connection_limit=1
 - SQLite en memoria usa siempre exactamente una conexión: `connection_limit` se acepta y se ignora ahí. En SQLite, `pool_timeout` solo se aplica si es un número válido; uno inválido se ignora, como hace el cliente original.
 - Un parámetro repetido conserva su último valor, y los valores pueden ir codificados con porcentaje.
 - Un valor inválido (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`) falla al crear el cliente, con un error de inicialización `P1013` que nombra el parámetro y el valor, nunca el resto de la URL. El cliente original trata `connection_limit=0` como sin límite; corvis-orm exige al menos 1.
+- El tamaño del pool es como máximo 262143 (el mayor valor que Postgres acepta para su propio `max_connections`), en la URL y en código: el driver reserva un espacio por conexión por adelantado, así que un valor mayor agotaría la memoria. `connection_limit=262144` falla con `P1013`, y `max_connections(0)` o `max_connections(n)` por encima del límite falla al crear el cliente.
 - Los valores puestos en código tienen prioridad sobre la URL: `OrmClientOptions::max_connections(n)` (y `OrmModuleOptions::max_connections(n)`) sobre `connection_limit`, y `OrmClientOptions::acquire_timeout` sobre `pool_timeout`. La URL tiene prioridad sobre los valores por defecto.
 - `pool_timeout=0` con un servidor inalcanzable solo está limitado por el tiempo de conexión del sistema operativo.
 

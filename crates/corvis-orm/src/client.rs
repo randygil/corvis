@@ -17,7 +17,7 @@ use crate::meta::{Model, ModelMeta, ModelSet};
 use crate::query::Delegate;
 use crate::raw::RawSql;
 use crate::transaction::{Batch, IsolationLevel, TransactionOptions, TxSlot, TxState, tx_error};
-use crate::url_params::{PoolTimeout, UrlParams, split_url_params};
+use crate::url_params::{MAX_POOL_SIZE, PoolTimeout, UrlParams, split_url_params};
 
 /// Options of a [`OrmClient`] (`new OrmClient({ datasourceUrl, log })`).
 #[derive(Debug, Clone)]
@@ -164,6 +164,13 @@ impl OrmClient {
     }
 
     pub fn with_options(options: OrmClientOptions) -> Result<Self> {
+        if let Some(n) = options.max_connections
+            && !(1..=MAX_POOL_SIZE).contains(&n)
+        {
+            return Err(OrmError::init(format!(
+                "`max_connections` must be a positive integer no greater than {MAX_POOL_SIZE}, got `{n}`."
+            )));
+        }
         let dialect = dialect_of(&options.url)?;
         let (driver_url, params) = split_url_params(&options.url, dialect)?;
         Ok(OrmClient { inner: Arc::new(ClientInner { options, dialect, driver_url, params, pool: RwLock::new(None) }), tx: None })

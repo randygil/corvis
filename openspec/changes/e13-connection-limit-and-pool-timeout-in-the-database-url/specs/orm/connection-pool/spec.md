@@ -74,6 +74,25 @@ rejected value. The error message MUST NOT contain the user, the password or any
 - **THEN** creation fails with an initialization error mentioning `connection_limit` (the original treats `0` as no
   limit; corvis-orm requires at least 1)
 
+### Requirement: The pool size is bounded
+The pool size, from `connection_limit` or from `OrmClientOptions::max_connections`, MUST be between 1 and 262143 (the
+largest value Postgres accepts for its own `max_connections`), because the driver preallocates one slot per connection.
+A value outside that range SHALL make `OrmClient::with_options` return an initialization error that names the
+parameter or field; for `connection_limit` the error has code `P1013` and the same shape as the other invalid values.
+
+#### Scenario: Limit at the bound
+- **WHEN** a client is created with `connection_limit=262143`
+- **THEN** creation succeeds
+
+#### Scenario: Limit above the bound
+- **WHEN** a client is created with `connection_limit=262144` or `connection_limit=4294967295`
+- **THEN** creation fails with a `P1013` initialization error saying the value must be a positive integer no greater
+  than 262143, without allocating a pool
+
+#### Scenario: Size set in code
+- **WHEN** a client is created with `OrmClientOptions::max_connections(0)` or `max_connections(u32::MAX)`
+- **THEN** creation fails with an initialization error that names `max_connections`
+
 ### Requirement: Other URL parameters are preserved
 Removing the pool parameters SHALL leave every other query parameter of the URL unchanged (same order, same encoding),
 so driver parameters such as `sslmode`, `application_name` or `options` keep working.

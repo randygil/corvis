@@ -37,6 +37,18 @@ impl Drop for TempDir {
 }
 
 #[test]
+fn pool_size_in_code_is_bounded() {
+    for n in [0, MAX_POOL_SIZE + 1, u32::MAX] {
+        let e = OrmClient::with_options(OrmClientOptions::new("sqlite::memory:").max_connections(n)).unwrap_err();
+        assert_eq!(e.name(), "InitializationError", "{n}");
+        assert!(e.to_string().contains("`max_connections`") && e.to_string().contains(&format!("got `{n}`")), "{n}: {e}");
+    }
+    for n in [1, MAX_POOL_SIZE] {
+        assert!(OrmClient::with_options(OrmClientOptions::new("sqlite::memory:").max_connections(n)).is_ok(), "{n}");
+    }
+}
+
+#[test]
 fn schema_search_path_statement_is_a_quoted_identifier() {
     assert_eq!(set_search_path_sql("tenant_a"), r#"SET search_path TO "tenant_a""#);
     assert_eq!(set_search_path_sql(r#"a"b"#), r#"SET search_path TO "a""b""#);

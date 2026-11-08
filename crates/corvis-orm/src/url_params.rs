@@ -76,11 +76,16 @@ fn digits(v: &str) -> Option<&str> {
     (!v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())).then_some(v)
 }
 
+/// Largest pool size, the largest value Postgres accepts for its own `max_connections`. sqlx
+/// preallocates its idle queue with one slot per connection, so an unbounded size would abort the
+/// process while allocating.
+pub(crate) const MAX_POOL_SIZE: u32 = 262_143;
+
 fn parse_limit(raw: &str) -> Result<u32> {
     let v = percent_decode(raw);
     match digits(&v).and_then(|d| d.parse::<u32>().ok()) {
-        Some(n) if n >= 1 => Ok(n),
-        _ => Err(invalid("`connection_limit` must be a positive integer", &v)),
+        Some(n) if (1..=MAX_POOL_SIZE).contains(&n) => Ok(n),
+        _ => Err(invalid("`connection_limit` must be a positive integer no greater than 262143", &v)),
     }
 }
 
@@ -217,6 +222,18 @@ mod tests {
         }
         let e = pg("postgresql://h/db?connection_limit=0").unwrap_err();
         assert_eq!(e.code(), Some("P1013"));
+    }
+
+    #[test]
+    fn pool_connection_limit_upper_bound() {
+        assert_eq!(pg("postgresql://h/db?connection_limit=262143").unwrap().1.connection_limit, Some(MAX_POOL_SIZE));
+        for v in ["262144", "4294967295", "4294967296"] {
+            let e = pg(&format!("postgresql://h/db?connection_limit={v}")).unwrap_err();
+            assert_eq!(e.code(), Some("P1013"), "{v}");
+            let m = e.to_string();
+            assert!(m.contains("no greater than 262143") && m.contains(&format!("got `{v}`")), "{v}: {m}");
+            assert!(sq(&format!("file:./a.db?connection_limit={v}")).is_err(), "{v}");
+        }
     }
 
     #[test]
