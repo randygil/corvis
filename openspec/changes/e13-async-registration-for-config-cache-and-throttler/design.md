@@ -9,11 +9,11 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
 - `ConfigModule::for_root(options)` (`crates/corvis/src/config.rs:275-284`) captures the options by value and
   registers `ConfigService` with `Provider::use_factory`, whose closure is already async and calls
   `ConfigService::load(&options)` (errors mapped with `anyhow::Error::msg`). Globality comes from
-  `options.is_global` (line 276). `ConfigModuleOptions` (`config.rs:40-58`) is `Clone` and has `is_global`,
+  `options.is_global` (line 276). `ConfigModuleOptions` (`config.rs:42-61`) is `Clone` and has `is_global`,
   `env_file_path`, `ignore_env_file`, `ignore_env_vars`, `load`, `validate`, `expand_variables`.
 - `CacheModule::register(options)` (`crates/corvis/src/modules/cache.rs:152-163`) builds one `Arc<CacheManager>`
   eagerly and registers it twice with `Provider::use_value_arc`, under `Token::of::<CacheManager>()` and
-  `CACHE_MANAGER` (`cache.rs:31`), so both resolve to the same instance. `CacheOptions` (`cache.rs:37-50`) has `ttl`,
+  `CACHE_MANAGER` (`cache.rs:31`), so both resolve to the same instance. `CacheOptions` (`cache.rs:37-45`, default at lines 47-51) has `ttl`,
   `max` and `is_global`.
 - `ThrottlerModule::for_root(throttlers)` and `for_root_storage(storage)` (`crates/corvis/src/modules/throttler.rs:141-155`)
   register a `ThrottlerStorage` with `Provider::use_value` and always call `.global(true)`. `ThrottlerGuard`
@@ -24,7 +24,7 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
 
 - `JwtModule::register_async(global, factory)` (`crates/corvis/src/jwt.rs:342-355`): `use_factory` on
   `Token::of::<JwtService>()`.
-- `MulterModule::register_async(factory)` (`crates/corvis/src/multer/mod.rs:268-280`): the module has no globality
+- `MulterModule::register_async(factory)` (`crates/corvis/src/multer/mod.rs:262-275`): the module has no globality
   option.
 - `ScheduleModule::for_root_async(imports, factory)` (`crates/corvis/src/modules/schedule/mod.rs:573`).
 - `OrmModule::for_root_async(is_global, factory)` (`crates/corvis-orm/src/module.rs:223-233`).
@@ -33,15 +33,15 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
 
 **DI facts the design relies on**
 
-- `Provider::use_factory` (`crates/corvis/src/di/provider.rs:196-206`) wraps `use_factory_arc` (lines 209-234), which
-  turns any non-DI error into `DiError::Factory { token, cause }` (line 228), displayed as
-  `Error while instantiating {token}: {cause}` (`crates/corvis/src/di/error.rs:28-29`); `docs/faq/common-errors.md:69-73`
+- `Provider::use_factory` (`crates/corvis/src/di/provider.rs:267-277`) wraps `use_factory_arc` (lines 280-303), which
+  turns any non-DI error into `DiError::Factory { token, cause }` (line 298), displayed as
+  `Error while instantiating {token}: {cause}` (`crates/corvis/src/di/error.rs:35-36`); `docs/faq/common-errors.md:82-86`
   documents that message for `register_async` / `for_root_async`.
-- `Provider::use_existing(token, existing)` (`provider.rs:237-245`) resolves `existing` and returns the same instance.
-- `resolve_provider` (`crates/corvis/src/di/container.rs:329-370`) returns `DiError::Circular` when a provider's
-  resolution path already contains its own key (lines 343-347), so a `ConfigService` factory that asks for
+- `Provider::use_existing(token, existing)` (`provider.rs:308-320`, `alias_of` set at line 318) resolves `existing` and returns the same instance.
+- `resolve_provider` (`crates/corvis/src/di/container.rs:458`) returns `DiError::Circular` when a provider's
+  resolution path already contains its own key (lines 469-473), so a `ConfigService` factory that asks for
   `ConfigService` fails with the circular dependency error instead of hanging.
-- Each `ModuleImport::Dynamic` creates a new module node (`container.rs:124-131`); `DynamicModule::import`
+- Each `ModuleImport::Dynamic` creates a new module node (`container.rs:156-166`); `DynamicModule::import`
   (`crates/corvis/src/di/module.rs:131`) adds imports to it, and the factory's `ResolveCtx` belongs to that node.
 - `docs/fundamentals/dynamic-modules.md:107-156` explains the async pattern and lists the built-in modules; the table
   (lines 146-156) shows no async variant for Config, Cache or Throttler.

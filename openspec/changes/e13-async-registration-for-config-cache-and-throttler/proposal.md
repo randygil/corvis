@@ -60,4 +60,6 @@ None (no spec covers built-in modules yet).
 - Renaming the existing async variants (`JwtModule::register_async(global, ..)` names its flag `global`,
   `ScheduleModule::for_root_async(imports, ..)` takes imports first): they already fit the convention in shape, and
   changing them would break callers; possible new issue for `ScheduleModule` if the maintainer wants one shape.
-- The units of `CacheOptions.ttl` (#18) and throttler headers (#120).
+- The units of `CacheOptions.ttl` (#18), throttler headers (#120) and the throttler block model (#135). Both
+  throttler changes configure the storage (`with_headers`, `with_block_duration`), so a factory returning a configured
+  `ThrottlerStorage` reaches them with no change here.

@@ -51,11 +51,15 @@ None (no archived spec covers these areas yet).
 - Port apps: none uses the throttler; the merge only runs when an enhancer sets a header, so apidiff should not move.
   The parity check confirms it.
 - Lands after #17, which touches the same dispatch path (`execute_route`, filter order), or rebases on it.
+- Lands **before** #135 (`e13-throttler-block-duration-like-the-original`): #135 replaces the counter behind these
+  headers with the original's block model and modifies two requirements of this change's `security/rate-limiting`
+  spec, so this change must be archived first.
 
 ## Out of scope
 
-- The original's block model (`blockDuration`, defaulting to `ttl` from the moment of the block): Corvis keeps its
-  fixed-window counter, so `Retry-After` reports the rest of the window (design.md, Decision 5); possible new issue.
+- The original's block model (`blockDuration`, defaulting to `ttl` from the moment of the block) and its sliding hit
+  count: filed as #135, implemented after this change. Until then `Retry-After` reports the rest of Corvis's fixed
+  window (design.md, Decision 5).
 - A per-throttler `setHeaders` option: `ThrottlerOptions` is built with struct literals in the docs, and a new public
   field would break them; possible new issue together with a builder.
 - `HttpException::with_header` for headers on user exceptions: possible new issue.

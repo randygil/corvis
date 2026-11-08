@@ -40,8 +40,8 @@
 ## 4. Docs
 
 - [ ] 4.1 `docs/security/rate-limiting.md`: a "Response headers" section (names, suffixes, seconds, 429,
-  `with_headers(false)`, CORS `Access-Control-Expose-Headers`, `Retry-After` follows the fixed window); remove the
-  missing-headers limitation; same in `docs/es/security/rate-limiting.md`
+  `with_headers(false)`, throttler names become header names so they must be header-safe and say nothing internal, CORS `Access-Control-Expose-Headers`, `Retry-After` follows the fixed window, which #135
+  changes later); remove the missing-headers limitation; same in `docs/es/security/rate-limiting.md`
 - [ ] 4.2 `docs/guards.md` and `docs/interceptors.md`: document `ctx.switch_to_http().set_response_header` and the
   merge rule (enhancer headers never replace headers the response already has; kept on errors and filter responses);
   same in `docs/es/`
