@@ -2,32 +2,32 @@
 
 ## 1. Build and locate the binary in the shared target
 
-- [ ] 1.1 In `bench/run.sh`, add a `target_dir` function (design decision 2): `cargo metadata --no-deps
+- [x] 1.1 In `bench/run.sh`, add a `target_dir` function (design decision 2): `cargo metadata --no-deps
   --format-version 1` in `$ROOT_DIR`, `target_directory` read with `node -e`, backslashes turned into `/`; set
   `TARGET_DIR` and `CORVIS_EXE="$TARGET_DIR/release/corvis-app.exe"` before the build step; verify by printing both
   values (temporary `echo`, removed afterwards) with `CARGO_TARGET_DIR` set and with it unset (`env -u
   CARGO_TARGET_DIR`): `C:/.../nestrs/target` in both cases on the maintainer's machine
-- [ ] 1.2 Replace the build command with `(cd "$ROOT_DIR" && cargo build --release -p corvis-app)` (no
+- [x] 1.2 Replace the build command with `(cd "$ROOT_DIR" && cargo build --release -p corvis-app)` (no
   `CARGO_TARGET_DIR` override); update the build log line to name `$TARGET_DIR/release`; keep the fallback to a
   previous binary and its `BENCH_NOTES` warning; make the missing-binary error give the full path and
   `cargo build --release -p corvis-app`; verify `bash -n bench/run.sh` passes (and `shellcheck bench/run.sh` reports
   nothing new, if shellcheck is installed)
-- [ ] 1.3 Print the leftover notice of design decision 4 when `$BENCH_DIR/target` exists; verify with an empty
+- [x] 1.3 Print the leftover notice of design decision 4 when `$BENCH_DIR/target` exists; verify with an empty
   `bench/target` folder created for the test that the notice appears and the folder is left in place
-- [ ] 1.4 Replace the header comment of `bench/run.sh` (lines 1-18) with a short English usage note that links to
+- [x] 1.4 Replace the header comment of `bench/run.sh` (lines 1-18) with a short English usage note that links to
   `bench/README.md`; verify the variable list now lives only in the README
 
 ## 2. Documentation and repository rules
 
-- [ ] 2.1 Write `bench/README.md` (English) with the content of design decision 5 (applications, prerequisites, how
+- [x] 2.1 Write `bench/README.md` (English) with the content of design decision 5 (applications, prerequisites, how
   to run, environment variables, binary location `<target>/release/corvis-app.exe`, `SKIP_BUILD=1`, loopback only,
   `bench/results.md` is overwritten by every run); describe the other side as an equivalent Node.js application on
   Express and on Fastify; verify every command in it runs as written
-- [ ] 2.2 Remove the `bench/target` line from `.gitignore`; verify `git check-ignore -v bench/target/x` still reports
+- [x] 2.2 Remove the `bench/target` line from `.gitignore`; verify `git check-ignore -v bench/target/x` still reports
   the `**/target` rule
-- [ ] 2.3 Add `bench/README.md` to `SURFACES` in `scripts/check-naming.mjs`; verify `node scripts/check-naming.mjs`
+- [x] 2.3 Add `bench/README.md` to `SURFACES` in `scripts/check-naming.mjs`; verify `node scripts/check-naming.mjs`
   passes and that it reports a violation when a banned word is added to the README on a scratch edit (then revert)
-- [ ] 2.4 Docs site: confirm no page under `docs/` or `docs/es/` mentions `bench/target` or the build folder
+- [x] 2.4 Docs site: confirm no page under `docs/` or `docs/es/` mentions `bench/target` or the build folder
   (`grep -rn "bench/target" docs README.md`), so no page changes; if #12 is already merged, link
   `bench/port-vs-original/README.md` from `bench/README.md` (design, "Interaction with #12")
 
@@ -44,7 +44,7 @@
 
 ## 4. Definition of done
 
-- [ ] 4.1 `cargo fmt --all --check` passes (no Rust change expected)
+- [x] 4.1 `cargo fmt --all --check` passes (no Rust change expected)
 - [ ] 4.2 `cargo build --workspace --all-targets` with no warnings (unchanged Rust code; `bench/corvis-app` still
   builds as a member)
 - [ ] 4.3 `cargo clippy --workspace --all-targets -- -D warnings` passes
@@ -52,8 +52,8 @@
 - [ ] 4.5 Regression checks for the script: the results of 3.1 and 3.2 recorded in the pull request
 - [ ] 4.6 Docs: `bench/README.md` is repository text (English only); no page of the docs site changes (2.4); `npm run
   docs:check` in `docs/` passes
-- [ ] 4.7 `node scripts/check-naming.mjs` passes
-- [ ] 4.8 corvis-parity: no framework runtime code changes, so no parity run is required; confirm with
+- [x] 4.7 `node scripts/check-naming.mjs` passes
+- [x] 4.8 corvis-parity: no framework runtime code changes, so no parity run is required; confirm with
   `git diff --stat` that only `bench/run.sh`, `bench/README.md`, `.gitignore` and `scripts/check-naming.mjs` changed
   and that `Cargo.lock` is unchanged
 
