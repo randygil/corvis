@@ -236,7 +236,7 @@ impl OrmClient {
                 if let Some(t) = opts.acquire_timeout {
                     pool_opts = pool_opts.acquire_timeout(t);
                 }
-                DbPool::Postgres(pool_opts.connect(url).await.map_err(|e| init_error(e, url))?)
+                DbPool::Postgres(db::retry_connect(|| pool_opts.clone().connect(url)).await.map_err(|e| init_error(e, url))?)
             }
         };
         *slot = Some(pool.clone());
@@ -285,7 +285,10 @@ impl OrmClient {
             }
             None => match self.pool().await? {
                 DbPool::Sqlite(p) => db::sqlite_fetch(&p, sql).await,
-                DbPool::Postgres(p) => db::pg_fetch(&p, sql).await,
+                DbPool::Postgres(p) => match db::acquire_pg(&p).await {
+                    Ok(mut c) => db::pg_fetch(&mut *c, sql).await,
+                    Err(e) => Err(e),
+                },
             },
         })
     }
@@ -304,7 +307,10 @@ impl OrmClient {
             }
             None => match self.pool().await? {
                 DbPool::Sqlite(p) => db::sqlite_execute(&p, sql).await,
-                DbPool::Postgres(p) => db::pg_execute(&p, sql).await,
+                DbPool::Postgres(p) => match db::acquire_pg(&p).await {
+                    Ok(mut c) => db::pg_execute(&mut *c, sql).await,
+                    Err(e) => Err(e),
+                },
             },
         })
     }
@@ -342,7 +348,10 @@ impl OrmClient {
             }
             None => match self.pool().await? {
                 DbPool::Sqlite(p) => db::sqlite_execute_script(&p, script).await,
-                DbPool::Postgres(p) => db::pg_execute_script(&p, script).await,
+                DbPool::Postgres(p) => match db::acquire_pg(&p).await {
+                    Ok(mut c) => db::pg_execute_script(&mut *c, script).await,
+                    Err(e) => Err(e),
+                },
             },
         })
     }

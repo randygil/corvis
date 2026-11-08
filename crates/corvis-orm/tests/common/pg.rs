@@ -15,11 +15,20 @@ pub fn base_url() -> String {
 pub async fn fresh_db(name: &str) -> Option<String> {
     let db = format!("orm_test_{name}");
     let admin = sqlx::postgres::PgConnectOptions::from_str(&format!("{}/postgres", base_url())).ok()?;
-    let mut c = match admin.connect().await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("skipping: Postgres not reachable ({e})");
-            return None;
+    // A refused connection means Postgres is down (skip); any other error is retried a few times
+    // before skipping, so a transient socket error (Windows `WSAEINVAL`) cannot silently skip a test.
+    let mut attempt = 0;
+    let mut c = loop {
+        match admin.connect().await {
+            Ok(c) => break c,
+            Err(sqlx::Error::Io(e)) if e.kind() != std::io::ErrorKind::ConnectionRefused && attempt < 4 => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+            }
+            Err(e) => {
+                eprintln!("skipping: Postgres not reachable ({e})");
+                return None;
+            }
         }
     };
     c.execute(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)").as_str()).await.ok()?;

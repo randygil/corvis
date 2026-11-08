@@ -209,9 +209,48 @@ impl DbPool {
     pub(crate) async fn begin(&self) -> Result<DbTx> {
         Ok(match self {
             DbPool::Sqlite(p) => DbTx::Sqlite(p.begin().await?),
-            DbPool::Postgres(p) => DbTx::Postgres(p.begin().await?),
+            DbPool::Postgres(p) => {
+                let conn = acquire_pg(p).await?;
+                DbTx::Postgres(Transaction::begin(conn, None).await?)
+            }
         })
     }
+}
+
+/// How many times a failed connection attempt is repeated (after the first one).
+const CONNECT_RETRIES: u32 = 4;
+
+/// Whether `e` is an I/O error of the socket layer while a connection was being established.
+/// sqlx's pool already retries `ConnectionRefused` until the acquire timeout; the rest of the
+/// socket errors (on Windows, `WSAEINVAL` / os error 10022 from `set_nodelay` on a socket that
+/// the peer reset right after the handshake) used to reach the application.
+fn is_transient_connect_error(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Io(io) if io.kind() != std::io::ErrorKind::ConnectionRefused)
+}
+
+/// Runs `connect` again while it fails with a transient socket error, with a short backoff.
+/// Nothing is sent to the server before a connection exists, so repeating is always safe. The
+/// last error is returned unchanged when the attempts run out.
+pub(crate) async fn retry_connect<T, F, Fut>(mut connect: F) -> std::result::Result<T, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, sqlx::Error>>,
+{
+    let mut attempt = 0;
+    loop {
+        match connect().await {
+            Err(e) if attempt < CONNECT_RETRIES && is_transient_connect_error(&e) => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Takes a connection from the pool, repeating attempts that fail with a transient socket error.
+pub(crate) async fn acquire_pg(pool: &PgPool) -> std::result::Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+    retry_connect(|| pool.acquire()).await
 }
 
 pub(crate) enum DbTx {
@@ -783,4 +822,54 @@ pub(crate) fn js_number(f: f64) -> Value {
 
 pub(crate) fn map_sqlx(e: sqlx::Error, model: Option<&crate::meta::ModelMeta>) -> OrmError {
     OrmError::from_sqlx(e, model)
+}
+
+#[cfg(test)]
+mod connect_retry_tests {
+    use super::*;
+    use std::io::{Error as IoError, ErrorKind};
+    use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+
+    fn io(kind: ErrorKind) -> sqlx::Error {
+        sqlx::Error::Io(IoError::new(kind, "boom"))
+    }
+
+    #[tokio::test]
+    async fn transient_socket_errors_are_retried_until_a_connection_opens() {
+        let calls = AtomicU32::new(0);
+        let r = retry_connect(|| async {
+            if calls.fetch_add(1, SeqCst) < 3 { Err(io(ErrorKind::InvalidInput)) } else { Ok(7) }
+        })
+        .await;
+        assert_eq!(r.unwrap(), 7);
+        assert_eq!(calls.load(SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn a_persistent_error_is_returned_unchanged_after_the_attempts() {
+        let calls = AtomicU32::new(0);
+        let r: std::result::Result<(), _> = retry_connect(|| async {
+            calls.fetch_add(1, SeqCst);
+            Err(io(ErrorKind::InvalidInput))
+        })
+        .await;
+        assert!(matches!(r, Err(sqlx::Error::Io(e)) if e.kind() == ErrorKind::InvalidInput));
+        assert_eq!(calls.load(SeqCst), CONNECT_RETRIES + 1);
+    }
+
+    #[tokio::test]
+    async fn refused_connections_and_other_errors_are_not_repeated_here() {
+        for e in [io(ErrorKind::ConnectionRefused), sqlx::Error::PoolTimedOut, sqlx::Error::PoolClosed] {
+            let calls = AtomicU32::new(0);
+            let mut e = Some(e);
+            let r: std::result::Result<(), _> = retry_connect(|| {
+                calls.fetch_add(1, SeqCst);
+                let e = e.take().unwrap();
+                async move { Err(e) }
+            })
+            .await;
+            assert!(r.is_err());
+            assert_eq!(calls.load(SeqCst), 1);
+        }
+    }
 }
