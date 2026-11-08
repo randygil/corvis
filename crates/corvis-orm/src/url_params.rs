@@ -1,5 +1,5 @@
 //! The one place that reads the corvis-specific query parameters of the database URL
-//! (`connection_limit`, `pool_timeout`). They are removed before the URL reaches the driver,
+//! (`connection_limit`, `pool_timeout`, `schema`). They are removed before the URL reaches the driver,
 //! which would ignore them (Postgres) or reject them (SQLite); every other pair is kept as is.
 
 use crate::db::Dialect;
@@ -17,6 +17,29 @@ pub(crate) enum PoolTimeout {
 pub(crate) struct UrlParams {
     pub(crate) connection_limit: Option<u32>,
     pub(crate) pool_timeout: Option<PoolTimeout>,
+    /// Postgres schema, percent-decoded (`?schema=tenant_a`). Ignored on SQLite.
+    pub(crate) schema: Option<String>,
+}
+
+/// Longest schema name: `NAMEDATALEN - 1` bytes on a default Postgres server.
+const MAX_SCHEMA_BYTES: usize = 63;
+
+/// The value is not echoed: unlike a number, a schema name can carry arbitrary text.
+fn invalid_schema() -> OrmError {
+    OrmError::Initialization(InitializationError {
+        message:
+            "The provided database string is invalid. `schema` must be a non-empty schema name of at most 63 bytes without NUL characters."
+                .into(),
+        error_code: Some("P1013".into()),
+    })
+}
+
+fn parse_schema(raw: &str) -> Result<String> {
+    let v = percent_decode(raw);
+    if v.is_empty() || v.len() > MAX_SCHEMA_BYTES || v.contains('\0') {
+        return Err(invalid_schema());
+    }
+    Ok(v)
 }
 
 fn invalid(what: &str, value: &str) -> OrmError {
@@ -74,12 +97,13 @@ fn parse_timeout(raw: &str) -> Option<PoolTimeout> {
 /// Splits `url` into the URL for the driver and the parameters read from it.
 ///
 /// The query string is cut at the first `?` and on `&`. A pair is removed when its key is exactly
-/// `connection_limit` or `pool_timeout`; the others are copied byte for byte, in order, and the
+/// `connection_limit`, `pool_timeout` or `schema`; the others are copied byte for byte, in order, and the
 /// `?` disappears when nothing remains. Values are percent-decoded; a repeated key keeps its last
 /// value (what the original client does).
 ///
 /// `connection_limit` must be an integer of at least 1. An invalid `pool_timeout` fails too,
-/// except for SQLite, where the original client accepts and ignores any value.
+/// except for SQLite, where the original client accepts and ignores any value. `schema` must be 1 to
+/// 63 bytes without NUL characters on both providers (SQLite then ignores it).
 pub(crate) fn split_url_params(url: &str, dialect: Dialect) -> Result<(String, UrlParams)> {
     let url = url.trim();
     let Some((head, query)) = url.split_once('?') else {
@@ -91,6 +115,7 @@ pub(crate) fn split_url_params(url: &str, dialect: Dialect) -> Result<(String, U
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         match key {
             "connection_limit" => params.connection_limit = Some(parse_limit(value)?),
+            "schema" => params.schema = Some(parse_schema(value)?),
             "pool_timeout" => match parse_timeout(value) {
                 Some(t) => params.pool_timeout = Some(t),
                 None if dialect == Dialect::Sqlite => params.pool_timeout = None,
@@ -221,6 +246,86 @@ mod tests {
         let long = "x".repeat(500);
         let m = msg(pg(&format!("postgresql://h/db?connection_limit={long}")));
         assert!(m.len() < 200, "{m}");
+    }
+
+    #[test]
+    fn schema_only_drops_the_question_mark() {
+        let (u, p) = pg("postgresql://h/db?schema=other").unwrap();
+        assert_eq!(u, "postgresql://h/db");
+        assert_eq!(p.schema.as_deref(), Some("other"));
+    }
+
+    #[test]
+    fn schema_mixed_with_other_params_keeps_them() {
+        let (u, p) = pg("postgresql://h/db?sslmode=require&schema=s&application_name=a%20b&options=-c%20x%3Dy&connection_limit=2").unwrap();
+        assert_eq!(u, "postgresql://h/db?sslmode=require&application_name=a%20b&options=-c%20x%3Dy");
+        assert_eq!(p.schema.as_deref(), Some("s"));
+        assert_eq!(p.connection_limit, Some(2));
+    }
+
+    #[test]
+    fn schema_is_percent_decoded() {
+        assert_eq!(pg("postgresql://h/db?schema=My%20Schema").unwrap().1.schema.as_deref(), Some("My Schema"));
+        assert_eq!(pg("postgresql://h/db?schema=a%22b").unwrap().1.schema.as_deref(), Some("a\"b"));
+    }
+
+    #[test]
+    fn schema_repeated_key_last_wins() {
+        assert_eq!(pg("postgresql://h/db?schema=a&schema=b").unwrap().1.schema.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn schema_similar_keys_are_not_removed() {
+        let (u, p) = pg("postgresql://h/db?schemas=a&x_schema=b").unwrap();
+        assert_eq!(u, "postgresql://h/db?schemas=a&x_schema=b");
+        assert_eq!(p.schema, None);
+    }
+
+    #[test]
+    fn schema_is_stripped_from_sqlite_urls() {
+        let (u, p) = sq("sqlite://dev.db?schema=main").unwrap();
+        assert_eq!((u.as_str(), p.schema.as_deref()), ("sqlite://dev.db", Some("main")));
+        let (u, _) = sq("file:./dev.db?schema=main").unwrap();
+        assert_eq!(u, "file:./dev.db");
+        let (u, _) = sq("file:./dev.db?mode=memory&schema=main").unwrap();
+        assert_eq!(u, "file:./dev.db?mode=memory");
+    }
+
+    #[test]
+    fn schema_length_limits() {
+        let ok = "a".repeat(63);
+        assert_eq!(pg(&format!("postgresql://h/db?schema={ok}")).unwrap().1.schema.as_deref(), Some(ok.as_str()));
+        let long = "a".repeat(64);
+        let e = pg(&format!("postgresql://h/db?schema={long}")).unwrap_err();
+        assert_eq!(e.code(), Some("P1013"));
+        assert!(e.to_string().contains("`schema`"), "{e}");
+        // The 63 bytes are counted after decoding: 32 two-byte characters are 64 bytes.
+        let wide = "%C3%A9".repeat(32);
+        assert!(pg(&format!("postgresql://h/db?schema={wide}")).is_err());
+        let wide = "%C3%A9".repeat(31);
+        assert!(pg(&format!("postgresql://h/db?schema={wide}")).is_ok());
+    }
+
+    #[test]
+    fn schema_empty_and_nul_are_rejected() {
+        for v in ["", "a%00b", "%00"] {
+            let e = pg(&format!("postgresql://h/db?schema={v}")).unwrap_err();
+            assert_eq!(e.code(), Some("P1013"), "{v}");
+            assert!(e.to_string().contains("`schema`"), "{v}: {e}");
+            assert!(sq(&format!("file:./a.db?schema={v}")).is_err(), "{v}");
+        }
+        assert!(pg("postgresql://h/db?schema").is_err());
+    }
+
+    #[test]
+    fn schema_error_never_echoes_the_url_or_the_value() {
+        let m = msg(pg("postgresql://app:secret@host/db?schema="));
+        for leak in ["app", "secret", "host"] {
+            assert!(!m.contains(leak), "{leak} leaked in {m}");
+        }
+        let long = format!("topsecretname{}", "z".repeat(60));
+        let m = msg(pg(&format!("postgresql://app:secret@host/db?schema={long}")));
+        assert!(!m.contains("topsecretname") && !m.contains("secret@"), "{m}");
     }
 
     #[test]

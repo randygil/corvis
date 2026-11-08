@@ -1,0 +1,417 @@
+{
+  "recorded_with": "@prisma/client + prisma 6.19.3",
+  "script": "corvis-tests/tmp/orm/schema/cases.js",
+  "queries": {
+    "schema=other": {
+      "find_many": [
+        "b@x"
+      ],
+      "current_schema": "other",
+      "search_path": "\"other\"",
+      "raw_unqualified": [
+        "b@x"
+      ]
+    },
+    "schema=public": {
+      "find_many": [
+        "a@x"
+      ],
+      "current_schema": "public",
+      "search_path": "\"public\"",
+      "raw_unqualified": [
+        "a@x"
+      ]
+    },
+    "none": {
+      "find_many": [
+        "a@x"
+      ],
+      "current_schema": "public",
+      "search_path": "\"$user\", public",
+      "raw_unqualified": [
+        "a@x"
+      ]
+    }
+  },
+  "generated_sql_with_schema_other": [
+    "SELECT \"other\".\"User\".\"id\", \"other\".\"User\".\"email\" FROM \"other\".\"User\" WHERE 1=1 OFFSET $1"
+  ],
+  "transaction_current_schema": "other",
+  "concurrent_current_schema": [
+    "other",
+    "other",
+    "other",
+    "other",
+    "other",
+    "other"
+  ],
+  "query_missing_schema": {
+    "error": {
+      "name": "PrismaClientKnownRequestError",
+      "code": "P2021",
+      "message": "\nInvalid `c.user.findMany()` invocation in\nC:\\Users\\Usuario\\Devel\\corvis-tests\\tmp\\orm\\schema\\cases.js:93:90\n\n  90 out.transaction_current_schema = await withClient(pgc, url(db, 'schema=other'), (c) => c.$transaction(async (t) => (await t.$queryRawUnsafe('SELECT current_schema() AS cs'))[0].cs));\n  91 out.concurrent_current_schema = await withClient(pgc, url(db, 'schema=other&connection_limit=3'), async (c) =>\n  92   (await Promise.all(Array.from({ length: 6 }, () => c.$queryRawUnsafe('SELECT current_schema() AS cs, pg_sleep(0.2)::text AS s')))).map((r) => r[0].cs));\n→ 93 out.query_missing_schema = await withClient(pgc, url(db, 'schema=nope'), (c) => c.user.findMany(\nThe table `nope.User` does not exist in the current database."
+    }
+  },
+  "invalid": {
+    "empty": {
+      "ok": true,
+      "current_schema": null,
+      "search_path": "\"\"",
+      "find_many": null
+    },
+    "nul": {
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:55432`\n\nPlease make sure your database server is running at `127.0.0.1:55432`."
+      }
+    },
+    "len63": {
+      "ok": true,
+      "current_schema": null,
+      "search_path": "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+      "find_many": "P2021"
+    },
+    "len64": {
+      "ok": true,
+      "current_schema": null,
+      "search_path": "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+      "find_many": "P2021"
+    },
+    "len100": {
+      "ok": true,
+      "current_schema": null,
+      "search_path": "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+      "find_many": "P2021"
+    },
+    "hostile": {
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nError querying the database: FATAL: invalid value for parameter \"search_path\": \"\"x\"; DROP TABLE canary; --\"\"\nDETAIL: List syntax is invalid."
+      }
+    }
+  },
+  "sslmode_kept": "other",
+  "migrate": {
+    "tenant_a": {
+      "status_before": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch1\", schema \"tenant_a\" at \"127.0.0.1:55432\"",
+          "Following migrations have not yet been applied:"
+        ]
+      },
+      "catalog_after_status": {
+        "schemas": [
+          "public",
+          "tenant_a"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "deploy": {
+        "exit": 0,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch1\", schema \"tenant_a\" at \"127.0.0.1:55432\"",
+          "Applying migration `20260101000000_init`",
+          "Applying migration `20260102000000_more`",
+          "The following migration(s) have been applied:",
+          "All migrations have been successfully applied."
+        ]
+      },
+      "catalog_after_deploy": {
+        "schemas": [
+          "public",
+          "tenant_a"
+        ],
+        "tables": [
+          "public.canary",
+          "tenant_a.Item",
+          "tenant_a.Tag",
+          "tenant_a._prisma_migrations"
+        ]
+      },
+      "status_after": {
+        "exit": 0,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch1\", schema \"tenant_a\" at \"127.0.0.1:55432\"",
+          "Database schema is up to date!"
+        ]
+      }
+    },
+    "public": {
+      "status_before": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch2\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Following migrations have not yet been applied:"
+        ]
+      },
+      "catalog_after_status": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "deploy": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch2\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Error: P3005"
+        ]
+      },
+      "catalog_after_deploy": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "status_after": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch2\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Following migrations have not yet been applied:"
+        ]
+      }
+    },
+    "none": {
+      "status_before": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch3\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Following migrations have not yet been applied:"
+        ]
+      },
+      "catalog_after_status": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "deploy": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch3\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Error: P3005"
+        ]
+      },
+      "catalog_after_deploy": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "status_after": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch3\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Following migrations have not yet been applied:"
+        ]
+      }
+    },
+    "My Schema": {
+      "status_before": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch4\", schema \"My Schema\" at \"127.0.0.1:55432\"",
+          "Following migrations have not yet been applied:"
+        ]
+      },
+      "catalog_after_status": {
+        "schemas": [
+          "My Schema",
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "deploy": {
+        "exit": 0,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch4\", schema \"My Schema\" at \"127.0.0.1:55432\"",
+          "Applying migration `20260101000000_init`",
+          "Applying migration `20260102000000_more`",
+          "The following migration(s) have been applied:",
+          "All migrations have been successfully applied."
+        ]
+      },
+      "catalog_after_deploy": {
+        "schemas": [
+          "My Schema",
+          "public"
+        ],
+        "tables": [
+          "My Schema.Item",
+          "My Schema.Tag",
+          "My Schema._prisma_migrations",
+          "public.canary"
+        ]
+      },
+      "status_after": {
+        "exit": 0,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch4\", schema \"My Schema\" at \"127.0.0.1:55432\"",
+          "Database schema is up to date!"
+        ]
+      }
+    },
+    "hostile": {
+      "status_before": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch5\", schema \"x\"; DROP TABLE canary; --\" at \"127.0.0.1:55432\"",
+          "Error: P1014: The underlying table for model `canary` does not exist."
+        ]
+      },
+      "catalog_after_status": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "deploy": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch5\", schema \"x\"; DROP TABLE canary; --\" at \"127.0.0.1:55432\"",
+          "Error: P1014: The underlying table for model `canary` does not exist."
+        ]
+      },
+      "catalog_after_deploy": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "status_after": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch5\", schema \"x\"; DROP TABLE canary; --\" at \"127.0.0.1:55432\"",
+          "Error: P1014: The underlying table for model `canary` does not exist."
+        ]
+      }
+    },
+    "empty": {
+      "status_before": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch6\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Error: Schema engine error:"
+        ]
+      },
+      "catalog_after_status": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "deploy": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch6\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Error: Schema engine error:"
+        ]
+      },
+      "catalog_after_deploy": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "status_after": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch6\", schema \"public\" at \"127.0.0.1:55432\"",
+          "Error: Schema engine error:"
+        ]
+      }
+    },
+    "len64": {
+      "status_before": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch7\", schema \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\" at \"127.0.0.1:55432\"",
+          "Error: Schema engine error:"
+        ]
+      },
+      "catalog_after_status": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "deploy": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch7\", schema \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\" at \"127.0.0.1:55432\"",
+          "Error: Schema engine error:"
+        ]
+      },
+      "catalog_after_deploy": {
+        "schemas": [
+          "public"
+        ],
+        "tables": [
+          "public.canary"
+        ]
+      },
+      "status_after": {
+        "exit": 1,
+        "lines": [
+          "Datasource \"db\": PostgreSQL database \"orm_schema_scratch7\", schema \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\" at \"127.0.0.1:55432\"",
+          "Error: Schema engine error:"
+        ]
+      }
+    }
+  },
+  "migrate_role_without_database_create": {
+    "existing_schema": {
+      "exit": 0,
+      "lines": [
+        "Datasource \"db\": PostgreSQL database \"orm_schema_scratch8\", schema \"app\" at \"127.0.0.1:55432\"",
+        "Applying migration `20260101000000_init`",
+        "Applying migration `20260102000000_more`",
+        "The following migration(s) have been applied:",
+        "All migrations have been successfully applied."
+      ]
+    },
+    "missing_schema": {
+      "exit": 1,
+      "lines": [
+        "Datasource \"db\": PostgreSQL database \"orm_schema_scratch8\", schema \"other_missing\" at \"127.0.0.1:55432\"",
+        "Error: Schema engine error:"
+      ]
+    }
+  },
+  "sqlite": {
+    "schema=main": {
+      "ok": true
+    },
+    "schema=": {
+      "ok": true
+    },
+    "schema=other": {
+      "ok": true
+    }
+  }
+}

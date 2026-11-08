@@ -177,6 +177,7 @@ impl OrmClient {
     }
 
     async fn migration_rows(&self) -> Result<Vec<Row>> {
+        self.ensure_schema().await?;
         self.execute_script(create_table_sql(self.dialect())).await?;
         let rows = self
             .query_raw(
@@ -200,6 +201,9 @@ impl OrmClient {
 
     /// `migrate deploy`: applies the pending `dir/*/migration.sql` in order and
     /// records them in `_prisma_migrations`. Returns the names of the applied migrations.
+    ///
+    /// With `?schema=name` in the URL, the schema is created when missing and the history table and
+    /// the migrations live in it.
     ///
     /// Fails with `P3009` when a previous migration failed, and with `P3018` when a
     /// migration fails (its error is stored in `logs`).

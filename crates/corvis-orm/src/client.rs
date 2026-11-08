@@ -24,6 +24,10 @@ use crate::url_params::{PoolTimeout, UrlParams, split_url_params};
 pub struct OrmClientOptions {
     /// `file:./dev.db`, `sqlite::memory:`, `sqlite://dev.db`, `postgresql://user:pass@host/db`.
     pub url: String,
+    ///
+    /// A Postgres URL may carry `?schema=name`: every connection then runs `SET search_path TO "name"`, and
+    /// `migrate deploy`, `migrate status` and `db push` create the schema when it is missing.
+    /// The parameter never reaches the driver (it is removed with `connection_limit` and `pool_timeout`).
     /// Log every query (`log: ['query']`) through the corvis logger (`[OrmClient]`).
     pub log_queries: bool,
     /// Maximum number of pooled connections. Overrides the `connection_limit` URL parameter; without
@@ -255,7 +259,15 @@ impl OrmClient {
                 DbPool::Sqlite(pool_opts.connect_with(connect).await.map_err(|e| init_error(e, url))?)
             }
             Dialect::Postgres => {
-                let pool_opts = PgPoolOptions::new().max_connections(max_connections).acquire_timeout(acquire_timeout);
+                let mut pool_opts = PgPoolOptions::new().max_connections(max_connections).acquire_timeout(acquire_timeout);
+                if let Some(schema) = &params.schema {
+                    // Runs on every new connection before it is handed out, so cached statements are planned against it.
+                    let set: Arc<str> = set_search_path_sql(schema).into();
+                    pool_opts = pool_opts.after_connect(move |conn, _meta| {
+                        let set = set.clone();
+                        Box::pin(async move { sqlx::Executor::execute(&mut *conn, &*set).await.map(|_| ()) })
+                    });
+                }
                 DbPool::Postgres(db::retry_connect(|| pool_opts.clone().connect(url)).await.map_err(|e| init_error(e, url))?)
             }
         };
@@ -593,6 +605,7 @@ impl OrmClient {
 
     /// `db push` for a list of model metadata.
     pub async fn db_push_models(&self, models: &[&'static ModelMeta]) -> Result<()> {
+        self.ensure_schema().await?;
         let statements = crate::schema::push_statements(self.inner.dialect, models)?;
         for stmt in statements {
             let mut q = Sql::new(self.inner.dialect);
@@ -616,6 +629,29 @@ impl OrmClient {
     /// The SQL that `db_push` would run (as a `migrate diff --script` would).
     pub fn schema_sql<S: ModelSet>(&self) -> Result<Vec<String>> {
         crate::schema::push_statements(self.inner.dialect, &S::metas())
+    }
+}
+
+/// `SET search_path` for the URL schema: the name is always a quoted identifier, never raw text.
+pub(crate) fn set_search_path_sql(schema: &str) -> String {
+    format!("SET search_path TO {}", db::quote_ident(schema))
+}
+
+impl OrmClient {
+    /// Creates the URL schema (`?schema=`) on Postgres when it does not exist. The catalog lookup comes
+    /// first because `CREATE SCHEMA IF NOT EXISTS` checks the database `CREATE` privilege before it checks
+    /// existence, which would fail for a role that only has rights on an existing schema.
+    pub(crate) async fn ensure_schema(&self) -> Result<()> {
+        let Some(schema) = self.inner.params.schema.as_deref() else { return Ok(()) };
+        if self.inner.dialect != Dialect::Postgres {
+            return Ok(());
+        }
+        let found =
+            self.query_raw("SELECT 1 AS one FROM pg_namespace WHERE nspname::text = $1", vec![Value::String(schema.to_string())]).await?;
+        if found.is_empty() {
+            self.execute_script(&format!("CREATE SCHEMA IF NOT EXISTS {}", db::quote_ident(schema))).await?;
+        }
+        Ok(())
     }
 }
 

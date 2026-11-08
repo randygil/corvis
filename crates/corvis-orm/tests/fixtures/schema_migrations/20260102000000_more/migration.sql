@@ -1,0 +1,1 @@
+CREATE TABLE "Tag" ("id" INTEGER NOT NULL, "label" TEXT NOT NULL, CONSTRAINT "Tag_pkey" PRIMARY KEY ("id"));

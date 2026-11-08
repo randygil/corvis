@@ -182,6 +182,23 @@ Before this change the pool had 10 connections on Postgres and 5 on SQLite files
 
 Pool settings that newer client versions take in code (maximum size, connection timeout) map to `max_connections(n)` and `acquire_timeout`.
 
+## Database schema
+
+A Postgres URL can name the schema to use, as with the original client:
+
+```text
+postgresql://user:pass@host/db?schema=tenant_a
+```
+
+- Every pooled connection runs `SET search_path TO "tenant_a"` right after it opens, before any other statement. Generated queries, raw SQL, interactive transactions, `push` and migrations therefore resolve unqualified names in that schema, and only in that schema. The name is always quoted as an identifier (case and spaces are kept), so no value of `schema` can run another statement.
+- Without `schema` nothing changes: the server's `search_path` applies (`"$user", public` by default), and no `SET` is sent.
+- Models and enums with an explicit schema (`#[model(schema = "audit")]`) keep their qualified names.
+- `migrate deploy`, `migrate status` and `push` create the schema when it does not exist, and `_prisma_migrations` lives in it. An existing schema is never re-created, so a role that only has rights on that schema can deploy. Creating a missing schema needs the `CREATE` privilege on the database.
+- The path is exactly that one schema: objects of other schemas, such as extension functions installed in `public` or `extensions`, must be qualified, and `CREATE EXTENSION` in a migration installs the extension in the URL schema.
+- An empty name, a name with a NUL character, or one longer than 63 bytes fails when the client is created, with an initialization error `P1013` that names `schema` and never shows the URL. The original client accepts an empty name (and then finds no table) and lets the server truncate long names; corvis-orm rejects both.
+- On SQLite the parameter is accepted and ignored. The 7.x adapter's `schema` option maps to this URL parameter.
+- A session setting that your own SQL changes (`SET search_path ...` outside a transaction) stays on that pooled connection, as with any session setting.
+
 ## Use `OrmService`
 
 `OrmService` implements `Deref` to the client, so each model's delegates are called directly on it:
@@ -279,6 +296,8 @@ The binary applies the SQL migrations in a folder (`<folder>/<name>/migration.sq
 cargo run -q -p corvis-orm --bin corvis-orm -- migrate deploy --migrations db/migrations --url "$DATABASE_URL"
 cargo run -q -p corvis-orm --bin corvis-orm -- migrate status --migrations db/migrations --url "$DATABASE_URL"
 ```
+
+With `?schema=name` in the URL (see [Database schema](#database-schema)), `migrate deploy`, `migrate status` and `push` create the schema when it does not exist, and `_prisma_migrations` lives inside it.
 
 From code: `db.migrate_deploy(dir).await` and `db.migrate_status(dir).await`. There are no commands to generate migrations from model changes.
 

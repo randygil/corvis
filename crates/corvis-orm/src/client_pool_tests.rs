@@ -37,6 +37,14 @@ impl Drop for TempDir {
 }
 
 #[test]
+fn schema_search_path_statement_is_a_quoted_identifier() {
+    assert_eq!(set_search_path_sql("tenant_a"), r#"SET search_path TO "tenant_a""#);
+    assert_eq!(set_search_path_sql(r#"a"b"#), r#"SET search_path TO "a""b""#);
+    assert_eq!(set_search_path_sql(r#"x"; DROP TABLE canary; --"#), r#"SET search_path TO "x""; DROP TABLE canary; --""#);
+    assert_eq!(set_search_path_sql("My Schema"), r#"SET search_path TO "My Schema""#);
+}
+
+#[test]
 fn pool_invalid_value_fails_at_creation_without_connecting() {
     let t = std::time::Instant::now();
     let e = OrmClient::new("postgresql://app:secret@192.0.2.1/db?connection_limit=abc").unwrap_err();

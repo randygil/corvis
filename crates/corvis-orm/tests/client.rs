@@ -512,6 +512,33 @@ async fn pool_timeout_in_the_url_gives_p2024() {
 }
 
 #[tokio::test]
+async fn schema_parameter_is_ignored_on_sqlite() {
+    let dir = pool_tmp("schema");
+    for (i, q) in ["schema=main", "schema=other&connection_limit=1"].into_iter().enumerate() {
+        let db = OrmClient::new(format!("sqlite://{}/schema{i}.db?{q}", pool_slash(&dir))).unwrap();
+        db.db_push::<(User, Post, Profile)>().await.unwrap();
+        db.user().create(json!({ "data": { "email": "a@b.c" } })).await.unwrap();
+        assert_eq!(db.user().count(()).await.unwrap(), 1);
+        db.disconnect().await.unwrap();
+    }
+    let db = OrmClient::new(format!("file:{}/schema9.db?schema=main", pool_slash(&dir))).unwrap();
+    db.db_push::<(User, Post, Profile)>().await.unwrap();
+    assert_eq!(db.user().count(()).await.unwrap(), 0);
+    db.disconnect().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn invalid_schema_parameter_fails_at_creation_and_the_url_is_kept() {
+    let t = std::time::Instant::now();
+    let e = OrmClient::new("postgresql://u:p@127.0.0.1:1/db?schema=").unwrap_err();
+    assert!(t.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(e.code(), Some("P1013"));
+    let url = "postgresql://u:p@127.0.0.1:1/db?schema=tenant_a&sslmode=disable";
+    assert_eq!(OrmClient::new(url).unwrap().options().url, url);
+}
+
+#[tokio::test]
 async fn pool_timeout_zero_waits_without_limit() {
     let dir = pool_tmp("nolimit");
     let url = format!("file:{}/pool.db?pool_timeout=0&connection_limit=1", pool_slash(&dir));

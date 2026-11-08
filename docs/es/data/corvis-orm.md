@@ -182,6 +182,23 @@ Antes el pool tenía 10 conexiones en Postgres y 5 en archivos SQLite, y una con
 
 Los ajustes de pool que las versiones más nuevas del cliente reciben en código (tamaño máximo, tiempo de conexión) equivalen a `max_connections(n)` y `acquire_timeout`.
 
+## Esquema de la base de datos
+
+Una URL de Postgres puede indicar el esquema que se usa, igual que en el cliente original:
+
+```text
+postgresql://user:pass@host/db?schema=tenant_a
+```
+
+- Cada conexión del pool ejecuta `SET search_path TO "tenant_a"` justo al abrirse, antes de cualquier otra sentencia. Las consultas generadas, el SQL crudo, las transacciones interactivas, `push` y las migraciones resuelven entonces los nombres sin calificar en ese esquema, y solo en ese. El nombre siempre se cita como identificador (se conservan mayúsculas y espacios), así que ningún valor de `schema` puede ejecutar otra sentencia.
+- Sin `schema` no cambia nada: rige el `search_path` del servidor (`"$user", public` por defecto) y no se envía ningún `SET`.
+- Los modelos y enums con esquema explícito (`#[model(schema = "audit")]`) conservan su nombre calificado.
+- `migrate deploy`, `migrate status` y `push` crean el esquema si no existe, y `_prisma_migrations` vive en él. Un esquema existente nunca se vuelve a crear, así que un rol que solo tiene permisos sobre ese esquema puede desplegar. Crear un esquema que falta exige el privilegio `CREATE` sobre la base de datos.
+- La ruta es exactamente ese esquema: los objetos de otros esquemas, como las funciones de extensiones instaladas en `public` o `extensions`, deben calificarse, y un `CREATE EXTENSION` en una migración instala la extensión en el esquema de la URL.
+- Un nombre vacío, con un carácter NUL o de más de 63 bytes falla al crear el cliente, con un error de inicialización `P1013` que nombra `schema` y nunca muestra la URL. El cliente original acepta un nombre vacío (y entonces no encuentra ninguna tabla) y deja que el servidor trunque los nombres largos; corvis-orm rechaza ambos.
+- En SQLite el parámetro se acepta y se ignora. La opción `schema` del adaptador 7.x equivale a este parámetro de la URL.
+- Un ajuste de sesión que cambie tu propio SQL (`SET search_path ...` fuera de una transacción) se queda en esa conexión del pool, como cualquier ajuste de sesión.
+
 ## Usar `OrmService`
 
 `OrmService` implementa `Deref` hacia el cliente, así que los delegados de cada modelo se llaman directamente sobre él:
@@ -279,6 +296,8 @@ El binario aplica las migraciones SQL de una carpeta (`<carpeta>/<nombre>/migrat
 cargo run -q -p corvis-orm --bin corvis-orm -- migrate deploy --migrations db/migrations --url "$DATABASE_URL"
 cargo run -q -p corvis-orm --bin corvis-orm -- migrate status --migrations db/migrations --url "$DATABASE_URL"
 ```
+
+Con `?schema=nombre` en la URL (ver [Esquema de la base de datos](#esquema-de-la-base-de-datos)), `migrate deploy`, `migrate status` y `push` crean el esquema si no existe y `_prisma_migrations` queda dentro de él.
 
 Desde código: `db.migrate_deploy(dir).await` y `db.migrate_status(dir).await`. No hay comandos para generar migraciones a partir de cambios en los modelos.
 
