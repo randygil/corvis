@@ -22,7 +22,7 @@
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 4.3 `cargo test --workspace` passes, including the regression tests of group 1
 - [x] 4.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 4.5 Framework runtime code changed (`websockets.rs`): run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (none has a gateway, so no difference is expected) (not run by the implementer: the maintainer runs it)
+- [x] 4.5 Framework runtime code changed (`websockets.rs`): run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (none has a gateway, so no difference is expected) (not run by the implementer: the maintainer runs it) (maintainer batch run on batch/phase03-c cd79e44: consi 832/832, facten 727/727, houseplan 598/598 quiet-hours count; routes identical, databases equivalent)
 
 ## Workflow follow-up
 
