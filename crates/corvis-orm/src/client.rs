@@ -17,6 +17,7 @@ use crate::meta::{Model, ModelMeta, ModelSet};
 use crate::query::Delegate;
 use crate::raw::RawSql;
 use crate::transaction::{Batch, IsolationLevel, TransactionOptions, TxSlot, TxState, tx_error};
+use crate::url_params::{PoolTimeout, UrlParams, split_url_params};
 
 /// Options of a [`OrmClient`] (`new OrmClient({ datasourceUrl, log })`).
 #[derive(Debug, Clone)]
@@ -25,9 +26,11 @@ pub struct OrmClientOptions {
     pub url: String,
     /// Log every query (`log: ['query']`) through the corvis logger (`[OrmClient]`).
     pub log_queries: bool,
-    /// Maximum number of pooled connections (`connection_limit`). In-memory SQLite always uses 1.
+    /// Maximum number of pooled connections. Overrides the `connection_limit` URL parameter; without
+    /// either it is `2 * physical CPU cores + 1`. In-memory SQLite always uses 1.
     pub max_connections: Option<u32>,
-    /// Timeout to acquire a connection (`pool_timeout`).
+    /// Timeout to acquire a connection. Overrides the `pool_timeout` URL parameter (whole seconds,
+    /// `0` for no limit); without either it is 10 seconds.
     pub acquire_timeout: Option<Duration>,
     /// Global `omit` (`new OrmClient({ omit: { user: { password: true } } })`):
     /// model (client name like `user`, or model name like `User`) -> omitted fields.
@@ -89,10 +92,28 @@ impl OrmClientOptions {
     }
 }
 
+#[cfg(test)]
+#[path = "client_pool_tests.rs"]
+mod pool_tests;
+
 pub(crate) struct ClientInner {
     pub(crate) options: OrmClientOptions,
     pub(crate) dialect: Dialect,
+    /// `options.url` without the corvis-only parameters (`connection_limit`, `pool_timeout`): what the driver gets.
+    pub(crate) driver_url: String,
+    params: UrlParams,
     pool: RwLock<Option<DbPool>>,
+}
+
+/// `pool_timeout=0` ("no limit") as a finite wait of about 136 years: sqlx adds the timeout to
+/// `Instant::now()`, which panics for `Duration::MAX`.
+const UNLIMITED_POOL_TIMEOUT: Duration = Duration::from_secs(u32::MAX as u64);
+/// Wait for a free connection when neither the code nor the URL set one (6.x engine default).
+const DEFAULT_POOL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Default pool size: `2 * physical CPU cores + 1` (6.x engine default).
+fn default_pool_size() -> u32 {
+    u32::try_from(num_cpus::get_physical().saturating_mul(2).saturating_add(1)).unwrap_or(u32::MAX)
 }
 
 /// The database client. Cheap to clone; clones share the connection pool.
@@ -140,7 +161,8 @@ impl OrmClient {
 
     pub fn with_options(options: OrmClientOptions) -> Result<Self> {
         let dialect = dialect_of(&options.url)?;
-        Ok(OrmClient { inner: Arc::new(ClientInner { options, dialect, pool: RwLock::new(None) }), tx: None })
+        let (driver_url, params) = split_url_params(&options.url, dialect)?;
+        Ok(OrmClient { inner: Arc::new(ClientInner { options, dialect, driver_url, params, pool: RwLock::new(None) }), tx: None })
     }
 
     /// The database provider.
@@ -200,7 +222,14 @@ impl OrmClient {
             return Ok(p.clone());
         }
         let opts = &self.inner.options;
-        let url = opts.url.trim();
+        let url = self.inner.driver_url.as_str();
+        let params = &self.inner.params;
+        let max_connections = opts.max_connections.or(params.connection_limit).unwrap_or_else(default_pool_size);
+        let acquire_timeout = opts.acquire_timeout.unwrap_or(match params.pool_timeout {
+            Some(PoolTimeout::Seconds(s)) => Duration::from_secs(s).min(UNLIMITED_POOL_TIMEOUT),
+            Some(PoolTimeout::Unlimited) => UNLIMITED_POOL_TIMEOUT,
+            None => DEFAULT_POOL_TIMEOUT,
+        });
         let pool = match self.inner.dialect {
             Dialect::Sqlite => {
                 let connect = if let Some(path) = url.strip_prefix("file:") {
@@ -216,23 +245,17 @@ impl OrmClient {
                 .map_err(|e| OrmError::init(format!("Invalid SQLite URL `{url}`: {e}")))?
                 .create_if_missing(true)
                 .foreign_keys(true);
-                let mut pool_opts = SqlitePoolOptions::new();
+                let mut pool_opts = SqlitePoolOptions::new().acquire_timeout(acquire_timeout);
                 if is_memory(url) {
                     // Every connection to `:memory:` is a different database: keep exactly one, forever.
                     pool_opts = pool_opts.max_connections(1).min_connections(1).idle_timeout(None).max_lifetime(None);
                 } else {
-                    pool_opts = pool_opts.max_connections(opts.max_connections.unwrap_or(5));
-                }
-                if let Some(t) = opts.acquire_timeout {
-                    pool_opts = pool_opts.acquire_timeout(t);
+                    pool_opts = pool_opts.max_connections(max_connections);
                 }
                 DbPool::Sqlite(pool_opts.connect_with(connect).await.map_err(|e| init_error(e, url))?)
             }
             Dialect::Postgres => {
-                let mut pool_opts = PgPoolOptions::new().max_connections(opts.max_connections.unwrap_or(10));
-                if let Some(t) = opts.acquire_timeout {
-                    pool_opts = pool_opts.acquire_timeout(t);
-                }
+                let pool_opts = PgPoolOptions::new().max_connections(max_connections).acquire_timeout(acquire_timeout);
                 DbPool::Postgres(db::retry_connect(|| pool_opts.clone().connect(url)).await.map_err(|e| init_error(e, url))?)
             }
         };

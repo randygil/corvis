@@ -155,7 +155,7 @@ impl OrmClient {
         }
         use sqlx::ConnectOptions;
         use std::str::FromStr;
-        let url = self.options().url.trim().to_string();
+        let url = self.inner.driver_url.clone();
         let opts = sqlx::postgres::PgConnectOptions::from_str(&url).map_err(|e| OrmError::init(format!("Invalid database URL: {e}")))?;
         match opts.connect().await {
             Ok(c) => {
