@@ -175,7 +175,9 @@ pub struct __Name__Guard;
 #[async_trait]
 impl CanActivate for __Name__Guard {
     async fn can_activate(&self, _context: &ExecutionContext) -> Result<bool, HttpException> {
-        Ok(true)
+        // TODO: implement the check. This guard denies every request until you do: with route posture on (new
+        // projects enforce it) a guard counts as access control, so it must not let requests through by default.
+        Ok(false)
     }
 }
 "#;
@@ -434,5 +436,12 @@ mod unit_tests {
     #[public]
     fn get_hello";
         assert!(APP_CONTROLLER.contains(route), "get_hello is public");
+    }
+
+    #[test]
+    fn a_generated_guard_denies_by_default() {
+        assert!(GUARD.contains("Ok(false)"), "the guard template denies");
+        assert!(!GUARD.contains("Ok(true)"), "the guard template does not let requests through");
+        assert!(GUARD.contains("TODO"), "the template says what to implement");
     }
 }
