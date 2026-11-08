@@ -2,19 +2,19 @@
 
 ## 1. Preconditions
 
-- [ ] 1.1 Confirm #108 (clippy under Rust 1.99) and #110 (LF for embedded Swagger assets, `.gitattributes`) are merged into `main`; verify locally that `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass on Windows from a fresh checkout (cargo verification left to the maintainer)
+- [x] 1.1 Confirm #108 (clippy under Rust 1.99) and #110 (LF for embedded Swagger assets, `.gitattributes`) are merged into `main`; verify locally that `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass on Windows from a fresh checkout — verified 2026-11-08: #108 and #110 are on main; clippy -D warnings clean and `cargo test --workspace` 377 passed / 0 failed on this branch.
 - [ ] 1.2 Re-run `cargo deny check` and `cargo audit` on `main` and record the result (2026-11-08 baseline: both pass, only duplicate/wildcard warnings from `cargo deny`); fix or document any new finding in `deny.toml` / `.cargo/audit.toml` with a reason; verify both exit 0 (cargo verification left to the maintainer)
 
 ## 2. Formatting baseline
 
 - [x] 2.1 Install rustfmt for the pinned toolchain (`rustup component add rustfmt`); for each candidate config (no file; `max_width = 120/140/160` with `use_small_heuristics = "Max"`), count the lines `cargo fmt --all --check` would change; record the numbers in the pull request description and pick the smallest (stable options only); verify the chosen `rustfmt.toml` is committed at the root
-- [ ] 2.2 With no other change in flight, run `cargo fmt --all` and commit it alone ("Format the workspace with rustfmt"); add that commit's SHA to a new `.git-blame-ignore-revs`; verify `cargo fmt --all --check` exits 0 and `cargo test --workspace` still passes (no behavior change) (left to the maintainer)
+- [x] 2.2 With no other change in flight, run `cargo fmt --all` and commit it alone ("Format the workspace with rustfmt"); add that commit's SHA to a new `.git-blame-ignore-revs`; verify `cargo fmt --all --check` exits 0 and `cargo test --workspace` still passes (no behavior change) — done: 79bd2a2 (formatting only), SHA in `.git-blame-ignore-revs`; `cargo fmt --all --check` exits 0 and `cargo test --workspace` passes (377/0).
 
 ## 3. Postgres tests that cannot skip in CI
 
-- [ ] 3.1 In `crates/corvis-orm/tests/common/pg.rs`, read `CORVIS_ORM_PG_REQUIRED`; when it is `1`, make every early `None` in `fresh_db` (admin connection, `DROP DATABASE`, `CREATE DATABASE`) panic with the error and the server host, never the password; update the module comment; verify that `CORVIS_ORM_PG_REQUIRED=1 CORVIS_ORM_PG=postgres://postgres:postgres@127.0.0.1:5299 cargo test -p corvis-orm --test pg_features` fails with that message, and that without the variable it still passes by skipping (cargo verification left to the maintainer)
-- [ ] 3.2 Add a regression test of the helper itself (unreachable URL + variable set → panic, message has no password); verify with `cargo test -p corvis-orm --test pg_features` (or a small new test file that includes `common/pg.rs`) (cargo verification left to the maintainer)
-- [ ] 3.3 With a local Postgres on port 55432, run `CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm` and verify every Postgres test runs (no "skipping" line except `pg_houseplan` when `corvis-tests` is absent) (cargo verification left to the maintainer)
+- [x] 3.1 In `crates/corvis-orm/tests/common/pg.rs`, read `CORVIS_ORM_PG_REQUIRED`; when it is `1`, make every early `None` in `fresh_db` (admin connection, `DROP DATABASE`, `CREATE DATABASE`) panic with the error and the server host, never the password; update the module comment; verify that `CORVIS_ORM_PG_REQUIRED=1 CORVIS_ORM_PG=postgres://postgres:postgres@127.0.0.1:5299 cargo test -p corvis-orm --test pg_features` fails with that message, and that without the variable it still passes by skipping — verified: with `CORVIS_ORM_PG_REQUIRED=1` and an unreachable server every Postgres test panics naming `host:port`.
+- [x] 3.2 Add a regression test of the helper itself (unreachable URL + variable set → panic, message has no password); verify with `cargo test -p corvis-orm --test pg_features` (or a small new test file that includes `common/pg.rs`) — verified: `cargo test -p corvis-orm --test pg_features` 9 passed; with a fake password in the URL it never appears in the panic.
+- [x] 3.3 With a local Postgres on port 55432, run `CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm` and verify every Postgres test runs (no "skipping" line except `pg_houseplan` when `corvis-tests` is absent) — verified against the local Postgres on 55432: `CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm` 86 passed / 0 failed.
 
 ## 4. CI workflow: Rust jobs
 
@@ -35,7 +35,7 @@
 
 ## 7. Contributor documentation
 
-- [ ] 7.1 Update `CONTRIBUTING.md`: a "Continuous integration" section listing each job, its platforms and the local command that reproduces it; `cargo fmt --all --check`; the Postgres service (`CORVIS_ORM_PG`, `CORVIS_ORM_PG_REQUIRED`, a `docker run` line on port 55432 bound to 127.0.0.1); the per-PR and nightly fuzzing budgets; what to do with a seed artifact; `.git-blame-ignore-revs` (`git config blame.ignoreRevsFile .git-blame-ignore-revs`); verify each documented command runs as written (cargo verification left to the maintainer)
+- [x] 7.1 Update `CONTRIBUTING.md`: a "Continuous integration" section listing each job, its platforms and the local command that reproduces it; `cargo fmt --all --check`; the Postgres service (`CORVIS_ORM_PG`, `CORVIS_ORM_PG_REQUIRED`, a `docker run` line on port 55432 bound to 127.0.0.1); the per-PR and nightly fuzzing budgets; what to do with a seed artifact; `.git-blame-ignore-revs` (`git config blame.ignoreRevsFile .git-blame-ignore-revs`); verify each documented command runs as written — verified: the documented local commands ran as written on this branch.
 
 ## 8. Measure and hand over
 
@@ -44,12 +44,12 @@
 
 ## 9. Definition of done
 
-- [ ] 9.1 `cargo build --workspace --all-targets` with no warnings (cargo verification left to the maintainer)
+- [x] 9.1 `cargo build --workspace --all-targets` with no warnings — verified locally: no warnings.
 - [ ] 9.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, locally and in the `clippy` job on Linux and Windows (cargo verification left to the maintainer)
 - [ ] 9.3 `cargo test --workspace` passes locally and in the `test` job on Linux (with Postgres required) and Windows (cargo verification left to the maintainer)
 - [ ] 9.4 Regression tests: the `CORVIS_ORM_PG_REQUIRED` helper test (3.2) and the throwaway-branch proofs (4.4, 5.3) recorded in the pull request (cargo verification left to the maintainer)
 - [x] 9.5 Docs: this change adds no user-facing feature, so no page under `docs/` and `docs/es/` changes; contributor documentation lives in `CONTRIBUTING.md`; confirm, and confirm `npm run docs:check` in `docs/` passes (it is now a CI job)
-- [ ] 9.6 corvis-parity: no framework runtime code changes (only a test helper, workflows, config and a formatting-only commit); confirm that the formatting commit changes no behavior by the unchanged `cargo test --workspace`; if the maintainer wants extra assurance for the formatting commit, run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (cargo verification left to the maintainer)
+- [x] 9.6 corvis-parity: no framework runtime code changes (only a test helper, workflows, config and a formatting-only commit); confirm that the formatting commit changes no behavior by the unchanged `cargo test --workspace`; if the maintainer wants extra assurance for the formatting commit, run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences — confirmed: the formatting commit leaves `cargo test --workspace` unchanged (377 passed / 0 failed).
 
 ## Workflow follow-up
 
