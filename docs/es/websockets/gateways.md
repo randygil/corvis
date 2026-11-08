@@ -101,7 +101,9 @@ Debajo de `#[websocket_gateway]` puedes poner `#[use_guards(...)]`, `#[use_inter
 
 Los handlers se declaran en un bloque `impl` marcado con `#[handlers]`, el mismo atributo que usan `#[on_event]` y `#[cron]`. Cada método con `#[subscribe_message("evento")]` atiende los frames cuyo `event` coincide. Un mismo bloque puede mezclar handlers de mensajes con otros: el gateway de tertulia tiene también un `#[on_event("room.created")]` que avisa a todos los clientes cuando se crea una sala por REST.
 
-Los métodos pueden ser `async` o no. Encima de cada `#[subscribe_message]` puedes poner `#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]` y `#[set_metadata]`; se suman a los del gateway.
+Los métodos pueden ser `async` o no. Encima de cada `#[subscribe_message]` puedes poner `#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]` y `#[set_metadata]`; se suman a los del gateway. Un método sin `#[subscribe_message]` es un helper común: ponerle `#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]` o `#[set_metadata]` es un error de compilación.
+
+Cada evento puede tener un solo handler por gateway. Si dos métodos `#[subscribe_message]` usan el mismo evento, la aplicación no arranca y muestra `ChatGateway has more than one handler for the "message" event (on_message and on_message_v2); a gateway can have only one handler per event`. Los nombres de evento distinguen mayúsculas y minúsculas (`"message"` y `"Message"` son eventos distintos), y gateways distintos pueden atender el mismo nombre de evento.
 
 ### Parámetros
 

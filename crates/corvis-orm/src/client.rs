@@ -17,17 +17,24 @@ use crate::meta::{Model, ModelMeta, ModelSet};
 use crate::query::Delegate;
 use crate::raw::RawSql;
 use crate::transaction::{Batch, IsolationLevel, TransactionOptions, TxSlot, TxState, tx_error};
+use crate::url_params::{MAX_POOL_SIZE, PoolTimeout, UrlParams, split_url_params};
 
 /// Options of a [`OrmClient`] (`new OrmClient({ datasourceUrl, log })`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OrmClientOptions {
     /// `file:./dev.db`, `sqlite::memory:`, `sqlite://dev.db`, `postgresql://user:pass@host/db`.
+    ///
+    /// A Postgres URL may carry `?schema=name`: every connection then runs `SET search_path TO "name"`, and
+    /// `migrate deploy`, `migrate status` and `db push` create the schema when it is missing.
+    /// The parameter never reaches the driver (it is removed with `connection_limit` and `pool_timeout`).
     pub url: String,
     /// Log every query (`log: ['query']`) through the corvis logger (`[OrmClient]`).
     pub log_queries: bool,
-    /// Maximum number of pooled connections (`connection_limit`). In-memory SQLite always uses 1.
+    /// Maximum number of pooled connections. Overrides the `connection_limit` URL parameter; without
+    /// either it is `2 * physical CPU cores + 1`. In-memory SQLite always uses 1.
     pub max_connections: Option<u32>,
-    /// Timeout to acquire a connection (`pool_timeout`).
+    /// Timeout to acquire a connection. Overrides the `pool_timeout` URL parameter (whole seconds,
+    /// `0` for no limit); without either it is 10 seconds.
     pub acquire_timeout: Option<Duration>,
     /// Global `omit` (`new OrmClient({ omit: { user: { password: true } } })`):
     /// model (client name like `user`, or model name like `User`) -> omitted fields.
@@ -40,6 +47,42 @@ pub struct OrmClientOptions {
     /// [`OrmClientOptions::DEFAULT_MAX_QUERY_DEPTH`] (125, the same limit as the reference
     /// query engine).
     pub max_query_depth: usize,
+}
+
+/// The URL for logs: the password is replaced by `***` and the query string (which may carry
+/// credentials such as `password=`) by `?...`.
+pub(crate) fn redact_url(url: &str) -> String {
+    let url = url.trim();
+    let (before_query, has_query) = match url.find(['?', '#']) {
+        Some(i) => (&url[..i], true),
+        None => (url, false),
+    };
+    let redacted = match before_query.split_once("://") {
+        // Split at the last `@`: an unencoded password may itself contain `/` or `@`.
+        Some((scheme, rest)) => match rest.rsplit_once('@') {
+            Some((userinfo, host)) => match userinfo.split_once(':') {
+                Some((user, _)) => format!("{scheme}://{user}:***@{host}"),
+                None => format!("{scheme}://{userinfo}@{host}"),
+            },
+            None => format!("{scheme}://{rest}"),
+        },
+        None => before_query.to_string(),
+    };
+    if has_query { format!("{redacted}?...") } else { redacted }
+}
+
+impl std::fmt::Debug for OrmClientOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrmClientOptions")
+            .field("url", &redact_url(&self.url))
+            .field("log_queries", &self.log_queries)
+            .field("max_connections", &self.max_connections)
+            .field("acquire_timeout", &self.acquire_timeout)
+            .field("omit", &self.omit)
+            .field("transaction_options", &self.transaction_options)
+            .field("max_query_depth", &self.max_query_depth)
+            .finish()
+    }
 }
 
 impl OrmClientOptions {
@@ -89,10 +132,28 @@ impl OrmClientOptions {
     }
 }
 
+#[cfg(test)]
+#[path = "client_pool_tests.rs"]
+mod pool_tests;
+
 pub(crate) struct ClientInner {
     pub(crate) options: OrmClientOptions,
     pub(crate) dialect: Dialect,
+    /// `options.url` without the corvis-only parameters (`connection_limit`, `pool_timeout`): what the driver gets.
+    pub(crate) driver_url: String,
+    params: UrlParams,
     pool: RwLock<Option<DbPool>>,
+}
+
+/// `pool_timeout=0` ("no limit") as a finite wait of about 136 years: sqlx adds the timeout to
+/// `Instant::now()`, which panics for `Duration::MAX`.
+const UNLIMITED_POOL_TIMEOUT: Duration = Duration::from_secs(u32::MAX as u64);
+/// Wait for a free connection when neither the code nor the URL set one (6.x engine default).
+const DEFAULT_POOL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Default pool size: `2 * physical CPU cores + 1` (6.x engine default).
+fn default_pool_size() -> u32 {
+    u32::try_from(num_cpus::get_physical().saturating_mul(2).saturating_add(1)).unwrap_or(u32::MAX)
 }
 
 /// The database client. Cheap to clone; clones share the connection pool.
@@ -139,8 +200,16 @@ impl OrmClient {
     }
 
     pub fn with_options(options: OrmClientOptions) -> Result<Self> {
+        if let Some(n) = options.max_connections
+            && !(1..=MAX_POOL_SIZE).contains(&n)
+        {
+            return Err(OrmError::init(format!(
+                "`max_connections` must be a positive integer no greater than {MAX_POOL_SIZE}, got `{n}`."
+            )));
+        }
         let dialect = dialect_of(&options.url)?;
-        Ok(OrmClient { inner: Arc::new(ClientInner { options, dialect, pool: RwLock::new(None) }), tx: None })
+        let (driver_url, params) = split_url_params(&options.url, dialect)?;
+        Ok(OrmClient { inner: Arc::new(ClientInner { options, dialect, driver_url, params, pool: RwLock::new(None) }), tx: None })
     }
 
     /// The database provider.
@@ -200,7 +269,18 @@ impl OrmClient {
             return Ok(p.clone());
         }
         let opts = &self.inner.options;
-        let url = opts.url.trim();
+        let url = self.inner.driver_url.as_str();
+        let params = &self.inner.params;
+        let max_connections = opts.max_connections.or(params.connection_limit).unwrap_or_else(default_pool_size);
+        // A code value is clamped like the URL one: sqlx adds the timeout to `Instant::now()`, which panics for `Duration::MAX`.
+        let acquire_timeout = opts
+            .acquire_timeout
+            .unwrap_or(match params.pool_timeout {
+                Some(PoolTimeout::Seconds(s)) => Duration::from_secs(s),
+                Some(PoolTimeout::Unlimited) => UNLIMITED_POOL_TIMEOUT,
+                None => DEFAULT_POOL_TIMEOUT,
+            })
+            .min(UNLIMITED_POOL_TIMEOUT);
         let pool = match self.inner.dialect {
             Dialect::Sqlite => {
                 let connect = if let Some(path) = url.strip_prefix("file:") {
@@ -216,22 +296,24 @@ impl OrmClient {
                 .map_err(|e| OrmError::init(format!("Invalid SQLite URL `{url}`: {e}")))?
                 .create_if_missing(true)
                 .foreign_keys(true);
-                let mut pool_opts = SqlitePoolOptions::new();
+                let mut pool_opts = SqlitePoolOptions::new().acquire_timeout(acquire_timeout);
                 if is_memory(url) {
                     // Every connection to `:memory:` is a different database: keep exactly one, forever.
                     pool_opts = pool_opts.max_connections(1).min_connections(1).idle_timeout(None).max_lifetime(None);
                 } else {
-                    pool_opts = pool_opts.max_connections(opts.max_connections.unwrap_or(5));
-                }
-                if let Some(t) = opts.acquire_timeout {
-                    pool_opts = pool_opts.acquire_timeout(t);
+                    pool_opts = pool_opts.max_connections(max_connections);
                 }
                 DbPool::Sqlite(pool_opts.connect_with(connect).await.map_err(|e| init_error(e, url))?)
             }
             Dialect::Postgres => {
-                let mut pool_opts = PgPoolOptions::new().max_connections(opts.max_connections.unwrap_or(10));
-                if let Some(t) = opts.acquire_timeout {
-                    pool_opts = pool_opts.acquire_timeout(t);
+                let mut pool_opts = PgPoolOptions::new().max_connections(max_connections).acquire_timeout(acquire_timeout);
+                if let Some(schema) = &params.schema {
+                    // Runs on every new connection before it is handed out, so cached statements are planned against it.
+                    let set: Arc<str> = set_search_path_sql(schema).into();
+                    pool_opts = pool_opts.after_connect(move |conn, _meta| {
+                        let set = set.clone();
+                        Box::pin(async move { sqlx::Executor::execute(&mut *conn, &*set).await.map(|_| ()) })
+                    });
                 }
                 DbPool::Postgres(db::retry_connect(|| pool_opts.clone().connect(url)).await.map_err(|e| init_error(e, url))?)
             }
@@ -346,7 +428,14 @@ impl OrmClient {
             None => match self.pool().await? {
                 DbPool::Sqlite(p) => db::sqlite_execute_script(&p, script).await,
                 DbPool::Postgres(p) => match db::acquire_pg(&p).await {
-                    Ok(mut c) => db::pg_execute_script(&mut *c, script).await,
+                    Ok(c) => {
+                        // A script may change session state (`SET search_path`, `RESET ALL`, `DISCARD ALL`): the
+                        // connection is closed instead of going back to the pool, so no later query inherits it.
+                        let mut conn = c.detach();
+                        let res = db::pg_execute_script(&mut conn, script).await;
+                        let _ = sqlx::Connection::close(conn).await;
+                        res
+                    }
                     Err(e) => Err(e),
                 },
             },
@@ -570,6 +659,7 @@ impl OrmClient {
 
     /// `db push` for a list of model metadata.
     pub async fn db_push_models(&self, models: &[&'static ModelMeta]) -> Result<()> {
+        self.ensure_schema().await?;
         let statements = crate::schema::push_statements(self.inner.dialect, models)?;
         for stmt in statements {
             let mut q = Sql::new(self.inner.dialect);
@@ -593,6 +683,34 @@ impl OrmClient {
     /// The SQL that `db_push` would run (as a `migrate diff --script` would).
     pub fn schema_sql<S: ModelSet>(&self) -> Result<Vec<String>> {
         crate::schema::push_statements(self.inner.dialect, &S::metas())
+    }
+}
+
+/// `SET search_path` for the URL schema: the name is always a quoted identifier, never raw text.
+pub(crate) fn set_search_path_sql(schema: &str) -> String {
+    format!("SET search_path TO {}", db::quote_ident(schema))
+}
+
+impl OrmClient {
+    /// The URL schema, for Postgres clients only (SQLite ignores the parameter).
+    pub(crate) fn url_schema(&self) -> Option<&str> {
+        if self.inner.dialect == Dialect::Postgres { self.inner.params.schema.as_deref() } else { None }
+    }
+
+    /// Creates the URL schema (`?schema=`) on Postgres when it does not exist. The catalog lookup comes
+    /// first because `CREATE SCHEMA IF NOT EXISTS` checks the database `CREATE` privilege before it checks
+    /// existence, which would fail for a role that only has rights on an existing schema.
+    pub(crate) async fn ensure_schema(&self) -> Result<()> {
+        let Some(schema) = self.inner.params.schema.as_deref() else { return Ok(()) };
+        if self.inner.dialect != Dialect::Postgres {
+            return Ok(());
+        }
+        let found =
+            self.query_raw("SELECT 1 AS one FROM pg_namespace WHERE nspname::text = $1", vec![Value::String(schema.to_string())]).await?;
+        if found.is_empty() {
+            self.execute_script(&format!("CREATE SCHEMA IF NOT EXISTS {}", db::quote_ident(schema))).await?;
+        }
+        Ok(())
     }
 }
 

@@ -171,7 +171,9 @@ pub struct CatsReport {
 }
 ```
 
-El token existente se busca desde el módulo donde está registrado el alias, con las reglas habituales de visibilidad.
+El token existente se busca desde el módulo donde está registrado el alias, con las reglas habituales de visibilidad. Si no es visible desde ahí, la aplicación no arranca (`NotFound`). Un alias puede apuntar a otro alias y se puede exportar como cualquier provider (`exports = ["CATS"]`).
+
+Un alias toma el scope de aquello a lo que apunta: el alias de un provider [transient](/es/fundamentals/injection-scopes) también es transient, así que cada consumidor que inyecta el alias recibe su propia instancia.
 
 ## Exportar providers personalizados
 

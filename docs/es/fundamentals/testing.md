@@ -179,7 +179,7 @@ async fn crud_validation_and_errors() {
 }
 ```
 
-Configura la aplicación (pipes globales, prefijo, CORS, versionado) **antes** de `app.init()`, igual que harías en `main`. `request(&app)` entra en pánico si la aplicación no se inicializó.
+Configura la aplicación (pipes globales, prefijo, CORS, versionado) **antes** de `app.init()`, igual que harías en `main`. `request(&app)` entra en pánico si la aplicación no se inicializó, y también si su `init()` falló: crea una aplicación nueva en lugar de reutilizar una cuya inicialización falló.
 
 ### `TestClient` y `TestRequest`
 

@@ -74,6 +74,9 @@ pub mod __private;
 #[doc = include_str!("../../../README.md")]
 pub struct ReadmeDoctests;
 
+#[cfg(doctest)]
+mod doctests;
+
 /// `Result` alias used by bootstrap code, lifecycle hooks and factories.
 pub type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 
@@ -88,7 +91,7 @@ pub use serde_json;
 pub use serde_json::json;
 pub use tokio;
 
-pub use application::{CorvisApplication, CorvisApplicationOptions, CorvisFactory, ListenAddr, LoggerOption};
+pub use application::{CorvisApplication, CorvisApplicationOptions, CorvisFactory, InitFailedError, ListenAddr, LoggerOption};
 pub use common::context::{ArgumentsHost, ContextType, ExecutionContext, Target};
 pub use common::decorator::{CustomDecorator, apply_decorators};
 pub use common::enhancer::{

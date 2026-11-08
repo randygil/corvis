@@ -16,6 +16,14 @@ pub enum DiError {
     )]
     Circular { chain: String },
 
+    /// Dynamic modules import each other (directly or through others), so scanning would never end. It is raised when
+    /// one module class imports the same class dynamically a second time on one import chain. A graph that repeats
+    /// such an edge but would still end is rejected too. `chain` names the modules of the cycle in order.
+    #[error(
+        "A circular import between dynamic modules has been detected: {chain}. Each dynamic import (for example for_root()) creates a new module instance, so this cycle never ends. Move what both modules need into a separate module that both import, or remove one of the two imports."
+    )]
+    CircularImport { chain: String },
+
     #[error("The provider {token} was found but it is not of the requested type {expected}")]
     TypeMismatch { token: String, expected: String },
 
@@ -29,4 +37,17 @@ pub enum DiError {
 
     #[error("{0}")]
     Other(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiError;
+
+    #[test]
+    fn circular_import_message_names_the_chain_and_the_dynamic_import() {
+        let text = DiError::CircularImport { chain: "AModule -> BModule -> AModule".into() }.to_string();
+        assert!(text.contains("AModule -> BModule -> AModule"));
+        assert!(text.contains("dynamic import"));
+        assert!(!text.contains("forwardRef"));
+    }
 }

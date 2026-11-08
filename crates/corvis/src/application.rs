@@ -82,6 +82,36 @@ pub(crate) struct AppConfig {
     server: crate::server::ServerOptions,
 }
 
+/// Returned by [`CorvisApplication::init`] (and by `listen`, `listen_in_background`, `handle` and
+/// `TestingModule::init`) when `init()` already failed once on that application.
+#[derive(Debug, Clone)]
+pub struct InitFailedError {
+    first_error: String,
+}
+
+impl InitFailedError {
+    fn new(first_error: String) -> Self {
+        InitFailedError { first_error }
+    }
+
+    /// The message of the error that made the first `init()` fail.
+    pub fn first_error(&self) -> &str {
+        &self.first_error
+    }
+}
+
+impl std::fmt::Display for InitFailedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the application failed to initialize earlier and cannot be initialized again; create a new application (first error: {})",
+            self.first_error
+        )
+    }
+}
+
+impl std::error::Error for InitFailedError {}
+
 /// A Corvis application instance.
 pub struct CorvisApplication {
     pub(crate) container: Arc<Container>,
@@ -89,6 +119,8 @@ pub struct CorvisApplication {
     shared: Option<Arc<AppShared>>,
     hooks_called: bool,
     initialized: bool,
+    /// The first `init()` error, once `init()` failed: the application cannot be initialized again.
+    init_error: Option<String>,
     closed: bool,
     shutdown_hooks: bool,
     log_routes: bool,
@@ -139,6 +171,7 @@ impl CorvisApplication {
             shared: None,
             hooks_called: false,
             initialized: false,
+            init_error: None,
             closed: false,
             shutdown_hooks: false,
             log_routes: true,
@@ -365,10 +398,36 @@ impl CorvisApplication {
     /// `app.init()` – registers routes, middleware and calls the init lifecycle hooks. Event and scheduled
     /// handlers are registered once per application, so calling it after `create_application_context` does
     /// not register them again.
+    ///
+    /// After a successful `init()`, later calls do nothing. After a failed one the application is single-use:
+    /// the failing call returns the original error and every later call (also through `listen`,
+    /// `listen_in_background`, `handle` and `TestingModule::init`) returns [`InitFailedError`] without running
+    /// any step, because hooks that already ran cannot be undone. Create a new application instead.
     pub async fn init(&mut self) -> crate::Result<()> {
+        if let Some(first) = &self.init_error {
+            return Err(InitFailedError::new(first.clone()).into());
+        }
         if self.initialized {
             return Ok(());
         }
+        match self.init_steps().await {
+            Ok(()) => {
+                self.initialized = true;
+                Ok(())
+            }
+            Err(e) => {
+                self.init_error = Some(format!("{e:#}"));
+                self.shared = None;
+                Err(e)
+            }
+        }
+    }
+
+    pub(crate) fn init_failed(&self) -> bool {
+        self.init_error.is_some()
+    }
+
+    async fn init_steps(&mut self) -> crate::Result<()> {
         // Global enhancers registered as providers (APP_GUARD, APP_PIPE, ...) are applied while
         // the application is created, before any `use_global_*()` call of the bootstrap code,
         // so they run first (outermost): insert them ahead of the ones already registered.
@@ -437,7 +496,6 @@ impl CorvisApplication {
             http_settings: self.config.http_settings.clone(),
         }));
         self.call_init_hooks().await?;
-        self.initialized = true;
         Ok(())
     }
 
@@ -597,5 +655,82 @@ struct BoxedLogger(Box<dyn LoggerService>);
 impl LoggerService for BoxedLogger {
     fn log(&self, level: LogLevel, message: &str, context: Option<&str>) {
         self.0.log(level, message, context)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::prelude::*;
+    use crate::testing::Test;
+
+    use super::InitFailedError;
+
+    #[injectable]
+    pub struct G;
+    #[async_trait]
+    impl CanActivate for G {
+        async fn can_activate(&self, _ctx: &ExecutionContext) -> Result<bool, HttpException> {
+            Ok(true)
+        }
+    }
+
+    #[injectable]
+    pub struct I;
+    #[async_trait]
+    impl CorvisInterceptor for I {
+        async fn intercept(&self, _ctx: &ExecutionContext, next: CallHandler) -> HandlerResult {
+            next.handle().await
+        }
+    }
+
+    #[injectable]
+    pub struct P;
+    #[async_trait]
+    impl PipeTransform for P {
+        async fn transform(&self, value: Value, _metadata: &ArgumentMetadata) -> Result<Value, HttpException> {
+            Ok(value)
+        }
+    }
+
+    #[injectable]
+    pub struct F;
+    #[async_trait]
+    impl ExceptionFilter for F {
+        async fn catch(&self, exception: HttpException, _host: &ArgumentsHost) -> Response {
+            BaseExceptionFilter::handle(&exception)
+        }
+    }
+
+    #[injectable]
+    pub struct Failing;
+    #[async_trait]
+    impl OnModuleInit for Failing {
+        async fn on_module_init(&self) -> crate::Result<()> {
+            anyhow::bail!("database unavailable")
+        }
+    }
+
+    #[module(providers = [
+        Failing,
+        Provider::app_guard::<G>(),
+        Provider::app_interceptor::<I>(),
+        Provider::app_pipe::<P>(),
+        Provider::app_filter::<F>(),
+    ])]
+    pub struct AppModule;
+
+    #[tokio::test]
+    async fn second_init_after_a_failure_does_not_register_enhancers_again() {
+        let mut app = Test::create_testing_module().import::<AppModule>().compile().await.unwrap().create_corvis_application();
+        let first = app.init().await.unwrap_err();
+        assert!(first.to_string().contains("database unavailable"));
+        let second = app.init().await.unwrap_err();
+        assert!(second.downcast_ref::<InitFailedError>().is_some());
+        assert!(second.to_string().contains("database unavailable"));
+        let router = &app.config.router;
+        assert_eq!(router.global_guards.len(), 1);
+        assert_eq!(router.global_interceptors.len(), 1);
+        assert_eq!(router.global_pipes.len(), 1);
+        assert_eq!(router.global_filters.len(), 1);
     }
 }

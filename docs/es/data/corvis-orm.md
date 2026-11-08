@@ -148,12 +148,59 @@ Opciones de `OrmModuleOptions`:
 | `new(url)` | `file:./dev.db`, `sqlite::memory:` o `postgresql://...` |
 | `global(bool)` | Registra el módulo como global |
 | `log_queries(bool)` | Registra cada consulta SQL con sus parámetros |
-| `max_connections(n)` | Tamaño del pool |
+| `max_connections(n)` | Tamaño del pool (tiene prioridad sobre `connection_limit` de la URL) |
 | `explicit_connect(bool)` | Conectar en `on_module_init` (por defecto `true`) |
 | `transaction_options(..)` | `maxWait`, `timeout` e `isolationLevel` por defecto de las transacciones |
 | `push::<(A, B)>()` | Crea al arrancar las tablas e índices que falten (útil en desarrollo y pruebas) |
 
 `push` no modifica ni elimina columnas existentes: para producción usa migraciones.
+
+## Pool de conexiones
+
+El pool se dimensiona y se limita en tiempo desde la URL de la base de datos, igual que lo hace el cliente original, así que una app que conserva su `DATABASE_URL` conserva su pool:
+
+```text
+postgresql://user:pass@host/db?connection_limit=5&pool_timeout=20
+file:./dev.db?connection_limit=1
+```
+
+| Parámetro | Significado | Por defecto |
+|---|---|---|
+| `connection_limit` | Número máximo de conexiones del pool. Un entero de al menos 1 | `2 * núcleos físicos de CPU + 1` |
+| `pool_timeout` | Segundos que una consulta espera una conexión libre antes de fallar con `P2024`. `0` espera sin límite | `10` |
+
+- Funcionan con Postgres y con SQLite en archivo (`file:` y `sqlite:`). Se quitan de la URL antes de que llegue al driver; el resto de parámetros (`sslmode`, `application_name`, `options`, ...) se conservan tal cual.
+- SQLite en memoria usa siempre exactamente una conexión: `connection_limit` se acepta y se ignora ahí. En SQLite, `pool_timeout` solo se aplica si es un número válido; uno inválido se ignora, como hace el cliente original.
+- Un parámetro repetido conserva su último valor, y los valores pueden ir codificados con porcentaje.
+- Un valor inválido (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`) falla al crear el cliente, con un error de inicialización `P1013` que nombra el parámetro y muestra el valor solo si es corto y simple (letras, dígitos, `+ . _ -`), nunca el resto de la URL. `OrmClientOptions` muestra su URL sin la contraseña en la salida de `Debug`; un `acquire_timeout` en código de `Duration::MAX` significa sin límite. El cliente original trata `connection_limit=0` como sin límite; corvis-orm exige al menos 1.
+- El tamaño del pool es como máximo 262143 (el mayor valor que Postgres acepta para su propio `max_connections`), en la URL y en código: el driver reserva un espacio por conexión por adelantado, así que un valor mayor agotaría la memoria. `connection_limit=262144` falla con `P1013`, y `max_connections(0)` o `max_connections(n)` por encima del límite falla al crear el cliente.
+- Los valores puestos en código tienen prioridad sobre la URL: `OrmClientOptions::max_connections(n)` (y `OrmModuleOptions::max_connections(n)`) sobre `connection_limit`, y `OrmClientOptions::acquire_timeout` sobre `pool_timeout`. La URL tiene prioridad sobre los valores por defecto.
+- `pool_timeout=0` con un servidor inalcanzable solo está limitado por el tiempo de conexión del sistema operativo.
+
+::: warning Valores por defecto cambiados
+Antes el pool tenía 10 conexiones en Postgres y 5 en archivos SQLite, y una consulta esperaba hasta 30 segundos por una conexión. Ahora los valores por defecto son `2 * núcleos físicos + 1` conexiones y 10 segundos. Define `connection_limit` y `pool_timeout` en la URL (o `max_connections` en código) para recuperar cualquier valor anterior. Con varias conexiones sobre un archivo SQLite, los escritores pueden competir por el bloqueo; usa `connection_limit=1` si tu app necesita un único escritor.
+:::
+
+Los ajustes de pool que las versiones más nuevas del cliente reciben en código (tamaño máximo, tiempo de conexión) equivalen a `max_connections(n)` y `acquire_timeout`.
+
+## Esquema de la base de datos
+
+Una URL de Postgres puede indicar el esquema que se usa, igual que en el cliente original:
+
+```text
+postgresql://user:pass@host/db?schema=tenant_a
+```
+
+- Cada conexión del pool ejecuta `SET search_path TO "tenant_a"` justo al abrirse, antes de cualquier otra sentencia. Las consultas generadas, el SQL crudo, las transacciones interactivas, `push` y las migraciones resuelven entonces los nombres sin calificar en ese esquema, y solo en ese. El nombre siempre se cita como identificador (se conservan mayúsculas y espacios), así que ningún valor de `schema` puede ejecutar otra sentencia.
+- Sin `schema` no cambia nada: rige el `search_path` del servidor (`"$user", public` por defecto) y no se envía ningún `SET`.
+- Los modelos y enums con esquema explícito (`#[model(schema = "audit")]`) conservan su nombre calificado.
+- `migrate deploy`, `migrate status` y `push` crean el esquema si no existe, y `_prisma_migrations` vive en él. Un esquema existente nunca se vuelve a crear, así que un rol que solo tiene permisos sobre ese esquema puede desplegar. Crear un esquema que falta exige el privilegio `CREATE` sobre la base de datos.
+- La ruta es exactamente ese esquema: los objetos de otros esquemas, como las funciones de extensiones instaladas en `public` o `extensions`, deben calificarse, y un `CREATE EXTENSION` en una migración instala la extensión en el esquema de la URL.
+- Los scripts de migración y `db_execute` se ejecutan en una conexión que se cierra al terminar en lugar de volver al pool, así que un script que cambie la sesión (`SET search_path`, `RESET ALL`) no puede enviar consultas posteriores a otro esquema. `_prisma_migrations` siempre se escribe en el esquema de la URL con su nombre calificado.
+- Los parámetros de la URL se leen como datos de formulario: la consulta termina en el primer `#`, las claves y los valores se decodifican (`schem%61=t` equivale a `schema=t`) y un `+` en un valor es un espacio (`My+Schema`).
+- Un nombre vacío, `$user`, uno que empieza por `pg_`, con un carácter NUL o de más de 63 bytes falla al crear el cliente, con un error de inicialización `P1013` que nombra `schema` y nunca muestra la URL. El cliente original acepta un nombre vacío (y entonces no encuentra ninguna tabla) y deja que el servidor trunque los nombres largos; corvis-orm rechaza ambos.
+- En SQLite el parámetro se acepta y se ignora. La opción `schema` del adaptador 7.x equivale a este parámetro de la URL.
+- Un ajuste de sesión que cambie tu propio SQL (`SET search_path ...` fuera de una transacción) se queda en esa conexión del pool, como cualquier ajuste de sesión.
 
 ## Usar `OrmService`
 
@@ -253,6 +300,8 @@ cargo run -q -p corvis-orm --bin corvis-orm -- migrate deploy --migrations db/mi
 cargo run -q -p corvis-orm --bin corvis-orm -- migrate status --migrations db/migrations --url "$DATABASE_URL"
 ```
 
+Con `?schema=nombre` en la URL (ver [Esquema de la base de datos](#esquema-de-la-base-de-datos)), `migrate deploy`, `migrate status` y `push` crean el esquema si no existe y `_prisma_migrations` queda dentro de él.
+
 Desde código: `db.migrate_deploy(dir).await` y `db.migrate_status(dir).await`. No hay comandos para generar migraciones a partir de cambios en los modelos.
 
 ## Seguridad
@@ -260,6 +309,7 @@ Desde código: `db.migrate_deploy(dir).await` y `db.migrate_status(dir).await`. 
 - En producción con Postgres usa `sslmode=verify-full` en la URL; `prefer` (el valor por defecto) no protege contra un atacante en la red. El TLS viene de la feature `tls-rustls` (activa por defecto); los errores de conexión muestran solo `host:puerto`, nunca el usuario, la contraseña ni la query string.
 - Pasar el JSON de una petición directamente a una consulta le da al cliente todos los operadores, `select` e `include`. Construye los argumentos con los campos que la ruta permite o valida el cuerpo con un schema estricto.
 - Los argumentos con más de 125 niveles de anidamiento se rechazan antes de procesarse (`max_query_depth`, se cambia con `OrmClientOptions::max_query_depth(n)`).
+- Un `where` con un carácter NUL (`\u0000`) en un string, en un segmento de `path` JSON o en una clave JSON es un error de validación en todas las bases de datos, antes de ejecutar SQL. PostgreSQL no puede guardar NUL en `text` ni en `jsonb`, y el cliente original responde con un error crudo de la base de datos; Corvis responde con un error de validación (`400` mediante `OrmExceptionFilter`).
 - En los inputs únicos (`findUnique`, `update`, `upsert`, `delete`, ...) los campos `@id` y `@unique` solo aceptan el valor (`{ email: "a@b.c" }`), nunca un filtro como `{ equals }` o `{ not }` ni `null`.
 - Los números fuera de rango son errores, nunca valores truncados: un `BigInt` de más de 64 bits, un byte de `Bytes` fuera de `0..=255`, un `Decimal` que no cabe en un `NUMERIC` de Postgres o un `limit` negativo en `update_many`/`delete_many` (`P2019`).
 - `update`, `delete` y las operaciones `*_many` repiten su `where` en el `UPDATE`/`DELETE`, así que la concurrencia optimista (`where: { id, version }`) tiene un solo ganador.

@@ -35,11 +35,11 @@ or when registering it, on any `Provider`:
 providers = [Provider::use_class::<OperationTimer>("TIMER").scope(Scope::Transient)]
 ```
 
-Each provider that has an `Arc<OperationTimer>` field receives its own instance, and `ModuleRef::resolve::<OperationTimer>()` creates a new one on each call.
+Each injection point (every `Arc<OperationTimer>` field, even two in the same struct) receives its own instance, and `ModuleRef::resolve::<OperationTimer>()` creates a new one on each call.
 
 Consequences worth knowing:
 
-- **They are not created at startup.** The container does not instantiate transient providers in advance; it builds them when injecting them.
+- **They are not created at startup.** The container does not instantiate transient providers in advance; it builds them when injecting them. Their dependencies are checked at startup, though: a transient class provider (or an alias of one) that asks for something its module cannot see fails startup with the usual "can't resolve dependencies" error, even if nothing injects it yet. Optional (`Option<Arc<T>>`) fields are skipped, and factory providers are not checked because their dependencies are code: the error of a transient factory appears the first time it is resolved. Prefer class providers when early validation matters.
 - **They are not stored.** That is why `ModuleRef::get::<T>()` and `app.get::<T>()`, which only return existing instances, don't find a transient provider. Use `module_ref.resolve::<T>().await`.
 - **They don't receive lifecycle hooks.** Hooks (`on_module_init`, `on_application_bootstrap`, the shutdown ones) run on the stored instances, so a transient provider doesn't receive them.
 - **The scope doesn't propagate.** A singleton that depends on a transient receives a single instance when it is created and keeps it.

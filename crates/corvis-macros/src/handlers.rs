@@ -79,6 +79,8 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
     let self_ty = item.self_ty.clone();
     let class_name = last_ident(&self_ty).unwrap_or_default();
     let mut entries = Vec::new();
+    // Errors for enhancers on methods without a handler attribute; reported together after the loop.
+    let mut discarded: Option<syn::Error> = None;
 
     for impl_item in item.items.iter_mut() {
         let ImplItem::Fn(method) = impl_item else { continue };
@@ -116,7 +118,21 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
         }
         method.attrs = keep;
-        let Some((kind, args)) = kind else { continue };
+        let Some((kind, args)) = kind else {
+            if let Some(attr) = enhancer_attr {
+                let message = format!(
+                    "`{}` has #[{}] but no #[subscribe_message] attribute; enhancers and metadata in `#[handlers]` only apply to message handlers",
+                    method.sig.ident,
+                    attr_name(&attr)
+                );
+                let error = syn::Error::new_spanned(&attr, message);
+                match &mut discarded {
+                    Some(all) => all.combine(error),
+                    None => discarded = Some(error),
+                }
+            }
+            continue;
+        };
         if let Some(attr) = &enhancer_attr
             && kind != "subscribe_message"
         {
@@ -322,6 +338,10 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
         });
     }
 
+    if let Some(error) = discarded {
+        return Err(error);
+    }
+
     let (impl_g, _, where_c) = item.generics.split_for_impl();
     Ok(quote! {
         #item
@@ -335,4 +355,87 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand;
+
+    fn messages(item: syn::ItemImpl) -> Vec<String> {
+        match expand(item) {
+            Ok(_) => Vec::new(),
+            Err(e) => e.into_iter().map(|e| e.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn guard_on_helper_is_rejected() {
+        let m = messages(syn::parse_quote! {
+            impl Gw { #[use_guards(WsAuthGuard)] fn kick_idle(&self) {} }
+        });
+        assert_eq!(
+            m,
+            [
+                "`kick_idle` has #[use_guards] but no #[subscribe_message] attribute; enhancers and metadata in `#[handlers]` only apply to message handlers"
+            ]
+        );
+    }
+
+    #[test]
+    fn metadata_on_helper_is_rejected() {
+        let m = messages(syn::parse_quote! {
+            impl Gw { #[set_metadata(K, 1)] fn helper(&self) {} }
+        });
+        assert_eq!(m.len(), 1);
+        assert!(m[0].starts_with("`helper` has #[set_metadata] but no #[subscribe_message] attribute"));
+    }
+
+    #[test]
+    fn path_attribute_reads_as_last_segment() {
+        let m = messages(syn::parse_quote! {
+            impl Gw { #[corvis::use_pipes(P)] fn helper(&self) {} }
+        });
+        assert!(m[0].starts_with("`helper` has #[use_pipes] but"));
+    }
+
+    #[test]
+    fn plain_helpers_are_accepted() {
+        assert!(
+            messages(syn::parse_quote! {
+                impl Gw { fn plain(&self) {} #[allow(dead_code)] fn other(&self) {} }
+            })
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn enhancer_on_another_handler_kind_keeps_its_message() {
+        let m = messages(syn::parse_quote! {
+            impl Gw { #[use_guards(G)] #[on_event("x")] fn on_x(&self) {} }
+        });
+        assert_eq!(m, ["enhancers in `#[handlers]` are only supported on #[subscribe_message] methods"]);
+    }
+
+    #[test]
+    fn subscribe_message_with_enhancer_is_accepted() {
+        assert!(
+            messages(syn::parse_quote! {
+                impl Gw { #[use_guards(G)] #[subscribe_message("kick")] fn kick(&self) {} }
+            })
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn all_offending_methods_are_reported() {
+        let m = messages(syn::parse_quote! {
+            impl Gw {
+                #[use_guards(A)] fn a(&self) {}
+                #[use_pipes(P)] fn b(&self) {}
+            }
+        });
+        assert_eq!(m.len(), 2);
+        assert!(m[0].starts_with("`a` has"));
+        assert!(m[1].starts_with("`b` has"));
+    }
 }

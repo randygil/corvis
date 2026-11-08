@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 85e204c3f809944e7cf04b7953bc05d9a75ebeb8128eb9d6208b14d52ef0c7af # shrinks to (["n"], "equals", Number(1000000), false)
+cc cf8919c6dd8a1d198d5315248dcc58e9370bba19c98e27119057548c578aeacc # shrinks to (Object {"AND": Object {"data": Object {"lt": String("'"), "path": String("\0")}}}, "findMany")
+cc 8b19cb6d83eeb00138a74e8a94198e9cabdb1683c5ede07aa160ddd66ce5c918 # shrinks to ("\0", false)

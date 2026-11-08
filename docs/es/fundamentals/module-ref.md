@@ -32,7 +32,7 @@ Otras formas de obtenerlo:
 | `get_token::<T>(token)` | `Result<Arc<T>, DiError>` | Igual, por token (`"TOKEN"` o `Token`). |
 | `get_token_in_context::<T>(token)` | `Result<Arc<T>, DiError>` | Solo lo visible desde el módulo: sus providers, los exports de sus imports y los módulos globales. Es lo mismo que vería un campo `Arc<T>`. |
 | `get_strict::<T>()` | `Result<Arc<T>, DiError>` | Solo los providers registrados en el propio módulo. |
-| `resolve::<T>().await` | `Result<Arc<T>, DiError>` | Resuelve como la inyección; para un provider transient crea una instancia nueva. |
+| `resolve::<T>().await` | `Result<Arc<T>, DiError>` | Resuelve como la inyección; para un provider transient crea una instancia nueva. Dentro de un constructor o factory, un ciclo de vuelta al provider que se está construyendo falla con el error de dependencia circular. |
 | `create::<T>().await` | `Result<T, DiError>` | Construye un `#[injectable]` que **no** está registrado, inyectándole sus campos desde el módulo. Devuelve el valor, no un `Arc`. |
 | `module_name()` | `String` | El nombre del módulo. |
 

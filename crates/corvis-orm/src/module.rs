@@ -45,7 +45,8 @@ pub struct OrmModuleOptions {
     pub is_global: bool,
     /// Log every query (`log: ['query']`).
     pub log_queries: bool,
-    /// Pool size (`connection_limit`).
+    /// Pool size. Overrides the `connection_limit` URL parameter; without either it is
+    /// `2 * physical CPU cores + 1`.
     pub max_connections: Option<u32>,
     /// Connect eagerly in `on_module_init` (default `true`).
     pub explicit_connect: bool,

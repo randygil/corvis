@@ -62,6 +62,12 @@ fn coercion_v3() {
     assert_eq!(z::coerce::boolean().parse(&json!("false")).unwrap(), json!(true));
     assert_eq!(z::coerce::boolean().parse(&json!("")).unwrap(), json!(false));
     assert_eq!(z::coerce::boolean().parse(&json!("true")).unwrap(), json!(true));
+    for truthy in [json!("0"), json!("no"), json!("off")] {
+        assert_eq!(z::coerce::boolean().parse(&truthy).unwrap(), json!(true), "{truthy}");
+    }
+    for falsy in [json!(0), json!(null)] {
+        assert_eq!(z::coerce::boolean().parse(&falsy).unwrap(), json!(false), "{falsy}");
+    }
     assert_eq!(z::coerce::date().parse(&json!(0)).unwrap(), json!("1970-01-01T00:00:00.000Z"));
     assert!(z::date().is_valid(&json!("2024-02-29")));
     assert_eq!(z::date().parse(&json!("2023-02-30")).unwrap_err().messages(), vec!["Invalid date"]);
@@ -305,6 +311,18 @@ fn v4_pick_extend_partial_keep_strict() {
     assert_eq!(ok, json!({ "currency": "USD" }));
     let partial = model.partial();
     assert_eq!(z::with_version(z::ZodVersion::V4, || partial.parse(&json!({})).unwrap()), json!({}));
+}
+
+#[test]
+fn v4_coerce_boolean_is_boolean_of_x() {
+    z::with_version(z::ZodVersion::V4, || {
+        for truthy in [json!("false"), json!("0"), json!("no"), json!("off")] {
+            assert_eq!(z::coerce::boolean().parse(&truthy).unwrap(), json!(true), "{truthy}");
+        }
+        for falsy in [json!(""), json!(0), json!(null)] {
+            assert_eq!(z::coerce::boolean().parse(&falsy).unwrap(), json!(false), "{falsy}");
+        }
+    });
 }
 
 #[test]

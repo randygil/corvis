@@ -9,7 +9,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 
 use super::error::DiError;
-use super::injectable::{Hooks, Injectable, ResolveCtx};
+use super::injectable::{Dependencies, Hooks, Injectable, ResolveCtx};
 use super::token::Token;
 use crate::common::filter::ExceptionFilter;
 use crate::common::guard::CanActivate;
@@ -144,6 +144,22 @@ impl GlobalEnhancer {
     }
 }
 
+/// What a provider is known to depend on without running it. An alias (`use_existing`) declares its target
+/// through `Provider::alias_of` instead.
+#[derive(Clone, Debug)]
+pub(crate) enum DeclaredDeps {
+    /// Factory providers and classes that do not declare their fields: the dependencies are code.
+    Unknown,
+    /// The injected fields of a class (empty for a value).
+    Fields(Dependencies),
+}
+
+impl DeclaredDeps {
+    fn of_class<T: Injectable>() -> Self {
+        T::dependencies().map_or(DeclaredDeps::Unknown, DeclaredDeps::Fields)
+    }
+}
+
 /// A provider definition. Build one with [`Provider::class`], [`Provider::use_value`],
 /// [`Provider::use_factory`], [`Provider::use_class`] or [`Provider::use_existing`].
 #[derive(Clone)]
@@ -154,6 +170,10 @@ pub struct Provider {
     pub(crate) scope: Scope,
     pub(crate) hooks: ErasedHooks,
     pub(crate) enhancer: Option<GlobalEnhancer>,
+    /// Set by `use_existing`: the token this provider is an alias of.
+    pub(crate) alias_of: Option<Token>,
+    /// What the provider is known to depend on, for the startup validation of transient providers.
+    pub(crate) deps: DeclaredDeps,
 }
 
 impl std::fmt::Debug for Provider {
@@ -164,7 +184,16 @@ impl std::fmt::Debug for Provider {
 
 impl Provider {
     fn new(token: Token, name: String, factory: Factory) -> Self {
-        Provider { token, name, factory, scope: Scope::Default, hooks: ErasedHooks::default(), enhancer: None }
+        Provider {
+            token,
+            name,
+            factory,
+            scope: Scope::Default,
+            hooks: ErasedHooks::default(),
+            enhancer: None,
+            alias_of: None,
+            deps: DeclaredDeps::Unknown,
+        }
     }
 
     /// Standard class provider: `providers: [CatsService]`.
@@ -185,6 +214,7 @@ impl Provider {
         let mut p = Self::new(token, crate::di::token::short_type_name(std::any::type_name::<T>()), factory);
         p.scope = T::scope();
         p.hooks = ErasedHooks::from_typed(T::hooks());
+        p.deps = DeclaredDeps::of_class::<T>();
         p
     }
 
@@ -203,6 +233,7 @@ impl Provider {
         let mut p = Self::new(token, crate::di::token::short_type_name(std::any::type_name::<T>()), factory);
         p.scope = T::scope();
         p.hooks = ErasedHooks::from_typed(T::hooks());
+        p.deps = DeclaredDeps::of_class::<T>();
         p
     }
 
@@ -226,7 +257,9 @@ impl Provider {
             let instance = instance.clone();
             async move { Ok(instance.into()) }.boxed()
         });
-        Self::new(token, name, factory)
+        let mut p = Self::new(token, name, factory);
+        p.deps = DeclaredDeps::Fields(Dependencies { requester: "", names: &[], items: Vec::new() });
+        p
     }
 
     /// `{ provide: token, useFactory: async (deps) => value, inject: [...] }`.
@@ -276,11 +309,14 @@ impl Provider {
         let token = token.into();
         let existing = existing.into();
         let name = token.display_name();
+        let target = existing.clone();
         let f: Factory = Arc::new(move |ctx: ResolveCtx| {
             let existing = existing.clone();
             async move { ctx.resolve_instance(existing).await.map(Built::from) }.boxed()
         });
-        Self::new(token, name, f)
+        let mut p = Self::new(token, name, f);
+        p.alias_of = Some(target);
+        p
     }
 
     /// Change the injection scope of the provider.
@@ -331,5 +367,40 @@ impl Provider {
             override_token: crate::testing::enhancer_override_token::<T>(),
         });
         p
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Plain;
+    impl Injectable for Plain {
+        fn construct(_ctx: ResolveCtx) -> BoxFuture<'static, Result<Self, DiError>> {
+            async { Ok(Plain) }.boxed()
+        }
+    }
+
+    struct Declared;
+    impl Injectable for Declared {
+        fn construct(_ctx: ResolveCtx) -> BoxFuture<'static, Result<Self, DiError>> {
+            async { Ok(Declared) }.boxed()
+        }
+        fn dependencies() -> Option<Dependencies> {
+            Some(Dependencies { requester: "Declared", names: &[], items: Vec::new() })
+        }
+    }
+
+    #[test]
+    fn every_constructor_records_what_it_knows_about_dependencies() {
+        assert!(matches!(Provider::class::<Plain>().deps, DeclaredDeps::Unknown));
+        assert!(matches!(Provider::class::<Declared>().deps, DeclaredDeps::Fields(_)));
+        assert!(matches!(Provider::use_class::<Declared>("TOKEN").deps, DeclaredDeps::Fields(_)));
+        assert!(matches!(Provider::use_class_as::<Declared, Declared>("TOKEN", |d| d).deps, DeclaredDeps::Fields(_)));
+        assert!(matches!(Provider::use_value("TOKEN", 1u8).deps, DeclaredDeps::Fields(ref d) if d.items.is_empty()));
+        assert!(matches!(Provider::use_factory("TOKEN", |_ctx| async { Ok(1u8) }).deps, DeclaredDeps::Unknown));
+        let alias = Provider::use_existing("ALIAS", "TOKEN");
+        assert!(matches!(alias.deps, DeclaredDeps::Unknown));
+        assert_eq!(alias.alias_of, Some(Token::from("TOKEN")));
     }
 }

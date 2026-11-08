@@ -60,7 +60,9 @@ En `examples/tertulia/src/firehose.rs`, `FirehoseService` usa `on_application_bo
    3. llama a `on_application_bootstrap` en todos los módulos.
 3. `listen` abre el socket y empieza a atender peticiones.
 
-`init()` es idempotente: llamarlo dos veces no repite los hooks.
+Después de un `init()` correcto, volver a llamarlo (directamente, o a través de `listen`, `handle` o `TestingModule::init`) no hace nada: los hooks no se repiten.
+
+Después de un `init()` **fallido** la aplicación no puede arrancar de nuevo. La primera llamada devuelve el error original; cada llamada posterior devuelve `corvis::InitFailedError`, cuyo mensaje dice que la aplicación falló al inicializarse antes, cita el primer error y pide crear una aplicación nueva. Los hooks que ya se ejecutaron (conexiones abiertas, tareas lanzadas) no se pueden deshacer, así que reintentar sobre la misma aplicación los repetiría o los omitiría. Crea una aplicación nueva con `CorvisFactory::create`. Puedes reconocer el error con `err.downcast_ref::<corvis::InitFailedError>()`. Un `listen` que falla al enlazar después de un `init()` correcto no es un fallo de init: puedes llamarlo de nuevo con otra dirección.
 
 ### Apagado
 
@@ -77,7 +79,7 @@ En `examples/tertulia/src/firehose.rs`, `FirehoseService` usa `on_application_bo
 
 Los hooks se recorren por módulo, empezando por los **más alejados** del módulo raíz (los importados más profundamente) y terminando en el raíz. Dentro de cada módulo el orden es: controladores, providers y, por último, la propia clase del módulo. El apagado sigue el mismo orden que el arranque.
 
-Si un hook devuelve `Err`, el recorrido se detiene y el error sale de `init()`, `listen()` o `close()`.
+Si un hook devuelve `Err`, el recorrido se detiene y el error sale de `init()`, `listen()` o `close()`. Tras un fallo de `init()`, mira [la secuencia de arranque](#arranque) para saber qué pasa al reintentar.
 
 ### Qué instancias reciben hooks
 

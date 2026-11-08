@@ -103,10 +103,10 @@ pub fn read_migrations(dir: &Path) -> Result<Vec<MigrationInfo>> {
     Ok(out)
 }
 
-fn create_table_sql(d: Dialect) -> &'static str {
-    match d {
+fn create_table_sql(d: Dialect, table: &str) -> String {
+    let sql = match d {
         Dialect::Postgres => {
-            r#"CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
+            r#"CREATE TABLE IF NOT EXISTS __TABLE__ (
     "id"                    VARCHAR(36) PRIMARY KEY NOT NULL,
     "checksum"              VARCHAR(64) NOT NULL,
     "finished_at"           TIMESTAMPTZ,
@@ -118,7 +118,7 @@ fn create_table_sql(d: Dialect) -> &'static str {
 );"#
         }
         Dialect::Sqlite => {
-            r#"CREATE TABLE IF NOT EXISTS "_prisma_migrations" (
+            r#"CREATE TABLE IF NOT EXISTS __TABLE__ (
     "id"                    TEXT PRIMARY KEY NOT NULL,
     "checksum"              TEXT NOT NULL,
     "finished_at"           DATETIME,
@@ -129,7 +129,8 @@ fn create_table_sql(d: Dialect) -> &'static str {
     "applied_steps_count"   INTEGER UNSIGNED NOT NULL DEFAULT 0
 );"#
         }
-    }
+    };
+    sql.replace("__TABLE__", table)
 }
 
 struct Row {
@@ -149,13 +150,19 @@ fn ph(d: Dialect, i: usize) -> String {
 }
 
 impl OrmClient {
+    /// The history table, qualified with the URL schema so that recording a migration does not depend on
+    /// the session's `search_path` (a migration script may change it).
+    fn history_table(&self) -> String {
+        crate::db::qualified(self.url_schema(), "_prisma_migrations")
+    }
+
     async fn ensure_database(&self) -> Result<()> {
         if self.dialect() != Dialect::Postgres {
             return Ok(());
         }
         use sqlx::ConnectOptions;
         use std::str::FromStr;
-        let url = self.options().url.trim().to_string();
+        let url = self.inner.driver_url.clone();
         let opts = sqlx::postgres::PgConnectOptions::from_str(&url).map_err(|e| OrmError::init(format!("Invalid database URL: {e}")))?;
         match opts.connect().await {
             Ok(c) => {
@@ -177,10 +184,12 @@ impl OrmClient {
     }
 
     async fn migration_rows(&self) -> Result<Vec<Row>> {
-        self.execute_script(create_table_sql(self.dialect())).await?;
+        self.ensure_schema().await?;
+        let t = self.history_table();
+        self.execute_script(&create_table_sql(self.dialect(), &t)).await?;
         let rows = self
             .query_raw(
-                r#"SELECT "id", "checksum", "migration_name", "finished_at" IS NOT NULL AS "finished", "rolled_back_at" IS NOT NULL AS "rolled_back", CAST("started_at" AS TEXT) AS "started_at" FROM "_prisma_migrations" ORDER BY "started_at" ASC"#,
+                &format!(r#"SELECT "id", "checksum", "migration_name", "finished_at" IS NOT NULL AS "finished", "rolled_back_at" IS NOT NULL AS "rolled_back", CAST("started_at" AS TEXT) AS "started_at" FROM {t} ORDER BY "started_at" ASC"#),
                 vec![],
             )
             .await?;
@@ -200,6 +209,9 @@ impl OrmClient {
 
     /// `migrate deploy`: applies the pending `dir/*/migration.sql` in order and
     /// records them in `_prisma_migrations`. Returns the names of the applied migrations.
+    ///
+    /// With `?schema=name` in the URL, the schema is created when missing and the history table and
+    /// the migrations live in it.
     ///
     /// Fails with `P3009` when a previous migration failed, and with `P3018` when a
     /// migration fails (its error is stored in `logs`).
@@ -222,13 +234,14 @@ impl OrmClient {
             rows.iter().filter(|r| r.finished && !r.rolled_back).map(|r| r.name.as_str()).collect();
         let d = self.dialect();
         let mut done = Vec::new();
+        let t = self.history_table();
         for m in local.iter().filter(|m| !applied.contains(m.name.as_str())) {
             let script = std::fs::read_to_string(&m.path).map_err(|e| OrmError::init(format!("{}: {e}", m.path.display())))?;
             let id = uuid::Uuid::new_v4().to_string();
             let now = if d == Dialect::Postgres { "now()" } else { "current_timestamp" };
             self.execute_raw(
                 &format!(
-                    r#"INSERT INTO "_prisma_migrations" ("id", "checksum", "migration_name", "started_at", "applied_steps_count") VALUES ({}, {}, {}, {now}, 0)"#,
+                    r#"INSERT INTO {t} ("id", "checksum", "migration_name", "started_at", "applied_steps_count") VALUES ({}, {}, {}, {now}, 0)"#,
                     ph(d, 1),
                     ph(d, 2),
                     ph(d, 3)
@@ -240,7 +253,7 @@ impl OrmClient {
                 Ok(()) => {
                     self.execute_raw(
                         &format!(
-                            r#"UPDATE "_prisma_migrations" SET "finished_at" = {now}, "applied_steps_count" = "applied_steps_count" + 1 WHERE "id" = {}"#,
+                            r#"UPDATE {t} SET "finished_at" = {now}, "applied_steps_count" = "applied_steps_count" + 1 WHERE "id" = {}"#,
                             ph(d, 1)
                         ),
                         vec![json!(id)],
@@ -256,7 +269,7 @@ impl OrmClient {
                     );
                     let _ = self
                         .execute_raw(
-                            &format!(r#"UPDATE "_prisma_migrations" SET "logs" = {} WHERE "id" = {}"#, ph(d, 1), ph(d, 2)),
+                            &format!(r#"UPDATE {t} SET "logs" = {} WHERE "id" = {}"#, ph(d, 1), ph(d, 2)),
                             vec![json!(logs), json!(id)],
                         )
                         .await;
