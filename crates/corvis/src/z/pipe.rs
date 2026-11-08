@@ -257,6 +257,10 @@ impl crate::common::guard::CanActivate for ZodGuard {
         validate_opt(input, &self.schema, self.create_validation_exception.as_ref())?;
         Ok(true)
     }
+
+    fn controls_access(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------

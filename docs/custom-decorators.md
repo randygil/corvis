@@ -80,8 +80,9 @@ A parameter decorator that takes an argument (for example, "give me only the `em
 
 To "mark" a handler or a controller, define a key and use it with `#[set_metadata]`. A guard or an interceptor reads it later with `Reflector`.
 
+Corvis defines one marker for you: `#[public]` stores `PUBLIC_METADATA` (`"isPublic"`) with the value `true`, and the route posture check reads it (see [Guards](/guards)). Your own keys work the same way with `#[set_metadata]`:
+
 ```rust
-pub const IS_PUBLIC_KEY: &str = "isPublic";
 pub const ROLES_KEY: &str = "roles";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +95,7 @@ pub enum Role {
 
 ```rust
 #[get]
-#[set_metadata(IS_PUBLIC_KEY, true)]
+#[public]
 fn find_all(&self, #[query] query: ListCatsQuery) -> Vec<Cat> { ... }
 
 #[delete(":id")]
@@ -139,6 +140,16 @@ impl UsersController {
 - `apply_decorators([a(), b()])` combines several into one.
 - `#[apply_decorators(a(), b())]` accepts several expressions and can be used on a handler or below `#[controller]`.
 - Entries keep their declaration order.
+
+`CustomDecorator::new().set_metadata(PUBLIC_METADATA, true)` composes the public marker with other metadata, with the same effect as `#[public]`:
+
+```rust
+use corvis::{CustomDecorator, PUBLIC_METADATA};
+
+fn public_health_check() -> CustomDecorator {
+    CustomDecorator::new().set_metadata(PUBLIC_METADATA, true).set_metadata("audit", false)
+}
+```
 
 A `CustomDecorator` can also set the route's status code with the `HTTP_CODE_METADATA` key, as `#[http_code]` would:
 

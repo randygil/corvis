@@ -79,7 +79,8 @@ use app_module::AppModule;
 
 #[corvis::main]
 async fn main() -> corvis::Result<()> {
-    let app = CorvisFactory::create::<AppModule>().await?;
+    let mut app = CorvisFactory::create::<AppModule>().await?;
+    app.require_route_posture();
     let port: u16 = app.get::<ConfigService>()?.get_or("PORT", 3000);
     app.listen(port).await
 }
@@ -88,6 +89,7 @@ async fn main() -> corvis::Result<()> {
 - `#[corvis::main]` convierte la función `async fn main` en un `main` que arranca un runtime multihilo de Tokio. Exige que la función sea `async`.
 - `CorvisFactory::create::<AppModule>()` recorre el grafo de módulos desde `AppModule`, crea todos los providers y controladores y devuelve una `CorvisApplication`. Si falta una dependencia o hay un ciclo, devuelve el error (y lo registra en el log).
 - `app.get::<ConfigService>()` obtiene una instancia del contenedor. Aquí se usa para leer `PORT` desde `.env` o el entorno.
+- `app.require_route_posture()` activa la comprobación de postura de rutas: la aplicación se niega a arrancar si una ruta no tiene guard y no está marcada con `#[public]`. La ruta generada `get_hello` está marcada con `#[public]` para que el proyecto arranque tal como se genera; una ruta que añadas sin guard ni `#[public]` se reporta al arrancar, y `corvis posture` lista cada ruta con su postura.
 - `app.listen(port)` registra las rutas, ejecuta los hooks de inicialización y atiende peticiones hasta que el proceso termina.
 
 `listen` acepta un puerto (`3000`, que escucha en `0.0.0.0`), una cadena (`"127.0.0.1:3000"` o `"3000"`), un `String` o un `SocketAddr`.
@@ -122,7 +124,9 @@ pub struct AppController {
 
 #[routes]
 impl AppController {
+    // Routes need a guard or #[public]: main enforces route posture (see require_route_posture).
     #[get]
+    #[public]
     fn get_hello(&self) -> String {
         self.app_service.get_hello()
     }

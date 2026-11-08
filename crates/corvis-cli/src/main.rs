@@ -7,11 +7,13 @@
 //! corvis g module users | controller | service | guard | interceptor | pipe | filter | middleware | gateway
 //! corvis start [--watch]
 //! corvis build
+//! corvis posture [--json] [--release] [--timeout <seconds>] [-- args]
 //! corvis info
 //! ```
 
 mod edit;
 mod names;
+mod posture;
 mod templates;
 
 use std::fs;
@@ -28,6 +30,9 @@ const RESET: &str = "\x1b[0m";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("posture") {
+        return posture::run(&args[1..]);
+    }
     let result = match args.first().map(String::as_str) {
         Some("new") | Some("n") => cmd_new(&args[1..]),
         Some("generate") | Some("g") => cmd_generate(&args[1..]),
@@ -67,6 +72,9 @@ Commands:
   start [--watch] [--release] [-- args]
                                  Run the application (cargo run, or cargo watch -x "run ..." with --watch).
   build [--release]              Build the application (debug profile unless --release).
+  posture [--json] [--release] [--timeout <seconds>] [-- args]
+                                 Print the route posture report (which routes are guarded, public or unprotected).
+                                 Exits 0 when nothing is unprotected, 1 when something is, 2 when no report was produced.
   info|i                         Display Corvis project details.
 
 Schematics:

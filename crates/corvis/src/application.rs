@@ -80,6 +80,7 @@ pub(crate) struct AppConfig {
     body_limit: usize,
     http_settings: crate::http::HttpSettings,
     server: crate::server::ServerOptions,
+    route_posture: crate::posture::RoutePostureOptions,
 }
 
 /// Returned by [`CorvisApplication::init`] (and by `listen`, `listen_in_background`, `handle` and
@@ -125,6 +126,8 @@ pub struct CorvisApplication {
     shutdown_hooks: bool,
     log_routes: bool,
     started: Instant,
+    /// `false` for applications created by the testing module: they ignore `CORVIS_ROUTE_POSTURE_REPORT`.
+    pub(crate) report_mode_allowed: bool,
     local_addr: Option<SocketAddr>,
 }
 
@@ -167,6 +170,7 @@ impl CorvisApplication {
                 body_limit: options.body_limit,
                 http_settings: crate::http::HttpSettings::default(),
                 server: crate::server::ServerOptions::default(),
+                route_posture: crate::posture::RoutePostureOptions::default(),
             },
             shared: None,
             hooks_called: false,
@@ -176,6 +180,7 @@ impl CorvisApplication {
             shutdown_hooks: false,
             log_routes: true,
             started,
+            report_mode_allowed: true,
             local_addr: None,
         })
     }
@@ -257,6 +262,48 @@ impl CorvisApplication {
     pub fn enable_versioning(&mut self, options: VersioningOptions) -> &mut Self {
         self.config.router.versioning = Some(options);
         self
+    }
+
+    /// Refuses to start when a controller route has no guard that controls access, is not marked
+    /// `#[public]` and matches no exemption: `init()` (so `listen()` too) fails with a
+    /// [`RoutePostureError`](crate::RoutePostureError) before module middleware is configured and before any
+    /// hook runs. Same as `set_route_posture(RoutePostureOptions::enforce())`. Off by default. Call it before
+    /// `init()` / `listen()`; it has no effect afterwards.
+    pub fn require_route_posture(&mut self) -> &mut Self {
+        self.set_route_posture(crate::posture::RoutePostureOptions::enforce())
+    }
+
+    /// Sets the route posture mode (off, warn or enforce) and its exemptions. Call it before `init()` /
+    /// `listen()`; it has no effect afterwards.
+    pub fn set_route_posture(&mut self, options: crate::posture::RoutePostureOptions) -> &mut Self {
+        self.config.route_posture = options;
+        self
+    }
+
+    /// The posture of every controller route and gateway message handler (guards, public marker, exemptions) and
+    /// the surfaces the check cannot enforce, in every mode. `None` before `init()`.
+    pub fn route_posture(&self) -> Option<crate::posture::RoutePostureReport> {
+        let shared = self.shared.as_ref()?;
+        let options = match self.config.route_posture.mode() {
+            crate::posture::RoutePostureMode::Off => crate::posture::RoutePostureOptions::off(),
+            _ => self.config.route_posture.clone(),
+        };
+        #[cfg(feature = "websockets")]
+        let gateways = crate::websockets::posture_gateways(shared.gateways.values().map(|g| g.as_ref()));
+        #[cfg(not(feature = "websockets"))]
+        let gateways = Vec::new();
+        let mut unchecked: Vec<crate::posture::UncheckedSurface> =
+            shared.static_dirs.iter().map(|d| crate::posture::UncheckedSurface::StaticFiles { serve_root: d.serve_root.clone() }).collect();
+        unchecked.extend(gateways.iter().map(|g| crate::posture::UncheckedSurface::WsHandshake {
+            path: g.path.clone(),
+            gateway: g.name.clone(),
+            verify_client: g.verify_client,
+        }));
+        let listeners = shared.http_server.upgrade_listener_count();
+        if listeners > 0 {
+            unchecked.push(crate::posture::UncheckedSurface::UpgradeListeners { count: listeners });
+        }
+        Some(crate::posture::report_for(&shared.router, &gateways, &options).with_unchecked(unchecked))
     }
 
     /// `app.enableShutdownHooks()` – listen to SIGINT/SIGTERM and run the shutdown hooks.
@@ -442,6 +489,9 @@ impl CorvisApplication {
     }
 
     async fn init_steps(&mut self) -> crate::Result<()> {
+        if self.config.route_posture.mode() != crate::posture::RoutePostureMode::Off {
+            self.config.route_posture.validate()?;
+        }
         // Global enhancers registered as providers (APP_GUARD, APP_PIPE, ...) are applied while
         // the application is created, before any `use_global_*()` call of the bootstrap code,
         // so they run first (outermost): insert them ahead of the ones already registered.
@@ -491,9 +541,27 @@ impl CorvisApplication {
         if let Some(warning) = self.config.cors.as_ref().and_then(CorsOptions::startup_warning) {
             Logger::new("CorsOptions").warn(warning);
         }
+        #[cfg(feature = "websockets")]
+        let compiled_gateways = crate::websockets::compile_gateways(&self.container, &self.config.router).await?;
+        // Before module middleware `configure`, gateway `after_init` and the init hooks: a failing check must not have
+        // run user code.
+        #[cfg(feature = "websockets")]
+        let gateway_posture = crate::websockets::posture_gateways(&compiled_gateways);
+        #[cfg(not(feature = "websockets"))]
+        let gateway_posture = Vec::new();
+        // Report mode (CORVIS_ROUTE_POSTURE_REPORT) prints the report, gateways included, and ends the process here,
+        // whatever the mode and before the check, so that enforce mode does not swallow the report.
+        let static_roots = self
+            .container
+            .instances_of::<crate::modules::serve_static::ServeStaticOptions>()
+            .iter()
+            .map(|d| d.serve_root.clone())
+            .collect();
+        crate::posture::run_report_mode(self.report_mode_allowed, &router, &gateway_posture, static_roots, &self.config.route_posture)?;
+        crate::posture::check_routes(&router, &gateway_posture, &self.config.route_posture)?;
         let module_middleware = build_middleware(&self.container, &router, &self.config.router).await?;
         #[cfg(feature = "websockets")]
-        let gateways = crate::websockets::build_gateways(&self.container, &self.config.router).await?;
+        let gateways = crate::websockets::start_gateways(compiled_gateways).await;
         self.shared = Some(Arc::new(AppShared {
             router,
             global_middleware: self.config.global_middleware.clone(),

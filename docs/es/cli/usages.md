@@ -46,6 +46,8 @@ Se ejecuta dentro de un proyecto: busca hacia arriba la primera carpeta con `Car
 | `middleware` | `mi` | `XMiddleware` (`CorvisMiddleware`) | No se registra |
 | `gateway` | `ga` | `XGateway` (`#[websocket_gateway]`) | `providers` del módulo de la carpeta, o de `AppModule` |
 
+Un guard generado deniega todas las peticiones (`Ok(false)`, con un `TODO`) hasta que lo implementes, porque un guard cuenta como control de acceso para la comprobación de postura de rutas y no debe dejar pasar peticiones por defecto.
+
 Guards, interceptors, pipes, filtros y middleware no se registran porque se usan con `#[use_guards(...)]`, `#[use_interceptors(...)]`, `consumer.apply::<...>()` o los métodos `use_global_*`, según el caso.
 
 ### Dónde se escriben los archivos
@@ -102,6 +104,49 @@ corvis build [--release]
 ```
 
 Ejecuta `cargo build` (perfil debug), o `cargo build --release` con `--release` (o `--prod`). Antes imprime el perfil: `Building the debug profile ...` o `Building the release profile`.
+
+## `corvis posture`
+
+```bash
+corvis posture [--json] [--release] [--timeout <segundos>] [-- <argumentos del programa>]
+```
+
+Imprime el informe de postura de rutas de la aplicación del proyecto actual: cada ruta con sus guards, o `public`, o la exención y su motivo, y `UNPROTECTED` para una ruta que no tiene nada de eso. Funciona con cualquier modo de postura de la aplicación (off, warn o enforce) y sirve para la revisión de código y la CI.
+
+Ejecuta `cargo build` (con `--release` si se indica) y luego `cargo run` con `CORVIS_ROUTE_POSTURE_REPORT` en `text` (`json` con `--json`). La aplicación calcula el informe al inicializarse, después de compilar las rutas y antes de que corra cualquier hook de inicialización o se abra un socket, lo imprime y termina. La aplicación nunca queda escuchando. Necesita el mismo entorno que `corvis start` (por ejemplo una base de datos accesible si un provider se conecta al crear la aplicación), porque los providers se crean antes de calcular el informe. Los handlers de mensajes de gateways y las rutas `#[sse]` forman parte del informe. Los hooks `after_init` de los gateways y el `configure` del middleware de módulos no se ejecutan. Los listeners `upgrade` en bruto se registran en hooks que no corren, así que el informe los lista bajo `Not checked:` como no contados, junto con los montajes de archivos estáticos y los handshakes WebSocket de los gateways (su `verify_client` es desconocido porque `after_init` no se ha ejecutado). El bloque `Not checked:` también está en el informe JSON como `unchecked`.
+
+| Salida | Dónde |
+|---|---|
+| El informe (tabla, o JSON con `--json`) | stdout, y nada más |
+| La salida de Cargo y las líneas de log de la aplicación | stderr |
+
+En formato texto, la tabla va seguida de los guards de acceso contados y de las exenciones obsoletas o redundantes; con `--json` la misma información está en el informe JSON (`entries`, `unchecked`, `access_guards`, `stale_exemptions`, `redundant_exemptions`).
+
+La aplicación escribe el informe entre las líneas `----- BEGIN CORVIS ROUTE POSTURE REPORT <nonce> -----` y `----- END CORVIS ROUTE POSTURE REPORT <nonce> -----` porque sus logs comparten stdout; el comando quita esas líneas, así que `corvis posture --json | jq .` funciona. El nonce es aleatorio en cada ejecución y viaja en `CORVIS_ROUTE_POSTURE_NONCE`, así que una línea de log o una librería que imprima algo parecido a un informe no puede reemplazar al verdadero; si aparecen varios informes, cuenta el último completo.
+
+En modo informe la propia aplicación termina con el código `40` (nada sin protección) o `41` (algo sin protección), nunca `0`, así que un proceso detenido en modo informe nunca parece una salida normal y exitosa. `corvis posture` los convierte en `0` y `1`. Cargo imprime en stderr una línea como `error: process didn't exit successfully (exit code: 40)`; es lo esperado.
+
+#### El modo informe no debe activarse en producción ni en trabajos de test
+
+`CORVIS_ROUTE_POSTURE_REPORT` hace que cualquier binario que la lea imprima su tabla de rutas y se detenga en `init()`. No la definas nunca en un despliegue (un supervisor encontraría la aplicación detenida) ni en un trabajo de CI que ejecute `cargo test` del proyecto. Las aplicaciones creadas con `Test::create_testing_module()` la ignoran, pero las creadas con `CorvisFactory` dentro de un test no. Actívala solo a través de `corvis posture`.
+
+#### Límites
+
+- Solo se reporta el primer `init()` del proceso, y el proceso termina ahí. Un binario que crea dos aplicaciones (por ejemplo una API pública y una de administración) reporta solo la primera; ejecuta la otra desde su propio binario o reordena `main`.
+- `corvis posture` ejecuta el binario por defecto del paquete, igual que `corvis start`. Los demás binarios del paquete no se comprueban.
+
+| Código de salida | Significado |
+|---|---|
+| `0` | Se imprimió el informe y nada está sin protección |
+| `1` | Se imprimió el informe y al menos una entrada está sin protección |
+| `2` | No hay un informe de confianza: falló la compilación, la aplicación no pudo arrancar (el mensaje muestra su código de salida), venció el tiempo límite o los argumentos eran inválidos |
+| `130` | El comando fue interrumpido (Ctrl-C) y la aplicación se detuvo |
+
+El código sale del informe mismo, no solo del código de salida de la aplicación: un informe que lista una entrada sin protección es siempre `1`, y un informe limpio solo cuenta si la aplicación terminó con el código `40` del modo informe.
+
+`--timeout <segundos>` (120 por defecto) es el tiempo que tiene la aplicación, una vez en ejecución, para imprimir el informe. Si nunca llega a la inicialización (por ejemplo se bloquea antes de llamar a `listen`), el comando la detiene y sale con 2. La compilación no cuenta para el tiempo límite. Las opciones de `corvis` se leen solo antes del primer `--`; todo lo que va después llega a tu programa. `--watch` no está soportado.
+
+Los proyectos nuevos creados con `corvis new` llaman a `require_route_posture()` en `main` y marcan su ruta `GET /` con `#[public]`, así que `corvis posture` sale con 0 para ellos.
 
 ## `corvis info`
 

@@ -5,24 +5,33 @@
 ### Requirement: Report mode of the application
 When the environment variable `CORVIS_ROUTE_POSTURE_REPORT` is `text` or `json` (surrounding whitespace ignored),
 `init()` SHALL compute the posture report regardless of the configured posture mode, write it to stdout as the text
-table or as JSON, flush stdout, and end the process with exit code 0 when no entry is unprotected and 1 otherwise.
-This MUST happen after route and gateway compilation, before any `OnModuleInit` or `OnApplicationBootstrap` hook runs
-and before any socket is bound.
+table or as JSON, flush stdout, and end the process with exit code 40 when no entry is unprotected and 41 otherwise (never 0, so that
+a process stopped in report mode cannot pass for a normal successful exit). This MUST happen after route and gateway
+compilation, before any `OnModuleInit` or `OnApplicationBootstrap` hook runs and before any socket is bound. The
+report SHALL list the surfaces the check cannot enforce that are known at that point (static mounts, WebSocket
+handshakes with `verify_client` unknown, raw upgrade listeners as not counted). Applications created by the testing
+module MUST ignore report mode, and exemptions with a blank reason MUST make `init()` fail in report mode too.
 
 #### Scenario: Unprotected route in report mode
 - **WHEN** an application with posture off and one unguarded, non-public route runs `init()` with
   `CORVIS_ROUTE_POSTURE_REPORT=text`
-- **THEN** the process prints a table that lists that route as unprotected, exits with code 1, and no init hook ran
+- **THEN** the process prints a table that lists that route as unprotected, exits with code 41, and no init hook ran
 
 #### Scenario: JSON report with everything accepted
 - **WHEN** an application whose routes are all guarded or public runs `listen(0)` with
   `CORVIS_ROUTE_POSTURE_REPORT=json`
-- **THEN** the printed report parses as the JSON posture report, the process exits with code 0, and no socket was
+- **THEN** the printed report parses as the JSON posture report, the process exits with code 40, and no socket was
   bound
 
 ### Requirement: The report is delimited on stdout
 In report mode the report SHALL be written between the line `----- BEGIN CORVIS ROUTE POSTURE REPORT -----` and the
-line `----- END CORVIS ROUTE POSTURE REPORT -----`, so it can be separated from log lines written to the same stream.
+line `----- END CORVIS ROUTE POSTURE REPORT -----`, so it can be separated from log lines written to the same stream. When
+`CORVIS_ROUTE_POSTURE_NONCE` is set, both lines SHALL contain its value after `REPORT`. `corvis posture` SHALL set it
+to a random value for each run and accept only markers that contain it, keeping the last complete report.
+
+#### Scenario: Fake markers in the output
+- **WHEN** the application prints lines that look like a clean report with the plain markers before the real report
+- **THEN** `corvis posture` treats them as ordinary output and reports the real one
 
 #### Scenario: Logs before the report
 - **WHEN** the application logs startup lines to stdout and then runs `init()` in report mode
@@ -58,8 +67,9 @@ status when any route is unprotected, whatever the posture mode of the applicati
 
 ### Requirement: CLI output and exit status
 `corvis posture` SHALL write only the report to its stdout and send Cargo output and the application's other output
-to its stderr. Its exit status MUST be 0 when nothing is unprotected, 1 when something is, and 2, with an explanatory
-message on stderr, when the application ends without printing a complete report.
+to its stderr. Its exit status MUST be 0 when nothing is unprotected, 1 when the selected report lists an unprotected
+entry (whatever the application's exit code), and 2, with an explanatory message on stderr, when the application ends
+without printing a complete report or a clean report is not followed by the report-mode exit code 40.
 
 #### Scenario: Output stays parseable
 - **WHEN** the application logs startup lines to stdout before `init()` and `corvis posture --json` runs
@@ -69,3 +79,21 @@ message on stderr, when the application ends without printing a complete report.
 - **WHEN** `corvis posture` runs in a project whose application returns a dependency injection error before `init()`
 - **THEN** the command prints on stderr that the application ended without producing a posture report, with the
   application's exit code, and exits with status 2
+
+### Requirement: Timeout for applications that never report
+`corvis posture` SHALL stop the application and exit with status 2 when it has not printed a complete report within
+`--timeout <seconds>` (default 120) after it started running. The time spent building MUST NOT count.
+
+#### Scenario: Application that never reaches init
+- **WHEN** `corvis posture --timeout 3` runs in a project whose `main` blocks before the application initializes
+- **THEN** the command stops the application and its child processes, prints on stderr that no report arrived within
+  3 seconds, and exits with status 2
+
+### Requirement: The timeout bounds the whole run
+`--timeout` SHALL bound the time from the start of the application until the command returns, also when a process the
+application started keeps its stdout open. When the command ends, no process of the run MUST be left running.
+
+#### Scenario: Helper that holds stdout
+- **WHEN** the application starts a long-lived helper that inherits stdout, prints the report and exits
+- **THEN** the command prints the report and returns promptly, and the helper is no longer running
+

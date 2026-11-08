@@ -133,3 +133,73 @@ Current code, read in this worktree (before #26):
 
 - Marker lines and exit code 2 for "no report" are accepted.
 - Add `--timeout <seconds>` (default 120) so an app that never reaches `init()` does not hang CI.
+
+## Implementation notes (differences from the design above)
+
+- **Position of the report-mode branch.** #26 places the posture check before module middleware `configure` and
+  gateway compilation (so a failing check runs no user code). Report mode sits right before `check_routes` at that
+  point (`posture::run_report_mode`), not after gateway compilation. It must run before the check, otherwise enforce
+  mode would return the error instead of the report. Consequence: neither `configure` nor gateway `after_init` hooks
+  run in report mode (stricter than decision 1, which accepted that `after_init` had run). The report is built by
+  `report_for_routes`, so entry kinds that #27 adds appear without changes here.
+- **Pure functions.** `report_format_from_env` and `render_report_mode` are public in `corvis::posture` together with
+  `REPORT_BEGIN`, `REPORT_END`, `REPORT_ENV` and `ReportFormat`. The text format is the report's `Display`, followed by
+  one `stale exemption: ...` line per stale exemption (`(no routes)` for an empty report). The CLI prints whatever is
+  between the markers, so unknown entry kinds need no handling there.
+- **`--timeout <seconds>` (review note).** Default 120, positive whole seconds, also `--timeout=N`. It counts from when
+  the application is started, not from the build: `corvis posture` runs `cargo build` first (stdout discarded, stderr
+  inherited), then `cargo run`. A build failure exits 2 with its own message. On timeout a watchdog thread ends the
+  process tree (`taskkill /T /F` on Windows; on Unix the child is its own process group and the group is killed) and
+  the command exits 2 with a message that names `--timeout`. A report that arrives is only trusted when the timeout did
+  not fire.
+- **CLI module.** The CLI code lives in `crates/corvis-cli/src/posture.rs` (`ReportFilter` is the streaming filter;
+  `split_report` is its test-only convenience wrapper). `posture` is dispatched in `main` before the `Res` mapping.
+- **`corvis new` manual verification.** Done with the shared target directory (`CARGO_TARGET_DIR` set for the generated
+  project too): `cargo test` passes, `corvis posture` and `--json` exit 0 listing `GET /` as public, an unguarded route
+  makes `cargo run` fail with the posture error and `corvis posture` exit 1, a compile error and a blocked `main`
+  with `--timeout 3` both exit 2 (no process left behind). The same checks stand in for task 2.4 because
+  `examples/tertulia` does not enable posture yet (#29).
+
+### After merging #26 (review fixes) and #27
+
+- The posture check now runs after `compile_gateways` and before `build_middleware` (#27), so report mode runs there,
+  right before `check_routes`, with the compiled gateways: the old statement that gateways were not compiled in report
+  mode no longer holds. Gateway `after_init` hooks (`start_gateways`) and module middleware `configure` still do not
+  run, so report mode stays free of user code beyond provider construction.
+- The report is built by `report_for(table, gateways, options)`, so it contains `Sse` and `WsMessage` entries, the
+  `unchecked` block and the access guard summary. The text format is the report's `Display` (table plus the
+  `Not checked:` block) followed by the `access guards counted: ...` line and one line per stale and per redundant
+  exemption; JSON is the serialized report unchanged. The exit code still depends only on unprotected entries.
+- `route_posture.rs` gains a child-process test with a gateway (entries, summary, `unchecked` in JSON, no hook ran).
+
+## Security review (2026-11-08, findings L1 to L6)
+
+- **L1, total time and orphans.** The CLI reads the application's stdout on its own thread and the main thread polls
+  the child and a channel against the deadline, so `--timeout` bounds the whole run. After the application exits the
+  command drains the pipe for 500 ms and stops (a helper that inherited stdout can keep it open forever). The run is
+  put in a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (kernel32 through FFI, no dependency), or in its
+  own Unix process group killed with `SIGKILL` through FFI (`kill`, no `libc` dependency). Both are ended at timeout and
+  when the command returns. On Unix, SIGINT and SIGTERM are caught: the loop stops, kills the group and exits 130. The
+  job is assigned right after `spawn`, so a process started by Cargo in the first instants could escape it; Cargo
+  starts the compiler and the application after that. `CORVIS_CARGO` selects the Cargo program (used by the tests with a
+  fake one); it is not documented as a user feature.
+- **L2, report injection.** `corvis posture` generates a 128-bit nonce per run (`RandomState` keys, i.e. operating system
+  randomness) and passes it in `CORVIS_ROUTE_POSTURE_NONCE`; the framework puts it in both markers (it validates it as
+  8 to 64 ASCII letters or digits) and without the variable keeps the plain markers. The filter accepts only markers
+  with the nonce, keeps the last complete report and restarts on a BEGIN seen inside a report. The exit status comes
+  from the report (an unprotected entry is 1 whatever the child's code). The unprotected check reads the report text
+  (`  UNPROTECTED  [` in text, `"state": "unprotected"` in JSON), which can only err towards 1.
+- **L3, `unchecked` in report mode.** Report mode fills it with the static mounts (from the container, as the startup
+  path does), the gateway handshakes and the raw upgrade listeners. `verify_client` and the upgrade listeners are not
+  known before `after_init` and the init hooks, so two new `UncheckedSurface` variants, `WsHandshakeUnknown` and
+  `UpgradeListenersUnknown`, say so instead of reporting a false "not set" or a count of 0. The test compares the
+  content.
+- **L4, exit codes and scope.** Report mode ends the process with 40 (clean) or 41 (unprotected), never 0; the CLI maps
+  them. Applications created through `Test::create_testing_module()` ignore the variable (a `pub(crate)` flag on the
+  application). The docs (CLI page, guards pages EN and ES) say the variable must not be set in production or in test
+  jobs.
+- **L5, limits.** Documented: only the first `init()` of the process is reported, and only the default binary is
+  checked. No selection variable was added.
+- **L6, guard template.** `corvis g guard` now generates `Ok(false)` with a `TODO`.
+- **Informational.** Report mode validates the exemptions even when the mode is off.
+

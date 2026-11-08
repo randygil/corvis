@@ -39,7 +39,8 @@ use app_module::AppModule;
 
 #[corvis::main]
 async fn main() -> corvis::Result<()> {
-    let app = CorvisFactory::create::<AppModule>().await?;
+    let mut app = CorvisFactory::create::<AppModule>().await?;
+    app.require_route_posture();
     let port: u16 = app.get::<ConfigService>()?.get_or("PORT", 3000);
     app.listen(port).await
 }
@@ -69,7 +70,9 @@ pub struct AppController {
 
 #[routes]
 impl AppController {
+    // Routes need a guard or #[public]: main enforces route posture (see require_route_posture).
     #[get]
+    #[public]
     fn get_hello(&self) -> String {
         self.app_service.get_hello()
     }
@@ -172,7 +175,9 @@ pub struct __Name__Guard;
 #[async_trait]
 impl CanActivate for __Name__Guard {
     async fn can_activate(&self, _context: &ExecutionContext) -> Result<bool, HttpException> {
-        Ok(true)
+        // TODO: implement the check. This guard denies every request until you do: with route posture on (new
+        // projects enforce it) a guard counts as access control, so it must not let requests through by default.
+        Ok(false)
     }
 }
 "#;
@@ -417,3 +422,26 @@ pub mod __name___service;
 
 pub use __name___module::__Name__Module;
 "#;
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_project_enforces_route_posture_and_marks_its_route_public() {
+        assert!(MAIN.contains("let mut app = CorvisFactory::create::<AppModule>().await?;"));
+        let enforce = MAIN.find("app.require_route_posture();").expect("main enables the check");
+        assert!(enforce < MAIN.find("app.listen(port)").unwrap(), "the check is enabled before listen");
+        let route = "    #[get]
+    #[public]
+    fn get_hello";
+        assert!(APP_CONTROLLER.contains(route), "get_hello is public");
+    }
+
+    #[test]
+    fn a_generated_guard_denies_by_default() {
+        assert!(GUARD.contains("Ok(false)"), "the guard template denies");
+        assert!(!GUARD.contains("Ok(true)"), "the guard template does not let requests through");
+        assert!(GUARD.contains("TODO"), "the template says what to implement");
+    }
+}

@@ -23,4 +23,48 @@ use crate::http::HttpException;
 #[async_trait]
 pub trait CanActivate: Send + Sync + 'static {
     async fn can_activate(&self, context: &ExecutionContext) -> Result<bool, HttpException>;
+
+    /// `true` (default) when this guard decides who may call the handler. Return `false` for guards that only
+    /// limit or validate requests (rate limiting, payload validation), or that let every request through when
+    /// they are not configured: they do not count for route posture
+    /// ([`CorvisApplication::require_route_posture`](crate::CorvisApplication::require_route_posture)).
+    /// It does not change how the guard runs.
+    fn controls_access(&self) -> bool {
+        true
+    }
+
+    /// Name shown in route posture errors and reports (default: the type name).
+    fn guard_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    struct OpenGuard;
+
+    #[async_trait]
+    impl CanActivate for OpenGuard {
+        async fn can_activate(&self, _: &ExecutionContext) -> Result<bool, HttpException> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn a_guard_controls_access_by_default_and_reports_its_type_name() {
+        let guard: Arc<dyn CanActivate> = Arc::new(OpenGuard);
+        assert!(guard.controls_access());
+        assert!(guard.guard_name().ends_with("OpenGuard"));
+    }
+
+    #[test]
+    fn zod_guard_does_not_control_access() {
+        let guard: Arc<dyn CanActivate> = Arc::new(crate::z::ZodGuard::new(crate::z::ZodGuardSource::Body, crate::z::string()));
+        assert!(!guard.controls_access());
+        assert!(guard.guard_name().ends_with("ZodGuard"));
+    }
 }

@@ -50,6 +50,7 @@ pub mod logger;
 pub mod modules;
 pub mod multer;
 pub mod openapi;
+pub mod posture;
 pub mod router;
 pub mod testing;
 pub mod validation;
@@ -129,6 +130,123 @@ pub use router::controller::{
 /// Metadata key of `@HttpCode()` (`__httpCode__`): a [`CustomDecorator`] that sets it changes the
 /// route's default status, like `applyDecorators(HttpCode(201), ...)` in a decorator-based framework.
 pub const HTTP_CODE_METADATA: &str = "__httpCode__";
+
+/// Metadata key set by `#[public]` (`"isPublic"`, the key apps already use for public routes). Its value is
+/// `true` on a controller or a handler that is open on purpose. The route posture check reads it, and a global
+/// guard can skip public routes with `Reflector::get_all_and_override::<bool>(PUBLIC_METADATA, ..)`.
+///
+/// `#[public]` goes below `#[controller]` or on a route method inside `#[routes]`; the route posture check
+/// reads it for gateways and SSE routes too:
+///
+/// ```
+/// use corvis::prelude::*;
+///
+/// #[controller("status")]
+/// #[public]
+/// pub struct StatusController;
+///
+/// #[routes]
+/// impl StatusController {
+///     #[get("ping")]
+///     async fn ping(&self) -> &'static str {
+///         "pong"
+///     }
+/// }
+/// ```
+///
+/// It takes no arguments:
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+///
+/// #[controller("status")]
+/// pub struct StatusController;
+///
+/// #[routes]
+/// impl StatusController {
+///     #[get("ping")]
+///     #[public(true)]
+///     async fn ping(&self) -> &'static str {
+///         "pong"
+///     }
+/// }
+/// ```
+///
+/// It needs a route attribute on the same method:
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+///
+/// #[controller("status")]
+/// pub struct StatusController;
+///
+/// #[routes]
+/// impl StatusController {
+///     #[public]
+///     fn helper(&self) {}
+/// }
+/// ```
+///
+/// And it cannot be used on other items:
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+///
+/// #[public]
+/// fn open() {}
+/// ```
+///
+/// Below `#[websocket_gateway]` and on `#[subscribe_message]` methods it marks gateways and message handlers:
+///
+/// ```
+/// use corvis::prelude::*;
+/// use corvis::{WsServer, websocket_gateway};
+///
+/// #[websocket_gateway(path = "/status")]
+/// #[public]
+/// pub struct StatusGateway {
+///     #[websocket_server]
+///     server: WsServer,
+/// }
+///
+/// #[handlers]
+/// impl StatusGateway {
+///     #[subscribe_message("ping")]
+///     #[public]
+///     fn ping(&self) {}
+/// }
+/// ```
+///
+/// It is rejected on the other `#[handlers]` kinds:
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+///
+/// #[injectable]
+/// pub struct Jobs;
+///
+/// #[handlers]
+/// impl Jobs {
+///     #[cron("0 * * * * *")]
+///     #[public]
+///     fn tick(&self) {}
+/// }
+/// ```
+///
+/// And it takes no arguments on a gateway either:
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+/// use corvis::{WsServer, websocket_gateway};
+///
+/// #[websocket_gateway(path = "/status")]
+/// #[public(true)]
+/// pub struct StatusGateway {
+///     #[websocket_server]
+///     server: WsServer,
+/// }
+/// ```
+pub const PUBLIC_METADATA: &str = "isPublic";
 pub use application::introspection::{ControllerInfo, ModuleInfo, ResolvedRoutePath};
 pub use openapi::{ApiSchema, ApiSchemaDef, ApiSchemaRef};
 pub use router::controller::RouteMeta;
@@ -137,7 +255,11 @@ pub use router::versioning::{VersioningOptions, VersioningType};
 pub use validation::{Validate, ValidationError, ValidationPipe, ValidationPipeOptions, ValidatorOptions};
 pub use z::{ZodDto, ZodSchema, ZodValidationPipe};
 
-pub use corvis_macros::{Validate, controller, handlers, injectable, main, module, routes, test, websocket_gateway};
+pub use corvis_macros::{Validate, controller, handlers, injectable, main, module, public, routes, test, websocket_gateway};
+pub use posture::{
+    AccessGuardSummary, GuardInfo, GuardScope, PostureEntry, PostureExemption, PostureKind, PostureStatus, PublicSource, RoutePostureError,
+    RoutePostureMode, RoutePostureOptions, RoutePostureReport, UncheckedSurface,
+};
 
 pub use http_adapter::{HttpAdapter, HttpAdapterHost, HttpServer, UpgradeRequest};
 #[cfg(feature = "jwt")]
@@ -170,12 +292,12 @@ pub mod prelude {
         DynamicModule, EventEmitter, EventEmitterModule, EventEmitterOptions, ExceptionFilter, ExecutionContext, ForbiddenException,
         FromContext, HandlerResult, HealthCheckService, HealthIndicator, HttpError, HttpException, HttpResult, HttpStatus, Injectable,
         InternalServerErrorException, IntoResponse, Json, Logger, MessageEvent, Middleware, ModuleImport, ModuleRef, Next,
-        NotFoundException, OnApplicationBootstrap, OnApplicationShutdown, OnModuleDestroy, OnModuleInit, ParseArrayPipe, ParseBoolPipe,
-        ParseEnumPipe, ParseFloatPipe, ParseIntPipe, ParseUUIDPipe, PipeTransform, Provider, Redirect, Reflector, Request, RequestMethod,
-        Response, ResultHttpExt, RouteInfo, RouteSpec, SKIP_THROTTLE, ScheduleModule, SchedulerRegistry, Scope, ServeStaticModule,
-        ServeStaticOptions, Sse, StreamableFile, THROTTLE_LIMIT, THROTTLE_TTL, TerminusModule, ThrottlerGuard, ThrottlerModule,
-        ThrottlerOptions, Token, UnauthorizedException, UnprocessableEntityException, VERSION_NEUTRAL, Validate, ValidationPipe,
-        VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json, module, routes,
+        NotFoundException, OnApplicationBootstrap, OnApplicationShutdown, OnModuleDestroy, OnModuleInit, PUBLIC_METADATA, ParseArrayPipe,
+        ParseBoolPipe, ParseEnumPipe, ParseFloatPipe, ParseIntPipe, ParseUUIDPipe, PipeTransform, Provider, Redirect, Reflector, Request,
+        RequestMethod, Response, ResultHttpExt, RouteInfo, RouteSpec, SKIP_THROTTLE, ScheduleModule, SchedulerRegistry, Scope,
+        ServeStaticModule, ServeStaticOptions, Sse, StreamableFile, THROTTLE_LIMIT, THROTTLE_TTL, TerminusModule, ThrottlerGuard,
+        ThrottlerModule, ThrottlerOptions, Token, UnauthorizedException, UnprocessableEntityException, VERSION_NEUTRAL, Validate,
+        ValidationPipe, VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json, module, public, routes,
     };
     pub use crate::{HttpAdapterHost, StreamableFileOptions};
     pub use async_trait::async_trait;
