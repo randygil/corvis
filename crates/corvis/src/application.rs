@@ -524,6 +524,8 @@ impl CorvisApplication {
             Logger::new("CorsOptions").warn(warning);
         }
         // Before module middleware `configure`, gateways and hooks: a failing check must not have run user code.
+        // Report mode (CORVIS_ROUTE_POSTURE_REPORT) prints the report and ends the process here, whatever the mode.
+        crate::posture::run_report_mode(&router, &self.config.route_posture)?;
         crate::posture::check_routes(&router, &self.config.route_posture)?;
         let module_middleware = build_middleware(&self.container, &router, &self.config.router).await?;
         #[cfg(feature = "websockets")]

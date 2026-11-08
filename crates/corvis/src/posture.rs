@@ -371,6 +371,78 @@ pub(crate) fn report_for_routes(table: &RouterTable, options: &RoutePostureOptio
     RoutePostureReport::new(entries, stale)
 }
 
+/// The line that opens the report in report mode.
+pub const REPORT_BEGIN: &str = "----- BEGIN CORVIS ROUTE POSTURE REPORT -----";
+/// The line that closes the report in report mode.
+pub const REPORT_END: &str = "----- END CORVIS ROUTE POSTURE REPORT -----";
+/// The environment variable that turns report mode on (`text` or `json`).
+pub const REPORT_ENV: &str = "CORVIS_ROUTE_POSTURE_REPORT";
+
+/// How report mode prints the report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportFormat {
+    /// The aligned table of [`RoutePostureReport`]'s `Display`.
+    Text,
+    /// The pretty-printed JSON of the serialized report.
+    Json,
+}
+
+/// Reads the value of [`REPORT_ENV`]: unset or blank means no report mode; `text` and `json` (surrounding
+/// whitespace ignored, case-sensitive) select the format; anything else is an error naming the variable.
+pub fn report_format_from_env(value: Option<&str>) -> crate::Result<Option<ReportFormat>> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some("text") => Ok(Some(ReportFormat::Text)),
+        Some("json") => Ok(Some(ReportFormat::Json)),
+        Some(other) => anyhow::bail!("{REPORT_ENV} must be \"text\" or \"json\" (got \"{other}\")"),
+    }
+}
+
+/// What report mode writes to stdout and the exit code it ends the process with (0 when nothing is
+/// unprotected, 1 otherwise).
+pub fn render_report_mode(report: &RoutePostureReport, format: ReportFormat) -> (String, i32) {
+    let mut out = String::new();
+    out.push_str(REPORT_BEGIN);
+    out.push('\n');
+    match format {
+        ReportFormat::Text => {
+            if report.entries().is_empty() {
+                out.push_str("(no routes)\n");
+            } else {
+                out.push_str(&report.to_string());
+            }
+            for e in report.stale_exemptions() {
+                out.push_str(&format!("stale exemption: {} {} ({}) matches no route\n", e.method.as_str(), e.pattern, e.reason));
+            }
+        }
+        ReportFormat::Json => {
+            out.push_str(&serde_json::to_string_pretty(report).expect("the report serializes"));
+            out.push('\n');
+        }
+    }
+    out.push_str(REPORT_END);
+    out.push('\n');
+    (out, if report.unprotected().is_empty() { 0 } else { 1 })
+}
+
+/// Report mode of `init()`: when [`REPORT_ENV`] asks for it, prints the report between the marker lines,
+/// flushes stdout and ends the process. Returns `Ok` (and does nothing) when the variable is unset or blank.
+pub(crate) fn run_report_mode(table: &RouterTable, options: &RoutePostureOptions) -> crate::Result<()> {
+    let value = std::env::var(REPORT_ENV).ok();
+    let Some(format) = report_format_from_env(value.as_deref())? else {
+        return Ok(());
+    };
+    let report = report_for_routes(table, options);
+    let (text, code) = render_report_mode(&report, format);
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(text.as_bytes());
+        let _ = out.flush();
+    }
+    std::process::exit(code);
+}
+
 /// Runs the startup check of `init()`: enforce returns the error, warn logs the list, off does nothing.
 pub(crate) fn check_routes(table: &RouterTable, options: &RoutePostureOptions) -> crate::Result<()> {
     if options.mode == RoutePostureMode::Off {
@@ -496,6 +568,53 @@ mod tests {
         }
         let e = PostureExemption { method: RequestMethod::Get, pattern: "/Api/V1/CATS/:id".into(), reason: "r".into() };
         assert!(e.matches(RequestMethod::Get, "/api/v1/cats/:id"), "literals ignore ASCII case");
+    }
+
+    #[test]
+    fn report_format_reads_the_variable() {
+        assert_eq!(report_format_from_env(None).unwrap(), None);
+        assert_eq!(report_format_from_env(Some("")).unwrap(), None);
+        assert_eq!(report_format_from_env(Some("  ")).unwrap(), None);
+        assert_eq!(report_format_from_env(Some("text")).unwrap(), Some(ReportFormat::Text));
+        assert_eq!(report_format_from_env(Some(" json\n")).unwrap(), Some(ReportFormat::Json));
+        for bad in ["yaml", "TEXT", "Json", "1"] {
+            let err = report_format_from_env(Some(bad)).unwrap_err().to_string();
+            assert!(err.contains("CORVIS_ROUTE_POSTURE_REPORT") && err.contains("\"text\"") && err.contains("\"json\""), "{err}");
+            assert!(err.contains(bad), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_markers_have_a_fixed_text() {
+        assert_eq!(REPORT_BEGIN, "----- BEGIN CORVIS ROUTE POSTURE REPORT -----");
+        assert_eq!(REPORT_END, "----- END CORVIS ROUTE POSTURE REPORT -----");
+    }
+
+    #[test]
+    fn report_mode_renders_both_formats_and_picks_the_exit_code() {
+        let open = entry(RequestMethod::Get, "/open", "C", "open", PostureStatus::Unprotected);
+        let fine = entry(RequestMethod::Get, "/fine", "C", "fine", PostureStatus::Public);
+        let bad = RoutePostureReport::new(vec![open, fine.clone()], Vec::new());
+        let good = RoutePostureReport::new(vec![fine], Vec::new());
+
+        let (text, code) = render_report_mode(&bad, ReportFormat::Text);
+        assert_eq!(code, 1);
+        assert!(text.starts_with(&format!("{REPORT_BEGIN}\n")) && text.ends_with(&format!("{REPORT_END}\n")), "{text}");
+        assert!(text.contains("UNPROTECTED") && text.contains("C::open"), "{text}");
+
+        let (text, code) = render_report_mode(&good, ReportFormat::Text);
+        assert_eq!(code, 0);
+        assert!(!text.contains("UNPROTECTED"), "{text}");
+
+        let (text, code) = render_report_mode(&bad, ReportFormat::Json);
+        assert_eq!(code, 1);
+        let body = text.strip_prefix(&format!("{REPORT_BEGIN}\n")).unwrap().strip_suffix(&format!("{REPORT_END}\n")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(json["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(render_report_mode(&good, ReportFormat::Json).1, 0);
+
+        let (text, _) = render_report_mode(&RoutePostureReport::new(Vec::new(), Vec::new()), ReportFormat::Text);
+        assert!(text.contains("(no routes)"), "{text}");
     }
 
     #[test]

@@ -677,3 +677,142 @@ fn the_default_mode_is_off() {
     assert_eq!(RoutePostureMode::default(), RoutePostureMode::Off);
     assert_eq!(RoutePostureOptions::default().mode(), RoutePostureMode::Off);
 }
+
+// ---------------------------------------------------------------------------
+// Report mode (CORVIS_ROUTE_POSTURE_REPORT): the test binary runs itself as a child process.
+// ---------------------------------------------------------------------------
+
+#[injectable]
+pub struct HookProbe;
+
+#[async_trait]
+impl OnModuleInit for HookProbe {
+    async fn on_module_init(&self) -> corvis::Result<()> {
+        println!("HOOK RAN");
+        Ok(())
+    }
+}
+
+#[controller("report-open")]
+pub struct ReportOpenController;
+
+#[routes]
+impl ReportOpenController {
+    #[get]
+    fn unguarded(&self) -> Value {
+        json!({})
+    }
+}
+
+#[controller("report-public")]
+#[public]
+pub struct ReportPublicController;
+
+#[routes]
+impl ReportPublicController {
+    #[get]
+    fn open_on_purpose(&self) -> Value {
+        json!({})
+    }
+}
+
+#[module(controllers = [ReportOpenController], providers = [HookProbe])]
+pub struct ReportOpenModule;
+
+#[module(controllers = [ReportPublicController], providers = [HookProbe])]
+pub struct ReportPublicModule;
+
+const FIXTURE_VAR: &str = "CORVIS_TEST_POSTURE_FIXTURE";
+
+/// The child of the `report_mode_*` tests: does nothing unless the parent selected a fixture.
+#[test]
+fn report_mode_child() {
+    let Ok(fixture) = std::env::var(FIXTURE_VAR) else { return };
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
+        let mut app = match fixture.as_str() {
+            "open" => CorvisFactory::create::<ReportOpenModule>().await.unwrap(),
+            _ => CorvisFactory::create::<ReportPublicModule>().await.unwrap(),
+        };
+        app.silence_route_logs();
+        if fixture == "init" {
+            match app.init().await {
+                Ok(()) => println!("INIT OK"),
+                Err(e) => println!("INIT ERROR: {e}"),
+            }
+            return;
+        }
+        let result = app.listen_in_background(0).await;
+        println!("AFTER LISTEN {}", result.is_ok());
+    });
+}
+
+struct Child {
+    code: Option<i32>,
+    stdout: String,
+}
+
+fn run_child(fixture: &str, report: Option<&str>) -> Child {
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["--exact", "report_mode_child", "--nocapture", "--test-threads=1"]).env(FIXTURE_VAR, fixture);
+    match report {
+        Some(v) => cmd.env("CORVIS_ROUTE_POSTURE_REPORT", v),
+        None => cmd.env_remove("CORVIS_ROUTE_POSTURE_REPORT"),
+    };
+    let out = cmd.output().unwrap();
+    Child { code: out.status.code(), stdout: String::from_utf8_lossy(&out.stdout).into_owned() }
+}
+
+fn between_markers(stdout: &str) -> Vec<&str> {
+    let lines: Vec<&str> = stdout.lines().collect();
+    let begin = lines.iter().position(|l| *l == corvis::posture::REPORT_BEGIN).expect("BEGIN marker");
+    let end = lines.iter().position(|l| *l == corvis::posture::REPORT_END).expect("END marker");
+    assert!(begin < end);
+    lines[begin + 1..end].to_vec()
+}
+
+#[test]
+fn report_mode_text_lists_the_unprotected_route_and_stops_before_hooks_and_listening() {
+    let child = run_child("open", Some("text"));
+    assert_eq!(child.code, Some(1), "{}", child.stdout);
+    let body = between_markers(&child.stdout).join("\n");
+    assert!(body.contains("/report-open") && body.contains("ReportOpenController::unguarded") && body.contains("UNPROTECTED"), "{body}");
+    assert!(!child.stdout.contains("HOOK RAN") && !child.stdout.contains("AFTER LISTEN"), "{}", child.stdout);
+}
+
+#[test]
+fn report_mode_json_with_only_public_routes_exits_zero() {
+    let child = run_child("public", Some("json"));
+    assert_eq!(child.code, Some(0), "{}", child.stdout);
+    let json: serde_json::Value = serde_json::from_str(&between_markers(&child.stdout).join("\n")).unwrap();
+    assert_eq!(json["entries"][0]["status"]["state"], "public");
+    assert_eq!(json["entries"][0]["path"], "/report-public");
+    assert!(!child.stdout.contains("HOOK RAN") && !child.stdout.contains("AFTER LISTEN"), "{}", child.stdout);
+}
+
+#[test]
+fn report_mode_json_has_only_the_report_between_the_markers() {
+    let child = run_child("open", Some(" json "));
+    assert_eq!(child.code, Some(1), "{}", child.stdout);
+    let lines = between_markers(&child.stdout);
+    assert!(lines.first().is_some_and(|l| *l == "{"), "{lines:?}");
+    assert!(lines.last().is_some_and(|l| *l == "}"), "{lines:?}");
+}
+
+#[test]
+fn report_mode_with_an_unknown_value_makes_init_fail_without_ending_the_process() {
+    let child = run_child("init", Some("yaml"));
+    assert_eq!(child.code, Some(0), "{}", child.stdout);
+    assert!(!child.stdout.contains(corvis::posture::REPORT_BEGIN), "{}", child.stdout);
+    let line = child.stdout.lines().find(|l| l.starts_with("INIT ERROR")).expect("init failed");
+    assert!(line.contains("CORVIS_ROUTE_POSTURE_REPORT") && line.contains("text") && line.contains("json"), "{line}");
+}
+
+#[test]
+fn report_mode_unset_or_blank_leaves_init_unchanged() {
+    for value in [None, Some(""), Some("  ")] {
+        let child = run_child("init", value);
+        assert_eq!(child.code, Some(0));
+        assert!(child.stdout.contains("INIT OK") && child.stdout.contains("HOOK RAN"), "{value:?}: {}", child.stdout);
+        assert!(!child.stdout.contains(corvis::posture::REPORT_BEGIN));
+    }
+}
