@@ -17,6 +17,10 @@ Esta página reúne lo que se puede configurar de ese servidor.
 - HTTP/1.1 y HTTP/2 sin TLS con *prior knowledge* (h2c), activo por defecto.
   `ServerOptions::new().h2c(false)` acepta solo HTTP/1.x. Si h2c sigue activo por defecto se decide en el issue
   #144; consulta [Análisis de HTTP y compatibilidad](/es/security/http-parsing).
+- Las peticiones HTTP/1 con encuadre ambiguo (LF sin CR como fin de línea, espacios después de un tamaño de chunk,
+  `Content-Length` con `Transfer-Encoding`) se responden con `400` y se cierra la conexión.
+  `ServerOptions::new().insecure_http_parser(true)` las vuelve a aceptar para clientes antiguos y registra un aviso al
+  arrancar; consulta [Análisis de HTTP y compatibilidad](/es/security/http-parsing).
 - No hay HTTPS: termina TLS en un proxy inverso. Ver [HTTPS y varios servidores](/es/faq/multiple-servers).
 - Upgrades a WebSocket, con gateways o con `corvis::ws`. Ver [Gateways](/es/websockets/gateways).
 

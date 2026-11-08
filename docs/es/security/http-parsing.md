@@ -6,37 +6,75 @@ status: documented
 
 Corvis no tiene un modo global "compatible" o "estricto". Cada comportamiento relevante para la seguridad tiene su
 propio tratamiento, con la opción segura como valor por defecto. Esta página lista lo que Corvis acepta y rechaza en el
-protocolo y en los cuerpos multipart, cómo se compara con el módulo `http` de Node y qué está previsto cambiar.
+protocolo y en los cuerpos multipart, cómo se compara con el módulo `http` de Node y cómo desactivar las comprobaciones más estrictas.
 
-El formato HTTP/1 lo analiza hyper (y `httparse` para la cabecera de la petición), no Corvis. Las cifras de Node de
+El formato HTTP/1 lo analiza hyper (y `httparse` para la cabecera de la petición). hyper y `httparse` no tienen ninguna
+opción para rechazar las entradas ambiguas de abajo, así que Corvis pone una pequeña comprobación de encuadre delante de
+hyper en cada conexión (ver [Cómo funciona la comprobación](#como-funciona-la-comprobacion)). Las cifras de Node de
 abajo salen de una sonda con sockets crudos contra `http.createServer` en Node 24.13 (`llhttp` 9.3.0).
 
 ## Qué hace Corvis
 
 | Entrada | Corvis | `http` de Node | Estado |
 |---|---|---|---|
-| Línea de petición o cabeceras terminadas en LF sin CR | se acepta | `400` | se rechazará |
-| Bloque de cabeceras terminado en `CRLF LF` | se acepta | `400` | se rechazará |
+| Línea de petición o cabeceras terminadas en LF sin CR | `400`, conexión cerrada | `400` | se rechaza (`insecure_http_parser` lo acepta) |
+| Bloque de cabeceras terminado en `CRLF LF` (o última cabecera terminada en `LF CRLF`) | `400`, conexión cerrada | `400` | se rechaza (`insecure_http_parser` lo acepta) |
+| Línea vacía (CRLF o LF solo) antes de la línea de petición | se ignora | se ignora | se mantiene |
 | CR suelto dentro de una cabecera | se rechaza | `400` | se mantiene |
+| Plegado de línea obsoleto en una cabecera | se rechaza | `400` | se mantiene |
 | Tamaño de chunk con ceros a la izquierda (`0002`) | se acepta | se acepta | se mantiene |
 | Tamaño de chunk que no cabe en 64 bits | se rechaza | `400` | se mantiene |
-| Espacio después del tamaño de chunk (`2 \r\n`) | se acepta | `400` | se rechazará |
+| Espacio después del tamaño de chunk (`2 \r\n`, `2\t\r\n`, `2 ;a=b\r\n`) | se rechaza | `400` | se rechaza (`insecure_http_parser` lo acepta) |
 | LF sin CR en el encuadre chunked (`2\nhi\n0\n\n`) | se rechaza | `400` | se mantiene |
 | Extensión de chunk con LF | se rechaza | `400` | se mantiene |
-| `Content-Length` y `Transfer-Encoding: chunked` juntos | se procesa como chunked y se cierra la conexión después | `400` | se rechazará |
+| LF sin CR dentro de la sección de tráilers de un cuerpo chunked (`0\r\nX-A: b\n\nGARBAGE\r\n\r\n`) | se rechaza | `400` | se rechaza (`insecure_http_parser` lo acepta) |
+| `Content-Length` y `Transfer-Encoding` juntos, en cualquier orden | `400`, conexión cerrada | `400` | se rechaza (`insecure_http_parser` lo procesa como chunked y cierra la conexión después) |
+| Dos cabeceras `Content-Length` idénticas | se acepta | `400` | se acepta: una sola lectura posible, así que no es ambiguo; difiere de Node |
+| `Transfer-Encoding: chunked, chunked` | se acepta | `400` | se acepta: una sola lectura posible, así que no es ambiguo; difiere de Node |
+| Petición `HTTP/1.0` con `Transfer-Encoding` | `400` | se acepta | se mantiene (más estricto que Node) |
 | `field_nesting_depth` superado en multipart | `400 Field name nesting too deep - <field>` | n/a | cambiado |
 | Errores de configuración de busboy (`Malformed content type`, `Unsupported content type: ...`) | `500` | `500` | se mantiene por paridad |
 
-"Se mantiene" significa que el comportamiento está cubierto por un test de regresión. "Se rechazará" significa que un
-cambio posterior (#146, épica Foundations #1) lo rechazará por defecto y añadirá una opción para desactivarlo llamada
-`insecure_http_parser`, por la opción `insecureHTTPParser` de Node. Esa opción todavía no existe.
+Cada fila está cubierta por un test de regresión. Las filas que nombran `insecure_http_parser` cambiaron en el issue
+#146 (épica Foundations #1): antes, Corvis aceptaba esas entradas. Una petición rechazada recibe un `400` y la conexión
+se cierra, y nada de lo que llegue después por esa conexión se procesa, así que un proxy que leyera los mismos bytes de
+otra forma no puede colar una segunda petición por Corvis.
 
-## Hasta que llegue el analizador más estricto
+Los clientes no se ven afectados salvo que escriban las peticiones a mano: el `http` de Node, los navegadores, curl,
+reqwest y los proxies terminan siempre las líneas con CRLF, nunca ponen espacios después de un tamaño de chunk y nunca
+envían las dos cabeceras de longitud.
 
-Corvis acepta un LF solo como fin de línea en la cabecera de la petición. El RFC 9112 permite al receptor hacerlo, pero
-es un riesgo si un proxy delante de Corvis lee los mismos bytes de otra forma. Si Corvis está detrás de un proxy o un
-balanceador, deja que el proxy normalice las peticiones (la mayoría lo hace y rechaza el LF solo por su cuenta). No se
-encontró contrabando de peticiones con los proxies habituales.
+## Cómo funciona la comprobación
+
+Una pequeña máquina de estados lee cada conexión antes que hyper y sigue dónde empieza y termina cada petición: la
+cabecera, luego el cuerpo por `Content-Length` o por chunks (tamaños, extensiones, tráilers) y luego la cabecera
+siguiente. Rechaza las cuatro entradas de arriba y pasa todo lo demás a hyper sin cambios. La sintaxis de las
+cabeceras, los límites y los códigos de estado siguen siendo de hyper. Las entradas que no entiende del todo (un
+`Transfer-Encoding` que no termina en `chunked`, valores de `Content-Length` distintos o inválidos, `HTTP/1.0` con
+`Transfer-Encoding`, una versión HTTP desconocida, una cabecera por encima del límite de tamaño) se entregan a hyper
+tal cual y no se lee nada después de esa petición, así que hyper las responde como antes. Después de una petición con
+cabecera `Upgrade`, los bytes siguientes se retienen hasta que la petición se responde, porque tras un `101` ya no son
+HTTP. Un test de propiedades pasa flujos encadenados generados y mutados por la comprobación y por hyper y falla si no
+coinciden en dónde termina una petición.
+
+## Desactivar las comprobaciones
+
+`ServerOptions::new().insecure_http_parser(true)` desactiva las cuatro comprobaciones y solo esas: LF sin CR como fin de
+línea en la cabecera y en los tráilers, espacios después de un tamaño de chunk y `Content-Length` junto con
+`Transfer-Encoding`. Se llama como la opción `insecureHTTPParser` de Node y es más estrecha: lo que el propio hyper
+rechaza (un CR suelto, un tamaño de chunk de más de 64 bits, un LF sin CR en el encuadre de chunks, un LF en una
+extensión de chunk, el plegado de línea obsoleto, un `Transfer-Encoding` inválido) sigue rechazado, y h2c, los timeouts
+y los límites de tamaño no cambian. Corvis registra un aviso cuando el servidor empieza a escuchar con ella activa.
+
+```rust
+use corvis::ServerOptions;
+
+app.set_server_options(ServerOptions::new().insecure_http_parser(true));
+```
+
+Úsala solo para clientes antiguos que no se pueden corregir (dispositivos que envían LF sin CR, por ejemplo). Con ella
+activa, un LF solo vuelve a ser un fin de línea, lo que es un riesgo si un proxy delante de Corvis lee los mismos bytes
+de otra forma: deja que el proxy normalice las peticiones (la mayoría lo hace y rechaza el LF solo por su cuenta).
 
 ## Límites de multipart
 

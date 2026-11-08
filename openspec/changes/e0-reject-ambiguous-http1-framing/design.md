@@ -299,7 +299,7 @@ with the other `ServerOptions`.
 
 ## Open Questions
 
-Pending maintainer review (task 1.1); answers go in a "Review notes" section at the end of this file.
+Answered by the maintainer on 2026-11-08, see "Review notes" below.
 
 1. **Approve option 3 (framing check in `TimedIo`) over options 1 and 2?** Recommendation: yes. It goes back on #8's
    reason for setting it aside, for the reason given in decision 1. If not, the fallback is option 1 and
@@ -321,3 +321,107 @@ Pending maintainer review (task 1.1); answers go in a "Review notes" section at 
    The docs list them as a difference from Node.
 3. Proposing the strict options upstream is tracked as a separate issue in epic #1. This change opens nothing
    upstream.
+
+## Implementation notes (2026-11-08)
+
+Decisions taken while implementing, where the design left room, and the places where the code differs from it.
+
+1. **Module and API.** The check is `crates/corvis/src/server/h1_framing.rs` (tests in `h1_framing/tests.rs`), declared
+   from `server.rs`. Core API: `passthrough_prefix` (bytes forwarded in place), `feed` (everything else, appended to an
+   output buffer), `eof`, `release` (upgraded), `resume` (upgrade answered without `101`), and a pending terminal
+   (`Reject` or `End`, with the number of finished requests to wait for). `TimedIo` owns the check, an output queue and
+   the socket's end-of-input flag; `ConnState` gets a `finished` counter, bumped when a request's response body is dropped.
+2. **Copies.** Design decision 5 says `Content-Length` bodies and chunk data are forwarded in place. That holds for the
+   bytes that follow a read boundary inside a body. Bytes that share a read with a head (a small POST arrives in one
+   read) go through the output queue, so they are copied once. A head is always copied (buffered until its empty
+   line). Measured cost: see item 9.
+3. **Waiting before the end of the connection.** A rejection, and the end of the stream after a head handed to hyper,
+   are delayed until `finished >= wait`, where `wait` is the number of requests forwarded before the offending one
+   (`heads` at a head boundary, `heads - 1` in the middle of a body, because the request whose body is being read
+   cannot finish). I compared with the design's "no request in flight": the finished counter also covers the window
+   in which hyper has the bytes of a request but has not called the service yet. The wait registers the connection
+   task in `ConnState::waker`, checks again after registering (a request may finish in between), and falls back to
+   `poll_idle`, so the header and keep-alive timeouts still apply. Without this wait hyper reads end of input while it
+   is still answering and fails with `IncompleteMessage`; the property test hit that with a bare duplex stream.
+4. **`Upgrade` hold.** Any `Upgrade` header (any value, either HTTP version) and the `CONNECT` method hold the bytes
+   that follow, a superset of what hyper upgrades (hyper needs HTTP/1.1 and a `101`, or a `2xx` to `CONNECT`).
+   The held bytes are capped at 64 KiB: past it the check stops reading the socket until the request is answered.
+   `ConnState::upgraded` (set when a response is `101`) releases the held bytes unchanged; `finished` reaching the
+   forwarded count resumes validation. No Corvis route answers a `CONNECT` with a tunnel.
+5. **What the check hands to hyper (stream ends after the head).** A request line that does not end in ` HTTP/1.1` or
+   ` HTTP/1.0`; `Transfer-Encoding` that is not chunked at the end (last line, last coding), or on `HTTP/1.0`; `Content-Length`
+   values that are not a plain `1*DIGIT` number (corrected in the security review follow-up: a list such as `5, 5` is
+   NOT accepted, hyper's server reads the value with `from_digits` and answers `400`); a number above `u64::MAX - 2`;
+   a head that reaches `max_header_size` without ending. Two identical `Content-Length` header lines are one number,
+   and hyper accepts them too (`role.rs`, `prev != len`). Both length headers together are rejected even when one
+   of them is invalid.
+6. **Chunked framing.** An empty chunk size (`\r\n` or `;a` first) is rejected by the check; hyper reads it as size 0.
+   The grammar asks for `1*HEXDIG`, and Node rejects it too. A chunk size that overflows 64 bits is rejected by the
+   check (hyper rejects it as well). Bytes of a chunked line that were already valid are forwarded before the
+   rejection bytes, so hyper fails the body at the same position.
+7. **Startup warning.** It is logged in `bind` (so for `listen` and `listen_in_background`), not in `init`, because
+   `set_server_options` may be called after `init()`. Logger context `ServerOptions`, one line per listen.
+8. **`ignore_invalid_headers`.** `serve` now sets it explicitly from a constant that is `false`, and a `debug_assert!`
+   states that it must not be on while the check is. The constant documents the rule where the builder is configured.
+9. **Throughput (task 5.4).** Release build of `bench/corvis-app` (temporary `INSECURE` switch, not committed),
+   `oha` 100 connections for `GET /`, 10 s per run after a 3 s warm-up, three runs per mode in alternating order, same
+   machine as `bench/results.md`, client and server competing for CPU:
+
+   | Mode | `GET /` req/s (3 runs) | average | chunked `POST /users` req/s (3 runs) | average |
+   |---|---|---:|---|---:|
+   | check on | 98,406 / 89,500 / 96,831 | 94,912 | 55,922 / 52,045 / 41,534 | 49,833 |
+   | check off (`insecure_http_parser(true)`) | 105,336 / 100,648 / 85,968 | 97,317 | 50,524 / 53,338 / 46,130 | 49,997 |
+
+   Difference: -2.5% on `GET /` and -0.3% on the chunked `POST`, both inside the run-to-run noise of this setup (single
+   runs vary by about 10%). Below the 5% threshold, so nothing to flag. The chunked load came from a small Node raw-socket
+   generator (64 connections, `oha` cannot send chunked bodies), the same for both modes; absolute numbers are
+   limited by it.
+10. **Tests that differ from the design.** The "response body streams in several chunks" scenario uses a route that
+    streams five chunks over about 400 ms. The property test uses hyper's `half_close(true)` so that the test's own end
+    of input does not cut the answers; it compares with hyper only up to the first HTTP/1.0 request, which closes the
+    connection (hyper then reads less than the check, the safe direction). It asserts that hyper never reads a request
+    the check did not complete, and that both read the same requests when hyper finishes without an error. I checked
+    that it catches a deliberately broken trailer rule (an empty line accepted as a bare LF) at 10,000 cases.
+11. **Fixture.** `fixtures/http1_framing/node-24.13.0.json` has the 27 cases of the probe. Regenerating it from Git Bash
+    needs `MSYS_NO_PATHCONV=1` (see `node-probe/README.md`). Node 22 is not installed, so task 2.5 is recorded as not
+    measured.
+12. **Not done here.** `npm run docs:check` (no `docs/node_modules` in the worktree) and the `corvis-parity` check
+    (6.7). The security review (6.6) was run afterwards, see the follow-up below.
+
+## Security review follow-up (2026-11-08)
+
+The security review found nothing exploitable. Findings and what was done:
+
+1. **A rejection after an empty line closed without `400` (low, spec violation).** `Start` forwarded empty lines to
+   hyper one read at a time; hyper kept a lone `\r\n` buffered as the possible start of a head, and the rejection bytes
+   `\r\0` that followed were then waited on until end of input (`IncompleteMessage`, no response). Fixed by dropping the
+   empty lines in `Start` instead of forwarding them (the other option, `\r\0\r\n\r\n`, would have kept sending bytes that
+   hyper has to interpret). hyper now never sees an empty line between messages, so nothing sits in front of the
+   rejection bytes; a lone CR at the end of the input is dropped too. Design decision 2 ("empty lines are skipped") is
+   now literal. Tests: unit tests for every kind of rejected head after each kind of empty line, a unit test that runs
+   those streams through hyper and expects `400`, and raw-socket tests (one write, two writes, and a keep-alive request
+   followed by the empty line and the rejected head).
+2. **`Content-Length: 3, 3` (info).** The check accepted a list; hyper's server (`headers::content_length_parse`,
+   `from_digits`) does not and answers `400`. The check now requires `1*DIGIT` (anything else goes to hyper, stream ends
+   after the head). Note 5 above is corrected. Two identical header lines are accepted by hyper (checked in `role.rs`
+   and with a raw-socket test), so the docs row "Two identical `Content-Length` headers: accepted" stays true; the docs
+   never mentioned lists.
+3. **Read into an empty buffer (info).** `poll_read_checked` returns `Ready(Ok(()))` without reading when
+   `buf.remaining() == 0`, so it cannot set `sock_eof` by mistake.
+4. **Order of loads (info).** `finished` is read before `upgraded` (a 101 sets `upgraded` before its request finishes), so
+   a request seen as finished cannot make the check call `resume` instead of `release`.
+5. **Test gaps.**
+   - The check records, in test builds only, each forwarded head, each finished message with its decoded body and its
+     trailer bytes. The mutated-stream property test compares, per request, method, path and body with what hyper
+     serves (not only the count), and no longer skips hyper's error responses: an error status or a failed body must be
+     explained by the rejection, a handed-over head, a message still open or a head still buffered at the end of the
+     stream, or by header, URI or trailer syntax that fails an independent grammar check in the test. Anything else is
+     reported as a disagreement. With a deliberately re-broken `content_length` (lists accepted) the test fails.
+   - New generated shapes: `Upgrade` (held, then resumed as if answered without `101`), `CONNECT`, HTTP/1.0 with
+     keep-alive, `Expect: 100-continue`, the largest `Content-Length`, empty lines before every request, and spliced
+     headers such as duplicate or list `Content-Length`, `Content-Length: +2`, `Content-Length: 2 ` and
+     `Connection: close`.
+   - Unmutated streams (with those shapes) must be accepted entirely, forwarded without their empty lines, and read by
+     hyper as exactly the generated requests with no error status.
+   - One integration test drives the real `TimedIo` and `auto::Builder` with a pipelined valid stream and a pipelined
+     rejected stream, each cut at every byte (two writes with a pause between them).
