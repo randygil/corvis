@@ -95,7 +95,7 @@
   4.2)
 - [ ] 6.5 Docs updated in English and Spanish (`docs/` and `docs/es/`); `npm run docs:check` in `docs/` passes
   (docs updated; `docs:check` not run, see 5.3)
-- [ ] 6.6 Security review: run the `security-reviewer` agent on the diff (framing check, `TimedIo` changes, opt-out)
+- [x] 6.6 Security review: run the `security-reviewer` agent on the diff (framing check, `TimedIo` changes, opt-out)
   with design.md and the spec delta as context, including an attempt to make the check and hyper disagree on a
   request boundary; fix or answer every finding in design.md "Review notes"
 - [ ] 6.7 corvis-parity: framework runtime code changed (`server.rs`, the new module), so run the `corvis-parity`

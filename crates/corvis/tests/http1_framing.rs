@@ -473,6 +473,89 @@ async fn requests_split_across_reads_are_served() {
     assert_eq!(statuses_of(&out), [200, 200, 200], "{:?}", String::from_utf8_lossy(&out));
 }
 
+/// Writes `parts` one after the other with a pause between them, so that the server reads them separately.
+async fn exchange_in_parts(addr: SocketAddr, parts: &[&[u8]]) -> Vec<u8> {
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.set_nodelay(true).unwrap();
+    for part in parts {
+        let _ = s.write_all(part).await;
+        let _ = s.flush().await;
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    read_all(&mut s, Duration::from_millis(1500)).await
+}
+
+const BAD_HEADS: [&str; 4] = [
+    "GET /t/echo HTTP/1.1\nHost: x\n\n",
+    "GET /t/echo HTTP/1.1\r\nHost: x\r\n\n",
+    "GET /t/echo HTTP/1.1\r\nHost: x\rX: y\r\n\r\n",
+    "POST /t/echo HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n",
+];
+
+/// Empty lines in front of a rejected head must not hide the `400` (hyper keeps a lone `\r\n` buffered as the start
+/// of a head).
+#[corvis::test]
+async fn a_rejection_after_empty_lines_is_still_answered_with_400() {
+    let addr = serve(None).await;
+    let valid = "GET /t/echo HTTP/1.1\r\nHost: x\r\n\r\n";
+    for bad in BAD_HEADS {
+        for empty in ["\r\n", "\n", "\r\n\n\r\n"] {
+            let one_write = format!("{empty}{bad}");
+            assert_eq!(statuses(addr, one_write.as_bytes()).await, [400], "{one_write:?}");
+            let got = statuses_of(&exchange_in_parts(addr, &[empty.as_bytes(), bad.as_bytes()]).await);
+            assert_eq!(got, [400], "two writes: {empty:?} then {bad:?}");
+            // A keep-alive request, then the empty line, then the rejected head.
+            let keep_alive = format!("{valid}{empty}{bad}");
+            assert_eq!(statuses(addr, keep_alive.as_bytes()).await, [200, 400], "{keep_alive:?}");
+            let got = statuses_of(&exchange_in_parts(addr, &[valid.as_bytes(), empty.as_bytes(), bad.as_bytes()]).await);
+            assert_eq!(got, [200, 400], "three writes: {empty:?} then {bad:?}");
+        }
+    }
+}
+
+/// hyper's server reads `Content-Length` with `from_digits`: a list is a `400` there, and the check hands it over.
+#[corvis::test]
+async fn content_length_lists_are_answered_by_hyper_with_400() {
+    let addr = serve(None).await;
+    for value in ["3, 3", "3,3", "3, 4", "3,"] {
+        let req = format!("POST /t/count/cl-list HTTP/1.1\r\nHost: x\r\nContent-Length: {value}\r\nConnection: close\r\n\r\nabc");
+        assert_eq!(statuses(addr, req.as_bytes()).await, [400], "{value}");
+    }
+    assert_eq!(count_of("cl-list"), 0);
+    // Two identical header lines are one reading for hyper too.
+    let req = "POST /t/echo HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
+    let out = exchange(addr, req.as_bytes()).await;
+    assert_eq!(statuses_of(&out), [200]);
+    assert!(String::from_utf8_lossy(&out).ends_with("abc"));
+}
+
+/// The real path (`TimedIo` and hyper's `auto::Builder`) with pipelined input cut at every byte.
+#[corvis::test]
+async fn pipelined_streams_cut_at_every_byte_behave_the_same() {
+    let addr = serve(None).await;
+    let body = "{\"a\":1}";
+    let mut valid = Vec::new();
+    valid.extend_from_slice(b"\r\n");
+    valid.extend_from_slice(
+        format!("POST /t/json HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+            .as_bytes(),
+    );
+    valid.extend_from_slice(b"POST /t/json HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n7;e=1\r\n{\"a\":1}\r\n0\r\nX-T: v\r\n\r\n");
+    valid.extend_from_slice(get("/t/echo").as_bytes());
+    let mut rejected = valid[..valid.len() - get("/t/echo").len()].to_vec();
+    rejected.extend_from_slice(b"\r\nGET /t/echo HTTP/1.1\nHost: x\n\n");
+    rejected.extend_from_slice(get("/t/count/every-byte").as_bytes());
+    for at in 1..valid.len() {
+        let got = statuses_of(&exchange_in_parts(addr, &[&valid[..at], &valid[at..]]).await);
+        assert_eq!(got, [200, 200, 200], "valid stream cut at {at}");
+    }
+    for at in 1..rejected.len() {
+        let got = statuses_of(&exchange_in_parts(addr, &[&rejected[..at], &rejected[at..]]).await);
+        assert_eq!(got, [200, 200, 400], "rejected stream cut at {at}");
+    }
+    assert_eq!(count_of("every-byte"), 0);
+}
+
 #[corvis::test]
 async fn in_memory_requests_are_unaffected() {
     let module = corvis::testing::Test::create_testing_module().import::<AppModule>().compile().await.unwrap();

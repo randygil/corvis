@@ -350,9 +350,11 @@ Decisions taken while implementing, where the design left room, and the places w
    forwarded count resumes validation. No Corvis route answers a `CONNECT` with a tunnel.
 5. **What the check hands to hyper (stream ends after the head).** A request line that does not end in ` HTTP/1.1` or
    ` HTTP/1.0`; `Transfer-Encoding` that is not chunked at the end (last line, last coding), or on `HTTP/1.0`; `Content-Length`
-   values that are not one number (`4, 4` and two identical lines are one number); a number above `u64::MAX - 2`; a head
-   that reaches `max_header_size` without ending. A `Content-Length` list such as `5, 5` is accepted because hyper
-   accepts it too. Both length headers together are rejected even when one of them is invalid.
+   values that are not a plain `1*DIGIT` number (corrected in the security review follow-up: a list such as `5, 5` is
+   NOT accepted, hyper's server reads the value with `from_digits` and answers `400`); a number above `u64::MAX - 2`;
+   a head that reaches `max_header_size` without ending. Two identical `Content-Length` header lines are one number,
+   and hyper accepts them too (`role.rs`, `prev != len`). Both length headers together are rejected even when one
+   of them is invalid.
 6. **Chunked framing.** An empty chunk size (`\r\n` or `;a` first) is rejected by the check; hyper reads it as size 0.
    The grammar asks for `1*HEXDIG`, and Node rejects it too. A chunk size that overflows 64 bits is rejected by the
    check (hyper rejects it as well). Bytes of a chunked line that were already valid are forwarded before the
@@ -383,5 +385,43 @@ Decisions taken while implementing, where the design left room, and the places w
 11. **Fixture.** `fixtures/http1_framing/node-24.13.0.json` has the 27 cases of the probe. Regenerating it from Git Bash
     needs `MSYS_NO_PATHCONV=1` (see `node-probe/README.md`). Node 22 is not installed, so task 2.5 is recorded as not
     measured.
-12. **Not done here.** `npm run docs:check` (no `docs/node_modules` in the worktree), the `security-reviewer` run
-    (6.6) and the `corvis-parity` check (6.7).
+12. **Not done here.** `npm run docs:check` (no `docs/node_modules` in the worktree) and the `corvis-parity` check
+    (6.7). The security review (6.6) was run afterwards, see the follow-up below.
+
+## Security review follow-up (2026-11-08)
+
+The security review found nothing exploitable. Findings and what was done:
+
+1. **A rejection after an empty line closed without `400` (low, spec violation).** `Start` forwarded empty lines to
+   hyper one read at a time; hyper kept a lone `\r\n` buffered as the possible start of a head, and the rejection bytes
+   `\r\0` that followed were then waited on until end of input (`IncompleteMessage`, no response). Fixed by dropping the
+   empty lines in `Start` instead of forwarding them (the other option, `\r\0\r\n\r\n`, would have kept sending bytes that
+   hyper has to interpret). hyper now never sees an empty line between messages, so nothing sits in front of the
+   rejection bytes; a lone CR at the end of the input is dropped too. Design decision 2 ("empty lines are skipped") is
+   now literal. Tests: unit tests for every kind of rejected head after each kind of empty line, a unit test that runs
+   those streams through hyper and expects `400`, and raw-socket tests (one write, two writes, and a keep-alive request
+   followed by the empty line and the rejected head).
+2. **`Content-Length: 3, 3` (info).** The check accepted a list; hyper's server (`headers::content_length_parse`,
+   `from_digits`) does not and answers `400`. The check now requires `1*DIGIT` (anything else goes to hyper, stream ends
+   after the head). Note 5 above is corrected. Two identical header lines are accepted by hyper (checked in `role.rs`
+   and with a raw-socket test), so the docs row "Two identical `Content-Length` headers: accepted" stays true; the docs
+   never mentioned lists.
+3. **Read into an empty buffer (info).** `poll_read_checked` returns `Ready(Ok(()))` without reading when
+   `buf.remaining() == 0`, so it cannot set `sock_eof` by mistake.
+4. **Order of loads (info).** `finished` is read before `upgraded` (a 101 sets `upgraded` before its request finishes), so
+   a request seen as finished cannot make the check call `resume` instead of `release`.
+5. **Test gaps.**
+   - The check records, in test builds only, each forwarded head, each finished message with its decoded body and its
+     trailer bytes. The mutated-stream property test compares, per request, method, path and body with what hyper
+     serves (not only the count), and no longer skips hyper's error responses: an error status or a failed body must be
+     explained by the rejection, a handed-over head, a message still open or a head still buffered at the end of the
+     stream, or by header, URI or trailer syntax that fails an independent grammar check in the test. Anything else is
+     reported as a disagreement. With a deliberately re-broken `content_length` (lists accepted) the test fails.
+   - New generated shapes: `Upgrade` (held, then resumed as if answered without `101`), `CONNECT`, HTTP/1.0 with
+     keep-alive, `Expect: 100-continue`, the largest `Content-Length`, empty lines before every request, and spliced
+     headers such as duplicate or list `Content-Length`, `Content-Length: +2`, `Content-Length: 2 ` and
+     `Connection: close`.
+   - Unmutated streams (with those shapes) must be accepted entirely, forwarded without their empty lines, and read by
+     hyper as exactly the generated requests with no error status.
+   - One integration test drives the real `TimedIo` and `auto::Builder` with a pipelined valid stream and a pipelined
+     rejected stream, each cut at every byte (two writes with a pause between them).

@@ -23,10 +23,20 @@ struct Outcome {
     wait: Option<u64>,
     completed: u64,
     holding: bool,
+    /// The stream ended inside a head the check had buffered, so hyper got it incomplete.
+    partial: bool,
+    msgs: Vec<TestMsg>,
+    /// Every head forwarded as a request, finished or not.
+    heads: Vec<Vec<u8>>,
 }
 
 /// Feeds the pieces like `poll_read` does (in-place prefix first, then the machine), then end of input.
 fn run_pieces(max_head: usize, pieces: &[&[u8]]) -> Outcome {
+    run_pieces_with(max_head, pieces, false)
+}
+
+/// With `resume`, a connection held after an `Upgrade` request behaves as if the request was answered without `101`.
+fn run_pieces_with(max_head: usize, pieces: &[&[u8]], resume: bool) -> Outcome {
     let mut fr = Framing::new(max_head);
     let mut out = Vec::new();
     for piece in pieces {
@@ -34,12 +44,29 @@ fn run_pieces(max_head: usize, pieces: &[&[u8]]) -> Outcome {
         out.extend_from_slice(&piece[..k]);
         fr.feed(&piece[k..], &mut out);
     }
+    let mut holding = fr.is_holding();
+    if resume {
+        while fr.is_holding() {
+            fr.resume(&mut out);
+        }
+        holding = false;
+    }
+    let partial = fr.has_partial_head();
     fr.eof(&mut out);
     let terminal = fr.pending_terminal();
     if terminal.is_some() {
         fr.send_terminal(&mut out);
     }
-    Outcome { out, ending: terminal.map(|t| t.ending), wait: terminal.map(|t| t.wait), completed: fr.completed, holding: fr.is_holding() }
+    Outcome {
+        out,
+        ending: terminal.map(|t| t.ending),
+        wait: terminal.map(|t| t.wait),
+        completed: fr.log.msgs.len() as u64,
+        holding,
+        partial,
+        msgs: fr.log.msgs.clone(),
+        heads: fr.log.heads.clone(),
+    }
 }
 
 fn run(stream: &[u8]) -> Outcome {
@@ -119,10 +146,31 @@ fn a_rejected_head_keeps_the_requests_before_it() {
 }
 
 #[test]
-fn empty_lines_before_the_request_line_are_accepted() {
-    assert_accepted(&cat(&[b"\r\n", GET]), 1);
-    assert_accepted(&cat(&[b"\n", GET]), 1);
-    assert_accepted(&cat(&[b"\r\n\n\r\n", GET, b"\r\n", GET]), 2);
+fn empty_lines_before_the_request_line_are_accepted_and_dropped() {
+    for (stream, messages) in [(cat(&[b"\r\n", GET]), 1), (cat(&[b"\n", GET]), 1), (cat(&[b"\r\n\n\r\n", GET, b"\r\n", GET]), 2)] {
+        let o = assert_split_invariant(&stream);
+        // hyper never sees them: a lone `\r\n` left in its buffer would hide the rejection bytes that may follow.
+        assert_eq!(o.out, cat(&[GET].repeat(messages as usize)), "{:?}", String::from_utf8_lossy(&stream));
+        assert_eq!(o.ending, None);
+        assert_eq!(o.completed, messages);
+    }
+}
+
+#[test]
+fn a_rejection_after_empty_lines_leaves_nothing_in_front_of_the_rejection_bytes() {
+    for rejected_head in [
+        &b"GET / HTTP/1.1\nHost: x\n\n"[..],
+        b"GET / HTTP/1.1\r\nHost: x\r\n\n",
+        b"GET / HTTP/1.1\r\nHost: x\rX: y\r\n\r\n",
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n",
+    ] {
+        for empty in [&b"\r\n"[..], b"\n", b"\r\n\n\r\n"] {
+            assert_rejected(&cat(&[empty, rejected_head, GET]), b"");
+            assert_rejected(&cat(&[GET, empty, rejected_head, GET]), GET);
+        }
+    }
+    // A lone CR at the end of the input is dropped, not forwarded.
+    assert_eq!(run(&cat(&[GET, b"\r"])).out, GET);
 }
 
 #[test]
@@ -226,7 +274,6 @@ fn content_length_bodies_are_forwarded_by_count() {
     assert_accepted(b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n", 1);
     assert_accepted(b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 05\r\n\r\nhello", 1);
     assert_accepted(b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello", 1);
-    assert_accepted(b"POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5, 5\r\n\r\nhello", 1);
     assert_accepted(b"POST /p HTTP/1.1\r\nHost: x\r\ncontent-length:\t5 \r\n\r\nhello", 1);
 }
 
@@ -256,6 +303,9 @@ fn heads_hyper_handles_alone_are_handed_off() {
         // Content-Length that is not one number.
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4, 5\r\n\r\n",
+        // hyper's server reads Content-Length with `from_digits`: a list, even of equal values, is a `400`.
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5, 5\r\n\r\n",
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5,\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: +4\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: -4\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4x\r\n\r\n",
@@ -299,7 +349,8 @@ fn end_of_input_forwards_what_is_buffered() {
     let o = run(b"GET / HTTP/1.1\r\nHost: x\r\n");
     assert_eq!(o.out, b"GET / HTTP/1.1\r\nHost: x\r\n");
     assert_eq!(o.ending, None);
-    assert_eq!(run(b"\r").out, b"\r");
+    // A lone CR is the start of an empty line: it is dropped, like the empty lines themselves.
+    assert_eq!(run(b"\r").out, b"");
     assert_eq!(run(b"PRI * HT").out, b"PRI * HT");
     assert_eq!(run(b"").out, b"");
 }
@@ -368,7 +419,7 @@ fn bytes_after_an_upgrade_request_are_held() {
     fr.feed(&cat(&[up, GET]), &mut out);
     fr.resume(&mut out);
     assert_eq!(out, cat(&[up, GET]));
-    assert_eq!(fr.completed, 2);
+    assert_eq!(fr.log.msgs.len(), 2);
 }
 
 #[test]
@@ -504,6 +555,27 @@ fn hyper_fails_the_body_on_the_rejection_bytes_in_every_chunked_state() {
     }
 }
 
+/// What the check forwards for a rejection that follows empty lines is answered with a `400` by hyper: nothing the
+/// check forwarded may sit in hyper's buffer in front of the rejection bytes.
+#[test]
+fn hyper_answers_400_to_a_rejection_that_follows_empty_lines() {
+    for rejected_head in
+        [&b"GET / HTTP/1.1\nHost: x\n\n"[..], b"GET / HTTP/1.1\r\nHost: x\r\n\n", b"GET / HTTP/1.1\r\nHost: x\rX: y\r\n\r\n"]
+    {
+        for empty in [&b"\r\n"[..], b"\n", b"\r\n\n\r\n"] {
+            for before in [&b""[..], GET] {
+                let stream = cat(&[before, empty, rejected_head]);
+                // Whole, in two parts and one byte at a time: the bytes hyper gets are the same.
+                let o = run(&stream);
+                let r = block_on(run_hyper(o.out.clone()));
+                let text = String::from_utf8_lossy(&r.response).into_owned();
+                assert!(text.contains("HTTP/1.1 400"), "{stream:?}: {text:?}");
+                assert_eq!(r.calls, usize::from(!before.is_empty()));
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Property test against hyper
 // ---------------------------------------------------------------------------
@@ -515,11 +587,28 @@ enum BodySpec {
     Chunked { chunks: Vec<(Vec<u8>, u8, u8)>, trailers: u8 },
 }
 
+/// The shape of a request beyond its body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Plain,
+    /// `Upgrade` and `Connection: upgrade` headers: the check holds what follows until the request is answered.
+    Upgrade,
+    /// HTTP/1.0 with `Connection: keep-alive`.
+    Http10KeepAlive,
+    /// `Expect: 100-continue` with a `Content-Length` body.
+    Expect,
+    /// Only in mutated streams: `CONNECT`, which makes hyper end the connection after its answer.
+    Connect,
+    /// Only in mutated streams: the biggest `Content-Length` hyper accepts; the rest of the stream is its body.
+    HugeLength,
+}
+
 #[derive(Debug, Clone)]
 struct ReqSpec {
     post: bool,
     leading: u8,
     extra_headers: u8,
+    kind: Kind,
     body: BodySpec,
 }
 
@@ -527,31 +616,75 @@ fn body_bytes() -> impl Strategy<Value = Vec<u8>> {
     prop::collection::vec(prop_oneof![3 => any::<u8>(), 1 => Just(b'\r'), 1 => Just(b'\n'), 1 => Just(b'0')], 0..24)
 }
 
-fn req_spec() -> impl Strategy<Value = ReqSpec> {
+fn req_spec(odd: bool) -> impl Strategy<Value = ReqSpec> {
     let chunked = (prop::collection::vec((body_bytes(), 0u8..4, 0u8..4), 0..4), 0u8..3)
         .prop_map(|(chunks, trailers)| BodySpec::Chunked { chunks, trailers });
     let body = prop_oneof![2 => Just(BodySpec::None), 2 => body_bytes().prop_map(BodySpec::Length), 3 => chunked];
-    (any::<bool>(), 0u8..3, 0u8..3, body).prop_map(|(post, leading, extra_headers, body)| {
+    let kind = if odd {
+        prop_oneof![
+            6 => Just(Kind::Plain),
+            2 => Just(Kind::Upgrade),
+            2 => Just(Kind::Http10KeepAlive),
+            2 => Just(Kind::Expect),
+            1 => Just(Kind::Connect),
+            1 => Just(Kind::HugeLength)
+        ]
+        .boxed()
+    } else {
+        prop_oneof![6 => Just(Kind::Plain), 2 => Just(Kind::Upgrade), 2 => Just(Kind::Http10KeepAlive), 2 => Just(Kind::Expect)].boxed()
+    };
+    (any::<bool>(), 0u8..3, 0u8..3, kind, body).prop_map(|(post, leading, extra_headers, kind, body)| {
+        // Shapes whose framing is fixed by the kind.
+        let body = match kind {
+            Kind::Plain => body,
+            Kind::Upgrade | Kind::Connect => BodySpec::None,
+            Kind::Http10KeepAlive => match body {
+                BodySpec::Chunked { .. } => BodySpec::None,
+                other => other,
+            },
+            Kind::Expect => match body {
+                BodySpec::Length(b) => BodySpec::Length(b),
+                _ => BodySpec::Length(b"expect".to_vec()),
+            },
+            Kind::HugeLength => BodySpec::Length(Vec::new()),
+        };
         let post = post || !matches!(body, BodySpec::None);
-        ReqSpec { post, leading, extra_headers, body }
+        ReqSpec { post, leading, extra_headers, kind, body }
     })
 }
 
-/// The bytes of one request and what hyper must record for it.
-fn render(i: usize, spec: &ReqSpec) -> (Vec<u8>, Seen) {
-    let mut out = Vec::new();
+/// The bytes of one request, the bytes the check forwards for it (empty lines are dropped) and what hyper must record.
+fn render(i: usize, spec: &ReqSpec) -> (Vec<u8>, Vec<u8>, Seen) {
+    let mut lead = Vec::new();
     for k in 0..spec.leading {
-        out.extend_from_slice(if k % 2 == 0 { b"\r\n" } else { b"\n" });
+        lead.extend_from_slice(if k % 2 == 0 { b"\r\n" } else { b"\n" });
     }
-    let method = if spec.post { "POST" } else { "GET" };
-    out.extend_from_slice(format!("{method} /r{i} HTTP/1.1\r\nHost: x\r\n").as_bytes());
+    let mut out = Vec::new();
+    let method = match spec.kind {
+        Kind::Connect => "CONNECT",
+        _ if spec.post => "POST",
+        _ => "GET",
+    };
+    let (target, path) =
+        if spec.kind == Kind::Connect { (format!("h{i}.test:443"), String::new()) } else { (format!("/r{i}"), format!("/r{i}")) };
+    let version = if spec.kind == Kind::Http10KeepAlive { "HTTP/1.0" } else { "HTTP/1.1" };
+    out.extend_from_slice(format!("{method} {target} {version}\r\nHost: x\r\n").as_bytes());
     for h in 0..spec.extra_headers {
         out.extend_from_slice(format!("X-H{h}: v{h} w\r\n").as_bytes());
+    }
+    match spec.kind {
+        Kind::Upgrade => out.extend_from_slice(b"Connection: upgrade\r\nUpgrade: foo\r\n"),
+        Kind::Http10KeepAlive => out.extend_from_slice(b"Connection: keep-alive\r\n"),
+        Kind::Expect => out.extend_from_slice(b"Expect: 100-continue\r\n"),
+        _ => {}
     }
     let mut body = Vec::new();
     let mut trailers = Vec::new();
     match &spec.body {
         BodySpec::None => out.extend_from_slice(b"\r\n"),
+        BodySpec::Length(_) if spec.kind == Kind::HugeLength => {
+            out.extend_from_slice(format!("Content-Length: {}\r\n\r\n", u64::MAX - 2).as_bytes());
+        }
         BodySpec::Length(b) => {
             out.extend_from_slice(format!("Content-Length: {}\r\n\r\n", b.len()).as_bytes());
             out.extend_from_slice(b);
@@ -589,7 +722,8 @@ fn render(i: usize, spec: &ReqSpec) -> (Vec<u8>, Seen) {
             out.extend_from_slice(b"\r\n");
         }
     }
-    (out, Seen { method: method.to_string(), path: format!("/r{i}"), body, trailers })
+    let wire = cat(&[&lead, &out]);
+    (wire, out, Seen { method: method.to_string(), path, body, trailers })
 }
 
 #[derive(Debug, Clone)]
@@ -607,11 +741,11 @@ fn mutation() -> impl Strategy<Value = Mutation> {
         (any::<prop::sample::Index>(), byte.clone()).prop_map(|(i, b)| Mutation::Insert(i, b)),
         any::<prop::sample::Index>().prop_map(Mutation::Delete),
         (any::<prop::sample::Index>(), byte).prop_map(|(i, b)| Mutation::Replace(i, b)),
-        (any::<prop::sample::Index>(), 0u8..8).prop_map(|(i, k)| Mutation::Header(i, k)),
+        (any::<prop::sample::Index>(), 0u8..12).prop_map(|(i, k)| Mutation::Header(i, k)),
     ]
 }
 
-const HEADER_MUTATIONS: [&[u8]; 8] = [
+const HEADER_MUTATIONS: [&[u8]; 12] = [
     b"Content-Length: 3\r\n",
     b"Content-Length: 3\r\nContent-Length: 4\r\n",
     b"Content-Length: 0\r\n",
@@ -619,7 +753,11 @@ const HEADER_MUTATIONS: [&[u8]; 8] = [
     b"Transfer-Encoding: chunked, chunked\r\n",
     b"Transfer-Encoding: gzip\r\n",
     b"Content-Length: 2, 2\r\n",
-    b"Upgrade-Insecure-Requests: 1\r\n",
+    b"Content-Length: 2\r\nContent-Length: 2\r\n",
+    b"Content-Length: 2 \r\n",
+    b"Content-Length: +2\r\n",
+    b"Upgrade: x\r\n",
+    b"Connection: close\r\n",
 ];
 
 fn apply(stream: &mut Vec<u8>, m: &Mutation) {
@@ -672,39 +810,119 @@ fn config() -> ProptestConfig {
     cfg
 }
 
+// What hyper may refuse that the check does not look at: header and URI syntax. A forwarded head or trailer section
+// that fails this independent grammar check excuses an error response of hyper; anything else does not.
+
+fn is_tchar(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
+}
+
+fn header_line_is_clean(line: &[u8]) -> bool {
+    let Some(colon) = line.iter().position(|&b| b == b':') else { return false };
+    let (name, value) = (&line[..colon], &line[colon + 1..]);
+    !name.is_empty() && name.iter().all(|&b| is_tchar(b)) && value.iter().all(|&b| b == b'\t' || (0x20..0x7f).contains(&b) || b >= 0x80)
+}
+
+fn head_is_clean(head: &[u8]) -> bool {
+    let mut lines = head.split(|&b| b == b'\n').map(|l| l.strip_suffix(b"\r").unwrap_or(l));
+    let Some(first) = lines.next() else { return false };
+    let parts: Vec<&[u8]> = first.split(|&b| b == b' ').collect();
+    if parts.len() != 3 || !(parts[2] == b"HTTP/1.1" || parts[2] == b"HTTP/1.0") {
+        return false;
+    }
+    let (method, target) = (parts[0], parts[1]);
+    if method.is_empty() || !method.iter().all(|&b| is_tchar(b)) {
+        return false;
+    }
+    let target_ok = if method == b"CONNECT" {
+        // `host:port`
+        let mut parts = target.splitn(2, |&b| b == b':');
+        let (host, port) = (parts.next().unwrap_or(&[]), parts.next().unwrap_or(&[]));
+        !host.is_empty()
+            && host.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'.')
+            && !port.is_empty()
+            && port.iter().all(u8::is_ascii_digit)
+    } else {
+        (target == b"*" || target.first() == Some(&b'/')) && target.iter().all(|&b| b.is_ascii_alphanumeric() || b"/_;.-".contains(&b))
+    };
+    target_ok && lines.filter(|l| !l.is_empty()).all(header_line_is_clean)
+}
+
+fn trailers_are_clean(trailers: &[u8]) -> bool {
+    trailers.split(|&b| b == b'\n').map(|l| l.strip_suffix(b"\r").unwrap_or(l)).filter(|l| !l.is_empty()).all(header_line_is_clean)
+}
+
+/// `(method, path)` of a forwarded head, when its request target is plain.
+fn request_of(head: &[u8]) -> Option<(String, String)> {
+    let line = head.split(|&b| b == b'\r').next()?;
+    let mut parts = line.split(|&b| b == b' ');
+    let (method, target) = (parts.next()?, parts.next()?);
+    let method = std::str::from_utf8(method).ok()?;
+    if method == "CONNECT" {
+        return Some((method.to_string(), String::new()));
+    }
+    let target = std::str::from_utf8(target).ok()?;
+    target.starts_with('/').then(|| (method.to_string(), target.to_string()))
+}
+
+fn status_codes(response: &[u8]) -> Vec<u16> {
+    let mut codes = Vec::new();
+    let mut i = 0;
+    while i + 12 <= response.len() {
+        if response[i..].starts_with(b"HTTP/1.1 ")
+            && let Some(n) = std::str::from_utf8(&response[i + 9..i + 12]).ok().and_then(|s| s.parse::<u16>().ok())
+        {
+            codes.push(n);
+            i += 12;
+            continue;
+        }
+        i += 1;
+    }
+    codes
+}
+
 proptest! {
     #![proptest_config(config())]
 
     /// Streams the check accepts entirely are read by hyper as exactly the requests that were generated.
     #[test]
     fn unmutated_streams_are_accepted_and_read_the_same(
-        specs in prop::collection::vec(req_spec(), 1..4),
+        specs in prop::collection::vec(req_spec(false), 1..4),
         cuts in prop::collection::vec(any::<prop::sample::Index>(), 0..6),
     ) {
         let mut stream = Vec::new();
+        let mut forwarded = Vec::new();
         let mut want = Vec::new();
         for (i, spec) in specs.iter().enumerate() {
-            let (bytes, seen) = render(i, spec);
-            stream.extend_from_slice(&bytes);
+            let (wire, fwd, seen) = render(i, spec);
+            stream.extend_from_slice(&wire);
+            forwarded.extend_from_slice(&fwd);
             want.push(seen);
         }
         let pieces = split_at_points(&stream, &cuts);
-        let o = run_pieces(32 * 1024, &pieces);
+        // A held connection (an `Upgrade` request) is resumed, as if the request was answered without `101`.
+        let o = run_pieces_with(32 * 1024, &pieces, true);
         prop_assert_eq!(o.ending, None);
-        prop_assert_eq!(&o.out, &stream);
+        prop_assert_eq!(&o.out, &forwarded);
         prop_assert_eq!(o.completed, specs.len() as u64);
+        for (msg, seen) in o.msgs.iter().zip(&want) {
+            prop_assert_eq!(&msg.body, &seen.body);
+        }
         let r = block_on(run_hyper(o.out));
         prop_assert!(r.ok);
         prop_assert_eq!(r.body_errors, 0);
+        prop_assert!(status_codes(&r.response).iter().all(|&c| c < 400), "{:?}", String::from_utf8_lossy(&r.response));
         prop_assert_eq!(r.seen, want);
     }
 
-    /// For mutated streams, hyper never reads a request the check did not complete, and when hyper reads the whole
-    /// stream without an error it reads exactly the requests the check completed.
+    /// For mutated streams: hyper reads the requests the check completed, where the check says they start and with the
+    /// bodies it saw, never one more. A response of hyper with an error status, or a failed body, must be explained
+    /// by something the check does not look at (header or URI syntax) or by the rejection itself; otherwise the two
+    /// parsers disagree.
     #[test]
     fn mutated_streams_are_read_by_hyper_as_the_check_reads_them(
-        specs in prop::collection::vec(req_spec(), 1..4),
-        mutations in prop::collection::vec(mutation(), 1..4),
+        specs in prop::collection::vec(req_spec(true), 1..4),
+        mutations in prop::collection::vec(mutation(), 0..4),
         cuts in prop::collection::vec(any::<prop::sample::Index>(), 0..6),
     ) {
         let mut stream = Vec::new();
@@ -715,22 +933,49 @@ proptest! {
             apply(&mut stream, m);
         }
         let pieces = split_at_points(&stream, &cuts);
-        let o = run_pieces(32 * 1024, &pieces);
+        let o = run_pieces_with(32 * 1024, &pieces, true);
         // The check gives the same answer for any read boundaries.
-        prop_assert_eq!(&run_pieces(32 * 1024, &[&stream]), &o);
-        // A held connection (an `Upgrade` header) is not generated: the Upgrade-Insecure-Requests header has another name.
-        prop_assert!(!o.holding);
+        prop_assert_eq!(&run_pieces_with(32 * 1024, &[&stream], true), &o);
         let r = block_on(run_hyper(o.out.clone()));
-        // A head handed to hyper because the check did not fully understand it may be served by hyper; nothing follows it.
-        let bound = o.completed + u64::from(o.ending == Some(Ending::End));
-        prop_assert!(r.seen.len() as u64 <= bound, "hyper read more requests ({}) than the check completed ({})", r.seen.len(), o.completed);
-        // An HTTP/1.0 request closes the connection after its response, so hyper stops reading there: a legitimate
-        // difference in the safe direction (hyper reads less, never more).
-        let closes = o.out.windows(8).any(|w| w == b"HTTP/1.0");
-        if r.ok && r.body_errors == 0 && o.ending != Some(Ending::Reject) && !closes {
-            prop_assert_eq!(r.seen.len() as u64, o.completed);
+        let statuses = status_codes(&r.response);
+        let seen = r.seen.len();
+
+        // Hyper reads a request only where the check saw one (a head handed to hyper may be served by hyper).
+        let bound = o.completed as usize + usize::from(o.ending == Some(Ending::End));
+        prop_assert!(seen <= bound, "hyper read more requests ({seen}) than the check completed ({})", o.completed);
+        // Same starts and bodies.
+        for (i, s) in r.seen.iter().enumerate() {
+            let Some(msg) = o.msgs.get(i) else { continue };
+            if let Some((method, path)) = request_of(&msg.head)
+                && head_is_clean(&msg.head)
+            {
+                prop_assert_eq!(&s.method, &method);
+                prop_assert_eq!(&s.path, &path.split('?').next().unwrap_or("").to_string());
+            }
+            prop_assert_eq!(&s.body, &msg.body, "request {}", i);
         }
-        // Nothing the check rejected, and nothing after the rejection, reaches a handler.
+
+        // Error responses: the rejection and a handed-over head explain one; unclean syntax explains one more.
+        let unclean_head = o.heads.iter().skip(seen).any(|h| !head_is_clean(h));
+        let unclean_trailers = o.msgs.iter().skip(seen).any(|m| !trailers_are_clean(&m.trailers));
+        let errors = statuses.iter().filter(|&&c| c >= 400).count().saturating_sub(r.body_errors);
+        let explained = usize::from(o.ending.is_some()) + usize::from(unclean_head) + usize::from(o.partial);
+        prop_assert!(errors <= explained, "hyper answered {statuses:?} (body errors {}), check ending {:?}, heads {:?}", r.body_errors, o.ending, o.heads);
+        // A failed body: the rejection, a message still open at the end of the stream, or a bad trailer.
+        let open = o.heads.len() > o.msgs.len();
+        prop_assert!(
+            r.body_errors == 0 || o.ending.is_some() || open || unclean_trailers || unclean_head,
+            "hyper failed {} bodies, check ending {:?}", r.body_errors, o.ending
+        );
+        // Without any error on either side hyper reads exactly what the check completed, except where hyper stops
+        // reading by design: HTTP/1.0 without keep-alive, `Connection: close` and `CONNECT` end the connection.
+        let stops = o.out.windows(8).any(|w| w == b"HTTP/1.0")
+            || o.out.windows(8).any(|w| w.eq_ignore_ascii_case(b"CONNECT "))
+            || o.out.windows(17).any(|w| w.eq_ignore_ascii_case(b"connection: close"));
+        if r.ok && errors == 0 && r.body_errors == 0 && o.ending.is_none() && !stops {
+            prop_assert_eq!(seen as u64, o.completed);
+        }
+        // A rejected stream reaches a handler at most up to the request that was in progress.
         if o.ending == Some(Ending::Reject) {
             prop_assert!(r.calls as u64 <= o.completed + 1);
         }

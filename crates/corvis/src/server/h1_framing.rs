@@ -95,6 +95,27 @@ enum Verdict {
     Request { body: BodyKind, hold: bool },
 }
 
+/// One message the check followed to its end (tests only).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TestMsg {
+    pub head: Vec<u8>,
+    /// The body after chunk decoding.
+    pub body: Vec<u8>,
+    /// Raw trailer section, including its final empty line.
+    pub trailers: Vec<u8>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct TestLog {
+    /// Every head forwarded as a request, finished or not.
+    pub heads: Vec<Vec<u8>>,
+    pub msgs: Vec<TestMsg>,
+    cur_body: Vec<u8>,
+    cur_trailers: Vec<u8>,
+}
+
 pub(super) struct Framing {
     st: St,
     max_head: usize,
@@ -107,9 +128,9 @@ pub(super) struct Framing {
     hold_after: bool,
     /// Requests forwarded to hyper whose framing the check understood.
     heads: u64,
-    /// Messages whose end the check reached (tests only).
+    /// What the check saw, for the tests that compare it with hyper.
     #[cfg(test)]
-    completed: u64,
+    log: TestLog,
     terminal: Option<Terminal>,
     terminal_sent: bool,
 }
@@ -129,10 +150,16 @@ impl Framing {
             hold_after: false,
             heads: 0,
             #[cfg(test)]
-            completed: 0,
+            log: TestLog::default(),
             terminal: None,
             terminal_sent: false,
         }
+    }
+
+    /// A head (or a prefix of the HTTP/2 preface) is buffered: end of input forwards it as it is (tests only).
+    #[cfg(test)]
+    pub(super) fn has_partial_head(&self) -> bool {
+        matches!(self.st, St::Head | St::Preface)
     }
 
     pub(super) fn is_holding(&self) -> bool {
@@ -202,10 +229,7 @@ impl Framing {
                 out.append(&mut self.head);
                 self.st = St::Start;
             }
-            St::StartCr => {
-                out.push(b'\r');
-                self.st = St::Start;
-            }
+            St::StartCr => self.st = St::Start,
             _ => {}
         }
     }
@@ -217,6 +241,8 @@ impl Framing {
             St::Passthrough => data.len(),
             St::Body(n) => {
                 let k = n.min(data.len() as u64);
+                #[cfg(test)]
+                self.log.cur_body.extend_from_slice(&data[..k as usize]);
                 if k == n {
                     self.finish_message();
                 } else {
@@ -226,6 +252,8 @@ impl Framing {
             }
             St::ChunkData(n) => {
                 let k = n.min(data.len() as u64);
+                #[cfg(test)]
+                self.log.cur_body.extend_from_slice(&data[..k as usize]);
                 self.st = if k == n { St::ChunkCr } else { St::ChunkData(n - k) };
                 k as usize
             }
@@ -236,7 +264,10 @@ impl Framing {
     fn finish_message(&mut self) {
         #[cfg(test)]
         {
-            self.completed += 1;
+            let head = self.log.heads.last().cloned().unwrap_or_default();
+            let body = std::mem::take(&mut self.log.cur_body);
+            let trailers = std::mem::take(&mut self.log.cur_trailers);
+            self.log.msgs.push(TestMsg { head, body, trailers });
         }
         self.st = if std::mem::take(&mut self.hold_after) { St::Hold } else { St::Start };
     }
@@ -270,11 +301,11 @@ impl Framing {
                         self.feed(&held, out);
                     }
                 }
+                // Empty lines between messages are dropped, not forwarded: hyper would keep a lone `\r\n` buffered as
+                // the start of a head, and a rejection that follows (`\r\0`) would then wait for a head end that
+                // never comes, so the client would get no `400`.
                 St::Start => match input[0] {
-                    b'\n' => {
-                        out.push(b'\n');
-                        input = &input[1..];
-                    }
+                    b'\n' => input = &input[1..],
                     b'\r' => {
                         self.st = St::StartCr;
                         input = &input[1..];
@@ -288,7 +319,6 @@ impl Framing {
                 },
                 St::StartCr => {
                     if input[0] == b'\n' {
-                        out.extend_from_slice(b"\r\n");
                         input = &input[1..];
                         self.st = St::Start;
                     } else {
@@ -299,6 +329,8 @@ impl Framing {
                 St::Body(n) => {
                     let k = n.min(input.len() as u64);
                     out.extend_from_slice(&input[..k as usize]);
+                    #[cfg(test)]
+                    self.log.cur_body.extend_from_slice(&input[..k as usize]);
                     input = &input[k as usize..];
                     if k == n {
                         self.finish_message();
@@ -309,6 +341,8 @@ impl Framing {
                 St::ChunkData(n) => {
                     let k = n.min(input.len() as u64);
                     out.extend_from_slice(&input[..k as usize]);
+                    #[cfg(test)]
+                    self.log.cur_body.extend_from_slice(&input[..k as usize]);
                     input = &input[k as usize..];
                     self.st = if k == n { St::ChunkCr } else { St::ChunkData(n - k) };
                 }
@@ -323,6 +357,10 @@ impl Framing {
 
     /// One byte of chunked framing (chunk size line, chunk end, trailer section).
     fn framing_byte(&mut self, b: u8, out: &mut Vec<u8>) {
+        #[cfg(test)]
+        if matches!(self.st, St::TrailerStart | St::TrailerLine | St::TrailerLineLf | St::TrailerEndLf) {
+            self.log.cur_trailers.push(b);
+        }
         match self.st {
             St::ChunkSize => match b {
                 b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' => {
@@ -485,6 +523,12 @@ impl Framing {
             }
             Verdict::Request { body, hold } => {
                 out.extend_from_slice(&self.head);
+                #[cfg(test)]
+                {
+                    self.log.heads.push(self.head.clone());
+                    self.log.cur_body.clear();
+                    self.log.cur_trailers.clear();
+                }
                 self.head.clear();
                 if self.head.capacity() > 8 * 1024 {
                     self.head = Vec::new();
@@ -511,30 +555,20 @@ fn trim(mut s: &[u8]) -> &[u8] {
     s
 }
 
-/// `Content-Length` value as hyper reads it: comma separated, each `1*DIGIT`, all equal.
+/// `Content-Length` value as hyper's server reads it (`from_digits`): `1*DIGIT`, nothing else. A list such as
+/// `3, 3` is not accepted by hyper's server, so it is handed to hyper (which answers `400`).
 fn content_length(value: &[u8]) -> Option<u64> {
-    let mut found: Option<u64> = None;
-    for part in value.split(|&b| b == b',') {
-        let part = trim(part);
-        if part.is_empty() {
-            return None;
-        }
-        let mut n: u64 = 0;
-        for &d in part {
-            if !d.is_ascii_digit() {
-                return None;
-            }
-            n = n.checked_mul(10)?.checked_add(u64::from(d - b'0'))?;
-        }
-        if n > MAX_LEN {
-            return None;
-        }
-        match found {
-            Some(prev) if prev != n => return None,
-            _ => found = Some(n),
-        }
+    if value.is_empty() {
+        return None;
     }
-    found
+    let mut n: u64 = 0;
+    for &d in value {
+        if !d.is_ascii_digit() {
+            return None;
+        }
+        n = n.checked_mul(10)?.checked_add(u64::from(d - b'0'))?;
+    }
+    (n <= MAX_LEN).then_some(n)
 }
 
 /// `true` when the last coding of a `Transfer-Encoding` value is `chunked` (hyper's `is_chunked_`).

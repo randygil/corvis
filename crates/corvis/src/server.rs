@@ -657,6 +657,10 @@ impl TimedIo {
 
     /// `poll_read` with the framing check: bytes reach hyper only when the check let them through.
     fn poll_read_checked(&mut self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        // A read into an empty buffer cannot tell end of input from "no room": do not read.
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
         loop {
             if self.queue_pos < self.queue.len() {
                 let n = buf.remaining().min(self.queue.len() - self.queue_pos);
@@ -677,8 +681,11 @@ impl TimedIo {
             if fr.is_holding() {
                 // After an `Upgrade` request the bytes may not be HTTP: wait for its answer.
                 let need = fr.heads();
+                // `finished` first, then `upgraded`: a 101 sets `upgraded` before its request finishes, so a request
+                // seen as finished here has its `upgraded` flag visible below and cannot be mistaken for a non-101.
+                let finished = state.finished.load(Ordering::SeqCst) >= need;
                 let released = state.upgraded.load(Ordering::SeqCst);
-                if released || state.finished.load(Ordering::SeqCst) >= need {
+                if released || finished {
                     if released {
                         fr.release(&mut self.queue);
                     } else {
