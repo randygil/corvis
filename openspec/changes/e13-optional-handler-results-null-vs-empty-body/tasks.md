@@ -46,42 +46,42 @@
   `Body::Empty`; verify the `HEAD` row of the replay and that `crates/corvis/tests/express_parity.rs` still passes
   (its `HEAD` with a JSON body keeps `Content-Length: 16`). If hyper itself writes `Content-Length: 0`, keep the
   difference as a known difference in the replay test with a comment and note it in the docs bullet of 4.1
-- [ ] 3.4 Check the other callers that read `json_body()` or `Body::Json` (`crates/corvis/src/router/mod.rs`
+- [x] 3.4 Check the other callers that read `json_body()` or `Body::Json` (`crates/corvis/src/router/mod.rs`
   redirect handling, `crates/corvis/src/websockets.rs`, `crates/corvis-swagger`) still behave the same for empty
   bodies; verify with `cargo test -p corvis --test websockets` and `cargo test -p corvis-swagger`
 
 ## 4. Docs
 
-- [ ] 4.1 `docs/controllers.md`, section "Responses": replace the `Option<T>, Result<T, E>` "Depends on the content"
+- [x] 4.1 `docs/controllers.md`, section "Responses": replace the `Option<T>, Result<T, E>` "Depends on the content"
   row with the rule (`None`, `Value::Null` and any value whose JSON is `null` answer an empty body with the default
   status, no `Content-Type`, `Content-Length: 0` and no `ETag`, like returning `null` or `undefined` in the original
   framework; `Some(v)` answers `v`; `Result` forwards `Ok` and maps `Err`), add `Json(None::<T>)` /
   `Response::json(Value::Null)` as the way to send a literal `null`, and adjust the `HEAD` bullet; same in
   `docs/es/controllers.md`
-- [ ] 4.2 `docs/interceptors.md` (`map_data` paragraph): a `null` result of the closure is stored as an empty body;
+- [x] 4.2 `docs/interceptors.md` (`map_data` paragraph): a `null` result of the closure is stored as an empty body;
   `docs/application/serialization.md` if it describes the serializer interceptor on empty results; same in `docs/es/`
-- [ ] 4.3 `docs/migration-guide.md`: one bullet on handlers that return `null` / `undefined` (now an empty body in
+- [x] 4.3 `docs/migration-guide.md`: one bullet on handlers that return `null` / `undefined` (now an empty body in
   Corvis too, `Json(None)` for a literal `null`), marked as a behavior change for apps on earlier Corvis versions;
   same in `docs/es/migration-guide.md`
-- [ ] 4.4 Run `npm run docs:check` in `docs/`; verify it passes
+- [x] 4.4 Run `npm run docs:check` in `docs/`; verify it passes
 
 ## 5. Definition of done
 
-- [ ] 5.1 `cargo fmt --all -- --check` passes
-- [ ] 5.2 `cargo build --workspace --all-targets` with no warnings
-- [ ] 5.3 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 5.4 `cargo test --workspace` passes, including `crates/corvis/tests/empty_results.rs` and the differential
+- [x] 5.1 `cargo fmt --all -- --check` passes
+- [x] 5.2 `cargo build --workspace --all-targets` with no warnings
+- [x] 5.3 `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [x] 5.4 `cargo test --workspace` passes, including `crates/corvis/tests/empty_results.rs` and the differential
   replay of 1.2
-- [ ] 5.5 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 5.6 Naming check: no "Nest", "NestJS" or "Prisma" in new public API names, doc comments, docs pages or error
+- [x] 5.5 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
+- [x] 5.6 Naming check: no "Nest", "NestJS" or "Prisma" in new public API names, doc comments, docs pages or error
   messages (`git diff main -- crates docs | grep -inE "nest|prisma"` shows only fixture package names and paths)
 
 ## 6. Parity (not run by the implementer: the maintainer runs it)
 
-- [ ] 6.1 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [ ] 6.1 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff (not run by the implementer: the maintainer runs it)
   differences; pay attention to houseplan `01-ledger.mjs` (`POST /api/transactions/3/undo`, "nothing left: null"),
   which must still answer an empty body through `PlainJson`, and to consi's envelope (`"data": null`)
-- [ ] 6.2 If #9 (`e0-typed-api-as-the-main-path`) is archived before this change, reconcile its `http/responses`
+- [x] 6.2 If #9 (`e0-typed-api-as-the-main-path`) is archived before this change, reconcile its `http/responses` (reconciled in the delta and design.md; #9 folder untouched)
   requirement "Typed handler return values are serialized as JSON" with the empty-body rule (a `T` whose JSON is
   `null` answers an empty body); if this change is archived first, leave the note for #9
 
