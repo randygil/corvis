@@ -1,7 +1,8 @@
 # docs/publishing Specification
 
 ## Purpose
-TBD - created by archiving change e0-publish-the-documentation-site. Update Purpose after archive.
+Defines where the documentation site is published and how a deployment is gated by the docs checks, so the public
+site always matches a commit of `main` that passed them.
 
 ## Requirements
 
