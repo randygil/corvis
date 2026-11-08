@@ -6,7 +6,7 @@ status: partial
 
 ## HTTPS
 
-Corvis does not terminate TLS: the server only accepts unencrypted HTTP/1.1 and HTTP/2 (h2c). There are no options
+Corvis does not terminate TLS: the server only accepts unencrypted HTTP/1.1 (HTTP/2 with `h2c(true)`). There are no options
 to load a certificate and a key into the application.
 
 The recommended way to serve HTTPS is to put a reverse proxy in front (nginx, Caddy, Traefik, a cloud

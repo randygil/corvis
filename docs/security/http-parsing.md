@@ -96,7 +96,7 @@ purpose; keep that in mind for error-rate alerts. This is revisited with the rou
   Set them on each call.
 - CORS: a regular expression origin is unanchored, like JavaScript's `regex.test`, and `reflect_origin()` with
   `credentials(true)` reflects any origin. See [CORS](/security/cors).
-- HTTP/2 without TLS (h2c) is on by default, and Node's `http` module does not speak it. Whether it stays on by
-  default is tracked in issue #144; `ServerOptions::new().h2c(false)` turns it off today. See
-  [Performance](/http/performance).
+- HTTP/2 without TLS (h2c) is off by default, like Node's `http` module, which does not speak it.
+  `ServerOptions::new().h2c(true)` turns it on for a proxy or platform configured to send it; the HTTP/2 limits then
+  differ from the HTTP/1 ones. See [Performance](/http/performance).
 - The request head is limited to 32 KiB by default (Node: 16 KiB); `ServerOptions` has `max_header_size`.

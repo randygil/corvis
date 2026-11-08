@@ -14,9 +14,12 @@ Esta página reúne lo que se puede configurar de ese servidor.
 
 ## Protocolos
 
-- HTTP/1.1 y HTTP/2 sin TLS con *prior knowledge* (h2c), activo por defecto.
-  `ServerOptions::new().h2c(false)` acepta solo HTTP/1.x. Si h2c sigue activo por defecto se decide en el issue
-  #144; consulta [Análisis de HTTP y compatibilidad](/es/security/http-parsing).
+- El servidor acepta solo HTTP/1.1, como el módulo `http` de Node. `ServerOptions::new().h2c(true)` acepta también
+  HTTP/2 sin TLS por conocimiento previo (h2c), para un proxy o plataforma configurado para enviarlo (Caddy `h2c://`,
+  Traefik `scheme=h2c`, nginx `grpc_pass`, Cloud Run con un puerto `h2c`). Con h2c activo, una conexión lleva hasta
+  200 peticiones concurrentes, `max_connections` limita conexiones y no peticiones, el límite de cabeceras de HTTP/2
+  es 16 KiB y `max_header_size` solo aplica a HTTP/1. Con h2c desactivado, una conexión con conocimiento previo se
+  cierra sin respuesta. Consulta [Análisis de HTTP y compatibilidad](/es/security/http-parsing).
 - Las peticiones HTTP/1 con encuadre ambiguo (LF sin CR como fin de línea, espacios después de un tamaño de chunk,
   `Content-Length` con `Transfer-Encoding`) se responden con `400` y se cierra la conexión.
   `ServerOptions::new().insecure_http_parser(true)` las vuelve a aceptar para clientes antiguos y registra un aviso al
