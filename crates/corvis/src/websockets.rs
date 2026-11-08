@@ -670,9 +670,11 @@ pub(crate) fn upgrade(gateway: Arc<GatewayRuntime>, mut req: hyper::Request<Inco
     }
     tokio::spawn(async move {
         let Ok(upgraded) = on_upgrade.await else { return };
-        let mut config = WebSocketConfig::default();
-        config.max_message_size = Some(options.max_payload);
-        config.max_frame_size = Some(options.max_payload);
+        let config = WebSocketConfig {
+            max_message_size: Some(options.max_payload),
+            max_frame_size: Some(options.max_payload),
+            ..WebSocketConfig::default()
+        };
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(config)).await;
         run_connection(gateway, ws, handshake, options).await;
     });
@@ -871,11 +873,10 @@ where
     };
     let guard = ConnectionGuard { client: client.clone(), writer: writer.abort_handle() };
     gateway.server.add(client.clone());
-    if let Some(h) = &gateway.info.on_connection {
-        if !run_hook(&gateway, "handleConnection", h, &client).await {
+    if let Some(h) = &gateway.info.on_connection
+        && !run_hook(&gateway, "handleConnection", h, &client).await {
             client.close_with(CloseFrame { code: CloseCode::from(CLOSE_INTERNAL_ERROR), reason: Cow::Borrowed("") }, false);
         }
-    }
     // Handlers of a connection run concurrently (a slow handler does not block the socket)
     // but start in the order their frames arrived, like RxJS `mergeMap`: a `join` followed
     // by a `message` always sees the room joined. With `max_inflight` handlers running the

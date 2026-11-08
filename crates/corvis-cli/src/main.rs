@@ -228,11 +228,10 @@ fn cmd_generate(args: &[String]) -> Res {
     let simple = |suffix: &str, template: &str, register: Option<&str>| -> Res {
         let file_stem = format!("{}_{suffix}", n.snake);
         let mut contents = render(template, &n);
-        if no_spec {
-            if let Some(i) = contents.find("\n#[cfg(test)]") {
+        if no_spec
+            && let Some(i) = contents.find("\n#[cfg(test)]") {
                 contents.truncate(i + 1);
             }
-        }
         let type_name = format!("{}{}", n.pascal, capitalize(suffix));
         if flat {
             write_file(&p.src.join(format!("{file_stem}.rs")), &contents)?;

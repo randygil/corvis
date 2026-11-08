@@ -527,14 +527,13 @@ impl SchemaObjectFactory {
             def.insert("required".into(), Value::Array(required));
         }
         let def = Value::Object(def);
-        if let Some(existing) = schemas.get(&info.name) {
-            if !js::deep_equal(existing, &def) {
+        if let Some(existing) = schemas.get(&info.name)
+            && !js::deep_equal(existing, &def) {
                 corvis::Logger::new("Logger").warn(format!(
                     "Duplicate DTO detected: \"{}\" is defined multiple times with different schemas.\nConsider using unique class names or applying @ApiExtraModels() decorator with custom schema names.\nNote: This will throw an error in the next major version.",
                     info.name
                 ));
             }
-        }
         schemas.insert(info.name.clone(), def);
         info.name
     }

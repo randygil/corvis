@@ -87,7 +87,7 @@ pub(crate) fn enum_values(e: &Value) -> Vec<Value> {
     match e {
         Value::Array(a) => a.clone(),
         Value::Object(o) => {
-            let numeric: Vec<String> = o.values().filter(|v| v.is_number()).map(|v| js_number_string(v)).collect();
+            let numeric: Vec<String> = o.values().filter(|v| v.is_number()).map(js_number_string).collect();
             o.iter().filter(|(k, _)| !numeric.contains(k)).map(|(_, v)| v.clone()).collect()
         }
         _ => Vec::new(),

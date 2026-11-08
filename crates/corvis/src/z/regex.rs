@@ -277,12 +277,10 @@ fn translate_escape(chars: &[char], i: usize, in_class: bool, unicode: bool) -> 
                 if (0xD800..0xDC00).contains(&hi)
                     && chars.get(i + 5) == Some(&'\\')
                     && chars.get(i + 6) == Some(&'u')
-                {
-                    if let Some(lo) = read_hex(chars, i + 7, 4).filter(|lo| (0xDC00..0xE000).contains(lo)) {
+                    && let Some(lo) = read_hex(chars, i + 7, 4).filter(|lo| (0xDC00..0xE000).contains(lo)) {
                         let cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
                         return Ok((lit(char::from_u32(cp).unwrap_or('\u{FFFD}')), 11));
                     }
-                }
                 match char::from_u32(hi) {
                     Some(ch) => (lit(ch), 5),
                     // Lone surrogate: cannot appear in a Rust string, so it never matches.

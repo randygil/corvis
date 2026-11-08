@@ -298,12 +298,11 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
                     kind = k.to_string();
                     let args = attr_args(&attr)?;
                     let mut it = args.into_iter().peekable();
-                    if let Some(first) = it.peek() {
-                        if let Some(s) = lit_str(first) {
+                    if let Some(first) = it.peek()
+                        && let Some(s) = lit_str(first) {
                             data = Some(s);
                             it.next();
                         }
-                    }
                     pipes.extend(it);
                 } else {
                     keep.push(attr);

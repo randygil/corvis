@@ -77,11 +77,10 @@ pub fn add_to_module(source: &str, key: &str, item: &str) -> Option<String> {
         // naive duplicate check inside the key list
         if let Some(k) = find_key(args, key) {
             let list = &args[k..];
-            if let Some(end) = list.find(']') {
-                if list[..end].split([',', '[', ' ', '\n']).any(|s| s.trim() == item) {
+            if let Some(end) = list.find(']')
+                && list[..end].split([',', '[', ' ', '\n']).any(|s| s.trim() == item) {
                     return Some(source.to_string());
                 }
-            }
         }
     }
     match find_key(args, key) {

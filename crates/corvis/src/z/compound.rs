@@ -165,8 +165,8 @@ impl ZodType for ZArray {
         };
         let mut ok = true;
         let len = items.len();
-        if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Length(n) = k { Some(n) } else { None }) {
-            if len != n {
+        if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Length(n) = k { Some(n) } else { None })
+            && len != n {
                 ok = false;
                 let (code, key) = if len < n { (ZodIssueCode::TooSmall, "minimum") } else { (ZodIssueCode::TooBig, "maximum") };
                 ctx.add(
@@ -175,9 +175,8 @@ impl ZodType for ZArray {
                     issue_params(&[(key, json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(true))]),
                 );
             }
-        }
-        if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Min(n) = k { Some(n) } else { None }) {
-            if len < n {
+        if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Min(n) = k { Some(n) } else { None })
+            && len < n {
                 ok = false;
                 ctx.add(
                     ZodIssueCode::TooSmall,
@@ -185,9 +184,8 @@ impl ZodType for ZArray {
                     issue_params(&[("minimum", json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(false))]),
                 );
             }
-        }
-        if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Max(n) = k { Some(n) } else { None }) {
-            if len > n {
+        if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Max(n) = k { Some(n) } else { None })
+            && len > n {
                 ok = false;
                 ctx.add(
                     ZodIssueCode::TooBig,
@@ -195,7 +193,6 @@ impl ZodType for ZArray {
                     issue_params(&[("maximum", json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(false))]),
                 );
             }
-        }
         let mut out = Vec::with_capacity(len);
         for (i, item) in items.iter().enumerate() {
             match ctx.at(i, |ctx| self.item.check(Some(item), ctx)) {
@@ -693,8 +690,8 @@ impl ZodType for ZRecord {
             let v = jsg.process(&self.value, &p)?;
             json.insert("additionalProperties".into(), v);
         }
-        if !self.partial {
-            if let Some(values) = key.values() {
+        if !self.partial
+            && let Some(values) = key.values() {
                 let req: Vec<Value> = values
                     .into_iter()
                     .filter_map(|v| match v {
@@ -706,7 +703,6 @@ impl ZodType for ZRecord {
                     json.insert("required".into(), Value::Array(req));
                 }
             }
-        }
         Ok(())
     }
 }
@@ -1769,6 +1765,19 @@ impl ZodType for ZJson {
     }
 }
 
+impl ZObject {
+    /// `z.strictObject({...})` from a builder.
+    pub fn strict_object(fields: Vec<(String, Schema)>) -> Self {
+        ZObject::from_fields(fields).strict()
+    }
+}
+
+#[allow(dead_code)]
+fn _assert_traits() {
+    fn is_schema<T: ZodSchema>() {}
+    is_schema::<ZObject>();
+}
+
 #[cfg(test)]
 mod json_tests {
     use super::*;
@@ -1803,17 +1812,4 @@ mod json_tests {
         let b = parse_val(&slow, Some(&deep), &opts).unwrap_err().to_json();
         assert_eq!(a, b);
     }
-}
-
-impl ZObject {
-    /// `z.strictObject({...})` from a builder.
-    pub fn strict_object(fields: Vec<(String, Schema)>) -> Self {
-        ZObject::from_fields(fields).strict()
-    }
-}
-
-#[allow(dead_code)]
-fn _assert_traits() {
-    fn is_schema<T: ZodSchema>() {}
-    is_schema::<ZObject>();
 }

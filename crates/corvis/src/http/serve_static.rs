@@ -172,6 +172,7 @@ impl ServeStatic {
 }
 
 /// What `send` decided.
+#[allow(clippy::large_enum_variant)] // short-lived value built once per request; boxing adds an allocation for no gain
 pub(crate) enum Outcome {
     /// Fall through to the next handler (`next()`).
     Next,
@@ -429,8 +430,8 @@ impl ServeStatic {
         if !self.index.is_empty() && has_trailing_slash {
             for idx in &self.index {
                 let p = file.join(idx);
-                if let Ok(meta) = tokio::fs::metadata(&p).await {
-                    if meta.is_file() {
+                if let Ok(meta) = tokio::fs::metadata(&p).await
+                    && meta.is_file() {
                         let mut checked = parts.clone();
                         checked.extend(idx.split('/').filter(|s| !s.is_empty()).map(String::from));
                         if let Err(status) = self.verify(checked).await {
@@ -438,7 +439,6 @@ impl ServeStatic {
                         }
                         return Outcome::Respond(self.send(req, &p, &meta).await);
                     }
-                }
             }
             return self.fail(404, false);
         }
@@ -449,8 +449,8 @@ impl ServeStatic {
                 if file.extension().is_none() && !has_trailing_slash {
                     for ext in &self.extensions {
                         let p = PathBuf::from(format!("{}.{ext}", file.display()));
-                        if let Ok(m) = tokio::fs::metadata(&p).await {
-                            if m.is_file() {
+                        if let Ok(m) = tokio::fs::metadata(&p).await
+                            && m.is_file() {
                                 let mut checked = parts.clone();
                                 if let Some(last) = checked.last_mut() {
                                     last.push_str(&format!(".{ext}"));
@@ -460,7 +460,6 @@ impl ServeStatic {
                                 }
                                 return Outcome::Respond(self.send(req, &p, &m).await);
                             }
-                        }
                     }
                 }
                 return self.fail(404, false);
@@ -544,8 +543,8 @@ impl ServeStatic {
 
         let mut status = 200u16;
         let (mut start, mut len) = (0u64, size);
-        if self.accept_ranges {
-            if let Some(range) = h("range").filter(|r| r.trim_start().starts_with("bytes=")) {
+        if self.accept_ranges
+            && let Some(range) = h("range").filter(|r| r.trim_start().starts_with("bytes=")) {
                 let fresh = match h("if-range") {
                     None => true,
                     Some(ir) if ir.contains('"') => self.etag && ir.contains(&etag),
@@ -569,7 +568,6 @@ impl ServeStatic {
                     }
                 }
             }
-        }
         headers.push(("Content-Length", len.to_string()));
         // `createReadStream(path, { start, end })`: only the requested bytes, in chunks.
         let body = if req.method() == http::Method::HEAD || len == 0 {

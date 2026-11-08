@@ -174,8 +174,11 @@ fn decode_param(v: &str) -> Result<String, String> {
 /// Matched route candidates and their decoded parameters (or the decode error message).
 type RouteMatch = (Vec<usize>, Result<HashMap<String, String>, String>);
 
+/// Route indexes grouped by (version, path).
+type RouteGroup = ((Option<String>, String), Vec<usize>);
+
 impl RouterTable {
-    fn insert(&mut self, groups: Vec<((Option<String>, String), Vec<usize>)>) {
+    fn insert(&mut self, groups: Vec<RouteGroup>) {
         let logger = Logger::new("RouterExplorer");
         for ((method, path), idx) in groups {
             let router = match &method {
@@ -204,18 +207,15 @@ impl RouterTable {
                 .collect();
             (m.value.clone(), params)
         };
-        if let Some(r) = self.by_method.get(method.as_str()) {
-            if let Ok(m) = r.at(&lowered) {
+        if let Some(r) = self.by_method.get(method.as_str())
+            && let Ok(m) = r.at(&lowered) {
                 return Some(decode(m));
             }
-        }
-        if method == Method::HEAD {
-            if let Some(r) = self.by_method.get("GET") {
-                if let Ok(m) = r.at(&lowered) {
+        if method == Method::HEAD
+            && let Some(r) = self.by_method.get("GET")
+                && let Ok(m) = r.at(&lowered) {
                     return Some(decode(m));
                 }
-            }
-        }
         self.any.at(&lowered).ok().map(decode)
     }
 }
@@ -278,7 +278,7 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
     let resolver_log = Logger::new("RoutesResolver");
     let explorer_log = Logger::new("RouterExplorer");
     let mut table = RouterTable::default();
-    let mut groups: Vec<((Option<String>, String), Vec<usize>)> = Vec::new();
+    let mut groups: Vec<RouteGroup> = Vec::new();
 
     for module in &container.modules {
         for def in &module.controllers {
@@ -458,11 +458,10 @@ pub(crate) struct AppShared {
 
 /// Entry point for every request.
 pub(crate) async fn dispatch(shared: Arc<AppShared>, req: Request) -> Response {
-    if let Some(cors) = &shared.cors {
-        if cors.is_preflight(&req) {
+    if let Some(cors) = &shared.cors
+        && cors.is_preflight(&req) {
             return cors.preflight(&req);
         }
-    }
     let req_for_cors = shared.cors.as_ref().map(|_| req.clone());
 
     // `next(err)` from the body parsers (registered after `cors`): the error is mapped
@@ -525,6 +524,7 @@ async fn route_request(shared: Arc<AppShared>, req: Request) -> HandlerResult {
 
 /// Like `route_request`, but returns the request together with the error so the
 /// caller can build an error context without cloning it beforehand.
+#[allow(clippy::result_large_err)] // internal: the error hands the request back to the caller by design
 async fn route_request_owned(shared: Arc<AppShared>, req: Request) -> Result<Response, (HttpException, Request)> {
     for s in &shared.static_dirs {
         if let Some(r) = s.try_serve(&req).await {

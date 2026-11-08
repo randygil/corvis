@@ -120,11 +120,10 @@ impl Subnet {
             None => (note, None),
         };
         let mut ip: IpAddr = addr.parse().map_err(|_| InvalidTrustProxy(format!("invalid IP address: {addr}")))?;
-        if let (IpAddr::V6(v6), None) = (ip, range) {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+        if let (IpAddr::V6(v6), None) = (ip, range)
+            && let Some(v4) = v6.to_ipv4_mapped() {
                 ip = IpAddr::V4(v4);
             }
-        }
         let max: u32 = if ip.is_ipv4() { 32 } else { 128 };
         let prefix = match range {
             None => Some(max),

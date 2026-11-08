@@ -681,10 +681,12 @@ impl Decimal {
     }
 
     /// `cmp()` as a number: -1, 0, 1 (`NaN` → `None`).
+    #[allow(clippy::should_implement_trait)] // decimal.js `cmp`: returns -1/0/1/NaN, not an `Ordering`
     pub fn cmp(&self, y: impl Into<Decimal>) -> Option<i32> {
         self.compared_to(y).map(|o| o as i32)
     }
     /// `eq` / `equals`
+    #[allow(clippy::should_implement_trait)] // decimal.js `eq`: accepts any `Into<Decimal>`, not `&Self`
     pub fn eq(&self, y: impl Into<Decimal>) -> bool {
         self.compared_to(y) == Some(Ordering::Equal)
     }

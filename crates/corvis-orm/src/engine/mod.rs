@@ -228,7 +228,7 @@ impl Engine {
             (_, Some("Citext")) => Some("citext".to_string()),
             (_, Some("Xml")) => Some("xml".to_string()),
             (_, Some("Money")) => Some("money".to_string()),
-            (_, Some("Bit")) | (_, Some("VarBit")) => f.native_type.map(|t| t.to_lowercase().replace("varbit", "varbit")),
+            (_, Some("Bit")) | (_, Some("VarBit")) => f.native_type.map(|t| t.to_lowercase()),
             (FieldKind::String, Some("Char")) => f.native_type.map(|t| t.to_lowercase()),
             (FieldKind::DateTime, Some("Date")) => Some("date".to_string()),
             (FieldKind::DateTime, Some("Time")) => Some("time".to_string()),

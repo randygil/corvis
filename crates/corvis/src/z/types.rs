@@ -357,8 +357,8 @@ fn url_check(
         p.push(issue(vec![("code", json!("invalid_format")), ("format", json!("url"))], &input, error, cont));
         return;
     };
-    if let Some(h) = hostname {
-        if !h.test(url.host_str().unwrap_or("")) {
+    if let Some(h) = hostname
+        && !h.test(url.host_str().unwrap_or("")) {
             p.push(issue(
                 vec![
                     ("code", json!("invalid_format")),
@@ -371,9 +371,8 @@ fn url_check(
                 cont,
             ));
         }
-    }
-    if let Some(pr) = protocol {
-        if !pr.test(url.scheme()) {
+    if let Some(pr) = protocol
+        && !pr.test(url.scheme()) {
             p.push(issue(
                 vec![
                     ("code", json!("invalid_format")),
@@ -386,7 +385,6 @@ fn url_check(
                 cont,
             ));
         }
-    }
     p.value = Val::Json(Value::String(if normalize { url.as_str().to_string() } else { trimmed.to_string() }));
 }
 
@@ -410,7 +408,7 @@ fn cidrv6_valid(s: &str) -> bool {
 fn atob(data: &str) -> Option<Vec<u8>> {
     let d: String = data.chars().filter(|c| !matches!(c, ' ' | '\t' | '\n' | '\x0c' | '\r')).collect();
     let mut d = d.as_str();
-    if d.len() % 4 == 0 {
+    if d.len().is_multiple_of(4) {
         d = d.strip_suffix("==").or_else(|| d.strip_suffix('=')).unwrap_or(d);
     }
     if d.len() % 4 == 1 || !d.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/') {
@@ -433,7 +431,7 @@ pub(crate) fn is_valid_base64(data: &str) -> bool {
     if data.chars().any(|c| c.is_whitespace() || js::is_js_whitespace(c)) {
         return false;
     }
-    if data.len() % 4 != 0 {
+    if !data.len().is_multiple_of(4) {
         return false;
     }
     atob(data).is_some()
@@ -465,11 +463,10 @@ pub(crate) fn is_valid_jwt(token: &str, alg: Option<&str>) -> bool {
     if !h.get("alg").is_some_and(|a| js::truthy(Some(a))) {
         return false;
     }
-    if let Some(alg) = alg {
-        if h.get("alg").and_then(Value::as_str) != Some(alg) {
+    if let Some(alg) = alg
+        && h.get("alg").and_then(Value::as_str) != Some(alg) {
             return false;
         }
-    }
     true
 }
 
@@ -1892,11 +1889,10 @@ impl ZodType for ZBigInt {
             ctx,
             !self.checks.is_empty(),
             |mut p| {
-                if self.coerce {
-                    if let Some(b) = js_bigint_of(&p.value) {
+                if self.coerce
+                    && let Some(b) = js_bigint_of(&p.value) {
                         p.value = Val::BigInt(b);
                     }
-                }
                 if !matches!(p.value, Val::BigInt(_)) {
                     invalid_type_v4("bigint", &mut p, self.inst_error());
                 }
@@ -2133,8 +2129,8 @@ impl ZodType for ZDate {
         let mut ok = true;
         let min_msg = self.checks.iter().find(|c| c.kind.0).and_then(|c| c.message.clone());
         let max_msg = self.checks.iter().find(|c| !c.kind.0).and_then(|c| c.message.clone());
-        if let Some((min, msg)) = &self.min {
-            if date < *min {
+        if let Some((min, msg)) = &self.min
+            && date < *min {
                 ok = false;
                 ctx.add(
                     ZodIssueCode::TooSmall,
@@ -2142,9 +2138,8 @@ impl ZodType for ZDate {
                     issue_params(&[("minimum", json!(min.timestamp_millis())), ("type", json!("date")), ("inclusive", json!(true)), ("exact", json!(false))]),
                 );
             }
-        }
-        if let Some((max, msg)) = &self.max {
-            if date > *max {
+        if let Some((max, msg)) = &self.max
+            && date > *max {
                 ok = false;
                 ctx.add(
                     ZodIssueCode::TooBig,
@@ -2152,7 +2147,6 @@ impl ZodType for ZDate {
                     issue_params(&[("maximum", json!(max.timestamp_millis())), ("type", json!("date")), ("inclusive", json!(true)), ("exact", json!(false))]),
                 );
             }
-        }
         if !ok {
             return Err(());
         }
@@ -2174,13 +2168,11 @@ impl ZodType for ZDate {
                     if let Some(t) = js_date_of(&p.value) {
                         p.value = Val::Date(t);
                     }
-                } else if ctx.date_strings {
-                    if let Some(s) = p.value.as_str() {
-                        if js::looks_like_iso_datetime(s) {
+                } else if ctx.date_strings
+                    && let Some(s) = p.value.as_str()
+                        && js::looks_like_iso_datetime(s) {
                             p.value = Val::Date(js::parse_date(s));
                         }
-                    }
-                }
                 match p.value {
                     Val::Date(t) if !t.is_nan() => {}
                     Val::Date(_) => {

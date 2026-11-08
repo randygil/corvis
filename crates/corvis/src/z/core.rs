@@ -561,12 +561,11 @@ impl RunCtx {
                 params.insert(k.clone(), v.clone());
             }
         }
-        if self.report_input {
-            if let Some(input) = raw.input.to_json() {
+        if self.report_input
+            && let Some(input) = raw.input.to_json() {
                 params.insert("input".into(), input);
                 layout.push("input".into());
             }
-        }
         ZodIssue { code, path: raw.path.clone(), message, params, layout: Some(layout), v3_layout: None }
     }
 

@@ -2,6 +2,7 @@
 //! (`corvis-orm generate`) and checks their metadata.
 
 #[allow(dead_code)]
+#[allow(clippy::doc_lazy_continuation)] // generated doc comments copied verbatim from the schema (list items without indentation)
 mod facten {
     include!("generated/facten.rs");
 }

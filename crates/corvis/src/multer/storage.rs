@@ -192,7 +192,7 @@ pub(crate) fn is_windows_file_name(seg: &str) -> bool {
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$")
         || ((stem.starts_with("COM") || stem.starts_with("LPT"))
             && stem.len() == 4
-            && matches!(stem.as_bytes()[3], b'0'..=b'9'))
+            && stem.as_bytes()[3].is_ascii_digit())
         || ((stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(&stem[3..], "\u{b9}" | "\u{b2}" | "\u{b3}"));
     !reserved
 }

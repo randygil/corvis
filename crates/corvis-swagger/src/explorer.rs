@@ -16,6 +16,9 @@ use crate::metadata::{self, Metadata};
 use crate::schema_factory::{self, SchemaObjectFactory, Schemas, SwaggerTypesMapper, Ty, ty};
 use crate::types;
 
+/// Builds the method key of a handler from its name.
+pub type MethodKeyFactory = Arc<dyn Fn(&str) -> String + Send + Sync>;
+
 /// `operationIdFactory(controllerKey, methodKey, version)`.
 pub type OperationIdFactory = Arc<dyn Fn(&str, &str, Option<&str>) -> String + Send + Sync>;
 
@@ -35,7 +38,7 @@ pub struct SwaggerDocumentOptions {
     pub operation_id_factory: Option<OperationIdFactory>,
     /// Name of a handler as a method key (default: `snake_case` -> `camelCase`, so
     /// `find_all` gives the same `UsersController_findAll` as the TypeScript method).
-    pub method_key_factory: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
+    pub method_key_factory: Option<MethodKeyFactory>,
     /// Tag controllers without `#[api_tags]` with their name minus `Controller`
     /// (`autoTagControllers`, default `true`).
     pub auto_tag_controllers: bool,
@@ -362,8 +365,8 @@ impl Explorer<'_> {
                 properties.push(o);
                 continue;
             }
-            if let Ty::Model(k) = t {
-                if let Some(info) = schema_factory::model_info(k) {
+            if let Ty::Model(k) = t
+                && let Some(info) = schema_factory::model_info(k) {
                     for (key, meta) in info.properties {
                         let mut o = reflected.clone();
                         js::assign(&mut o, &meta);
@@ -375,7 +378,6 @@ impl Explorer<'_> {
                         properties.push(o);
                     }
                 }
-            }
         }
 
         // removeBodyMetadataIfExplicitExists
@@ -597,11 +599,10 @@ fn explore_callbacks(method: &Metadata) -> Option<Obj> {
 
 /// `mergeMetadata(globalMetadata, methodMetadata)`.
 fn merge_metadata(global: &Obj, mut method: Obj) -> Obj {
-    if let Some(Value::Object(root)) = method.get_mut("root") {
-        if !root.contains_key("parameters") {
+    if let Some(Value::Object(root)) = method.get_mut("root")
+        && !root.contains_key("parameters") {
             root.insert("parameters".into(), json!([]));
         }
-    }
     if let Some(Value::Array(chunks)) = global.get("chunks") {
         for chunk in chunks {
             let chunk = js::obj_of(chunk);
