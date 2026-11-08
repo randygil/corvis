@@ -64,9 +64,15 @@ rejected value. The error message MUST NOT contain the user, the password or any
 - **THEN** creation fails with an initialization error mentioning `connection_limit` and `abc`, and the message does
   not contain `app` or `secret`
 
+#### Scenario: Pool timeout on SQLite
+- **WHEN** a client is created with `file:./dev.db?pool_timeout=abc`
+- **THEN** creation succeeds and the parameter is ignored (the original client accepts any `pool_timeout` on SQLite);
+  Postgres URLs reject the same value
+
 #### Scenario: Zero limit
 - **WHEN** a client is created with `file:./dev.db?connection_limit=0`
-- **THEN** creation fails with an initialization error mentioning `connection_limit`
+- **THEN** creation fails with an initialization error mentioning `connection_limit` (the original treats `0` as no
+  limit; corvis-orm requires at least 1)
 
 ### Requirement: Other URL parameters are preserved
 Removing the pool parameters SHALL leave every other query parameter of the URL unchanged (same order, same encoding),

@@ -148,12 +148,39 @@ The first argument of `for_root_async` and `for_root_from_config` says whether t
 | `new(url)` | `file:./dev.db`, `sqlite::memory:` or `postgresql://...` |
 | `global(bool)` | Registers the module as global |
 | `log_queries(bool)` | Logs every SQL query with its parameters |
-| `max_connections(n)` | Pool size |
+| `max_connections(n)` | Pool size (overrides `connection_limit` in the URL) |
 | `explicit_connect(bool)` | Connect in `on_module_init` (default `true`) |
 | `transaction_options(..)` | Default `maxWait`, `timeout` and `isolationLevel` for transactions |
 | `push::<(A, B)>()` | Creates the missing tables and indexes at startup (useful in development and tests) |
 
 `push` does not modify or drop existing columns: use migrations for production.
+
+## Connection pool
+
+The pool is sized and timed from the database URL, the same way the original client does it, so an app that keeps its `DATABASE_URL` keeps its pool:
+
+```text
+postgresql://user:pass@host/db?connection_limit=5&pool_timeout=20
+file:./dev.db?connection_limit=1
+```
+
+| Parameter | Meaning | Default |
+|---|---|---|
+| `connection_limit` | Maximum number of pooled connections. An integer of at least 1 | `2 * physical CPU cores + 1` |
+| `pool_timeout` | Seconds a query waits for a free connection before it fails with `P2024`. `0` waits without limit | `10` |
+
+- They work for Postgres and for file-backed SQLite (`file:` and `sqlite:`). They are removed from the URL before it reaches the driver; every other parameter (`sslmode`, `application_name`, `options`, ...) is kept as written.
+- In-memory SQLite always uses exactly one connection: `connection_limit` is accepted and ignored there. On SQLite, `pool_timeout` is applied only when it is a valid number; an invalid one is ignored, as the original client does.
+- A repeated parameter keeps its last value, and values can be percent-encoded.
+- An invalid value (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`) fails when the client is created, with an initialization error `P1013` that names the parameter and the value, never the rest of the URL. The original client treats `connection_limit=0` as no limit; corvis-orm requires at least 1.
+- Values set in code win over the URL: `OrmClientOptions::max_connections(n)` (and `OrmModuleOptions::max_connections(n)`) over `connection_limit`, and `OrmClientOptions::acquire_timeout` over `pool_timeout`. The URL wins over the defaults.
+- `pool_timeout=0` with an unreachable server is bounded only by the operating system's connection timeout.
+
+::: warning Changed defaults
+Before this change the pool had 10 connections on Postgres and 5 on SQLite files, and a query waited up to 30 seconds for a connection. The defaults are now `2 * physical cores + 1` connections and 10 seconds. Set `connection_limit` and `pool_timeout` in the URL (or `max_connections` in code) to restore any previous value. With several connections on a SQLite file, writers can contend for the lock; use `connection_limit=1` when your app needs a single writer.
+:::
+
+Pool settings that newer client versions take in code (maximum size, connection timeout) map to `max_connections(n)` and `acquire_timeout`.
 
 ## Use `OrmService`
 

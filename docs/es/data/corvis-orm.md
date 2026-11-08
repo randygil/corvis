@@ -148,12 +148,39 @@ Opciones de `OrmModuleOptions`:
 | `new(url)` | `file:./dev.db`, `sqlite::memory:` o `postgresql://...` |
 | `global(bool)` | Registra el módulo como global |
 | `log_queries(bool)` | Registra cada consulta SQL con sus parámetros |
-| `max_connections(n)` | Tamaño del pool |
+| `max_connections(n)` | Tamaño del pool (tiene prioridad sobre `connection_limit` de la URL) |
 | `explicit_connect(bool)` | Conectar en `on_module_init` (por defecto `true`) |
 | `transaction_options(..)` | `maxWait`, `timeout` e `isolationLevel` por defecto de las transacciones |
 | `push::<(A, B)>()` | Crea al arrancar las tablas e índices que falten (útil en desarrollo y pruebas) |
 
 `push` no modifica ni elimina columnas existentes: para producción usa migraciones.
+
+## Pool de conexiones
+
+El pool se dimensiona y se limita en tiempo desde la URL de la base de datos, igual que lo hace el cliente original, así que una app que conserva su `DATABASE_URL` conserva su pool:
+
+```text
+postgresql://user:pass@host/db?connection_limit=5&pool_timeout=20
+file:./dev.db?connection_limit=1
+```
+
+| Parámetro | Significado | Por defecto |
+|---|---|---|
+| `connection_limit` | Número máximo de conexiones del pool. Un entero de al menos 1 | `2 * núcleos físicos de CPU + 1` |
+| `pool_timeout` | Segundos que una consulta espera una conexión libre antes de fallar con `P2024`. `0` espera sin límite | `10` |
+
+- Funcionan con Postgres y con SQLite en archivo (`file:` y `sqlite:`). Se quitan de la URL antes de que llegue al driver; el resto de parámetros (`sslmode`, `application_name`, `options`, ...) se conservan tal cual.
+- SQLite en memoria usa siempre exactamente una conexión: `connection_limit` se acepta y se ignora ahí. En SQLite, `pool_timeout` solo se aplica si es un número válido; uno inválido se ignora, como hace el cliente original.
+- Un parámetro repetido conserva su último valor, y los valores pueden ir codificados con porcentaje.
+- Un valor inválido (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`) falla al crear el cliente, con un error de inicialización `P1013` que nombra el parámetro y el valor, nunca el resto de la URL. El cliente original trata `connection_limit=0` como sin límite; corvis-orm exige al menos 1.
+- Los valores puestos en código tienen prioridad sobre la URL: `OrmClientOptions::max_connections(n)` (y `OrmModuleOptions::max_connections(n)`) sobre `connection_limit`, y `OrmClientOptions::acquire_timeout` sobre `pool_timeout`. La URL tiene prioridad sobre los valores por defecto.
+- `pool_timeout=0` con un servidor inalcanzable solo está limitado por el tiempo de conexión del sistema operativo.
+
+::: warning Valores por defecto cambiados
+Antes el pool tenía 10 conexiones en Postgres y 5 en archivos SQLite, y una consulta esperaba hasta 30 segundos por una conexión. Ahora los valores por defecto son `2 * núcleos físicos + 1` conexiones y 10 segundos. Define `connection_limit` y `pool_timeout` en la URL (o `max_connections` en código) para recuperar cualquier valor anterior. Con varias conexiones sobre un archivo SQLite, los escritores pueden competir por el bloqueo; usa `connection_limit=1` si tu app necesita un único escritor.
+:::
+
+Los ajustes de pool que las versiones más nuevas del cliente reciben en código (tamaño máximo, tiempo de conexión) equivalen a `max_connections(n)` y `acquire_timeout`.
 
 ## Usar `OrmService`
 
