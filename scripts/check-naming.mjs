@@ -25,6 +25,7 @@ const SURFACES = [
   'bench/results.md',
   'bench/run.sh',
   'bench/corvis-app/**',
+  'bench/port-vs-original/**',
 ]
 
 /** Banned patterns. Case-sensitive, so "nested", "nesting" and "schema.prisma" do not match. */
@@ -48,6 +49,8 @@ const ALLOW = [
   { path: 'crates/corvis-orm/src/bin/corvis-orm.rs', pattern: /prisma\/(?:schema|migrations|\.env)/, reason: `${COMPAT}: default schema, migrations and .env paths` },
   { path: 'crates/corvis-orm/src/migrate.rs', pattern: /prisma\/migrations/, reason: `${COMPAT}: migrations folder layout` },
   { path: 'crates/corvis-orm/src/psl.rs', pattern: /e == "prisma"|prismaSchemaFolder|"prisma-client-js"/, reason: 'schema file format: the `.prisma` extension, a preview feature and the generator provider' },
+
+  { path: 'bench/port-vs-original/run.mjs', pattern: /@prisma\/client|@nestjs\/(?:core|platform-express|platform-fastify)/, reason: 'package names read from the original application package.json to record its versions' },
 
   // Error texts copied verbatim for parity (design Decision 6).
   { path: 'crates/corvis-orm/src/error.rs', pattern: /http:\/\/pris\.ly\/d\/connection-pool/, reason: 'P2024 message copied verbatim for parity' },

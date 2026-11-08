@@ -92,4 +92,6 @@ register listeners for the `upgrade` event. See [HTTP adapter](/faq/http-adapter
 
 The repository's `bench/` directory contains a reproducible benchmark (`bash bench/run.sh`)
 against an equivalent Node.js application. The results and the measurement environment are in
-[Corvis versus Fastify, Express and Hono](/faq/corvis-vs-fastify-express-hono).
+[Corvis versus Fastify, Express and Hono](/faq/corvis-vs-fastify-express-hono). A real application measured
+against its Node.js original is in
+[Benchmark: a migrated application versus its original](/faq/port-vs-original-benchmark).

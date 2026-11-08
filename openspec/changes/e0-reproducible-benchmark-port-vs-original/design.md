@@ -173,3 +173,45 @@
 - **Maintainer decision (2026-11-08):** the published numbers describe the reference application generically (for
   example "a real invoicing API with 74 routes on Postgres"), without its name or code; the numbers and the method
   are published.
+
+## Implementation notes (2026-11-08)
+
+Decisions taken while implementing groups 1, 2, 3, 5 and 6 (group 4, the publishable run, is left to the maintainer's
+session).
+
+- **Naming.** The published surfaces describe the application generically ("a real invoicing API with 74 routes on
+  PostgreSQL"). `bench/port-vs-original/**` is now in the scan list of `scripts/check-naming.mjs`. The only places that
+  carry the application's name are the `--app facten` option and its default in `run.mjs` (the design names it); the
+  administrator's email is derived from `--app` at run time instead of being written in `scenario.mjs`, and the docs
+  pages, the README, `results.md` and `summary.json` never name the application. `summary.json` records the versions of
+  the original's ORM and framework as `originalOrmVersion` and `originalFrameworkVersion`, so it needs no package names;
+  `run.mjs` reads them from the original's `package.json`, which needs one allowlist entry in `check-naming.mjs`
+  (package names as nominative uses). Routes appear in `run.mjs` and `scenario.mjs` only; the docs and the results use
+  scenario descriptions.
+- **Databases and ports.** The benchmark uses its own databases (`bench_original`, `bench_port`, created from the
+  template and dropped at the end, unless `--keep-db`) and ports 3611 and 3612 (`--ports`), so it never touches
+  `facten_nest` / `facten_corvis` or the ports of the parity suites.
+- **Quick runs** write to `bench/port-vs-original/raw/quick/` (git-ignored), never to `results/`, and their summary has
+  `"publishable": false`; `report.mjs --docs` refuses such a summary unless `--allow-quick` is given.
+- **Latency rate per scenario.** `R` is half of the original's median throughput of that same scenario (a single
+  rate would be wrong across scenarios that differ by 30x). With one Corvis worker `R` can be above what the target
+  sustains (a health check on a single worker), so the latency table has an "Achieved (req/s)" column and the docs say a
+  saturated target's percentiles include queueing.
+- **Memory.** On Windows one PowerShell process per server reads `WorkingSet64` and `PeakWorkingSet64` every 500 ms
+  (a PowerShell start per reading would be too slow); on Linux the sampler reads `/proc/<pid>/status`. The peak is the
+  process lifetime counter, so it covers startup, the warmup, the three throughput runs and the three latency runs of
+  that scenario; the counter right after the throughput phase is kept as `afterThroughputPeak` in `summary.json`.
+  Checked against `Get-Process` read from a separate shell during a run: identical values.
+- **Equality check of 1.2.** Besides apidiff (which compares every measured request on both sides in the setup phase),
+  each target is checked with one request before measuring: it must answer 200, and the listing count and the preview
+  totals must match the first target's. This uses `fetch` instead of `oha -n 1`; the body file passed to oha with `-D`
+  is the one the check sends.
+- **Interrupts.** Errors, `SIGINT`, `SIGTERM` and normal exit stop every process the script started. On Windows a hard
+  kill of the orchestrator cannot run handlers and would leave its children running; at the next start the script
+  refuses to run if its ports are in use.
+- **Observed in quick runs (not for publication).** The load generator reported `os error 10048` (no local port
+  available) in some closed-loop runs against the port, and the server side showed many `TIME_WAIT` sockets; whether
+  the port closes keep-alive connections more often than the original should be checked on the quiet machine before
+  publishing numbers, and any such errors are reported next to their cells.
+- **Docs.** The tables live between the `bench:port-vs-original` markers of both pages. Until the publishable run they
+  hold the placeholder "Results pending the publishable run" (`report.mjs --docs-placeholder` restores it).
