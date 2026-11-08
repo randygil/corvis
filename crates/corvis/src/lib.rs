@@ -205,8 +205,8 @@ pub use z::{ZodDto, ZodSchema, ZodValidationPipe};
 
 pub use corvis_macros::{Validate, controller, handlers, injectable, main, module, public, routes, test, websocket_gateway};
 pub use posture::{
-    GuardInfo, PostureEntry, PostureExemption, PostureKind, PostureStatus, RoutePostureError, RoutePostureMode, RoutePostureOptions,
-    RoutePostureReport,
+    AccessGuardSummary, GuardInfo, GuardScope, PostureEntry, PostureExemption, PostureKind, PostureStatus, PublicSource, RoutePostureError,
+    RoutePostureMode, RoutePostureOptions, RoutePostureReport,
 };
 
 pub use http_adapter::{HttpAdapter, HttpAdapterHost, HttpServer, UpgradeRequest};

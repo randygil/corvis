@@ -213,14 +213,40 @@ app.set_route_posture(
 );
 ```
 
-- El patrón de la exención se compara con la ruta completa (prefijo global y versión incluidos) con las mismas reglas que las [rutas de middleware](/es/middleware): `/api/*/internal/*`. `RequestMethod::All` coincide con cualquier método; una ruta declarada con `#[all]` solo la cubre una exención `All`.
-- Una razón en blanco hace que `init()` falle. Una exención que no coincide con ninguna ruta registra una advertencia.
+- El patrón de la exención se compara literalmente con la plantilla de ruta completa (prefijo global y versión incluidos), segmento a segmento: un segmento literal coincide con el mismo literal (sin distinguir mayúsculas), `:id` o `{id}` coincide solo con un segmento `:param` (así `/files/:id` no exime `/files/export-all`), `*` como segmento completo es exactamente un segmento (`/api/*/internal/*`), `**` es cero o más segmentos (`/metrics/**`) y `*` dentro de un segmento (`/health*`) nunca cruza un `/`. `RequestMethod::All` coincide con cualquier método; una ruta declarada con `#[all]` solo la cubre una exención `All`.
+- Una razón en blanco hace que `init()` falle. Una exención que no coincide con ninguna ruta registra una advertencia, y también la que coincide solo con rutas que ya tienen un guard o son públicas (aceptaría esas rutas en silencio si se quitara el guard).
 - Un guard que solo limita o valida peticiones no decide quién puede llamar a una ruta. `ThrottlerGuard` y `ZodGuard` no cuentan. Tu propio guard cuenta por defecto; sobrescribe `controls_access()` para que devuelva `false` cuando deja pasar todo salvo que esté configurado (un guard de roles sin roles, por ejemplo). Solo cambia la declaración, no cómo se ejecuta el guard.
-- `app.route_posture()` devuelve, después de `init()` y en cualquier modo (también apagado), la postura de cada ruta: método, ruta, controlador y handler, guards, y si está protegida, pública, exenta (con su razón) o sin protección. Implementa `Display` (una tabla) y `serde::Serialize`.
+- `app.route_posture()` devuelve, después de `init()` y en cualquier modo (también apagado), la postura de cada ruta: método, ruta, controlador y handler, guards, y si está protegida, pública (y si el marcador está en el handler o en el controlador), exenta (con su razón) o sin protección. También lista los guards que contaron como control de acceso (`access_guards()`) y las exenciones redundantes. Implementa `Display` (una tabla) y `serde::Serialize`.
 - Llama a `require_route_posture()` o `set_route_posture()` antes de `init()` o `listen()`; después no tienen efecto.
 - Las rutas `#[sse]` se revisan como cualquier otra. Los handlers de mensajes de gateways todavía no se revisan.
 
 Contar un guard es una declaración, no una prueba de que autentique: la verificación no distingue un guard de autenticación real de uno que siempre devuelve `true`.
+
+### Guards globales que dejan pasar todo
+
+El riesgo es un guard global que deja pasar todo cuando no tiene nada que comprobar. Un guard de roles registrado con `Provider::app_guard::<RolesGuard>()` que devuelve `Ok(true)` cuando la ruta no tiene metadatos `roles` es el caso típico; también lo son los guards de tenant, CSRF, modo mantenimiento y feature flags. Por defecto cuenta como control de acceso, así que todas las rutas parecen protegidas y la verificación pasa aunque nadie se autentique. Sobrescribe `controls_access()` para que devuelva `false` en todo guard que no deniega por defecto:
+
+```rust
+#[async_trait]
+impl CanActivate for RolesGuard {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> { ... }
+
+    fn controls_access(&self) -> bool {
+        false
+    }
+}
+```
+
+Para detectar el caso, en modo warn y enforce la verificación registra una línea con los guards que contó, su alcance y cuántas rutas cubre cada uno, por ejemplo `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller CatsController, 5 routes)`. Un guard global que cubre todas las rutas y no es tu guard de autenticación es el que hay que revisar. Los mismos datos están en `app.route_posture().unwrap().access_guards()`.
+
+### Lo que la verificación no ve
+
+La verificación cubre solo las rutas de controladores. Estas superficies HTTP quedan fuera, así que protégelas por separado:
+
+- la interfaz de Swagger y Scalar y su documento JSON (se montan como middleware);
+- `ServeStaticModule` y `serve_static` (archivos estáticos);
+- cualquier middleware de `use_fn` o `configure` que responda sin llamar a `next`;
+- los listeners `upgrade` directos y los handshakes de WebSocket (los gateways los cubre una versión posterior).
 
 ## Guards en los tests
 
