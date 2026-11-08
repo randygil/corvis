@@ -21,6 +21,12 @@ Run the suites **one at a time** (shared Docker container and fixed ports), and 
   ```
 - The project settings set `CARGO_TARGET_DIR` to the framework's target dir. **The ports keep their own target
   dirs** (their scripts expect `./target/...`), so override it when building them, as below.
+- **Testing a branch in a worktree:** back up each port's `Cargo.toml` and `Cargo.lock`, rewrite the `corvis`,
+  `corvis-orm` and `corvis-swagger` path dependencies to `<worktree>/crates/...`, and restore both files byte for byte
+  at the end (`cmp` against the backup; the ports are not git repos). Before building, clean only the framework
+  crates each port actually depends on (`corvis-cli` is in none, `corvis-swagger` is not in houseplan), for example
+  `CARGO_TARGET_DIR="$PWD/target" cargo clean --release -p corvis -p corvis-macros -p corvis-orm -p corvis-orm-macros`;
+  otherwise a build may reuse artifacts compiled from another checkout with the same crate names.
 
 ## 1. Build and unit-test each port (release)
 
@@ -79,7 +85,8 @@ Caracas time.
 ```powershell
 taskkill /F /IM houseplan-api.exe 2>$null
 Get-NetTCPConnection -State Listen -LocalPort 3001,3101,3200,3300,3399,4000,4001,4100,4191 -ErrorAction SilentlyContinue |
-  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+  Where-Object { $_.OwningProcess -gt 4 } |
+  ForEach-Object { try { Stop-Process -Id $_.OwningProcess -Force -ErrorAction Stop } catch {} }
 ```
 
 ## Reading a difference
