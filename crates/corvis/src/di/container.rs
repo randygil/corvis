@@ -9,14 +9,29 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 
 use super::error::DiError;
-use super::injectable::{Injectable, ResolveCtx};
+use super::injectable::{Injectable, ResolveCtx, unknown_dependency};
 use super::module::{ConfigureFn, ExportItem, ModuleDefinition, ModuleImport};
-use super::provider::{Built, ErasedHooks, Instance, Provider, Scope, downcast, erase};
+use super::provider::{Built, DeclaredDeps, ErasedHooks, Instance, Provider, Scope, downcast, erase};
 use super::token::Token;
 use crate::common::lifecycle::HookKind;
 use crate::router::controller::ControllerDef;
 
 pub type ModuleId = usize;
+
+/// The deepest resolution chain the container follows before it gives up. A chain this long that never repeats a
+/// provider is almost surely a runaway, so it is reported as a circular dependency instead of exhausting the stack.
+const MAX_RESOLUTION_DEPTH: usize = 256;
+
+tokio::task_local! {
+    /// The resolution path of the factory running on this task, read by `ModuleRef` so that a resolution started
+    /// from inside a constructor continues the path instead of starting a new one.
+    static RESOLUTION_PATH: Arc<Vec<(ModuleId, Token)>>;
+}
+
+/// The resolution path of the construction running on this task, empty outside any construction.
+pub(crate) fn current_resolution_path() -> Arc<Vec<(ModuleId, Token)>> {
+    RESOLUTION_PATH.try_with(Arc::clone).unwrap_or_default()
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum ResolvedExport {
@@ -69,6 +84,16 @@ struct Scanner {
     modules: Vec<ModuleNode>,
     static_index: HashMap<TypeId, ModuleId>,
     overrides: Overrides,
+    /// The modules being filled right now, outermost first.
+    chain: Vec<ChainEntry>,
+}
+
+/// A module on the scanner's current import chain.
+struct ChainEntry {
+    type_id: TypeId,
+    name: String,
+    /// The module was reached through a dynamic import (`for_root()`).
+    dynamic: bool,
 }
 
 impl Scanner {
@@ -122,17 +147,38 @@ impl Scanner {
                 let def = definition();
                 let id = self.new_node(def.name.clone(), type_id);
                 self.static_index.insert(type_id, id);
-                self.fill(id, def, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None)?;
+                self.chain.push(ChainEntry { type_id, name: def.name.clone(), dynamic: false });
+                let filled = self.fill(id, def, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None);
+                self.chain.pop();
+                filled?;
                 Ok(id)
             }
             ModuleImport::Dynamic(dm) => {
                 let def = (dm.base)();
+                self.check_dynamic_import_cycle(def.type_id)?;
                 let id = self.new_node(def.name.clone(), def.type_id);
                 // A dynamic module also satisfies later static imports of the same class.
                 self.static_index.entry(def.type_id).or_insert(id);
-                self.fill(id, def, dm.imports, dm.providers, dm.controllers, dm.exports, dm.global)?;
+                self.chain.push(ChainEntry { type_id: def.type_id, name: def.name.clone(), dynamic: true });
+                let filled = self.fill(id, def, dm.imports, dm.providers, dm.controllers, dm.exports, dm.global);
+                self.chain.pop();
+                filled?;
                 Ok(id)
             }
+        }
+    }
+
+    /// Fails when the module on top of the chain is about to dynamically import a class that the same module class
+    /// already imported dynamically earlier on the chain: the graph would repeat itself forever.
+    fn check_dynamic_import_cycle(&self, imported: TypeId) -> Result<(), DiError> {
+        let Some(top) = self.chain.last() else { return Ok(()) };
+        let repeated = self.chain.windows(2).position(|w| w[0].type_id == top.type_id && w[1].type_id == imported && w[1].dynamic);
+        match repeated {
+            Some(start) => {
+                let names: Vec<&str> = self.chain[start..].iter().map(|e| e.name.as_str()).collect();
+                Err(DiError::CircularImport { chain: names.join(" -> ") })
+            }
+            None => Ok(()),
         }
     }
 
@@ -193,7 +239,7 @@ impl Scanner {
 impl Container {
     /// Scans the module graph starting at `root`.
     pub(crate) fn scan(root: ModuleImport, overrides: Overrides) -> Result<Arc<Container>, DiError> {
-        let mut scanner = Scanner { modules: Vec::new(), static_index: HashMap::new(), overrides };
+        let mut scanner = Scanner { modules: Vec::new(), static_index: HashMap::new(), overrides, chain: Vec::new() };
 
         // Internal core module (global): Reflector & friends.
         let core = scanner.new_node("InternalCoreModule".into(), TypeId::of::<InternalCoreModule>());
@@ -245,14 +291,73 @@ impl Container {
         }
 
         let globals = modules.iter().filter(|m| m.global).map(|m| m.id).collect();
-        Ok(Arc::new(Container {
+        let container = Container {
             modules,
             globals,
             root,
             instances: Mutex::new(HashMap::new()),
             hook_targets: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
-        }))
+        };
+        container.validate_transients()?;
+        Ok(Arc::new(container))
+    }
+
+    /// Checks the declared dependencies of every transient provider without creating anything, so a missing
+    /// dependency stops startup instead of the first resolution. Singletons are validated by being instantiated;
+    /// factory providers declare nothing and are not checked.
+    fn validate_transients(&self) -> Result<(), DiError> {
+        let mut done = HashSet::new();
+        for node in &self.modules {
+            for provider in &node.providers {
+                if self.is_transient(node.id, provider) {
+                    self.validate_transient(node.id, provider, &mut Vec::new(), &mut done)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_transient(
+        &self,
+        owner: ModuleId,
+        provider: &Provider,
+        path: &mut Vec<(ModuleId, Token)>,
+        done: &mut HashSet<(ModuleId, Token)>,
+    ) -> Result<(), DiError> {
+        let key = (owner, provider.token.clone());
+        if done.contains(&key) {
+            return Ok(());
+        }
+        if path.contains(&key) {
+            let mut chain: Vec<String> = path.iter().map(|(_, t)| t.display_name()).collect();
+            chain.push(provider.token.display_name());
+            return Err(DiError::Circular { chain: chain.join(" -> ") });
+        }
+        path.push(key.clone());
+        if let Some(target) = &provider.alias_of {
+            let (o, p) = self.lookup(owner, target).ok_or_else(|| DiError::NotFound { token: target.display_name() })?;
+            if self.is_transient(o, p) {
+                self.validate_transient(o, p, path, done)?;
+            }
+        } else if let DeclaredDeps::Fields(declared) = &provider.deps {
+            for dep in &declared.items {
+                match self.lookup(owner, &dep.token) {
+                    Some((o, p)) => {
+                        if self.is_transient(o, p) {
+                            self.validate_transient(o, p, path, done)?;
+                        }
+                    }
+                    None if dep.optional => {}
+                    None => {
+                        return Err(unknown_dependency(declared.requester, declared.names, dep.index, &dep.token, self.module_name(owner)));
+                    }
+                }
+            }
+        }
+        path.pop();
+        done.insert(key);
+        Ok(())
     }
 
     pub(crate) fn module_name(&self, id: ModuleId) -> String {
@@ -367,6 +472,9 @@ impl Container {
                 chain.push(provider.token.display_name());
                 return Err(DiError::Circular { chain: chain.join(" -> ") });
             }
+            if path.len() >= MAX_RESOLUTION_DEPTH {
+                return Err(depth_error(&path, &provider.token));
+            }
             let mut new_path = (*path).clone();
             new_path.push(key.clone());
             let ctx = ResolveCtx {
@@ -376,7 +484,8 @@ impl Container {
                 deps: &[],
                 path: Arc::new(new_path),
             };
-            let Built { instance, hook_target } = (provider.factory)(ctx).await?;
+            let scoped_path = ctx.path.clone();
+            let Built { instance, hook_target } = RESOLUTION_PATH.scope(scoped_path, (provider.factory)(ctx)).await?;
             if transient {
                 return Ok(instance);
             }
@@ -404,14 +513,26 @@ impl Container {
             {
                 return Ok(t);
             }
+            // Continue the path of the construction this call runs in (empty outside any construction).
+            let mut path = (*current_resolution_path()).clone();
+            if path.contains(&key) {
+                let mut chain: Vec<String> = path.iter().map(|(_, t)| t.display_name()).collect();
+                chain.push(key.1.display_name());
+                return Err(DiError::Circular { chain: chain.join(" -> ") });
+            }
+            if path.len() >= MAX_RESOLUTION_DEPTH {
+                return Err(depth_error(&path, &key.1));
+            }
+            path.push(key.clone());
+            let path = Arc::new(path);
             let ctx = ResolveCtx {
                 container: self.clone(),
                 module,
                 requester: Arc::from(crate::di::token::short_type_name(std::any::type_name::<T>())),
                 deps: &[],
-                path: Arc::new(vec![key.clone()]),
+                path: path.clone(),
             };
-            let value = Arc::new(T::construct(ctx).await?);
+            let value = Arc::new(RESOLUTION_PATH.scope(path, T::construct(ctx)).await?);
             if T::scope() != Scope::Transient {
                 self.instances.lock().unwrap().entry(key).or_insert_with(|| erase(value.clone()));
             }
@@ -550,3 +671,12 @@ impl Container {
 }
 
 struct InternalCoreModule;
+
+/// The error for a chain longer than [`MAX_RESOLUTION_DEPTH`]: the last links of the chain and the provider that was
+/// about to be added.
+fn depth_error(path: &[(ModuleId, Token)], next: &Token) -> DiError {
+    let tail = path.len().saturating_sub(8);
+    let mut chain: Vec<String> = path[tail..].iter().map(|(_, t)| t.display_name()).collect();
+    chain.push(next.display_name());
+    DiError::Circular { chain: format!("... -> {}", chain.join(" -> ")) }
+}

@@ -148,12 +148,59 @@ The first argument of `for_root_async` and `for_root_from_config` says whether t
 | `new(url)` | `file:./dev.db`, `sqlite::memory:` or `postgresql://...` |
 | `global(bool)` | Registers the module as global |
 | `log_queries(bool)` | Logs every SQL query with its parameters |
-| `max_connections(n)` | Pool size |
+| `max_connections(n)` | Pool size (overrides `connection_limit` in the URL) |
 | `explicit_connect(bool)` | Connect in `on_module_init` (default `true`) |
 | `transaction_options(..)` | Default `maxWait`, `timeout` and `isolationLevel` for transactions |
 | `push::<(A, B)>()` | Creates the missing tables and indexes at startup (useful in development and tests) |
 
 `push` does not modify or drop existing columns: use migrations for production.
+
+## Connection pool
+
+The pool is sized and timed from the database URL, the same way the original client does it, so an app that keeps its `DATABASE_URL` keeps its pool:
+
+```text
+postgresql://user:pass@host/db?connection_limit=5&pool_timeout=20
+file:./dev.db?connection_limit=1
+```
+
+| Parameter | Meaning | Default |
+|---|---|---|
+| `connection_limit` | Maximum number of pooled connections. An integer of at least 1 | `2 * physical CPU cores + 1` |
+| `pool_timeout` | Seconds a query waits for a free connection before it fails with `P2024`. `0` waits without limit | `10` |
+
+- They work for Postgres and for file-backed SQLite (`file:` and `sqlite:`). They are removed from the URL before it reaches the driver; every other parameter (`sslmode`, `application_name`, `options`, ...) is kept as written.
+- In-memory SQLite always uses exactly one connection: `connection_limit` is accepted and ignored there. On SQLite, `pool_timeout` is applied only when it is a valid number; an invalid one is ignored, as the original client does.
+- A repeated parameter keeps its last value, and values can be percent-encoded.
+- An invalid value (`connection_limit=0`, `connection_limit=abc`, `pool_timeout=-1`) fails when the client is created, with an initialization error `P1013` that names the parameter and shows the value only when it is short and plain (letters, digits, `+ . _ -`), never the rest of the URL. `OrmClientOptions` prints its URL without the password in `Debug` output; a code `acquire_timeout` of `Duration::MAX` means no limit. The original client treats `connection_limit=0` as no limit; corvis-orm requires at least 1.
+- The pool size is at most 262143 (the largest value Postgres accepts for its own `max_connections`), in the URL and in code: the driver reserves one slot per connection up front, so a larger value would exhaust memory. `connection_limit=262144` fails with `P1013`, and `max_connections(0)` or `max_connections(n)` above the bound fails when the client is created.
+- Values set in code win over the URL: `OrmClientOptions::max_connections(n)` (and `OrmModuleOptions::max_connections(n)`) over `connection_limit`, and `OrmClientOptions::acquire_timeout` over `pool_timeout`. The URL wins over the defaults.
+- `pool_timeout=0` with an unreachable server is bounded only by the operating system's connection timeout.
+
+::: warning Changed defaults
+Before this change the pool had 10 connections on Postgres and 5 on SQLite files, and a query waited up to 30 seconds for a connection. The defaults are now `2 * physical cores + 1` connections and 10 seconds. Set `connection_limit` and `pool_timeout` in the URL (or `max_connections` in code) to restore any previous value. With several connections on a SQLite file, writers can contend for the lock; use `connection_limit=1` when your app needs a single writer.
+:::
+
+Pool settings that newer client versions take in code (maximum size, connection timeout) map to `max_connections(n)` and `acquire_timeout`.
+
+## Database schema
+
+A Postgres URL can name the schema to use, as with the original client:
+
+```text
+postgresql://user:pass@host/db?schema=tenant_a
+```
+
+- Every pooled connection runs `SET search_path TO "tenant_a"` right after it opens, before any other statement. Generated queries, raw SQL, interactive transactions, `push` and migrations therefore resolve unqualified names in that schema, and only in that schema. The name is always quoted as an identifier (case and spaces are kept), so no value of `schema` can run another statement.
+- Without `schema` nothing changes: the server's `search_path` applies (`"$user", public` by default), and no `SET` is sent.
+- Models and enums with an explicit schema (`#[model(schema = "audit")]`) keep their qualified names.
+- `migrate deploy`, `migrate status` and `push` create the schema when it does not exist, and `_prisma_migrations` lives in it. An existing schema is never re-created, so a role that only has rights on that schema can deploy. Creating a missing schema needs the `CREATE` privilege on the database.
+- The path is exactly that one schema: objects of other schemas, such as extension functions installed in `public` or `extensions`, must be qualified, and `CREATE EXTENSION` in a migration installs the extension in the URL schema.
+- Migration scripts and `db_execute` run on a connection that is closed afterwards instead of going back to the pool, so a script that changes the session (`SET search_path`, `RESET ALL`) cannot send later queries to another schema. `_prisma_migrations` is always written to the URL schema by its qualified name.
+- Query parameters are read as form data: the query ends at the first `#`, keys and values are percent-decoded (`schem%61=t` is `schema=t`), and `+` in a value is a space (`My+Schema`).
+- An empty name, `$user`, a name starting with `pg_`, a name with a NUL character, or one longer than 63 bytes fails when the client is created, with an initialization error `P1013` that names `schema` and never shows the URL. The original client accepts an empty name (and then finds no table) and lets the server truncate long names; corvis-orm rejects both.
+- On SQLite the parameter is accepted and ignored. The 7.x adapter's `schema` option maps to this URL parameter.
+- A session setting that your own SQL changes (`SET search_path ...` outside a transaction) stays on that pooled connection, as with any session setting.
 
 ## Use `OrmService`
 
@@ -252,6 +299,8 @@ The binary applies the SQL migrations in a folder (`<folder>/<name>/migration.sq
 cargo run -q -p corvis-orm --bin corvis-orm -- migrate deploy --migrations db/migrations --url "$DATABASE_URL"
 cargo run -q -p corvis-orm --bin corvis-orm -- migrate status --migrations db/migrations --url "$DATABASE_URL"
 ```
+
+With `?schema=name` in the URL (see [Database schema](#database-schema)), `migrate deploy`, `migrate status` and `push` create the schema when it does not exist, and `_prisma_migrations` lives inside it.
 
 From code: `db.migrate_deploy(dir).await` and `db.migrate_status(dir).await`. There are no commands to generate migrations from model changes.
 

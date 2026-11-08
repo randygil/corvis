@@ -27,6 +27,7 @@
 mod cron_job;
 mod cron_time;
 
+pub(crate) use cron_job::panic_message;
 pub use cron_job::{CronErrorHandler, CronJob, CronJobParams, TickFn, TickOutput, tick_fn};
 pub use cron_time::{CronError, CronSource, CronTime, CronZone};
 

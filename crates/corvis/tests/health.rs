@@ -431,11 +431,129 @@ async fn fixture_no_scheme_diverges_on_purpose() {
 }
 
 /// The original does not catch an indicator that throws: it answers 500 `{ statusCode, message }` without a
-/// health body. Recorded for the panic-isolation change (#126); corvis does not catch panics yet.
+/// health body. corvis diverges on purpose: a panicking indicator is reported `down` (503, see the panic tests below).
 #[test]
 fn fixture_records_the_throwing_indicator() {
     let fx = fixture();
     let s = &fx["scenarios"]["throws_plain_error"];
     assert_eq!(s["status"], 500);
     assert_eq!(s["body"], json!({ "statusCode": 500, "message": "Internal server error" }));
+}
+
+// 4. panic isolation
+
+fn panicking_future(key: &str) -> HealthIndicator {
+    HealthIndicator::new(key.to_string(), || async {
+        if true {
+            panic!("connection pool poisoned");
+        }
+        Ok(json!({}))
+    })
+}
+
+#[tokio::test]
+async fn panicking_indicator_is_reported_down_next_to_the_others() {
+    let e = HealthCheckService
+        .check(vec![HealthIndicator::new("db", || async { Ok(json!({})) }), panicking_future("cache")])
+        .await
+        .unwrap_err();
+    assert_eq!(e.status().as_u16(), 503);
+    let body = e.get_response();
+    assert_eq!(body["status"], "error");
+    assert_eq!(body["info"]["db"], json!({ "status": "up" }));
+    assert_eq!(body["error"]["cache"], json!({ "status": "down", "message": "health indicator panicked" }));
+    assert_eq!(body["details"].as_object().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn indicator_that_panics_before_returning_its_future_is_reported_down() {
+    let e = HealthCheckService
+        .check(vec![
+            HealthIndicator::new("cfg", || -> futures::future::Ready<Result<Value, Value>> { panic!("bad config") }),
+            HealthIndicator::new("db", || async { Ok(json!({})) }),
+        ])
+        .await
+        .unwrap_err();
+    let body = e.get_response();
+    assert_eq!(body["error"]["cfg"], json!({ "status": "down", "message": "health indicator panicked" }));
+    assert_eq!(body["info"]["db"], json!({ "status": "up" }));
+}
+
+#[tokio::test]
+async fn a_hang_is_still_a_timeout_and_a_panic_a_panic() {
+    let e = HealthCheckService
+        .check(vec![
+            HealthIndicator::new("stuck", || async {
+                std::future::pending::<()>().await;
+                Ok(json!({}))
+            })
+            .timeout(Duration::from_millis(50)),
+            panicking_future("boom"),
+        ])
+        .await
+        .unwrap_err();
+    let body = e.get_response();
+    assert_eq!(body["error"]["stuck"]["message"], "timeout of 50ms exceeded");
+    assert_eq!(body["error"]["boom"]["message"], "health indicator panicked");
+}
+
+#[tokio::test]
+async fn panic_message_stays_out_of_the_response() {
+    let e = HealthCheckService
+        .check(vec![HealthIndicator::new("db", || async {
+            if true {
+                panic!("postgres://user:secret@db/app");
+            }
+            Ok(json!({}))
+        })])
+        .await
+        .unwrap_err();
+    let text = e.get_response().to_string();
+    assert!(!text.contains("secret"), "{text}");
+    assert!(text.contains("health indicator panicked"));
+}
+
+mod http_route {
+    use corvis::prelude::*;
+    use corvis::testing::{Test, request};
+
+    #[controller("health")]
+    pub struct HealthController {
+        health: Arc<HealthCheckService>,
+    }
+
+    #[routes]
+    impl HealthController {
+        #[get]
+        async fn check(&self) -> HttpResult<Value> {
+            self.health
+                .check(vec![
+                    HealthIndicator::new("db", || async { Ok(json!({})) }),
+                    HealthIndicator::new("cache", || async {
+                        if true {
+                            panic!("pool poisoned");
+                        }
+                        Ok(json!({}))
+                    }),
+                ])
+                .await
+        }
+    }
+
+    #[module(imports = [TerminusModule], controllers = [HealthController])]
+    pub struct AppModule;
+
+    #[corvis::test]
+    async fn route_answers_503_with_the_health_body_not_500() {
+        let module = Test::create_testing_module().import::<AppModule>().compile().await.unwrap();
+        let mut app = module.create_corvis_application();
+        app.init().await.unwrap();
+        let res = request(&app).get("/health").send().await;
+        res.expect_status(503);
+        let body = res.json_value();
+        assert_eq!(body["status"], "error");
+        assert_eq!(body["info"]["db"]["status"], "up");
+        assert_eq!(body["error"]["cache"], json!({ "status": "down", "message": "health indicator panicked" }));
+        app.close().await.unwrap();
+    }
 }

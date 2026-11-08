@@ -50,6 +50,7 @@ mod raw;
 mod schema;
 pub mod serde_helpers;
 mod transaction;
+mod url_params;
 pub mod util;
 
 pub use client::{OrmClient, OrmClientOptions};

@@ -464,3 +464,100 @@ async fn postgres_sql_generation() {
     // Like the reference client: the column is cast to text and Postgres' default `\` escape is used.
     assert_eq!(sql, "((t0.\"email\"::text ILIKE $1) AND (((t0.\"age\" > $2)) OR ((t0.\"id\" IN ($3, $4)))))");
 }
+
+fn pool_tmp(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("corvis-orm-client-pool-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn pool_slash(dir: &std::path::Path) -> String {
+    dir.to_string_lossy().replace('\\', "/")
+}
+
+#[tokio::test]
+async fn pool_sqlite_scheme_url_with_connection_limit_works() {
+    // The driver rejects `connection_limit` as an unknown query parameter; the client removes it.
+    let dir = pool_tmp("scheme");
+    let db = OrmClient::new(format!("sqlite://{}/pool.db?connection_limit=1", pool_slash(&dir))).unwrap();
+    db.db_push::<(User, Post, Profile)>().await.unwrap();
+    db.user().create(json!({ "data": { "email": "p@corvis.dev" } })).await.unwrap();
+    assert_eq!(db.user().count(()).await.unwrap(), 1);
+    db.disconnect().await.unwrap();
+    assert!(dir.join("pool.db").exists(), "the file is pool.db, the query string is not part of the name");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Holds the only connection with an interactive transaction while a raw query runs outside it.
+async fn pool_held_by_transaction(url: String, hold: std::time::Duration) -> (Result<u64, OrmError>, std::time::Duration) {
+    let db = OrmClient::new(url).unwrap();
+    db.db_push::<(User, Post, Profile)>().await.unwrap();
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
+    let holder = {
+        let db = db.clone();
+        tokio::spawn(async move {
+            db._transaction(|tx| async move {
+                tx.user().count(()).await?;
+                let _ = held_tx.send(());
+                tokio::time::sleep(hold).await;
+                Ok::<_, OrmError>(())
+            })
+            .await
+        })
+    };
+    held_rx.await.unwrap();
+    let t = std::time::Instant::now();
+    let res = db.execute_raw("SELECT 1", vec![]).await;
+    let waited = t.elapsed();
+    holder.await.unwrap().unwrap();
+    db.disconnect().await.unwrap();
+    (res, waited)
+}
+
+#[tokio::test]
+async fn pool_timeout_in_the_url_gives_p2024() {
+    let dir = pool_tmp("timeout");
+    let url = format!("file:{}/pool.db?pool_timeout=1&connection_limit=1", pool_slash(&dir));
+    let (res, waited) = pool_held_by_transaction(url, std::time::Duration::from_millis(2500)).await;
+    assert_eq!(res.unwrap_err().code(), Some("P2024"));
+    assert!(waited >= std::time::Duration::from_millis(900) && waited < std::time::Duration::from_millis(2000), "{waited:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn schema_parameter_is_ignored_on_sqlite() {
+    let dir = pool_tmp("schema");
+    for (i, q) in ["schema=main", "schema=other&connection_limit=1"].into_iter().enumerate() {
+        let db = OrmClient::new(format!("sqlite://{}/schema{i}.db?{q}", pool_slash(&dir))).unwrap();
+        db.db_push::<(User, Post, Profile)>().await.unwrap();
+        db.user().create(json!({ "data": { "email": "a@b.c" } })).await.unwrap();
+        assert_eq!(db.user().count(()).await.unwrap(), 1);
+        db.disconnect().await.unwrap();
+    }
+    let db = OrmClient::new(format!("file:{}/schema9.db?schema=main", pool_slash(&dir))).unwrap();
+    db.db_push::<(User, Post, Profile)>().await.unwrap();
+    assert_eq!(db.user().count(()).await.unwrap(), 0);
+    db.disconnect().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn invalid_schema_parameter_fails_at_creation_and_the_url_is_kept() {
+    let t = std::time::Instant::now();
+    let e = OrmClient::new("postgresql://u:p@127.0.0.1:1/db?schema=").unwrap_err();
+    assert!(t.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(e.code(), Some("P1013"));
+    let url = "postgresql://u:p@127.0.0.1:1/db?schema=tenant_a&sslmode=disable";
+    assert_eq!(OrmClient::new(url).unwrap().options().url, url);
+}
+
+#[tokio::test]
+async fn pool_timeout_zero_waits_without_limit() {
+    let dir = pool_tmp("nolimit");
+    let url = format!("file:{}/pool.db?pool_timeout=0&connection_limit=1", pool_slash(&dir));
+    let (res, waited) = pool_held_by_transaction(url, std::time::Duration::from_millis(1500)).await;
+    res.unwrap();
+    assert!(waited >= std::time::Duration::from_millis(1000), "{waited:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

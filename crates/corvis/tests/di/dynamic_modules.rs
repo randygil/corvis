@@ -1,6 +1,6 @@
 //! `core/dynamic-modules`: a user-written `DynamicModule` (the `for_root` pattern of the docs).
 //!
-//! Dynamic modules that import each other are tracked by #112 and not tested here.
+//! Dynamic modules that import each other are covered by `dynamic_import_cycles`.
 
 use std::future::Future;
 

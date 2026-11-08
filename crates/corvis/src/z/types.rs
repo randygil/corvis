@@ -3239,8 +3239,10 @@ pub mod coerce {
     pub fn number() -> ZNumber {
         ZNumber::new().coerce()
     }
-    /// `z.coerce.boolean()`. zod 3 mode: `"false"`, `"0"`, `"no"`, `"off"` and `""` become `false`;
-    /// zod 4: `Boolean(x)` (any non-empty string is `true`).
+    /// `z.coerce.boolean()`: converts the input with JavaScript's `Boolean(x)` before validating, in both zod 3 and
+    /// zod 4 modes. Only `false`, `""`, `0`, `NaN`, `null` and a missing value become `false`; every other value is
+    /// `true`, including the strings `"false"`, `"0"`, `"no"` and `"off"`. To read text flags such as
+    /// `?active=false`, use [`z::stringbool()`](super::stringbool).
     pub fn boolean() -> ZBoolean {
         ZBoolean::new().coerce()
     }

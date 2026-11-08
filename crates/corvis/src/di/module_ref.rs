@@ -72,7 +72,8 @@ impl ModuleRef {
             module: self.module,
             requester: Arc::from("ModuleRef"),
             deps: &[],
-            path: Arc::new(Vec::new()),
+            // Inside a constructor the resolution continues its path, so a cycle through `ModuleRef` is detected.
+            path: super::container::current_resolution_path(),
         }
     }
 

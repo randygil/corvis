@@ -48,6 +48,10 @@ impl InjectTag {
     pub fn resolve<T: InjectField>(self, ctx: ResolveCtx, token: Option<Token>, index: usize) -> BoxFuture<'static, Result<T, DiError>> {
         T::inject(ctx, token, index)
     }
+
+    pub fn dependency<T: InjectField>(self, token: Option<Token>, index: usize) -> Option<crate::di::Dependency> {
+        T::dependency(token, index)
+    }
 }
 
 pub struct DefaultTag;
@@ -59,6 +63,10 @@ impl DefaultTag {
         _index: usize,
     ) -> BoxFuture<'static, Result<T, DiError>> {
         async { Ok(T::default()) }.boxed()
+    }
+
+    pub fn dependency<T>(self, _token: Option<Token>, _index: usize) -> Option<crate::di::Dependency> {
+        None
     }
 }
 
@@ -374,6 +382,10 @@ macro_rules! default_injectable {
             impl $crate::di::Injectable for $t {
                 fn construct(_ctx: $crate::di::ResolveCtx) -> $crate::__private::BoxFuture<'static, ::std::result::Result<Self, $crate::di::DiError>> {
                     ::std::boxed::Box::pin(async { Ok(<$t as ::std::default::Default>::default()) })
+                }
+
+                fn dependencies() -> ::std::option::Option<$crate::di::Dependencies> {
+                    ::std::option::Option::Some($crate::di::Dependencies { requester: "", names: &[], items: ::std::vec::Vec::new() })
                 }
             }
         )*

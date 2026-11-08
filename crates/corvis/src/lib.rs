@@ -91,7 +91,7 @@ pub use serde_json;
 pub use serde_json::json;
 pub use tokio;
 
-pub use application::{CorvisApplication, CorvisApplicationOptions, CorvisFactory, ListenAddr, LoggerOption};
+pub use application::{CorvisApplication, CorvisApplicationOptions, CorvisFactory, InitFailedError, ListenAddr, LoggerOption};
 pub use common::context::{ArgumentsHost, ContextType, ExecutionContext, Target};
 pub use common::decorator::{CustomDecorator, apply_decorators};
 pub use common::enhancer::{
