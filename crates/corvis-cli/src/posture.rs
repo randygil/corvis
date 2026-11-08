@@ -130,6 +130,7 @@ impl ReportFilter {
 
 /// Splits `lines` into the first complete report and the other lines. A report without an END marker is not
 /// a report: its lines come back in the other lines.
+#[cfg(test)]
 pub fn split_report(lines: &[&str]) -> (Option<String>, Vec<String>) {
     let mut filter = ReportFilter::default();
     let (mut report, mut other) = (None, Vec::new());
@@ -332,7 +333,8 @@ mod tests {
 
     #[test]
     fn windows_line_endings_are_accepted() {
-        let lines = ["log\r\n", "----- BEGIN CORVIS ROUTE POSTURE REPORT -----\r\n", "row\r\n", "----- END CORVIS ROUTE POSTURE REPORT -----\r\n"];
+        let lines =
+            ["log\r\n", "----- BEGIN CORVIS ROUTE POSTURE REPORT -----\r\n", "row\r\n", "----- END CORVIS ROUTE POSTURE REPORT -----\r\n"];
         let (report, other) = split_report(&lines);
         assert_eq!(report.as_deref(), Some("row\n"));
         assert_eq!(other, ["log"]);

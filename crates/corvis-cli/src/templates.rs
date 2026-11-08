@@ -430,8 +430,9 @@ mod unit_tests {
         assert!(MAIN.contains("let mut app = CorvisFactory::create::<AppModule>().await?;"));
         let enforce = MAIN.find("app.require_route_posture();").expect("main enables the check");
         assert!(enforce < MAIN.find("app.listen(port)").unwrap(), "the check is enabled before listen");
-        assert!(APP_CONTROLLER.contains("    #[get]
+        let route = "    #[get]
     #[public]
-    fn get_hello"), "get_hello is public");
+    fn get_hello";
+        assert!(APP_CONTROLLER.contains(route), "get_hello is public");
     }
 }
