@@ -26,7 +26,7 @@
 - [x] 4.3 `cargo test --workspace` passes
 - [x] 4.4 Regression tests from group 1 are in place and the ones marked in 1.1 and 1.2 fail on the code before this change
 - [x] 4.5 Docs updated in English and Spanish (`docs/` and `docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 4.6 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences; record in the change whether `consi-backend`'s `run-jobs` binary needs a follow-up (design, Open questions)
+- [x] 4.6 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences; record in the change whether `consi-backend`'s `run-jobs` binary needs a follow-up (design, Open questions) — maintainer run on 7444f68: consi 832/832, facten 727/727, houseplan 598/598 (quiet-hours count), routes identical, databases equivalent. consi's `run-jobs` now also starts the cron schedule (gated by JOBS_ENABLED, off in the parity environment); no difference observed, and it matches the original's application context running scheduled jobs.
 
 ## Workflow follow-up
 
