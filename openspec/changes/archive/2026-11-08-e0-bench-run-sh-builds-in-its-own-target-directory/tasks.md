@@ -33,24 +33,24 @@
 
 ## 3. Run checks
 
-- [ ] 3.1 Delete the old `bench/target` folder on the maintainer's machine (388 MB), then a short run with the build:
+- [x] 3.1 Delete the old `bench/target` folder on the maintainer's machine (388 MB), then a short run with the build:
   `FRAMEWORKS=corvis SCENARIOS=hello DURATION=2 WARMUP=1 bash bench/run.sh` with no other heavy process running;
   verify the run completes, the binary is at `$CARGO_TARGET_DIR/release/corvis-app.exe`, no `bench/target` folder
   exists afterwards, and nothing new appears under `bench/` except the git-ignored `raw/` and `logs/`; restore the
   committed results with `git checkout bench/results.md` (short runs are not publishable)
-- [ ] 3.2 Same short run with `SKIP_BUILD=1` (reuses the binary, no build output), then with `SKIP_BUILD=1` after
+- [x] 3.2 Same short run with `SKIP_BUILD=1` (reuses the binary, no build output), then with `SKIP_BUILD=1` after
   renaming the binary temporarily (stops with the path and the build command, starts no server); restore the binary
   and `bench/results.md`; verify each result and that `git status` is clean apart from the intended files
 
 ## 4. Definition of done
 
 - [x] 4.1 `cargo fmt --all --check` passes (no Rust change expected)
-- [ ] 4.2 `cargo build --workspace --all-targets` with no warnings (unchanged Rust code; `bench/corvis-app` still
+- [x] 4.2 `cargo build --workspace --all-targets` with no warnings (unchanged Rust code; `bench/corvis-app` still
   builds as a member)
-- [ ] 4.3 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 4.4 `cargo test --workspace` passes
-- [ ] 4.5 Regression checks for the script: the results of 3.1 and 3.2 recorded in the pull request
-- [ ] 4.6 Docs: `bench/README.md` is repository text (English only); no page of the docs site changes (2.4); `npm run
+- [x] 4.3 `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [x] 4.4 `cargo test --workspace` passes
+- [x] 4.5 Regression checks for the script: the results of 3.1 and 3.2 recorded in the pull request
+- [x] 4.6 Docs: `bench/README.md` is repository text (English only); no page of the docs site changes (2.4); `npm run
   docs:check` in `docs/` passes
 - [x] 4.7 `node scripts/check-naming.mjs` passes
 - [x] 4.8 corvis-parity: no framework runtime code changes, so no parity run is required; confirm with
@@ -59,7 +59,7 @@
 
 ## Workflow follow-up
 
-- [ ] Archive the change with `/opsx:archive` after review
-- [ ] Close issue [#132](https://github.com/randygil/corvis/issues/132)
-- [ ] Tick #132 in its epic [#1](https://github.com/randygil/corvis/issues/1)
-- [ ] Move the card to Done in the Corvis Roadmap project (see the `corvis-task` skill)
+- [x] Archive the change with `/opsx:archive` after review
+- [x] Close issue [#132](https://github.com/randygil/corvis/issues/132)
+- [x] Tick #132 in its epic [#1](https://github.com/randygil/corvis/issues/1)
+- [x] Move the card to Done in the Corvis Roadmap project (see the `corvis-task` skill)

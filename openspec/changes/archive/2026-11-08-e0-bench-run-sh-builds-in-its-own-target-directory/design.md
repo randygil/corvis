@@ -152,3 +152,18 @@ in these places:
 - The Rust checks (`cargo build`, `clippy`, `test`) were not run: no Rust code, manifest or lockfile changed. Only
   `cargo fmt --all --check` was run.
 - Unticked: 3.1 and 3.2 (need a real benchmark build and run), 4.2 to 4.6 (see above).
+
+## Verification (2026-11-08)
+
+Run from the integration worktree with `CARGO_TARGET_DIR` set to the shared target:
+
+- 3.1: the old `bench/target` (388 MB) was deleted. `FRAMEWORKS=corvis SCENARIOS=hello DURATION=2 WARMUP=1 bash
+  bench/run.sh` built `corvis-app` in release mode into `<target>/release/corvis-app.exe` (32 s), verified the
+  endpoints and completed. No `bench/target` appeared; only the git-ignored `raw/`, `logs/` and `node-app` build
+  output changed under `bench/`. The peak RSS read 0 KB in this run because the sampler's first reading comes 2 s
+  after the measurement starts, which equals `DURATION=2`. That timing was there before this change, and the default
+  15 s run is not affected.
+- 3.2: with `SKIP_BUILD=1` the run compiled nothing and completed (peak RSS read correctly with `DURATION=3`). With
+  the binary renamed, it stopped with exit code 1 before starting any server: `<target>/release/corvis-app.exe does
+  not exist. Build it with: cargo build --release -p corvis-app`. The binary and `bench/results.md` were restored;
+  `git status` was clean and nothing listened on port 3200 afterwards.

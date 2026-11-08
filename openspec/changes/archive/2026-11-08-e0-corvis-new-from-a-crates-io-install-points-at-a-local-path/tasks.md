@@ -49,25 +49,25 @@
 - [x] 3.4 `README.md:98-99`: say that `corvis new` depends on the published version by default and that
   `--corvis-path` / `CORVIS_PATH` select a local checkout; verify the README has no other sentence that describes the
   old default (`grep -n "built from" README.md`)
-- [ ] 3.5 `npm run docs:check` in `docs/` passes
+- [x] 3.5 `npm run docs:check` in `docs/` passes
 
 ## 4. Definition of done
 
 - [x] 4.1 `cargo fmt --all --check` passes
-- [ ] 4.2 `cargo build --workspace --all-targets` with no warnings
+- [x] 4.2 `cargo build --workspace --all-targets` with no warnings
 - [x] 4.3 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 4.4 `cargo test --workspace` passes, including the new unit and integration tests of 1.1, 1.2, 2.1 and 2.2
-- [ ] 4.5 Docs in English and Spanish updated (3.1-3.4) and `npm run docs:check` passes
+- [x] 4.4 `cargo test --workspace` passes, including the new unit and integration tests of 1.1, 1.2, 2.1 and 2.2
+- [x] 4.5 Docs in English and Spanish updated (3.1-3.4) and `npm run docs:check` passes
 - [x] 4.6 `node scripts/check-naming.mjs` passes
 - [x] 4.7 corvis-parity: only `crates/corvis-cli` changes (no framework runtime crate), so no parity run is required;
   confirm with `git diff --stat` that no file under `crates/corvis/`, `crates/corvis-macros/`, `crates/corvis-orm*` or
   `crates/corvis-swagger*` changed and that `Cargo.lock` is unchanged
-- [ ] 4.8 File the follow-up issue for the VS Code extension (design, open question 3) if the maintainer agrees, and
-  link it from the pull request
+- [x] 4.8 File the follow-up issue for the VS Code extension (design, open question 3) if the maintainer agrees, and
+  link it from the pull request (filed as #149)
 
 ## Workflow follow-up
 
-- [ ] Archive the change with `/opsx:archive` after review
-- [ ] Close issue [#121](https://github.com/randygil/corvis/issues/121)
-- [ ] Tick #121 in its epic [#1](https://github.com/randygil/corvis/issues/1)
-- [ ] Move the card to Done in the Corvis Roadmap project (see the `corvis-task` skill)
+- [x] Archive the change with `/opsx:archive` after review
+- [x] Close issue [#121](https://github.com/randygil/corvis/issues/121)
+- [x] Tick #121 in its epic [#1](https://github.com/randygil/corvis/issues/1)
+- [x] Move the card to Done in the Corvis Roadmap project (see the `corvis-task` skill)
