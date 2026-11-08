@@ -147,7 +147,7 @@ HttpHealthIndicator::ping_check_with(
 );
 ```
 
-Incluso con `follow_cross_origin(true)`, una redirección a una dirección de loopback, link-local o privada (`127.0.0.1`, `10.x`, `192.168.x`, `169.254.x`, `localhost` y los equivalentes IPv6) se rechaza salvo que la URL configurada ya apuntara a una. Solo se reconocen IP literales y `localhost`: los nombres de host no se resuelven.
+Incluso con `follow_cross_origin(true)`, una redirección a una dirección de loopback, link-local o privada (`127.0.0.1`, `10.x`, `192.168.x`, `169.254.x`, `100.64.x`, `localhost`, otros rangos no públicos, los equivalentes IPv6 y las formas IPv6 que contienen una IPv4, como `::ffff:127.0.0.1`) se rechaza salvo que la URL configurada ya apuntara a una. Solo se reconocen IP literales y `localhost`: los nombres de host no se resuelven.
 
 Los mensajes sobre URLs inválidas y redirecciones son texto fijo: la URL configurada (que podría contener credenciales) y la cabecera `Location` de la respuesta nunca se copian a la respuesta de salud.
 

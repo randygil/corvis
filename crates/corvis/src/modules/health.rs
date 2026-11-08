@@ -184,12 +184,43 @@ fn is_internal(host: &url::Host<&str>) -> bool {
             let d = d.trim_end_matches('.').to_ascii_lowercase();
             d == "localhost" || d.ends_with(".localhost")
         }
-        url::Host::Ipv4(a) => a.is_loopback() || a.is_private() || a.is_link_local() || a.is_unspecified(),
+        url::Host::Ipv4(a) => is_internal_v4(a),
         url::Host::Ipv6(a) => {
             let seg = a.segments();
+            // IPv4-mapped (`::ffff:a.b.c.d`), IPv4-compatible (`::a.b.c.d`) and NAT64 (`64:ff9b::/96`) addresses
+            // reach the embedded IPv4 address on dual-stack hosts, so they are judged by it.
+            let embedded = if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                let o = a.octets();
+                Some(std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]))
+            } else {
+                a.to_ipv4()
+            };
+            if let Some(v4) = embedded.filter(|v4| !v4.is_unspecified() || a.is_unspecified()) {
+                return is_internal_v4(&v4);
+            }
             a.is_loopback() || a.is_unspecified() || (seg[0] & 0xfe00) == 0xfc00 || (seg[0] & 0xffc0) == 0xfe80
         }
     }
+}
+
+/// Loopback, private, link-local and the other ranges that are not public unicast destinations.
+fn is_internal_v4(a: &std::net::Ipv4Addr) -> bool {
+    let [o0, o1, o2, _] = a.octets();
+    a.is_loopback()
+        || a.is_private()
+        || a.is_link_local()
+        || a.is_unspecified()
+        || a.is_broadcast()
+        || o0 == 0 // 0.0.0.0/8 ("this network")
+        || (o0 == 100 && (o1 & 0xc0) == 64) // 100.64.0.0/10 (shared address space, cloud metadata)
+        || (o0 == 192 && o1 == 0 && o2 == 0) // 192.0.0.0/24 (protocol assignments)
+        || (o0 == 198 && (o1 & 0xfe) == 18) // 198.18.0.0/15 (benchmarking)
+}
+
+/// A host for an error message, cut to a readable length: after a redirect it comes from the target server.
+fn shown_host(host: &url::Host<&str>) -> String {
+    let h = host.to_string();
+    if h.chars().count() > 64 { format!("{}…", h.chars().take(64).collect::<String>()) } else { h }
 }
 
 fn same_origin_or_upgrade(from: &url::Url, to: &url::Url) -> bool {
@@ -265,7 +296,7 @@ async fn request(url: &url::Url) -> Result<(http::StatusCode, Option<String>), V
         url::Host::Ipv4(a) => tokio::net::TcpStream::connect((*a, port)).await,
         url::Host::Ipv6(a) => tokio::net::TcpStream::connect((*a, port)).await,
     }
-    .map_err(|e| down(format!("connect to {host}:{port} failed: {e}")))?;
+    .map_err(|e| down(format!("connect to {}:{port} failed: {e}", shown_host(&host))))?;
     if https {
         #[cfg(feature = "health-tls")]
         {
@@ -407,12 +438,30 @@ mod tests {
             "http://[::1]/",
             "http://[fe80::1]/",
             "http://[fd00::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:169.254.169.254]/latest/meta-data",
+            "http://[::127.0.0.1]/",
+            "http://[64:ff9b::a9fe:a9fe]/",
+            "http://100.100.100.200/",
+            "http://192.0.0.192/",
+            "http://198.18.0.1/",
+            "http://0.1.2.3/",
+            "http://255.255.255.255/",
         ] {
             assert_eq!(refusal(o, o, t, &open), Some("redirect to an internal address was not followed"), "{t}");
         }
         let internal = "http://10.1.1.1/";
         assert!(refusal(internal, internal, "http://127.0.0.1/", &open).is_none());
         assert!(refusal(o, o, "http://8.8.8.8/", &open).is_none());
+        assert!(refusal(o, o, "http://[::ffff:8.8.8.8]/", &open).is_none());
+        assert!(refusal(o, o, "http://[2606:4700::1111]/", &open).is_none());
+    }
+
+    #[test]
+    fn long_hosts_are_cut_in_messages() {
+        let long = "a".repeat(60_000);
+        let shown = shown_host(&url::Host::Domain(&long));
+        assert!(shown.chars().count() <= 65, "{}", shown.len());
     }
 
     #[test]
