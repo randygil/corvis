@@ -23,7 +23,8 @@
 - [x] 4.1 `cargo build --workspace --all-targets` with no warnings
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings`: the code added by this change adds no lints (`cargo clippy -p corvis-orm --all-targets`); the existing workspace lints are tracked in #108
 - [x] 4.3 `cargo test --workspace` passes (the 3 known CRLF failures of `corvis-swagger` are tracked in #110)
-- [ ] 4.4 Runtime code changed (`engine/filter.rs`): run the `corvis-parity` check and verify the three ports keep 0 differences (left to the maintainer's parity run)
+- [x] 4.4 Runtime code changed (`engine/filter.rs`): run the `corvis-parity` check and verify the three ports keep 0 differences (left to the maintainer's parity run)
+  - Result (with the review fix `aef5678`): consi 832/832, facten 727/727, houseplan 598/598 (quiet-hours count), routes identical, databases equivalent. Security review of the fix: verified (no findings; memory back to baseline).
 - [x] 4.5 Docs: no user-facing change, so no `docs/` page (EN/ES) is needed; confirm
 
 ## Workflow follow-up
