@@ -33,7 +33,7 @@
 - [x] 5.3 `cargo test --workspace` passes
 - [x] 5.4 Regression tests from 1.1, 1.2, 2.2, 2.3 and 3.4 are in place and fail on the code before this change
 - [x] 5.5 Docs updated in English and Spanish (`docs/` and `docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 5.6 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (`facten-api` uses `use_class_as`)
+- [x] 5.6 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (`facten-api` uses `use_class_as`) — maintainer run on 254a10e: consi 832/832, facten 727/727, houseplan 598/598 (quiet-hours count), routes identical, databases equivalent.
 
 ## Workflow follow-up
 
