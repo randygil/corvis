@@ -15,4 +15,4 @@
 ## 3. Definition of done
 
 - [x] 3.1 No Rust code changed: cargo build, clippy, tests and the apidiff of the ports are unaffected
-- [ ] 3.2 Docs EN+ES: mention the published address in `docs/README.md`
+- [x] 3.2 Docs EN+ES: mention the published address in `docs/README.md`

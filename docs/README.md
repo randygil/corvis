@@ -3,6 +3,9 @@
 The documentation site is built with [VitePress](https://vitepress.dev). English is the primary language; Spanish is a
 full translation. This file is not part of the site.
 
+The site is published at https://corvis.randygil.com from `main` (Coolify builds `docs/Dockerfile`, which runs
+`npm run docs:check`, so a failing check stops the deployment).
+
 ## Running it
 
 ```bash
