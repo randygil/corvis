@@ -30,6 +30,8 @@ mod busboy;
 mod file;
 mod interceptors;
 mod storage;
+#[cfg(test)]
+mod fuzz;
 
 use std::sync::Arc;
 
