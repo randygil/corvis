@@ -2,3 +2,6 @@
 # Enable locally once per clone: git config blame.ignoreRevsFile .git-blame-ignore-revs
 #
 # Add the full SHA of each commit below, with its subject in a comment line above it.
+
+# Format the workspace with rustfmt
+79bd2a2843ce20d0bbd747df2a7556a7338fbf0d
