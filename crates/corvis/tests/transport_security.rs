@@ -371,6 +371,52 @@ async fn oversized_head_is_rejected() {
     assert!(r.starts_with("HTTP/1.1 431"), "{r:?}");
 }
 
+/// Before: the server closed the socket while the rest of the oversized request was still
+/// arriving, which Windows turns into a reset that discards the 431 the client had not read yet.
+/// The client keeps sending past the head, so unread input is guaranteed when the server answers.
+#[corvis::test]
+async fn early_error_response_survives_unread_input() {
+    let addr = serve(None).await;
+    for _ in 0..5 {
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        let big = "a".repeat(40 * 1024);
+        s.write_all(format!("GET /t/slow HTTP/1.1
+Host: x
+X-Big: {big}
+
+").as_bytes()).await.unwrap();
+        // Input that arrives after the server has answered; errors only mean it already closed.
+        let _ = s.write_all(&vec![b'b'; 256 * 1024]).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = s.write_all(&vec![b'b'; 64 * 1024]).await;
+        let r = read_head(&mut s, Duration::from_secs(5)).await;
+        assert!(r.starts_with("HTTP/1.1 431"), "{r:?}");
+    }
+}
+
+/// The drain after an early error response is bounded: a peer that keeps sending forever does
+/// not keep the connection open.
+#[corvis::test]
+async fn drain_after_an_early_error_response_is_bounded() {
+    let addr = serve(None).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let big = "a".repeat(40 * 1024);
+    s.write_all(format!("GET /t/slow HTTP/1.1
+Host: x
+X-Big: {big}
+
+").as_bytes()).await.unwrap();
+    let started = Instant::now();
+    let chunk = vec![b'b'; 64 * 1024];
+    // Keep sending until the server gives up (reset or closed); it must within a few seconds.
+    while started.elapsed() < Duration::from_secs(8) {
+        if s.write_all(&chunk).await.is_err() {
+            break;
+        }
+    }
+    assert!(started.elapsed() < Duration::from_secs(6), "server kept draining an endless sender");
+}
+
 // ---------------------------------------------------------------------------
 // Timeouts (slowloris)
 // ---------------------------------------------------------------------------

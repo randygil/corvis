@@ -18,7 +18,9 @@ use hyper::body::{Frame, Incoming, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::TcpListener;
+use tokio::io::AsyncReadExt;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::{Instant, Sleep};
 
 use crate::http::{Body, HttpException, Request, Response};
@@ -431,8 +433,16 @@ const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// The socket of a connection, with the `headersTimeout` / `keepAliveTimeout` of Node: while no
 /// request is in flight, a read that waits past the deadline fails and hyper closes the
 /// connection. Requests in flight are not limited here (the body read has `requestTimeout`).
-struct TimedIo<S> {
-    io: S,
+///
+/// When the connection is dropped by the server, it is closed gracefully (see [`linger_close`]) so
+/// that an error response sent before the request was fully read is not lost to a TCP reset.
+struct TimedIo {
+    /// `None` only while `Drop` hands the socket to the closing task.
+    io: Option<TcpStream>,
+    /// Held until the socket is really closed, so `max_connections` also counts closing sockets.
+    permit: Option<OwnedSemaphorePermit>,
+    /// `false` when the server closes the connection to punish the peer (timeouts, h2c refused).
+    linger: bool,
     state: Arc<ConnState>,
     headers_timeout: Option<Duration>,
     keep_alive_timeout: Option<Duration>,
@@ -443,10 +453,55 @@ struct TimedIo<S> {
     preface: Option<usize>,
 }
 
-impl<S> TimedIo<S> {
-    fn new(io: S, state: Arc<ConnState>, options: &ServerOptions) -> Self {
+/// Most input the server reads and discards after an early error response before closing.
+const LINGER_MAX_BYTES: usize = 1024 * 1024;
+/// Longest the server waits for the peer to finish (or stop) sending after an early error response.
+const LINGER_MAX_TIME: Duration = Duration::from_secs(2);
+
+/// Closes a socket the way Node does after answering before the request was fully read: the
+/// response is already flushed, so send FIN, then read and discard what the peer still sends until
+/// it closes, `LINGER_MAX_BYTES` or `LINGER_MAX_TIME`. Dropping a socket that still has unread
+/// input makes Windows (and Linux) send a reset, and the peer then discards the response it has
+/// not read yet. Both bounds keep a peer from holding the connection (and its connection permit).
+async fn linger_close(mut io: TcpStream) {
+    let drain = async {
+        let _ = tokio::io::AsyncWriteExt::shutdown(&mut io).await;
+        let mut buf = [0u8; 16 * 1024];
+        let mut total = 0usize;
+        while total < LINGER_MAX_BYTES {
+            match io.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => total += n,
+            }
+        }
+    };
+    let _ = tokio::time::timeout(LINGER_MAX_TIME, drain).await;
+}
+
+impl Drop for TimedIo {
+    fn drop(&mut self) {
+        let (Some(io), true) = (self.io.take(), self.linger && !self.state.upgraded.load(Ordering::SeqCst)) else {
+            return;
+        };
+        let permit = self.permit.take();
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => {
+                rt.spawn(async move {
+                    linger_close(io).await;
+                    drop(permit);
+                });
+            }
+            Err(_) => drop(io),
+        }
+    }
+}
+
+impl TimedIo {
+    fn new(io: TcpStream, permit: Option<OwnedSemaphorePermit>, state: Arc<ConnState>, options: &ServerOptions) -> Self {
         TimedIo {
-            io,
+            io: Some(io),
+            permit,
+            linger: true,
             state,
             headers_timeout: options.headers_timeout,
             keep_alive_timeout: options.keep_alive_timeout,
@@ -468,6 +523,10 @@ impl<S> TimedIo<S> {
         }
     }
 
+    fn sock(&mut self) -> Pin<&mut TcpStream> {
+        Pin::new(self.io.as_mut().expect("socket is present until drop"))
+    }
+
     fn on_read(&mut self, data: &[u8]) -> io::Result<()> {
         self.sync();
         if let Phase::KeepAlive(_) = self.phase {
@@ -478,6 +537,7 @@ impl<S> TimedIo<S> {
             if data[..n] != H2_PREFACE[matched..matched + n] {
                 self.preface = None;
             } else if matched + n == H2_PREFACE.len() {
+                self.linger = false;
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 (h2c) is disabled"));
             } else {
                 self.preface = Some(matched + n);
@@ -510,17 +570,20 @@ impl<S> TimedIo<S> {
             sleep.as_mut().reset(deadline);
         }
         match sleep.as_mut().poll(cx) {
-            Poll::Ready(()) => Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "connection idle timeout"))),
+            Poll::Ready(()) => {
+                self.linger = false;
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "connection idle timeout")))
+            }
             Poll::Pending => Poll::Pending,
         }
     }
 }
 
-impl<S: AsyncRead + Unpin> AsyncRead for TimedIo<S> {
+impl AsyncRead for TimedIo {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let this = &mut *self;
         let before = buf.filled().len();
-        match Pin::new(&mut this.io).poll_read(cx, buf) {
+        match this.sock().poll_read(cx, buf) {
             Poll::Ready(Ok(())) => {
                 if buf.filled().len() > before {
                     this.on_read(&buf.filled()[before..])?;
@@ -533,10 +596,10 @@ impl<S: AsyncRead + Unpin> AsyncRead for TimedIo<S> {
     }
 }
 
-impl<S: AsyncWrite + Unpin> AsyncWrite for TimedIo<S> {
+impl AsyncWrite for TimedIo {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let this = &mut *self;
-        let r = Pin::new(&mut this.io).poll_write(cx, buf);
+        let r = this.sock().poll_write(cx, buf);
         if let Poll::Ready(Ok(n)) = r
             && n > 0 {
                 this.sync();
@@ -548,10 +611,10 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for TimedIo<S> {
         r
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_flush(cx)
+        self.sock().poll_flush(cx)
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_shutdown(cx)
+        self.sock().poll_shutdown(cx)
     }
     fn poll_write_vectored(
         mut self: Pin<&mut Self>,
@@ -559,7 +622,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for TimedIo<S> {
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
         let this = &mut *self;
-        let r = Pin::new(&mut this.io).poll_write_vectored(cx, bufs);
+        let r = this.sock().poll_write_vectored(cx, bufs);
         if let Poll::Ready(Ok(n)) = r
             && n > 0 {
                 this.sync();
@@ -570,7 +633,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for TimedIo<S> {
         r
     }
     fn is_write_vectored(&self) -> bool {
-        self.io.is_write_vectored()
+        self.io.as_ref().is_some_and(|io| io.is_write_vectored())
     }
 }
 
@@ -608,7 +671,7 @@ pub(crate) async fn serve(
                 };
                 let _ = stream.set_nodelay(true);
                 let state = Arc::new(ConnState::default());
-                let io = TimedIo::new(stream, state.clone(), &options);
+                let io = TimedIo::new(stream, permit, state.clone(), &options);
                 let shared = shared.clone();
                 let opts = options.clone();
                 let service = hyper::service::service_fn(move |req| {
@@ -629,7 +692,6 @@ pub(crate) async fn serve(
                 let conn = graceful.watch(conn.into_owned());
                 tokio::spawn(async move {
                     let _ = conn.await;
-                    drop(permit);
                 });
             }
             _ = &mut shutdown => break,
