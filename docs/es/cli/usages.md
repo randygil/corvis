@@ -87,10 +87,13 @@ corvis start [--watch] [--release] [-- <argumentos del programa>]
 | `corvis start --release` (o `--prod`) | `cargo run --release` |
 | `corvis start -- --mi-flag` | `cargo run -- --mi-flag` |
 | `corvis start --watch` | `cargo watch -x run` |
+| `corvis start --watch --release` | `cargo watch -x "run --release"` |
+| `corvis start --watch -- --port 4000` | `cargo watch -x "run -- --port 4000"` |
 
+Las opciones de `corvis` (`--watch`, `--release`, `--prod`) se leen solo antes del primer `--`. Todo lo que va después de `--` llega a tu programa sin cambios, así que `corvis start -- --release` ejecuta `cargo run -- --release` (una compilación debug que recibe `--release`).
 Sin `--watch`, el comando imprime antes el perfil que ejecuta (`Running the debug profile ...` o `Running the release profile`).
 
-`--watch` necesita [`cargo-watch`](https://crates.io/crates/cargo-watch) (`cargo install cargo-watch`). Antes de ejecutarlo, la CLI busca `cargo-watch` en los directorios de `PATH` y en `$CARGO_HOME/bin` (por defecto `~/.cargo/bin`); si no está, el comando falla con `cargo-watch is not installed` e indica ejecutar `cargo install cargo-watch` o usar `corvis start` sin `--watch`. En modo watch se ignoran `--release` y los argumentos tras `--`.
+`--watch` necesita [`cargo-watch`](https://crates.io/crates/cargo-watch) (`cargo install cargo-watch`). Antes de ejecutarlo, la CLI busca `cargo-watch` en los directorios de `PATH` y en `$CARGO_HOME/bin` (por defecto `~/.cargo/bin`); si no está, el comando falla con `cargo-watch is not installed` e indica ejecutar `cargo install cargo-watch` o usar `corvis start` sin `--watch`. En modo watch, `--release` y los argumentos tras `--` pasan al comando vigilado. Como `cargo watch` ejecuta ese comando a través de un shell, el modo watch solo acepta argumentos formados por letras, dígitos y `- _ . / : = , + @`; cualquier otro argumento (por ejemplo uno con un espacio) hace que el comando falle antes de iniciar Cargo, y puedes usar `corvis start` sin `--watch`.
 
 ## `corvis build`
 

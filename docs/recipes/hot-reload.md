@@ -11,7 +11,7 @@ cargo install cargo-watch     # only once
 corvis start --watch
 ```
 
-`corvis start --watch` runs `cargo watch -x run`: it watches the project, recompiles when a file changes and launches the server again. Without the CLI, the equivalent command is the same `cargo watch -x run`. If `cargo-watch` is not installed, `corvis start --watch` stops with a message that shows `cargo install cargo-watch`.
+`corvis start --watch` runs `cargo watch -x run`: it watches the project, recompiles when a file changes and launches the server again. `--release` and the arguments after `--` are included: `corvis start --watch --release -- --port 4000` runs `cargo watch -x "run --release -- --port 4000"`. Without the CLI, the equivalent command is the same `cargo watch -x run`. If `cargo-watch` is not installed, `corvis start --watch` stops with a message that shows `cargo install cargo-watch`.
 
 ## Compile times
 

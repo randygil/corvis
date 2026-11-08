@@ -9,7 +9,7 @@ En un proyecto de Corvis no hay un archivo de scripts propio de la CLI: el proye
 | Tarea | Con la CLI | Con Cargo |
 |---|---|---|
 | Ejecutar en desarrollo | `corvis start` | `cargo run` |
-| Ejecutar y reiniciar al guardar | `corvis start --watch` | `cargo watch -x run` |
+| Ejecutar y reiniciar al guardar | `corvis start --watch` | `cargo watch -x run` (con `--release` y argumentos tras `--`: ver [Uso](/es/cli/usages#corvis-start)) |
 | Compilar | `corvis build` | `cargo build` |
 | Compilar para producción | `corvis build --release` | `cargo build --release` |
 | Ejecutar los tests | | `cargo test` |

@@ -9,7 +9,7 @@ A Corvis project has no CLI-specific scripts file: the project is a Cargo crate 
 | Task | With the CLI | With Cargo |
 |---|---|---|
 | Run in development | `corvis start` | `cargo run` |
-| Run and restart on save | `corvis start --watch` | `cargo watch -x run` |
+| Run and restart on save | `corvis start --watch` | `cargo watch -x run` (with `--release` and `--` arguments: see [Usage](/cli/usages#corvis-start)) |
 | Build | `corvis build` | `cargo build` |
 | Build for production | `corvis build --release` | `cargo build --release` |
 | Run the tests | | `cargo test` |
