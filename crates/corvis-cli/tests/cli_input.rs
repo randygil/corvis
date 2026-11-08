@@ -12,7 +12,7 @@ fn sandbox(tag: &str) -> PathBuf {
 }
 
 fn corvis(cwd: &Path, args: &[&str]) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_corvis")).args(args).current_dir(cwd).output().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_corvis")).args(args).current_dir(cwd).env_remove("CORVIS_PATH").output().unwrap();
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 

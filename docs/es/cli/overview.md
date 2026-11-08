@@ -64,17 +64,30 @@ Todas las opciones se describen en [Uso](/es/cli/usages).
 
 ## Dependencia del framework
 
-Corvis todavía no está publicado en crates.io, así que el `Cargo.toml` generado apunta a una copia local:
+Por defecto el `Cargo.toml` generado depende de la versión publicada del framework que corresponde a la CLI (la versión de la propia CLI, como requisito con caret):
 
-- por defecto, a la carpeta `crates/corvis` desde la que se compiló la CLI;
-- con `--corvis-path <ruta>` o la variable de entorno `CORVIS_PATH`, a otra ruta;
-- con `--corvis-version <requisito>`, a una versión del registro (para cuando se publique).
+```toml
+[dependencies]
+corvis = { version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+```
+
+Para usar una copia local del framework u otra versión:
+
+- `--corvis-path <ruta>` o la variable de entorno `CORVIS_PATH` escribe `path = "<ruta>"`;
+- `--corvis-version <requisito>` escribe `version = "<requisito>"`.
+
+Una opción de la línea de comandos gana sobre `CORVIS_PATH`, y un `CORVIS_PATH` vacío cuenta como no definido. Pasar `--corvis-path` y `--corvis-version` a la vez es un error. Cuando la ruta viene de `CORVIS_PATH`, el comando imprime una línea `NOTE` que lo indica.
 
 ```toml
 [dependencies]
 corvis = { path = "C:/Users/tu-usuario/src/corvis/crates/corvis" }
 serde = { version = "1", features = ["derive"] }
 ```
+
+::: warning Hasta el primer lanzamiento
+Corvis todavía no está en crates.io, así que un proyecto generado con los valores por defecto no puede resolver `corvis`. Hasta el primer lanzamiento, define `CORVIS_PATH` con la carpeta `crates/corvis` de tu clon (Bash: `export CORVIS_PATH=~/src/corvis/crates/corvis`; PowerShell: `$env:CORVIS_PATH = "C:/src/corvis/crates/corvis"`) o pasa `--corvis-path`. Si la CLI se compiló desde un clon que todavía existe, imprime una línea `NOTE` con esa carpeta.
+:::
 
 ## Extensión para VS Code
 

@@ -95,8 +95,9 @@ corvis info
 
 Available schematics: `module`, `controller`, `service`, `resource`, `guard`, `interceptor`, `pipe`, `filter`,
 `middleware`, `gateway`. The CLI registers what it generates in the right module (`imports`, `controllers`,
-`providers`) and adds the `mod` declarations. `corvis new` accepts `--corvis-path <path>` (local dependency),
-`--corvis-version <version>` and `--skip-git`.
+`providers`) and adds the `mod` declarations. `corvis new` depends on the published `corvis` version that matches the
+CLI by default; `--corvis-path <path>` or the `CORVIS_PATH` variable select a local checkout, `--corvis-version
+<version>` another version, and `--skip-git` skips `git init`.
 
 Next: [First steps](https://corvis.randygil.com/first-steps) and the [CLI reference](https://corvis.randygil.com/cli/usages).
 

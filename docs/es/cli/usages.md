@@ -9,16 +9,19 @@ Referencia de los comandos de `corvis`. Las opciones empiezan con `--` y pueden 
 ## `corvis new`
 
 ```bash
-corvis new <nombre> [--corvis-path <ruta>] [--corvis-version <requisito>] [--skip-git]
+corvis new <nombre> [--corvis-path <ruta> | --corvis-version <requisito>] [--skip-git]
 ```
 
 Crea la carpeta del proyecto (el nombre en kebab-case) con `Cargo.toml`, `.env`, `.gitignore` y `src/` con `main.rs`, `app_module.rs`, `app_controller.rs` y `app_service.rs`. Falla si la carpeta ya existe.
 
 | Opción | Efecto |
 |---|---|
-| `--corvis-path <ruta>` | Dependencia `corvis = { path = "<ruta>" }`. Sin ella se usa `CORVIS_PATH` o la copia desde la que se compiló la CLI |
-| `--corvis-version <requisito>` | Dependencia `corvis = { version = "<requisito>" }` (un requisito de versión de Cargo) |
+| (ninguna) | Dependencia `corvis = { version = "<versión de la CLI>" }`, el framework publicado que corresponde a la CLI. Si `CORVIS_PATH` está definida y no vacía, se usa su ruta |
+| `--corvis-path <ruta>` | Dependencia `corvis = { path = "<ruta>" }`, para una copia local. Gana sobre `CORVIS_PATH` |
+| `--corvis-version <requisito>` | Dependencia `corvis = { version = "<requisito>" }` (un requisito de versión de Cargo). Gana sobre `CORVIS_PATH` |
 | `--skip-git` | No ejecuta `git init` |
+
+`--corvis-path` y `--corvis-version` no se pueden usar juntas: el comando falla y no crea nada. Cuando la ruta viene de `CORVIS_PATH`, el comando imprime `NOTE using CORVIS_PATH=<ruta>`. Cuando se escribe la versión por defecto y la copia desde la que se compiló la CLI todavía existe, imprime un `NOTE` con el valor de `--corvis-path` que la usaría. Hasta el primer lanzamiento en crates.io, define `CORVIS_PATH` o pasa `--corvis-path`.
 
 El nombre debe empezar con una letra y contener solo letras, dígitos, `-` y `_`. `--corvis-version` debe ser un requisito de versión de Cargo (por ejemplo `0.1`, `^0.1.2` o `>=0.1, <0.3`) y `--corvis-path` no puede contener comillas ni caracteres de control. Así nada se escribe fuera de `src/` ni se inyecta texto en los archivos generados. `corvis generate` aplica la misma regla de nombres.
 

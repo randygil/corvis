@@ -35,12 +35,12 @@ cargo run
 
 | Option | Dependency written |
 |---|---|
-| (none) | `path = "..."` pointing to `crates/corvis` in the repository the CLI was built from |
+| (none) | `version = "<CLI version>"`, the published framework that matches the CLI |
 | `--corvis-path <dir>` or the `CORVIS_PATH` variable | `path = "<dir>"` |
-| `--corvis-version <ver>` | `version = "<ver>"` (a Cargo version requirement, to use a version published in a registry) |
+| `--corvis-version <ver>` | `version = "<ver>"` (a Cargo version requirement) |
 
-::: tip
-The simplest option today is the path dependency: install the CLI from your clone of the repository and let `corvis new` point to it. If you move the clone, update the path in `Cargo.toml`.
+::: tip Until the first release
+Corvis is not on crates.io yet. Until it is, point the new project at your clone of the repository: set `CORVIS_PATH` to its `crates/corvis` folder once (Bash: `export CORVIS_PATH=~/src/corvis/crates/corvis`; PowerShell: `$env:CORVIS_PATH = "C:/src/corvis/crates/corvis"`) or pass `--corvis-path <dir>` to `corvis new`. If you move the clone, update the path in `Cargo.toml`.
 :::
 
 The project name must start with a letter and contain only letters, digits, `_`, or `-`.

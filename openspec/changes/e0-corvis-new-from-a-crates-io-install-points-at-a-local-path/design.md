@@ -141,3 +141,10 @@ workspace).
 2. Open question 2: `--corvis-path` together with `--corvis-version` is an error.
 3. Open question 3: the VS Code extension passing `CORVIS_PATH` is a separate issue.
 4. Open question 4: a caret requirement (`0.1.0`), not `=0.1.0`.
+
+## Implementation notes
+
+- `corvis_dependency` detects the conflict with `flag()` (the flag is present), so `--corvis-path --corvis-version x` also fails.
+- The "default used" state for the build-checkout `NOTE` is decided in `cmd_new` (no dependency flag and no `CORVIS_PATH`); the checkout exists when `<CARGO_MANIFEST_DIR>/../corvis/Cargo.toml` is a file.
+- `docs:check` was skipped (no `docs/node_modules`); tasks 3.5 and 4.5 stay open for that reason. Tasks 4.2 and 4.4 cover the whole workspace, and only `cargo clippy --workspace --all-targets` and `cargo test -p corvis-cli` were run.
+- Task 4.8 (follow-up issue for the extension) is tracked as #149 by the maintainer and not filed here.

@@ -64,17 +64,30 @@ All options are described in [Usage](/cli/usages).
 
 ## Framework dependency
 
-Corvis is not published on crates.io yet, so the generated `Cargo.toml` points to a local copy:
+By default the generated `Cargo.toml` depends on the published framework version that matches the CLI (the CLI's own version, as a caret requirement):
 
-- by default, to the `crates/corvis` folder the CLI was built from;
-- with `--corvis-path <path>` or the `CORVIS_PATH` environment variable, to another path;
-- with `--corvis-version <requirement>`, to a registry version (for when it is published).
+```toml
+[dependencies]
+corvis = { version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+```
+
+To use a local copy of the framework or another version:
+
+- `--corvis-path <path>` or the `CORVIS_PATH` environment variable writes `path = "<path>"`;
+- `--corvis-version <requirement>` writes `version = "<requirement>"`.
+
+A flag beats `CORVIS_PATH`, and an empty `CORVIS_PATH` counts as unset. Passing `--corvis-path` and `--corvis-version` together is an error. When the path comes from `CORVIS_PATH`, the command prints a `NOTE` line saying so.
 
 ```toml
 [dependencies]
 corvis = { path = "C:/Users/your-user/src/corvis/crates/corvis" }
 serde = { version = "1", features = ["derive"] }
 ```
+
+::: warning Until the first release
+Corvis is not on crates.io yet, so a project generated with the defaults cannot resolve `corvis`. Until the first release, set `CORVIS_PATH` to the `crates/corvis` folder of your clone (Bash: `export CORVIS_PATH=~/src/corvis/crates/corvis`; PowerShell: `$env:CORVIS_PATH = "C:/src/corvis/crates/corvis"`) or pass `--corvis-path`. When the CLI was built from a clone that still exists, it prints a `NOTE` line with that folder.
+:::
 
 ## VS Code extension
 
