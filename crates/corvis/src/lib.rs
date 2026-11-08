@@ -1,7 +1,6 @@
 //! # corvis
 //!
-//! A progressive Rust framework for building efficient and scalable server-side
-//! applications, built around modules,
+//! A modular backend framework for Rust, built around modules,
 //! controllers, providers with dependency injection, middleware, guards,
 //! interceptors, pipes, exception filters, validation, configuration, testing...
 //!
