@@ -63,6 +63,12 @@ async fn catch(&self, _exception: HttpException, host: &ArgumentsHost) -> Respon
 }
 ```
 
+::: warning Do not leak internal errors
+A catch-all filter (the default `catches` returns `true` for everything) that copies `exception.message()` into the frame sends internal error text (database messages, file paths) to the client, because the built-in mapping that hides it no longer runs. Check `exception.is_internal()` and answer with a generic message for those.
+:::
+
+A filter whose `catches` panics is treated as not catching the exception, and the panic is logged.
+
 ## The built-in mapping
 
 When no filter catches the exception, any error from a guard, interceptor, pipe, or handler is turned into an `exception` frame with a fixed shape.

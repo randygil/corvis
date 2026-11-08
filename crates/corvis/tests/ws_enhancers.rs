@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use corvis::prelude::*;
 use corvis::testing::request;
-use corvis::{ContextType, LogLevel, LoggerService, WsClient, WsException, WsResponse, WsServer, websocket_gateway};
+use corvis::{
+    CacheInterceptor, CacheModule, CacheOptions, ContextType, LogLevel, LoggerService, LoggingInterceptor, WsClient, WsException,
+    WsResponse, WsServer, websocket_gateway,
+};
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -146,6 +149,19 @@ impl ExceptionFilter for NoCatch {
     }
     async fn catch(&self, _exception: HttpException, _host: &ArgumentsHost) -> Response {
         unreachable!("catches returns false")
+    }
+}
+
+#[injectable]
+pub struct PanicCatches;
+
+#[async_trait]
+impl ExceptionFilter for PanicCatches {
+    fn catches(&self, _exception: &HttpException) -> bool {
+        panic!("catches broke");
+    }
+    async fn catch(&self, _exception: HttpException, _host: &ArgumentsHost) -> Response {
+        unreachable!("catches panics")
     }
 }
 
@@ -413,9 +429,38 @@ impl ShapesGateway {
         Err(HttpException::from_anyhow(corvis::anyhow::anyhow!("database is on fire")))
     }
 
+    #[subscribe_message("catches_panics")]
+    #[use_filters(PanicCatches)]
+    fn catches_panics(&self) -> HttpResult<()> {
+        Err(WsException::new("boom"))
+    }
+
     #[subscribe_message("internal_builtin")]
     fn internal_builtin(&self) -> HttpResult<()> {
         Err(HttpException::from_anyhow(corvis::anyhow::anyhow!("database is on fire")))
+    }
+}
+
+/// Replies depend on who asks (`who`) or are constant (`ping`); both would collide if cached by the
+/// handshake URL.
+#[websocket_gateway(path = "/cached")]
+pub struct CachedGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl CachedGateway {
+    #[subscribe_message("who")]
+    fn who(&self, #[connected_socket] client: WsClient) -> String {
+        record("who-handler");
+        client.handshake().query_param("user").unwrap_or_default().to_string()
+    }
+
+    #[subscribe_message("ping")]
+    fn ping(&self) -> &'static str {
+        record("ping-handler");
+        "pong"
     }
 }
 
@@ -432,12 +477,18 @@ impl HealthController {
 
 #[module(
     controllers = [HealthController],
-    providers = [PlainGateway, GuardedGateway, PublicGateway, FilteredGateway, ShapesGateway]
+    providers = [PlainGateway, GuardedGateway, PublicGateway, FilteredGateway, ShapesGateway, CachedGateway]
 )]
 pub struct AppModule;
 
 #[module(imports = [AppModule], providers = [Provider::app_guard::<Deny>()])]
 pub struct ProviderDenyModule;
+
+#[module(
+    imports = [AppModule, CacheModule::register(CacheOptions::default())],
+    providers = [Provider::app_interceptor::<CacheInterceptor>()]
+)]
+pub struct ProviderCacheModule;
 
 #[module(imports = [AppModule], providers = [Provider::app_guard::<PublicOnly>()])]
 pub struct ProviderPublicModule;
@@ -926,4 +977,51 @@ async fn replays_the_original_framework_fixture() {
             assert_eq!(calls(), expected_calls, "{name}: calls for {message}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Built-in interceptors that read the request now run on gateways.
+// ---------------------------------------------------------------------------
+
+#[corvis::test]
+async fn the_cache_interceptor_never_caches_gateway_messages() {
+    let _s = SERIAL.lock().await;
+    let (_app, addr) = start::<ProviderCacheModule>(|_| {}).await;
+    let mut a = connect(addr, "/cached?user=a").await;
+    let mut b = connect(addr, "/cached?user=b").await;
+    assert_eq!(send(&mut a, json!({ "event": "who" })).await.unwrap(), json!({ "event": "who", "data": "a" }));
+    // A different event and client must reach their own handler, not A's cached reply.
+    assert_eq!(send(&mut b, json!({ "event": "ping" })).await.unwrap(), json!({ "event": "ping", "data": "pong" }));
+    assert_eq!(send(&mut b, json!({ "event": "who" })).await.unwrap(), json!({ "event": "who", "data": "b" }));
+    assert_eq!(send(&mut a, json!({ "event": "ping" })).await.unwrap(), json!({ "event": "ping", "data": "pong" }));
+    assert_eq!(send(&mut a, json!({ "event": "who" })).await.unwrap(), json!({ "event": "who", "data": "a" }));
+    assert_eq!(calls(), ["who-handler", "ping-handler", "who-handler", "ping-handler", "who-handler"]);
+}
+
+#[corvis::test]
+async fn the_logging_interceptor_logs_the_handler_not_the_handshake_url() {
+    let _s = SERIAL.lock().await;
+    let (_app, addr) = start::<AppModule>(|app| {
+        app.use_global_interceptors(LoggingInterceptor);
+    })
+    .await;
+    let mut ws = connect(addr, "/cached?user=a&token=s3cret").await;
+    send(&mut ws, json!({ "event": "who" })).await.unwrap();
+    let lines: Vec<String> =
+        LOGS.lock().unwrap().iter().filter(|(_, _, c)| c.as_deref() == Some("LoggingInterceptor")).map(|(_, m, _)| m.clone()).collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("WS CachedGateway.who 200 - "), "{lines:?}");
+    assert!(!lines[0].contains("s3cret"));
+}
+
+#[corvis::test]
+async fn a_filter_whose_catches_panics_does_not_catch() {
+    let _s = SERIAL.lock().await;
+    let (_app, addr) = start::<AppModule>(|_| {}).await;
+    let mut ws = connect(addr, "/shapes").await;
+    assert_eq!(send(&mut ws, json!({ "event": "catches_panics" })).await.unwrap(), built_in("boom"));
+    let logs = exception_logs();
+    assert!(logs.iter().any(|l| l.contains("PanicCatches") && l.contains("catches")), "{logs:?}");
+    // The connection is still alive.
+    assert_eq!(send(&mut ws, json!({ "event": "catches_panics" })).await.unwrap(), built_in("boom"));
 }
