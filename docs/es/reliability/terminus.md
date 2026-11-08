@@ -49,7 +49,7 @@ Dos detalles de ese ejemplo: la metadata `IS_PUBLIC_KEY` hace que el guard globa
 
 ## Formato de la respuesta
 
-Todos los indicadores se ejecutan en paralelo. Con todos arriba, la respuesta es `200`:
+Todos los indicadores se ejecutan en paralelo, cada uno con un [límite de tiempo](#limites-de-tiempo). Con todos arriba, la respuesta es `200`:
 
 ```json
 {
@@ -101,10 +101,76 @@ La closure tiene que ser `'static`, por eso se clona el `Arc` antes de moverlo d
 
 | Indicador | Qué comprueba |
 |---|---|
-| `corvis::HttpHealthIndicator::ping_check(clave, "host:puerto")` | Que se pueda abrir una conexión TCP a esa dirección en menos de 3 segundos. No hace una petición HTTP |
-| `corvis::MemoryHealthIndicator::check_rss(clave, bytes)` | Que la memoria residente del proceso no supere el umbral. Lee `/proc/self/statm`, así que solo mide en Linux; en otros sistemas siempre informa `up` sin datos |
+| `corvis::HttpHealthIndicator::ping_check(clave, "http://host:puerto/ruta")` | Envía un `GET` HTTP y solo está `up` con una respuesta 2xx (se siguen hasta 5 redirecciones). `https://` requiere la feature `health-tls` de `corvis` |
+| `corvis::HttpHealthIndicator::tcp_check(clave, "host:puerto")` | Que se pueda abrir una conexión TCP a esa dirección. No envía ninguna petición: úsalo con servicios sin HTTP, como Redis o SMTP |
+| `corvis::MemoryHealthIndicator::check_rss(clave, bytes)` | Que la memoria residente del proceso no supere el umbral. Mide en Linux, Windows y macOS; donde no puede medir, informa `down` con un mensaje en lugar de un `up` silencioso |
+
+Cuando `ping_check` falla, la entrada en `error` tiene un `message` y, si el servidor respondió, `statusCode` y `statusText`:
+
+```json
+{ "status": "down", "message": "Request failed with status code 500", "statusCode": 500, "statusText": "Internal Server Error" }
+```
+
+`check_rss` informa `{ "status": "down", "message": "Used rss exceeded the set threshold" }` por encima del umbral, y `up` sin campos adicionales en caso contrario.
+
+::: warning Migrar desde `ping_check("host:puerto")`
+`ping_check` antes solo abría una conexión TCP. Ahora recibe una URL y hace una petición HTTP, y un valor sin `http://` ni `https://` se informa `down` con un mensaje que nombra `tcp_check`. Reemplaza `ping_check(clave, "host:puerto")` por `tcp_check(clave, "host:puerto")` para conservar el comportamiento anterior.
+:::
+
+Para URLs `https://`, activa la feature en `Cargo.toml`:
+
+```toml
+corvis = { version = "0.1", features = ["health-tls"] }
+```
+
+Sin ella, una URL `https://` se informa `down` con un mensaje que nombra la feature, y no se envía ninguna petición.
+
+### Redirecciones
+
+`ping_check` sigue hasta 5 redirecciones, pero solo dentro del mismo origen (mismo esquema, host y puerto; una subida de `http` a `https` del mismo host también cuenta). Una redirección a otro origen no se sigue: el indicador queda `down` con `statusCode` `302` (o el estado recibido) y un mensaje que lo dice. Una redirección de `https` a `http` nunca se sigue. Esto difiere de la librería original, que sigue redirecciones a cualquier sitio (valor por defecto de axios), porque la redirección la controla el servidor destino y podría apuntar la comprobación a una dirección interna.
+
+Cambia el comportamiento con `ping_check_with` y `PingOptions`:
+
+```rust
+use corvis::{HttpHealthIndicator, PingOptions};
+
+HttpHealthIndicator::ping_check_with(
+    "api",
+    "https://api.example.com/health",
+    PingOptions::new().max_redirects(0), // 0 = no seguir ninguna redirección
+);
+
+HttpHealthIndicator::ping_check_with(
+    "cdn",
+    "https://example.com/",
+    PingOptions::new().follow_cross_origin(true),
+);
+```
+
+Incluso con `follow_cross_origin(true)`, una redirección a una dirección de loopback, link-local o privada (`127.0.0.1`, `10.x`, `192.168.x`, `169.254.x`, `100.64.x`, `localhost`, otros rangos no públicos, los equivalentes IPv6 y las formas IPv6 que contienen una IPv4, como `::ffff:127.0.0.1`) se rechaza salvo que la URL configurada ya apuntara a una. Solo se reconocen IP literales y `localhost`: los nombres de host no se resuelven.
+
+Los mensajes sobre URLs inválidas y redirecciones son texto fijo: la URL configurada (que podría contener credenciales) y la cabecera `Location` de la respuesta nunca se copian a la respuesta de salud.
+
+### Exposición de detalles
+
+Los detalles `down` de un indicador van a la respuesta de salud tal cual: `ping_check` y `tcp_check` pueden incluir el `host:puerto` de destino y el texto de error del sistema operativo (por ejemplo `connect ECONNREFUSED 10.0.0.5:6379`), y los indicadores propios incluyen lo que devuelvan. Si el endpoint es público, cualquiera puede leerlos: no pongas texto sensible en los detalles o protege la ruta.
+
+Cada llamada al endpoint de salud también abre conexiones salientes: una por cada `ping_check` o `tcp_check` (más las redirecciones), cada una abierta hasta el límite de tiempo del indicador. Un endpoint público que se llama a menudo puede usarse para generar ese tráfico, así que limita su tasa (ver [Límite de peticiones](/es/security/rate-limiting)) o guarda el resultado en caché unos segundos.
+
+## Límites de tiempo
+
+Cada indicador se ejecuta con un límite de 5 segundos. Uno que no termina a tiempo se informa `down` con `"message": "timeout of <ms>ms exceeded"`, y los demás indicadores se siguen informando, así que una dependencia colgada no puede colgar el endpoint de salud. Los indicadores corren de forma concurrente: el tiempo de respuesta lo acota el mayor límite, no la suma.
+
+Cambia el límite de un indicador con `timeout`:
+
+```rust
+use std::time::Duration;
+
+HttpHealthIndicator::ping_check("api", "http://127.0.0.1:8080/ready").timeout(Duration::from_millis(500))
+```
+
+Un orquestador cuya sonda expira antes de 5 segundos necesita un límite menor aquí. El valor por defecto no se puede cambiar para toda la aplicación.
 
 ## Límites
 
 - No hay indicadores incluidos para bases de datos, disco o servicios concretos: se escriben con `HealthIndicator::new`.
-- `check` no aplica un tiempo máximo a los indicadores propios. Si uno puede colgarse, envuélvelo con `tokio::time::timeout` dentro de la closure.

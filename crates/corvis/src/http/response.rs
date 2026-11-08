@@ -211,6 +211,7 @@ pub struct Cookie {
     pub value: String,
     pub path: Option<String>,
     pub domain: Option<String>,
+    /// Lifetime in milliseconds (see `Cookie::max_age`).
     pub max_age: Option<i64>,
     pub http_only: bool,
     pub secure: bool,
@@ -238,8 +239,10 @@ impl Cookie {
         self.domain = Some(d.into());
         self
     }
-    pub fn max_age(mut self, seconds: i64) -> Self {
-        self.max_age = Some(seconds);
+    /// Lifetime in **milliseconds**, like Express `res.cookie` and `CookieOptions::max_age`.
+    /// `Max-Age` is written as whole seconds, rounded down.
+    pub fn max_age(mut self, ms: i64) -> Self {
+        self.max_age = Some(ms);
         self
     }
     pub fn http_only(mut self, v: bool) -> Self {
@@ -280,7 +283,7 @@ impl Cookie {
             out.push_str(&format!("; Domain={d}"));
         }
         if let Some(m) = self.max_age {
-            out.push_str(&format!("; Max-Age={m}"));
+            out.push_str(&format!("; Max-Age={}", m.div_euclid(1000)));
         }
         if self.http_only {
             out.push_str("; HttpOnly");

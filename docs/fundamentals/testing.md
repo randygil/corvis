@@ -130,8 +130,22 @@ let module = Test::create_testing_module()
 
 `override_guard::<G>(mock)`, `override_interceptor::<I>(mock)`, `override_pipe::<P>(mock)`, and `override_filter::<F>(mock)` replace the enhancers referenced **by type** in `#[use_guards(G)]`, `#[use_interceptors(I)]`, `#[use_pipes(P)]`, `#[use_filters(F)]`, or in a parameter.
 
+The same methods also replace a global enhancer registered **by type** with `Provider::app_guard::<G>()`, `app_interceptor`, `app_pipe` or `app_filter`. The mock takes the original's place in the global order, and the original is never called:
+
+```rust
+// The module registers `Provider::app_guard::<RolesGuard>()`.
+let module = Test::create_testing_module()
+    .import::<AppModule>()
+    .override_guard::<RolesGuard>(AllowAll)
+    .compile()
+    .await
+    .unwrap();
+```
+
+If you override the provider behind a `Provider::app_*` registration instead (`override_provider_token("APP_GUARD:<type name>")`), the overriding value stays registered as a global enhancer of the same kind. If it cannot act as that kind of enhancer (for example a `String` where a guard is expected), `init()` fails with an error that names the enhancer, instead of starting the application without it.
+
 ::: warning
-Global enhancers registered with `Provider::app_guard` (and its equivalents) or with `use_global_*`, and those passed as an expression (`#[use_guards(RolesGuard::new("admin"))]`), are not replaced with these methods. For those from `use_global_*`, simply don't register them in the test application; for those from `Provider::app_*`, replace their dependencies with `override_provider`.
+Enhancers registered with `use_global_*`, and those passed as an expression (`#[use_guards(RolesGuard::new("admin"))]`), are not replaced with these methods. For those from `use_global_*`, simply don't register them in the test application.
 :::
 
 ## In-memory HTTP requests

@@ -79,8 +79,8 @@ filter in this order:
 
 1. The method's (`#[use_filters]` on the handler).
 2. The controller's.
-3. The global ones: first those registered with `Provider::app_filter`, then those from
-   `app.use_global_filters(...)`.
+3. The global ones, last registered first: those from `app.use_global_filters(...)` (from the last call
+   to the first), then those registered with `Provider::app_filter` (from the last to the first).
 
 The **first** filter whose `catches(&exception)` returns `true` is used. If none accepts it,
 `BaseExceptionFilter` responds with the standard body

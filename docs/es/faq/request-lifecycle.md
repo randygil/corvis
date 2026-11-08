@@ -80,8 +80,8 @@ filtro en este orden:
 
 1. Los del método (`#[use_filters]` en el handler).
 2. Los del controlador.
-3. Los globales: primero los registrados con `Provider::app_filter`, luego los de
-   `app.use_global_filters(...)`.
+3. Los globales, el último registrado primero: los de `app.use_global_filters(...)` (de la última
+   llamada a la primera), luego los registrados con `Provider::app_filter` (del último al primero).
 
 Se usa el **primer** filtro cuyo `catches(&exception)` devuelve `true`. Si ninguno lo acepta,
 `BaseExceptionFilter` responde con el cuerpo estándar

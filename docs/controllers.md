@@ -77,6 +77,7 @@ All handlers receive `&self` as their first parameter (the macro rejects those t
 ### Route patterns
 
 - `:name` captures one segment: `#[get(":id")]`, `#[get(":room/messages")]`.
+- `:name?` makes the segment optional: `#[get(":id?")]` in `#[controller("cats")]` answers `GET /cats` and `GET /cats/7`, and `#[get("files/:dir?/list")]` answers `/files/list` and `/files/docs/list`. When the segment is absent the parameter is missing: `#[param("id")] id: Option<String>` receives `None`. A path may have up to 4 optional segments (more is a startup error); with several in a row (`:a?/:b?`) the values bind from left to right. Static routes keep priority over an optional one. OpenAPI documents the parameter as a required path parameter, as OpenAPI requires for path parameters.
 - `*`, `*name`, or `{*name}` at the end capture the rest of the path.
 - Routes are case-insensitive (`/CATS` = `/cats`) and accept a single optional trailing slash (`/cats/` works, `/cats//` does not), like the Express 5 router.
 - Static segments take priority over parameters regardless of declaration order: `#[get("count")]` and `#[get(":id")]` can coexist in either order.

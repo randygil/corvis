@@ -11,7 +11,7 @@ use crate::common::lifecycle::HookKind;
 use crate::common::middleware::{CorvisMiddleware, FnMiddleware, Next};
 use crate::common::pipe::PipeTransform;
 use crate::di::container::{Container, Overrides};
-use crate::di::provider::{GlobalEnhancer, downcast};
+use crate::di::provider::{GlobalEnhancer, Instance, downcast};
 use crate::di::{DiError, Module, ModuleImport, ModuleRef, Token};
 use crate::http::{HandlerResult, Request, Response};
 use crate::logger::{LogLevel, Logger, LoggerService};
@@ -373,36 +373,47 @@ impl CorvisApplication {
         // the application is created, before any `use_global_*()` call of the bootstrap code,
         // so they run first (outermost): insert them ahead of the ones already registered.
         let (mut guard_at, mut interceptor_at, mut pipe_at) = (0, 0, 0);
+        let mut provider_filters: Vec<Arc<dyn ExceptionFilter>> = Vec::new();
         for (module, provider) in self.container.all_providers() {
             let Some(enh) = &provider.enhancer else { continue };
-            let Some(instance) = self.container.instance(module, &provider.token) else { continue };
+            let instance = self.container.instance(module, &provider.token);
+            // A testing module's `override_guard::<T>(mock)` (and siblings) replaces `T` here too.
+            let source = self.container.find_instance(enh.override_token()).or(instance);
+            let (name, kind) = (provider.token.display_name(), enh.kind());
+            let unusable = |source: &Option<Instance>| match source {
+                Some(_) => anyhow::anyhow!("global {kind} {name} could not be applied: the provider value is not a {kind}"),
+                None => anyhow::anyhow!("global {kind} {name} could not be applied: the provider has no instance"),
+            };
+            macro_rules! apply {
+                ($cast:expr) => {
+                    match source.as_ref().and_then($cast) {
+                        Some(x) => x,
+                        None => return Err(unusable(&source)),
+                    }
+                };
+            }
             match enh {
-                GlobalEnhancer::Guard(f) => {
-                    if let Some(g) = f(&instance) {
-                        self.config.router.global_guards.insert(guard_at, g);
-                        guard_at += 1;
-                    }
+                GlobalEnhancer::Guard { cast, .. } => {
+                    self.config.router.global_guards.insert(guard_at, apply!(cast));
+                    guard_at += 1;
                 }
-                GlobalEnhancer::Interceptor(f) => {
-                    if let Some(i) = f(&instance) {
-                        self.config.router.global_interceptors.insert(interceptor_at, i);
-                        interceptor_at += 1;
-                    }
+                GlobalEnhancer::Interceptor { cast, .. } => {
+                    self.config.router.global_interceptors.insert(interceptor_at, apply!(cast));
+                    interceptor_at += 1;
                 }
-                GlobalEnhancer::Pipe(f) => {
-                    if let Some(p) = f(&instance) {
-                        self.config.router.global_pipes.insert(pipe_at, p);
-                        pipe_at += 1;
-                    }
+                GlobalEnhancer::Pipe { cast, .. } => {
+                    self.config.router.global_pipes.insert(pipe_at, apply!(cast));
+                    pipe_at += 1;
                 }
-                GlobalEnhancer::Filter(f) => {
-                    if let Some(x) = f(&instance) {
-                        // Filters registered through DI have priority over `useGlobalFilters`.
-                        self.config.router.global_filters.insert(0, x);
-                    }
-                }
+                GlobalEnhancer::Filter { cast, .. } => provider_filters.push(apply!(cast)),
             }
         }
+        // Exception filters are tried last registered first, the order of the original framework
+        // (verified against it): the filters of `use_global_filters` from the last call to the
+        // first, then the ones registered as providers from the last to the first. The route's and
+        // the controller's own filters are tried before all of these.
+        self.config.router.global_filters.reverse();
+        self.config.router.global_filters.extend(provider_filters.into_iter().rev());
         let router = build_router(&self.container, &self.config.router, self.log_routes).await?;
         let module_middleware = build_middleware(&self.container, &router, &self.config.router).await?;
         #[cfg(feature = "websockets")]

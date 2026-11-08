@@ -134,6 +134,8 @@ impl HealthController {
 pub struct HealthModule;
 ```
 
+Cada indicador tiene un límite de 5 segundos, así que una dependencia colgada se informa `down` en lugar de colgar el endpoint, y `check_rss` mide en Linux, Windows y macOS.
+
 Ver [Health checks](/es/reliability/terminus).
 
 ## Logs

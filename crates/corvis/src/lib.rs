@@ -143,7 +143,7 @@ pub use modules::cache::{
     CACHE_KEY_METADATA, CACHE_MANAGER, CACHE_TTL_METADATA, CacheInterceptor, CacheManager, CacheModule, CacheOptions,
 };
 pub use modules::event_emitter::{EventEmitter, EventEmitterModule, EventEmitterOptions};
-pub use modules::health::{HealthCheckService, HealthIndicator, HttpHealthIndicator, MemoryHealthIndicator, TerminusModule};
+pub use modules::health::{HealthCheckService, HealthIndicator, HttpHealthIndicator, MemoryHealthIndicator, PingOptions, TerminusModule};
 pub use modules::schedule;
 pub use modules::schedule::{CronExpression, CronJob, CronOptions, CronTime, ScheduleModule, ScheduleModuleOptions, SchedulerRegistry};
 pub use modules::serve_static::{ServeStaticModule, ServeStaticOptions};
