@@ -57,12 +57,12 @@
   `crates/corvis/tests/transport_security.rs`
 - [x] 5.4 Regression tests exist for every requirement of the `http/request-parsing` delta (2.1, 3.1)
 - [x] 5.5 Docs updated in English and Spanish (`docs/` and `docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 5.6 corvis-parity: framework runtime code changed (`multer/mod.rs`), so run the `corvis-parity` check; the three (not run by the implementer: the maintainer runs it)
-  port apps (consi, facten, houseplan) keep 0 apidiff differences
+- [x] 5.6 corvis-parity: framework runtime code changed (`multer/mod.rs`), so run the `corvis-parity` check; the three (not run by the implementer: the maintainer runs it)
+  port apps (consi, facten, houseplan) keep 0 apidiff differences (maintainer batch run on batch/phase04-f 00df2bb: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 
 ## Workflow follow-up
 
-- [ ] Archive the change with `/opsx:archive`
-- [ ] Close issue [#8](https://github.com/randygil/corvis/issues/8)
-- [ ] Tick #8 in its epic [#1](https://github.com/randygil/corvis/issues/1)
-- [ ] Move the card to Done in the Corvis Roadmap project
+- [x] Archive the change with `/opsx:archive`
+- [x] Close issue [#8](https://github.com/randygil/corvis/issues/8)
+- [x] Tick #8 in its epic [#1](https://github.com/randygil/corvis/issues/1)
+- [x] Move the card to Done in the Corvis Roadmap project

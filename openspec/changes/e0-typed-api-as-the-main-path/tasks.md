@@ -91,9 +91,9 @@
 - [x] 7.3 `cargo test --workspace` passes (with Postgres available for the `pg_*` suites)
 - [x] 7.4 Regression tests from tasks 1.1, 2.1-2.4, 3.1-3.2 and 4.1-4.3 are in place and pass
 - [x] 7.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), and `npm run docs:check` in `docs/` passes
-- [ ] 7.6 corvis-parity: framework runtime code changes (`corvis` error conversion, `corvis-orm` query builder and
+- [x] 7.6 corvis-parity: framework runtime code changes (`corvis` error conversion, `corvis-orm` query builder and
   derive), so run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (not run by the
-  implementer: the maintainer runs it)
+  implementer: the maintainer runs it) (maintainer batch run on batch/phase04-f 00df2bb: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 
 ## Workflow follow-up
 
