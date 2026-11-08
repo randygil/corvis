@@ -2,7 +2,7 @@
 
 ## 1. Reference behavior and failing tests
 
-- [ ] 1.1 Add `crates/corvis/tests/fixtures/empty_results/` with a `package.json` pinning `@nestjs/common`,
+- [x] 1.1 Add `crates/corvis/tests/fixtures/empty_results/` with a `package.json` pinning `@nestjs/common`,
   `@nestjs/core` and `@nestjs/platform-express` 11.2.1, `reflect-metadata` 0.2.2 and `rxjs` 7.8.2 (as
   `fixtures/terminus/package.json` does), and a `generate.mjs` that starts a controller with the rows of design.md
   ("Original framework" table) on `127.0.0.1:0`, records status, headers (without `date`, `connection`,
@@ -11,7 +11,7 @@
   (`record.cjs`, plain JS decorators) can be adapted. If the recording differs from the design.md table, stop and
   record it under Open questions in design.md. Verify by running `npm install && node generate.mjs` once (no server
   left running afterwards) and committing the JSON, not `node_modules`
-- [ ] 1.2 Add `crates/corvis/tests/empty_results.rs` with one controller per return type (`Option<CatDto>` and
+- [x] 1.2 Add `crates/corvis/tests/empty_results.rs` with one controller per return type (`Option<CatDto>` and
   `HttpResult<Option<CatDto>>` with `None` and `Some`, `Option<Value>` and `HttpResult<Option<String>>` with `None`
   and `Some`, `HttpResult<Value>` with `Value::Null`, `()`, an `async` handler, `#[post]`, `#[http_code(204)]`,
   `#[header("Content-Type", "application/json")]`, `Json(None::<CatDto>)`, and the non-empty controls of the fixture),
@@ -24,25 +24,25 @@
 
 ## 2. Conversion of handler results
 
-- [ ] 2.1 In `crates/corvis/src/__private.rs`, make `SerializeTag::convert` return `Ok(Response::new())` when the
+- [x] 2.1 In `crates/corvis/src/__private.rs`, make `SerializeTag::convert` return `Ok(Response::new())` when the
   serialized value is `Value::Null`; in `crates/corvis/src/http/response.rs`, make `IntoResponse for Value` do the same
   for `Value::Null`, leave `IntoResponse for Option<T>` as is (it already answers `Response::new()`), and leave
   `Json<T>` and `Response::json` literal; update the doc comments of `IntoResponse`, `Json` and `Response::json` to say
   so. Verify the `Option`, `Value::Null`, `POST` and `204` rows of the replay pass and the `Json(None)` test still
   answers `null`
-- [ ] 2.2 In `Response::map_data` (`crates/corvis/src/http/response.rs`), store a `Value::Null` result of the closure
+- [x] 2.2 In `Response::map_data` (`crates/corvis/src/http/response.rs`), store a `Value::Null` result of the closure
   as `Body::Empty`; update its doc comment. Verify the identity and envelope interceptor tests, and that
   `cargo test -p corvis --lib` and `cargo test -p corvis --test app` still pass
 
 ## 3. Neighbours and wire details
 
-- [ ] 3.1 In `ZodSerializerInterceptor` (`crates/corvis/src/z/pipe.rs`), when the serializer metadata is set and the
+- [x] 3.1 In `ZodSerializerInterceptor` (`crates/corvis/src/z/pipe.rs`), when the serializer metadata is set and the
   body is `Body::Empty`, validate `Value::Null`; verify the strict and nullable serializer tests and
   `cargo test -p corvis --test zod_pipe`
-- [ ] 3.2 In `CacheInterceptor` (`crates/corvis/src/modules/cache.rs`), answer a cache hit whose value is
+- [x] 3.2 In `CacheInterceptor` (`crates/corvis/src/modules/cache.rs`), answer a cache hit whose value is
   `Value::Null` with `Response::new()` and status 200; verify the cache test and the existing cache tests
   (`cargo test -p corvis --test modules`)
-- [ ] 3.3 In `server::into_hyper` (`crates/corvis/src/server.rs`), skip the `HEAD` `Content-Length` when the body is
+- [x] 3.3 In `server::into_hyper` (`crates/corvis/src/server.rs`), skip the `HEAD` `Content-Length` when the body is
   `Body::Empty`; verify the `HEAD` row of the replay and that `crates/corvis/tests/express_parity.rs` still passes
   (its `HEAD` with a JSON body keeps `Content-Length: 16`). If hyper itself writes `Content-Length: 0`, keep the
   difference as a known difference in the replay test with a comment and note it in the docs bullet of 4.1
