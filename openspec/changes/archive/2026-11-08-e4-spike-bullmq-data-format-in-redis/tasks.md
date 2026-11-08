@@ -7,14 +7,17 @@ into its own delta (Decision 9), and refines these tasks in its own `tasks.md`.
 
 ## 1. Spike close-out (#49)
 
-- [ ] 1.1 Maintainer reviews design.md and answers the Open questions (target version, module name, dispatch
+- [x] 1.1 Maintainer reviews design.md and answers the Open questions (target version, module name, dispatch
   default, CI frequency, `meta.version`, dependency pinning); record the answers in design.md; verify no question is
   left without an answer or an owner issue
-- [ ] 1.2 Open the "Out of scope" items the maintainer wants tracked as new issues (legacy `repeat` options, Sentinel,
+  - Result: answered in design.md, Review notes (2026-11-08).
+- [x] 1.2 Open the "Out of scope" items the maintainer wants tracked as new issues (legacy `repeat` options, Sentinel,
   queue telemetry, Redis-backed cache/throttler stores); verify each has an issue linked from the epic or is
   explicitly dropped
-- [ ] 1.3 Report the `meta` `library`/`version` divergence of `bullmq-official` upstream (only if the maintainer
+  - Result: dropped for now (not needed by phase 1); revisit if a port needs them.
+- [x] 1.3 Report the `meta` `library`/`version` divergence of `bullmq-official` upstream (only if the maintainer
   agrees to file it); verify the link is added to design.md
+  - Result: not filed upstream; Corvis writes `meta.version` itself (Review notes, point 5).
 
 ## 2. #50 Redis connection and BullModule (`e4-redis-connection-and-bullmodule`)
 
