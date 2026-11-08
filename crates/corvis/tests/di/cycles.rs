@@ -3,7 +3,7 @@
 //! Every `compile()` goes through the helpers of `main.rs`, which fail after 20 seconds instead of
 //! hanging if the container ever loops again.
 //!
-//! Not covered here (separate issues): dynamic modules importing each other (#112), cycles that pass
+//! Not covered here (separate issues): cycles that pass
 //! through `ModuleRef::resolve` inside a factory (#113) and transient providers that are only
 //! validated when first resolved (#114).
 

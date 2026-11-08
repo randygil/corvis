@@ -20,6 +20,16 @@ pub struct BillingModule;
 
 No hace falta ninguna referencia diferida para los módulos. Que el grafo lo admita no significa que sea buen diseño: un ciclo entre módulos suele indicar que hay una tercera responsabilidad que merece su propio módulo.
 
+### Los módulos dinámicos son la excepción
+
+La regla anterior cubre los módulos estáticos. Cada import dinámico (`BModule::for_root()`) crea una instancia de módulo **nueva**, así que dos módulos dinámicos que se importan mutuamente crearían instancias sin fin. Corvis lo detecta al construir el grafo de módulos y falla al arrancar:
+
+```text
+A circular import between dynamic modules has been detected: AModule -> BModule -> AModule. Each dynamic import (for example for_root()) creates a new module instance, so this cycle never ends. Move what both modules need into a separate module that both import, or remove one of the two imports.
+```
+
+Para arreglarlo, mueve lo que ambos módulos necesitan a un tercer módulo que los dos importen, o elimina uno de los dos imports. La comprobación salta cuando el mismo módulo importa dinámicamente el mismo módulo por segunda vez en una cadena de imports, así que un grafo que repite un import así se rechaza aunque terminara por sí solo. Ver [Módulos dinámicos](/es/fundamentals/dynamic-modules#cada-llamada-es-una-instancia-nueva).
+
 ## Ciclos entre providers: se detectan y fallan
 
 Si `OrdersService` tiene un campo `Arc<InvoicesService>` e `InvoicesService` un campo `Arc<OrdersService>`, ninguno se puede construir antes que el otro. Corvis lo detecta al arrancar y devuelve un error con la cadena completa:

@@ -20,6 +20,16 @@ pub struct BillingModule;
 
 No deferred reference is needed for modules. That the graph allows it doesn't mean it is good design: a cycle between modules usually indicates there is a third responsibility that deserves its own module.
 
+### Dynamic modules are the exception
+
+The rule above covers static modules. Every dynamic import (`BModule::for_root()`) creates a **new** module instance, so two dynamic modules that import each other would create instances forever. Corvis detects it while building the module graph and fails at startup:
+
+```text
+A circular import between dynamic modules has been detected: AModule -> BModule -> AModule. Each dynamic import (for example for_root()) creates a new module instance, so this cycle never ends. Move what both modules need into a separate module that both import, or remove one of the two imports.
+```
+
+To fix it, move what both modules need into a third module that both import, or remove one of the two imports. The check fires when the same module imports the same other module dynamically a second time on one chain of imports, so a graph that repeats such an import is rejected even if it would eventually end. See [Dynamic modules](/fundamentals/dynamic-modules#each-call-is-a-new-instance).
+
 ## Cycles between providers: detected and fail
 
 If `OrdersService` has an `Arc<InvoicesService>` field and `InvoicesService` has an `Arc<OrdersService>` field, neither can be built before the other. Corvis detects it at startup and returns an error with the full chain:

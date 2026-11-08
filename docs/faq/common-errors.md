@@ -55,6 +55,16 @@ Two providers ask for each other (directly or indirectly). The cycle has to be b
 
 See [Circular dependencies](/fundamentals/circular-dependency).
 
+## "A circular import between dynamic modules has been detected"
+
+```text
+A circular import between dynamic modules has been detected: AModule -> BModule -> AModule. Each dynamic import
+(for example for_root()) creates a new module instance, so this cycle never ends. Move what both modules need
+into a separate module that both import, or remove one of the two imports.
+```
+
+Two modules import each other through `for_root()` (or any other `DynamicModule`), directly or through other modules. Every dynamic import creates a new instance, so the graph would never finish. Move what both modules need into a third module that both import, or remove one of the two imports. See [Dynamic modules are the exception](/fundamentals/circular-dependency#dynamic-modules-are-the-exception).
+
 ## "Corvis cannot export a provider/module that is not a part of the currently processed module"
 
 A module lists in `exports` something that is not in its `providers` and that none of its

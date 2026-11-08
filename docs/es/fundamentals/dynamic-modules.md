@@ -166,3 +166,5 @@ Importar dos veces el mismo módulo estático da un único nodo en el grafo. Con
 Para una configuración compartida, llama al método una sola vez (en el módulo raíz o en un módulo de infraestructura) y hazlo global con `.global(true)`, o re-exporta el módulo dinámico desde un módulo que el resto importe.
 
 Un detalle de la implementación: si un módulo importa el tipo estático (`MailerModule`) y ese tipo ya se importó antes en forma dinámica, el import estático reutiliza el nodo dinámico existente en lugar de crear otro. No dependas de ese orden; importa siempre la forma configurada.
+
+Por la misma razón, dos módulos dinámicos no pueden importarse mutuamente: cada import crearía una instancia nueva del otro, sin fin. Corvis lo informa al arrancar con un error `CircularImport`. Ver [Los módulos dinámicos son la excepción](/es/fundamentals/circular-dependency#los-modulos-dinamicos-son-la-excepcion).

@@ -109,3 +109,16 @@ Current behavior, read in the code of this worktree:
 - The rare false positive (the same dynamic edge twice in a chain that terminates) is acceptable; document it in the
   error's doc comment.
 - Whether `DiError` becomes `#[non_exhaustive]` is decided with the public API review of #10, not here.
+
+## Implementation notes
+
+- **Chain content**: the error chain is the slice of the import chain from the earlier importer up to the module that
+  repeats the import (`AModule -> BModule -> AModule`), without appending the imported class again. Decision 1 said
+  "plus C", which would give `AModule -> BModule -> AModule -> BModule` and contradict the spec scenarios.
+- **#15 landed first**: the `di` target already existed; the tests are in `dynamic_import_cycles.rs`, and the stale
+  "tracked by #112" comments in `cycles.rs` and `dynamic_modules.rs` were updated.
+- **Extra imports of `for_root`**: a cycle written as `DynamicModule::new::<A>().import(B::for_root())` with `B::for_root()`
+  doing the same recurses while user code builds the `DynamicModule`, before the scanner runs. The container cannot
+  report it, so it has no test.
+- Without the check the tests abort the binary with a stack overflow (verified).
+- The corvis-parity task 5.6 is left for the maintainer.

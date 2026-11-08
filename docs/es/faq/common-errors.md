@@ -55,6 +55,16 @@ Dos providers se piden mutuamente (directa o indirectamente). Hay que romper el 
 
 Ver [Dependencias circulares](/es/fundamentals/circular-dependency).
 
+## "A circular import between dynamic modules has been detected"
+
+```text
+A circular import between dynamic modules has been detected: AModule -> BModule -> AModule. Each dynamic import
+(for example for_root()) creates a new module instance, so this cycle never ends. Move what both modules need
+into a separate module that both import, or remove one of the two imports.
+```
+
+Dos módulos se importan mutuamente mediante `for_root()` (o cualquier otro `DynamicModule`), directamente o a través de otros módulos. Cada import dinámico crea una instancia nueva, así que el grafo no terminaría nunca. Mueve lo que ambos módulos necesitan a un tercer módulo que los dos importen, o elimina uno de los dos imports. Ver [Los módulos dinámicos son la excepción](/es/fundamentals/circular-dependency#los-modulos-dinamicos-son-la-excepcion).
+
 ## "Corvis cannot export a provider/module that is not a part of the currently processed module"
 
 Un módulo lista en `exports` algo que no está en sus `providers` ni lo exporta ninguno de sus

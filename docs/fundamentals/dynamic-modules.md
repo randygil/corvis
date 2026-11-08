@@ -166,3 +166,5 @@ Importing the same static module twice gives a single node in the graph. With dy
 For a shared configuration, call the method only once (in the root module or in an infrastructure module) and make it global with `.global(true)`, or re-export the dynamic module from a module that the rest import.
 
 One implementation detail: if a module imports the static type (`MailerModule`) and that type was already imported earlier in dynamic form, the static import reuses the existing dynamic node instead of creating another. Don't depend on that order; always import the configured form.
+
+For the same reason, two dynamic modules cannot import each other: each import would create a new instance of the other, forever. Corvis reports it at startup with a `CircularImport` error. See [Dynamic modules are the exception](/fundamentals/circular-dependency#dynamic-modules-are-the-exception).

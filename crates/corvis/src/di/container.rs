@@ -69,6 +69,16 @@ struct Scanner {
     modules: Vec<ModuleNode>,
     static_index: HashMap<TypeId, ModuleId>,
     overrides: Overrides,
+    /// The modules being filled right now, outermost first.
+    chain: Vec<ChainEntry>,
+}
+
+/// A module on the scanner's current import chain.
+struct ChainEntry {
+    type_id: TypeId,
+    name: String,
+    /// The module was reached through a dynamic import (`for_root()`).
+    dynamic: bool,
 }
 
 impl Scanner {
@@ -122,17 +132,38 @@ impl Scanner {
                 let def = definition();
                 let id = self.new_node(def.name.clone(), type_id);
                 self.static_index.insert(type_id, id);
-                self.fill(id, def, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None)?;
+                self.chain.push(ChainEntry { type_id, name: def.name.clone(), dynamic: false });
+                let filled = self.fill(id, def, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None);
+                self.chain.pop();
+                filled?;
                 Ok(id)
             }
             ModuleImport::Dynamic(dm) => {
                 let def = (dm.base)();
+                self.check_dynamic_import_cycle(def.type_id)?;
                 let id = self.new_node(def.name.clone(), def.type_id);
                 // A dynamic module also satisfies later static imports of the same class.
                 self.static_index.entry(def.type_id).or_insert(id);
-                self.fill(id, def, dm.imports, dm.providers, dm.controllers, dm.exports, dm.global)?;
+                self.chain.push(ChainEntry { type_id: def.type_id, name: def.name.clone(), dynamic: true });
+                let filled = self.fill(id, def, dm.imports, dm.providers, dm.controllers, dm.exports, dm.global);
+                self.chain.pop();
+                filled?;
                 Ok(id)
             }
+        }
+    }
+
+    /// Fails when the module on top of the chain is about to dynamically import a class that the same module class
+    /// already imported dynamically earlier on the chain: the graph would repeat itself forever.
+    fn check_dynamic_import_cycle(&self, imported: TypeId) -> Result<(), DiError> {
+        let Some(top) = self.chain.last() else { return Ok(()) };
+        let repeated = self.chain.windows(2).position(|w| w[0].type_id == top.type_id && w[1].type_id == imported && w[1].dynamic);
+        match repeated {
+            Some(start) => {
+                let names: Vec<&str> = self.chain[start..].iter().map(|e| e.name.as_str()).collect();
+                Err(DiError::CircularImport { chain: names.join(" -> ") })
+            }
+            None => Ok(()),
         }
     }
 
@@ -193,7 +224,7 @@ impl Scanner {
 impl Container {
     /// Scans the module graph starting at `root`.
     pub(crate) fn scan(root: ModuleImport, overrides: Overrides) -> Result<Arc<Container>, DiError> {
-        let mut scanner = Scanner { modules: Vec::new(), static_index: HashMap::new(), overrides };
+        let mut scanner = Scanner { modules: Vec::new(), static_index: HashMap::new(), overrides, chain: Vec::new() };
 
         // Internal core module (global): Reflector & friends.
         let core = scanner.new_node("InternalCoreModule".into(), TypeId::of::<InternalCoreModule>());
