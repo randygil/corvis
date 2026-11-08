@@ -6,3 +6,9 @@ crates/*/tests/fixtures/**/*.sql text eol=lf
 crates/*/tests/fixtures/**/*.pem text eol=lf
 crates/*/tests/fixtures/**/*.prisma text eol=lf
 crates/*/tests/fixtures/**/*.mjs text eol=lf
+
+# Copies of the root LICENSE and THIRD_PARTY_NOTICES.md shipped inside every crate package: byte-identical to the root.
+LICENSE text eol=lf
+THIRD_PARTY_NOTICES.md text eol=lf
+crates/*/LICENSE text eol=lf
+crates/*/THIRD_PARTY_NOTICES.md text eol=lf
