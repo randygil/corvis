@@ -80,6 +80,7 @@ pub(crate) struct AppConfig {
     body_limit: usize,
     http_settings: crate::http::HttpSettings,
     server: crate::server::ServerOptions,
+    route_posture: crate::posture::RoutePostureOptions,
 }
 
 /// Returned by [`CorvisApplication::init`] (and by `listen`, `listen_in_background`, `handle` and
@@ -167,6 +168,7 @@ impl CorvisApplication {
                 body_limit: options.body_limit,
                 http_settings: crate::http::HttpSettings::default(),
                 server: crate::server::ServerOptions::default(),
+                route_posture: crate::posture::RoutePostureOptions::default(),
             },
             shared: None,
             hooks_called: false,
@@ -257,6 +259,33 @@ impl CorvisApplication {
     pub fn enable_versioning(&mut self, options: VersioningOptions) -> &mut Self {
         self.config.router.versioning = Some(options);
         self
+    }
+
+    /// Refuses to start when a controller route has no guard that controls access, is not marked
+    /// `#[public]` and matches no exemption: `init()` (so `listen()` too) fails with a
+    /// [`RoutePostureError`](crate::RoutePostureError) before module middleware is configured and before any
+    /// hook runs. Same as `set_route_posture(RoutePostureOptions::enforce())`. Off by default. Call it before
+    /// `init()` / `listen()`; it has no effect afterwards.
+    pub fn require_route_posture(&mut self) -> &mut Self {
+        self.set_route_posture(crate::posture::RoutePostureOptions::enforce())
+    }
+
+    /// Sets the route posture mode (off, warn or enforce) and its exemptions. Call it before `init()` /
+    /// `listen()`; it has no effect afterwards.
+    pub fn set_route_posture(&mut self, options: crate::posture::RoutePostureOptions) -> &mut Self {
+        self.config.route_posture = options;
+        self
+    }
+
+    /// The posture of every controller route (guards, public marker, exemptions), in every mode. `None`
+    /// before `init()`.
+    pub fn route_posture(&self) -> Option<crate::posture::RoutePostureReport> {
+        let shared = self.shared.as_ref()?;
+        let options = match self.config.route_posture.mode() {
+            crate::posture::RoutePostureMode::Off => crate::posture::RoutePostureOptions::off(),
+            _ => self.config.route_posture.clone(),
+        };
+        Some(crate::posture::report_for_routes(&shared.router, &options))
     }
 
     /// `app.enableShutdownHooks()` – listen to SIGINT/SIGTERM and run the shutdown hooks.
@@ -442,6 +471,9 @@ impl CorvisApplication {
     }
 
     async fn init_steps(&mut self) -> crate::Result<()> {
+        if self.config.route_posture.mode() != crate::posture::RoutePostureMode::Off {
+            self.config.route_posture.validate()?;
+        }
         // Global enhancers registered as providers (APP_GUARD, APP_PIPE, ...) are applied while
         // the application is created, before any `use_global_*()` call of the bootstrap code,
         // so they run first (outermost): insert them ahead of the ones already registered.
@@ -491,6 +523,8 @@ impl CorvisApplication {
         if let Some(warning) = self.config.cors.as_ref().and_then(CorsOptions::startup_warning) {
             Logger::new("CorsOptions").warn(warning);
         }
+        // Before module middleware `configure`, gateways and hooks: a failing check must not have run user code.
+        crate::posture::check_routes(&router, &self.config.route_posture)?;
         let module_middleware = build_middleware(&self.container, &router, &self.config.router).await?;
         #[cfg(feature = "websockets")]
         let gateways = crate::websockets::build_gateways(&self.container, &self.config.router).await?;
