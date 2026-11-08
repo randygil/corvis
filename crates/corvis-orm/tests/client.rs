@@ -433,6 +433,20 @@ async fn datetime_filters() {
 }
 
 #[tokio::test]
+async fn nul_in_a_relation_or_include_filter_is_a_validation_error() {
+    let db = seeded().await;
+    let n = "a\u{0}b";
+    for args in [
+        json!({ "where": { "posts": { "some": { "title": n } } } }),
+        json!({ "where": { "posts": { "none": { "title": { "contains": n } } } } }),
+        json!({ "include": { "posts": { "where": { "title": n } } } }),
+    ] {
+        let e = db.user().find_many(args.clone()).await.unwrap_err();
+        assert!(e.is_validation(), "{args}: {e}");
+    }
+}
+
+#[tokio::test]
 async fn postgres_sql_generation() {
     // No server needed: only check the generated SQL and placeholders.
     let db = OrmClient::new("postgresql://user:pass@127.0.0.1:1/db").unwrap();

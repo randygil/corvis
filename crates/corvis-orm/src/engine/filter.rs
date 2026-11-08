@@ -45,6 +45,19 @@ fn escape_like(s: &str) -> String {
 /// (and more than once for some), so its size multiplies; real documents are not nested this deep.
 const MAX_JSON_PATH: usize = 128;
 
+/// What in a `where` argument holds a NUL character (U+0000), if anything: a string value, a JSON
+/// path segment or an object key. PostgreSQL cannot hold NUL in `text` or `jsonb` and fails the whole
+/// statement with a raw database error, so every dialect rejects it with a validation error before
+/// any SQL is built; SQLite would otherwise cut a JSON path short at it.
+fn find_nul(v: &Value) -> Option<&'static str> {
+    match v {
+        Value::String(s) if s.contains('\0') => Some("A string"),
+        Value::Array(a) => a.iter().find_map(find_nul),
+        Value::Object(o) => o.iter().find_map(|(k, v)| if k.contains('\0') { Some("A key") } else { find_nul(v) }),
+        _ => None,
+    }
+}
+
 /// `[v]` as JSON text (so `json_extract(.., '$[0]')` yields `v` in SQLite's representation).
 fn json_wrap(v: &Value) -> String {
     Value::Array(vec![v.clone()]).to_string()
@@ -93,7 +106,19 @@ pub(crate) struct OrderItem {
 
 impl Engine {
     /// Writes a boolean SQL expression for a `where` argument.
+    ///
+    /// Rejects a NUL character anywhere in the filter first (see [`find_nul`]), on every dialect.
     pub(crate) fn where_sql(&self, q: &mut Sql, model: &'static ModelMeta, alias: &str, w: &Value) -> Result<()> {
+        if let Some(what) = find_nul(w) {
+            return Err(self.err(format!(
+                "Argument `where`: Invalid value provided. {what} contains the NUL character (\\u0000), which the database cannot store or compare."
+            )));
+        }
+        self.where_node(q, model, alias, w)
+    }
+
+    /// One node of a `where` tree; the whole tree was already checked by [`Engine::where_sql`].
+    fn where_node(&self, q: &mut Sql, model: &'static ModelMeta, alias: &str, w: &Value) -> Result<()> {
         match w {
             Value::Null => {
                 q.push("1=1");
@@ -130,7 +155,7 @@ impl Engine {
                                 q.push(" AND ");
                             }
                             q.push("NOT ");
-                            self.where_sql(q, model, alias, item)?;
+                            self.where_node(q, model, alias, item)?;
                         }
                         q.push(")");
                     }
@@ -139,7 +164,7 @@ impl Engine {
                     }
                     other => {
                         q.push("NOT ");
-                        self.where_sql(q, model, alias, other)?;
+                        self.where_node(q, model, alias, other)?;
                     }
                 },
                 key => {
@@ -179,12 +204,12 @@ impl Engine {
                     if i > 0 {
                         q.push(sep);
                     }
-                    self.where_sql(q, model, alias, item)?;
+                    self.where_node(q, model, alias, item)?;
                 }
                 q.push(")");
                 Ok(())
             }
-            other => self.where_sql(q, model, alias, other),
+            other => self.where_node(q, model, alias, other),
         }
     }
 
@@ -919,7 +944,7 @@ impl Engine {
             if negate_inner {
                 q.push("NOT ");
             }
-            self.where_sql(q, r.target, &a, w)?;
+            self.where_node(q, r.target, &a, w)?;
         }
         q.push(")");
         Ok(())
