@@ -175,5 +175,5 @@ Corvis applications require the Rust 2024 edition (Rust 1.85 or later). If you u
 - Environment variables defined and validated at startup.
 - `enable_shutdown_hooks()` enabled.
 - TLS terminated at the proxy and `set_trust_proxy` configured if there is a proxy.
-- Swagger routes, static files, and plain WebSockets protected separately if they are not public: global guards don't cover them.
+- Swagger routes, static files, and plain `corvis::ws` listeners protected separately if they are not public: global guards don't cover them. Gateways do get the global guards: mark public gateways explicitly.
 - A health check endpoint.

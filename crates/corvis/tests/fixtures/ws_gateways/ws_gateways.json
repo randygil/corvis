@@ -1,0 +1,293 @@
+{
+  "global_guard_use_global": [
+    {
+      "message": {
+        "event": "join",
+        "data": "  lobby  "
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "status": "error",
+            "message": "Forbidden resource"
+          }
+        }
+      ],
+      "calls": [
+        "Deny"
+      ]
+    }
+  ],
+  "global_guard_provider": [
+    {
+      "message": {
+        "event": "join",
+        "data": "  lobby  "
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "status": "error",
+            "message": "Forbidden resource"
+          }
+        }
+      ],
+      "calls": [
+        "Deny"
+      ]
+    }
+  ],
+  "global_guard_before_gateway_guard": [
+    {
+      "message": {
+        "event": "join",
+        "data": "  lobby  "
+      },
+      "frames": [
+        {
+          "event": "joined",
+          "data": "  lobby  "
+        }
+      ],
+      "calls": [
+        "A",
+        "B",
+        "handler"
+      ]
+    }
+  ],
+  "global_guard_ws_only": [
+    {
+      "message": {
+        "event": "join",
+        "data": "  lobby  "
+      },
+      "frames": [
+        {
+          "event": "joined",
+          "data": "  lobby  "
+        }
+      ],
+      "calls": [
+        "WsOnly",
+        "handler"
+      ]
+    }
+  ],
+  "global_pipe_and_interceptor": [
+    {
+      "message": {
+        "event": "join",
+        "data": "  lobby  "
+      },
+      "frames": [
+        {
+          "event": "joined",
+          "data": {
+            "wrapped": "lobby"
+          }
+        }
+      ],
+      "calls": [
+        "WrapInterceptor",
+        "TrimPipe",
+        "handler"
+      ]
+    }
+  ],
+  "global_pipe_provider": [
+    {
+      "message": {
+        "event": "join",
+        "data": "  lobby  "
+      },
+      "frames": [
+        {
+          "event": "joined",
+          "data": {
+            "wrapped": "lobby"
+          }
+        }
+      ],
+      "calls": [
+        "WrapInterceptor",
+        "TrimPipe",
+        "handler"
+      ]
+    }
+  ],
+  "global_filter_use_global": [
+    {
+      "message": {
+        "event": "fail",
+        "data": "ws-string"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "status": "error",
+            "message": "boom"
+          }
+        }
+      ],
+      "calls": [
+        "handler"
+      ]
+    },
+    {
+      "message": {
+        "event": "fail",
+        "data": "ws-object"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "code": "ROOM_FULL"
+          }
+        }
+      ],
+      "calls": [
+        "handler"
+      ]
+    }
+  ],
+  "global_filter_provider": [
+    {
+      "message": {
+        "event": "fail",
+        "data": "ws-string"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "status": "error",
+            "message": "boom"
+          }
+        }
+      ],
+      "calls": [
+        "handler"
+      ]
+    }
+  ],
+  "builtin_frames": [
+    {
+      "message": {
+        "event": "fail",
+        "data": "ws-string"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "status": "error",
+            "message": "boom"
+          }
+        }
+      ],
+      "calls": [
+        "handler"
+      ]
+    },
+    {
+      "message": {
+        "event": "fail",
+        "data": "ws-object"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "code": "ROOM_FULL"
+          }
+        }
+      ],
+      "calls": [
+        "handler"
+      ]
+    },
+    {
+      "message": {
+        "event": "fail",
+        "data": "other"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "status": "error",
+            "message": "Internal server error"
+          }
+        }
+      ],
+      "calls": [
+        "handler"
+      ]
+    }
+  ],
+  "method_filter_wins": [
+    {
+      "message": {
+        "event": "failFiltered",
+        "data": "x"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "by": "MethodFilter"
+          }
+        }
+      ],
+      "calls": [
+        "handler",
+        "MethodFilter"
+      ]
+    }
+  ],
+  "gateway_filter_catches_guard_refusal": [
+    {
+      "message": {
+        "event": "join",
+        "data": "  lobby  "
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "by": "GatewayFilter"
+          }
+        }
+      ],
+      "calls": [
+        "Deny",
+        "GatewayFilter"
+      ]
+    }
+  ],
+  "filters_in_one_use_filters": [
+    {
+      "message": {
+        "event": "failFiltered",
+        "data": "x"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "by": "Second"
+          }
+        }
+      ],
+      "calls": [
+        "handler",
+        "Second"
+      ]
+    }
+  ]
+}

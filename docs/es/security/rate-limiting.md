@@ -120,4 +120,4 @@ reescribe `X-Forwarded-For`: si no, un cliente puede elegir su IP y saltarse el 
 ## Limitaciones
 
 - No se envían cabeceras informativas (`Retry-After`, `X-RateLimit-*`).
-- `ThrottlerGuard` no se aplica a los gateways de WebSocket aunque esté registrado como global.
+- Un `ThrottlerGuard` global también cuenta los mensajes de los gateways de WebSocket, por IP del handshake y por handler, así que una conexión duradera puede agotar su límite. `app.apply_global_enhancers_to_gateways(false)` deja fuera a los gateways. Los listeners `corvis::ws` planos nunca se cuentan.

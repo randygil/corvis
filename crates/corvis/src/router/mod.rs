@@ -296,7 +296,7 @@ impl CompiledMiddleware {
 }
 
 /// Global application configuration used to build the router.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct RouterConfig {
     pub global_prefix: String,
     pub prefix_exclude: Vec<String>,
@@ -305,6 +305,24 @@ pub(crate) struct RouterConfig {
     pub global_interceptors: Vec<Arc<dyn CorvisInterceptor>>,
     pub global_pipes: Vec<Arc<dyn PipeTransform>>,
     pub global_filters: Vec<Arc<dyn ExceptionFilter>>,
+    /// Whether global guards, interceptors and pipes also apply to gateway handlers
+    /// (`apply_global_enhancers_to_gateways`).
+    pub gateway_global_enhancers: bool,
+}
+
+impl Default for RouterConfig {
+    fn default() -> Self {
+        RouterConfig {
+            global_prefix: String::new(),
+            prefix_exclude: Vec::new(),
+            versioning: None,
+            global_guards: Vec::new(),
+            global_interceptors: Vec::new(),
+            global_pipes: Vec::new(),
+            global_filters: Vec::new(),
+            gateway_global_enhancers: true,
+        }
+    }
 }
 
 fn version_paths(versioning: Option<&VersioningOptions>, version: &Option<VersionValue>) -> Vec<Option<String>> {

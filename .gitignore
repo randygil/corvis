@@ -28,3 +28,4 @@ docs/.vitepress/dist
 .claude/worktrees/
 
 crates/corvis/tests/fixtures/terminus/node_modules
+crates/corvis/tests/fixtures/ws_gateways/node_modules

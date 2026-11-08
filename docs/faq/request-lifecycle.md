@@ -99,7 +99,7 @@ valid.
 
 ## WebSockets
 
-In a gateway, each message goes through guards → interceptors → pipes → handler, with the gateway's and the handler's
-enhancers. Global enhancers are not applied and exception filters are not
-supported: errors are sent to the client as an `exception` event. See
+In a gateway, each message goes through guards → interceptors → pipes → handler, with the global, the gateway's and the
+handler's enhancers. Global exception filters are not applied; errors go through the handler's and the gateway's
+`#[use_filters]` and are otherwise sent to the client as an `exception` event. See
 [Gateways](/websockets/gateways).
