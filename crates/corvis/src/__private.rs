@@ -284,6 +284,11 @@ pub struct SerializeTag;
 impl SerializeTag {
     pub fn convert<T: Serialize>(self, v: T) -> HandlerResult {
         let value = serde_json::to_value(&v).map_err(HttpException::from)?;
+        // No value (`None`, `null`) answers an empty body, like `return null` in the original;
+        // `Json(v)` and `Response::json(v)` are the ways to send a literal `null`.
+        if value.is_null() {
+            return Ok(Response::new());
+        }
         Ok(Response::json(value))
     }
 }

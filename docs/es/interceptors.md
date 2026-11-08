@@ -50,7 +50,7 @@ impl CorvisInterceptor for TimingInterceptor {
 
 ## Transformar la respuesta
 
-`Response::map_data` aplica una función al cuerpo de la respuesta. Los cuerpos JSON llegan tal cual, los de texto como string JSON y los vacíos como `null`; los binarios o en streaming no se tocan.
+`Response::map_data` aplica una función al cuerpo de la respuesta. Los cuerpos JSON llegan tal cual, los de texto como string JSON y los vacíos como `null`; los binarios o en streaming no se tocan. Un resultado `null` de la función se guarda como cuerpo vacío, así que `map_data(|data| data)` mantiene vacía una respuesta vacía.
 
 ```rust
 #[injectable]

@@ -1,0 +1,137 @@
+{
+  "versions": {
+    "core": "11.2.1",
+    "platformExpress": "11.2.1",
+    "express": "5.2.1",
+    "node": "v24.13.0"
+  },
+  "cases": [
+    {
+      "method": "GET",
+      "path": "/r/null",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-length": "0"
+      },
+      "body": ""
+    },
+    {
+      "method": "GET",
+      "path": "/r/undefined",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-length": "0"
+      },
+      "body": ""
+    },
+    {
+      "method": "GET",
+      "path": "/r/void",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-length": "0"
+      },
+      "body": ""
+    },
+    {
+      "method": "GET",
+      "path": "/r/async-null",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-length": "0"
+      },
+      "body": ""
+    },
+    {
+      "method": "POST",
+      "path": "/r/null",
+      "status": 201,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-length": "0"
+      },
+      "body": ""
+    },
+    {
+      "method": "HEAD",
+      "path": "/r/null",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express"
+      },
+      "body": ""
+    },
+    {
+      "method": "GET",
+      "path": "/r/null-204",
+      "status": 204,
+      "headers": {
+        "x-powered-by": "Express"
+      },
+      "body": ""
+    },
+    {
+      "method": "GET",
+      "path": "/r/null-json-header",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "0"
+      },
+      "body": ""
+    },
+    {
+      "method": "GET",
+      "path": "/r/obj",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "7",
+        "etag": "W/\"7-n4nHQM60bXQYySSnisV5QdXpZSA\""
+      },
+      "body": "{\"a\":1}"
+    },
+    {
+      "method": "GET",
+      "path": "/r/str",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-type": "text/html; charset=utf-8",
+        "content-length": "2",
+        "etag": "W/\"2-witfkXg0JglCjW9RssWvTAveakI\""
+      },
+      "body": "hi"
+    },
+    {
+      "method": "GET",
+      "path": "/r/empty-str",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-type": "text/html; charset=utf-8",
+        "content-length": "0",
+        "etag": "W/\"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk\""
+      },
+      "body": ""
+    },
+    {
+      "method": "GET",
+      "path": "/r/array-null",
+      "status": 200,
+      "headers": {
+        "x-powered-by": "Express",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "6",
+        "etag": "W/\"6-1E2iJRDeml63J1thpL7r1NDNa10\""
+      },
+      "body": "[null]"
+    }
+  ]
+}

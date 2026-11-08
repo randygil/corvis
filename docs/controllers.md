@@ -162,21 +162,22 @@ A struct gives you the same bytes as the equivalent `json!` object, plus a name 
 | Any `T: Serialize` (structs, `Vec`, `Value`, ...) | JSON |
 | `String`, `&'static str` | Text with `Content-Type: text/html; charset=utf-8`, like `res.send(string)` in Express |
 | `()` | Empty body |
-| `Json(v)`, `Html(s)` | Explicit JSON or HTML |
+| `Json(v)`, `Html(s)` | Explicit JSON or HTML. `Json(None::<T>)` and `Response::json(Value::Null)` send the text `null` with a JSON type, on purpose |
 | `Redirect::to(url)`, `Redirect::permanent(url)` | Redirect |
 | `Response` | Full control: `Response::json(..)`, `Response::text(..)`, `Response::html(..)`, `Response::bytes(data, type)`, `Response::stream(..)`, `Response::redirect(url, code)`, with `.with_status(..)`, `.with_header(..)`, `.with_cookie(..)` |
 | `StreamableFile` | A file or byte stream (see [Streaming responses](/http/streaming-responses)) |
 | `Sse` | Server-Sent Events |
 | `(StatusCode, T)` or `(u16, T)` | `T` with a different status |
 | `Bytes`, `Vec<u8>` | Raw bytes |
-| `Option<T>`, `Result<T, E>` | Depends on the content |
+| `Option<T>`, `Result<T, E>` | `Some(v)` answers as `v` does; `None` answers an empty body. `Ok(v)` answers as `v`, `Err(e)` becomes the error response |
 
 Every response also goes through Express's defaults:
 
 - Bodies sent as text, JSON or HTML carry a weak `ETag` (`W/"<hex length>-<base64 sha1>"`, the same as the `etag` package) and `Content-Length`. A `GET` or `HEAD` with a still-valid `If-None-Match` or `If-Modified-Since` gets `304` without a body. `app.set_etag(EtagMode::Strong)` or `app.disable("etag")` change this.
 - An explicit `Content-Type` on a text or JSON body gets `charset=utf-8` (like `res.send(string)`), and `#[header("Content-Type", "text/plain")]` adds the default charset too (`text/plain; charset=utf-8`).
 - Raw bodies (`Response::bytes`, `StreamableFile`, streams, an empty body) are written untouched, like `res.end(buffer)`: no `ETag` and the exact `Content-Type` (`text/plain; charset=windows-1252` is kept).
-- `HEAD` keeps the `Content-Length` and `ETag` of the `GET`, without a body.
+- A result with no value (`None` from any `Option<T>`, `Value::Null`, or any `Serialize` whose JSON is `null`) answers an empty body, like returning `null` or `undefined` in the original framework: the default status (`200`, `201` for `POST`, or `#[http_code]`), no `Content-Type` unless you set one, `Content-Length: 0` and no `ETag`. This is a behavior change for apps on earlier Corvis versions, which answered the text `null` for an `Option<Dto>`. Return `Json(None::<T>)` to keep sending a literal `null`.
+- `HEAD` keeps the `Content-Length` and `ETag` of the `GET`, without a body; an empty answer has neither, nor a `Content-Type`.
 - `X-Powered-By: corvis` is sent by default. `app.set_x_powered_by("Express")` reproduces byte for byte what an Express app sends; `app.disable("x-powered-by")` removes it.
 
 ### Status code

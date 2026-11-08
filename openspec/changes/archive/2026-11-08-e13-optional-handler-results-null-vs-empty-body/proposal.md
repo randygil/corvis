@@ -71,5 +71,3 @@ None.
   in the original). Possible new issue.
 - WebSocket and microservice handlers: they already treat no value as "no reply".
 - The OpenAPI document for `Option<T>` responses (#9 and the swagger crates decide that).
-</content>
-</invoke>

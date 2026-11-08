@@ -199,10 +199,7 @@ The scratch script is the starting point for the committed fixture (task 1.1); i
    small widening of the issue. Confirm it belongs here, or split it into its own issue.
 3. **houseplan `PlainJson`.** It becomes redundant. Remove it from the port after this lands (a port change, not part
    of this change), or keep it as is.
-</content>
-</invoke>
-<invoke name="Bash">
-<parameter name="command">cd /c/Users/Usuario/Devel/nestrs && sed -n 275,302p crates/corvis/src/__private.rs | head -30; sed -n 359,368p crates/corvis/src/z/pipe.rs
+
 ## Review notes (2026-11-08)
 
 1. Accept the recommended decision: every result without a value (`None` of any `Option`, `Value::Null`, a
@@ -216,3 +213,24 @@ The scratch script is the starting point for the committed fixture (task 1.1); i
 5. Order: start after #9 (`e0-typed-api-as-the-main-path`) is merged, on top of it, since both touch the route
    macro's result conversion. #9 is archived first, so task 6.2 applies: reconcile its `http/responses` requirement.
 6. The change name differs from the one suggested in the issue; the issue is updated to point at this one.
+
+## Reconciliation with #9 (task 6.2, 2026-11-08)
+
+#9's delta (`e0-typed-api-as-the-main-path/specs/http/responses/spec.md`, not archived yet) says "Typed handler return
+values are serialized as JSON": any `T: Serialize` answers its JSON with `Content-Type: application/json`, and a type
+that implements `IntoResponse` keeps its own conversion. Its scenarios (a struct, same bytes as `json!`) never use a
+value whose JSON is `null`, so they stay true. The two combine as follows: #9's requirement is the general rule and the
+first requirement of this change is its single exception (a `T` whose JSON is `null`, `None` of an `Option<T>`, and
+`Value::Null` answer an empty body). Since #9's requirement does not exist in the main spec yet, this delta cannot use
+`MODIFIED`; it states the exception in its own wording (naming #9's requirement) and stays `ADDED`. #9's change folder
+was not edited.
+
+## Implementation notes (2026-11-08)
+
+- The recording of the original (`fixtures/empty_results/empty_results.json`, core 11.2.1, express 5.2.1, Node 24.13.0)
+  matches the "Original framework" table above row by row.
+- The stray `ETag` on a `204` disappears with the normalization: an empty answer never reaches the `ETag` step of
+  `finalize`, which is unchanged. `Json(None)` on a `204` would still compute one from the discarded body, as Express
+  does for `res.json(null)`.
+- The in-memory test client does not show `Content-Length` (hyper writes it on the wire), so `Content-Length: 0` is
+  asserted in the socket replay only.

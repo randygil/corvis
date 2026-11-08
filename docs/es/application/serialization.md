@@ -86,7 +86,7 @@ app.use_global_interceptors(z::ZodSerializerInterceptor::new());
 | `ZodSerializerDto::dto_array::<T>()` | La respuesta es un arreglo de `T` |
 | `ZodSerializerDto::schema(s)` / `schema_array(s)` | Un schema suelto, sin DTO |
 
-`ZodSerializerInterceptor::create(Some(true))` incluye el valor de entrada en los issues del error (`reportInput`). Las respuestas que no son JSON (archivos, streams) pasan sin cambios.
+`ZodSerializerInterceptor::create(Some(true))` incluye el valor de entrada en los issues del error (`reportInput`). Las respuestas que no son JSON (archivos, streams) pasan sin cambios. Un resultado de handler sin valor (cuerpo vacío) se valida como `null`, así que el esquema debe aceptar `null` (`.nullable()`) en los handlers que pueden devolver `None`.
 
 Si el DTO se declaró como codec (`zod_dto!(Dto, schema, codec = true)`), el interceptor usa `encode` en lugar de `parse`, de modo que las transformaciones del codec se aplican en sentido inverso al serializar.
 
