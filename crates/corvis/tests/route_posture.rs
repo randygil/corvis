@@ -69,6 +69,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn install(app: &mut CorvisApplication) -> Captured {
     let captured: Captured = Arc::default();
     corvis::logger::set_logging_enabled(true);
+    corvis::logger::set_log_levels(&[LogLevel::Log, LogLevel::Error, LogLevel::Warn, LogLevel::Debug, LogLevel::Verbose, LogLevel::Fatal]);
     app.use_logger(Capture(captured.clone()));
     app.silence_route_logs();
     captured
