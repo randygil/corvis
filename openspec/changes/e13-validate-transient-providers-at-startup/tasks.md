@@ -60,8 +60,8 @@
 - [x] 6.4 Regression tests: every scenario of `specs/core/injection-scopes/spec.md` maps to a test in
   `crates/corvis/tests/di/transient_validation.rs` (list the mapping in the PR description)
 - [x] 6.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/` passes
-- [ ] 6.6 Framework runtime code changed (DI container, providers, macros): run the `corvis-parity` check and verify the (not run by the implementer: the maintainer runs it)
-  three port apps (consi, facten, houseplan) keep 0 apidiff differences
+- [x] 6.6 Framework runtime code changed (DI container, providers, macros): run the `corvis-parity` check and verify the (not run by the implementer: the maintainer runs it)
+  three port apps (consi, facten, houseplan) keep 0 apidiff differences (maintainer batch run on batch/phase03-d 2780936: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 
 ## Workflow follow-up
 

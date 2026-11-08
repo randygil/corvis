@@ -81,9 +81,9 @@
 - [x] 6.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 6.3 `cargo test --workspace` passes, including the regression tests of groups 2-4
 - [x] 6.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 6.5 Framework runtime code changed (corvis-orm connection and migrations): run the `corvis-parity` check and (not run by the implementer: the maintainer runs it)
+- [x] 6.5 Framework runtime code changed (corvis-orm connection and migrations): run the `corvis-parity` check and (not run by the implementer: the maintainer runs it)
   verify the three port apps keep 0 apidiff differences (and equivalent databases); consi and facten exercise
-  `?schema=public`, houseplan the no-parameter path
+  `?schema=public`, houseplan the no-parameter path (maintainer batch run on batch/phase03-d 2780936: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 - [x] 6.6 Security review of the parsing and quoting (`security-reviewer` agent): no injection through `schema`, no URL
   parts in error messages. Note: maintainer security review 2026-11-08: no critical/high/medium findings; low/informational
   fixes applied in the commit "Harden the database URL parameters after review"; connect timeout filed as #142

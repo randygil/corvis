@@ -69,8 +69,8 @@
 - [x] 6.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 6.3 `cargo test --workspace` passes, including the regression tests of groups 1-4
 - [x] 6.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 6.5 Framework runtime code changed (corvis-orm pool defaults): run the `corvis-parity` check and verify the three
-  port apps keep 0 apidiff differences (and 0 dbdiff differences)
+- [x] 6.5 Framework runtime code changed (corvis-orm pool defaults): run the `corvis-parity` check and verify the three
+  port apps keep 0 apidiff differences (and 0 dbdiff differences) (maintainer batch run on batch/phase03-d 2780936: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 
 ## Workflow follow-up
 

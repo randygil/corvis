@@ -51,12 +51,12 @@
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 4.3 `cargo test --workspace` passes, including the regression tests of group 2
 - [x] 4.4 Docs updated in English and Spanish (`docs/` and `docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 4.5 (the maintainer runs it) corvis-parity: the three port apps (consi, facten, houseplan) keep 0 apidiff differences (framework
-  runtime code changed in `application.rs`)
+- [x] 4.5 (the maintainer runs it) corvis-parity: the three port apps (consi, facten, houseplan) keep 0 apidiff differences (framework
+  runtime code changed in `application.rs`) (maintainer batch run on batch/phase03-d 2780936: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 
 ## Workflow follow-up
 
-- [ ] Archive the change with `/opsx:archive`
-- [ ] Close issue [#123](https://github.com/randygil/corvis/issues/123)
-- [ ] Tick #123 in its epic [#13](https://github.com/randygil/corvis/issues/13)
-- [ ] Move the card to Done in the Corvis Roadmap project
+- [x] Archive the change with `/opsx:archive`
+- [x] Close issue [#123](https://github.com/randygil/corvis/issues/123)
+- [x] Tick #123 in its epic [#13](https://github.com/randygil/corvis/issues/13)
+- [x] Move the card to Done in the Corvis Roadmap project

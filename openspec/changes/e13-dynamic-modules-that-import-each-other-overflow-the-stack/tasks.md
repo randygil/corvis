@@ -48,8 +48,8 @@
 - [x] 5.4 Regression tests: every scenario of `specs/core/circular-dependencies/spec.md` maps to a test in
   `crates/corvis/tests/di/dynamic_import_cycles.rs` (list the mapping in the PR description)
 - [x] 5.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/` passes
-- [ ] 5.6 Framework runtime code changed (`di/container.rs`, `di/error.rs`): run the `corvis-parity` check and verify (not run by the implementer: the maintainer runs it)
-  the three port apps (consi, facten, houseplan) keep 0 apidiff differences
+- [x] 5.6 Framework runtime code changed (`di/container.rs`, `di/error.rs`): run the `corvis-parity` check and verify (not run by the implementer: the maintainer runs it)
+  the three port apps (consi, facten, houseplan) keep 0 apidiff differences (maintainer batch run on batch/phase03-d 2780936: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 
 ## Workflow follow-up
 
