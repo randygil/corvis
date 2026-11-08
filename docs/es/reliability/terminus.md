@@ -171,6 +171,18 @@ HttpHealthIndicator::ping_check("api", "http://127.0.0.1:8080/ready").timeout(Du
 
 Un orquestador cuya sonda expira antes de 5 segundos necesita un límite menor aquí. El valor por defecto no se puede cambiar para toda la aplicación.
 
+## Indicadores que entran en pánico
+
+Un indicador que entra en pánico, al empezar su comprobación o mientras corre, se informa `down` con `"message": "health indicator panicked"`, y los demás indicadores se siguen informando. El estado es `503`, como cualquier otro fallo:
+
+```json
+{ "status": "down", "message": "health indicator panicked" }
+```
+
+El mensaje del pánico no forma parte de la respuesta, porque los endpoints de salud suelen ser públicos y un mensaje puede llevar una cadena de conexión. Se escribe una vez en el log de errores, con la clave del indicador, bajo el contexto `HealthCheckService`.
+
+Esto difiere de la librería original, que no captura un indicador que lanza una excepción y responde un `500` sin cuerpo de salud. Un `500` y un `503` son igual de no saludables para un orquestador, y ahora el informe dice qué indicador falló.
+
 ## Límites
 
 - No hay indicadores incluidos para bases de datos, disco o servicios concretos: se escriben con `HealthIndicator::new`.

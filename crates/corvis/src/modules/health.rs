@@ -1,8 +1,10 @@
 //! Health checks (`TerminusModule`, `HealthCheckService` and the health indicators).
 //!
 //! Every indicator runs with a time limit (5 seconds, or `HealthIndicator::timeout`); one that exceeds it is
-//! reported `down` and the others are still reported. `HttpHealthIndicator::ping_check` makes a real HTTP request,
-//! `tcp_check` only opens a TCP connection, and `MemoryHealthIndicator::check_rss` is `down` where it cannot measure.
+//! reported `down` and the others are still reported. An indicator that panics is reported `down` with
+//! `"health indicator panicked"` (the panic message only goes to the log) and the others are still reported.
+//! `HttpHealthIndicator::ping_check` makes a real HTTP request, `tcp_check` only opens a TCP connection, and
+//! `MemoryHealthIndicator::check_rss` is `down` where it cannot measure.
 //!
 //! ```ignore
 //! #[controller("health")]
@@ -21,6 +23,7 @@
 //! ```
 
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +37,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::di::{Module, ModuleDefinition, Provider};
 use crate::http::HttpException;
+use crate::logger::Logger;
+use crate::modules::schedule::panic_message;
 
 type Check = Arc<dyn Fn() -> BoxFuture<'static, Result<Value, Value>> + Send + Sync>;
 
@@ -73,10 +78,18 @@ impl HealthIndicator {
     }
 }
 
-/// The one place where an indicator runs: applies its time limit.
+/// The one place where an indicator runs: applies its time limit and isolates it from panics. The panic catch is
+/// inside the time limit, so a panic is reported as a panic and a hang as a timeout.
 async fn run_indicator(ind: &HealthIndicator) -> Result<Value, Value> {
-    match tokio::time::timeout(ind.timeout, (ind.check)()).await {
-        Ok(res) => res,
+    let guarded = AssertUnwindSafe(async { (ind.check)().await }).catch_unwind();
+    match tokio::time::timeout(ind.timeout, guarded).await {
+        Ok(Ok(res)) => res,
+        Ok(Err(payload)) => {
+            // The payload can carry a connection string or a query, and health endpoints are often public: it only
+            // goes to the log.
+            Logger::new("HealthCheckService").error(format!("health indicator \"{}\" panicked: {}", ind.key, panic_message(&payload)));
+            Err(down("health indicator panicked"))
+        }
         Err(_) => Err(down(format!("timeout of {}ms exceeded", ind.timeout.as_millis()))),
     }
 }
