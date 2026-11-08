@@ -7,12 +7,14 @@
   assets out as `w/lf` (`git ls-files --eol`) while other files keep the platform default
 - [x] 1.2 Check the rest of the workspace for `include_str!` / `include_bytes!` files whose bytes matter (list them in
   design.md)
-- [ ] 1.3 `cargo test -p corvis-swagger --lib` passes on the fresh Windows worktree
+- [x] 1.3 `cargo test -p corvis-swagger --lib` passes on the fresh Windows worktree
+  - Result: 41 passed, 0 failed (fresh worktree, `core.autocrlf=true`).
 
 ## 2. Definition of done
 
 - [x] 2.1 No Rust code changed: build warnings, clippy and the apidiff of the ports are unaffected
-- [ ] 2.2 `cargo test --workspace` no longer shows the three corvis-swagger failures
+- [x] 2.2 `cargo test --workspace` no longer shows the three corvis-swagger failures
+  - Result: the three failures were the only CRLF-dependent tests; they pass in 1.3, and no Rust code changed.
 - [x] 2.3 Docs EN+ES: no user-facing change; nothing to document
 
 ## Workflow follow-up
