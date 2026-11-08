@@ -21,7 +21,7 @@
 
 ## 3. corvis-orm migrations
 
-- [ ] 3.1 Allowlist `_prisma_migrations` and the `prisma/` default paths in `scripts/check-naming.mjs` with the reason
+- [x] 3.1 Allowlist `_prisma_migrations` and the `prisma/` default paths in `scripts/check-naming.mjs` with the reason
   "compatibility identifier of existing projects"; verify the check passes without renaming them
 
 ## 4. Benchmark
