@@ -159,3 +159,49 @@ Decisions taken for the open questions so the change can start; the maintainer c
   before implementing; the spec delta is adjusted to match.
 - `?schema=` being ignored is tracked as its own issue (filed from this review), not in this change.
 - The folder was renamed to `e13-connection-limit-and-pool-timeout-in-the-database-url` (issue #133).
+
+## Fixture results (recorded with @prisma/client 6.19.3, implementation)
+
+Recorded by `corvis-tests/tmp/orm/pool/cases.js` into `crates/corvis-orm/tests/fixtures/pool_url.json` (Postgres 127.0.0.1:55432,
+temp SQLite file). Where it settles the open questions, and where corvis-orm deliberately differs:
+
+- **Default pool size** is `2 * physical cores + 1` on Postgres (49 active with 24 physical cores, 64 queries). On SQLite
+  the default pool runs 16 CPU-bound reads in parallel (364 ms against 4218 ms with `connection_limit=1`), consistent with
+  the same formula; the original serializes interactive transactions on SQLite whatever the limit, which is engine
+  behavior, not pool size, and is not reproduced.
+- **Repeated keys**: the last occurrence wins (`2&5` gives 5, `5&2` gives 2; same for `pool_timeout`), as designed.
+  Percent-decoding applies (`%32` is 2).
+- **`pool_timeout` on SQLite**: the original accepts any value, including invalid ones, and ignores it (a query waited 3 s
+  and 13 s behind a held connection with and without `pool_timeout=1`). corvis-orm keeps applying a valid value there (the
+  harmless superset of decision 2) and, like the original, ignores an invalid one without failing.
+- **`pool_timeout=0`** waits without limit on Postgres (as designed). **P2024** after `pool_timeout=1` takes 1.0 s; the
+  original's message is "Timed out fetching a new connection from the connection pool. More info:
+  http://pris.ly/d/connection-pool (Current connection pool timeout: 1, connection limit: 1)"; corvis-orm keeps its existing
+  `P2024` text (out of scope).
+- **Invalid values** (Postgres): `-1`, `abc`, `1.5` and empty for `connection_limit`, and `-1`, `1.5`, `abc` and empty for
+  `pool_timeout`, fail with an `InitializationError` without an error code whose message starts "The provided database
+  string is invalid." followed by a sentence and a link to the original's documentation. corvis-orm uses the same first
+  sentence, then names the parameter and the value, and sets `P1013` (the original's runtime error has no code; `P1013`
+  is its schema-engine code for the same condition and keeps the style shared with the `schema` change). The link is not
+  reproduced. On SQLite only `connection_limit` is validated (same values rejected, with a different message).
+- **Deviation**: the original accepts `connection_limit=0` and `connection_limit=4294967296` and runs without a pool limit
+  (64 concurrent queries on 64 connections), on both providers. corvis-orm rejects both: sqlx preallocates its idle queue
+  to the pool size, so an unbounded size is not representable, and a pool needs at least one connection. The decision 5
+  rule (at least 1, at most `u32`) stays.
+
+## Implementation notes
+
+- **Deviation: the pool size has an upper bound.** The rule above ("at most `u32`") was too wide. sqlx 0.8.6
+  preallocates its idle queue with `ArrayQueue::new(max_connections as usize)`, so `connection_limit=4294967295` (or
+  `OrmClientOptions::max_connections(u32::MAX)`) made pool creation try to allocate hundreds of gigabytes and abort the
+  process. The size is now limited to 1..=262143, the largest value Postgres accepts for its own `max_connections`
+  (`MAX_POOL_SIZE` in `url_params.rs`). A larger URL value fails with the same `P1013` shape ("must be a positive
+  integer no greater than 262143"); a code-provided `max_connections` of 0 or above the cap fails in
+  `OrmClient::with_options` with an initialization error that names the field. The original accepts these values; corvis-orm
+  bounds them because of the preallocation.
+- **Review fixes (2026-11-08).** The message of an invalid value now shows the value only when it is at most 40
+  characters of `[0-9A-Za-z+._-]` after decoding, otherwise "got an invalid value" (an unencoded password can contain a
+  parameter key and was echoed in part). The parser also follows the original and the `url` crate: the query ends at
+  the first `#`, keys are percent-decoded before matching, `+` in a value is a space, and `%` needs two ASCII hex
+  digits. A code `acquire_timeout` is clamped like `pool_timeout` (`Duration::MAX` panicked). `OrmClientOptions` prints
+  its URL without the password in `Debug`. See #137's design for the details.

@@ -1,0 +1,304 @@
+{
+  "recorded_with": "@prisma/client 6.19.3",
+  "script": "corvis-tests/tmp/orm/pool/cases.js",
+  "cores": {
+    "physical": 24,
+    "logical": 32
+  },
+  "concurrency": {
+    "connection_limit=1": {
+      "queries": 6,
+      "max_active": 1,
+      "max_backends": 1,
+      "elapsed_ms": 1812
+    },
+    "connection_limit=2": {
+      "queries": 6,
+      "max_active": 2,
+      "max_backends": 2,
+      "elapsed_ms": 913
+    },
+    "connection_limit=5": {
+      "queries": 12,
+      "max_active": 5,
+      "max_backends": 5,
+      "elapsed_ms": 914
+    },
+    "connection_limit=2&pool_timeout=20": {
+      "queries": 6,
+      "max_active": 2,
+      "max_backends": 2,
+      "elapsed_ms": 913
+    },
+    "connection_limit=2&connection_limit=5": {
+      "queries": 12,
+      "max_active": 5,
+      "max_backends": 5,
+      "elapsed_ms": 913
+    },
+    "connection_limit=5&connection_limit=2": {
+      "queries": 12,
+      "max_active": 2,
+      "max_backends": 2,
+      "elapsed_ms": 1816
+    },
+    "connection_limit=%32": {
+      "queries": 6,
+      "max_active": 2,
+      "max_backends": 2,
+      "elapsed_ms": 911
+    },
+    "sslmode=disable&connection_limit=3": {
+      "queries": 12,
+      "max_active": 3,
+      "max_backends": 3,
+      "elapsed_ms": 1214
+    },
+    "connection_limit=0": {
+      "queries": 64,
+      "max_active": 64,
+      "max_backends": 64,
+      "elapsed_ms": 335
+    },
+    "connection_limit=4294967296": {
+      "queries": 64,
+      "max_active": 64,
+      "max_backends": 64,
+      "elapsed_ms": 343
+    },
+    "default": {
+      "queries": 64,
+      "max_active": 49,
+      "max_backends": 49,
+      "elapsed_ms": 628
+    }
+  },
+  "wait": {
+    "connection_limit=1&pool_timeout=1 (hold 3s)": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientKnownRequestError",
+        "code": "P2024",
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nTimed out fetching a new connection from the connection pool. More info: http://pris.ly/d/connection-pool (Current connection pool timeout: 1, connection limit: 1)"
+      },
+      "waited_ms": 1015
+    },
+    "connection_limit=1&pool_timeout=0 (hold 2s)": {
+      "ok": true,
+      "waited_ms": 2011
+    },
+    "connection_limit=1&pool_timeout=3 (hold 1s)": {
+      "ok": true,
+      "waited_ms": 1007
+    },
+    "connection_limit=1&pool_timeout=1&pool_timeout=5 (hold 3s)": {
+      "ok": true,
+      "waited_ms": 3015
+    },
+    "connection_limit=1&pool_timeout=5&pool_timeout=1 (hold 3s)": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientKnownRequestError",
+        "code": "P2024",
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nTimed out fetching a new connection from the connection pool. More info: http://pris.ly/d/connection-pool (Current connection pool timeout: 1, connection limit: 1)"
+      },
+      "waited_ms": 1011
+    }
+  },
+  "invalid_postgres": {
+    "connection_limit=0": {
+      "ok": true
+    },
+    "connection_limit=-1": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      }
+    },
+    "connection_limit=abc": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      }
+    },
+    "connection_limit=1.5": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      }
+    },
+    "connection_limit=": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      }
+    },
+    "connection_limit=4294967296": {
+      "ok": true
+    },
+    "pool_timeout=-1": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      }
+    },
+    "pool_timeout=1.5": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      }
+    },
+    "pool_timeout=abc": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      }
+    },
+    "pool_timeout=": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      }
+    }
+  },
+  "valid_postgres": {
+    "connection_limit=1&pool_timeout=1": {
+      "ok": true
+    }
+  },
+  "sqlite": {
+    "file:<db>?connection_limit=1": {
+      "ok": true
+    },
+    "file:<db>?pool_timeout=1": {
+      "ok": true
+    },
+    "file:<db>?connection_limit=1&pool_timeout=0": {
+      "ok": true
+    },
+    "file:<db>?connection_limit=1&connection_limit=3": {
+      "ok": true
+    },
+    "file:<db>?connection_limit=0": {
+      "ok": true
+    },
+    "file:<db>?connection_limit=abc": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nError in connector: Error creating a database connection. (The provided arguments are not supported)"
+      }
+    },
+    "file:<db>?pool_timeout=-1": {
+      "ok": true
+    },
+    "file:<db>?pool_timeout=abc": {
+      "ok": true
+    },
+    "file:<db>?pool_timeout=1.5": {
+      "ok": true
+    },
+    "file:<db>?connection_limit=1.5": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nError in connector: Error creating a database connection. (The provided arguments are not supported)"
+      }
+    },
+    "file:<db>?connection_limit=-1": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nError in connector: Error creating a database connection. (The provided arguments are not supported)"
+      }
+    },
+    "file:<db>?connection_limit=": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nError in connector: Error creating a database connection. (The provided arguments are not supported)"
+      }
+    },
+    "file:<db>?connection_limit=4294967296": {
+      "ok": true
+    }
+  },
+  "sqlite_pool_size": {
+    "default": {
+      "transactions": 60,
+      "started_after_2500ms": 1
+    },
+    "connection_limit=1": {
+      "transactions": 60,
+      "started_after_2500ms": 1
+    },
+    "connection_limit=3": {
+      "transactions": 60,
+      "started_after_2500ms": 1
+    },
+    "connection_limit=0": {
+      "transactions": 60,
+      "started_after_2500ms": 1
+    },
+    "connection_limit=1&connection_limit=3": {
+      "transactions": 60,
+      "started_after_2500ms": 1
+    }
+  },
+  "sqlite_parallel": {
+    "connection_limit=1": {
+      "queries": 16,
+      "elapsed_ms": 4218
+    },
+    "connection_limit=2": {
+      "queries": 16,
+      "elapsed_ms": 2049
+    },
+    "connection_limit=4": {
+      "queries": 16,
+      "elapsed_ms": 1053
+    },
+    "connection_limit=8": {
+      "queries": 16,
+      "elapsed_ms": 569
+    },
+    "default": {
+      "queries": 16,
+      "elapsed_ms": 364
+    },
+    "connection_limit=0": {
+      "queries": 16,
+      "elapsed_ms": 352
+    }
+  },
+  "sqlite_wait": {
+    "connection_limit=1&pool_timeout=1 (hold 3s)": {
+      "ok": true,
+      "waited_ms": 3012
+    },
+    "connection_limit=1 (hold 13s)": {
+      "ok": true,
+      "waited_ms": 13001
+    }
+  }
+}

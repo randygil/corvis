@@ -208,3 +208,84 @@ Decisions taken for the open questions so the change can start; the maintainer c
 - Without the parameter nothing changes (no `SET`), as in Decision 3, unless the fixture shows the original forces
   `public`.
 - Correction to the issue text: only consi and facten pass `?schema=public`; houseplan does not.
+
+## Implementation notes
+
+- **Parsing structure (adapted to #133).** #133 landed `crates/corvis-orm/src/url_params.rs` with
+  `split_url_params(url, dialect)` and `UrlParams`, not `split_pool_params` in `client.rs`. The change adds the `schema`
+  key and the `schema: Option<String>` field to that helper; `with_options` already stores `driver_url` and the params
+  in `ClientInner`, and `pool()` / `ensure_database` already use `driver_url`. There is still one parser.
+- **Validation message.** `schema` has its own error constructor (`P1013`, "`schema` must be a non-empty schema name of
+  at most 63 bytes without NUL characters") so the value is never echoed, unlike #133's numeric values. The 63 bytes are
+  counted after percent-decoding.
+- **`after_connect` and `Executor`.** The hook runs the statement with `sqlx::Executor::execute(&mut *conn, &*set)`
+  instead of `sqlx::raw_sql(..)`: `raw_sql(..).execute(&mut *conn)` does not compile inside the pool callback
+  ("implementation of `Executor` is not general enough"). A `&str` without arguments is sent with the simple query
+  protocol, the same as `raw_sql`, so nothing is prepared or cached.
+- **`ensure_schema` lookup** compares `nspname::text = $1` (the catalog column is of type `name`) with the schema bound
+  as text.
+- **Spec delta** unchanged: the recorded behavior of the original agrees with it except for the documented deviations
+  below.
+
+## Fixture results (recorded with `prisma` / `@prisma/client` 6.19.3, implementation)
+
+Recorded by `corvis-tests/tmp/orm/schema/cases.js` into `crates/corvis-orm/tests/fixtures/schema_url.json` (Postgres
+127.0.0.1:55432, temp SQLite file; scratch databases, the scratch role and the generated clients are removed). Replayed
+by `crates/corvis-orm/tests/pg_schema_url.rs`.
+
+- **`search_path` is set.** With `?schema=other` the original's `SHOW search_path` is exactly `"other"`,
+  `current_schema()` is `other`, and an unqualified `SELECT ... FROM "User"` raw query reads `other."User"` (rows `b@x`,
+  not `a@x`); the same inside interactive transactions and on every pooled connection. Its generated SQL is also
+  qualified (`FROM "other"."User"`). Decision 2 (exactly one schema, no `public`) is confirmed. The original prints the
+  quoted form; the server prints `other` for the same path, so the test compares without quotes.
+- **No parameter**: `search_path` is the server's `"$user", public`; the original does not force `public`. Decision 4
+  (no `SET` without the parameter) is confirmed, which settles the "absent schema" open question.
+- **Missing schema**: queries do not create it (`P2021`, table `nope.User` not found). `migrate deploy` creates it
+  (`tenant_a`, `My Schema`) and puts `_prisma_migrations` and the migration tables in it; `migrate status` creates the
+  empty schema too and reports the migrations as pending; after the deploy `status` reports up to date. Decision 3
+  (both commands ensure the schema) is confirmed. A role without database `CREATE` deploys into an existing schema and
+  fails on a missing one.
+- **Non-empty `public` without history** gives `P3005` in the original (its baseline check); not reproduced, corvis-orm
+  has no such check.
+- **Empty `schema=`**: the original accepts it for queries (`search_path` becomes `""`, `current_schema()` is NULL, no
+  table resolves) and its schema engine fails. corvis-orm rejects it with `P1013` (spec kept): a client that can find no
+  table is never what the URL meant.
+- **Long names**: the original accepts 63, 64 and 100 bytes for queries (the server truncates in `SET`) and its schema
+  engine fails for 64. corvis-orm rejects names over 63 bytes (maintainer decision of 2026-11-08).
+- **NUL (`a%00b`)**: the original cannot connect ("Can't reach database server"); corvis-orm fails at creation with
+  `P1013`.
+- **Hostile name** `x"; DROP TABLE canary; --`: the original builds an invalid `search_path` (`FATAL: invalid value for
+  parameter "search_path"`) for queries and its schema engine fails; `public.canary` survives. corvis-orm quotes the name
+  and works with a schema of exactly that name: a deliberate difference (security).
+- **`sslmode=disable&schema=other`** works in the original; the parameters are independent.
+- **SQLite**: `file:...?schema=main`, `schema=` and `schema=other` are all accepted and ignored by the original, as here.
+
+### Security review fixes (2026-11-08)
+
+- **Sticky `search_path`.** A script that changes the session (`set_config(..., false)`, `RESET ALL`, `SET search_path`)
+  used to leave the pooled connection changed for good. `execute_script_raw` (migration scripts, `db_execute`, the
+  `CREATE TABLE` of the history table and `CREATE SCHEMA`) now runs on a Postgres connection taken with
+  `PoolConnection::detach()` and closed afterwards, at the cost of one new connection per script. `_prisma_migrations` is
+  written and read with its name qualified by the URL schema (`history_table()` in `migrate.rs`), so recording a
+  migration no longer depends on the session path. A migration that itself switches the path and creates tables
+  unqualified still creates them where it says; qualifying generated SQL stays out of scope.
+- **Error echo.** The numeric parameters' `P1013` message shows the value only when it is at most 40 characters of
+  `[0-9A-Za-z+._-]` after decoding; otherwise "got an invalid value". An unencoded password can contain a key
+  (`...:S3cr?connection_limit=etPw%40host@...`), which used to echo part of it.
+- **Parsing.** The query ends at the first `#` (the fragment is kept in the driver URL, never parsed); keys are
+  percent-decoded before matching; `+` in a value is a space; `%` needs two ASCII hex digits (`%+1` stays literal, the old
+  `from_str_radix` accepted the sign). A `#` before the first `?` means there is no query.
+- **Reserved names.** `$user` and names starting with `pg_` (case-sensitive, as the server) fail with `P1013`.
+- **Pre-existing.** `OrmClientOptions` has a manual `Debug` that prints the URL with the password as `***` and the query
+  as `?...`; a code `acquire_timeout` is clamped to the same cap as the URL value (`Duration::MAX` panicked in sqlx).
+- Not done here: a separate connect timeout (issue #142).
+
+### Open questions, answered
+
+1. Absent `schema`: the server's `search_path`, nothing forced (fixture).
+2. The original sets the connection's `search_path` and also qualifies generated SQL: decision 2 does not diverge for raw
+   SQL.
+3. `migrate deploy` creates a missing schema, and so does `migrate status` (fixture); both are covered.
+4. Empty `schema=`: the original accepts it for queries and is unusable; corvis-orm rejects it with `P1013` (deviation).
+5. Names over 63 bytes: the original accepts them (the server truncates); corvis-orm rejects them (deviation, maintainer
+   decision).

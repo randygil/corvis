@@ -86,7 +86,8 @@ another statement or change another setting.
 - **THEN** the tables are created in the schema `My Schema` (not `my schema`)
 
 ### Requirement: Invalid schema values fail at creation
-An empty `schema` value, a value containing a NUL character, or a value longer than 63 bytes after percent-decoding
+An empty `schema` value, `$user`, a value starting with `pg_`, a value containing a NUL character, or a value longer
+than 63 bytes after decoding
 SHALL make `OrmClient::with_options` (and `OrmClient::new`) return an initialization error with code `P1013` that names
 the `schema` parameter. The message MUST NOT contain the user, the password or any other part of the URL.
 
@@ -98,3 +99,29 @@ the `schema` parameter. The message MUST NOT contain the user, the password or a
 #### Scenario: NUL character
 - **WHEN** a client is created with `postgresql://host/db?schema=a%00b`
 - **THEN** creation fails with a `P1013` initialization error mentioning `schema`
+
+#### Scenario: Reserved names
+- **WHEN** a client is created with `?schema=%24user`, `?schema=pg_temp` or `?schema=pg_x`
+- **THEN** creation fails with a `P1013` initialization error mentioning `schema` (`"$user"` is the server's special
+  path token and `pg_temp` would send every object to temporary tables)
+
+### Requirement: Scripts do not change the pooled sessions
+Migration scripts and `db_execute` scripts SHALL run on a connection that is closed afterwards and never returns to
+the pool, and `_prisma_migrations` SHALL be referenced by its name qualified with the URL schema, so that a script that
+changes the session (`set_config('search_path', ...)`, `RESET ALL`, `SET search_path`) cannot send later statements
+to another schema.
+
+#### Scenario: Migration that resets the search path
+- **WHEN** `migrate_deploy(dir)` runs with `...?schema=sticky&connection_limit=1` and a migration runs
+  `SELECT set_config('search_path', 'public', false)` and another `RESET ALL`
+- **THEN** both migrations are recorded as finished in `sticky._prisma_migrations`, and afterwards `current_schema()`
+  and model queries still resolve to `sticky`
+
+### Requirement: Parameters are read as form data
+The query string SHALL end at the first `#` (the fragment is never read as parameters), keys SHALL be percent-decoded
+before they are matched (`schem%61=t` is `schema=t`), values SHALL be decoded with `+` as a space and `%` followed by
+two ASCII hex digits only, and the pairs that are not ours MUST be copied unchanged.
+
+#### Scenario: Encoded key and plus sign
+- **WHEN** a client is created with `...?schem%61=My+Schema&sslmode=disable`
+- **THEN** the schema is `My Schema` and the driver receives `...?sslmode=disable`
