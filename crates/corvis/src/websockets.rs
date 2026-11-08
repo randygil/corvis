@@ -544,11 +544,10 @@ async fn resolve_all<T: ?Sized + Send + Sync + 'static>(refs: &[EnhancerRef<T>],
     Ok(out)
 }
 
-pub(crate) async fn build_gateways(
-    container: &Arc<Container>,
-    cfg: &RouterConfig,
-) -> Result<HashMap<String, Arc<GatewayRuntime>>, DiError> {
-    let mut out = HashMap::new();
+/// Resolves every gateway's enhancers and handler map. It registers no server and runs no `after_init`, so the
+/// route posture check can look at the final guard lists before any user code of a gateway runs.
+pub(crate) async fn compile_gateways(container: &Arc<Container>, cfg: &RouterConfig) -> Result<Vec<GatewayRuntime>, DiError> {
+    let mut out = Vec::new();
     let logger = Logger::new("WebSocketsController");
     for module in &container.modules {
         for p in &module.providers {
@@ -600,19 +599,39 @@ pub(crate) async fn build_gateways(
                 }
             }
             let server = info.server.as_ref().and_then(|s| s.downcast_ref::<WsServer>().cloned()).unwrap_or_default();
-            SERVERS.lock().unwrap().insert(info.path.clone(), server.clone());
-            if let Some(init) = &info.on_init {
-                init(Arc::new(server.clone())).await;
-            }
             let class_target = Arc::new(Target { name: p.name.clone(), metadata: info.enhancers.metadata.iter().cloned().collect() });
             let module_ref = ModuleRef { container: container.clone(), module: module.id };
-            out.insert(
-                info.path.clone(),
-                Arc::new(GatewayRuntime { name: p.name.clone(), server, handlers, info, class_target, module_ref }),
-            );
+            out.push(GatewayRuntime { name: p.name.clone(), server, handlers, info, class_target, module_ref });
         }
     }
     Ok(out)
+}
+
+/// Registers the compiled gateways' servers and runs their `after_init`.
+pub(crate) async fn start_gateways(compiled: Vec<GatewayRuntime>) -> HashMap<String, Arc<GatewayRuntime>> {
+    let mut out = HashMap::new();
+    for gateway in compiled {
+        SERVERS.lock().unwrap().insert(gateway.info.path.clone(), gateway.server.clone());
+        if let Some(init) = &gateway.info.on_init {
+            init(Arc::new(gateway.server.clone())).await;
+        }
+        out.insert(gateway.info.path.clone(), Arc::new(gateway));
+    }
+    out
+}
+
+/// What the route posture check needs from gateways: each handler with the guards that run for it.
+pub(crate) fn posture_gateways<'a>(gateways: impl IntoIterator<Item = &'a GatewayRuntime>) -> Vec<crate::posture::GatewayPosture> {
+    gateways
+        .into_iter()
+        .map(|g| crate::posture::GatewayPosture {
+            path: g.info.path.clone(),
+            name: g.name.clone(),
+            class_target: g.class_target.clone(),
+            verify_client: g.server.options().verify_client.is_some(),
+            handlers: g.handlers.iter().map(|(event, h)| (event.clone(), h.target.clone(), h.guards.clone())).collect(),
+        })
+        .collect()
 }
 
 /// If the request is a WebSocket upgrade for a gateway, returns its runtime.

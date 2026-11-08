@@ -135,7 +135,8 @@ pub const HTTP_CODE_METADATA: &str = "__httpCode__";
 /// `true` on a controller or a handler that is open on purpose. The route posture check reads it, and a global
 /// guard can skip public routes with `Reflector::get_all_and_override::<bool>(PUBLIC_METADATA, ..)`.
 ///
-/// `#[public]` goes below `#[controller]` or on a route method inside `#[routes]`:
+/// `#[public]` goes below `#[controller]` or on a route method inside `#[routes]`; the route posture check
+/// reads it for gateways and SSE routes too:
 ///
 /// ```
 /// use corvis::prelude::*;
@@ -194,6 +195,57 @@ pub const HTTP_CODE_METADATA: &str = "__httpCode__";
 /// #[public]
 /// fn open() {}
 /// ```
+///
+/// Below `#[websocket_gateway]` and on `#[subscribe_message]` methods it marks gateways and message handlers:
+///
+/// ```
+/// use corvis::prelude::*;
+/// use corvis::{WsServer, websocket_gateway};
+///
+/// #[websocket_gateway(path = "/status")]
+/// #[public]
+/// pub struct StatusGateway {
+///     #[websocket_server]
+///     server: WsServer,
+/// }
+///
+/// #[handlers]
+/// impl StatusGateway {
+///     #[subscribe_message("ping")]
+///     #[public]
+///     fn ping(&self) {}
+/// }
+/// ```
+///
+/// It is rejected on the other `#[handlers]` kinds:
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+///
+/// #[injectable]
+/// pub struct Jobs;
+///
+/// #[handlers]
+/// impl Jobs {
+///     #[cron("0 * * * * *")]
+///     #[public]
+///     fn tick(&self) {}
+/// }
+/// ```
+///
+/// And it takes no arguments on a gateway either:
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+/// use corvis::{WsServer, websocket_gateway};
+///
+/// #[websocket_gateway(path = "/status")]
+/// #[public(true)]
+/// pub struct StatusGateway {
+///     #[websocket_server]
+///     server: WsServer,
+/// }
+/// ```
 pub const PUBLIC_METADATA: &str = "isPublic";
 pub use application::introspection::{ControllerInfo, ModuleInfo, ResolvedRoutePath};
 pub use openapi::{ApiSchema, ApiSchemaDef, ApiSchemaRef};
@@ -206,7 +258,7 @@ pub use z::{ZodDto, ZodSchema, ZodValidationPipe};
 pub use corvis_macros::{Validate, controller, handlers, injectable, main, module, public, routes, test, websocket_gateway};
 pub use posture::{
     GuardInfo, PostureEntry, PostureExemption, PostureKind, PostureStatus, RoutePostureError, RoutePostureMode, RoutePostureOptions,
-    RoutePostureReport,
+    RoutePostureReport, UncheckedSurface,
 };
 
 pub use http_adapter::{HttpAdapter, HttpAdapterHost, HttpServer, UpgradeRequest};

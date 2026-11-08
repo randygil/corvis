@@ -106,6 +106,10 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                     ws_enhancers.push(quote!(.#m(#e)));
                 }
                 enhancer_attr.get_or_insert(attr);
+            } else if n == "public" {
+                crate::controller::no_public_args(&attr)?;
+                ws_enhancers.push(quote!(.set_metadata(::corvis::PUBLIC_METADATA, true)));
+                enhancer_attr.get_or_insert(attr);
             } else if n == "set_metadata" {
                 let a = attr_args(&attr)?;
                 if a.len() != 2 {

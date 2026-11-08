@@ -58,6 +58,11 @@ pub fn expand(args: TokenStream, mut item: ItemStruct) -> syn::Result<TokenStrea
                 continue;
             }
             "use_filters" => "filter",
+            "public" => {
+                crate::controller::no_public_args(&attr)?;
+                enhancers.push(quote!(.set_metadata(::corvis::PUBLIC_METADATA, true)));
+                continue;
+            }
             _ => {
                 keep.push(attr);
                 continue;
