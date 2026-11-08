@@ -634,6 +634,12 @@ impl CorvisApplication {
 
     async fn bind(&mut self, addr: impl ListenAddr) -> crate::Result<tokio::net::TcpListener> {
         self.init().await?;
+        // At listen time, not in `init`: the options may be set after `init()` (`set_server_options`).
+        if self.config.server.insecure_http_parser {
+            Logger::new("ServerOptions").warn(
+                "insecure_http_parser(true): HTTP/1 framing checks are off (bare LF line endings, whitespace after a chunk size, Content-Length with Transfer-Encoding and bare LF in trailers are accepted). See https://corvis.randygil.com/security/http-parsing",
+            );
+        }
         let addr = addr.to_socket_addr()?;
         let listener = match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => l,
