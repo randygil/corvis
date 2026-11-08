@@ -391,17 +391,29 @@ impl MemoryHealthIndicator {
     /// `up` while the resident set size of the process stays at or under `threshold_bytes`. Measured on Linux,
     /// Windows and macOS; where it cannot be measured the indicator is `down`, never a silent `up`.
     pub fn check_rss(key: impl Into<String>, threshold_bytes: u64) -> HealthIndicator {
-        HealthIndicator::new(key, move || async move {
-            rss_verdict(memory_stats::memory_stats().map(|m| m.physical_mem as u64), threshold_bytes)
-        })
+        HealthIndicator::new(key, move || async move { rss_verdict(current_rss(), threshold_bytes) })
     }
+}
+
+/// Resident set size of the process in bytes, if it can be measured.
+///
+/// `memory_stats` 1.2 decides on its first call whether to read `/proc/self/smaps` or `/proc/self/statm` on Linux, and
+/// a call made concurrently with that first one can read `statm` with a page size of 0 and report 0 bytes. The first
+/// call therefore runs once, alone, before any other.
+fn current_rss() -> Option<u64> {
+    static FIRST_READ: std::sync::Once = std::sync::Once::new();
+    FIRST_READ.call_once(|| {
+        let _ = memory_stats::memory_stats();
+    });
+    memory_stats::memory_stats().map(|m| m.physical_mem as u64)
 }
 
 fn rss_verdict(rss: Option<u64>, threshold_bytes: u64) -> Result<Value, Value> {
     match rss {
+        // A running process always has resident pages: 0 means the reading failed.
+        Some(0) | None => Err(down("rss could not be measured on this platform")),
         Some(rss) if rss > threshold_bytes => Err(down("Used rss exceeded the set threshold")),
         Some(_) => Ok(json!({})),
-        None => Err(down("rss could not be measured on this platform")),
     }
 }
 
@@ -481,6 +493,20 @@ mod tests {
     fn unmeasurable_rss_is_down() {
         let res = rss_verdict(None, u64::MAX);
         assert_eq!(res.unwrap_err()["message"], "rss could not be measured on this platform");
+    }
+
+    #[test]
+    fn zero_rss_is_a_failed_reading() {
+        let res = rss_verdict(Some(0), u64::MAX);
+        assert_eq!(res.unwrap_err()["message"], "rss could not be measured on this platform");
+    }
+
+    #[test]
+    fn concurrent_first_readings_are_never_zero() {
+        let readings: Vec<_> = (0..16).map(|_| std::thread::spawn(current_rss)).collect();
+        for r in readings {
+            assert!(r.join().unwrap().is_none_or(|rss| rss > 0));
+        }
     }
 }
 
