@@ -49,7 +49,7 @@ Two details in that example: the `IS_PUBLIC_KEY` metadata makes the app's global
 
 ## Response format
 
-All indicators run in parallel. With all of them up, the response is `200`:
+All indicators run in parallel, each with a [time limit](#time-limits). With all of them up, the response is `200`:
 
 ```json
 {
@@ -101,10 +101,44 @@ The closure has to be `'static`, which is why the `Arc` is cloned before being m
 
 | Indicator | What it checks |
 |---|---|
-| `corvis::HttpHealthIndicator::ping_check(key, "host:port")` | That a TCP connection to that address can be opened in under 3 seconds. It does not make an HTTP request |
-| `corvis::MemoryHealthIndicator::check_rss(key, bytes)` | That the process resident memory does not exceed the threshold. It reads `/proc/self/statm`, so it only measures on Linux; on other systems it always reports `up` with no data |
+| `corvis::HttpHealthIndicator::ping_check(key, "http://host:port/path")` | Sends an HTTP `GET` and is `up` only on a 2xx response (up to 5 redirects are followed). `https://` needs the `health-tls` feature of `corvis` |
+| `corvis::HttpHealthIndicator::tcp_check(key, "host:port")` | That a TCP connection to that address can be opened. It sends no request: use it for services without HTTP, such as Redis or SMTP |
+| `corvis::MemoryHealthIndicator::check_rss(key, bytes)` | That the process resident memory does not exceed the threshold. It measures on Linux, Windows and macOS; where it cannot measure, it reports `down` with a message instead of a silent `up` |
+
+When `ping_check` fails, the entry in `error` has a `message` and, if the server answered, `statusCode` and `statusText`:
+
+```json
+{ "status": "down", "message": "Request failed with status code 500", "statusCode": 500, "statusText": "Internal Server Error" }
+```
+
+`check_rss` reports `{ "status": "down", "message": "Used rss exceeded the set threshold" }` over the threshold, and `up` with no extra fields otherwise.
+
+::: warning Migrating from `ping_check("host:port")`
+`ping_check` used to open a TCP connection only. It now takes a URL and makes an HTTP request, and a value without `http://` or `https://` is reported `down` with a message that names `tcp_check`. Replace `ping_check(key, "host:port")` with `tcp_check(key, "host:port")` to keep the old behavior.
+:::
+
+For `https://` URLs, enable the feature in `Cargo.toml`:
+
+```toml
+corvis = { version = "0.1", features = ["health-tls"] }
+```
+
+Without it, an `https://` URL is reported `down` with a message naming the feature, and no request is sent.
+
+## Time limits
+
+Every indicator runs with a time limit of 5 seconds. One that does not finish in time is reported `down` with `"message": "timeout of <ms>ms exceeded"`, and the other indicators are still reported, so a hung dependency cannot hang the health endpoint. Indicators run concurrently: the response time is bounded by the largest limit, not by their sum.
+
+Change the limit of one indicator with `timeout`:
+
+```rust
+use std::time::Duration;
+
+HttpHealthIndicator::ping_check("api", "http://127.0.0.1:8080/ready").timeout(Duration::from_millis(500))
+```
+
+An orchestrator whose probe times out sooner than 5 seconds needs a lower limit here. The default cannot be changed for the whole application.
 
 ## Limits
 
 - There are no built-in indicators for databases, disk or specific services: write them with `HealthIndicator::new`.
-- `check` does not apply a maximum time to custom indicators. If one can hang, wrap it with `tokio::time::timeout` inside the closure.

@@ -102,3 +102,22 @@ All health code lives in `crates/corvis/src/modules/health.rs` (148 lines), re-e
 - `health-tls` off by default, as recommended.
 - The response follows the recorded `@nestjs/terminus` fixture exactly, so the extra `rss` field goes.
 - A global timeout option in `TerminusModule::for_root` is out of scope.
+
+## Implementation notes
+
+- The original package `@nestjs/terminus` is not available locally, so tasks 5.1 and 5.2 (differential fixture and its
+  replay test) are not done and stay unticked. `crates/corvis/tests/health.rs` covers the same scenarios (200, 500,
+  302 to 200, closed port, RSS huge and tiny thresholds) and asserts the body shape of the original's documented
+  behavior: `message`, `statusCode`, `statusText`, axios' wording `Request failed with status code N`, and `up`
+  entries with no extra fields. The `rss` detail was dropped as the review notes decided, without the fixture
+  confirming it.
+- The per-indicator limit lives in the private `run_indicator` in `health.rs`, the single place an indicator runs, so
+  the panic isolation of `e13-isolate-panicking-health-indicators` can add `catch_unwind` inside the timeout there.
+- Task 3.3: the TLS tests are limited to the cases that need no certificate: feature disabled (down, names the
+  feature, no byte reaches the server) and feature enabled against a plain-HTTP server (handshake fails, down). A
+  successful HTTPS ping against a self-signed server is not tested. `tokio-rustls` uses the `ring` provider, so no
+  C build tools are needed.
+- `memory-stats` reports `physical_mem` as RSS on every supported OS; the Linux page size handling is inherited from
+  that crate. `cargo deny check` passes.
+- `tokio` with `test-util` was added to the dev-dependencies of `corvis` for the paused-clock tests.
+- Task 7.5 (corvis-parity) is not run here: framework runtime code changed, so the parity check is still needed.

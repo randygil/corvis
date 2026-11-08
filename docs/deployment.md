@@ -134,6 +134,8 @@ impl HealthController {
 pub struct HealthModule;
 ```
 
+Every indicator has a 5 second time limit, so a hung dependency is reported `down` instead of hanging the endpoint, and `check_rss` measures on Linux, Windows and macOS.
+
 See [Health checks](/reliability/terminus).
 
 ## Logs
