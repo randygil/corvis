@@ -1,13 +1,13 @@
 //! The one place that reads the corvis-specific query parameters of the database URL
-//! (`connection_limit`, `pool_timeout`, `schema`). They are removed before the URL reaches the driver,
+//! (`connection_limit`, `pool_timeout`, `connect_timeout`, `schema`). They are removed before the URL reaches the driver,
 //! which would ignore them (Postgres) or reject them (SQLite); every other pair is kept as is.
 
 use crate::db::Dialect;
 use crate::error::{InitializationError, OrmError, Result};
 
-/// `pool_timeout`: whole seconds, `0` meaning no limit.
+/// `pool_timeout` and `connect_timeout`: whole seconds, `0` meaning no limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PoolTimeout {
+pub(crate) enum Timeout {
     Seconds(u64),
     Unlimited,
 }
@@ -16,7 +16,9 @@ pub(crate) enum PoolTimeout {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct UrlParams {
     pub(crate) connection_limit: Option<u32>,
-    pub(crate) pool_timeout: Option<PoolTimeout>,
+    pub(crate) pool_timeout: Option<Timeout>,
+    /// Postgres only; ignored (and never invalid) on SQLite.
+    pub(crate) connect_timeout: Option<Timeout>,
     /// Postgres schema, percent-decoded (`?schema=tenant_a`). Ignored on SQLite.
     pub(crate) schema: Option<String>,
 }
@@ -100,13 +102,13 @@ fn parse_limit(raw: &str) -> Result<u32> {
     }
 }
 
-fn parse_timeout(raw: &str) -> Option<PoolTimeout> {
+fn parse_timeout(raw: &str) -> Option<Timeout> {
     let v = percent_decode(raw);
     let d = digits(&v)?;
     // Digits that overflow `u64` are a wait longer than any clock: no limit.
     Some(match d.parse::<u64>() {
-        Ok(0) | Err(_) => PoolTimeout::Unlimited,
-        Ok(n) => PoolTimeout::Seconds(n),
+        Ok(0) | Err(_) => Timeout::Unlimited,
+        Ok(n) => Timeout::Seconds(n),
     })
 }
 
@@ -114,11 +116,11 @@ fn parse_timeout(raw: &str) -> Option<PoolTimeout> {
 ///
 /// The query string starts at the first `?`, ends at the first `#` (the fragment is kept and never read
 /// as parameters) and is cut on `&`. A pair is removed when its percent-decoded key is exactly
-/// `connection_limit`, `pool_timeout` or `schema`; the others are copied byte for byte, in order, and the
+/// `connection_limit`, `pool_timeout`, `connect_timeout` or `schema`; the others are copied byte for byte, in order, and the
 /// `?` disappears when nothing remains. Values are decoded as form data (`%XX` with two hex digits,
 /// `+` for a space); a repeated key keeps its last value (what the original client does).
 ///
-/// `connection_limit` must be an integer of at least 1. An invalid `pool_timeout` fails too,
+/// `connection_limit` must be an integer of at least 1. An invalid `pool_timeout` or `connect_timeout` fails too,
 /// except for SQLite, where the original client accepts and ignores any value. `schema` must be 1 to
 /// 63 bytes without NUL characters on both providers (SQLite then ignores it).
 pub(crate) fn split_url_params(url: &str, dialect: Dialect) -> Result<(String, UrlParams)> {
@@ -144,6 +146,11 @@ pub(crate) fn split_url_params(url: &str, dialect: Dialect) -> Result<(String, U
                 Some(t) => params.pool_timeout = Some(t),
                 None if dialect == Dialect::Sqlite => params.pool_timeout = None,
                 None => return Err(invalid("`pool_timeout` must be a whole number of seconds", &percent_decode(value))),
+            },
+            "connect_timeout" => match parse_timeout(value) {
+                Some(t) => params.connect_timeout = Some(t),
+                None if dialect == Dialect::Sqlite => params.connect_timeout = None,
+                None => return Err(invalid("`connect_timeout` must be a whole number of seconds", &percent_decode(value))),
             },
             _ => kept.push(pair),
         }
@@ -178,7 +185,7 @@ mod tests {
         let (u, p) = pg("postgresql://h/db?connection_limit=2&pool_timeout=7").unwrap();
         assert_eq!(u, "postgresql://h/db");
         assert_eq!(p.connection_limit, Some(2));
-        assert_eq!(p.pool_timeout, Some(PoolTimeout::Seconds(7)));
+        assert_eq!(p.pool_timeout, Some(Timeout::Seconds(7)));
     }
 
     #[test]
@@ -188,7 +195,7 @@ mod tests {
                 .unwrap();
         assert_eq!(u, "postgresql://h/db?sslmode=require&application_name=a%20b&options=-c%20search_path%3Dx");
         assert_eq!(p.connection_limit, Some(3));
-        assert_eq!(p.pool_timeout, Some(PoolTimeout::Unlimited));
+        assert_eq!(p.pool_timeout, Some(Timeout::Unlimited));
     }
 
     #[test]
@@ -223,12 +230,12 @@ mod tests {
         let p = pg("postgresql://h/db?connection_limit=5&connection_limit=2").unwrap().1;
         assert_eq!(p.connection_limit, Some(2));
         let p = pg("postgresql://h/db?pool_timeout=5&pool_timeout=1").unwrap().1;
-        assert_eq!(p.pool_timeout, Some(PoolTimeout::Seconds(1)));
+        assert_eq!(p.pool_timeout, Some(Timeout::Seconds(1)));
     }
 
     #[test]
     fn pool_timeout_zero_is_unlimited() {
-        assert_eq!(pg("postgresql://h/db?pool_timeout=0").unwrap().1.pool_timeout, Some(PoolTimeout::Unlimited));
+        assert_eq!(pg("postgresql://h/db?pool_timeout=0").unwrap().1.pool_timeout, Some(Timeout::Unlimited));
     }
 
     #[test]
@@ -402,7 +409,7 @@ mod tests {
         assert_eq!(u, "postgresql://h/db?sslmode=disable");
         assert_eq!(p.schema.as_deref(), Some("t"));
         assert_eq!(p.connection_limit, Some(5));
-        assert_eq!(p.pool_timeout, Some(PoolTimeout::Seconds(7)));
+        assert_eq!(p.pool_timeout, Some(Timeout::Seconds(7)));
         // A decoded key that is not one of ours is copied as written.
         let (u, _) = pg("postgresql://h/db?a%20b=1").unwrap();
         assert_eq!(u, "postgresql://h/db?a%20b=1");
@@ -440,8 +447,73 @@ mod tests {
     }
 
     #[test]
+    fn connect_timeout_is_removed_with_other_params() {
+        let (u, p) = pg("postgresql://h/db?sslmode=disable&connect_timeout=3&schema=s&application_name=a%20b").unwrap();
+        assert_eq!(u, "postgresql://h/db?sslmode=disable&application_name=a%20b");
+        assert_eq!(p.connect_timeout, Some(Timeout::Seconds(3)));
+        let (u, p) = pg("postgresql://h/db?connect_timeout=2").unwrap();
+        assert_eq!((u.as_str(), p.connect_timeout), ("postgresql://h/db", Some(Timeout::Seconds(2))));
+        assert_eq!(pg("postgresql://h/db").unwrap().1.connect_timeout, None);
+    }
+
+    #[test]
+    fn connect_timeout_zero_overflow_and_repeats() {
+        assert_eq!(pg("postgresql://h/db?connect_timeout=0").unwrap().1.connect_timeout, Some(Timeout::Unlimited));
+        assert_eq!(pg("postgresql://h/db?connect_timeout=99999999999999999999").unwrap().1.connect_timeout, Some(Timeout::Unlimited));
+        assert_eq!(pg("postgresql://h/db?connect_timeout=1&connect_timeout=3").unwrap().1.connect_timeout, Some(Timeout::Seconds(3)));
+        assert_eq!(pg("postgresql://h/db?connect_timeout=3&connect_timeout=1").unwrap().1.connect_timeout, Some(Timeout::Seconds(1)));
+        let (u, p) = pg("postgresql://h/db?connect%5Ftimeout=4&pool%5Ftimeout=7").unwrap();
+        assert_eq!(
+            (u.as_str(), p.connect_timeout, p.pool_timeout),
+            ("postgresql://h/db", Some(Timeout::Seconds(4)), Some(Timeout::Seconds(7)))
+        );
+    }
+
+    #[test]
+    fn connect_timeout_similar_keys_are_not_removed() {
+        let (u, p) = pg("postgresql://h/db?x_connect_timeout=1&connect_timeouts=2").unwrap();
+        assert_eq!(u, "postgresql://h/db?x_connect_timeout=1&connect_timeouts=2");
+        assert_eq!(p, UrlParams::default());
+    }
+
+    #[test]
+    fn connect_timeout_invalid_values_fail_on_postgres() {
+        for v in ["-1", "1.5", "abc", ""] {
+            let e = pg(&format!("postgresql://h/db?connect_timeout={v}")).unwrap_err();
+            assert_eq!(e.code(), Some("P1013"), "{v}");
+            let m = e.to_string();
+            assert!(m.starts_with("The provided database string is invalid."), "{m}");
+            assert!(m.contains("`connect_timeout`") && m.contains(&format!("got `{v}`")), "{v}: {m}");
+        }
+        let long = "a".repeat(41);
+        assert!(msg(pg(&format!("postgresql://h/db?connect_timeout={long}"))).contains("got an invalid value"));
+    }
+
+    #[test]
+    fn connect_timeout_error_never_echoes_the_url() {
+        let m = msg(pg("postgresql://app:secret@host/db?connect_timeout=abc"));
+        assert!(m.contains("connect_timeout") && m.contains("abc"), "{m}");
+        for leak in ["app", "secret", "host"] {
+            assert!(!m.contains(leak), "{leak} leaked in {m}");
+        }
+        let m = msg(pg("postgres://app:S3cr?connect_timeout=etPw%40host@127.0.0.1:55432/postgres"));
+        assert!(m.contains("`connect_timeout`") && !m.contains("etPw") && !m.contains("S3cr"), "{m}");
+    }
+
+    #[test]
+    fn connect_timeout_is_accepted_and_ignored_on_sqlite() {
+        for v in ["1", "0", "abc", "-1", "", "99999999999999999999"] {
+            let (u, p) = sq(&format!("file:./a.db?connect_timeout={v}")).unwrap();
+            assert_eq!(u, "file:./a.db", "{v}");
+            assert!(p.connect_timeout.is_none() || v.chars().all(|c| c.is_ascii_digit()), "{v}");
+        }
+        let (u, _) = sq("sqlite://dev.db?connect_timeout=abc&mode=rwc").unwrap();
+        assert_eq!(u, "sqlite://dev.db?mode=rwc");
+    }
+
+    #[test]
     fn pool_huge_pool_timeout_is_unlimited_not_a_panic() {
         let p = pg("postgresql://h/db?pool_timeout=99999999999999999999999").unwrap().1;
-        assert_eq!(p.pool_timeout, Some(PoolTimeout::Unlimited));
+        assert_eq!(p.pool_timeout, Some(Timeout::Unlimited));
     }
 }

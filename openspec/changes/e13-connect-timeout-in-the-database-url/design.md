@@ -279,3 +279,27 @@ Maintainer decisions; they override the text above where they differ.
    implementation notes. Do not use the shared benchmark setup.
 6. This change starts only after #133 and #137 are merged into main (the delta extends `orm/connection-pool`, which
    #133 creates). Run the corvis-parity check before archiving.
+
+## Implementation notes
+
+- Tasks 1.1, 1.2 and 4.2 (the fixture recorded with the original 6.x client, its "Fixture results" section and its replay)
+  were not done: recording needs Node, the scratch database objects and the maintainer's go-ahead. The behaviors it was
+  meant to confirm (default 5 s, `0` = no limit, SQLite acceptance, the original's error for 22P05 and 53300) are still
+  open questions above; the implementation follows the 6.x documentation for them.
+- Hot path measurement (task review note 5), debug profile, local Postgres, 5 pooled connections, `query_raw("SELECT 1")`
+  through the client, 500 warm-up queries, three runs of 10 000 sequential queries, and 8 tasks x 1 250 queries:
+  - before (main at a380499): sequential 3728 / 3698 / 3713 ms (about 372 us per query); concurrent 1370 ms.
+  - after: sequential 3990 / 3921 / 3831 ms and 3878 / 3955 / 3993 ms in a second run (about 390 us per query, +5%);
+    concurrent 1351 ms and 1364 ms (no difference). The measuring test was temporary and is not part of the change.
+- `PgConn` releases its slot only after `PoolConnection::return_to_pool()` has finished (spawned on drop), as review note 2
+  asks. `Transaction` owns its pool connection and gives no way to wait for its return, so `PgTx` releases the slot when
+  it is dropped, before sqlx has put the connection back: the window of the Risks section stays for transactions (a
+  following request may spend a round trip of its `connect_timeout` on that return).
+- `report_setup_error` stores the error text (`String`) and a flag instead of a `sqlx::Error` (it is not `Clone` and only
+  the text is shown); `open_connection` is generic over the acquire future and holds the timeout, the `select!` and the
+  mapping of sqlx's own `PoolTimedOut` (set equal to `connect_timeout`) to the same `P1001`.
+- `ensure_database` also fails with `P1001` when the second (administrative) direct connection times out.
+- "Server lost after start" is tested with `ALTER ROLE .. CONNECTION LIMIT 0` plus `pg_terminate_backend`, the variant
+  allowed by task 4.1; a role at its limit is reported by sqlx as a timeout, without the database's message (53300 is
+  retried inside its connect loop), as design.md predicted.
+- `DbPool::close` closes the slot semaphore before the sqlx pool so waiting requests fail at once.

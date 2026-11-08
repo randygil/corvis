@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio::sync::RwLock;
 
@@ -17,7 +17,7 @@ use crate::meta::{Model, ModelMeta, ModelSet};
 use crate::query::Delegate;
 use crate::raw::RawSql;
 use crate::transaction::{Batch, IsolationLevel, TransactionOptions, TxSlot, TxState, tx_error};
-use crate::url_params::{MAX_POOL_SIZE, PoolTimeout, UrlParams, split_url_params};
+use crate::url_params::{MAX_POOL_SIZE, Timeout, UrlParams, split_url_params};
 
 /// Options of a [`OrmClient`] (`new OrmClient({ datasourceUrl, log })`).
 #[derive(Clone)]
@@ -26,15 +26,19 @@ pub struct OrmClientOptions {
     ///
     /// A Postgres URL may carry `?schema=name`: every connection then runs `SET search_path TO "name"`, and
     /// `migrate deploy`, `migrate status` and `db push` create the schema when it is missing.
-    /// The parameter never reaches the driver (it is removed with `connection_limit` and `pool_timeout`).
+    ///
+    /// The corvis-only parameters `connection_limit`, `pool_timeout`, `connect_timeout` (Postgres: whole
+    /// seconds to open a connection, `0` for no limit, 5 by default; ignored on SQLite) and `schema` never reach
+    /// the driver.
     pub url: String,
     /// Log every query (`log: ['query']`) through the corvis logger (`[OrmClient]`).
     pub log_queries: bool,
     /// Maximum number of pooled connections. Overrides the `connection_limit` URL parameter; without
     /// either it is `2 * physical CPU cores + 1`. In-memory SQLite always uses 1.
     pub max_connections: Option<u32>,
-    /// Timeout to acquire a connection. Overrides the `pool_timeout` URL parameter (whole seconds,
-    /// `0` for no limit); without either it is 10 seconds.
+    /// Timeout of the wait for a free connection of the pool. Overrides the `pool_timeout` URL parameter (whole
+    /// seconds, `0` for no limit); without either it is 10 seconds. On Postgres it does not include opening a
+    /// connection, which the `connect_timeout` URL parameter bounds (5 seconds by default).
     pub acquire_timeout: Option<Duration>,
     /// Global `omit` (`new OrmClient({ omit: { user: { password: true } } })`):
     /// model (client name like `user`, or model name like `User`) -> omitted fields.
@@ -139,7 +143,8 @@ mod pool_tests;
 pub(crate) struct ClientInner {
     pub(crate) options: OrmClientOptions,
     pub(crate) dialect: Dialect,
-    /// `options.url` without the corvis-only parameters (`connection_limit`, `pool_timeout`): what the driver gets.
+    /// `options.url` without the corvis-only parameters (`connection_limit`, `pool_timeout`, `connect_timeout`,
+    /// `schema`): what the driver gets.
     pub(crate) driver_url: String,
     params: UrlParams,
     pool: RwLock<Option<DbPool>>,
@@ -150,6 +155,8 @@ pub(crate) struct ClientInner {
 const UNLIMITED_POOL_TIMEOUT: Duration = Duration::from_secs(u32::MAX as u64);
 /// Wait for a free connection when neither the code nor the URL set one (6.x engine default).
 const DEFAULT_POOL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Time to open a Postgres connection when the URL has no `connect_timeout` (6.x engine default).
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default pool size: `2 * physical CPU cores + 1` (6.x engine default).
 fn default_pool_size() -> u32 {
@@ -260,6 +267,15 @@ impl OrmClient {
         self.inner.pool.read().await.is_some()
     }
 
+    /// Time to open a Postgres connection (`connect_timeout` of the URL); `None` means no limit.
+    pub(crate) fn connect_timeout(&self) -> Option<Duration> {
+        match self.inner.params.connect_timeout {
+            Some(Timeout::Seconds(s)) => Some(Duration::from_secs(s)).filter(|d| *d < UNLIMITED_POOL_TIMEOUT),
+            Some(Timeout::Unlimited) => None,
+            None => Some(DEFAULT_CONNECT_TIMEOUT),
+        }
+    }
+
     pub(crate) async fn pool(&self) -> Result<DbPool> {
         if let Some(p) = self.inner.pool.read().await.as_ref() {
             return Ok(p.clone());
@@ -276,8 +292,8 @@ impl OrmClient {
         let acquire_timeout = opts
             .acquire_timeout
             .unwrap_or(match params.pool_timeout {
-                Some(PoolTimeout::Seconds(s)) => Duration::from_secs(s),
-                Some(PoolTimeout::Unlimited) => UNLIMITED_POOL_TIMEOUT,
+                Some(Timeout::Seconds(s)) => Duration::from_secs(s),
+                Some(Timeout::Unlimited) => UNLIMITED_POOL_TIMEOUT,
                 None => DEFAULT_POOL_TIMEOUT,
             })
             .min(UNLIMITED_POOL_TIMEOUT);
@@ -306,16 +322,42 @@ impl OrmClient {
                 DbPool::Sqlite(pool_opts.connect_with(connect).await.map_err(|e| init_error(e, url))?)
             }
             Dialect::Postgres => {
-                let mut pool_opts = PgPoolOptions::new().max_connections(max_connections).acquire_timeout(acquire_timeout);
+                let connect_timeout = self.connect_timeout();
+                // sqlx's own deadline is a second guard: the request holds a slot, so it only covers the idle
+                // check and the connect loop.
+                let sqlx_deadline = connect_timeout.unwrap_or(UNLIMITED_POOL_TIMEOUT);
+                let mut pool_opts = PgPoolOptions::new().max_connections(max_connections).acquire_timeout(sqlx_deadline);
                 if let Some(schema) = &params.schema {
                     // Runs on every new connection before it is handed out, so cached statements are planned against it.
                     let set: Arc<str> = set_search_path_sql(schema).into();
                     pool_opts = pool_opts.after_connect(move |conn, _meta| {
                         let set = set.clone();
-                        Box::pin(async move { sqlx::Executor::execute(&mut *conn, &*set).await.map(|_| ()) })
+                        Box::pin(async move {
+                            let r = sqlx::Executor::execute(&mut *conn, &*set).await.map(|_| ());
+                            if let Err(e) = &r {
+                                db::report_setup_error(e);
+                            }
+                            r
+                        })
                     });
                 }
-                DbPool::Postgres(db::retry_connect(|| pool_opts.clone().connect(url)).await.map_err(|e| init_error(e, url))?)
+                let connect = PgConnectOptions::from_str(url).map_err(|e| init_error(e, url))?;
+                let handle = db::PgHandle {
+                    pool: pool_opts.connect_lazy_with(connect),
+                    slots: Arc::new(tokio::sync::Semaphore::new(max_connections as usize)),
+                    // Not sqlx's clamped value: `None` means the wait has no limit.
+                    pool_timeout: (acquire_timeout < UNLIMITED_POOL_TIMEOUT).then_some(acquire_timeout),
+                    connect_timeout,
+                    server: server_of(url).into(),
+                };
+                // The first connection takes the same path as every other one, so a refused, silent or
+                // rejecting server fails here, after `connect_timeout`, with the same `P1001`.
+                match db::acquire_pg(&handle).await {
+                    Ok(Ok(first)) => drop(first),
+                    Ok(Err(e)) => return Err(init_error(e, url)),
+                    Err(e) => return Err(e),
+                }
+                DbPool::Postgres(handle)
             }
         };
         *slot = Some(pool.clone());
@@ -364,7 +406,7 @@ impl OrmClient {
             }
             None => match self.pool().await? {
                 DbPool::Sqlite(p) => db::sqlite_fetch(&p, sql).await,
-                DbPool::Postgres(p) => match db::acquire_pg(&p).await {
+                DbPool::Postgres(p) => match db::acquire_pg(&p).await? {
                     Ok(mut c) => db::pg_fetch(&mut *c, sql).await,
                     Err(e) => Err(e),
                 },
@@ -386,7 +428,7 @@ impl OrmClient {
             }
             None => match self.pool().await? {
                 DbPool::Sqlite(p) => db::sqlite_execute(&p, sql).await,
-                DbPool::Postgres(p) => match db::acquire_pg(&p).await {
+                DbPool::Postgres(p) => match db::acquire_pg(&p).await? {
                     Ok(mut c) => db::pg_execute(&mut *c, sql).await,
                     Err(e) => Err(e),
                 },
@@ -427,11 +469,12 @@ impl OrmClient {
             }
             None => match self.pool().await? {
                 DbPool::Sqlite(p) => db::sqlite_execute_script(&p, script).await,
-                DbPool::Postgres(p) => match db::acquire_pg(&p).await {
+                DbPool::Postgres(p) => match db::acquire_pg(&p).await? {
                     Ok(c) => {
                         // A script may change session state (`SET search_path`, `RESET ALL`, `DISCARD ALL`): the
                         // connection is closed instead of going back to the pool, so no later query inherits it.
-                        let mut conn = c.detach();
+                        // The slot stays with the connection until it is closed.
+                        let (mut conn, _slot) = c.detach();
                         let res = db::pg_execute_script(&mut conn, script).await;
                         let _ = sqlx::Connection::close(conn).await;
                         res
