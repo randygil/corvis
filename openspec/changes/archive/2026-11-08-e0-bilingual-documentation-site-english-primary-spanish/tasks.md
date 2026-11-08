@@ -31,7 +31,8 @@ Each batch: translate the Spanish pages of the listed sections into English at t
 ## 5. Definition of done
 
 - [x] 5.1 `npm run docs:check` passes with all checks enabled and no allowlist entry without a reason
-- [ ] 5.2 Manual pass in the dev server: home, one page per section in both languages, the language switcher both ways, search in both languages, the 404 page in both languages, light and dark themes
+- [x] 5.2 Manual pass in the dev server: home, one page per section in both languages, the language switcher both ways, search in both languages, the 404 page in both languages, light and dark themes
+  - Result: done with a scripted headless Chrome against `npm run docs:dev`: home and one page per section (18 sections plus top-level pages) in both languages with the right `lang`, localized sidebar, pager and links; switcher `/fundamentals/custom-providers` → `/es/...` and `/es/openapi/operations` → `/openapi/operations`; search ("Search"/"Buscar") returns only pages of the current language; 404 pages localized with the right home link; theme toggle in both languages; status badges "Not available yet" / "No disponible todavía". Only console noise: the browser's default `/favicon.ico` request (the site declares `logo.svg` as its icon).
 - [x] 5.3 No Rust code changed: record that `cargo build`, clippy, tests and the apidiff of the port apps are unaffected, so they are not rerun for this change
 - [x] 5.4 Docs EN+ES: this change is the docs; confirm both locales are complete (173 pages each)
 
