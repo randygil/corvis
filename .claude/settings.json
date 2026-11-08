@@ -1,5 +1,6 @@
 {
   "env": {
-    "CARGO_TARGET_DIR": "C:/Users/Usuario/Devel/nestrs/target"
+    "CARGO_TARGET_DIR": "C:/Users/Usuario/Devel/nestrs/target",
+    "CARGO_INCREMENTAL": "0"
   }
 }

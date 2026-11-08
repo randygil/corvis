@@ -4,6 +4,7 @@ Corvis aims to be the way to move Node.js backends built on the NestJS + Prisma 
 
 ## How work is organized
 
+- **Order of work:** the phases of [#111](https://github.com/randygil/corvis/issues/111) set which issues are worked next; each phase is merged before the next one starts.
 - **Phases** are GitHub milestones. **Epics** are parent issues; their **tasks** are sub-issues, each sized to a few sessions at most.
 - When a task starts, it becomes an **OpenSpec change** (`openspec/changes/<change>/`): `/opsx:propose` writes the proposal, spec deltas, design and task list; after review, `/opsx:apply` implements it and `/opsx:archive` merges the specs into `openspec/specs/`. The change name is shown in each issue.
 - Features with an original Node library are verified with a differential test against it (same inputs to both, compare outputs and state), like the three ports verified with apidiff.
