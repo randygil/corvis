@@ -46,8 +46,9 @@ Methods without any of these attributes MUST still be accepted as plain helper m
 ### Requirement: Enhancers on a method without a handler attribute in `#[handlers]` are a compile error
 In a `#[handlers]` block, when a method carries one or more attributes that `#[handlers]` consumes as enhancers or
 metadata (`#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]`, `#[set_metadata]`, and any attribute added to that
-set later) and carries no handler attribute (`#[subscribe_message]`, `#[on_event]`, `#[cron]`, `#[interval]`,
-`#[timeout]`), the macro SHALL fail compilation with an error spanned on the first such attribute.
+set later) and carries no `#[subscribe_message]`, the macro SHALL fail compilation with an error spanned on the first such
+attribute. A method with `#[on_event]`, `#[cron]`, `#[interval]` or `#[timeout]` plus an enhancer is rejected by the
+same rule, with the existing message below; a method with none of those attributes gets the new message.
 
 #### Scenario: Guard on a gateway helper method
 - **WHEN** a `#[handlers]` block contains `#[use_guards(WsAuthGuard)] fn kick_idle(&self)` with no handler attribute

@@ -74,6 +74,9 @@ pub mod __private;
 #[doc = include_str!("../../../README.md")]
 pub struct ReadmeDoctests;
 
+#[cfg(doctest)]
+mod doctests;
+
 /// `Result` alias used by bootstrap code, lifecycle hooks and factories.
 pub type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 

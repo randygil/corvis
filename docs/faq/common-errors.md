@@ -83,6 +83,8 @@ message includes the cause. A typical case is a required environment variable th
 | `unknown #[module] key; expected imports, controllers, providers, exports or global` | A misspelled key in `#[module(...)]` |
 | `#[corvis::main] requires an async fn` | `async` is missing on `main` |
 | `#[optional] has no effect: declare the field as Option<Arc<T>> to make the dependency optional` | `#[optional]` on a field. Write `cats: Option<Arc<CatsService>>` instead |
+| `` `purge` has #[use_guards] but no route attribute (#[get], #[post], #[put], #[patch], #[delete], #[options], #[head], #[search], #[all] or #[sse]); add one or remove #[use_guards] `` | A method in a `#[routes]` block has an enhancer or another route attribute (`#[http_code]`, `#[set_metadata]`, `#[version]`, `#[api_*]`, ...) but no verb attribute, so it would be dropped. Add `#[get]`, `#[post]`, ... or remove the attribute |
+| `` `kick` has #[use_guards] but no #[subscribe_message] attribute; enhancers and metadata in `#[handlers]` only apply to message handlers `` | A method in a `#[handlers]` block has `#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]` or `#[set_metadata]` but no `#[subscribe_message]`. Add it or remove the enhancer |
 
 A field of an `#[injectable]` that is not `Arc<T>`, `Option<Arc<T>>` or `ModuleRef` is initialized with
 `Default`. If its type does not implement `Default`, the compiler error mentions it: initialize it with

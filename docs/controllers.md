@@ -74,6 +74,8 @@ Without an argument, the route is the controller's own. It also accepts several 
 
 All handlers receive `&self` as their first parameter (the macro rejects those that don't have it). They can be `fn` or `async fn`.
 
+A method without a verb attribute is a plain helper and is not registered as a route. Putting enhancers or other route attributes on it (`#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]`, `#[use_filters]`, `#[set_metadata]`, `#[http_code]`, `#[header]`, `#[redirect]`, `#[version]`, `#[apply_decorators]`, `#[api_*]`) is a compile error, so a guard can never be dropped silently.
+
 ### Route patterns
 
 - `:name` captures one segment: `#[get(":id")]`, `#[get(":room/messages")]`.

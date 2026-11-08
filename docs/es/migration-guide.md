@@ -60,4 +60,5 @@ Los atributos de clase (`#[use_guards]`, `#[set_metadata]`...) van **debajo** de
 - **Interceptors sin observables.** `CallHandler::handle()` devuelve un `Future`: puedes transformar, medir y cachear la respuesta, pero no componer operadores de flujos.
 - **Pipes sobre JSON.** Los pipes reciben y devuelven `serde_json::Value`; el resultado se deserializa en el tipo del parámetro.
 - **Enhancers globales y gateways.** Los guards, pipes e interceptors globales no se aplican a los gateways de WebSockets. Ver [Gateways](/es/websockets/gateways#enhancers-globales).
+- **Un handler por evento en un gateway.** Con dos handlers para el mismo mensaje, el adaptador `ws` del original conserva el último y su adaptador de socket.io los ejecuta todos, en ambos casos sin avisar. Corvis se niega a arrancar, así que un handler con guard nunca queda tapado por uno sin guard. Elimina el handler muerto o fusiona los dos en uno. Ver [Gateways](/es/websockets/gateways#handlers-y-subscribe-message).
 - **Sin GraphQL ni microservicios** por ahora.

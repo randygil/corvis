@@ -147,14 +147,36 @@ const METHODS: &[(&str, &str)] = &[
     ("get", "Get"),
     ("post", "Post"),
     ("put", "Put"),
-    ("delete", "Delete"),
     ("patch", "Patch"),
+    ("delete", "Delete"),
     ("options", "Options"),
     ("head", "Head"),
-    ("all", "All"),
     ("search", "Search"),
+    ("all", "All"),
     ("sse", "Get"),
 ];
+
+/// Attributes `expand_routes` consumes on a method besides the route attributes in `METHODS`, the
+/// `api_*` decorators and (via `decorator_tokens`) `apply_decorators`. A method with one of these and no
+/// route attribute is rejected, since they would be dropped silently.
+const CONSUMED_ROUTE_ATTRS: &[&str] = &[
+    "http_code",
+    "header",
+    "redirect",
+    "use_guards",
+    "use_interceptors",
+    "use_pipes",
+    "use_filters",
+    "set_metadata",
+    "version",
+    "apply_decorators",
+];
+
+fn no_route_message(method: &str, attr: &str) -> String {
+    let routes: Vec<String> = METHODS.iter().map(|(m, _)| format!("#[{m}]")).collect();
+    let (last, rest) = routes.split_last().expect("METHODS is not empty");
+    format!("`{method}` has #[{attr}] but no route attribute ({} or {last}); add one or remove #[{attr}]", rest.join(", "))
+}
 
 const PARAM_ATTRS: &[(&str, &str)] = &[
     ("body", "Body"),
@@ -174,6 +196,8 @@ const PARAM_ATTRS: &[(&str, &str)] = &[
 pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
     let self_ty = item.self_ty.clone();
     let mut routes = Vec::new();
+    // Errors for methods whose route attributes would be discarded; reported together after the loop.
+    let mut discarded: Option<syn::Error> = None;
 
     for impl_item in item.items.iter_mut() {
         let ImplItem::Fn(method) = impl_item else { continue };
@@ -181,12 +205,17 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
         let mut route: Option<(String, Vec<Expr>, bool)> = None;
         let mut builder = Vec::<TokenStream>::new();
         let mut keep = Vec::new();
+        // First attribute consumed by this macro that is not a route attribute.
+        let mut consumed: Option<syn::Attribute> = None;
         for attr in method.attrs.drain(..) {
             let name = attr_name(&attr);
             if let Some((_, variant)) = METHODS.iter().find(|(m, _)| *m == name) {
                 let args = flatten_array(attr_args(&attr)?);
                 route = Some((variant.to_string(), args, name == "sse"));
                 continue;
+            }
+            if CONSUMED_ROUTE_ATTRS.contains(&name.as_str()) || name.starts_with("api_") {
+                consumed.get_or_insert_with(|| attr.clone());
             }
             match name.as_str() {
                 "http_code" => {
@@ -243,7 +272,16 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
         }
         method.attrs = keep;
-        let Some((variant, paths, is_sse)) = route else { continue };
+        let Some((variant, paths, is_sse)) = route else {
+            if let Some(attr) = consumed {
+                let error = syn::Error::new_spanned(&attr, no_route_message(&method.sig.ident.to_string(), &attr_name(&attr)));
+                match &mut discarded {
+                    Some(all) => all.combine(error),
+                    None => discarded = Some(error),
+                }
+            }
+            continue;
+        };
         if is_sse {
             builder.push(quote!(.sse()));
         }
@@ -414,6 +452,10 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
         });
     }
 
+    if let Some(error) = discarded {
+        return Err(error);
+    }
+
     let (impl_g, _, where_c) = item.generics.split_for_impl();
     Ok(quote! {
         #item
@@ -424,4 +466,80 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_routes;
+
+    const ROUTES: &str = "(#[get], #[post], #[put], #[patch], #[delete], #[options], #[head], #[search], #[all] or #[sse])";
+
+    fn messages(item: syn::ItemImpl) -> Vec<String> {
+        match expand_routes(item) {
+            Ok(_) => Vec::new(),
+            Err(e) => e.into_iter().map(|e| e.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn guard_on_helper_is_rejected() {
+        let m = messages(syn::parse_quote! {
+            impl AdminController { #[use_guards(AdminGuard)] async fn purge(&self) -> HttpResult<()> { Ok(()) } }
+        });
+        assert_eq!(m, [format!("`purge` has #[use_guards] but no route attribute {ROUTES}; add one or remove #[use_guards]")]);
+    }
+
+    #[test]
+    fn every_consumed_attribute_is_rejected() {
+        for (attr, name) in [
+            ("#[http_code(204)]", "http_code"),
+            ("#[header(\"x\", \"y\")]", "header"),
+            ("#[redirect(\"/\")]", "redirect"),
+            ("#[use_interceptors(I)]", "use_interceptors"),
+            ("#[use_pipes(P)]", "use_pipes"),
+            ("#[use_filters(F)]", "use_filters"),
+            ("#[set_metadata(K, 1)]", "set_metadata"),
+            ("#[version(\"2\")]", "version"),
+            ("#[apply_decorators(d())]", "apply_decorators"),
+            ("#[api_security(\"bearer\")]", "api_security"),
+        ] {
+            let attr: proc_macro2::TokenStream = attr.parse().unwrap();
+            let m = messages(syn::parse_quote! { impl C { #attr fn reset(&self) {} } });
+            assert_eq!(m.len(), 1, "{name}");
+            assert!(m[0].starts_with(&format!("`reset` has #[{name}] but no route attribute")), "{name}: {}", m[0]);
+        }
+    }
+
+    #[test]
+    fn plain_helpers_are_accepted() {
+        assert!(
+            messages(syn::parse_quote! {
+                impl C { fn normalize(&self, s: &str) -> String { s.into() } #[allow(dead_code)] #[inline] fn other(&self) {} }
+            })
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn route_method_is_unchanged() {
+        assert!(
+            messages(syn::parse_quote! {
+                impl C { #[use_guards(AdminGuard)] #[delete("cache")] async fn purge(&self) {} }
+            })
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn all_offending_methods_are_reported() {
+        let m = messages(syn::parse_quote! {
+            impl C {
+                #[use_guards(A)] fn a(&self) {}
+                #[use_pipes(P)] fn b(&self) {}
+            }
+        });
+        assert_eq!(m.len(), 2);
+        assert!(m[0].starts_with("`a` has #[use_guards]"));
+        assert!(m[1].starts_with("`b` has #[use_pipes]"));
+    }
 }

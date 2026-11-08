@@ -83,6 +83,8 @@ mensaje incluye la causa. Un caso típico es una variable de entorno obligatoria
 | `unknown #[module] key; expected imports, controllers, providers, exports or global` | Una clave mal escrita en `#[module(...)]` |
 | `#[corvis::main] requires an async fn` | Falta `async` en `main` |
 | `#[optional] has no effect: declare the field as Option<Arc<T>> to make the dependency optional` | `#[optional]` en un campo. Escribe `cats: Option<Arc<CatsService>>` en su lugar |
+| `` `purge` has #[use_guards] but no route attribute (#[get], #[post], #[put], #[patch], #[delete], #[options], #[head], #[search], #[all] or #[sse]); add one or remove #[use_guards] `` | Un método de un bloque `#[routes]` tiene un enhancer u otro atributo de ruta (`#[http_code]`, `#[set_metadata]`, `#[version]`, `#[api_*]`, ...) pero ningún atributo de verbo, así que se descartaría. Agrega `#[get]`, `#[post]`, ... o quita el atributo |
+| `` `kick` has #[use_guards] but no #[subscribe_message] attribute; enhancers and metadata in `#[handlers]` only apply to message handlers `` | Un método de un bloque `#[handlers]` tiene `#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]` o `#[set_metadata]` pero no `#[subscribe_message]`. Agrégalo o quita el enhancer |
 
 Un campo de un `#[injectable]` que no es `Arc<T>`, `Option<Arc<T>>` ni `ModuleRef` se inicializa con
 `Default`. Si su tipo no implementa `Default`, el error del compilador lo menciona: inicialízalo con
