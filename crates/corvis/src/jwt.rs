@@ -24,7 +24,7 @@ pub use jsonwebtoken::Algorithm as JwtAlgorithm;
 /// Options for `JwtModule::register`.
 #[derive(Debug, Clone)]
 pub struct JwtModuleOptions {
-    /// HMAC secret (`HS256`/`HS384`/`HS512`). As in `@nestjs/jwt`, a non-empty `secret` takes
+    /// HMAC secret (`HS256`/`HS384`/`HS512`). A non-empty `secret` takes
     /// precedence over `private_key`/`public_key`: leave it empty (`JwtModuleOptions::new("")`)
     /// to use PEM keys with `RS*`/`PS*`/`ES*`/`EdDSA`. Signing and verifying fail without a key.
     pub secret: String,
@@ -201,7 +201,7 @@ impl JwtService {
     /// value`) or `expires_in` is not a valid timespan.
     pub fn sign_with(&self, payload: &impl Serialize, opts: JwtSignOptions) -> crate::Result<String> {
         let alg = self.options.algorithm;
-        // `@nestjs/jwt`: `options.secret || this.options.secret || options.privateKey || this.options.privateKey`.
+        // The first non-empty key wins: per-call secret, module secret, per-call private key, module private key.
         let key = [opts.secret.as_deref(), Some(self.options.secret.as_str()), opts.private_key.as_deref(), self.options.private_key.as_deref()]
             .into_iter()
             .flatten()
@@ -249,7 +249,7 @@ impl JwtService {
     /// `iat` are numbers when present.
     pub fn verify<T: DeserializeOwned>(&self, token: &str) -> crate::Result<T> {
         let alg = self.options.algorithm;
-        // `@nestjs/jwt`: `this.options.secret || this.options.publicKey`.
+        // The first non-empty key wins: module secret, then module public key.
         let key = [Some(self.options.secret.as_str()), self.options.public_key.as_deref()]
             .into_iter()
             .flatten()
@@ -390,7 +390,7 @@ mod tests {
         assert!(jwt.sign(&serde_json::json!({ "sub": 1 })).is_err());
         let opts = JwtSignOptions { secret: Some(String::new()), ..Default::default() };
         assert!(jwt.sign_with(&serde_json::json!({ "sub": 1 }), opts).is_err());
-        // As in `@nestjs/jwt`, an empty per-call secret falls back to the module secret.
+        // An empty per-call secret falls back to the module secret.
         let ok = JwtService::new(JwtModuleOptions::new("s"));
         let opts = JwtSignOptions { secret: Some(String::new()), ..Default::default() };
         let token = ok.sign_with(&serde_json::json!({ "sub": 1 }), opts).unwrap();
@@ -444,7 +444,7 @@ mod tests {
         assert!(check(serde_json::json!({ "sub": 1, "iat": "now" })).is_err());
     }
 
-    /// `publicKey` / `privateKey` for RS256, as in `@nestjs/jwt`.
+    /// `public_key` / `private_key` for RS256, with an empty secret.
     #[test]
     fn asymmetric_keys() {
         let jwt = JwtService::new(

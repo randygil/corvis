@@ -12,7 +12,7 @@
 
 ## 2. Comments and crate metadata
 
-- [ ] 2.1 Rewrite the comments of category A (`sse.rs:46`, `jwt.rs:27,204,252,395,449`, `serve_static.rs:3`,
+- [x] 2.1 Rewrite the comments of category A (`sse.rs:46`, `jwt.rs:27,204,252,395,449`, `serve_static.rs:3`,
   `throttler.rs:65`, `tests/static_response_security.rs:252`) per Decision 1; verify `node scripts/check-naming.mjs`
   no longer reports them and `git diff` touches comments only
 - [ ] 2.2 Replace the description in `crates/corvis/Cargo.toml` and the first paragraph of `crates/corvis/src/lib.rs`
