@@ -69,7 +69,8 @@ There is no `.github/` folder: the repository has no CI. Every check runs by han
 1. **One `ci.yml` with independent jobs, plus a `nightly.yml`.** Jobs: `fmt`, `clippy` (matrix ubuntu/windows),
    `test` (matrix ubuntu/windows), `fuzz`, `deny`, `audit`, `docs`. Independent jobs fail independently and show
    exactly which check broke; branch protection lists them as required checks. Triggers: `pull_request` to `main`,
-   `push` to `main`, `workflow_dispatch`. `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }`.
+   `push` to `main`, `workflow_dispatch` (superseded: no `push` trigger, see Review notes).
+   `concurrency: { group: ci-${{ github.ref }}, cancel-in-progress: true }`.
    Alternative: one job running everything sequentially — cheaper in setup time but one red X with no detail, and no
    parallelism.
 
@@ -109,7 +110,8 @@ There is no `.github/` folder: the repository has no CI. Every check runs by han
    the `test` job. The `fuzz` job (Linux only, `timeout-minutes: 20`) runs the three commands from `CONTRIBUTING.md`
    with `PROPTEST_CASES=20000`, in the dev profile (not `--release`) so `debug_assert!`s and overflow checks stay on.
    On failure, `actions/upload-artifact` uploads `crates/*/proptest-regressions/`. The
-   nightly workflow runs the same commands with `PROPTEST_CASES=100000` (`timeout-minutes: 120`). The exact per-PR
+   nightly workflow runs the same commands with `PROPTEST_CASES=100000` (`timeout-minutes: 120`; manual only, see
+   Review notes). The exact per-PR
    value is set in task 5 from measured run time (target: under 10 minutes). Alternative: `cargo fuzz` — needs
    nightly and fuzz targets that do not exist; out of scope.
 
@@ -179,3 +181,78 @@ Decisions taken for the open questions so the change can start; the maintainer c
 - Branch protection and a Windows Postgres job: left to the maintainer; a follow-up issue only if asked.
 - Runner cost: the repository is private, so Windows minutes count double; 8.1 measures them before the jobs are made
   required.
+
+### Maintainer decision (2026-11-08): pull requests and manual runs only
+
+The repository is private and Actions minutes are limited, so the workflows run only on `pull_request` (to `main`)
+and `workflow_dispatch`. There is no `push` trigger and no `schedule` trigger anywhere: the nightly workflow (long
+fuzzing and `cargo audit` against the latest database) is started by hand. `concurrency` with `cancel-in-progress`
+stays, and the Linux and Windows jobs stay as designed. This overrides Decision 1 (`push` trigger), Decisions 6 and 7
+(nightly schedule) and Decision 10 (caches saved only from `main`, which without a `push` trigger would never save);
+the proposal, the spec delta and tasks 4.1, 4.2, 4.3 and 6.1 are adjusted to match.
+
+## Implementation notes
+
+Session of 2026-11-08. No cargo command other than `cargo fmt --check` was run (another build shared the target
+directory and the disk is limited), and nothing ran on GitHub, so every task whose verification needs a build or a
+workflow run is left unticked for the maintainer.
+
+- **Formatting candidates** (task 2.1; rustfmt 1.10.0-stable installed with `rustup component add rustfmt`, edition
+  2024 style; `cargo fmt --all --check` on the workspace at `019f47c`, line counts from the diff):
+
+  | Config | Hunks | Files | Lines removed | Lines added | Total |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | defaults (no file) | 2,845 | 201 | 4,773 | 19,478 | 24,251 |
+  | `max_width = 120`, `use_small_heuristics = "Max"` | 910 | 152 | 1,603 | 4,778 | 6,381 |
+  | `max_width = 130`, Max | 586 | 138 | 1,368 | 2,940 | 4,308 |
+  | `max_width = 140`, Max | 469 | 131 | 1,538 | 2,112 | **3,650** |
+  | `max_width = 150`, Max | 494 | 137 | 2,003 | 1,833 | 3,836 |
+  | `max_width = 160`, Max | 575 | 142 | 2,587 | 1,774 | 4,361 |
+
+  `rustfmt.toml` has `max_width = 140` and `use_small_heuristics = "Max"` (130 and 150 were measured on top of the
+  three planned candidates to confirm 140 is the minimum). The reformat itself (task 2.2) is not done: another branch
+  is open. Until it lands, the `fmt` job is red.
+- **`.git-blame-ignore-revs`** is added with a header and no SHA. The repository merges with merge commits, which keep
+  the reformat commit's SHA; add the SHA after the commit exists and before merging, and do not squash or rebase it.
+- **Postgres helper.** `fresh_db` now delegates to `fresh_db_at(base, required, name)`, so the regression test passes
+  the URL and the policy as arguments instead of changing the process environment (`set_var` is `unsafe` in edition
+  2024 and races with other test threads). All four early returns (invalid URL, unreachable server, failed `DROP`,
+  failed `CREATE DATABASE`) go through one function that panics when required and otherwise prints the old
+  `skipping: Postgres not reachable (...)` line; the message has the `host:port` and the error, with the URL's password
+  replaced by `***` in case an error ever quotes it. The tests (`required_postgres_fails_instead_of_skipping`,
+  `server_host_never_includes_credentials`) are in `pg_features.rs`, not a new file, to avoid one more test binary.
+  `pg_json_paths.rs` (added after the design was written) uses the same helper and is covered too.
+- **Test job split.** Service containers only run on Linux runners, so `test` is two jobs, `test-linux` and
+  `test-windows`, named `test (ubuntu-latest)` and `test (windows-latest)` as a matrix would name them.
+  `RUSTFLAGS: -D warnings` is job-level env on both, the same as setting it on the build and test steps (the other jobs
+  keep the default flags and their own caches). The service publishes `55432:5432` on the runner without a loopback
+  binding (an ephemeral VM); the `docker run` line in `CONTRIBUTING.md` binds `127.0.0.1`.
+- **Caches.** Without a `push` trigger, `save-if: github.ref == 'refs/heads/main'` would never save. `ci.yml` saves on
+  pull requests (reused by later pushes to the same pull request) and on runs of `main` (a manual run on `main` warms
+  caches that every pull request can restore). The `fuzz` jobs of both workflows share `shared-key: fuzz`.
+- **Fuzz job.** The three suites are separate steps that run even when an earlier one failed (`!cancelled()` and a
+  successful toolchain step), so one run reports every failing property. The seed artifact is kept 14 days (artifact
+  storage is billed on private repositories). `PROPTEST_CASES` stays at 20,000 until a real run is measured (5.1).
+- **Long workflow.** Kept the file name `nightly.yml` (display name "Nightly checks") so the plan, the spec and the
+  maintainer's wording still match; a schedule can be added later if minutes allow. A `cases` input (default 100000)
+  reaches `PROPTEST_CASES` through `env`, never expanded inside a script.
+- **Dependency tools.** `taiki-e/install-action` installs `cargo-deny@0.20.2` and `cargo-audit@0.22.2` (the versions
+  of the 2026-11-08 baseline), so a local run with the same versions reproduces CI; bump them together with the
+  action's SHA. Both jobs install the pinned toolchain too, because `cargo deny` calls `cargo metadata` and the
+  runner's preinstalled Rust can differ.
+- **Naming check.** `node scripts/check-naming.mjs` (the root script for crates, examples, README and benchmark) runs
+  as the first step of the `docs` job: it needs only Node, and a separate job would cost at least one billed minute per
+  run (each job is rounded up to a whole minute).
+- **Pins.** `actions/checkout@v7`, `actions/setup-node@v7`, `actions/upload-artifact@v7` (latest majors on
+  2026-11-08). `dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8` (tag `v1` = `master`, 2026-10-16),
+  `Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0` (v2.9.3, annotated tag dereferenced to its commit),
+  `taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2` (v2.90.2). `persist-credentials: false` on every
+  checkout. The toolchain stays at 1.99.0 (the local version) although 1.99.1 exists.
+- **Validation.** `actionlint` 1.7.12 and `@action-validator/cli` report no problem in either workflow; neither has a
+  `push` or `schedule` key; every non-`actions/*` `uses:` names a 40-character SHA. `npm run docs:check` passes (173
+  English, 173 Spanish pages) and `node scripts/check-naming.mjs` passes. Locally, moving `docs/es/api-reference.md`
+  away makes `node scripts/check.mjs` fail with `[pages] api-reference.md: missing Spanish page es/api-reference.md`
+  (the CI proof of 5.3 still needs a throwaway pull request).
+- **Minutes.** Every pull request run bills nine jobs, each rounded up to a whole minute, with the two Windows jobs
+  counted twice. If minutes run short, `fmt`, `deny` and `audit` can be merged into one Linux job (about two billed
+  minutes saved per run) at the cost of less precise check names.

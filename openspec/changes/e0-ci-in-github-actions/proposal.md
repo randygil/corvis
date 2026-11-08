@@ -13,7 +13,8 @@ same checks, on Linux and Windows, with a real Postgres.
 
 ## What Changes
 
-- New workflow `.github/workflows/ci.yml`, run on every pull request to `main` and every push to `main`:
+- New workflow `.github/workflows/ci.yml`, run on every pull request to `main` and on manual dispatch (no `push` or
+  `schedule` trigger: the repository is private and Actions minutes are limited):
   - `fmt`: `cargo fmt --all --check` (Linux).
   - `clippy`: `cargo clippy --workspace --all-targets -- -D warnings` on Linux and Windows.
   - `test`: `cargo build --workspace --all-targets` with warnings denied, then `cargo test --workspace`, on Linux
@@ -23,8 +24,9 @@ same checks, on Linux and Windows, with a real Postgres.
   - `deny`: `cargo deny check` with the existing `deny.toml`.
   - `audit`: `cargo audit` with the existing `.cargo/audit.toml`.
   - `docs`: `npm ci` and `npm run docs:check` in `docs/`.
-- New scheduled workflow `.github/workflows/nightly.yml`: the long fuzzing run (`PROPTEST_CASES=100000`) and
-  `cargo audit` against the latest advisory database, so new advisories show up without a pull request.
+- New manual workflow `.github/workflows/nightly.yml`: the long fuzzing run (`PROPTEST_CASES=100000`) and
+  `cargo audit` against the latest advisory database, started by hand so new advisories show up without a pull
+  request.
 - `crates/corvis-orm/tests/common/pg.rs`: a new opt-in variable `CORVIS_ORM_PG_REQUIRED=1` turns "Postgres not
   reachable, skipping" into a test failure; CI sets it on Linux so the Postgres suites cannot pass by skipping.
 - A `rustfmt.toml` that matches the current code style, plus one formatting-only commit (listed in
