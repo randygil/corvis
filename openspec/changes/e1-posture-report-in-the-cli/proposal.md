@@ -29,6 +29,8 @@ without a guard is caught on the first run.
 - **`corvis new` enables the check.** The generated `main` calls `app.require_route_posture()` and the generated
   `get_hello` route is marked `#[public]`, so a new project starts, passes `corvis posture`, and refuses to start once
   a route without a guard or `#[public]` is added.
+- `--timeout <seconds>` (default 120): an application that never reaches `init()` is stopped and the command exits
+  with 2 (review note of 2026-11-08).
 - Help text, the CLI usage page (English and Spanish) and tests.
 
 ## Capabilities
@@ -65,7 +67,6 @@ without a guard is caught on the first run.
 - Choosing the binary in a multi-binary package (`--bin`); `corvis start` does not support it either. Possible new
   issue for both commands.
 - `--watch` for `corvis posture`.
-- Timeouts for applications that never reach `init()` (open question).
 - Adding `#[public]` or guards to the controllers produced by `corvis generate resource` (they are generated without
   either. In a new project the application then refuses to start until one is added, and the error explains how).
   Possible follow-up with #20.

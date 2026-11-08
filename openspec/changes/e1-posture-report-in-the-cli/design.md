@@ -133,3 +133,29 @@ Current code, read in this worktree (before #26):
 
 - Marker lines and exit code 2 for "no report" are accepted.
 - Add `--timeout <seconds>` (default 120) so an app that never reaches `init()` does not hang CI.
+
+## Implementation notes (differences from the design above)
+
+- **Position of the report-mode branch.** #26 places the posture check before module middleware `configure` and
+  gateway compilation (so a failing check runs no user code). Report mode sits right before `check_routes` at that
+  point (`posture::run_report_mode`), not after gateway compilation. It must run before the check, otherwise enforce
+  mode would return the error instead of the report. Consequence: neither `configure` nor gateway `after_init` hooks
+  run in report mode (stricter than decision 1, which accepted that `after_init` had run). The report is built by
+  `report_for_routes`, so entry kinds that #27 adds appear without changes here.
+- **Pure functions.** `report_format_from_env` and `render_report_mode` are public in `corvis::posture` together with
+  `REPORT_BEGIN`, `REPORT_END`, `REPORT_ENV` and `ReportFormat`. The text format is the report's `Display`, followed by
+  one `stale exemption: ...` line per stale exemption (`(no routes)` for an empty report). The CLI prints whatever is
+  between the markers, so unknown entry kinds need no handling there.
+- **`--timeout <seconds>` (review note).** Default 120, positive whole seconds, also `--timeout=N`. It counts from when
+  the application is started, not from the build: `corvis posture` runs `cargo build` first (stdout discarded, stderr
+  inherited), then `cargo run`. A build failure exits 2 with its own message. On timeout a watchdog thread ends the
+  process tree (`taskkill /T /F` on Windows; on Unix the child is its own process group and the group is killed) and
+  the command exits 2 with a message that names `--timeout`. A report that arrives is only trusted when the timeout did
+  not fire.
+- **CLI module.** The CLI code lives in `crates/corvis-cli/src/posture.rs` (`ReportFilter` is the streaming filter;
+  `split_report` is its test-only convenience wrapper). `posture` is dispatched in `main` before the `Res` mapping.
+- **`corvis new` manual verification.** Done with the shared target directory (`CARGO_TARGET_DIR` set for the generated
+  project too): `cargo test` passes, `corvis posture` and `--json` exit 0 listing `GET /` as public, an unguarded route
+  makes `cargo run` fail with the posture error and `corvis posture` exit 1, a compile error and a blocked `main`
+  with `--timeout 3` both exit 2 (no process left behind). The same checks stand in for task 2.4 because
+  `examples/tertulia` does not enable posture yet (#29).
