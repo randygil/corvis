@@ -22,3 +22,6 @@ bench/logs
 docs/node_modules
 docs/.vitepress/cache
 docs/.vitepress/dist
+
+# Worktrees de los agentes de Claude Code
+.claude/worktrees/
