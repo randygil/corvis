@@ -4,7 +4,7 @@ use corvis::prelude::*;
 use corvis_swagger::*;
 
 use super::cats_service::CatsService;
-use super::dto::{CreateCatDto, ListCatsQuery, UpdateCatDto};
+use super::dto::{CatV2Dto, CountDto, CreateCatDto, ListCatsQuery, UpdateCatDto};
 use super::entities::Cat;
 use crate::common::decorators::{CurrentUser, IS_PUBLIC_KEY, ROLES_KEY, Role};
 use crate::common::interceptors::{TimingInterceptor, TransformInterceptor};
@@ -39,8 +39,8 @@ impl CatsController {
     #[set_metadata(IS_PUBLIC_KEY, true)]
     #[use_interceptors(CacheInterceptor)]
     #[set_metadata(CACHE_TTL_METADATA, 5_000)]
-    fn count(&self) -> Value {
-        json!({ "count": self.cats_service.count() })
+    fn count(&self) -> CountDto {
+        CountDto { count: self.cats_service.count() }
     }
 
     /// Server-sent events: `curl -N localhost:3000/api/v1/cats/stream`.
@@ -71,9 +71,9 @@ impl CatsController {
     #[get(":id")]
     #[version("2")]
     #[set_metadata(IS_PUBLIC_KEY, true)]
-    fn find_one_v2(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Value> {
+    fn find_one_v2(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<CatV2Dto> {
         let cat = self.cats_service.find_one(id)?;
-        Ok(json!({ "cat": cat, "apiVersion": 2 }))
+        Ok(CatV2Dto { cat, api_version: 2 })
     }
 
     #[patch(":id")]

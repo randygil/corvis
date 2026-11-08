@@ -1,8 +1,25 @@
 use corvis::prelude::*;
 use corvis::zod_dto;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use crate::auth::ChatUser;
 use crate::chat::room_name;
+use crate::models::Room;
+
+/// A room with the users connected to it right now (`GET /api/rooms` and the WebSocket `rooms` message).
+#[derive(Debug, Serialize)]
+pub struct RoomWithMembers {
+    #[serde(flatten)]
+    pub room: Room,
+    pub members: Vec<ChatUser>,
+}
+
+/// Answer of `POST /api/rooms/:room/announcements`.
+#[derive(Debug, Serialize)]
+pub struct Delivery {
+    pub room: String,
+    pub delivered: usize,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

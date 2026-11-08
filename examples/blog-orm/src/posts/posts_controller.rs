@@ -1,8 +1,8 @@
 use corvis::prelude::*;
 
 use super::dto::{CreatePostDto, ListPostsQuery};
-use super::posts_service::PostsService;
-use crate::models::Post;
+use super::posts_service::{PostsService, Stats};
+use crate::models::{Paginated, Post};
 
 #[controller("posts")]
 pub struct PostsController {
@@ -17,12 +17,12 @@ impl PostsController {
     }
 
     #[get]
-    async fn find_all(&self, #[query] query: ListPostsQuery) -> HttpResult<Value> {
+    async fn find_all(&self, #[query] query: ListPostsQuery) -> HttpResult<Paginated<Post>> {
         Ok(self.posts_service.find_all(query).await?)
     }
 
     #[get("stats")]
-    async fn stats(&self) -> HttpResult<Value> {
+    async fn stats(&self) -> HttpResult<Stats> {
         Ok(self.posts_service.stats().await?)
     }
 

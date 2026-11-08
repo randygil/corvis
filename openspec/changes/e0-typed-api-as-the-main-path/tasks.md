@@ -56,17 +56,17 @@
 
 ## 5. Examples
 
-- [ ] 5.1 Before changing anything, record the responses of every endpoint touched below (a small script with
+- [x] 5.1 Before changing anything, record the responses of every endpoint touched below (a small script with
   `curl` against each example on 127.0.0.1, saved under the scratchpad, not the repository); verify the recordings
   exist
-- [ ] 5.2 `examples/blog-orm`: models to `corvis_orm::DateTime`; `UpdateUserDto` fields get
+- [x] 5.2 `examples/blog-orm`: models to `corvis_orm::DateTime`; `UpdateUserDto` fields get
   `skip_serializing_if = "Option::is_none"`; `create`/`update` with `Data`; filters with typed helpers; users list with
   `user::posts::count()` and `Paginated<user::WithCount>`; posts list with `Paginated<Post>`; stats with
   example-local structs read with `.exec_as::<T>()`; no `HttpResult<Value>` left; verify against the recordings
   (only the timestamp format of `createdAt`/`updatedAt` may differ, see design decision 8)
-- [ ] 5.3 `examples/cats-app`: DTOs for sign-in, count and `find_one_v2`; keep `Value` in health, SSE, WS, filter and
+- [x] 5.3 `examples/cats-app`: DTOs for sign-in, count and `find_one_v2`; keep `Value` in health, SSE, WS, filter and
   interceptor code; verify the responses are byte-identical to the recordings
-- [ ] 5.4 `examples/tertulia`: DTOs for login, rooms list, announce and stats; typed helpers and `Data` in
+- [x] 5.4 `examples/tertulia`: DTOs for login, rooms list, announce and stats; typed helpers and `Data` in
   `rooms_service.rs`; keep WS payloads; verify the recordings match and `cargo test -p tertulia` passes
 
 ## 6. Documentation
