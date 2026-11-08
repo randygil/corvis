@@ -29,6 +29,10 @@ fn escape_like(s: &str) -> String {
     out
 }
 
+/// The most segments a JSON filter `path` may have. A path is written once per operator of a filter
+/// (and more than once for some), so its size multiplies; real documents are not nested this deep.
+const MAX_JSON_PATH: usize = 128;
+
 /// `[v]` as JSON text (so `json_extract(.., '$[0]')` yields `v` in SQLite's representation).
 fn json_wrap(v: &Value) -> String {
     Value::Array(vec![v.clone()]).to_string()
@@ -538,8 +542,12 @@ impl Engine {
                 jsonb(q);
                 q.push(if as_text { " #>> " } else { " #> " });
                 // The path is one `text[]` parameter: segments never touch the SQL text or an array literal.
-                let segments = p.iter().cloned().map(SqlValue::Text).collect();
-                q.bind(SqlValue::Cast(Box::new(SqlValue::Array(segments, FieldKind::String)), "text[]".into())).push(")");
+                // One filter uses the path many times: it is bound once and referenced after that.
+                q.bind_shared(|| {
+                    let segments = p.iter().cloned().map(SqlValue::Text).collect();
+                    SqlValue::Cast(Box::new(SqlValue::Array(segments, FieldKind::String)), "text[]".into())
+                })
+                .push(")");
             }
             (Dialect::Sqlite, p) => {
                 let path = sqlite_json_path(p);
@@ -629,8 +637,10 @@ impl Engine {
             }
         };
         self.check_keys(ops, JSON_OPS)?;
+        q.reset_shared();
         let path: Option<Vec<String>> = match ops.get("path") {
             None | Some(Value::Null) => None,
+            Some(Value::Array(a)) if a.len() > MAX_JSON_PATH => return Err(self.path_too_long(a.len())),
             Some(Value::Array(a)) => Some(a.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect()),
             Some(Value::String(s)) => {
                 // SQLite / MySQL style `$.a.b[0]`.
@@ -646,6 +656,11 @@ impl Engine {
                 return Err(self.err(format!("Argument `path`: Invalid value provided. Expected List<String>, provided {}.", json_type(other))));
             }
         };
+        if let Some(p) = &path
+            && p.len() > MAX_JSON_PATH
+        {
+            return Err(self.path_too_long(p.len()));
+        }
         let insensitive = ops.get("mode").and_then(|m| m.as_str()) == Some("insensitive");
         let entries: Vec<(&String, &Value)> = ops.iter().filter(|(k, _)| !matches!(k.as_str(), "path" | "mode")).collect();
         if entries.is_empty() {
@@ -848,7 +863,12 @@ impl Engine {
             }
         }
         q.push(")");
+        q.reset_shared();
         Ok(())
+    }
+
+    fn path_too_long(&self, n: usize) -> crate::error::OrmError {
+        self.err(format!("Argument `path`: Invalid value provided. Expected at most {MAX_JSON_PATH} path segments, provided {n}."))
     }
 
     /// `EXISTS (SELECT 1 FROM target AS tN [JOIN ...] WHERE <join> [AND [NOT] <inner>])`

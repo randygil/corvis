@@ -36,6 +36,17 @@ so the filter for `path: ["a'b"]` compiled to `("accounts"."data"::jsonb #> '{"a
    same documents, 256 cases by default and `PROPTEST_CASES` to run longer, failing seeds in
    `proptest-regressions/pg_json_paths.txt`.
 
+6. **Bind the path once per filter.** One JSON filter writes its path up to ~17 times (12 operators, and `string_*`,
+   `array_contains` and `not` with `JsonNull` write it twice). Binding a copy each time multiplied the memory of a
+   hostile path (the array is cloned again when the statement is tagged and when it is bound): a `where` of ~349k
+   empty segments with all 12 operators peaked at 955 MB (1 MB body) instead of 139 MB. `Sql::bind_shared` binds the
+   value on first use and writes `$n::text[]` for the later uses until `reset_shared`; `json_filter` resets it at its
+   start and end, so numbering stays correct by construction and two filters of one statement never share a path.
+   SQLite placeholders are positional, so `bind_shared` always binds there (its path is a short string anyway).
+7. **Segment cap.** A `path` of more than 128 segments is a validation error (`Expected at most 128 path segments`)
+   raised before any SQL is built, for the list and the string form, on both dialects. The cap is cheap and the same
+   on SQLite, where the same multiplication happened before this change. Real documents are not nested that deep.
+
 ## Risks / Trade-offs
 
 - The SQL text of Postgres JSON path filters changes (a parameter instead of a literal). Anything that compared SQL

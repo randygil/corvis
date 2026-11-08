@@ -13,6 +13,10 @@ JSON holds the value at the path made of those literal segments.
 - **THEN** the generated SQL does not contain the segments, and the query returns exactly the rows that have a key
   equal to each segment
 
+#### Scenario: Path size is bounded
+- **WHEN** a JSON filter has a `path` of more than 128 segments, in list or string form
+- **THEN** the query fails with a validation error before any SQL is built, and a path of 128 segments is accepted
+
 #### Scenario: Segments are literal keys
 - **WHEN** a path segment looks like an array literal (`{a,b}`) or a JSONPath (`$.a`)
 - **THEN** it is matched as the single key with that text, not parsed

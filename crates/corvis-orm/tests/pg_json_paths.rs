@@ -89,18 +89,73 @@ fn pg_client() -> OrmClient {
 #[test]
 fn generated_sql_binds_the_path_and_never_contains_it() {
     let db = pg_client();
+    const OPS: [&str; 12] = [
+        "equals",
+        "not",
+        "lt",
+        "lte",
+        "gt",
+        "gte",
+        "string_contains",
+        "string_starts_with",
+        "string_ends_with",
+        "array_contains",
+        "array_starts_with",
+        "array_ends_with",
+    ];
     for key in KEYS.iter().filter(|k| k.len() > 1) {
-        for op in ["equals", "not", "lt", "gt", "string_contains", "array_contains"] {
+        for op in OPS {
             let lit = if op.starts_with("string") { json!("x") } else { json!(1) };
-            let w = json!({ "data": { "path": [key, "other"], op: lit } });
-            let sql = corvis_orm::debug_sql(&db, meta(), &w).unwrap();
-            assert!(!sql.contains(key), "{op}: the path leaked into the SQL: {sql}");
-            assert!(sql.contains("::text[]"), "{op}: {sql}");
-            assert!(!sql.contains("'{"), "{op}: {sql}");
+            for mode in [None, Some("insensitive")] {
+                let mut f = json!({ "path": [key, "other"], op: lit });
+                if let Some(m) = mode {
+                    f["mode"] = json!(m);
+                }
+                let sql = corvis_orm::debug_sql(&db, meta(), &json!({ "data": f })).unwrap();
+                assert!(!sql.contains(key), "{op} {mode:?}: the path leaked into the SQL: {sql}");
+                assert!(sql.contains("::text[]"), "{op} {mode:?}: {sql}");
+                assert!(!sql.contains("'{"), "{op} {mode:?}: {sql}");
+            }
         }
+        // The string form of a path (`$.a.b`) is split into segments and bound like the list form.
+        let sql = corvis_orm::debug_sql(&db, meta(), &json!({ "data": { "path": format!("$.{key}.other"), "equals": 1 } })).unwrap();
+        assert!(!sql.contains(key), "string path leaked into the SQL: {sql}");
+        assert!(sql.contains("#> $1::text[]"), "{sql}");
     }
     let sql = corvis_orm::debug_sql(&db, meta(), &json!({ "data": { "path": ["a'b"], "equals": 1 } })).unwrap();
     assert!(sql.contains("#> $1::text[]"), "{sql}");
+}
+
+#[test]
+fn a_filter_binds_its_path_once_whatever_the_number_of_operators() {
+    let db = pg_client();
+    let f = json!({ "path": ["a'b", "c"], "equals": 1, "not": 2, "lt": 3, "gt": 4, "string_contains": "x", "array_contains": 5 });
+    let sql = corvis_orm::debug_sql(&db, meta(), &json!({ "data": f })).unwrap();
+    // The path is `$1` everywhere; the six values are `$2` to `$7` and nothing else is bound.
+    assert!(sql.matches("$1::text[]").count() >= 6, "{sql}");
+    assert!(sql.contains("$7") && !sql.contains("$8"), "{sql}");
+    assert_eq!(sql.matches("::text[]").count(), sql.matches("$1::text[]").count(), "{sql}");
+    // Two filters of one statement each bind their own path.
+    let w = json!({ "OR": [{ "data": { "path": ["x"], "equals": 1, "not": 2 } }, { "data": { "path": ["y"], "equals": 3, "not": 4 } }] });
+    let sql = corvis_orm::debug_sql(&db, meta(), &w).unwrap();
+    assert!(sql.contains("$1::text[]") && sql.contains("$4::text[]") && !sql.contains("$7"), "{sql}");
+}
+
+#[test]
+fn paths_over_the_segment_cap_are_a_validation_error_on_both_dialects() {
+    let clients = [pg_client(), OrmClient::new("sqlite::memory:").unwrap()];
+    for db in &clients {
+        let at = |n: usize| json!({ "data": { "path": vec![""; n], "equals": 1, "not": 2 } });
+        assert!(corvis_orm::debug_sql(db, meta(), &at(128)).is_ok());
+        let e = corvis_orm::debug_sql(db, meta(), &at(129)).unwrap_err();
+        assert!(e.message().contains("at most 128 path segments"), "{e}");
+        let e = corvis_orm::debug_sql(db, meta(), &at(100_000)).unwrap_err();
+        assert!(e.message().contains("at most 128 path segments"), "{e}");
+        // The string form too: 129 segments of `a`.
+        let s = format!("$.{}", vec!["a"; 129].join("."));
+        let e = corvis_orm::debug_sql(db, meta(), &json!({ "data": { "path": s, "equals": 1 } })).unwrap_err();
+        assert!(e.message().contains("at most 128 path segments"), "{e}");
+    }
 }
 
 #[tokio::test]
@@ -134,6 +189,22 @@ async fn paths_are_not_parsed_as_array_literals_or_text() {
     // The table is intact after a statement-shaped path.
     assert_eq!(ids(&db, json!({ "data": { "path": ["'; DROP TABLE accounts; --"], "equals": 8 } })).await, [9]);
     assert_eq!(q(&db, "count", json!({})).await.unwrap(), json!(KEYS.len()));
+}
+
+#[tokio::test]
+async fn a_shared_path_parameter_works_with_every_operator_on_postgres() {
+    let Some(db) = seeded("shared").await else { return };
+    // Five operators on one path: the one `text[]` parameter is used by all of them.
+    let f = json!({ "path": ["n", "a'b"], "not": "zz", "string_starts_with": "v", "string_ends_with": "0", "string_contains": "v", "gte": "v0" });
+    assert_eq!(ids(&db, json!({ "data": f })).await, [1]);
+    let f = json!({ "path": ["list"], "array_starts_with": "}", "array_contains": "}", "not": [] });
+    assert_eq!(ids(&db, json!({ "data": f })).await, [3]);
+    // Two filters in one statement bind two paths.
+    let w = json!({ "OR": [{ "data": { "path": ["a'b"], "equals": 0, "not": 9 } }, { "data": { "path": ["{"], "equals": 3, "not": 9 } }] });
+    assert_eq!(ids(&db, w).await, [1, 4]);
+    // Over the cap: a validation error before any query runs.
+    let e = q(&db, "findMany", json!({ "where": { "data": { "path": vec![""; 129], "equals": 1 } } })).await.unwrap_err();
+    assert!(e.message().contains("at most 128 path segments"), "{e}");
 }
 
 fn key() -> impl Strategy<Value = String> {

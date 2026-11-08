@@ -108,11 +108,39 @@ pub struct Sql {
     pub text: String,
     pub params: Vec<SqlValue>,
     aliases: usize,
+    /// The parameter shared between several uses (`$n::cast`), see [`Sql::bind_shared`].
+    shared: Option<(usize, String)>,
 }
 
 impl Sql {
     pub fn new(dialect: Dialect) -> Self {
-        Sql { dialect, text: String::new(), params: Vec::new(), aliases: 0 }
+        Sql { dialect, text: String::new(), params: Vec::new(), aliases: 0, shared: None }
+    }
+    /// Forgets the shared parameter: the next [`Sql::bind_shared`] binds a new one.
+    pub fn reset_shared(&mut self) {
+        self.shared = None;
+    }
+    /// Like [`Sql::bind`], but a later call (until [`Sql::reset_shared`]) writes a reference to the
+    /// parameter bound by the first one instead of binding a copy; `make` runs only for the first.
+    /// Postgres only: SQLite placeholders are positional, so there it always binds.
+    pub fn bind_shared(&mut self, make: impl FnOnce() -> SqlValue) -> &mut Self {
+        if self.dialect == Dialect::Postgres
+            && let Some((n, cast)) = &self.shared
+        {
+            let text = format!("${n}::{cast}");
+            self.text.push_str(&text);
+            return self;
+        }
+        let v = make();
+        let cast = match (&v, self.dialect) {
+            (SqlValue::Cast(_, c), Dialect::Postgres) => Some(c.clone()),
+            _ => None,
+        };
+        self.bind(v);
+        if let Some(cast) = cast {
+            self.shared = Some((self.params.len(), cast));
+        }
+        self
     }
     pub fn push(&mut self, s: &str) -> &mut Self {
         self.text.push_str(s);

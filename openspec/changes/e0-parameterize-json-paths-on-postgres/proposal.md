@@ -19,6 +19,7 @@ database driver, and Postgres is not covered by the filter fuzzing. The security
   statement-shaped text; the generated SQL is asserted not to contain the path.
 - A Postgres variant of the JSON-path differential property (generated hostile paths against a Rust evaluation),
   skipped when no server is reachable.
+- Cap JSON filter paths at 128 segments (validation error) and bind the path once per filter (review follow-up).
 - Runtime code changes (`engine/filter.rs`): the Postgres SQL text of JSON path filters changes; results do not.
 
 Out of scope:
