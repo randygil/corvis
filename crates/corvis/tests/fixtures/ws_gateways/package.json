@@ -1,0 +1,17 @@
+﻿{
+  "name": "ws-gateways-fixture",
+  "private": true,
+  "type": "module",
+  "description": "Records the frames of a gateway in the original framework (global guards, pipes, interceptors, filters).",
+  "dependencies": {
+    "@nestjs/common": "12.4.0",
+    "@nestjs/core": "12.4.0",
+    "@nestjs/platform-express": "12.4.0",
+    "@nestjs/platform-ws": "12.4.0",
+    "@nestjs/websockets": "12.4.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "ws": "8.18.3"
+  }
+}
+

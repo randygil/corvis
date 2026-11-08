@@ -100,7 +100,7 @@ vigente.
 
 ## WebSockets
 
-En un gateway, cada mensaje pasa por guards → interceptors → pipes → handler, con los enhancers del
-gateway y del handler. Los enhancers globales no se aplican y los filtros de excepción no están
-soportados: los errores se envían al cliente como un evento `exception`. Ver
+En un gateway, cada mensaje pasa por guards → interceptors → pipes → handler, con los enhancers globales, los del
+gateway y los del handler. Los filtros de excepción globales no se aplican; los errores pasan por los
+`#[use_filters]` del handler y del gateway y, si ninguno los atrapa, se envían al cliente como un evento `exception`. Ver
 [Gateways](/es/websockets/gateways).

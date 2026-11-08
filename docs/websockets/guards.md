@@ -27,7 +27,7 @@ impl ChatGateway {
 
 The gateway's guards run first and then the handler's, in the order they appear. If one returns `Ok(false)`, the client receives `{ "event": "exception", "data": { "status": "error", "message": "Forbidden resource" } }`. If it returns `Err(...)`, it receives that error (see [Gateways](/websockets/gateways#errors-wsexception)).
 
-Global guards (`app.use_global_guards`, `Provider::app_guard`) only protect controller routes. They do not apply to gateways (declare the guards with `#[use_guards]` on the gateway or on each handler), to the `upgrade` listeners of [`corvis::ws`](/websockets/adapter), to static files (`serve_static`, `ServeStaticModule`) or to the Swagger/Scalar routes. A static file with the same path as a protected endpoint is served before the endpoint. Protect those surfaces separately (middleware, `verify_client`, another static root).
+Global guards (`app.use_global_guards`, `Provider::app_guard`) also run on every gateway message, ahead of the gateway's and the handler's guards. A guard written for HTTP can tell the transports apart with `ctx.get_type()`, or skip a gateway marked with `#[set_metadata(...)]`; `app.apply_global_enhancers_to_gateways(false)` keeps global guards HTTP-only (see [Gateways](/websockets/gateways#global-enhancers)). They do not cover the `upgrade` listeners of [`corvis::ws`](/websockets/adapter), static files (`serve_static`, `ServeStaticModule`) or the Swagger/Scalar routes. A static file with the same path as a protected endpoint is served before the endpoint. Protect those surfaces separately (middleware, `verify_client`, another static root).
 
 ## The context in a gateway
 

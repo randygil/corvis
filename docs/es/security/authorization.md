@@ -167,7 +167,7 @@ async fn clear(&self, #[message_body] dto: RoomDto, #[connected_socket] client: 
 }
 ```
 
-Los guards globales no se aplican a los gateways: decláralos en el gateway o en cada handler. Ver
+Los guards globales también corren en los mensajes de los gateways; marca los gateways públicos con metadatos o comprueba `ctx.get_type()`. Ver
 [Guards de WebSockets](/es/websockets/guards).
 
 ## Lo que no incluye Corvis

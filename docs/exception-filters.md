@@ -205,5 +205,5 @@ If none handles it, the default filter responds.
 Exceptions that occur outside a route (in a middleware, the `404` of a nonexistent route, a body parser error) only go through the global filters.
 
 ::: info Gateways
-Filters do not apply to WebSocket gateways. See [WebSockets: exception filters](/websockets/exception-filters).
+Global filters do not apply to WebSocket gateways; declare `#[use_filters]` on the gateway or handler instead. See [WebSockets: exception filters](/websockets/exception-filters).
 :::

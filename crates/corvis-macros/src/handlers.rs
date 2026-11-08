@@ -86,7 +86,7 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
         let ImplItem::Fn(method) = impl_item else { continue };
         let mut kind: Option<(String, Vec<Expr>)> = None;
         let mut keep = Vec::new();
-        // `#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]`, `#[set_metadata]` (WebSocket handlers).
+        // `#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]`, `#[use_filters]`, `#[set_metadata]` (WebSocket handlers).
         let mut ws_enhancers = Vec::<TokenStream>::new();
         let mut enhancer_attr: Option<syn::Attribute> = None;
         for attr in method.attrs.drain(..) {
@@ -95,6 +95,7 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 "use_guards" => Some("guard"),
                 "use_interceptors" => Some("interceptor"),
                 "use_pipes" => Some("pipe"),
+                "use_filters" => Some("filter"),
                 _ => None,
             };
             if ["on_event", "cron", "interval", "timeout", "subscribe_message"].contains(&n.as_str()) {
@@ -406,6 +407,32 @@ mod tests {
             })
             .is_empty()
         );
+    }
+
+    #[test]
+    fn filter_on_an_event_handler_is_rejected() {
+        let m = messages(syn::parse_quote! {
+            impl Gw { #[use_filters(F)] #[on_event("x")] fn on_x(&self) {} }
+        });
+        assert_eq!(m, ["enhancers in `#[handlers]` are only supported on #[subscribe_message] methods"]);
+    }
+
+    #[test]
+    fn filter_on_a_subscribe_message_is_accepted() {
+        assert!(
+            messages(syn::parse_quote! {
+                impl Gw { #[use_filters(F)] #[subscribe_message("x")] async fn on_x(&self) {} }
+            })
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn filter_on_a_helper_is_rejected() {
+        let m = messages(syn::parse_quote! {
+            impl Gw { #[use_filters(F)] fn helper(&self) {} }
+        });
+        assert!(m[0].starts_with("`helper` has #[use_filters] but no #[subscribe_message] attribute"));
     }
 
     #[test]

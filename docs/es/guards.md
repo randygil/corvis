@@ -109,7 +109,7 @@ Para cada ruta los guards se ejecutan así:
 El primero que devuelve `false` o un error corta la cadena. Los guards se ejecutan después de todos los middleware y antes de los interceptors.
 
 ::: warning Lo que no cubren los guards globales
-`use_global_guards` y `Provider::app_guard` protegen las rutas de los controladores. No se aplican a los gateways de WebSocket (decláralos en el gateway), a los listeners `upgrade` de `corvis::ws`, a los archivos estáticos ni a las rutas de Swagger o Scalar. Un archivo estático con la misma ruta que un endpoint protegido se sirve antes que el endpoint. Protege esas superficies por separado (middleware, `verify_client`, otra raíz de estáticos).
+`use_global_guards` y `Provider::app_guard` protegen las rutas de los controladores. También corren en los mensajes de los gateways de WebSocket (ver [guards en WebSockets](/es/websockets/guards)), pero no en los listeners `upgrade` de `corvis::ws`, a los archivos estáticos ni a las rutas de Swagger o Scalar. Un archivo estático con la misma ruta que un endpoint protegido se sirve antes que el endpoint. Protege esas superficies por separado (middleware, `verify_client`, otra raíz de estáticos).
 :::
 
 ## Autorización por roles con metadatos

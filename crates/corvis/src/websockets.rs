@@ -45,13 +45,14 @@ use tokio_tungstenite::tungstenite::{Error, Message};
 
 use crate::common::context::{ExecutionContext, Target};
 use crate::common::enhancer::EnhancerRef;
+use crate::common::filter::ExceptionFilter;
 use crate::common::guard::CanActivate;
 use crate::common::interceptor::{CallHandler, CorvisInterceptor};
 use crate::common::pipe::PipeTransform;
 use crate::di::container::Container;
 use crate::di::{DiError, ModuleRef, ResolveCtx};
 use crate::discovery::{GatewayInfo, HandlerKind, WsCall};
-use crate::http::{HttpException, Request, Response};
+use crate::http::{Body, HttpException, Request, Response};
 use crate::logger::Logger;
 use crate::router::controller::ParamDef;
 use crate::router::{AppShared, RouterConfig};
@@ -520,6 +521,8 @@ struct CompiledWsHandler {
     /// Gateway-level then handler-level pipes, applied to every `#[message_body]`.
     pipes: Vec<Arc<dyn PipeTransform>>,
     params: Vec<(ParamDef, Vec<Arc<dyn PipeTransform>>)>,
+    /// The handler's exception filters, then the gateway's (global filters never apply).
+    filters: Vec<Arc<dyn ExceptionFilter>>,
     target: Arc<Target>,
 }
 
@@ -543,7 +546,7 @@ async fn resolve_all<T: ?Sized + Send + Sync + 'static>(refs: &[EnhancerRef<T>],
 
 pub(crate) async fn build_gateways(
     container: &Arc<Container>,
-    _cfg: &RouterConfig,
+    cfg: &RouterConfig,
 ) -> Result<HashMap<String, Arc<GatewayRuntime>>, DiError> {
     let mut out = HashMap::new();
     let logger = Logger::new("WebSocketsController");
@@ -554,9 +557,16 @@ pub(crate) async fn build_gateways(
             let Some(info) = gw(instance.clone()) else { continue };
             let ctx = ResolveCtx::for_module(container.clone(), module.id);
             let c = &info.enhancers;
-            let c_guards = resolve_all(&c.guards, &ctx).await?;
-            let c_interceptors = resolve_all(&c.interceptors, &ctx).await?;
-            let c_pipes = resolve_all(&c.pipes, &ctx).await?;
+            let (mut c_guards, mut c_interceptors, mut c_pipes) = (Vec::new(), Vec::new(), Vec::new());
+            if cfg.gateway_global_enhancers {
+                c_guards.extend(cfg.global_guards.iter().cloned());
+                c_interceptors.extend(cfg.global_interceptors.iter().cloned());
+                c_pipes.extend(cfg.global_pipes.iter().cloned());
+            }
+            c_guards.extend(resolve_all(&c.guards, &ctx).await?);
+            c_interceptors.extend(resolve_all(&c.interceptors, &ctx).await?);
+            c_pipes.extend(resolve_all(&c.pipes, &ctx).await?);
+            let c_filters = resolve_all(&c.filters, &ctx).await?;
             let mut handlers: HashMap<String, Arc<CompiledWsHandler>> = HashMap::new();
             if let Some(explore) = &p.hooks.handlers {
                 for h in explore(instance) {
@@ -574,6 +584,8 @@ pub(crate) async fn build_gateways(
                         interceptors.extend(resolve_all(&enhancers.interceptors, &ctx).await?);
                         let mut pipes = c_pipes.clone();
                         pipes.extend(resolve_all(&enhancers.pipes, &ctx).await?);
+                        let mut filters = resolve_all(&enhancers.filters, &ctx).await?;
+                        filters.extend(c_filters.iter().cloned());
                         let mut params = Vec::with_capacity(enhancers.params.len());
                         for param in &enhancers.params {
                             let param_pipes = resolve_all(&param.pipes, &ctx).await?;
@@ -581,7 +593,8 @@ pub(crate) async fn build_gateways(
                         }
                         let target =
                             Arc::new(Target { name: h.method_name.to_string(), metadata: enhancers.metadata.iter().cloned().collect() });
-                        let compiled = CompiledWsHandler { call, guards, interceptors: Arc::new(interceptors), pipes, params, target };
+                        let compiled =
+                            CompiledWsHandler { call, guards, interceptors: Arc::new(interceptors), pipes, params, filters, target };
                         handlers.insert(event, Arc::new(compiled));
                     }
                 }
@@ -706,21 +719,13 @@ const SHAPE_RESPONSE: u8 = 2;
 
 /// Guards -> interceptors -> pipes -> handler for one message.
 async fn run_handler(
-    gateway: &GatewayRuntime,
     handler: &Arc<CompiledWsHandler>,
     client: &WsClient,
+    ctx: &ExecutionContext,
     data: Value,
 ) -> Result<Option<Value>, HttpException> {
-    let ctx = ExecutionContext::for_ws(
-        client.handshake().clone(),
-        gateway.class_target.clone(),
-        handler.target.clone(),
-        Some(gateway.module_ref.clone()),
-        Arc::new(client.clone()),
-        data.clone(),
-    );
     for g in &handler.guards {
-        if !g.can_activate(&ctx).await? {
+        if !g.can_activate(ctx).await? {
             return Err(WsException::new("Forbidden resource"));
         }
     }
@@ -730,7 +735,8 @@ async fn run_handler(
     // Interceptors see the handler's return value as the JSON body of a `Response`: the data
     // for a plain value, `{ event, data }` for a `WsResponse`, `null` for no reply.
     let shape = Arc::new(AtomicU8::new(SHAPE_NONE));
-    let resp = call_interceptors(handler.interceptors.clone(), 0, ctx, handler.clone(), client.clone(), data, shape.clone()).await?;
+    let resp =
+        call_interceptors(handler.interceptors.clone(), 0, ctx.clone(), handler.clone(), client.clone(), data, shape.clone()).await?;
     let body = resp.json_body().cloned().unwrap_or(Value::Null);
     Ok(match shape.load(Ordering::SeqCst) {
         SHAPE_RESPONSE if body.get("event").is_some_and(Value::is_string) => Some(body),
@@ -784,6 +790,42 @@ async fn invoke_handler(handler: Arc<CompiledWsHandler>, client: WsClient, data:
     (handler.call)(Arc::new(client), args).await
 }
 
+/// The `data` of the `exception` frame for an error: the first handler or gateway filter that
+/// catches it answers, otherwise the built-in mapping. `None` means a filter answered by itself
+/// (empty body) and nothing is sent. Internal errors are logged only when the built-in mapping
+/// answers.
+async fn exception_data(gateway: &GatewayRuntime, handler: &CompiledWsHandler, ctx: &ExecutionContext, e: HttpException) -> Option<Value> {
+    let builtin = |e: &HttpException| {
+        if e.is_internal() {
+            Logger::new("WsExceptionsHandler").error(format!("{}: {}", gateway.name, e.message()));
+        }
+        Some(exception_payload(e))
+    };
+    let Some(filter) = handler.filters.iter().find(|f| f.catches(&e)) else {
+        return builtin(&e);
+    };
+    let name = filter.filter_name();
+    let log = Logger::new("WsExceptionsHandler");
+    match AssertUnwindSafe(filter.catch(e.clone(), ctx)).catch_unwind().await {
+        Ok(response) => match response.body {
+            Body::Empty => None,
+            Body::Json(value) => Some(value),
+            Body::Text(text) | Body::Html(text) => Some(Value::String(text)),
+            Body::Bytes { .. } | Body::Stream { .. } => {
+                log.error(format!(
+                    "{}: the exception filter {name} returned a binary or stream body, which a WebSocket frame cannot carry",
+                    gateway.name
+                ));
+                builtin(&e)
+            }
+        },
+        Err(_) => {
+            log.error(format!("{}: the exception filter {name} panicked", gateway.name));
+            Some(json!({ "status": "error", "message": "Internal server error" }))
+        }
+    }
+}
+
 /// Runs one message through its handler and sends the reply (or the `exception` frame).
 /// When the incoming frame carries an `id`, the reply and the `exception` frame echo it, so a
 /// client can match answers to requests (acknowledgements).
@@ -795,7 +837,15 @@ async fn dispatch(
     data: Value,
     id: Option<Value>,
 ) {
-    let result = match AssertUnwindSafe(run_handler(&gateway, &handler, &client, data)).catch_unwind().await {
+    let ctx = ExecutionContext::for_ws(
+        client.handshake().clone(),
+        gateway.class_target.clone(),
+        handler.target.clone(),
+        Some(gateway.module_ref.clone()),
+        Arc::new(client.clone()),
+        data.clone(),
+    );
+    let result = match AssertUnwindSafe(run_handler(&handler, &client, &ctx, data)).catch_unwind().await {
         Ok(r) => r,
         Err(panic) => {
             let msg = panic
@@ -823,10 +873,9 @@ async fn dispatch(
         }
         Ok(None) => {}
         Err(e) => {
-            if e.is_internal() {
-                Logger::new("WsExceptionsHandler").error(format!("{}: {}", gateway.name, e.message()));
+            if let Some(data) = exception_data(&gateway, &handler, &ctx, e).await {
+                client.send_text(with_id(json!({ "event": "exception", "data": data })).to_string());
             }
-            client.send_text(with_id(json!({ "event": "exception", "data": exception_payload(&e) })).to_string());
         }
     }
 }

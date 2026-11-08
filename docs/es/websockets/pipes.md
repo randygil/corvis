@@ -14,9 +14,9 @@ Los [pipes](/es/pipes) de un gateway funcionan igual que en HTTP: reciben el val
 | Handler | `#[use_pipes(...)]` encima del método | Cada `#[message_body]` de ese handler |
 | Parámetro | `#[message_body("prop", MiPipe)]` | Solo ese argumento |
 
-El orden es: pipes del gateway, después los del handler y por último los del parámetro. Los pipes se indican por tipo (`ParseIntPipe`), y entonces se instancian con inyección de dependencias en el contexto del módulo del gateway, o como expresión (`ZodValidationPipe::auto()`).
+El orden es: pipes globales, pipes del gateway, después los del handler y por último los del parámetro. Los pipes se indican por tipo (`ParseIntPipe`), y entonces se instancian con inyección de dependencias en el contexto del módulo del gateway, o como expresión (`ZodValidationPipe::auto()`).
 
-Los pipes globales (`app.use_global_pipes`, `Provider::app_pipe`) **no** se aplican a los gateways.
+Los pipes globales (`app.use_global_pipes`, `Provider::app_pipe`) también se aplican a los gateways, a cada `#[message_body]` antes que los demás pipes. Repetir un pipe de validación global en el gateway lo ejecuta dos veces, lo cual es inofensivo. `app.apply_global_enhancers_to_gateways(false)` mantiene los pipes globales solo en HTTP (ver [Gateways](/es/websockets/gateways#enhancers-globales)).
 
 ## Validar los mensajes
 
