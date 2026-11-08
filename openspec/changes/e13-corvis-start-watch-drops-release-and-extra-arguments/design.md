@@ -105,3 +105,7 @@ Decisions taken for the open questions so the change can start; the maintainer c
 - Arguments that are unsafe for the shell `cargo watch -x` uses are rejected with an error, not escaped: escaping rules
   differ between `cmd.exe`, PowerShell and POSIX shells, and a wrong escape is a command-injection bug. Escaping can be
   a follow-up issue if users ask for it.
+
+## cargo-watch version (task 1.1)
+
+Checked against cargo-watch 8.5.3 (latest release, 2024-10-02; the repository is archived since 2025-01-18, follow-up #143). `set_commands` in `src/options.rs` prepends `cargo ` to each `-x` value and runs it through a shell: `cmd` by default on Windows, watchexec's default shell on Unix, `--use-shell` to change it. So `-x` is shell-interpreted on both platforms, the allow-list of Decision 3 is required, and its error text stands.

@@ -2,10 +2,14 @@
 
 ## 1. Command builder
 
-- [ ] (NOT DONE: cargo-watch is not installed on this machine, so how it runs -x was not verified; the design rests on its documentation) 1.1 Check how the installed cargo-watch runs `-x` (`cargo watch --help`, the `--use-shell`/`--shell` option and
+- [x] 1.1 Check how the installed cargo-watch runs `-x` (`cargo watch --help`, the `--use-shell`/`--shell` option and
   its default on Windows and Unix) and record the version in design.md; adjust the error text of Decision 3 if `-x` is
   not run through a shell; verify by running `cargo watch -x "run -- --port 4000"` in a scaffolded project and
   checking that the program receives `--port 4000`
+  (maintainer, 2026-11-08: cargo-watch is not installed here; checked against its 8.x source instead, latest release
+  8.5.3: `set_commands` in `src/options.rs` prepends `cargo ` to the `-x` value and runs it through a shell, `cmd` by
+  default on Windows and watchexec's default shell on Unix, so the allow-list and Decision 3's error text hold; the
+  README documents `cargo watch -x 'run -- --some-arg'`. The project is archived since 2025-01-18: follow-up #143)
 - [x] 1.2 Add `cargo_invocation(args, sub) -> Result<Vec<String>, String>` in `crates/corvis-cli/src/main.rs`, split
   at the first `--` (Decision 2), with the watch form and allow-list of Decision 3; make `cmd_cargo` spawn `cargo`
   with its result; verify with unit tests in a new `#[cfg(test)] mod tests` in `main.rs` for: `start`,
