@@ -196,7 +196,9 @@ Para cada excepción, Corvis recorre los filtros en este orden y usa **el primer
 
 1. Los filtros de la ruta.
 2. Los del controlador.
-3. Los globales: primero los registrados como provider (`app_filter`), después los de `use_global_filters` en el orden en que se agregaron.
+3. Los globales, el último registrado primero: antes los de `use_global_filters`, de la última llamada a la primera, y después los registrados como provider (`app_filter`), del último al primero.
+
+   Los guards, interceptors y pipes se ejecutan en orden de registro, pero los filtros de excepción se prueban al revés, así que un filtro registrado después tiene prioridad sobre uno anterior. El orden se verificó contra el framework original.
 
 Si ninguno la atiende, responde el filtro por defecto.
 

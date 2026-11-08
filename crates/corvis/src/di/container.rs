@@ -97,6 +97,8 @@ impl Scanner {
             Some(o) => {
                 let mut o = o.clone();
                 o.token = provider.token.clone();
+                // An overridden `Provider::app_*` stays a global enhancer of the same kind.
+                o.enhancer = provider.enhancer.clone();
                 o
             }
             None => provider,

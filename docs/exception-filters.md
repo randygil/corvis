@@ -196,7 +196,9 @@ For each exception, Corvis walks the filters in this order and uses **the first 
 
 1. The route's filters.
 2. The controller's.
-3. The global ones: first those registered as a provider (`app_filter`), then those from `use_global_filters` in the order they were added.
+3. The global ones, last registered first: first those from `use_global_filters`, from the last call to the first, then those registered as a provider (`app_filter`), from the last to the first.
+
+   Guards, interceptors and pipes run in registration order, but exception filters are tried in reverse, so a filter registered later takes precedence over an earlier one. The order was checked against the original framework.
 
 If none handles it, the default filter responds.
 

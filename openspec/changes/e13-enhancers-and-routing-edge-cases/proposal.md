@@ -11,7 +11,8 @@ right thing:
 - Testing overrides (`override_guard` and its siblings) cannot replace a global enhancer registered with
   `Provider::app_guard` (and equivalents), and overriding the `app_*` provider itself silently removes the global
   enhancer, so a test can pass while the guard it meant to mock is simply gone.
-- Several `Provider::app_filter` are tried in reverse registration order.
+- Several `Provider::app_filter` are tried in reverse registration order (the issue treats this as a bug; the original
+  framework does the same, see design.md).
 - `set_global_prefix_with_exclude` compares the exclusions with the controller path only, so a single route cannot
   be kept outside the prefix.
 - With URI versioning, a text pattern in `for_routes("cats")` does not match `/v1/cats`, so module middleware is
@@ -27,8 +28,10 @@ mistake the framework should not let through.
   global enhancer registered with `Provider::app_guard::<G>()` (and equivalents) in the testing module.
 - Overriding the provider behind an `app_*` registration keeps it registered as a global enhancer; if the override's
   value cannot be used as that enhancer, `init()` fails with a clear error instead of dropping it.
-- Several global filters registered with `Provider::app_filter` are tried in registration order, like `app_guard`,
-  `app_interceptor` and `app_pipe`.
+- Global exception filters are tried last registered first, as in the original framework (checked in task 1.1): the
+  `use_global_filters` ones from the last call to the first, then the `Provider::app_filter` ones from the last to the
+  first. Guards, interceptors and pipes keep registration order. **Behavior change:** a bootstrap filter now comes
+  before the provider filters (it came after).
 - `set_global_prefix_with_exclude` matches each exclusion against the full route path (controller path plus handler
   path, without the prefix), so a single endpoint can be excluded. **Behavior change:** an exclusion `"health"` no
   longer excludes `/health/live`; write `"health/*"` for that.

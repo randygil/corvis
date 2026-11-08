@@ -110,12 +110,38 @@ impl ErasedHooks {
 
 /// Global enhancer registered through the DI container
 /// (`APP_GUARD`, `APP_INTERCEPTOR`, `APP_PIPE`, `APP_FILTER`).
+///
+/// `cast` turns the provider's instance into the enhancer. It accepts the concrete class `T` and the
+/// trait object itself, which is what a testing override stores. `override_token` is the token a
+/// testing module's `override_guard::<T>()` (and siblings) registers its mock under.
 #[derive(Clone)]
 pub(crate) enum GlobalEnhancer {
-    Guard(fn(&Instance) -> Option<Arc<dyn CanActivate>>),
-    Interceptor(fn(&Instance) -> Option<Arc<dyn CorvisInterceptor>>),
-    Pipe(fn(&Instance) -> Option<Arc<dyn PipeTransform>>),
-    Filter(fn(&Instance) -> Option<Arc<dyn ExceptionFilter>>),
+    Guard { cast: fn(&Instance) -> Option<Arc<dyn CanActivate>>, override_token: Token },
+    Interceptor { cast: fn(&Instance) -> Option<Arc<dyn CorvisInterceptor>>, override_token: Token },
+    Pipe { cast: fn(&Instance) -> Option<Arc<dyn PipeTransform>>, override_token: Token },
+    Filter { cast: fn(&Instance) -> Option<Arc<dyn ExceptionFilter>>, override_token: Token },
+}
+
+impl GlobalEnhancer {
+    /// Token under which a testing override of this enhancer is registered.
+    pub(crate) fn override_token(&self) -> &Token {
+        match self {
+            GlobalEnhancer::Guard { override_token, .. }
+            | GlobalEnhancer::Interceptor { override_token, .. }
+            | GlobalEnhancer::Pipe { override_token, .. }
+            | GlobalEnhancer::Filter { override_token, .. } => override_token,
+        }
+    }
+
+    /// `guard`, `interceptor`, `pipe` or `filter`.
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            GlobalEnhancer::Guard { .. } => "guard",
+            GlobalEnhancer::Interceptor { .. } => "interceptor",
+            GlobalEnhancer::Pipe { .. } => "pipe",
+            GlobalEnhancer::Filter { .. } => "filter",
+        }
+    }
 }
 
 /// A provider definition. Build one with [`Provider::class`], [`Provider::use_value`],
@@ -270,28 +296,40 @@ impl Provider {
     /// `{ provide: APP_GUARD, useClass: T }` – a global guard with dependency injection.
     pub fn app_guard<T: Injectable + CanActivate>() -> Self {
         let mut p = Self::use_class::<T>(Token::named(format!("APP_GUARD:{}", std::any::type_name::<T>())));
-        p.enhancer = Some(GlobalEnhancer::Guard(|i| downcast::<T>(i).map(|t| t as Arc<dyn CanActivate>)));
+        p.enhancer = Some(GlobalEnhancer::Guard {
+            cast: |i| downcast::<T>(i).map(|t| t as Arc<dyn CanActivate>).or_else(|| downcast::<dyn CanActivate>(i)),
+            override_token: crate::testing::enhancer_override_token::<T>(),
+        });
         p
     }
 
     /// `{ provide: APP_INTERCEPTOR, useClass: T }`.
     pub fn app_interceptor<T: Injectable + CorvisInterceptor>() -> Self {
         let mut p = Self::use_class::<T>(Token::named(format!("APP_INTERCEPTOR:{}", std::any::type_name::<T>())));
-        p.enhancer = Some(GlobalEnhancer::Interceptor(|i| downcast::<T>(i).map(|t| t as Arc<dyn CorvisInterceptor>)));
+        p.enhancer = Some(GlobalEnhancer::Interceptor {
+            cast: |i| downcast::<T>(i).map(|t| t as Arc<dyn CorvisInterceptor>).or_else(|| downcast::<dyn CorvisInterceptor>(i)),
+            override_token: crate::testing::enhancer_override_token::<T>(),
+        });
         p
     }
 
     /// `{ provide: APP_PIPE, useClass: T }`.
     pub fn app_pipe<T: Injectable + PipeTransform>() -> Self {
         let mut p = Self::use_class::<T>(Token::named(format!("APP_PIPE:{}", std::any::type_name::<T>())));
-        p.enhancer = Some(GlobalEnhancer::Pipe(|i| downcast::<T>(i).map(|t| t as Arc<dyn PipeTransform>)));
+        p.enhancer = Some(GlobalEnhancer::Pipe {
+            cast: |i| downcast::<T>(i).map(|t| t as Arc<dyn PipeTransform>).or_else(|| downcast::<dyn PipeTransform>(i)),
+            override_token: crate::testing::enhancer_override_token::<T>(),
+        });
         p
     }
 
     /// `{ provide: APP_FILTER, useClass: T }`.
     pub fn app_filter<T: Injectable + ExceptionFilter>() -> Self {
         let mut p = Self::use_class::<T>(Token::named(format!("APP_FILTER:{}", std::any::type_name::<T>())));
-        p.enhancer = Some(GlobalEnhancer::Filter(|i| downcast::<T>(i).map(|t| t as Arc<dyn ExceptionFilter>)));
+        p.enhancer = Some(GlobalEnhancer::Filter {
+            cast: |i| downcast::<T>(i).map(|t| t as Arc<dyn ExceptionFilter>).or_else(|| downcast::<dyn ExceptionFilter>(i)),
+            override_token: crate::testing::enhancer_override_token::<T>(),
+        });
         p
     }
 }

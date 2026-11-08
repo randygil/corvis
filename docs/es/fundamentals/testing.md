@@ -130,8 +130,22 @@ let module = Test::create_testing_module()
 
 `override_guard::<G>(mock)`, `override_interceptor::<I>(mock)`, `override_pipe::<P>(mock)` y `override_filter::<F>(mock)` reemplazan los enhancers referenciados **por tipo** en `#[use_guards(G)]`, `#[use_interceptors(I)]`, `#[use_pipes(P)]`, `#[use_filters(F)]` o en un parámetro.
 
+Los mismos métodos también reemplazan un enhancer global registrado **por tipo** con `Provider::app_guard::<G>()`, `app_interceptor`, `app_pipe` o `app_filter`. El mock ocupa el lugar del original en el orden global, y el original nunca se llama:
+
+```rust
+// El módulo registra `Provider::app_guard::<RolesGuard>()`.
+let module = Test::create_testing_module()
+    .import::<AppModule>()
+    .override_guard::<RolesGuard>(AllowAll)
+    .compile()
+    .await
+    .unwrap();
+```
+
+Si en cambio sobrescribes el provider detrás de un registro `Provider::app_*` (`override_provider_token("APP_GUARD:<nombre del tipo>")`), el valor que lo sustituye sigue registrado como enhancer global del mismo tipo. Si no puede actuar como ese tipo de enhancer (por ejemplo, un `String` donde se espera un guard), `init()` falla con un error que nombra al enhancer, en lugar de arrancar la aplicación sin él.
+
 ::: warning
-Los enhancers globales registrados con `Provider::app_guard` (y sus equivalentes) o con `use_global_*`, y los que se pasan como expresión (`#[use_guards(RolesGuard::new("admin"))]`), no se reemplazan con estos métodos. Para los de `use_global_*`, simplemente no los registres en la aplicación de prueba; para los de `Provider::app_*`, sustituye sus dependencias con `override_provider`.
+Los enhancers registrados con `use_global_*`, y los que se pasan como expresión (`#[use_guards(RolesGuard::new("admin"))]`), no se reemplazan con estos métodos. Para los de `use_global_*`, simplemente no los registres en la aplicación de prueba.
 :::
 
 ## Peticiones HTTP en memoria

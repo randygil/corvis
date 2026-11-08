@@ -69,7 +69,56 @@ pub(crate) fn join_paths(parts: &[&str]) -> String {
     if segs.is_empty() { "/".to_string() } else { format!("/{}", segs.join("/")) }
 }
 
-/// Converts an Express-style path (`/cats/:id`, `/files/*`) into matchit syntax.
+/// Most optional segments (`:name?`) one route path may have; each doubles the routes registered.
+const MAX_OPTIONAL_SEGMENTS: usize = 4;
+
+fn is_optional_segment(seg: &str) -> bool {
+    seg.starts_with(':') && seg.ends_with('?')
+}
+
+/// Expands the optional segments (`:name?`) of a path into every path with and without them:
+/// `/cats/:id?` -> `/cats/:id`, `/cats`. The result has no `?` left. A path without optional
+/// segments is returned as is. When consecutive optional segments give the same shape
+/// (`/x/:a?/:b?` without `a` or without `b`), the variant that keeps the earlier segment wins, so
+/// `/x/1` binds `a`. More than [`MAX_OPTIONAL_SEGMENTS`] optional segments is an error.
+pub(crate) fn expand_optional(path: &str) -> Result<Vec<String>, String> {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let optional: Vec<usize> = segs.iter().enumerate().filter(|(_, s)| is_optional_segment(s)).map(|(i, _)| i).collect();
+    if optional.is_empty() {
+        return Ok(vec![path.to_string()]);
+    }
+    if optional.len() > MAX_OPTIONAL_SEGMENTS {
+        return Err(format!(
+            "the path {path} has {} optional segments (`:name?`), the most allowed is {MAX_OPTIONAL_SEGMENTS}",
+            optional.len()
+        ));
+    }
+    let n = optional.len();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    // Bit `n - 1 - k` set: the k-th optional segment is kept. Counting down tries the variants that
+    // keep earlier segments first.
+    for mask in (0..(1usize << n)).rev() {
+        let kept: Vec<&str> = segs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| match optional.iter().position(|o| *o == i) {
+                Some(k) if mask & (1 << (n - 1 - k)) == 0 => None,
+                Some(_) => Some(s.trim_end_matches('?')),
+                None => Some(*s),
+            })
+            .collect();
+        let shape: Vec<&str> = kept.iter().map(|s| if s.starts_with(':') { ":" } else { *s }).collect();
+        if seen.insert(shape.join("/")) {
+            out.push(join_paths(&kept));
+        }
+    }
+    Ok(out)
+}
+
+/// Converts an Express-style path (`/cats/:id`, `/files/*`) into matchit syntax. Optional segments
+/// (`:id?`) must be expanded with [`expand_optional`] first: one that reaches this function keeps its
+/// `?` in the parameter name instead of silently becoming a required parameter.
 pub(crate) fn to_matchit(path: &str) -> String {
     let mut out = Vec::new();
     for seg in path.split('/') {
@@ -77,8 +126,9 @@ pub(crate) fn to_matchit(path: &str) -> String {
             continue;
         }
         if let Some(name) = seg.strip_prefix(':') {
+            let optional = name.ends_with('?');
             let name = name.split('(').next().unwrap_or(name).trim_end_matches('?');
-            out.push(format!("{{{name}}}"));
+            out.push(format!("{{{name}{}}}", if optional { "?" } else { "" }));
         } else if seg == "*" || seg == "(.*)" || seg == "*path" || seg == "{*path}" {
             out.push("{*path}".to_string());
             break;
@@ -180,15 +230,25 @@ type RouteGroup = ((Option<String>, String), Vec<usize>);
 impl RouterTable {
     fn insert(&mut self, groups: Vec<RouteGroup>) {
         let logger = Logger::new("RouterExplorer");
+        for message in self.try_insert(groups) {
+            logger.error(message);
+        }
+    }
+
+    /// Registers the groups and returns one message per route the table refused (a conflict with
+    /// another route); the others stay registered.
+    fn try_insert(&mut self, groups: Vec<RouteGroup>) -> Vec<String> {
+        let mut refused = Vec::new();
         for ((method, path), idx) in groups {
             let router = match &method {
                 Some(m) => self.by_method.entry(m.clone()).or_default(),
                 None => &mut self.any,
             };
             if let Err(e) = router.insert(lowercase_static(&path), idx) {
-                logger.error(format!("Unable to register route {path}: {e}"));
+                refused.push(format!("Unable to register route {path}: {e}"));
             }
         }
+        refused
     }
 
     fn lookup(&self, method: &Method, path: &str) -> Option<RouteMatch> {
@@ -297,8 +357,16 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
             let module_ref = ModuleRef { container: container.clone(), module: module.id };
 
             for c_path in &c_paths {
-                let prefix = if cfg.prefix_exclude.iter().any(|e| path_matches(e, c_path)) { "" } else { cfg.global_prefix.as_str() };
+                // The prefix is decided per route, from its path without the prefix and the version
+                // segment (controller path joined with the handler path).
+                let prefix_for = |r_path: &str| -> &str {
+                    let relative = join_paths(&[c_path, r_path]);
+                    if cfg.prefix_exclude.iter().any(|e| path_matches(e, &relative)) { "" } else { cfg.global_prefix.as_str() }
+                };
                 if log {
+                    // Display only: the controller shows without the prefix when all its routes do.
+                    let all_excluded = !routes.is_empty() && routes.iter().all(|r| r.meta.paths.iter().all(|p| prefix_for(p).is_empty()));
+                    let prefix = if all_excluded { "" } else { cfg.global_prefix.as_str() };
                     let base_version = cmeta.version.clone().or_else(|| cfg.versioning.as_ref().and_then(|v| v.default_version.clone()));
                     let shown = version_paths(cfg.versioning.as_ref(), &base_version);
                     let p = join_paths(&[prefix, shown[0].as_deref().unwrap_or(""), c_path]);
@@ -346,6 +414,7 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
                     };
                     let interceptors = Arc::new(interceptors);
                     for r_path in &meta.paths {
+                        let prefix = prefix_for(r_path);
                         for vp in version_paths(cfg.versioning.as_ref(), &version) {
                             let full = join_paths(&[prefix, vp.as_deref().unwrap_or(""), c_path, r_path]);
                             let idx = table.routes.len();
@@ -369,10 +438,15 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
                                 host: cmeta.host.clone(),
                                 response_mode: meta.response_mode,
                             }));
-                            let key = (meta.method.to_http().map(|m| m.to_string()), to_matchit(&full));
-                            match groups.iter_mut().find(|(k, _)| *k == key) {
-                                Some((_, v)) => v.push(idx),
-                                None => groups.push((key, vec![idx])),
+                            let variants = expand_optional(&full).map_err(|e| {
+                                DiError::Other(format!("Unable to register route {} {} of {}: {e}", meta.method.as_str(), full, def.name))
+                            })?;
+                            for variant in variants {
+                                let key = (meta.method.to_http().map(|m| m.to_string()), to_matchit(&variant));
+                                match groups.iter_mut().find(|(k, _)| *k == key) {
+                                    Some((_, v)) => v.push(idx),
+                                    None => groups.push((key, vec![idx])),
+                                }
                             }
                             if log {
                                 explorer_log.log(format!(
@@ -399,6 +473,16 @@ pub(crate) async fn build_middleware(
     cfg: &RouterConfig,
 ) -> Result<Vec<CompiledMiddleware>, DiError> {
     let mut out = Vec::new();
+    // With URI versioning, a route is published under every version segment (`/v1/cats`), so a text
+    // pattern (`for_routes("cats")`) also has to match the path under each of them.
+    let mut version_segments: Vec<String> = Vec::new();
+    for route in &table.routes {
+        for vp in version_paths(cfg.versioning.as_ref(), &route.versions).into_iter().flatten() {
+            if !version_segments.contains(&vp) {
+                version_segments.push(vp);
+            }
+        }
+    }
     for module in &container.modules {
         let Some(configure) = module.configure else { continue };
         let Some(token) = &module.module_token else { continue };
@@ -417,12 +501,21 @@ pub(crate) async fn build_middleware(
                             if p == "*" || p == "(.*)" || p == "*path" || p == "{*path}" {
                                 v.push(("*".to_string(), *method));
                             } else {
-                                v.push((join_paths(&[cfg.global_prefix.as_str(), p]), *method));
+                                // Optional segments (`:id?`) match with and without the segment.
+                                let patterns = expand_optional(p).unwrap_or_else(|_| vec![p.to_string()]);
+                                for p in patterns {
+                                    v.push((join_paths(&[cfg.global_prefix.as_str(), &p]), *method));
+                                    for vp in &version_segments {
+                                        v.push((join_paths(&[cfg.global_prefix.as_str(), vp, &p]), *method));
+                                    }
+                                }
                             }
                         }
                         RouteSpec::Controller(tid) => {
                             for r in table.routes.iter().filter(|r| r.controller_type == *tid) {
-                                v.push((r.path.clone(), r.method));
+                                for path in expand_optional(&r.path).unwrap_or_else(|_| vec![r.path.clone()]) {
+                                    v.push((path, r.method));
+                                }
                             }
                         }
                     }
@@ -785,5 +878,50 @@ mod tests {
         assert_eq!(to_matchit("/cats/:id"), "/cats/{id}");
         assert_eq!(to_matchit("/files/*"), "/files/{*path}");
         assert_eq!(to_matchit("/"), "/");
+    }
+
+    #[test]
+    fn optional_segments_are_never_registered_as_required() {
+        // An optional segment that was not expanded keeps its `?`, it does not become `{id}`.
+        assert_eq!(to_matchit("/cats/:id?"), "/cats/{id?}");
+        assert_eq!(expand_optional("/cats/:id").unwrap(), ["/cats/:id"]);
+        assert_eq!(expand_optional("/cats/:id?").unwrap(), ["/cats/:id", "/cats"]);
+        assert_eq!(expand_optional("/files/:dir?/list").unwrap(), ["/files/:dir/list", "/files/list"]);
+        assert_eq!(expand_optional("/:id?").unwrap(), ["/:id", "/"]);
+        assert_eq!(expand_optional("/x/:id(\\d+)?").unwrap(), ["/x/:id(\\d+)", "/x"]);
+        for path in ["/cats/:id?", "/files/:dir?/list", "/x/:a?/:b?/:c?/:d?"] {
+            for variant in expand_optional(path).unwrap() {
+                assert!(!variant.contains('?'), "{variant}");
+                assert!(!to_matchit(&variant).contains('?'), "{variant}");
+            }
+        }
+    }
+
+    #[test]
+    fn consecutive_optional_segments_keep_the_earlier_one() {
+        // `/x/1` binds `a`, like left to right matching; `{a}` and `{b}` would conflict otherwise.
+        assert_eq!(expand_optional("/x/:a?/:b?").unwrap(), ["/x/:a/:b", "/x/:a", "/x"]);
+        assert_eq!(expand_optional("/x/:a?/:b?/:c?/:d?").unwrap().len(), 5);
+    }
+
+    #[test]
+    fn more_than_four_optional_segments_is_an_error() {
+        let err = expand_optional("/a/:b?/:c?/:d?/:e?/:f?").unwrap_err();
+        assert!(err.contains("5 optional segments"), "{err}");
+    }
+
+    #[test]
+    fn an_optional_route_that_conflicts_with_an_explicit_one_is_reported() {
+        let mut table = RouterTable::default();
+        let get = || Some("GET".to_string());
+        let mut groups: Vec<RouteGroup> = vec![((get(), "/cats/{name}".into()), vec![0])];
+        for variant in expand_optional("/cats/:id?").unwrap() {
+            groups.push(((get(), to_matchit(&variant)), vec![1]));
+        }
+        let refused = table.try_insert(groups);
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].starts_with("Unable to register route /cats/{id}"), "{refused:?}");
+        // The variant without the segment is still registered.
+        assert_eq!(table.lookup(&Method::GET, "/cats").unwrap().0, vec![1]);
     }
 }
