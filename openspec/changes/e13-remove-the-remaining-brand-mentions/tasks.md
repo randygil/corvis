@@ -36,17 +36,17 @@
 
 ## 5. Docs
 
-- [ ] 5.1 Update any docs page whose text changes because of 2.x or 4.x (if none, record it); verify
-  `npm run docs:check` in `docs/`
+- [x] 5.1 Update any docs page whose text changes because of 2.x or 4.x (if none, record it); verify
+  `npm run docs:check` in `docs/` (no page needed changes; recorded in design.md)
 
 ## 6. Definition of done
 
-- [ ] 6.1 Builds with no warnings
-- [ ] 6.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 6.3 `cargo test --workspace` passes
-- [ ] 6.4 Regression test: the naming check (`node scripts/check-naming.mjs` exits 0, and fails on a planted mention)
-- [ ] 6.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 6.6 Only comments, metadata and the benchmark change, no framework runtime code: record that the corvis-parity
+- [ ] 6.1 Builds with no warnings (cargo verification left to the maintainer)
+- [ ] 6.2 `cargo clippy --workspace --all-targets -- -D warnings` passes (cargo verification left to the maintainer)
+- [ ] 6.3 `cargo test --workspace` passes (cargo verification left to the maintainer)
+- [x] 6.4 Regression test: the naming check (`node scripts/check-naming.mjs` exits 0, and fails on a planted mention)
+- [x] 6.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
+- [x] 6.6 Only comments, metadata and the benchmark change, no framework runtime code: record that the corvis-parity
   check is not needed (run it if any runtime string changes)
 
 ## Workflow follow-up
