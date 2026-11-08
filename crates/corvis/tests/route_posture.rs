@@ -984,7 +984,10 @@ mod gateways {
         fn chat(&self) {}
     });
 
-    #[module(providers = [ReportGateway, HookProbe])]
+    #[module(
+        imports = [ServeStaticModule::for_root(vec![ServeStaticOptions::new(env!("CARGO_MANIFEST_DIR")).serve_root("/report-assets")])],
+        providers = [ReportGateway, HookProbe],
+    )]
     pub struct ReportGatewayModule;
 
     #[module(providers = [GuardedGateway])]
@@ -1425,6 +1428,16 @@ const FIXTURE_VAR: &str = "CORVIS_TEST_POSTURE_FIXTURE";
 fn report_mode_child() {
     let Ok(fixture) = std::env::var(FIXTURE_VAR) else { return };
     tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
+        if fixture == "testing" {
+            let module =
+                Test::create_testing_module().controller::<ReportOpenController>().provider::<HookProbe>().compile().await.unwrap();
+            let mut app = module.create_corvis_application();
+            match app.init().await {
+                Ok(()) => println!("INIT OK"),
+                Err(e) => println!("INIT ERROR: {e}"),
+            }
+            return;
+        }
         let mut app = match fixture.as_str() {
             "open" => CorvisFactory::create::<ReportOpenModule>().await.unwrap(),
             #[cfg(feature = "websockets")]
@@ -1432,7 +1445,10 @@ fn report_mode_child() {
             _ => CorvisFactory::create::<ReportPublicModule>().await.unwrap(),
         };
         app.silence_route_logs();
-        if fixture == "init" {
+        if fixture == "blank" {
+            app.set_route_posture(RoutePostureOptions::off().exempt(corvis::RequestMethod::Get, "/report-public", "  "));
+        }
+        if matches!(fixture.as_str(), "init" | "blank") {
             match app.init().await {
                 Ok(()) => println!("INIT OK"),
                 Err(e) => println!("INIT ERROR: {e}"),
@@ -1449,38 +1465,51 @@ struct Child {
     stdout: String,
 }
 
-fn run_child(fixture: &str, report: Option<&str>) -> Child {
+fn run_child_with(fixture: &str, report: Option<&str>, nonce: Option<&str>) -> Child {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
     cmd.args(["--exact", "report_mode_child", "--nocapture", "--test-threads=1"]).env(FIXTURE_VAR, fixture);
     match report {
         Some(v) => cmd.env("CORVIS_ROUTE_POSTURE_REPORT", v),
         None => cmd.env_remove("CORVIS_ROUTE_POSTURE_REPORT"),
     };
+    match nonce {
+        Some(v) => cmd.env("CORVIS_ROUTE_POSTURE_NONCE", v),
+        None => cmd.env_remove("CORVIS_ROUTE_POSTURE_NONCE"),
+    };
     let out = cmd.output().unwrap();
     Child { code: out.status.code(), stdout: String::from_utf8_lossy(&out.stdout).into_owned() }
 }
 
-fn between_markers(stdout: &str) -> Vec<&str> {
+fn run_child(fixture: &str, report: Option<&str>) -> Child {
+    run_child_with(fixture, report, None)
+}
+
+fn between_markers_of(stdout: &str, nonce: Option<&str>) -> Vec<String> {
+    let (begin, end) = corvis::posture::report_markers(nonce);
     let lines: Vec<&str> = stdout.lines().collect();
-    let begin = lines.iter().position(|l| *l == corvis::posture::REPORT_BEGIN).expect("BEGIN marker");
-    let end = lines.iter().position(|l| *l == corvis::posture::REPORT_END).expect("END marker");
+    let begin = lines.iter().position(|l| *l == begin).expect("BEGIN marker");
+    let end = lines.iter().position(|l| *l == end).expect("END marker");
     assert!(begin < end);
-    lines[begin + 1..end].to_vec()
+    lines[begin + 1..end].iter().map(|l| l.to_string()).collect()
+}
+
+fn between_markers(stdout: &str) -> Vec<String> {
+    between_markers_of(stdout, None)
 }
 
 #[test]
 fn report_mode_text_lists_the_unprotected_route_and_stops_before_hooks_and_listening() {
     let child = run_child("open", Some("text"));
-    assert_eq!(child.code, Some(1), "{}", child.stdout);
+    assert_eq!(child.code, Some(41), "{}", child.stdout);
     let body = between_markers(&child.stdout).join("\n");
     assert!(body.contains("/report-open") && body.contains("ReportOpenController::unguarded") && body.contains("UNPROTECTED"), "{body}");
     assert!(!child.stdout.contains("HOOK RAN") && !child.stdout.contains("AFTER LISTEN"), "{}", child.stdout);
 }
 
 #[test]
-fn report_mode_json_with_only_public_routes_exits_zero() {
+fn report_mode_json_with_only_public_routes_exits_with_the_clean_code() {
     let child = run_child("public", Some("json"));
-    assert_eq!(child.code, Some(0), "{}", child.stdout);
+    assert_eq!(child.code, Some(40), "{}", child.stdout);
     let json: serde_json::Value = serde_json::from_str(&between_markers(&child.stdout).join("\n")).unwrap();
     assert_eq!(json["entries"][0]["status"]["state"], "public");
     assert_eq!(json["entries"][0]["path"], "/report-public");
@@ -1488,12 +1517,40 @@ fn report_mode_json_with_only_public_routes_exits_zero() {
 }
 
 #[test]
+fn report_mode_never_ends_the_process_with_zero() {
+    for (fixture, expected) in [("open", 41), ("public", 40)] {
+        for format in ["text", "json"] {
+            let child = run_child(fixture, Some(format));
+            assert_eq!(child.code, Some(expected), "{fixture} {format}: {}", child.stdout);
+        }
+    }
+}
+
+#[test]
 fn report_mode_json_has_only_the_report_between_the_markers() {
     let child = run_child("open", Some(" json "));
-    assert_eq!(child.code, Some(1), "{}", child.stdout);
+    assert_eq!(child.code, Some(41), "{}", child.stdout);
     let lines = between_markers(&child.stdout);
-    assert!(lines.first().is_some_and(|l| *l == "{"), "{lines:?}");
-    assert!(lines.last().is_some_and(|l| *l == "}"), "{lines:?}");
+    assert!(lines.first().is_some_and(|l| l == "{"), "{lines:?}");
+    assert!(lines.last().is_some_and(|l| l == "}"), "{lines:?}");
+}
+
+#[test]
+fn report_mode_with_a_nonce_puts_it_in_both_markers_and_not_the_plain_ones() {
+    let child = run_child_with("open", Some("json"), Some("Nonce12345"));
+    assert_eq!(child.code, Some(41), "{}", child.stdout);
+    assert!(child.stdout.contains("----- BEGIN CORVIS ROUTE POSTURE REPORT Nonce12345 -----"), "{}", child.stdout);
+    assert!(!child.stdout.lines().any(|l| l == corvis::posture::REPORT_BEGIN), "{}", child.stdout);
+    let json: serde_json::Value = serde_json::from_str(&between_markers_of(&child.stdout, Some("Nonce12345")).join("\n")).unwrap();
+    assert_eq!(json["entries"][0]["path"], "/report-open");
+}
+
+#[test]
+fn report_mode_with_an_invalid_nonce_makes_init_fail() {
+    let child = run_child_with("init", Some("json"), Some("bad nonce!"));
+    assert_eq!(child.code, Some(0), "{}", child.stdout);
+    let line = child.stdout.lines().find(|l| l.starts_with("INIT ERROR")).expect("init failed");
+    assert!(line.contains("CORVIS_ROUTE_POSTURE_NONCE"), "{line}");
 }
 
 #[test]
@@ -1515,26 +1572,50 @@ fn report_mode_unset_or_blank_leaves_init_unchanged() {
     }
 }
 
+#[test]
+fn applications_of_the_testing_module_ignore_report_mode() {
+    let child = run_child("testing", Some("text"));
+    assert_eq!(child.code, Some(0), "{}", child.stdout);
+    assert!(child.stdout.contains("INIT OK") && child.stdout.contains("HOOK RAN"), "{}", child.stdout);
+    assert!(!child.stdout.contains(corvis::posture::REPORT_BEGIN), "{}", child.stdout);
+}
+
+#[test]
+fn report_mode_validates_the_exemptions_even_when_the_mode_is_off() {
+    let child = run_child("blank", Some("text"));
+    assert_eq!(child.code, Some(0), "{}", child.stdout);
+    let line = child.stdout.lines().find(|l| l.starts_with("INIT ERROR")).expect("init failed");
+    assert!(line.contains("GET /report-public") && line.contains("no reason"), "{line}");
+    assert!(!child.stdout.contains(corvis::posture::REPORT_BEGIN), "{}", child.stdout);
+    // Without report mode the same application starts (off mode does not validate).
+    let plain = run_child("blank", None);
+    assert!(plain.stdout.contains("INIT OK"), "{}", plain.stdout);
+}
+
 #[cfg(feature = "websockets")]
 #[test]
-fn report_mode_includes_gateway_handlers_and_the_summary() {
+fn report_mode_includes_gateway_handlers_the_summary_and_the_unchecked_surfaces() {
     let text = run_child("gateway", Some("text"));
-    assert_eq!(text.code, Some(1), "{}", text.stdout);
-    let body = between_markers(&text.stdout).join(
-        "
-",
-    );
+    assert_eq!(text.code, Some(41), "{}", text.stdout);
+    let body = between_markers(&text.stdout).join("\n");
     assert!(body.contains("/report-ws") && body.contains("chat") && body.contains("UNPROTECTED"), "{body}");
     assert!(body.contains("access guards counted: none"), "{body}");
+    assert!(body.contains("Not checked:"), "{body}");
+    assert!(body.contains("static files served at /report-assets"), "{body}");
+    assert!(body.contains("WebSocket handshake of ReportGateway at /report-ws (verify_client unknown"), "{body}");
+    assert!(body.contains("raw upgrade listeners (registered in init hooks, not counted in report mode)"), "{body}");
     assert!(!text.stdout.contains("HOOK RAN") && !text.stdout.contains("AFTER LISTEN"), "{}", text.stdout);
 
     let json = run_child("gateway", Some("json"));
-    assert_eq!(json.code, Some(1));
-    let report: serde_json::Value = serde_json::from_str(&between_markers(&json.stdout).join(
-        "
-",
-    ))
-    .unwrap();
+    assert_eq!(json.code, Some(41));
+    let report: serde_json::Value = serde_json::from_str(&between_markers(&json.stdout).join("\n")).unwrap();
     assert!(report["entries"].as_array().unwrap().iter().any(|e| e["path"] == "/report-ws"), "{report}");
-    assert!(report.get("unchecked").is_some(), "{report}");
+    assert_eq!(
+        report["unchecked"],
+        serde_json::json!([
+            { "type": "static_files", "serve_root": "/report-assets" },
+            { "type": "ws_handshake_unknown", "path": "/report-ws", "gateway": "ReportGateway" },
+            { "type": "upgrade_listeners_unknown" },
+        ])
+    );
 }

@@ -171,3 +171,35 @@ Current code, read in this worktree (before #26):
   `Not checked:` block) followed by the `access guards counted: ...` line and one line per stale and per redundant
   exemption; JSON is the serialized report unchanged. The exit code still depends only on unprotected entries.
 - `route_posture.rs` gains a child-process test with a gateway (entries, summary, `unchecked` in JSON, no hook ran).
+
+## Security review (2026-11-08, findings L1 to L6)
+
+- **L1, total time and orphans.** The CLI reads the application's stdout on its own thread and the main thread polls
+  the child and a channel against the deadline, so `--timeout` bounds the whole run. After the application exits the
+  command drains the pipe for 500 ms and stops (a helper that inherited stdout can keep it open forever). The run is
+  put in a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (kernel32 through FFI, no dependency), or in its
+  own Unix process group killed with `SIGKILL` through FFI (`kill`, no `libc` dependency). Both are ended at timeout and
+  when the command returns. On Unix, SIGINT and SIGTERM are caught: the loop stops, kills the group and exits 130. The
+  job is assigned right after `spawn`, so a process started by Cargo in the first instants could escape it; Cargo
+  starts the compiler and the application after that. `CORVIS_CARGO` selects the Cargo program (used by the tests with a
+  fake one); it is not documented as a user feature.
+- **L2, report injection.** `corvis posture` generates a 128-bit nonce per run (`RandomState` keys, i.e. operating system
+  randomness) and passes it in `CORVIS_ROUTE_POSTURE_NONCE`; the framework puts it in both markers (it validates it as
+  8 to 64 ASCII letters or digits) and without the variable keeps the plain markers. The filter accepts only markers
+  with the nonce, keeps the last complete report and restarts on a BEGIN seen inside a report. The exit status comes
+  from the report (an unprotected entry is 1 whatever the child's code). The unprotected check reads the report text
+  (`  UNPROTECTED  [` in text, `"state": "unprotected"` in JSON), which can only err towards 1.
+- **L3, `unchecked` in report mode.** Report mode fills it with the static mounts (from the container, as the startup
+  path does), the gateway handshakes and the raw upgrade listeners. `verify_client` and the upgrade listeners are not
+  known before `after_init` and the init hooks, so two new `UncheckedSurface` variants, `WsHandshakeUnknown` and
+  `UpgradeListenersUnknown`, say so instead of reporting a false "not set" or a count of 0. The test compares the
+  content.
+- **L4, exit codes and scope.** Report mode ends the process with 40 (clean) or 41 (unprotected), never 0; the CLI maps
+  them. Applications created through `Test::create_testing_module()` ignore the variable (a `pub(crate)` flag on the
+  application). The docs (CLI page, guards pages EN and ES) say the variable must not be set in production or in test
+  jobs.
+- **L5, limits.** Documented: only the first `init()` of the process is reported, and only the default binary is
+  checked. No selection variable was added.
+- **L6, guard template.** `corvis g guard` now generates `Ok(false)` with a `TODO`.
+- **Informational.** Report mode validates the exemptions even when the mode is off.
+

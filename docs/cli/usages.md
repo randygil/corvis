@@ -46,6 +46,8 @@ It runs inside a project: it searches upward for the first folder with `Cargo.to
 | `middleware` | `mi` | `XMiddleware` (`CorvisMiddleware`) | Not registered |
 | `gateway` | `ga` | `XGateway` (`#[websocket_gateway]`) | `providers` of the folder's module, or of `AppModule` |
 
+A generated guard denies every request (`Ok(false)`, with a `TODO`) until you implement it, because a guard counts as access control for the route posture check and must not let requests through by default.
+
 Guards, interceptors, pipes, filters and middleware are not registered because they are used with `#[use_guards(...)]`, `#[use_interceptors(...)]`, `consumer.apply::<...>()` or the `use_global_*` methods, depending on the case.
 
 ### Where the files are written
@@ -111,7 +113,7 @@ corvis posture [--json] [--release] [--timeout <seconds>] [-- <program arguments
 
 Prints the route posture report of the application in the current project: every route with its guards, or `public`, or the exemption and its reason, and `UNPROTECTED` for a route that has none of them. It works whatever posture mode the application uses (off, warn or enforce) and is meant for code review and CI.
 
-It runs `cargo build` (with `--release` if given) and then `cargo run` with `CORVIS_ROUTE_POSTURE_REPORT` set to `text` (`json` with `--json`). The application computes the report when it initializes, after the routes are compiled and before any initialization hook runs or any socket is bound, prints it and exits. The application is never left listening. It needs the same environment as `corvis start` (for example a reachable database if a provider connects while the application is created), because the providers are created before the report is computed. Gateway message handlers and `#[sse]` routes are part of the report. Gateway `after_init` hooks and module middleware `configure` do not run. Raw `upgrade` listeners registered in hooks are not counted, and the report lists them under `Not checked:`.
+It runs `cargo build` (with `--release` if given) and then `cargo run` with `CORVIS_ROUTE_POSTURE_REPORT` set to `text` (`json` with `--json`). The application computes the report when it initializes, after the routes are compiled and before any initialization hook runs or any socket is bound, prints it and exits. The application is never left listening. It needs the same environment as `corvis start` (for example a reachable database if a provider connects while the application is created), because the providers are created before the report is computed. Gateway message handlers and `#[sse]` routes are part of the report. Gateway `after_init` hooks and module middleware `configure` do not run. Raw `upgrade` listeners are registered in hooks that do not run, so the report lists them under `Not checked:` as not counted, together with the static file mounts and the WebSocket handshakes of the gateways (their `verify_client` is unknown because `after_init` has not run). The `Not checked:` block is also in the JSON report as `unchecked`.
 
 | Output | Where |
 |---|---|
@@ -120,13 +122,27 @@ It runs `cargo build` (with `--release` if given) and then `cargo run` with `COR
 
 In text format, the table is followed by the access guards that were counted and by any stale or redundant exemptions; with `--json` the same information is in the JSON report (`entries`, `unchecked`, `access_guards`, `stale_exemptions`, `redundant_exemptions`).
 
-The application writes the report between the lines `----- BEGIN CORVIS ROUTE POSTURE REPORT -----` and `----- END CORVIS ROUTE POSTURE REPORT -----` because its logs share stdout; the command removes those lines, so `corvis posture --json | jq .` works.
+The application writes the report between the lines `----- BEGIN CORVIS ROUTE POSTURE REPORT <nonce> -----` and `----- END CORVIS ROUTE POSTURE REPORT <nonce> -----` because its logs share stdout; the command removes those lines, so `corvis posture --json | jq .` works. The nonce is random for each run and travels in `CORVIS_ROUTE_POSTURE_NONCE`, so a log line or a library that prints something that looks like a report cannot replace the real one; if several reports appear, the last complete one counts.
+
+In report mode the application itself ends with exit code `40` (nothing unprotected) or `41` (something unprotected), never `0`, so a process stopped in report mode never looks like a normal successful exit. `corvis posture` turns these into `0` and `1`. Cargo prints a line such as `error: process didn't exit successfully (exit code: 40)` on stderr; it is expected.
+
+#### Report mode must not be enabled in production or in test jobs
+
+`CORVIS_ROUTE_POSTURE_REPORT` makes any binary that reads it print its route table and stop at `init()`. Never set it in a deployment (a supervisor would find the application stopped) or in a CI job that runs `cargo test` for the project. Applications created with `Test::create_testing_module()` ignore it, but applications created with `CorvisFactory` in a test do not. Set it only through `corvis posture`.
+
+#### Limits
+
+- Only the first `init()` in the process is reported, and the process ends there. A binary that creates two applications (for example a public API and an admin API) reports only the first one; run the other from its own binary or reorder `main`.
+- `corvis posture` runs the default binary of the package, like `corvis start`. Other binaries of the package are not checked.
 
 | Exit status | Meaning |
 |---|---|
 | `0` | The report was printed and nothing is unprotected |
-| `1` | The report was printed and at least one route is unprotected |
-| `2` | There is no report: the build failed, the application failed to start (the message shows its exit code), the timeout passed, or the arguments were invalid |
+| `1` | The report was printed and at least one entry is unprotected |
+| `2` | There is no trusted report: the build failed, the application failed to start (the message shows its exit code), the timeout passed, or the arguments were invalid |
+| `130` | The command was interrupted (Ctrl-C) and the application was stopped |
+
+The status comes from the report itself, not only from the application's exit code: a report that lists an unprotected entry is always `1`, and a clean report counts only if the application ended with the report-mode code `40`.
 
 `--timeout <seconds>` (default 120) is how long the application gets, once it is running, to print the report. If it never reaches initialization (for example it blocks before calling `listen`), the command stops it and exits with 2. The build is not subject to the timeout. The flags of `corvis` are read only before the first `--`; everything after goes to your program. `--watch` is not supported.
 

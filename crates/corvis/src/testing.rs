@@ -158,6 +158,7 @@ impl TestingModuleBuilder {
         };
         let mut app = CorvisApplication::bootstrap(ModuleImport::Dynamic(root), self.overrides, options).await?;
         app.silence_route_logs();
+        app.report_mode_allowed = false;
         Ok(TestingModule { app })
     }
 }
