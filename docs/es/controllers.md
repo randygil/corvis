@@ -74,6 +74,8 @@ Sin argumento la ruta es la del controlador. También acepta varias rutas a la v
 
 Todos los handlers reciben `&self` como primer parámetro (el macro rechaza los que no lo tienen). Pueden ser `fn` o `async fn`.
 
+Un método sin atributo de verbo es un helper común y no se registra como ruta. Ponerle enhancers u otros atributos de ruta (`#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]`, `#[use_filters]`, `#[set_metadata]`, `#[http_code]`, `#[header]`, `#[redirect]`, `#[version]`, `#[apply_decorators]`, `#[api_*]`) es un error de compilación, así que un guard nunca se descarta en silencio.
+
 ### Patrones de ruta
 
 - `:nombre` captura un segmento: `#[get(":id")]`, `#[get(":room/messages")]`.
