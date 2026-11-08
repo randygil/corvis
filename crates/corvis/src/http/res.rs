@@ -337,9 +337,7 @@ fn encode_uri(s: &str) -> String {
 /// The `encodeurl` package (what `res.location()` / `res.redirect()` use): encodes what is
 /// not a valid URL character, leaving existing `%XX` escapes alone.
 pub fn encode_url(url: &str) -> String {
-    let allowed = |c: char| {
-        matches!(c as u32, 0x21 | 0x23..=0x3B | 0x3D | 0x3F..=0x5F | 0x61..=0x7A | 0x7C | 0x7E)
-    };
+    let allowed = |c: char| matches!(c as u32, 0x21 | 0x23..=0x3B | 0x3D | 0x3F..=0x5F | 0x61..=0x7A | 0x7C | 0x7E);
     let chars: Vec<char> = url.chars().collect();
     let mut out = String::with_capacity(url.len());
     let mut run = String::new();
@@ -516,8 +514,7 @@ pub fn accepts<'a>(accept: Option<&str>, types: &[&'a str]) -> Option<&'a str> {
                 s |= 1;
             }
             let cand = (spec.q, s, spec.i as i64);
-            let better = (best.1 - cand.1) < 0
-                || (best.1 == cand.1 && (best.0 < cand.0 || (best.0 == cand.0 && best.2 < cand.2)));
+            let better = (best.1 - cand.1) < 0 || (best.1 == cand.1 && (best.0 < cand.0 || (best.0 == cand.0 && best.2 < cand.2)));
             if better {
                 best = cand;
             }
@@ -526,11 +523,7 @@ pub fn accepts<'a>(accept: Option<&str>, types: &[&'a str]) -> Option<&'a str> {
     }
     prios.retain(|p| p.0 > 0.0);
     prios.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(b.1.cmp(&a.1))
-            .then(a.2.cmp(&b.2))
-            .then(a.3.cmp(&b.3))
+        b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3))
     });
     prios.first().map(|p| types[p.3])
 }
@@ -575,9 +568,8 @@ impl Res {
 
     /// `res.status(code)`. Panics (Express throws) outside `100..=999`.
     pub fn status(&self, code: u16) -> &Self {
-        let status = StatusCode::from_u16(code).unwrap_or_else(|_| {
-            panic!("RangeError: Invalid status code: {code}. Status code must be greater than 99 and less than 1000.")
-        });
+        let status = StatusCode::from_u16(code)
+            .unwrap_or_else(|_| panic!("RangeError: Invalid status code: {code}. Status code must be greater than 99 and less than 1000."));
         self.inner.state.lock().unwrap().status = status;
         self
     }
@@ -925,8 +917,7 @@ pub fn content_disposition(filename: &str) -> String {
     let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
     // TEXT_REGEXP: printable latin1.
     let is_quoted = name.chars().all(|c| matches!(c as u32, 0x20..=0x7e | 0x80..=0xff));
-    let fallback: String =
-        name.chars().map(|c| if matches!(c as u32, 0x20..=0x7e | 0xa0..=0xff) { c } else { '?' }).collect();
+    let fallback: String = name.chars().map(|c| if matches!(c as u32, 0x20..=0x7e | 0xa0..=0xff) { c } else { '?' }).collect();
     let has_fallback = fallback != name;
     let b = name.as_bytes();
     let hex_escape = (0..b.len().saturating_sub(2)).any(|i| b[i] == b'%' && b[i + 1].is_ascii_hexdigit() && b[i + 2].is_ascii_hexdigit());

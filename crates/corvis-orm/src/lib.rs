@@ -34,6 +34,7 @@
 #![forbid(unsafe_code)]
 
 mod client;
+pub mod codegen;
 mod datetime;
 mod db;
 pub mod decimal;
@@ -43,34 +44,30 @@ mod meta;
 mod migrate;
 #[cfg(feature = "corvis")]
 mod module;
-pub mod codegen;
 pub mod psl;
 mod query;
 mod raw;
 mod schema;
-mod transaction;
 pub mod serde_helpers;
+mod transaction;
 pub mod util;
 
 pub use client::{OrmClient, OrmClientOptions};
 pub use datetime::DateTime;
-pub use migrate::{MigrateStatus, MigrationInfo};
 pub use db::{Dialect, SqlValue};
 pub use decimal::{Decimal, DecimalConfig, DecimalCtor, DecimalError, Rounding};
-pub use error::{
-    CLIENT_VERSION, InitializationError, KnownRequestError, UnknownRequestError,
-    QueryValidationError, OrmError, Result,
-};
+pub use error::{CLIENT_VERSION, InitializationError, KnownRequestError, OrmError, QueryValidationError, Result, UnknownRequestError};
 pub use meta::{
     DefaultValue, EnumMeta, EnumValueMeta, FieldKind, FieldMeta, IndexMeta, JoinTable, Model, ModelMeta, ModelSet, OrmEnum,
     ReferentialAction, RelationKind, RelationMeta, ResolvedRelation, ScalarType, UniqueMeta, UnsupportedMeta, m2m_relation_name,
     resolve_relation,
 };
+pub use migrate::{MigrateStatus, MigrationInfo};
 #[cfg(feature = "corvis")]
 pub use module::{ORM_MODULE_OPTIONS, OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};
 pub use query::{
-    Action, Args, BatchPayload, DataArg, Delegate, IncludeParam, OrderByParam, Query, SelectParam, SetParam, SortOrder,
-    WhereArg, WhereParam, and, data_object, not, or, to_json, where_object,
+    Action, Args, BatchPayload, DataArg, Delegate, IncludeParam, OrderByParam, Query, SelectParam, SetParam, SortOrder, WhereArg,
+    WhereParam, and, data_object, not, or, to_json, where_object,
 };
 
 pub use raw::{Bytes, RawArg, RawSql, ToSqlArg};
@@ -83,16 +80,16 @@ pub use serde_json;
 /// Query actions (the `A` of `Query<M, A>`).
 pub mod actions {
     pub use crate::query::{
-        Aggregate, Count, Create, CreateMany, Delete, DeleteMany, FindFirst, FindFirstOrThrow, FindMany, FindUnique,
-        FindUniqueOrThrow, GroupBy, Update, UpdateMany, Upsert,
+        Aggregate, Count, Create, CreateMany, Delete, DeleteMany, FindFirst, FindFirstOrThrow, FindMany, FindUnique, FindUniqueOrThrow,
+        GroupBy, Update, UpdateMany, Upsert,
     };
 }
 
 /// `use corvis_orm::prelude::*;`
 pub mod prelude {
     pub use crate::{
-        BatchPayload, DateTime, Decimal, DecimalConfig, DecimalCtor, IsolationLevel, Model, OrmClient, OrmEnum, OrmError,
-        RawSql, SortOrder, TransactionOptions, or_undefined, sql, undefined,
+        BatchPayload, DateTime, Decimal, DecimalConfig, DecimalCtor, IsolationLevel, Model, OrmClient, OrmEnum, OrmError, RawSql,
+        SortOrder, TransactionOptions, or_undefined, sql, undefined,
     };
     #[cfg(feature = "corvis")]
     pub use crate::{OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};

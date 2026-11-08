@@ -7,26 +7,23 @@ use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use super::{ValidationError, Validate, ValidatorOptions};
+use super::{Validate, ValidationError, ValidatorOptions};
 
 type V<'a> = Option<&'a Value>;
 
 static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$").unwrap()
 });
-static UUID: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap()
-});
+static UUID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap());
 static URL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?i)(https?|ftp)://(([a-z0-9\-._~%!$&'()*+,;=]+(:[^@\s]*)?@)?([a-z0-9\-]+\.)+[a-z]{2,}|localhost|\d{1,3}(\.\d{1,3}){3})(:\d{1,5})?(/[^\s]*)?$").unwrap()
 });
-static ISO8601: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$").unwrap()
-});
+static ISO8601: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$").unwrap());
 static HEX_COLOR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$").unwrap());
-static JWT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.?[A-Za-z0-9_-]*$").unwrap());
+static JWT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.?[A-Za-z0-9_-]*$").unwrap());
 static MONGO_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-fA-F]{24}$").unwrap());
 
 fn as_str(v: V<'_>) -> Option<&str> {
@@ -280,9 +277,10 @@ pub fn coerce(obj: &mut Map<String, Value>, prop: &str, kind: Primitive) {
             }
             Primitive::Float => {
                 if let Ok(n) = s.parse::<f64>()
-                    && let Some(num) = serde_json::Number::from_f64(n) {
-                        *v = Value::Number(num);
-                    }
+                    && let Some(num) = serde_json::Number::from_f64(n)
+                {
+                    *v = Value::Number(num);
+                }
             }
             Primitive::Bool => match s.as_str() {
                 "true" | "1" => *v = Value::Bool(true),

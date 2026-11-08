@@ -52,12 +52,7 @@ pub type Result<T, E = OrmError> = std::result::Result<T, E>;
 
 impl OrmError {
     pub fn known(code: &str, message: impl Into<String>, meta: Value) -> Self {
-        OrmError::KnownRequest(KnownRequestError {
-            code: code.to_string(),
-            message: message.into(),
-            meta,
-            client_version: CLIENT_VERSION,
-        })
+        OrmError::KnownRequest(KnownRequestError { code: code.to_string(), message: message.into(), meta, client_version: CLIENT_VERSION })
     }
     pub fn validation(message: impl Into<String>) -> Self {
         OrmError::Validation(QueryValidationError { message: message.into() })
@@ -138,9 +133,7 @@ impl OrmError {
         let code = db.code().map(|c| c.to_string()).unwrap_or_default();
         let model_name = model.map(|m| m.name);
         let columns_to_fields = |cols: Vec<String>| -> Vec<String> {
-            cols.into_iter()
-                .map(|c| model.and_then(|m| m.field_by_column(&c)).map(|f| f.name.to_string()).unwrap_or(c))
-                .collect()
+            cols.into_iter().map(|c| model.and_then(|m| m.field_by_column(&c)).map(|f| f.name.to_string()).unwrap_or(c)).collect()
         };
         match db.kind() {
             sqlx::error::ErrorKind::UniqueViolation => {
@@ -197,9 +190,8 @@ impl OrmError {
                 )
             }
             _ if code == "42703" || msg.contains("no such column") => {
-                let column = quoted_name(&msg)
-                    .or_else(|| msg.split("no such column:").nth(1).map(|c| c.trim().to_string()))
-                    .unwrap_or_default();
+                let column =
+                    quoted_name(&msg).or_else(|| msg.split("no such column:").nth(1).map(|c| c.trim().to_string())).unwrap_or_default();
                 Self::known(
                     "P2022",
                     format!("The column `{column}` does not exist in the current database."),
@@ -253,11 +245,7 @@ impl OrmError {
             }
             (None, _) => db.message().to_string(),
         };
-        Self::known(
-            "P2010",
-            format!("Raw query failed. Code: `{code}`. Message: `{message}`"),
-            json!({ "code": code, "message": message }),
-        )
+        Self::known("P2010", format!("Raw query failed. Code: `{code}`. Message: `{message}`"), json!({ "code": code, "message": message }))
     }
 
     /// The error raised when a query has an `Int` argument outside the 32-bit range

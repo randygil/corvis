@@ -163,9 +163,8 @@ struct LoggerState {
     enabled: bool,
 }
 
-static STATE: LazyLock<RwLock<LoggerState>> = LazyLock::new(|| {
-    RwLock::new(LoggerState { service: Arc::new(ConsoleLogger::default()), levels: LogLevel::all(), enabled: true })
-});
+static STATE: LazyLock<RwLock<LoggerState>> =
+    LazyLock::new(|| RwLock::new(LoggerState { service: Arc::new(ConsoleLogger::default()), levels: LogLevel::all(), enabled: true }));
 
 /// Replace the global logger (`app.useLogger(...)`).
 pub fn set_logger(service: impl LoggerService) {

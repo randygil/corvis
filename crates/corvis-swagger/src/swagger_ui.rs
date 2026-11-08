@@ -84,12 +84,13 @@ fn extract_functions(v: &mut Value, fns: &mut Vec<(String, String)>) {
     match v {
         Value::Object(o) => {
             if o.len() == 1
-                && let Some(Value::String(code)) = o.get("$js") {
-                    let placeholder = format!("corvis-swagger-fn-{}", fns.len());
-                    fns.push((placeholder.clone(), code.clone()));
-                    *v = Value::String(placeholder);
-                    return;
-                }
+                && let Some(Value::String(code)) = o.get("$js")
+            {
+                let placeholder = format!("corvis-swagger-fn-{}", fns.len());
+                fns.push((placeholder.clone(), code.clone()));
+                *v = Value::String(placeholder);
+                return;
+            }
             for (_, x) in o.iter_mut() {
                 extract_functions(x, fns);
             }
@@ -156,7 +157,11 @@ mod tests {
 
     #[test]
     fn init_js() {
-        let js = build_swagger_init_js(&json!({ "openapi": "3.0.0" }), None, &json!({ "persistAuthorization": true, "f": { "$js": "function () { return 1 }" } }));
+        let js = build_swagger_init_js(
+            &json!({ "openapi": "3.0.0" }),
+            None,
+            &json!({ "persistAuthorization": true, "f": { "$js": "function () { return 1 }" } }),
+        );
         assert!(js.contains("let options = {\n  \"swaggerDoc\": {\n    \"openapi\": \"3.0.0\"\n  },\n  \"customOptions\": {\n    \"persistAuthorization\": true,\n    \"f\": function () { return 1 }\n  }\n};"));
         assert!(js.starts_with("\nwindow.onload = function() {"));
     }

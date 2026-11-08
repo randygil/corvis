@@ -36,13 +36,14 @@ pub fn walk_json_schema(schema: Value, cb: &mut dyn FnMut(Value) -> Result<Value
     };
     let ty = o.get("type").and_then(Value::as_str).map(str::to_string);
     if ty.as_deref() == Some("object")
-        && let Some(Value::Object(props)) = o.get_mut("properties") {
-            let keys: Vec<String> = props.keys().cloned().collect();
-            for k in keys {
-                let v = props.get(&k).cloned().unwrap_or(Value::Null);
-                props.insert(k, walk_json_schema(v, cb)?);
-            }
+        && let Some(Value::Object(props)) = o.get_mut("properties")
+    {
+        let keys: Vec<String> = props.keys().cloned().collect();
+        for k in keys {
+            let v = props.get(&k).cloned().unwrap_or(Value::Null);
+            props.insert(k, walk_json_schema(v, cb)?);
         }
+    }
     if ty.as_deref() == Some("array") {
         if let Some(Value::Array(items)) = o.get("items").cloned() {
             let mut out = Vec::new();
@@ -76,9 +77,10 @@ pub fn walk_json_schema(schema: Value, cb: &mut dyn FnMut(Value) -> Result<Value
 fn walk(schema: Value, mut cb: impl FnMut(&mut Obj) -> Result<Option<Value>, String>) -> Result<Value, String> {
     walk_json_schema(schema, &mut |mut v| {
         if let Value::Object(o) = &mut v
-            && let Some(replacement) = cb(o)? {
-                return Ok(replacement);
-            }
+            && let Some(replacement) = cb(o)?
+        {
+            return Ok(replacement);
+        }
         Ok(v)
     })
 }
@@ -89,9 +91,10 @@ pub fn fix_all_refs(schema: Value, def_renames: &Obj, root_schema_name: Option<&
         if let Some(r) = s.get("$ref").and_then(Value::as_str).filter(|r| !r.is_empty()).map(str::to_string) {
             let mut r = r;
             if let Some(old) = r.strip_prefix("#/$defs/")
-                && let Some(new) = def_renames.get(old).and_then(Value::as_str).filter(|n| !n.is_empty()) {
-                    r = format!("#/$defs/{new}");
-                }
+                && let Some(new) = def_renames.get(old).and_then(Value::as_str).filter(|n| !n.is_empty())
+            {
+                r = format!("#/$defs/{new}");
+            }
             let mut r = r.replacen("#/$defs/", "#/components/schemas/", 1);
             if r == "#" {
                 let Some(root) = root_schema_name else {
@@ -128,11 +131,12 @@ pub fn convert_to_open_api_3_point_0(schema: Value) -> Value {
                 }
                 let mut out = js::spread(&[&sole_obj, &rest]);
                 if let Some(Value::Array(values)) = sole_obj.get("enum")
-                    && !values.contains(&Value::Null) {
-                        let mut e = values.clone();
-                        e.push(Value::Null);
-                        out.insert("enum".into(), Value::Array(e));
-                    }
+                    && !values.contains(&Value::Null)
+                {
+                    let mut e = values.clone();
+                    e.push(Value::Null);
+                    out.insert("enum".into(), Value::Array(e));
+                }
                 out.insert("nullable".into(), Value::Bool(true));
                 return Ok(Some(Value::Object(out)));
             }
@@ -164,9 +168,11 @@ fn cleanup_refs(schema: Value, io: ZodIo) -> Value {
     walk(schema, |s| {
         if let Some(r) = s.get("$ref").and_then(Value::as_str).map(str::to_string)
             && let Some(key) = r.strip_prefix("#/$defs/")
-                && !key.is_empty() && io == ZodIo::Output {
-                    s.insert("$ref".into(), Value::String(format!("#/$defs/{key}_Output")));
-                }
+            && !key.is_empty()
+            && io == ZodIo::Output
+        {
+            s.insert("$ref".into(), Value::String(format!("#/$defs/{key}_Output")));
+        }
         js::delete(s, "id");
         Ok(None)
     })
@@ -329,11 +335,12 @@ pub enum OpenApiVersion {
 
 fn register_schema(registry: &mut Obj, name: &str, schema: Value) -> Result<(), String> {
     if let Some(existing) = registry.get(name)
-        && !js::deep_equal(existing, &schema) {
-            return Err(format!(
-                "[cleanupOpenApiDoc] Found multiple schemas with name `{name}`.  Please review your schemas to ensure that you are not using the same schema name for different schemas"
-            ));
-        }
+        && !js::deep_equal(existing, &schema)
+    {
+        return Err(format!(
+            "[cleanupOpenApiDoc] Found multiple schemas with name `{name}`.  Please review your schemas to ensure that you are not using the same schema name for different schemas"
+        ));
+    }
     registry.insert(name.to_string(), schema);
     Ok(())
 }
@@ -354,9 +361,10 @@ fn fix_refs_in_bodies(method: &mut Obj, renames: &Obj) {
         }
     };
     if let Some(Value::Object(rb)) = method.get_mut("requestBody")
-        && let Some(Value::Object(content)) = rb.get_mut("content") {
-            fix(content);
-        }
+        && let Some(Value::Object(content)) = rb.get_mut("content")
+    {
+        fix(content);
+    }
     if let Some(Value::Object(responses)) = method.get_mut("responses") {
         for (_, r) in responses.iter_mut() {
             if let Some(Value::Object(content)) = r.get_mut("content") {
@@ -388,14 +396,15 @@ fn cleanup_schema(old_name: &str, old_schema: &Value, version: OpenApiVersion) -
         let mut p = s["properties"][&prop_name].as_object().cloned().unwrap_or_default();
         if p.contains_key(SELF_REQUIRED_KEY) {
             if !js::truthy(p.get(SELF_REQUIRED_KEY))
-                && let Some(Value::Array(req)) = s.get_mut("required") {
-                    if let Some(i) = req.iter().position(|v| v.as_str() == Some(prop_name.as_str())) {
-                        req.remove(i);
-                    }
-                    if req.is_empty() {
-                        js::delete(&mut s, "required");
-                    }
+                && let Some(Value::Array(req)) = s.get_mut("required")
+            {
+                if let Some(i) = req.iter().position(|v| v.as_str() == Some(prop_name.as_str())) {
+                    req.remove(i);
                 }
+                if req.is_empty() {
+                    js::delete(&mut s, "required");
+                }
+            }
             js::delete(&mut p, SELF_REQUIRED_KEY);
             js::delete(&mut p, "selfRequired");
         }
@@ -459,7 +468,12 @@ fn cleanup_schema(old_name: &str, old_schema: &Value, version: OpenApiVersion) -
     if uses_31 && version == OpenApiVersion::V3_0 {
         schema = convert_to_open_api_3_point_0(schema);
     }
-    let unwrap = schema.get("properties").and_then(|p| p.get("root")).and_then(Value::as_object).filter(|r| r.contains_key(UNWRAP_ROOT_KEY)).cloned();
+    let unwrap = schema
+        .get("properties")
+        .and_then(|p| p.get("root"))
+        .and_then(Value::as_object)
+        .filter(|r| r.contains_key(UNWRAP_ROOT_KEY))
+        .cloned();
     if let Some(mut root) = unwrap {
         let replace = js::truthy(root.get(UNWRAP_ROOT_KEY));
         js::delete(&mut root, UNWRAP_ROOT_KEY);
@@ -470,11 +484,12 @@ fn cleanup_schema(old_name: &str, old_schema: &Value, version: OpenApiVersion) -
         }
     }
     if let Some(existing) = additional.get(&name)
-        && !js::deep_equal(existing, &schema) {
-            return Err(format!(
-                "[cleanupOpenApiDoc] Found multiple schemas with name `{name}`.  Please review your schemas to ensure that you are not using the same schema name for different schemas"
-            ));
-        }
+        && !js::deep_equal(existing, &schema)
+    {
+        return Err(format!(
+            "[cleanupOpenApiDoc] Found multiple schemas with name `{name}`.  Please review your schemas to ensure that you are not using the same schema name for different schemas"
+        ));
+    }
     Ok(Cleaned { schema, name, additional })
 }
 
@@ -517,10 +532,12 @@ fn fix_parameter(input: &Value, version: OpenApiVersion) -> Result<Obj, String> 
         uses_31 = js::truthy(p.get(USES_THREE_POINT_ONE_SYNTAX_KEY));
         js::delete(&mut p, USES_THREE_POINT_ONE_SYNTAX_KEY);
     }
-    if version == OpenApiVersion::V3_0 && uses_31
-        && let Some(schema) = p.get("schema").cloned().filter(|s| js::truthy(Some(s))) {
-            p.insert("schema".into(), convert_to_open_api_3_point_0(schema));
-        }
+    if version == OpenApiVersion::V3_0
+        && uses_31
+        && let Some(schema) = p.get("schema").cloned().filter(|s| js::truthy(Some(s)))
+    {
+        p.insert("schema".into(), convert_to_open_api_3_point_0(schema));
+    }
     Ok(p)
 }
 
@@ -588,9 +605,11 @@ pub fn try_cleanup_open_api_doc(mut doc: OpenApiDocument, version: OpenApiVersio
                         }
                         if let Some(Value::Array(req)) = p.get("required").cloned()
                             && let Some(Value::Object(s)) = p.get_mut("schema")
-                                && is_object && !s.contains_key("required") {
-                                    s.insert("required".into(), Value::Array(req));
-                                }
+                            && is_object
+                            && !s.contains_key("required")
+                        {
+                            s.insert("required".into(), Value::Array(req));
+                        }
                         let sr = js::truthy(p.get(SELF_REQUIRED_KEY));
                         p.insert("required".into(), Value::Bool(sr));
                     }

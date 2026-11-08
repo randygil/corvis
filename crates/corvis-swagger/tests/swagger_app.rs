@@ -100,7 +100,10 @@ async fn document_matches_reference_generator() {
     assert_eq!(one["responses"]["202"]["description"], "The cat");
     assert_eq!(one["responses"]["202"]["content"]["application/json"]["schema"]["$ref"], "#/components/schemas/CatDto_Output");
     // As in the reference generator, `example` of an explicit @ApiParam moves into `schema`.
-    assert_eq!(serde_json::to_string(&one["parameters"]).unwrap(), r#"[{"name":"id","required":true,"in":"path","schema":{"example":"abc","type":"string"}}]"#);
+    assert_eq!(
+        serde_json::to_string(&one["parameters"]).unwrap(),
+        r#"[{"name":"id","required":true,"in":"path","schema":{"example":"abc","type":"string"}}]"#
+    );
 
     // ZodResponse: status 202 and the response serialized through the DTO schema.
     SwaggerModule::setup("docs", &mut app, doc.clone());

@@ -13,8 +13,7 @@ pub struct AuthGuard {
 #[async_trait]
 impl CanActivate for AuthGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
-        let is_public: bool =
-            self.reflector.get_all_and_override(IS_PUBLIC_KEY, &[ctx.get_handler(), ctx.get_class()]).unwrap_or(false);
+        let is_public: bool = self.reflector.get_all_and_override(IS_PUBLIC_KEY, &[ctx.get_handler(), ctx.get_class()]).unwrap_or(false);
         if is_public {
             return Ok(true);
         }

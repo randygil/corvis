@@ -379,7 +379,9 @@ impl<M: Model, A: Action<M>> Query<M, A> {
             Value::Object(o) => Value::Object(
                 o.into_iter()
                     .map(|(k, v)| match v {
-                        Value::Object(mut inner) if inner.len() == 1 && inner.contains_key("equals") => (k, inner.remove("equals").unwrap()),
+                        Value::Object(mut inner) if inner.len() == 1 && inner.contains_key("equals") => {
+                            (k, inner.remove("equals").unwrap())
+                        }
                         other => (k, other),
                     })
                     .collect(),

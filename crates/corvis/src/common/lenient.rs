@@ -135,21 +135,11 @@ impl<'de> de::Deserializer<'de> for Lenient {
         }
     }
 
-    fn deserialize_struct<V: Visitor<'de>>(
-        self,
-        _name: &'static str,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, E> {
+    fn deserialize_struct<V: Visitor<'de>>(self, _name: &'static str, _fields: &'static [&'static str], visitor: V) -> Result<V::Value, E> {
         self.deserialize_map(visitor)
     }
 
-    fn deserialize_enum<V: Visitor<'de>>(
-        self,
-        name: &'static str,
-        variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, E> {
+    fn deserialize_enum<V: Visitor<'de>>(self, name: &'static str, variants: &'static [&'static str], visitor: V) -> Result<V::Value, E> {
         self.0.deserialize_enum(name, variants, visitor)
     }
 

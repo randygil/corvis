@@ -40,7 +40,10 @@ async fn interactive_transaction_timeout_rolls_back() {
         .await;
     let err = res.unwrap_err();
     assert_eq!(err.code(), Some("P2028"), "{err}");
-    assert!(err.message().contains("A query cannot be executed on an expired transaction. The timeout for this transaction was 300 ms"), "{err}");
+    assert!(
+        err.message().contains("A query cannot be executed on an expired transaction. The timeout for this transaction was 300 ms"),
+        "{err}"
+    );
     assert_eq!(db.category().count(()).await.unwrap(), 0);
 
     // The commit of an expired transaction fails too.
@@ -56,13 +59,12 @@ async fn interactive_transaction_timeout_rolls_back() {
     assert_eq!(db.category().count(()).await.unwrap(), 0);
 
     // Within the timeout everything is committed.
-    db
-        ._transaction_with(TransactionOptions::new().max_wait(5_000).timeout(10_000), |tx| async move {
-            tx.category().create(category("d")).await?;
-            Ok::<_, OrmError>(())
-        })
-        .await
-        .unwrap();
+    db._transaction_with(TransactionOptions::new().max_wait(5_000).timeout(10_000), |tx| async move {
+        tx.category().create(category("d")).await?;
+        Ok::<_, OrmError>(())
+    })
+    .await
+    .unwrap();
     assert_eq!(db.category().count(()).await.unwrap(), 1);
 }
 
@@ -82,10 +84,8 @@ async fn max_wait_and_isolation_level() {
             .await
     });
     started_rx.await.unwrap();
-    let err = db
-        ._transaction_with(TransactionOptions::new().max_wait(100), |tx| async move { tx.category().count(()).await })
-        .await
-        .unwrap_err();
+    let err =
+        db._transaction_with(TransactionOptions::new().max_wait(100), |tx| async move { tx.category().count(()).await }).await.unwrap_err();
     assert_eq!(err.code(), Some("P2028"));
     assert!(err.message().contains("Unable to start a transaction in the given time."), "{err}");
     hold.await.unwrap().unwrap();
@@ -110,26 +110,22 @@ async fn max_wait_and_isolation_level() {
 async fn sequential_transactions() {
     let Some(db) = setup("feat_batch", 5).await else { return };
     let (a, b, n) = db
-        ._transaction_batch((
-            db.category().create(category("a")),
-            db.category().create(category("b")),
-            db.category().count(()),
-        ))
+        ._transaction_batch((db.category().create(category("a")), db.category().create(category("b")), db.category().count(())))
         .await
         .unwrap();
     assert_eq!((a.name.as_str(), b.name.as_str(), n), ("a", "b", 2));
 
     // A failing query rolls back the whole batch.
-    let err = db
-        ._transaction_batch(vec![db.category().create(category("c")), db.category().create(category("a"))])
-        .await
-        .unwrap_err();
+    let err = db._transaction_batch(vec![db.category().create(category("c")), db.category().create(category("a"))]).await.unwrap_err();
     assert_eq!(err.code(), Some("P2002"));
     assert_eq!(db.category().count(()).await.unwrap(), 2);
 
     let updated = db
         ._transaction_batch(
-            ["a", "b"].iter().map(|n| db.category().update(json!({ "where": { "name": n }, "data": { "name": format!("{n}2") } }))).collect::<Vec<_>>(),
+            ["a", "b"]
+                .iter()
+                .map(|n| db.category().update(json!({ "where": { "name": n }, "data": { "name": format!("{n}2") } })))
+                .collect::<Vec<_>>(),
         )
         .await
         .unwrap();
@@ -150,12 +146,11 @@ async fn typed_raw_queries() {
     let ids = RawSql::join([1, 3], ",", "(", ")");
     let missing: Option<String> = None;
     let cond = if names.is_empty() { RawSql::empty() } else { sql!("AND name <> {\"x\"}") };
-    let n: i64 = db
-        ._query_raw(sql!("SELECT count(*) AS n FROM \"Category\" WHERE id IN {ids} AND {missing}::text IS NULL {cond}"))
-        .await
-        .unwrap()[0]["n"]
-        .as_i64()
-        .unwrap();
+    let n: i64 =
+        db._query_raw(sql!("SELECT count(*) AS n FROM \"Category\" WHERE id IN {ids} AND {missing}::text IS NULL {cond}")).await.unwrap()
+            [0]["n"]
+            .as_i64()
+            .unwrap();
     assert_eq!(n, 2);
 
     #[derive(Deserialize)]
@@ -212,11 +207,7 @@ async fn undefined_arguments_are_dropped() {
     assert_eq!(some.len(), 1);
     // `undefined` in data leaves the column untouched; `null` would write NULL.
     let u: User = db.user().create(json!({ "data": { "email": "x@y.z", "name": "X" } })).await.unwrap();
-    let u: User = db
-        .user()
-        .update(json!({ "where": { "id": u.id }, "data": { "name": undefined(), "active": false } }))
-        .await
-        .unwrap();
+    let u: User = db.user().update(json!({ "where": { "id": u.id }, "data": { "name": undefined(), "active": false } })).await.unwrap();
     assert_eq!((u.name.as_deref(), u.active), (Some("X"), false));
 }
 

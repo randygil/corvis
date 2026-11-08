@@ -28,10 +28,10 @@ mod append_field;
 mod buffer;
 mod busboy;
 mod file;
-mod interceptors;
-mod storage;
 #[cfg(test)]
 mod fuzz;
+mod interceptors;
+mod storage;
 
 use std::sync::Arc;
 
@@ -42,12 +42,8 @@ use crate::http::{HttpException, Request};
 
 pub use buffer::{buffer_from_value, buffer_to_value};
 pub use file::{FileInfo, UploadedFile};
-pub use interceptors::{
-    AnyFilesInterceptor, FileFieldsInterceptor, FileInterceptor, FilesInterceptor, MulterField, NoFilesInterceptor,
-};
-pub use storage::{
-    DiskStorage, DiskStorageOptions, MemoryStorage, StorageEngine, disk_storage, memory_storage, node_path_join,
-};
+pub use interceptors::{AnyFilesInterceptor, FileFieldsInterceptor, FileInterceptor, FilesInterceptor, MulterField, NoFilesInterceptor};
+pub use storage::{DiskStorage, DiskStorageOptions, MemoryStorage, StorageEngine, disk_storage, memory_storage, node_path_join};
 
 /// Injection token of the module-wide options (`MULTER_MODULE_OPTIONS`).
 pub const MULTER_MODULE_OPTIONS: &str = "MULTER_MODULE_OPTIONS";
@@ -211,10 +207,8 @@ impl MulterOptions {
         if let Some(b) = self.body_limit {
             return b;
         }
-        let from_files = limits
-            .file_size
-            .map(|f| f.saturating_mul(limits.files.unwrap_or(1).max(1)).saturating_add(1024 * 1024))
-            .unwrap_or(0);
+        let from_files =
+            limits.file_size.map(|f| f.saturating_mul(limits.files.unwrap_or(1).max(1)).saturating_add(1024 * 1024)).unwrap_or(0);
         DEFAULT_MULTIPART_BODY_LIMIT.max(from_files)
     }
 
@@ -367,11 +361,12 @@ pub(crate) fn transform_multer_error(e: MulterError) -> HttpException {
     use MulterErrorCode::*;
     match e.code {
         LimitFileSize => PayloadTooLargeException::new(e.message()),
-        LimitFileCount | LimitFieldKey | LimitFieldValue | LimitFieldCount | LimitUnexpectedFile | LimitPartCount
-        | MissingFieldName => match &e.field {
-            Some(f) => BadRequestException::new(format!("{} - {}", e.message(), f)),
-            None => BadRequestException::new(e.message()),
-        },
+        LimitFileCount | LimitFieldKey | LimitFieldValue | LimitFieldCount | LimitUnexpectedFile | LimitPartCount | MissingFieldName => {
+            match &e.field {
+                Some(f) => BadRequestException::new(format!("{} - {}", e.message(), f)),
+                None => BadRequestException::new(e.message()),
+            }
+        }
         LimitFieldNesting => HttpException::internal(e),
     }
 }
@@ -520,9 +515,7 @@ impl BodySource {
             BodySource::Buffered(b) => Ok(b.take()),
             BodySource::Stream { body, deadline } => loop {
                 let frame = match deadline {
-                    Some(d) => tokio::time::timeout_at(*d, body.frame())
-                        .await
-                        .map_err(|_| crate::server::request_timeout_error())?,
+                    Some(d) => tokio::time::timeout_at(*d, body.frame()).await.map_err(|_| crate::server::request_timeout_error())?,
                     None => body.frame().await,
                 };
                 match frame {
@@ -530,9 +523,10 @@ impl BodySource {
                     Some(Err(_)) => return Err(crate::server::request_aborted_error()),
                     Some(Ok(f)) => {
                         if let Ok(data) = f.into_data()
-                            && !data.is_empty() {
-                                return Ok(Some(data));
-                            }
+                            && !data.is_empty()
+                        {
+                            return Ok(Some(data));
+                        }
                     }
                 }
             },

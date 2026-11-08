@@ -110,10 +110,7 @@ pub struct OrmClient {
 
 impl std::fmt::Debug for OrmClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OrmClient")
-            .field("provider", &self.inner.dialect.name())
-            .field("in_transaction", &self.tx.is_some())
-            .finish()
+        f.debug_struct("OrmClient").field("provider", &self.inner.dialect.name()).field("in_transaction", &self.tx.is_some()).finish()
     }
 }
 

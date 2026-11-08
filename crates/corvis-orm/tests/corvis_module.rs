@@ -3,7 +3,7 @@ mod common;
 use common::*;
 use corvis::prelude::*;
 use corvis::testing::{Test, request};
-use corvis_orm::{OrmExceptionFilter, OrmError, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};
+use corvis_orm::{OrmError, OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};
 
 #[injectable]
 pub struct UsersService {
@@ -106,12 +106,8 @@ async fn for_root_async_reads_config() {
         load: vec![corvis::config::ConfigFactory::from(|| json!({ "DATABASE_URL": "sqlite::memory:" }))],
         ..Default::default()
     });
-    let mut module = Test::create_testing_module()
-        .import_dynamic(config)
-        .import_dynamic(OrmModule::for_root_from_config(true))
-        .compile()
-        .await
-        .unwrap();
+    let mut module =
+        Test::create_testing_module().import_dynamic(config).import_dynamic(OrmModule::for_root_from_config(true)).compile().await.unwrap();
     module.init().await.unwrap();
     let db = module.get::<OrmService>().unwrap();
     db.db_push::<(User, Post, Profile)>().await.unwrap();

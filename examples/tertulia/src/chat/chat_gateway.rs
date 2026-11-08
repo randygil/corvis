@@ -18,8 +18,8 @@ use std::collections::BTreeMap;
 
 use corvis::prelude::*;
 use corvis::{
-    JwtService, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsClient, WsException, WsResponse, WsServer,
-    extract_bearer_token, websocket_gateway,
+    JwtService, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsClient, WsException, WsResponse, WsServer, extract_bearer_token,
+    websocket_gateway,
 };
 use corvis_orm::OrmResultExt;
 
@@ -74,7 +74,10 @@ impl ChatGateway {
             }
             client.join(&room.name);
             let members = self.members(&room.name);
-            self.server.to(&room.name).except(client.id()).emit("user_joined", json!({ "room": room.name, "user": user, "members": members }));
+            self.server
+                .to(&room.name)
+                .except(client.id())
+                .emit("user_joined", json!({ "room": room.name, "user": user, "members": members }));
         }
         let history = self.rooms.history(&room.name, 50).await.http()?;
         Ok(WsResponse::new("joined", json!({ "room": room, "members": self.members(&room.name), "history": history })))

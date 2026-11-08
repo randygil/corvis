@@ -143,8 +143,7 @@ impl Request {
     }
     /// Deserializes the query string into `T` (numbers and booleans are parsed from strings).
     pub fn query_as<T: DeserializeOwned>(&self) -> Result<T, HttpException> {
-        crate::common::lenient::from_value(Value::Object(self.query.clone()))
-            .map_err(|e| BadRequestException::new(e.to_string()))
+        crate::common::lenient::from_value(Value::Object(self.query.clone())).map_err(|e| BadRequestException::new(e.to_string()))
     }
     /// Client IP (`req.ip`). By default the socket address (`X-Forwarded-For` is ignored); with a
     /// `trust proxy` setting ([`crate::CorvisApplication::set_trust_proxy`]) the closest
@@ -199,7 +198,8 @@ impl Request {
     /// occurrence of a name wins, surrounding double quotes are removed and a value is
     /// URI-decoded only when it contains `%` (an invalid escape keeps the raw value).
     pub fn cookies(&self) -> HashMap<String, String> {
-        let header: Vec<String> = self.headers.get_all(http::header::COOKIE).iter().map(|v| super::body_parser::latin1(v.as_bytes())).collect();
+        let header: Vec<String> =
+            self.headers.get_all(http::header::COOKIE).iter().map(|v| super::body_parser::latin1(v.as_bytes())).collect();
         parse_cookies(&header.join("; "))
     }
     pub fn cookie(&self, name: &str) -> Option<String> {
@@ -330,4 +330,3 @@ pub(crate) fn parse_query_with(q: &str, mode: super::body_parser::QueryParser) -
         }
     }
 }
-

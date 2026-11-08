@@ -76,11 +76,7 @@ fn create_table(d: Dialect, m: &'static ModelMeta) -> Result<String> {
         cols.push(c);
     }
     if !sqlite_autoinc {
-        cols.push(format!(
-            "CONSTRAINT {} PRIMARY KEY ({})",
-            quote_ident(&format!("{}_pkey", m.table)),
-            quote_ident(id.column)
-        ));
+        cols.push(format!("CONSTRAINT {} PRIMARY KEY ({})", quote_ident(&format!("{}_pkey", m.table)), quote_ident(id.column)));
     }
     for f in m.relations() {
         let rel = f.relation.as_ref().unwrap();

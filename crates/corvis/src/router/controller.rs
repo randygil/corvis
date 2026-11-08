@@ -10,11 +10,11 @@ use serde_json::Value;
 use crate::common::context::ExecutionContext;
 pub use crate::common::decorator::CustomDecorator;
 use crate::common::enhancer::{FilterRef, GuardRef, InterceptorRef, PipeRef};
-use crate::openapi::ApiSchemaRef;
 use crate::common::pipe::{ArgumentMetadata, Metatype, ParamKind};
 use crate::di::provider::downcast;
 use crate::di::{Injectable, Instance, Provider};
 use crate::http::{HandlerResult, RequestMethod};
+use crate::openapi::ApiSchemaRef;
 
 /// Version(s) of a controller or route (`@Version('1')`, `VERSION_NEUTRAL`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,8 +155,7 @@ pub struct RouteMeta {
     pub response_mode: Option<crate::http::ResMode>,
 }
 
-pub type HandlerFn<C> =
-    Arc<dyn Fn(Arc<C>, ExecutionContext, Vec<Value>) -> BoxFuture<'static, HandlerResult> + Send + Sync>;
+pub type HandlerFn<C> = Arc<dyn Fn(Arc<C>, ExecutionContext, Vec<Value>) -> BoxFuture<'static, HandlerResult> + Send + Sync>;
 pub(crate) type ErasedHandler = Arc<dyn Fn(ExecutionContext, Vec<Value>) -> BoxFuture<'static, HandlerResult> + Send + Sync>;
 
 /// A route of controller `C`.
@@ -295,10 +294,7 @@ impl ControllerDef {
                     .map(|r| {
                         let this = this.clone();
                         let handler = r.handler;
-                        ErasedRoute {
-                            meta: r.meta,
-                            handler: Arc::new(move |ctx, args| handler(this.clone(), ctx, args)),
-                        }
+                        ErasedRoute { meta: r.meta, handler: Arc::new(move |ctx, args| handler(this.clone(), ctx, args)) }
                     })
                     .collect()
             }),

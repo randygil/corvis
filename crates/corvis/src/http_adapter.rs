@@ -276,11 +276,7 @@ pub(crate) async fn dispatch_upgrade(
     request.remote_addr = Some(remote);
     let (tx, rx) = oneshot::channel();
     let upgrade = UpgradeRequest {
-        inner: Arc::new(UpgradeInner {
-            request,
-            decision: Mutex::new(Some(tx)),
-            on_upgrade: Mutex::new(Some(on_upgrade)),
-        }),
+        inner: Arc::new(UpgradeInner { request, decision: Mutex::new(Some(tx)), on_upgrade: Mutex::new(Some(on_upgrade)) }),
     };
     for listener in server.listeners() {
         let u = upgrade.clone();

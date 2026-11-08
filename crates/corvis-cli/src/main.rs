@@ -138,13 +138,11 @@ fn corvis_dependency(args: &[String]) -> Result<String, String> {
         names::validate_version_req(&v)?;
         return Ok(format!("version = \"{v}\""));
     }
-    let path = opt(args, "--corvis-path")
-        .or_else(|| std::env::var("CORVIS_PATH").ok())
-        .unwrap_or_else(|| {
-            // Path of the framework this CLI was built from.
-            let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("corvis");
-            p.canonicalize().unwrap_or(p).display().to_string()
-        });
+    let path = opt(args, "--corvis-path").or_else(|| std::env::var("CORVIS_PATH").ok()).unwrap_or_else(|| {
+        // Path of the framework this CLI was built from.
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("corvis");
+        p.canonicalize().unwrap_or(p).display().to_string()
+    });
     let path = path.trim_start_matches(r"\\?\").replace('\\', "/");
     // Written inside a TOML basic string.
     if path.chars().any(|c| c == '"' || c.is_control()) {
@@ -228,10 +226,9 @@ fn cmd_generate(args: &[String]) -> Res {
     let simple = |suffix: &str, template: &str, register: Option<&str>| -> Res {
         let file_stem = format!("{}_{suffix}", n.snake);
         let mut contents = render(template, &n);
-        if no_spec
-            && let Some(i) = contents.find("\n#[cfg(test)]") {
-                contents.truncate(i + 1);
-            }
+        if no_spec && let Some(i) = contents.find("\n#[cfg(test)]") {
+            contents.truncate(i + 1);
+        }
         let type_name = format!("{}{}", n.pascal, capitalize(suffix));
         if flat {
             write_file(&p.src.join(format!("{file_stem}.rs")), &contents)?;

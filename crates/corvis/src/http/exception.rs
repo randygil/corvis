@@ -139,10 +139,7 @@ impl HttpException {
 
     /// 500 for unexpected errors: `{ statusCode: 500, message: "Internal server error" }`.
     pub fn internal(cause: impl std::error::Error + Send + Sync + 'static) -> Self {
-        let mut e = Self::new(
-            json!({ "statusCode": 500, "message": "Internal server error" }),
-            StatusCode::INTERNAL_SERVER_ERROR,
-        );
+        let mut e = Self::new(json!({ "statusCode": 500, "message": "Internal server error" }), StatusCode::INTERNAL_SERVER_ERROR);
         e.message = cause.to_string();
         e.cause = Some(Arc::new(cause));
         e.internal = true;
@@ -154,10 +151,7 @@ impl HttpException {
         match err.downcast::<HttpExceptionError>() {
             Ok(HttpExceptionError(e)) => e,
             Err(err) => {
-                let mut e = Self::new(
-                    json!({ "statusCode": 500, "message": "Internal server error" }),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                );
+                let mut e = Self::new(json!({ "statusCode": 500, "message": "Internal server error" }), StatusCode::INTERNAL_SERVER_ERROR);
                 e.message = err.to_string();
                 e.anyhow_cause = Some(Arc::new(err));
                 e.internal = true;
@@ -240,10 +234,7 @@ fn value_to_message(v: &Value) -> String {
 
 impl fmt::Debug for HttpException {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpException")
-            .field("status", &self.status.as_u16())
-            .field("response", &self.response)
-            .finish()
+        f.debug_struct("HttpException").field("status", &self.status.as_u16()).field("response", &self.response).finish()
     }
 }
 

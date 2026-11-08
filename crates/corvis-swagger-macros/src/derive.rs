@@ -182,11 +182,8 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         if f.attrs.iter().any(|a| a.path().is_ident("api_hide_property")) {
             continue;
         }
-        let json_name = serde
-            .iter()
-            .find(|(k, v)| k == "rename" && v.is_some())
-            .and_then(|(_, v)| v.clone())
-            .unwrap_or_else(|| match &rule {
+        let json_name =
+            serde.iter().find(|(k, v)| k == "rename" && v.is_some()).and_then(|(_, v)| v.clone()).unwrap_or_else(|| match &rule {
                 Some(r) => rename_all(r, &fname),
                 None => fname.clone(),
             });

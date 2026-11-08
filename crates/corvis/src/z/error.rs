@@ -113,8 +113,26 @@ pub struct ZodIssue {
 
 /// `ZodParsedType` values (zod 3): an `expected` outside this set comes from an enum.
 const PARSED_TYPES: &[&str] = &[
-    "string", "nan", "number", "integer", "float", "boolean", "date", "bigint", "symbol", "function", "undefined", "null", "array",
-    "object", "unknown", "promise", "void", "never", "map", "set",
+    "string",
+    "nan",
+    "number",
+    "integer",
+    "float",
+    "boolean",
+    "date",
+    "bigint",
+    "symbol",
+    "function",
+    "undefined",
+    "null",
+    "array",
+    "object",
+    "unknown",
+    "promise",
+    "void",
+    "never",
+    "map",
+    "set",
 ];
 
 impl ZodIssue {
@@ -157,7 +175,8 @@ impl ZodIssue {
             ZodIssueCode::NotFinite | ZodIssueCode::Custom => vec!["code", "message", "path"],
             _ => vec!["code", "path", "message"],
         };
-        let mut keys: Vec<String> = listed.iter().filter(|k| matches!(**k, "code" | "path" | "message") || p.contains_key(**k)).map(|k| k.to_string()).collect();
+        let mut keys: Vec<String> =
+            listed.iter().filter(|k| matches!(**k, "code" | "path" | "message") || p.contains_key(**k)).map(|k| k.to_string()).collect();
         // Params without a fixed position go right after the listed data keys.
         let extra: Vec<String> = p.keys().filter(|k| !listed.contains(&k.as_str())).cloned().collect();
         let at = keys.iter().position(|k| k == "message" || k == "path").unwrap_or(keys.len());
@@ -192,20 +211,13 @@ impl ZodIssue {
         let code = ZodIssueCode::parse(obj.get("code")?.as_str()?);
         let path = obj.get("path").and_then(Value::as_array).cloned().unwrap_or_default();
         let message = obj.get("message").and_then(Value::as_str).unwrap_or_default().to_string();
-        let params = obj
-            .iter()
-            .filter(|(k, _)| !matches!(k.as_str(), "code" | "path" | "message"))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let params =
+            obj.iter().filter(|(k, _)| !matches!(k.as_str(), "code" | "path" | "message")).map(|(k, v)| (k.clone(), v.clone())).collect();
         Some(ZodIssue { code, path, message, params, layout: Some(obj.keys().cloned().collect()), v3_layout: None })
     }
 
     fn nested(&self, key: &str) -> Vec<ZodIssue> {
-        self.params
-            .get(key)
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(ZodIssue::from_json).collect())
-            .unwrap_or_default()
+        self.params.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(ZodIssue::from_json).collect()).unwrap_or_default()
     }
 }
 

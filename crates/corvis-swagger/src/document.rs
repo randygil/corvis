@@ -215,7 +215,8 @@ impl DocumentBuilder {
         variables: Option<Value>,
         extra: Option<Value>,
     ) -> Self {
-        let mut server = defined(vec![("url", Some(Value::String(url.into()))), ("description", description.map(js::s)), ("variables", variables)]);
+        let mut server =
+            defined(vec![("url", Some(Value::String(url.into()))), ("description", description.map(js::s)), ("variables", variables)]);
         if let Some(Value::Object(extra)) = extra {
             for (k, v) in extra {
                 if matches!(k.as_str(), "url" | "description" | "variables") {

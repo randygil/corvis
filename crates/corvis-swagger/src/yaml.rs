@@ -115,14 +115,18 @@ fn represent_float(f: f64) -> String {
 // --- implicit resolution (YAML 1.1 schema + core int/float) --------------------------------
 
 static INT_YAML11: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?0x[0-9a-fA-F_]+|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+|[-+]?(?:0|[1-9][0-9_]*))$").unwrap()
+    Regex::new(r"^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?0x[0-9a-fA-F_]+|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+|[-+]?(?:0|[1-9][0-9_]*))$")
+        .unwrap()
 });
 static INT_CORE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:0o[0-7]+|0x[0-9a-fA-F]+|[-+]?[0-9]+)$").unwrap());
 static FLOAT_YAML11: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:[-+]?(?:(?:[0-9][0-9_]*)?\.[0-9_]*)(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$").unwrap()
 });
 static FLOAT_CORE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:[-+]?[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?|[-+]?\.[0-9]+(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$").unwrap()
+    Regex::new(
+        r"^(?:[-+]?[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?|[-+]?\.[0-9]+(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$",
+    )
+    .unwrap()
 });
 static FLOAT_SPECIAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$").unwrap());
 static DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([0-9][0-9][0-9][0-9])-([0-9][0-9])-([0-9][0-9])$").unwrap());
@@ -192,7 +196,11 @@ fn days_in_month(year: i64, month0: i64) -> i64 {
         0 | 2 | 4 | 6 | 7 | 9 | 11 => 31,
         3 | 5 | 8 | 10 => 30,
         1 => {
-            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 29 } else { 28 }
+            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+                29
+            } else {
+                28
+            }
         }
         _ => 0,
     }
@@ -266,7 +274,8 @@ fn write_node(node: &Node, level: usize, ctx: Ctx) -> String {
         Node::Map(items) => write_flow_mapping(items, level),
         Node::Seq(items) if ctx.block && !items.is_empty() => write_block_sequence(items, level, ctx.compact),
         Node::Seq(items) => {
-            let parts: Vec<String> = items.iter().map(|i| write_node(i, level, Ctx { block: false, compact: false, iskey: false })).collect();
+            let parts: Vec<String> =
+                items.iter().map(|i| write_node(i, level, Ctx { block: false, compact: false, iskey: false })).collect();
             format!("[{}]", parts.join(", "))
         }
         Node::Scalar { tag, value } => {
@@ -478,13 +487,15 @@ fn choose_scalar_style(s: &[u16], layout: &Layout, single_line_only: bool, inblo
     let mut has_foldable = false;
     let mut prev_break: i64 = -1;
     let mut prev: i64 = -1;
-    let mut plain = !starts_with_document_separator(s) && is_plain_safe_at_start(s, inblock) && is_plain_safe_last(code_point_at(s, s.len() - 1));
+    let mut plain =
+        !starts_with_document_separator(s) && is_plain_safe_at_start(s, inblock) && is_plain_safe_last(code_point_at(s, s.len() - 1));
     let mut i = 0usize;
     while i < s.len() {
         let c = code_point_at(s, i);
         if !single_line_only && c == 10 {
             has_line_break = true;
-            has_foldable = has_foldable || (i as i64 - prev_break - 1 > line_width && s.get((prev_break + 1) as usize) != Some(&(' ' as u16)));
+            has_foldable =
+                has_foldable || (i as i64 - prev_break - 1 > line_width && s.get((prev_break + 1) as usize) != Some(&(' ' as u16)));
             prev_break = i as i64;
         } else if !is_printable(c) {
             return Style::Double;
@@ -540,7 +551,16 @@ fn block_header(s: &[u16], indent_per_level: usize) -> String {
     let nl = '\n' as u16;
     let clip = s.last() == Some(&nl);
     let keep = clip && ((s.len() >= 2 && s[s.len() - 2] == nl) || s == [nl]);
-    format!("{indicator}{}\n", if keep { "+" } else if clip { "" } else { "-" })
+    format!(
+        "{indicator}{}\n",
+        if keep {
+            "+"
+        } else if clip {
+            ""
+        } else {
+            "-"
+        }
+    )
 }
 
 fn encode_flow_breaks(s: &[u16], indent: usize) -> Vec<u16> {

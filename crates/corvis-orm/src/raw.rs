@@ -294,12 +294,10 @@ mod tests {
     fn composes_like_tagged_sql() {
         let ids = RawSql::join([1, 2, 3], ",", "(", ")");
         let cond = RawSql::new(vec!["\"status\" = ", ""], vec!["open".to_sql_arg()]);
-        let q = RawSql::new(vec!["SELECT * FROM t WHERE id IN ", " AND ", "", " LIMIT ", ""], vec![
-            ids.to_sql_arg(),
-            cond.to_sql_arg(),
-            RawSql::empty().to_sql_arg(),
-            10.to_sql_arg(),
-        ]);
+        let q = RawSql::new(
+            vec!["SELECT * FROM t WHERE id IN ", " AND ", "", " LIMIT ", ""],
+            vec![ids.to_sql_arg(), cond.to_sql_arg(), RawSql::empty().to_sql_arg(), 10.to_sql_arg()],
+        );
         assert_eq!(q.text(), "SELECT * FROM t WHERE id IN ($1,$2,$3) AND \"status\" = $4 LIMIT $5");
         assert_eq!(q.sql(), "SELECT * FROM t WHERE id IN (?,?,?) AND \"status\" = ? LIMIT ?");
         assert_eq!(q.values().len(), 5);

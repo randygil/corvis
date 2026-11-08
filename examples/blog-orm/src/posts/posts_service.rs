@@ -57,11 +57,7 @@ impl PostsService {
 
     /// `update` + `increment` – P2025 -> 404.
     pub async fn publish(&self, id: i64) -> Result<Post, OrmError> {
-        self.db
-            .post()
-            .update(post::id::equals(id))
-            .data(vec![post::published::set(true), post::views::increment(1)])
-            .await
+        self.db.post().update(post::id::equals(id)).data(vec![post::published::set(true), post::views::increment(1)]).await
     }
 
     pub async fn remove(&self, id: i64) -> Result<Post, OrmError> {
@@ -70,11 +66,8 @@ impl PostsService {
 
     /// `aggregate` + `groupBy` + relation filters.
     pub async fn stats(&self) -> Result<Value, OrmError> {
-        let totals = self
-            .db
-            .post()
-            .aggregate(json!({ "_count": { "_all": true }, "_sum": { "views": true }, "_avg": { "views": true } }))
-            .await?;
+        let totals =
+            self.db.post().aggregate(json!({ "_count": { "_all": true }, "_sum": { "views": true }, "_avg": { "views": true } })).await?;
         let by_author = self
             .db
             .post()

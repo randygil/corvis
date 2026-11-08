@@ -57,10 +57,7 @@ async fn app_interceptor_providers_wrap_use_global_interceptors() {
     app.init().await.unwrap();
     request(&app).get("/x").send().await.expect_status(200);
 
-    assert_eq!(
-        *LOG.lock().unwrap(),
-        ["provider:before", "bootstrap:before", "handler", "bootstrap:after", "provider:after"]
-    );
+    assert_eq!(*LOG.lock().unwrap(), ["provider:before", "bootstrap:before", "handler", "bootstrap:after", "provider:after"]);
 }
 
 // `res.statusCode` already holds the route status while interceptors run (it is set

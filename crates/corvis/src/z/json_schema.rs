@@ -117,11 +117,7 @@ impl Registry {
     /// Registered schemas that carry an `id` (`registry._idmap`).
     pub fn schemas_by_id(&self) -> Vec<(String, Schema)> {
         let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
-        inner
-            .entries
-            .iter()
-            .filter_map(|(_, s, m)| m.get("id").and_then(Value::as_str).map(|id| (id.to_string(), s.clone())))
-            .collect()
+        inner.entries.iter().filter_map(|(_, s, m)| m.get("id").and_then(Value::as_str).map(|id| (id.to_string(), s.clone()))).collect()
     }
 }
 
@@ -321,9 +317,10 @@ impl JsonSchemaGen {
             out.shift_remove("default");
         }
         if self.io_input()
-            && let Some(p) = out.get("_prefault").cloned() {
-                out.entry("default").or_insert(p);
-            }
+            && let Some(p) = out.get("_prefault").cloned()
+        {
+            out.entry("default").or_insert(p);
+        }
         out.shift_remove("_prefault");
         self.seen[i].schema = out;
         Ok(placeholder(i))
@@ -384,11 +381,12 @@ impl JsonSchemaGen {
         for i in 0..self.seen.len() {
             if let Some(id) = self.meta_id(i) {
                 if let Some(&other) = ids.get(&id)
-                    && self.seen[other].node.id() != self.seen[i].node.id() {
-                        return Err(format!(
-                            "Duplicate schema id \"{id}\" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together."
-                        ));
-                    }
+                    && self.seen[other].node.id() != self.seen[i].node.id()
+                {
+                    return Err(format!(
+                        "Duplicate schema id \"{id}\" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together."
+                    ));
+                }
                 ids.insert(id, i);
             }
         }
@@ -480,21 +478,23 @@ impl JsonSchemaGen {
                 schema.retain(|k, _| k == "$ref" || k == "allOf" || cached.contains_key(k));
             }
             if ref_schema.contains_key("$ref")
-                && let Some(def) = &self.seen[r].def {
-                    let def = def.clone();
-                    schema.retain(|k, v| k == "$ref" || k == "allOf" || def.get(k) != Some(v));
-                }
+                && let Some(def) = &self.seen[r].def
+            {
+                let def = def.clone();
+                schema.retain(|k, v| k == "$ref" || k == "allOf" || def.get(k) != Some(v));
+            }
         }
         if let Some(p) = self.seen[i].parent
-            && Some(p) != ref_idx {
-                self.flatten_ref(p);
-                if let Some(pr) = self.seen[p].schema.get("$ref").cloned() {
-                    schema.insert("$ref".into(), pr);
-                    if let Some(def) = self.seen[p].def.clone() {
-                        schema.retain(|k, v| k == "$ref" || k == "allOf" || def.get(k) != Some(v));
-                    }
+            && Some(p) != ref_idx
+        {
+            self.flatten_ref(p);
+            if let Some(pr) = self.seen[p].schema.get("$ref").cloned() {
+                schema.insert("$ref".into(), pr);
+                if let Some(def) = self.seen[p].def.clone() {
+                    schema.retain(|k, v| k == "$ref" || k == "allOf" || def.get(k) != Some(v));
                 }
             }
+        }
         if let Some(f) = self.opts.override_fn.clone() {
             let node = self.seen[i].node.clone();
             let path = self.seen[i].path.clone();

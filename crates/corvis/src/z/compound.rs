@@ -4,9 +4,14 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
-use super::core::{CheckOpts, CheckRunner, ErrorMap, ErrorParam, Payload, RawIssue, RunCtx, Val, WhenFn, has_length, prefix_all, run_parse_checks};
+use super::core::{
+    CheckOpts, CheckRunner, ErrorMap, ErrorParam, Payload, RawIssue, RunCtx, Val, WhenFn, has_length, prefix_all, run_parse_checks,
+};
 use super::types::{ZAny, ZEnum, ZNever, issue_params, js_string_of};
-use super::{JsonSchemaGen, ParseCtx, Schema, TypeErrors, ZNonOptional, ZOptional, ZodIssueCode, ZodSchema, ZodType, invalid_type, js, regexes, v3_via_v4};
+use super::{
+    JsonSchemaGen, ParseCtx, Schema, TypeErrors, ZNonOptional, ZOptional, ZodIssueCode, ZodSchema, ZodType, invalid_type, js, regexes,
+    v3_via_v4,
+};
 
 fn type_issue(expected: &str, input: &Val, error: Option<ErrorMap>) -> RawIssue {
     RawIssue::new(vec![("expected", json!(expected)), ("code", json!("invalid_type"))], input.clone(), error, None)
@@ -148,7 +153,13 @@ pub(crate) fn length_check(kind: ArrKind, p: &mut Payload, err: Option<ErrorMap>
         }
         ArrKind::Length(n) if len != n => {
             let (code, key) = if len > n { ("too_big", "maximum") } else { ("too_small", "minimum") };
-            Some(vec![("origin", json!(origin)), ("code", json!(code)), (key, json!(n)), ("inclusive", json!(true)), ("exact", json!(true))])
+            Some(vec![
+                ("origin", json!(origin)),
+                ("code", json!(code)),
+                (key, json!(n)),
+                ("inclusive", json!(true)),
+                ("exact", json!(true)),
+            ])
         }
         _ => None,
     };
@@ -166,33 +177,36 @@ impl ZodType for ZArray {
         let mut ok = true;
         let len = items.len();
         if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Length(n) = k { Some(n) } else { None })
-            && len != n {
-                ok = false;
-                let (code, key) = if len < n { (ZodIssueCode::TooSmall, "minimum") } else { (ZodIssueCode::TooBig, "maximum") };
-                ctx.add(
-                    code,
-                    m.unwrap_or_else(|| format!("Array must contain exactly {n} element(s)")),
-                    issue_params(&[(key, json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(true))]),
-                );
-            }
+            && len != n
+        {
+            ok = false;
+            let (code, key) = if len < n { (ZodIssueCode::TooSmall, "minimum") } else { (ZodIssueCode::TooBig, "maximum") };
+            ctx.add(
+                code,
+                m.unwrap_or_else(|| format!("Array must contain exactly {n} element(s)")),
+                issue_params(&[(key, json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(true))]),
+            );
+        }
         if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Min(n) = k { Some(n) } else { None })
-            && len < n {
-                ok = false;
-                ctx.add(
-                    ZodIssueCode::TooSmall,
-                    m.unwrap_or_else(|| format!("Array must contain at least {n} element(s)")),
-                    issue_params(&[("minimum", json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(false))]),
-                );
-            }
+            && len < n
+        {
+            ok = false;
+            ctx.add(
+                ZodIssueCode::TooSmall,
+                m.unwrap_or_else(|| format!("Array must contain at least {n} element(s)")),
+                issue_params(&[("minimum", json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(false))]),
+            );
+        }
         if let Some((n, m)) = self.last_v3(|k| if let ArrKind::Max(n) = k { Some(n) } else { None })
-            && len > n {
-                ok = false;
-                ctx.add(
-                    ZodIssueCode::TooBig,
-                    m.unwrap_or_else(|| format!("Array must contain at most {n} element(s)")),
-                    issue_params(&[("maximum", json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(false))]),
-                );
-            }
+            && len > n
+        {
+            ok = false;
+            ctx.add(
+                ZodIssueCode::TooBig,
+                m.unwrap_or_else(|| format!("Array must contain at most {n} element(s)")),
+                issue_params(&[("maximum", json!(n)), ("type", json!("array")), ("inclusive", json!(true)), ("exact", json!(false))]),
+            );
+        }
         let mut out = Vec::with_capacity(len);
         for (i, item) in items.iter().enumerate() {
             match ctx.at(i, |ctx| self.item.check(Some(item), ctx)) {
@@ -355,7 +369,12 @@ impl ZodType for ZTuple {
             if len < optin_start {
                 let input_val = p.value.clone();
                 p.push(RawIssue::new(
-                    vec![("code", json!("too_small")), ("minimum", json!(optin_start)), ("inclusive", json!(true)), ("origin", json!("array"))],
+                    vec![
+                        ("code", json!("too_small")),
+                        ("minimum", json!(optin_start)),
+                        ("inclusive", json!(true)),
+                        ("origin", json!("array")),
+                    ],
                     input_val,
                     self.error.clone(),
                     None,
@@ -365,7 +384,12 @@ impl ZodType for ZTuple {
             if len > self.items.len() {
                 let input_val = p.value.clone();
                 p.push(RawIssue::new(
-                    vec![("code", json!("too_big")), ("maximum", json!(self.items.len())), ("inclusive", json!(true)), ("origin", json!("array"))],
+                    vec![
+                        ("code", json!("too_big")),
+                        ("maximum", json!(self.items.len())),
+                        ("inclusive", json!(true)),
+                        ("origin", json!("array")),
+                    ],
                     input_val,
                     self.error.clone(),
                     None,
@@ -691,18 +715,19 @@ impl ZodType for ZRecord {
             json.insert("additionalProperties".into(), v);
         }
         if !self.partial
-            && let Some(values) = key.values() {
-                let req: Vec<Value> = values
-                    .into_iter()
-                    .filter_map(|v| match v {
-                        Val::Json(v @ (Value::String(_) | Value::Number(_))) => Some(v),
-                        _ => None,
-                    })
-                    .collect();
-                if !req.is_empty() {
-                    json.insert("required".into(), Value::Array(req));
-                }
+            && let Some(values) = key.values()
+        {
+            let req: Vec<Value> = values
+                .into_iter()
+                .filter_map(|v| match v {
+                    Val::Json(v @ (Value::String(_) | Value::Number(_))) => Some(v),
+                    _ => None,
+                })
+                .collect();
+            if !req.is_empty() {
+                json.insert("required".into(), Value::Array(req));
             }
+        }
         Ok(())
     }
 }
@@ -1035,7 +1060,12 @@ impl ZodType for ZObject {
                     UnknownKeys::Strict(Some(m)) => Some(ErrorParam::Message(m.clone()).into_map()),
                     _ => self.inst_error(),
                 };
-                p.push(RawIssue::new(vec![("code", json!("unrecognized_keys")), ("keys", Value::Array(unrecognized))], input_val, err, None));
+                p.push(RawIssue::new(
+                    vec![("code", json!("unrecognized_keys")), ("keys", Value::Array(unrecognized))],
+                    input_val,
+                    err,
+                    None,
+                ));
             }
         }
         p.value = Val::Json(Value::Object(super::js::js_map(out)));
@@ -1110,7 +1140,13 @@ fn union_pattern(options: &[Schema]) -> Option<String> {
     Some(format!("^({})$", parts.join("|")))
 }
 
-fn union_json_schema(options: &[Schema], exclusive: bool, jsg: &mut JsonSchemaGen, json: &mut Map<String, Value>, path: &[Value]) -> Result<(), String> {
+fn union_json_schema(
+    options: &[Schema],
+    exclusive: bool,
+    jsg: &mut JsonSchemaGen,
+    json: &mut Map<String, Value>,
+    path: &[Value],
+) -> Result<(), String> {
     let key = if exclusive { "oneOf" } else { "anyOf" };
     let mut out = Vec::new();
     for (i, o) in options.iter().enumerate() {
@@ -1163,9 +1199,8 @@ impl ZodType for ZUnion {
         // zod returns the issues of a "dirty" option: one whose type matched but
         // whose checks failed. Otherwise it reports `invalid_union`.
         let depth = ctx.path.len();
-        if let Some(dirty) = failures
-            .iter()
-            .find(|issues| issues.iter().any(|i| i.code != ZodIssueCode::InvalidType || i.path.len() > depth))
+        if let Some(dirty) =
+            failures.iter().find(|issues| issues.iter().any(|i| i.code != ZodIssueCode::InvalidType || i.path.len() > depth))
         {
             ctx.issues.extend(dirty.iter().cloned());
             return Err(());

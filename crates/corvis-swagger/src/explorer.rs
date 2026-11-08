@@ -4,9 +4,9 @@
 use std::any::TypeId;
 use std::sync::Arc;
 
-use corvis::{ControllerInfo, CorvisApplication, ParamDef, ParamKind, RequestMethod, RouteMeta};
 use corvis::router::controller::VersionValue;
 use corvis::router::versioning::VersioningType;
+use corvis::{ControllerInfo, CorvisApplication, ParamDef, ParamKind, RequestMethod, RouteMeta};
 use serde_json::{Value, json};
 
 use crate::decorators::keys;
@@ -274,10 +274,7 @@ impl Explorer<'_> {
         }
         // headers (a chunk merged into root.parameters, depth 1)
         if let Some(headers) = class.array(keys::API_HEADERS) {
-            global.insert(
-                "chunks".into(),
-                json!([{ "root": { "parameters": Value::Array(headers.clone()) }, "depth": 1 }]),
-            );
+            global.insert("chunks".into(), json!([{ "root": { "parameters": Value::Array(headers.clone()) }, "depth": 1 }]));
         }
         global
     }
@@ -366,18 +363,19 @@ impl Explorer<'_> {
                 continue;
             }
             if let Ty::Model(k) = t
-                && let Some(info) = schema_factory::model_info(k) {
-                    for (key, meta) in info.properties {
-                        let mut o = reflected.clone();
-                        js::assign(&mut o, &meta);
-                        let name = match meta.get("name") {
-                            Some(n) if js::truthy(Some(n)) => n.clone(),
-                            _ => js::s(key),
-                        };
-                        o.insert("name".into(), name);
-                        properties.push(o);
-                    }
+                && let Some(info) = schema_factory::model_info(k)
+            {
+                for (key, meta) in info.properties {
+                    let mut o = reflected.clone();
+                    js::assign(&mut o, &meta);
+                    let name = match meta.get("name") {
+                        Some(n) if js::truthy(Some(n)) => n.clone(),
+                        _ => js::s(key),
+                    };
+                    o.insert("name".into(), name);
+                    properties.push(o);
                 }
+            }
         }
 
         // removeBodyMetadataIfExplicitExists
@@ -600,9 +598,10 @@ fn explore_callbacks(method: &Metadata) -> Option<Obj> {
 /// `mergeMetadata(globalMetadata, methodMetadata)`.
 fn merge_metadata(global: &Obj, mut method: Obj) -> Obj {
     if let Some(Value::Object(root)) = method.get_mut("root")
-        && !root.contains_key("parameters") {
-            root.insert("parameters".into(), json!([]));
-        }
+        && !root.contains_key("parameters")
+    {
+        root.insert("parameters".into(), json!([]));
+    }
     if let Some(Value::Array(chunks)) = global.get("chunks") {
         for chunk in chunks {
             let chunk = js::obj_of(chunk);

@@ -89,14 +89,7 @@ impl EventEmitter {
     }
 
     fn listeners_for(&self, event: &str) -> Vec<EventCall> {
-        self.inner
-            .listeners
-            .read()
-            .unwrap()
-            .iter()
-            .filter(|l| self.matches(&l.pattern, event))
-            .map(|l| l.call.clone())
-            .collect()
+        self.inner.listeners.read().unwrap().iter().filter(|l| self.matches(&l.pattern, event)).map(|l| l.call.clone()).collect()
     }
 
     /// `emitter.emit(event, payload)` – listeners run concurrently in the background.

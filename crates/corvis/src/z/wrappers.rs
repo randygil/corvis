@@ -8,9 +8,7 @@ use std::sync::{Arc, OnceLock};
 use serde_json::{Map, Value, json};
 
 use super::core::{CheckRunner, ErrorMap, ErrorParam, Payload, RawIssue, RunCtx, Val, WhenFn};
-use super::{
-    JsonSchemaGen, ParseCtx, RefinementCtx, Schema, ZObject, ZodError, ZodIssueCode, ZodType, v3_via_v4,
-};
+use super::{JsonSchemaGen, ParseCtx, RefinementCtx, Schema, ZObject, ZodError, ZodIssueCode, ZodType, v3_via_v4};
 
 fn null_or<'a>(v: &'a Option<Value>, null: &'a Value) -> &'a Value {
     v.as_ref().unwrap_or(null)
@@ -710,13 +708,14 @@ impl ZodType for ZRefine {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
         let out = self.inner.check(input, ctx)?;
         if let Some(v) = &out
-            && !(self.check)(v) {
-                let base = ctx.path.len();
-                ctx.path.extend(self.params.path.iter().cloned());
-                ctx.add(ZodIssueCode::Custom, self.params.message.clone().unwrap_or_else(|| "Invalid input".into()), Map::new());
-                ctx.path.truncate(base);
-                return Err(());
-            }
+            && !(self.check)(v)
+        {
+            let base = ctx.path.len();
+            ctx.path.extend(self.params.path.iter().cloned());
+            ctx.add(ZodIssueCode::Custom, self.params.message.clone().unwrap_or_else(|| "Invalid input".into()), Map::new());
+            ctx.path.truncate(base);
+            return Err(());
+        }
         Ok(out)
     }
     fn type_name(&self) -> String {
@@ -1020,11 +1019,7 @@ impl ZodType for ZTransform {
         true
     }
     fn json_schema(&self, jsg: &mut JsonSchemaGen, _json: &mut Map<String, Value>, path: &[Value]) -> Result<(), String> {
-        if jsg.io_input() {
-            jsg.inherit(&self.inner, path)
-        } else {
-            jsg.unrepresentable("Transforms cannot be represented in JSON Schema")
-        }
+        if jsg.io_input() { jsg.inherit(&self.inner, path) } else { jsg.unrepresentable("Transforms cannot be represented in JSON Schema") }
     }
 }
 

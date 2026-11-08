@@ -17,8 +17,8 @@ use http_body_util::{BodyExt, Full, LengthLimitError, Limited, StreamBody};
 use hyper::body::{Frame, Incoming, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::{Instant, Sleep};
@@ -140,9 +140,10 @@ pub(crate) fn into_hyper(resp: Response, head: bool) -> hyper::Response<ResBody>
     // An empty type (`res.end()` without a `Content-Type`) writes no header, like Node.
     if let Some(ct) = content_type.filter(|ct| !ct.is_empty())
         && !headers.contains_key(http::header::CONTENT_TYPE)
-            && let Ok(v) = http::HeaderValue::from_str(&ct) {
-                headers.insert(http::header::CONTENT_TYPE, v);
-            }
+        && let Ok(v) = http::HeaderValue::from_str(&ct)
+    {
+        headers.insert(http::header::CONTENT_TYPE, v);
+    }
     // `X-Powered-By`, ETag, ... are added by `http::express::finalize` (see `handle`).
     let bodyless = status == http::StatusCode::NO_CONTENT || status == http::StatusCode::NOT_MODIFIED || status.is_informational();
     if head && !bodyless && !headers.contains_key(http::header::CONTENT_LENGTH) {
@@ -209,9 +210,8 @@ fn read_limit(headers: &http::HeaderMap, transport: usize, parser: &crate::http:
     if !parser.enabled {
         return transport;
     }
-    let identity = headers
-        .get(http::header::CONTENT_ENCODING)
-        .is_none_or(|v| v.to_str().is_ok_and(|s| s.trim().eq_ignore_ascii_case("identity")));
+    let identity =
+        headers.get(http::header::CONTENT_ENCODING).is_none_or(|v| v.to_str().is_ok_and(|s| s.trim().eq_ignore_ascii_case("identity")));
     if !identity {
         // The parser answers 415 whatever the size: keep the transport limit.
         return transport;
@@ -342,23 +342,23 @@ async fn handle(
     }
     let head = req.method() == http::Method::HEAD;
     let info = crate::http::express::RequestInfo::new(req.method(), req.headers());
-    let mut resp =
-        match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await {
-            Ok(r) => {
-                let pending = r.get::<PendingBodySlot>();
-                let resp = dispatch(shared.clone(), r).await;
-                // A body nobody read (or left half read by a failed upload) is drained now, not
-                // when the last clone of the request goes away.
-                if let Some(slot) = pending {
-                    let unread = slot.0.lock().unwrap_or_else(|e| e.into_inner()).take();
-                    if let Some(p) = unread {
-                        tokio::spawn(drain(p, shared.body_limit as u64));
-                    }
+    let mut resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await
+    {
+        Ok(r) => {
+            let pending = r.get::<PendingBodySlot>();
+            let resp = dispatch(shared.clone(), r).await;
+            // A body nobody read (or left half read by a failed upload) is drained now, not
+            // when the last clone of the request goes away.
+            if let Some(slot) = pending {
+                let unread = slot.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(p) = unread {
+                    tokio::spawn(drain(p, shared.body_limit as u64));
                 }
-                resp
             }
-            Err(resp) => resp,
-        };
+            resp
+        }
+        Err(resp) => resp,
+    };
     crate::http::express::finalize(&mut resp, &info, &shared.http_settings);
     Ok(into_hyper(resp, head))
 }
@@ -629,13 +629,14 @@ impl AsyncWrite for TimedIo {
         let this = &mut *self;
         let r = this.sock().poll_write(cx, buf);
         if let Poll::Ready(Ok(n)) = r
-            && n > 0 {
-                this.sync();
-                // A response still being flushed is progress, not idleness.
-                if let Phase::KeepAlive(_) = this.phase {
-                    this.phase = Phase::KeepAlive(Instant::now());
-                }
+            && n > 0
+        {
+            this.sync();
+            // A response still being flushed is progress, not idleness.
+            if let Phase::KeepAlive(_) = this.phase {
+                this.phase = Phase::KeepAlive(Instant::now());
             }
+        }
         r
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -644,20 +645,17 @@ impl AsyncWrite for TimedIo {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.sock().poll_shutdown(cx)
     }
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
+    fn poll_write_vectored(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[io::IoSlice<'_>]) -> Poll<io::Result<usize>> {
         let this = &mut *self;
         let r = this.sock().poll_write_vectored(cx, bufs);
         if let Poll::Ready(Ok(n)) = r
-            && n > 0 {
-                this.sync();
-                if let Phase::KeepAlive(_) = this.phase {
-                    this.phase = Phase::KeepAlive(Instant::now());
-                }
+            && n > 0
+        {
+            this.sync();
+            if let Phase::KeepAlive(_) = this.phase {
+                this.phase = Phase::KeepAlive(Instant::now());
             }
+        }
         r
     }
     fn is_write_vectored(&self) -> bool {

@@ -150,7 +150,10 @@ pub fn serialize_config_to_js(configuration: &Map<String, Value>) -> String {
             function_props.push(format!("\"{k}\": {code}"));
         } else if let Value::Array(items) = v {
             if items.iter().any(|i| is_function(i).is_some()) {
-                let parts: Vec<String> = items.iter().map(|i| is_function(i).map(str::to_string).unwrap_or_else(|| escape_inline_json(&js::stringify(i)))).collect();
+                let parts: Vec<String> = items
+                    .iter()
+                    .map(|i| is_function(i).map(str::to_string).unwrap_or_else(|| escape_inline_json(&js::stringify(i))))
+                    .collect();
                 function_props.push(format!("\"{k}\": [{}]", parts.join(", ")));
             } else {
                 rest.insert(k.clone(), v.clone());
@@ -160,7 +163,8 @@ pub fn serialize_config_to_js(configuration: &Map<String, Value>) -> String {
         }
     }
     let json = escape_inline_json(&js::stringify_pretty(&Value::Object(rest), 2));
-    let indented = json.split('\n').enumerate().map(|(i, l)| if i == 0 { l.to_string() } else { format!("      {l}") }).collect::<Vec<_>>().join("\n");
+    let indented =
+        json.split('\n').enumerate().map(|(i, l)| if i == 0 { l.to_string() } else { format!("      {l}") }).collect::<Vec<_>>().join("\n");
     if function_props.is_empty() {
         return indented;
     }
@@ -244,13 +248,7 @@ pub fn mount(app: &mut CorvisApplication, path: &str, options: ApiReferenceOptio
     app.use_fn(move |req: Request, next: Next| {
         let html = html.clone();
         let matched = use_path_matches(&mount_path, req.path());
-        async move {
-            if matched {
-                Ok(Response::html(html.to_string()))
-            } else {
-                next.run(req).await
-            }
-        }
+        async move { if matched { Ok(Response::html(html.to_string())) } else { next.run(req).await } }
     });
 }
 

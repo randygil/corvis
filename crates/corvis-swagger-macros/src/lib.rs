@@ -186,7 +186,9 @@ pub fn api_security(input: TokenStream) -> TokenStream {
     expand(input, |a| {
         let p = positional(&a);
         match p.as_slice() {
-            [name] => Ok(quote!(#k::decorators::api_security(#k::__private::to_value(&(#name)), #k::__private::Value::Array(::std::vec![])))),
+            [name] => {
+                Ok(quote!(#k::decorators::api_security(#k::__private::to_value(&(#name)), #k::__private::Value::Array(::std::vec![]))))
+            }
             [name, req] => Ok(quote!(#k::decorators::api_security(#k::__private::to_value(&(#name)), #k::__private::to_value(&(#req))))),
             _ => Err(syn::Error::new(proc_macro2::Span::call_site(), "#[api_security(name, requirements?)]")),
         }
@@ -373,10 +375,7 @@ status_macros! {
 /// `#[serde(rename)]`, `#[serde(rename_all)]` and `#[serde(skip)]`. Field attributes:
 /// `#[api_property(...)]`, `#[api_property_optional(...)]`, `#[api_response_property(...)]`,
 /// `#[api_hide_property]`. Container attribute: `#[api_schema(name = "...", description = "...")]`.
-#[proc_macro_derive(
-    ApiSchema,
-    attributes(api_property, api_property_optional, api_response_property, api_hide_property, api_schema)
-)]
+#[proc_macro_derive(ApiSchema, attributes(api_property, api_property_optional, api_response_property, api_hide_property, api_schema))]
 pub fn derive_api_schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     match derive::expand(input) {

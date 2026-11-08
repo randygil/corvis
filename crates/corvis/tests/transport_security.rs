@@ -23,7 +23,9 @@ fn upload_dir(tag: &str) -> String {
 }
 
 fn files_in(dir: &str) -> Vec<String> {
-    std::fs::read_dir(dir).map(|r| r.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default()
+    std::fs::read_dir(dir)
+        .map(|r| r.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default()
 }
 
 #[injectable]
@@ -184,7 +186,9 @@ async fn closed_within(s: &mut TcpStream, wait: Duration) -> bool {
 const CT: &str = "multipart/form-data; boundary=BB";
 
 fn file_part_head(name: &str, filename: &str) -> String {
-    format!("--BB\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n")
+    format!(
+        "--BB\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    )
 }
 
 /// A multipart POST whose head announces `length` bytes, of which only `sent` is written.
@@ -352,9 +356,11 @@ async fn json_over_the_parser_limit_is_rejected_before_reading() {
 async fn malformed_chunked_body_is_not_reported_as_too_large() {
     let addr = serve(None).await;
     let mut s = TcpStream::connect(addr).await.unwrap();
-    s.write_all(b"POST /t/json HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n{}\r\n0\r\n\r\n")
-        .await
-        .unwrap();
+    s.write_all(
+        b"POST /t/json HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n{}\r\n0\r\n\r\n",
+    )
+    .await
+    .unwrap();
     let r = read_head(&mut s, Duration::from_secs(5)).await;
     assert!(!r.contains(" 413 "), "{r:?}");
     assert!(r.is_empty() || r.starts_with("HTTP/1.1 400"), "{r:?}");

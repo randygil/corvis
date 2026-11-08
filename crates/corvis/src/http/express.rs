@@ -96,9 +96,7 @@ pub fn fresh(req: &HeaderMap, res: &HeaderMap) -> bool {
             return true;
         }
         let Some(etag) = get(res, header::ETAG) else { return false };
-        return parse_token_list(&none_match)
-            .iter()
-            .any(|m| *m == etag || format!("W/{etag}") == *m || format!("W/{m}") == etag);
+        return parse_token_list(&none_match).iter().any(|m| *m == etag || format!("W/{etag}") == *m || format!("W/{m}") == etag);
     }
     if let Some(since) = modified_since {
         let last = get(res, header::LAST_MODIFIED).and_then(|l| parse_http_date(&l));
@@ -192,9 +190,10 @@ pub fn content_type(value: &str) -> String {
         v = crate::common::mime::from_path(&path).split(';').next().unwrap_or("").to_string();
     }
     if !v.to_ascii_lowercase().contains("charset")
-        && let Some(cs) = default_charset(&v) {
-            v = format!("{v}; charset={cs}");
-        }
+        && let Some(cs) = default_charset(&v)
+    {
+        v = format!("{v}; charset={cs}");
+    }
     v
 }
 
@@ -234,9 +233,10 @@ pub fn set_charset(content_type: &str, charset: &str) -> String {
 pub(crate) fn finalize(resp: &mut Response, req: &RequestInfo, settings: &HttpSettings) {
     if let Some(p) = &settings.x_powered_by
         && !resp.headers.contains_key("x-powered-by")
-            && let Ok(v) = HeaderValue::from_str(p) {
-                resp.headers.insert(header::HeaderName::from_static("x-powered-by"), v);
-            }
+        && let Ok(v) = HeaderValue::from_str(p)
+    {
+        resp.headers.insert(header::HeaderName::from_static("x-powered-by"), v);
+    }
     // Only bodies written through `res.send()` / `res.json()` get the send() semantics;
     // empty, raw and streamed bodies are written as they are (`res.end(...)`, pipes).
     let sent: Option<(Bytes, &'static str)> = match &resp.body {
@@ -268,9 +268,10 @@ pub(crate) fn finalize(resp: &mut Response, req: &RequestInfo, settings: &HttpSe
         };
         if let Some(weak) = etag
             && !resp.headers.contains_key(header::ETAG)
-                && let Ok(v) = HeaderValue::from_str(&entity_tag(&data, weak)) {
-                    resp.headers.insert(header::ETAG, v);
-                }
+            && let Ok(v) = HeaderValue::from_str(&entity_tag(&data, weak))
+        {
+            resp.headers.insert(header::ETAG, v);
+        }
         resp.headers.insert(header::CONTENT_LENGTH, HeaderValue::from(data.len()));
         let ct = resp.headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or(default_ct).to_string();
         resp.body = Body::Bytes { data, content_type: ct };

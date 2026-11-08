@@ -247,10 +247,7 @@ impl Rows {
     /// Rows as JSON objects keyed by column name.
     pub fn into_objects(self) -> Vec<Value> {
         let cols = self.columns;
-        self.rows
-            .into_iter()
-            .map(|r| Value::Object(cols.iter().cloned().zip(r).collect()))
-            .collect()
+        self.rows.into_iter().map(|r| Value::Object(cols.iter().cloned().zip(r).collect())).collect()
     }
 }
 
@@ -366,7 +363,9 @@ fn pg_query(sql: &Sql) -> sqlx::query::Query<'_, Postgres, sqlx::postgres::PgArg
                         let v: Vec<sqlx::types::Json<Value>> = items.iter().map(|x| sqlx::types::Json(sql_value_json(x))).collect();
                         q.bind(v)
                     }
-                    (Some(SqlValue::Bytes(_)), _) | (None, FieldKind::Bytes) => bind_array!(q, items, Bytes, Vec<u8>, |b: &Vec<u8>| b.clone()),
+                    (Some(SqlValue::Bytes(_)), _) | (None, FieldKind::Bytes) => {
+                        bind_array!(q, items, Bytes, Vec<u8>, |b: &Vec<u8>| b.clone())
+                    }
                     _ => bind_array!(q, items, Text, String, |b: &String| b.clone()),
                 }
             }
@@ -567,7 +566,10 @@ fn decode_pg_value(oid: u32, kind: Option<&PgTypeKind>, b: &[u8], type_name: &st
             let us = be_i64(b);
             let days = be_i32(&b[8..]);
             let months = be_i32(&b[12..]);
-            Value::String(format!("{months} mons {days} days {}", NaiveTime::from_num_seconds_from_midnight_opt(0, 0).unwrap() + chrono::Duration::microseconds(us)))
+            Value::String(format!(
+                "{months} mons {days} days {}",
+                NaiveTime::from_num_seconds_from_midnight_opt(0, 0).unwrap() + chrono::Duration::microseconds(us)
+            ))
         }
         2278 => Value::Null,
         25 | 19 | 1042 | 1043 | 142 => Value::String(String::from_utf8_lossy(b).to_string()),

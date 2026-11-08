@@ -37,7 +37,8 @@ fn name_and_value(args: Vec<Expr>) -> (Option<TokenStream>, Option<Expr>) {
 fn cron_options(sig: &syn::Signature, args: Vec<Expr>) -> syn::Result<(Expr, TokenStream)> {
     let mut positional = Vec::new();
     let mut setters = Vec::new();
-    const KEYS: [&str; 8] = ["name", "time_zone", "utc_offset", "disabled", "wait_for_completion", "threshold", "initial_delay", "unref_timeout"];
+    const KEYS: [&str; 8] =
+        ["name", "time_zone", "utc_offset", "disabled", "wait_for_completion", "threshold", "initial_delay", "unref_timeout"];
     for a in args {
         if let Expr::Assign(assign) = &a
             && let Expr::Path(p) = &*assign.left
@@ -156,16 +157,11 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
         }
 
-        let task_conv = if result {
-            quote!(__ret.map_err(|__e| ::corvis::anyhow::anyhow!("{}", __e))?;)
-        } else {
-            quote!(let _ = __ret;)
-        };
+        let task_conv = if result { quote!(__ret.map_err(|__e| ::corvis::anyhow::anyhow!("{}", __e))?;) } else { quote!(let _ = __ret;) };
 
         let entry = match kind.as_str() {
             "on_event" => {
-                let events: Vec<TokenStream> =
-                    flatten_array(args).iter().map(|e| quote!(::std::string::String::from(#e))).collect();
+                let events: Vec<TokenStream> = flatten_array(args).iter().map(|e| quote!(::std::string::String::from(#e))).collect();
                 let (bind, call_args) = match params.first() {
                     Some((ty, ..)) => (
                         quote! {
@@ -236,7 +232,10 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
             _ => {
                 // subscribe_message
-                let event = args.first().cloned().ok_or_else(|| syn::Error::new_spanned(&method.sig, "#[subscribe_message(\"event\")] requires an event name"))?;
+                let event = args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| syn::Error::new_spanned(&method.sig, "#[subscribe_message(\"event\")] requires an event name"))?;
                 let mut lets = Vec::new();
                 let mut names = Vec::new();
                 let mut body_index = 0usize;

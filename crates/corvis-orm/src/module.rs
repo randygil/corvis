@@ -23,9 +23,8 @@ use std::sync::Arc;
 
 use corvis::di::{DiError, Hooks, Injectable, ResolveCtx};
 use corvis::{
-    ArgumentsHost, BadRequestException, BaseExceptionFilter, ConflictException, DynamicModule, ExceptionFilter, HttpException,
-    Logger, Module, ModuleDefinition, NotFoundException, OnModuleDestroy, OnModuleInit, Provider,
-    Response, Token,
+    ArgumentsHost, BadRequestException, BaseExceptionFilter, ConflictException, DynamicModule, ExceptionFilter, HttpException, Logger,
+    Module, ModuleDefinition, NotFoundException, OnModuleDestroy, OnModuleInit, Provider, Response, Token,
 };
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -121,9 +120,8 @@ pub struct OrmService {
 
 impl OrmService {
     pub fn new(options: OrmModuleOptions) -> Result<Self, OrmError> {
-        let mut client_opts = OrmClientOptions::new(options.url.clone())
-            .log_queries(options.log_queries)
-            .transaction_options(options.transaction_options);
+        let mut client_opts =
+            OrmClientOptions::new(options.url.clone()).log_queries(options.log_queries).transaction_options(options.transaction_options);
         client_opts.max_connections = options.max_connections;
         Ok(OrmService { client: OrmClient::with_options(client_opts)?, options, logger: Logger::new("OrmService") })
     }

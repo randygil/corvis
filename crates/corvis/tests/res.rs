@@ -127,15 +127,10 @@ async fn res_matches_express() {
         assert_eq!(r.body.as_ref(), case["body"].as_str().unwrap().chars().map(|ch| ch as u8).collect::<Vec<_>>(), "{label}");
 
         let expected = case["h"].as_object().unwrap();
-        let cookies: Vec<String> =
-            r.headers.get_all("set-cookie").iter().map(|v| v.to_str().unwrap().to_string()).collect();
+        let cookies: Vec<String> = r.headers.get_all("set-cookie").iter().map(|v| v.to_str().unwrap().to_string()).collect();
         assert_eq!(serde_json::to_value(&cookies).unwrap(), expected["set-cookie"], "{label}: set-cookie");
-        let mut names: Vec<String> = r
-            .headers
-            .keys()
-            .map(|k| k.as_str().to_string())
-            .filter(|k| !["date", "set-cookie"].contains(&k.as_str()))
-            .collect();
+        let mut names: Vec<String> =
+            r.headers.keys().map(|k| k.as_str().to_string()).filter(|k| !["date", "set-cookie"].contains(&k.as_str())).collect();
         names.dedup();
         let mut want: Vec<String> = expected.keys().filter(|k| *k != "set-cookie").cloned().collect();
         names.sort();

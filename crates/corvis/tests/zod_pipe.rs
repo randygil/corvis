@@ -97,9 +97,10 @@ async fn zod_pipe_matches_fixture() {
     let r = strict.transform(json!({ "a": 1 }), &meta(ParamKind::Body, None)).await;
     assert_same("strictNoDto", outcome(r), &fx);
 
-    let custom = z::create_zod_validation_pipe(z::ZodValidationPipeOptions::new().create_validation_exception(|e| {
-        BadRequestException::new(json!({ "custom": true, "count": e.issues.len() }))
-    }));
+    let custom = z::create_zod_validation_pipe(
+        z::ZodValidationPipeOptions::new()
+            .create_validation_exception(|e| BadRequestException::new(json!({ "custom": true, "count": e.issues.len() }))),
+    );
     let r = custom.transform(json!({}), &dto_meta()).await;
     assert_same("customException", outcome(r), &fx);
 

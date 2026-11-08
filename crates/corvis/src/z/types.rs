@@ -15,16 +15,13 @@ use super::core::{CheckOpts, CheckRunner, ErrorMap, ErrorParam, Payload, RawIssu
 use super::regex::JsRegex;
 use super::{JsonSchemaGen, ParseCtx, Schema, TypeErrors, ZodIssueCode, ZodType, invalid_type, js, regexes, v3_via_v4};
 
-static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Za-z0-9_'+\-.]*[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$").unwrap()
-});
-static UUID: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap()
-});
+static EMAIL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_'+\-.]*[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$").unwrap());
+static UUID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap());
 static CUID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^c[^\s-]{8,}$").unwrap());
 static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^\s/?#]+[^\s]*$").unwrap());
-static DATETIME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z$").unwrap());
+static DATETIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z$").unwrap());
 static DATETIME_OFFSET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)$").unwrap());
 static DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap());
@@ -224,7 +221,11 @@ impl<K> Chk<K> {
 pub(crate) enum FmtKind {
     /// `$ZodCheckStringFormat` with a pattern.
     Pattern,
-    Url { hostname: Option<JsRegex>, protocol: Option<JsRegex>, normalize: bool },
+    Url {
+        hostname: Option<JsRegex>,
+        protocol: Option<JsRegex>,
+        normalize: bool,
+    },
     Ipv6,
     Cidrv6,
     Base64,
@@ -358,33 +359,35 @@ fn url_check(
         return;
     };
     if let Some(h) = hostname
-        && !h.test(url.host_str().unwrap_or("")) {
-            p.push(issue(
-                vec![
-                    ("code", json!("invalid_format")),
-                    ("format", json!("url")),
-                    ("note", json!("Invalid hostname")),
-                    ("pattern", json!(h.source())),
-                ],
-                &input,
-                error.clone(),
-                cont,
-            ));
-        }
+        && !h.test(url.host_str().unwrap_or(""))
+    {
+        p.push(issue(
+            vec![
+                ("code", json!("invalid_format")),
+                ("format", json!("url")),
+                ("note", json!("Invalid hostname")),
+                ("pattern", json!(h.source())),
+            ],
+            &input,
+            error.clone(),
+            cont,
+        ));
+    }
     if let Some(pr) = protocol
-        && !pr.test(url.scheme()) {
-            p.push(issue(
-                vec![
-                    ("code", json!("invalid_format")),
-                    ("format", json!("url")),
-                    ("note", json!("Invalid protocol")),
-                    ("pattern", json!(pr.source())),
-                ],
-                &input,
-                error,
-                cont,
-            ));
-        }
+        && !pr.test(url.scheme())
+    {
+        p.push(issue(
+            vec![
+                ("code", json!("invalid_format")),
+                ("format", json!("url")),
+                ("note", json!("Invalid protocol")),
+                ("pattern", json!(pr.source())),
+            ],
+            &input,
+            error,
+            cont,
+        ));
+    }
     p.value = Val::Json(Value::String(if normalize { url.as_str().to_string() } else { trimmed.to_string() }));
 }
 
@@ -442,7 +445,18 @@ pub(crate) fn is_valid_base64url(data: &str) -> bool {
     if !regexes::BASE64URL.test(data) {
         return false;
     }
-    let b: String = data.chars().map(|c| if c == '-' { '+' } else if c == '_' { '/' } else { c }).collect();
+    let b: String = data
+        .chars()
+        .map(|c| {
+            if c == '-' {
+                '+'
+            } else if c == '_' {
+                '/'
+            } else {
+                c
+            }
+        })
+        .collect();
     let padded_len = b.len().div_ceil(4) * 4;
     let padded = format!("{b}{}", "=".repeat(padded_len - b.len()));
     is_valid_base64(&padded)
@@ -464,9 +478,10 @@ pub(crate) fn is_valid_jwt(token: &str, alg: Option<&str>) -> bool {
         return false;
     }
     if let Some(alg) = alg
-        && h.get("alg").and_then(Value::as_str) != Some(alg) {
-            return false;
-        }
+        && h.get("alg").and_then(Value::as_str) != Some(alg)
+    {
+        return false;
+    }
     true
 }
 
@@ -547,7 +562,13 @@ impl Fmt {
         f
     }
     pub fn jwt(alg: Option<&str>) -> Self {
-        Fmt { format: "jwt".into(), pattern: None, kind: FmtKind::Jwt(alg.map(str::to_string)), legacy: Legacy::None, content_encoding: None }
+        Fmt {
+            format: "jwt".into(),
+            pattern: None,
+            kind: FmtKind::Jwt(alg.map(str::to_string)),
+            legacy: Legacy::None,
+            content_encoding: None,
+        }
     }
     pub fn e164() -> Self {
         Fmt::pat("e164", regexes::E164.clone())
@@ -1108,11 +1129,7 @@ pub(crate) fn string_json_schema(bag: &StrBag, jsg: &JsonSchemaGen, json: &mut M
                 .patterns
                 .iter()
                 .map(|r| {
-                    if jsg.legacy_target() {
-                        json!({ "type": "string", "pattern": r.source() })
-                    } else {
-                        json!({ "pattern": r.source() })
-                    }
+                    if jsg.legacy_target() { json!({ "type": "string", "pattern": r.source() }) } else { json!({ "pattern": r.source() }) }
                 })
                 .collect();
             json.insert("allOf".into(), Value::Array(all));
@@ -1156,7 +1173,12 @@ impl ZodType for ZString {
                         ctx,
                         ZodIssueCode::TooSmall,
                         format!("String must contain at least {n} character(s)"),
-                        issue_params(&[("minimum", json!(n)), ("type", json!("string")), ("inclusive", json!(true)), ("exact", json!(false))]),
+                        issue_params(&[
+                            ("minimum", json!(n)),
+                            ("type", json!("string")),
+                            ("inclusive", json!(true)),
+                            ("exact", json!(false)),
+                        ]),
                     );
                 }
                 StrKind::Max(n) if len > *n => {
@@ -1165,7 +1187,12 @@ impl ZodType for ZString {
                         ctx,
                         ZodIssueCode::TooBig,
                         format!("String must contain at most {n} character(s)"),
-                        issue_params(&[("maximum", json!(n)), ("type", json!("string")), ("inclusive", json!(true)), ("exact", json!(false))]),
+                        issue_params(&[
+                            ("maximum", json!(n)),
+                            ("type", json!("string")),
+                            ("inclusive", json!(true)),
+                            ("exact", json!(false)),
+                        ]),
                     );
                 }
                 StrKind::Length(n) if len != *n => {
@@ -1255,7 +1282,10 @@ impl ZodType for ZString {
                     p,
                     &self.checks,
                     |c| &c.opts,
-                    |c| matches!(c.kind, StrKind::Min(_) | StrKind::Max(_) | StrKind::Length(_)).then_some(has_length as fn(&Payload) -> bool),
+                    |c| {
+                        matches!(c.kind, StrKind::Min(_) | StrKind::Max(_) | StrKind::Length(_))
+                            .then_some(has_length as fn(&Payload) -> bool)
+                    },
                     |c, p| self.apply_v4(c, p),
                 )
             },
@@ -1728,7 +1758,12 @@ impl ZodType for ZNumber {
                     ctx.add(
                         ZodIssueCode::TooSmall,
                         msg(d),
-                        issue_params(&[("minimum", num_value(v)), ("type", json!("number")), ("inclusive", json!(inclusive)), ("exact", json!(false))]),
+                        issue_params(&[
+                            ("minimum", num_value(v)),
+                            ("type", json!("number")),
+                            ("inclusive", json!(inclusive)),
+                            ("exact", json!(false)),
+                        ]),
                     );
                 }
                 NumKind::Max(v, inclusive) if (inclusive && n > v) || (!inclusive && n >= v) => {
@@ -1741,7 +1776,12 @@ impl ZodType for ZNumber {
                     ctx.add(
                         ZodIssueCode::TooBig,
                         msg(d),
-                        issue_params(&[("maximum", num_value(v)), ("type", json!("number")), ("inclusive", json!(inclusive)), ("exact", json!(false))]),
+                        issue_params(&[
+                            ("maximum", num_value(v)),
+                            ("type", json!("number")),
+                            ("inclusive", json!(inclusive)),
+                            ("exact", json!(false)),
+                        ]),
                     );
                 }
                 NumKind::MultipleOf(m) if m != 0.0 && ((n / m).round() * m - n).abs() > 1e-9 * n.abs().max(1.0) => {
@@ -1890,9 +1930,10 @@ impl ZodType for ZBigInt {
             !self.checks.is_empty(),
             |mut p| {
                 if self.coerce
-                    && let Some(b) = js_bigint_of(&p.value) {
-                        p.value = Val::BigInt(b);
-                    }
+                    && let Some(b) = js_bigint_of(&p.value)
+                {
+                    p.value = Val::BigInt(b);
+                }
                 if !matches!(p.value, Val::BigInt(_)) {
                     invalid_type_v4("bigint", &mut p, self.inst_error());
                 }
@@ -2114,9 +2155,7 @@ impl ZodType for ZDate {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
         let (date, original) = match input {
             Some(Value::String(s)) => (parse_date(s), Some(s.clone())),
-            Some(Value::Number(n)) if self.coerce => {
-                (n.as_i64().and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis), None)
-            }
+            Some(Value::Number(n)) if self.coerce => (n.as_i64().and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis), None),
             other => {
                 invalid_type(ctx, "date", other, &self.errors);
                 return Err(());
@@ -2130,23 +2169,35 @@ impl ZodType for ZDate {
         let min_msg = self.checks.iter().find(|c| c.kind.0).and_then(|c| c.message.clone());
         let max_msg = self.checks.iter().find(|c| !c.kind.0).and_then(|c| c.message.clone());
         if let Some((min, msg)) = &self.min
-            && date < *min {
-                ok = false;
-                ctx.add(
-                    ZodIssueCode::TooSmall,
-                    msg.clone().or(min_msg).unwrap_or_else(|| format!("Date must be greater than or equal to {}", min.to_rfc3339())),
-                    issue_params(&[("minimum", json!(min.timestamp_millis())), ("type", json!("date")), ("inclusive", json!(true)), ("exact", json!(false))]),
-                );
-            }
+            && date < *min
+        {
+            ok = false;
+            ctx.add(
+                ZodIssueCode::TooSmall,
+                msg.clone().or(min_msg).unwrap_or_else(|| format!("Date must be greater than or equal to {}", min.to_rfc3339())),
+                issue_params(&[
+                    ("minimum", json!(min.timestamp_millis())),
+                    ("type", json!("date")),
+                    ("inclusive", json!(true)),
+                    ("exact", json!(false)),
+                ]),
+            );
+        }
         if let Some((max, msg)) = &self.max
-            && date > *max {
-                ok = false;
-                ctx.add(
-                    ZodIssueCode::TooBig,
-                    msg.clone().or(max_msg).unwrap_or_else(|| format!("Date must be smaller than or equal to {}", max.to_rfc3339())),
-                    issue_params(&[("maximum", json!(max.timestamp_millis())), ("type", json!("date")), ("inclusive", json!(true)), ("exact", json!(false))]),
-                );
-            }
+            && date > *max
+        {
+            ok = false;
+            ctx.add(
+                ZodIssueCode::TooBig,
+                msg.clone().or(max_msg).unwrap_or_else(|| format!("Date must be smaller than or equal to {}", max.to_rfc3339())),
+                issue_params(&[
+                    ("maximum", json!(max.timestamp_millis())),
+                    ("type", json!("date")),
+                    ("inclusive", json!(true)),
+                    ("exact", json!(false)),
+                ]),
+            );
+        }
         if !ok {
             return Err(());
         }
@@ -2170,9 +2221,10 @@ impl ZodType for ZDate {
                     }
                 } else if ctx.date_strings
                     && let Some(s) = p.value.as_str()
-                        && js::looks_like_iso_datetime(s) {
-                            p.value = Val::Date(js::parse_date(s));
-                        }
+                    && js::looks_like_iso_datetime(s)
+                {
+                    p.value = Val::Date(js::parse_date(s));
+                }
                 match p.value {
                     Val::Date(t) if !t.is_nan() => {}
                     Val::Date(_) => {
@@ -2202,7 +2254,12 @@ impl ZodType for ZDate {
                         if !ok {
                             let (code, key) = if is_min { ("too_small", "minimum") } else { ("too_big", "maximum") };
                             p.push(issue(
-                                vec![("origin", json!("date")), ("code", json!(code)), (key, js::num_json(bound)), ("inclusive", json!(true))],
+                                vec![
+                                    ("origin", json!("date")),
+                                    ("code", json!(code)),
+                                    (key, js::num_json(bound)),
+                                    ("inclusive", json!(true)),
+                                ],
                                 &input,
                                 c.opts.error.clone(),
                                 c.opts.cont(),
@@ -2439,9 +2496,9 @@ impl ZodType for ZEnum {
             Some(Value::String(s)) => {
                 ctx.add(
                     ZodIssueCode::InvalidEnumValue,
-                    self.message.clone().unwrap_or_else(|| {
-                        format!("Invalid enum value. Expected {}, received '{s}'", quote_list(&self.values))
-                    }),
+                    self.message
+                        .clone()
+                        .unwrap_or_else(|| format!("Invalid enum value. Expected {}, received '{s}'", quote_list(&self.values))),
                     issue_params(&[("received", json!(s)), ("options", json!(self.values))]),
                 );
                 Err(())
@@ -2612,7 +2669,6 @@ simple_type!(
     |jsg: &mut JsonSchemaGen, _json: &mut Map<String, Value>| jsg.unrepresentable("NaN cannot be represented in JSON Schema")
 );
 
-
 /// `z.any()` / `z.unknown()`.
 #[derive(Clone)]
 pub struct ZAny;
@@ -2698,7 +2754,11 @@ impl ZodType for ZStringBool {
                 return p;
             }
             let t = p.value == Val::Json(Value::Bool(true));
-            let s = if t { self.truthy.first().cloned().unwrap_or("true".into()) } else { self.falsy.first().cloned().unwrap_or("false".into()) };
+            let s = if t {
+                self.truthy.first().cloned().unwrap_or("true".into())
+            } else {
+                self.falsy.first().cloned().unwrap_or("false".into())
+            };
             p.value = Val::Json(Value::String(s));
             return p;
         }

@@ -39,8 +39,7 @@ pub enum Scope {
 
 pub(crate) type Factory = Arc<dyn Fn(ResolveCtx) -> BoxFuture<'static, Result<Instance, DiError>> + Send + Sync>;
 pub(crate) type ErasedHook = Arc<dyn Fn(Instance) -> BoxFuture<'static, crate::Result<()>> + Send + Sync>;
-pub(crate) type ErasedSignalHook =
-    Arc<dyn Fn(Instance, Option<String>) -> BoxFuture<'static, crate::Result<()>> + Send + Sync>;
+pub(crate) type ErasedSignalHook = Arc<dyn Fn(Instance, Option<String>) -> BoxFuture<'static, crate::Result<()>> + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub(crate) struct ErasedHooks {
@@ -151,10 +150,7 @@ impl Provider {
 
     /// `{ provide: token, useClass: T }` exposed as a trait object `U`
     /// (e.g. `Provider::use_class_as::<PgRepo, dyn Repo>("REPO", |r| r)`).
-    pub fn use_class_as<T: Injectable, U: ?Sized + Send + Sync + 'static>(
-        token: impl Into<Token>,
-        cast: fn(Arc<T>) -> Arc<U>,
-    ) -> Self {
+    pub fn use_class_as<T: Injectable, U: ?Sized + Send + Sync + 'static>(token: impl Into<Token>, cast: fn(Arc<T>) -> Arc<U>) -> Self {
         let token = token.into();
         let factory: Factory = Arc::new(move |ctx: ResolveCtx| {
             async move {

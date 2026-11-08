@@ -28,13 +28,31 @@ pub struct VersioningOptions {
 
 impl VersioningOptions {
     pub fn uri() -> Self {
-        VersioningOptions { kind: VersioningType::Uri, prefix: "v".into(), header: String::new(), key: String::new(), default_version: None }
+        VersioningOptions {
+            kind: VersioningType::Uri,
+            prefix: "v".into(),
+            header: String::new(),
+            key: String::new(),
+            default_version: None,
+        }
     }
     pub fn header(name: impl Into<String>) -> Self {
-        VersioningOptions { kind: VersioningType::Header, prefix: String::new(), header: name.into(), key: String::new(), default_version: None }
+        VersioningOptions {
+            kind: VersioningType::Header,
+            prefix: String::new(),
+            header: name.into(),
+            key: String::new(),
+            default_version: None,
+        }
     }
     pub fn media_type(key: impl Into<String>) -> Self {
-        VersioningOptions { kind: VersioningType::MediaType, prefix: String::new(), header: String::new(), key: key.into(), default_version: None }
+        VersioningOptions {
+            kind: VersioningType::MediaType,
+            prefix: String::new(),
+            header: String::new(),
+            key: key.into(),
+            default_version: None,
+        }
     }
     pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
         self.prefix = prefix.into();

@@ -38,8 +38,7 @@ fn words(input: &str) -> Vec<String> {
 /// other characters are rejected instead of being copied into paths or sources.
 pub fn validate_name(name: &str) -> Result<(), String> {
     let mut chars = name.chars();
-    let ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    let ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if ok {
         Ok(())
     } else {
@@ -54,11 +53,7 @@ pub fn validate_module_dir(dir: &str) -> Result<(), String> {
     let ok = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
         && dir != "_";
-    if ok {
-        Ok(())
-    } else {
-        Err(format!("invalid --path \"{}\": use a module name such as users or user_profile", dir.escape_debug()))
-    }
+    if ok { Ok(()) } else { Err(format!("invalid --path \"{}\": use a module name such as users or user_profile", dir.escape_debug())) }
 }
 
 /// `--corvis-version <v>`: a Cargo version requirement (`0.1`, `^0.1.2`, `>=0.1, <0.3`,

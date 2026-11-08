@@ -111,11 +111,7 @@ async fn matches_reference_client() {
         let action = c["action"].as_str().unwrap();
         let res = if model == "$raw" && matches!(action, "queryRaw" | "executeRaw") {
             let sql = typed_sql(c["args"].as_array().unwrap());
-            if action == "queryRaw" {
-                db._query_raw(sql).await.map(Value::from)
-            } else {
-                db._execute_raw(sql).await.map(Value::from)
-            }
+            if action == "queryRaw" { db._query_raw(sql).await.map(Value::from) } else { db._execute_raw(sql).await.map(Value::from) }
         } else if model == "$raw" {
             let a = c["args"].as_array().unwrap();
             let sql = a[0].as_str().unwrap();

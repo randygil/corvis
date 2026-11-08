@@ -104,7 +104,13 @@ impl Engine {
             .await
     }
 
-    fn insert_sql(&self, model: &'static ModelMeta, cols: &[(&'static FieldMeta, SqlValue)], returning: bool, skip_duplicates: bool) -> Sql {
+    fn insert_sql(
+        &self,
+        model: &'static ModelMeta,
+        cols: &[(&'static FieldMeta, SqlValue)],
+        returning: bool,
+        skip_duplicates: bool,
+    ) -> Sql {
         let mut q = Sql::new(self.dialect());
         q.push("INSERT ");
         if skip_duplicates && self.dialect() == Dialect::Sqlite {
@@ -146,7 +152,12 @@ impl Engine {
     }
 
     /// Scalar columns of a create, applying defaults and checking required fields.
-    fn complete_insert(&self, model: &'static ModelMeta, cols: &mut Vec<(&'static FieldMeta, SqlValue)>, provided: &HashSet<&'static str>) -> Result<()> {
+    fn complete_insert(
+        &self,
+        model: &'static ModelMeta,
+        cols: &mut Vec<(&'static FieldMeta, SqlValue)>,
+        provided: &HashSet<&'static str>,
+    ) -> Result<()> {
         for f in model.scalars() {
             if provided.contains(f.name) {
                 continue;
@@ -171,7 +182,12 @@ impl Engine {
     }
 
     /// Runs an insert with `RETURNING <pk>` and returns the new id.
-    async fn insert_returning(&self, model: &'static ModelMeta, cols: &[(&'static FieldMeta, SqlValue)], skip_duplicates: bool) -> Result<Option<Id>> {
+    async fn insert_returning(
+        &self,
+        model: &'static ModelMeta,
+        cols: &[(&'static FieldMeta, SqlValue)],
+        skip_duplicates: bool,
+    ) -> Result<Option<Id>> {
         let q = self.insert_sql(model, cols, true, skip_duplicates);
         let rows = self.client.fetch(&q, Some(model)).await?;
         let d = self.dialect();
@@ -252,7 +268,13 @@ impl Engine {
     }
 
     /// `UPDATE t AS t0 SET ... WHERE <w>`: the number of updated rows.
-    pub(crate) async fn update_where(&self, model: &'static ModelMeta, sets: &[(&'static FieldMeta, SetExpr)], w: &Value, limit: Option<i64>) -> Result<u64> {
+    pub(crate) async fn update_where(
+        &self,
+        model: &'static ModelMeta,
+        sets: &[(&'static FieldMeta, SetExpr)],
+        w: &Value,
+        limit: Option<i64>,
+    ) -> Result<u64> {
         if sets.is_empty() {
             return Ok(self.ids_where(model, w, limit).await?.len() as u64);
         }
@@ -261,7 +283,13 @@ impl Engine {
     }
 
     /// `UPDATE ... RETURNING <pk>`: the (new) ids of the updated rows.
-    async fn update_where_returning(&self, model: &'static ModelMeta, sets: &[(&'static FieldMeta, SetExpr)], w: &Value, limit: Option<i64>) -> Result<Vec<Id>> {
+    async fn update_where_returning(
+        &self,
+        model: &'static ModelMeta,
+        sets: &[(&'static FieldMeta, SetExpr)],
+        w: &Value,
+        limit: Option<i64>,
+    ) -> Result<Vec<Id>> {
         if sets.is_empty() {
             return self.ids_where(model, w, limit).await;
         }
@@ -275,7 +303,14 @@ impl Engine {
             .collect())
     }
 
-    fn update_sql(&self, model: &'static ModelMeta, sets: &[(&'static FieldMeta, SetExpr)], w: &Value, limit: Option<i64>, returning: bool) -> Result<Sql> {
+    fn update_sql(
+        &self,
+        model: &'static ModelMeta,
+        sets: &[(&'static FieldMeta, SetExpr)],
+        w: &Value,
+        limit: Option<i64>,
+        returning: bool,
+    ) -> Result<Sql> {
         let mut q = Sql::new(self.dialect());
         q.push("UPDATE ").table(model.schema, model.table).push(" AS t0 SET ");
         self.set_list_sql(&mut q, sets, "");
@@ -362,7 +397,11 @@ impl Engine {
                 return Ok(SetExpr::Push(self.value(f, &tmp, false)?));
             }
             if !f.kind.is_numeric() {
-                return Err(self.err(format!("Argument `{op}` is only available for numeric fields; `{}` is {}.", f.name, f.kind.schema_name())));
+                return Err(self.err(format!(
+                    "Argument `{op}` is only available for numeric fields; `{}` is {}.",
+                    f.name,
+                    f.kind.schema_name()
+                )));
             }
             let sym = match op.as_str() {
                 "increment" => "+",
@@ -407,7 +446,13 @@ impl Engine {
     }
 
     /// Finds the record a nested `connect` (on the side holding the foreign key) points to.
-    async fn connect_target(&self, parent: &'static ModelMeta, f: &FieldMeta, r: &ResolvedRelation, w: &Value) -> Result<Map<String, Value>> {
+    async fn connect_target(
+        &self,
+        parent: &'static ModelMeta,
+        f: &FieldMeta,
+        r: &ResolvedRelation,
+        w: &Value,
+    ) -> Result<Map<String, Value>> {
         let w = &self.check_unique_where(r.target, w)?;
         let rows = self.scalar_rows(r.target, w, Some(1)).await?;
         rows.into_iter().next().ok_or_else(|| {
@@ -422,7 +467,14 @@ impl Engine {
     }
 
     /// Resolves a `belongs_to` nested write into the target row.
-    async fn belongs_to_target(&self, model: &'static ModelMeta, f: &'static FieldMeta, r: &ResolvedRelation, op: &str, val: &Value) -> Result<Map<String, Value>> {
+    async fn belongs_to_target(
+        &self,
+        model: &'static ModelMeta,
+        f: &'static FieldMeta,
+        r: &ResolvedRelation,
+        op: &str,
+        val: &Value,
+    ) -> Result<Map<String, Value>> {
         match op {
             "connect" => self.connect_target(model, f, r, val).await,
             "create" => {
@@ -549,7 +601,14 @@ impl Engine {
     }
 
     /// Nested writes on a `has_many` / `has_one` / many-to-many relation of the record `id`.
-    fn nested_relation_writes<'a>(&'a self, model: &'static ModelMeta, id: &'a Id, f: &'static FieldMeta, v: Value, in_update: bool) -> BoxFuture<'a, Result<()>> {
+    fn nested_relation_writes<'a>(
+        &'a self,
+        model: &'static ModelMeta,
+        id: &'a Id,
+        f: &'static FieldMeta,
+        v: Value,
+        in_update: bool,
+    ) -> BoxFuture<'a, Result<()>> {
         async move {
             let r = self.relation(model, f)?;
             let list = matches!(r.kind, RelationKind::HasMany | RelationKind::ManyToMany);
@@ -849,7 +908,13 @@ impl Engine {
 
     /// One-to-one `create` in an update while a partner exists: the current one is disconnected
     /// (or the write fails with P2014 when its foreign key is required).
-    async fn release_one_to_one(&self, r: &ResolvedRelation, fk: &Map<String, Value>, rel_name: &str, model: &'static ModelMeta) -> Result<()> {
+    async fn release_one_to_one(
+        &self,
+        r: &ResolvedRelation,
+        fk: &Map<String, Value>,
+        rel_name: &str,
+        model: &'static ModelMeta,
+    ) -> Result<()> {
         let existing = self.ids_where(r.target, &Value::Object(fk.clone()), None).await?;
         if existing.is_empty() {
             return Ok(());
@@ -864,7 +929,8 @@ impl Engine {
                 json!({ "relation_name": rel_name, "model_a_name": r.target.name, "model_b_name": model.name }),
             ));
         }
-        let sets: Vec<(&'static FieldMeta, SetExpr)> = r.target_fields.iter().map(|tf| (*tf, SetExpr::Value(SqlValue::Null(tf.kind)))).collect();
+        let sets: Vec<(&'static FieldMeta, SetExpr)> =
+            r.target_fields.iter().map(|tf| (*tf, SetExpr::Value(SqlValue::Null(tf.kind)))).collect();
         self.update_where(r.target, &sets, &ids_filter(&existing), None).await?;
         Ok(())
     }
@@ -880,7 +946,13 @@ impl Engine {
 
     /// Inserts a scalar-only record (createMany). Returns the affected rows and, when
     /// `returning`, the new id.
-    async fn insert_scalars(&self, model: &'static ModelMeta, data: &Map<String, Value>, skip_duplicates: bool, returning: bool) -> Result<(u64, Option<Id>)> {
+    async fn insert_scalars(
+        &self,
+        model: &'static ModelMeta,
+        data: &Map<String, Value>,
+        skip_duplicates: bool,
+        returning: bool,
+    ) -> Result<(u64, Option<Id>)> {
         let mut cols = Vec::new();
         let mut provided = HashSet::new();
         for (f, v) in self.scalar_data(model, data)? {
@@ -905,7 +977,13 @@ impl Engine {
     /// `guard` is the `where` of the caller: it is repeated in the `UPDATE` (`WHERE pk AND
     /// (<guard>)`), and when the row no longer matches it the update fails with `P2025` instead
     /// of overwriting a row that changed since it was read.
-    pub(crate) fn update_record<'a>(&'a self, model: &'static ModelMeta, id: Id, data: Map<String, Value>, guard: Option<Value>) -> BoxFuture<'a, Result<Id>> {
+    pub(crate) fn update_record<'a>(
+        &'a self,
+        model: &'static ModelMeta,
+        id: Id,
+        data: Map<String, Value>,
+        guard: Option<Value>,
+    ) -> BoxFuture<'a, Result<Id>> {
         async move {
             let mut guard = guard;
             let target = |guard: &Option<Value>| and(Value::Object(id.clone()), guard.clone());
@@ -982,7 +1060,8 @@ impl Engine {
                                 w.insert(tf.name.to_string(), row.get(pf.name).cloned().unwrap_or(Value::Null));
                             }
                             let linked = r.parent_fields.iter().all(|pf| !row.get(pf.name).unwrap_or(&Value::Null).is_null());
-                            let tid = if linked { self.ids_where(r.target, &Value::Object(w), Some(1)).await?.into_iter().next() } else { None };
+                            let tid =
+                                if linked { self.ids_where(r.target, &Value::Object(w), Some(1)).await?.into_iter().next() } else { None };
                             if op == "update" {
                                 let data = if o.contains_key("data") && o.keys().all(|k| k == "where" || k == "data") {
                                     self.obj(&o["data"], "data", "object")?.clone()
@@ -1008,7 +1087,10 @@ impl Engine {
                                         let tid = self.create_record(r.target, data).await?;
                                         let trow = self.row_by_id(r.target, &tid).await?;
                                         for (pf, tf) in r.parent_fields.iter().zip(r.target_fields.iter()) {
-                                            sets.push((pf, SetExpr::Value(self.value(pf, trow.get(tf.name).unwrap_or(&Value::Null), false)?)));
+                                            sets.push((
+                                                pf,
+                                                SetExpr::Value(self.value(pf, trow.get(tf.name).unwrap_or(&Value::Null), false)?),
+                                            ));
                                         }
                                     }
                                 }
@@ -1188,7 +1270,8 @@ impl Engine {
         let nested_select = ["select", "include"].iter().any(|k| {
             args.get(*k).and_then(|v| v.as_object()).is_some_and(|o| {
                 o.iter().any(|(name, v)| {
-                    !matches!(v, Value::Null | Value::Bool(false)) && (name == "_count" || model.field(name).is_some_and(|f| f.is_relation()))
+                    !matches!(v, Value::Null | Value::Bool(false))
+                        && (name == "_count" || model.field(name).is_some_and(|f| f.is_relation()))
                 })
             })
         });

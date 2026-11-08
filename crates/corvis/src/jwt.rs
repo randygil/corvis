@@ -202,12 +202,13 @@ impl JwtService {
     pub fn sign_with(&self, payload: &impl Serialize, opts: JwtSignOptions) -> crate::Result<String> {
         let alg = self.options.algorithm;
         // The first non-empty key wins: per-call secret, module secret, per-call private key, module private key.
-        let key = [opts.secret.as_deref(), Some(self.options.secret.as_str()), opts.private_key.as_deref(), self.options.private_key.as_deref()]
-            .into_iter()
-            .flatten()
-            .find(|k| !k.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("secretOrPrivateKey must have a value"))?
-            .to_string();
+        let key =
+            [opts.secret.as_deref(), Some(self.options.secret.as_str()), opts.private_key.as_deref(), self.options.private_key.as_deref()]
+                .into_iter()
+                .flatten()
+                .find(|k| !k.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("secretOrPrivateKey must have a value"))?
+                .to_string();
         let mut claims = serde_json::to_value(payload)?;
         if let Value::Object(map) = &mut claims {
             let now = chrono::Utc::now().timestamp();
@@ -279,13 +280,15 @@ impl JwtService {
         };
         number("iat")?;
         if let Some(nbf) = number("nbf")?
-            && nbf > now {
-                anyhow::bail!("jwt not active");
-            }
+            && nbf > now
+        {
+            anyhow::bail!("jwt not active");
+        }
         if let Some(exp) = number("exp")?
-            && now >= exp {
-                anyhow::bail!("jwt expired");
-            }
+            && now >= exp
+        {
+            anyhow::bail!("jwt expired");
+        }
         Ok(serde_json::from_value(claims)?)
     }
 

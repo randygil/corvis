@@ -8,7 +8,7 @@ use crate::common::filter::ExceptionFilter;
 use crate::common::guard::CanActivate;
 use crate::common::interceptor::CorvisInterceptor;
 use crate::common::lifecycle::HookKind;
-use crate::common::middleware::{FnMiddleware, CorvisMiddleware, Next};
+use crate::common::middleware::{CorvisMiddleware, FnMiddleware, Next};
 use crate::common::pipe::PipeTransform;
 use crate::di::container::{Container, Overrides};
 use crate::di::provider::{GlobalEnhancer, downcast};
@@ -319,11 +319,7 @@ impl CorvisApplication {
 
     /// `app.getHttpAdapter()`.
     pub fn get_http_adapter(&self) -> crate::http_adapter::HttpAdapter {
-        self.container
-            .instances_of::<crate::http_adapter::HttpAdapterHost>()
-            .first()
-            .map(|h| h.http_adapter().clone())
-            .unwrap_or_default()
+        self.container.instances_of::<crate::http_adapter::HttpAdapterHost>().first().map(|h| h.http_adapter().clone()).unwrap_or_default()
     }
 
     /// `app.getHttpServer()`.
@@ -565,9 +561,7 @@ impl ListenAddr for &str {
             return p.to_socket_addr();
         }
         use std::net::ToSocketAddrs;
-        self.to_socket_addrs()?
-            .next()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid address"))
+        self.to_socket_addrs()?.next().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid address"))
     }
 }
 impl ListenAddr for String {

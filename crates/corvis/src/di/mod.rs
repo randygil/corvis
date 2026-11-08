@@ -11,7 +11,7 @@ pub mod token;
 pub use container::{Container, ModuleId};
 pub use error::DiError;
 pub use injectable::{Hooks, InjectField, Injectable, ResolveCtx};
-pub use module::{ConfigureFn, DynamicModule, ExportItem, Module, ModuleDefinition, ModuleImport, CorvisModule};
+pub use module::{ConfigureFn, CorvisModule, DynamicModule, ExportItem, Module, ModuleDefinition, ModuleImport};
 pub use module_ref::ModuleRef;
 pub use provider::{Instance, Provider, Scope};
 pub use token::Token;

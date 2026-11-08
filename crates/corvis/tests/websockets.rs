@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use futures::{SinkExt, StreamExt};
 use corvis::prelude::*;
 use corvis::{OnGatewayConnection, WsClient, WsResponse, WsServer, websocket_gateway};
+use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 #[websocket_gateway(path = "/chat")]
@@ -287,7 +287,10 @@ impl SecureGateway {
 #[module(providers = [SecureGateway])]
 pub struct SecureModule;
 
-async fn secure_client(addr: std::net::SocketAddr, query: &str) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+async fn secure_client(
+    addr: std::net::SocketAddr,
+    query: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
     tokio_tungstenite::connect_async(format!("ws://{addr}/secure{query}")).await.unwrap().0
 }
 
@@ -379,10 +382,7 @@ async fn interceptors_exceptions_and_acknowledgements() {
         json!({ "event": "exception", "data": { "status": "error", "message": "Internal server error" } })
     );
     // `id` is echoed in replies and exception frames.
-    assert_eq!(
-        ask(&mut ws, json!({ "event": "whoami", "id": 7 })).await,
-        json!({ "event": "whoami", "data": "ana", "id": 7 })
-    );
+    assert_eq!(ask(&mut ws, json!({ "event": "whoami", "id": 7 })).await, json!({ "event": "whoami", "data": "ana", "id": 7 }));
     assert_eq!(
         ask(&mut ws, json!({ "event": "room_full", "id": "req-1" })).await,
         json!({ "event": "exception", "data": { "code": "ROOM_FULL", "max": 2 }, "id": "req-1" })

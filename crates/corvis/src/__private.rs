@@ -45,12 +45,7 @@ impl<T: ?Sized> Default for Probe<T> {
 
 pub struct InjectTag;
 impl InjectTag {
-    pub fn resolve<T: InjectField>(
-        self,
-        ctx: ResolveCtx,
-        token: Option<Token>,
-        index: usize,
-    ) -> BoxFuture<'static, Result<T, DiError>> {
+    pub fn resolve<T: InjectField>(self, ctx: ResolveCtx, token: Option<Token>, index: usize) -> BoxFuture<'static, Result<T, DiError>> {
         T::inject(ctx, token, index)
     }
 }
