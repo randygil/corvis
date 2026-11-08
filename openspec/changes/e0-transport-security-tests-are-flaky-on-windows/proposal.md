@@ -15,7 +15,7 @@ system turns that close into a TCP reset, and the reset discards the response be
 
 - When the server closes a connection it accepted, it first sends FIN and then reads and discards what the peer still
   sends, bounded to 1 MiB and 2 seconds, before releasing the socket (what Node does after an early error response).
-- Connections the server closes to punish the peer (headers timeout, keep-alive timeout, refused h2c) skip the drain.
+- Connections the server closes to punish the peer (headers timeout, keep-alive timeout, refused h2c) and sockets destroyed by an upgrade listener skip the drain.
 - The connection permit of `max_connections` is held until the socket is really closed.
 - Regression tests: a request whose oversized head is followed by more input still gets its `431`, and the drain
   is bounded for a peer that never stops sending.

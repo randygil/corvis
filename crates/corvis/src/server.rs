@@ -373,6 +373,13 @@ struct ConnState {
     generation: AtomicU64,
     /// The connection was upgraded (WebSocket, ...): no idle timeouts.
     upgraded: AtomicBool,
+    /// An upgrade listener destroyed the socket (or the upgrade was refused): nothing to protect.
+    destroyed: AtomicBool,
+    /// The server closes the connection to punish the peer (idle timeouts, refused h2c): no drain.
+    no_linger: AtomicBool,
+    /// The socket and its permit, left here by `TimedIo::drop` for the connection task, which decides
+    /// whether to drain before closing (hyper's own timeouts are only visible to that task).
+    closing: Mutex<Option<(TcpStream, Option<OwnedSemaphorePermit>)>>,
     /// Task waiting on the IO, woken when the last in-flight request ends.
     waker: Mutex<Option<Waker>>,
 }
@@ -441,8 +448,6 @@ struct TimedIo {
     io: Option<TcpStream>,
     /// Held until the socket is really closed, so `max_connections` also counts closing sockets.
     permit: Option<OwnedSemaphorePermit>,
-    /// `false` when the server closes the connection to punish the peer (timeouts, h2c refused).
-    linger: bool,
     state: Arc<ConnState>,
     headers_timeout: Option<Duration>,
     keep_alive_timeout: Option<Duration>,
@@ -466,7 +471,7 @@ const LINGER_MAX_TIME: Duration = Duration::from_secs(2);
 async fn linger_close(mut io: TcpStream) {
     let drain = async {
         let _ = tokio::io::AsyncWriteExt::shutdown(&mut io).await;
-        let mut buf = [0u8; 16 * 1024];
+        let mut buf = [0u8; 4 * 1024];
         let mut total = 0usize;
         while total < LINGER_MAX_BYTES {
             match io.read(&mut buf).await {
@@ -480,19 +485,40 @@ async fn linger_close(mut io: TcpStream) {
 
 impl Drop for TimedIo {
     fn drop(&mut self) {
-        let (Some(io), true) = (self.io.take(), self.linger && !self.state.upgraded.load(Ordering::SeqCst)) else {
-            return;
-        };
-        let permit = self.permit.take();
-        match tokio::runtime::Handle::try_current() {
-            Ok(rt) => {
-                rt.spawn(async move {
-                    linger_close(io).await;
-                    drop(permit);
-                });
-            }
-            Err(_) => drop(io),
+        if let Some(io) = self.io.take() {
+            let permit = self.permit.take();
+            *self.state.closing.lock().unwrap_or_else(|e| e.into_inner()) = Some((io, permit));
         }
+    }
+}
+
+/// `true` when hyper ended the connection because of its own header read timeout.
+fn is_hyper_timeout(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cur = Some(err);
+    while let Some(e) = cur {
+        if e.downcast_ref::<hyper::Error>().is_some_and(|h| h.is_timeout()) {
+            return true;
+        }
+        cur = e.source();
+    }
+    false
+}
+
+/// Runs a connection to its end, then closes the socket: gracefully (see [`linger_close`]) unless the
+/// server is closing it to punish the peer (an idle timeout of this server, hyper's header read
+/// timeout, refused h2c), the connection was upgraded, or an upgrade listener destroyed the socket.
+async fn finish_connection(state: Arc<ConnState>, conn: impl Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>) {
+    let result = conn.await;
+    let punish = state.no_linger.load(Ordering::SeqCst)
+        || state.destroyed.load(Ordering::SeqCst)
+        || state.upgraded.load(Ordering::SeqCst)
+        || result.as_ref().err().is_some_and(|e| is_hyper_timeout(e.as_ref()));
+    let closing = state.closing.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some((io, permit)) = closing {
+        if !punish {
+            linger_close(io).await;
+        }
+        drop(permit);
     }
 }
 
@@ -501,7 +527,6 @@ impl TimedIo {
         TimedIo {
             io: Some(io),
             permit,
-            linger: true,
             state,
             headers_timeout: options.headers_timeout,
             keep_alive_timeout: options.keep_alive_timeout,
@@ -537,7 +562,7 @@ impl TimedIo {
             if data[..n] != H2_PREFACE[matched..matched + n] {
                 self.preface = None;
             } else if matched + n == H2_PREFACE.len() {
-                self.linger = false;
+                self.state.no_linger.store(true, Ordering::SeqCst);
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 (h2c) is disabled"));
             } else {
                 self.preface = Some(matched + n);
@@ -571,7 +596,7 @@ impl TimedIo {
         }
         match sleep.as_mut().poll(cx) {
             Poll::Ready(()) => {
-                self.linger = false;
+                self.state.no_linger.store(true, Ordering::SeqCst);
                 Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "connection idle timeout")))
             }
             Poll::Pending => Poll::Pending,
@@ -671,6 +696,7 @@ pub(crate) async fn serve(
                 };
                 let _ = stream.set_nodelay(true);
                 let state = Arc::new(ConnState::default());
+                let conn_state = state.clone();
                 let io = TimedIo::new(stream, permit, state.clone(), &options);
                 let shared = shared.clone();
                 let opts = options.clone();
@@ -679,7 +705,13 @@ pub(crate) async fn serve(
                     let shared = shared.clone();
                     let opts = opts.clone();
                     async move {
-                        let resp = handle(shared, req, remote, &opts).await?;
+                        let resp = match handle(shared, req, remote, &opts).await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                guard.0.destroyed.store(true, Ordering::SeqCst);
+                                return Err(e);
+                            }
+                        };
                         if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
                             guard.0.upgraded.store(true, Ordering::SeqCst);
                         }
@@ -690,9 +722,7 @@ pub(crate) async fn serve(
                 });
                 let conn = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
                 let conn = graceful.watch(conn.into_owned());
-                tokio::spawn(async move {
-                    let _ = conn.await;
-                });
+                tokio::spawn(finish_connection(conn_state, conn));
             }
             _ = &mut shutdown => break,
         }
