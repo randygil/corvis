@@ -199,3 +199,20 @@ version)**
   binary because the logger is process-wide.
 - **Behavior note for the replay.** The fixture's `global_guard_ws_only` scenario covers `ctx.get_type()`; the HTTP side of
   that scenario (403) is covered by `a_guard_can_tell_the_transports_apart`.
+
+### Security review
+
+- **Global `CacheInterceptor` on gateways (medium-high).** It decided cacheability and the key from `ctx.request()`, the
+  handshake (always a `GET` on one URL), so messages of different events and users shared one cached reply and handlers
+  were skipped. It now passes non-HTTP contexts through uncached. Test: `the_cache_interceptor_never_caches_gateway_messages`.
+- **Audit of the other built-in interceptors and guards.** `TimeoutInterceptor` does not read the request.
+  `ZodSerializerInterceptor` works from handler metadata and the reply, so it behaves the same on a message. The multer
+  interceptors return early when the handshake is not multipart, which it never is. `ThrottlerGuard` keys on the handshake IP
+  plus gateway and handler names, which is the documented per-IP, per-handler counting. Only the cache and logging
+  interceptors needed a change.
+- **`LoggingInterceptor` (low).** It logged the handshake URL, with any query token, per message. In a WebSocket context it
+  logs `WS <Gateway>.<handler>`. Test: `the_logging_interceptor_logs_the_handler_not_the_handshake_url`.
+- **Panicking `catches` (low).** The filter lookup now runs under `catch_unwind`; a panic counts as "does not catch" and is
+  logged. Test: `a_filter_whose_catches_panics_does_not_catch`.
+- **Catch-all filters (info).** The exception filters page warns that copying `exception.message()` into a frame exposes
+  internal error text.

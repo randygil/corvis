@@ -801,11 +801,19 @@ async fn exception_data(gateway: &GatewayRuntime, handler: &CompiledWsHandler, c
         }
         Some(exception_payload(e))
     };
-    let Some(filter) = handler.filters.iter().find(|f| f.catches(&e)) else {
+    let log = Logger::new("WsExceptionsHandler");
+    // A panicking `catches` counts as "does not catch" and is logged.
+    let found = handler.filters.iter().find(|f| match std::panic::catch_unwind(AssertUnwindSafe(|| f.catches(&e))) {
+        Ok(catches) => catches,
+        Err(_) => {
+            log.error(format!("{}: the exception filter {} panicked in catches", gateway.name, f.filter_name()));
+            false
+        }
+    });
+    let Some(filter) = found else {
         return builtin(&e);
     };
     let name = filter.filter_name();
-    let log = Logger::new("WsExceptionsHandler");
     match AssertUnwindSafe(filter.catch(e.clone(), ctx)).catch_unwind().await {
         Ok(response) => match response.body {
             Body::Empty => None,

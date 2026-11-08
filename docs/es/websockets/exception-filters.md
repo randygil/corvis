@@ -63,6 +63,12 @@ async fn catch(&self, _exception: HttpException, host: &ArgumentsHost) -> Respon
 }
 ```
 
+::: warning No filtres errores internos
+Un filtro que atrapa todo (el `catches` por defecto devuelve `true` para cualquier excepción) y copia `exception.message()` en el frame envía al cliente el texto de los errores internos (mensajes de la base de datos, rutas de archivos), porque el mapeo integrado que lo oculta ya no corre. Comprueba `exception.is_internal()` y responde con un mensaje genérico en esos casos.
+:::
+
+Un filtro cuyo `catches` hace `panic` se trata como si no atrapara la excepción, y el `panic` se registra.
+
 ## El mapeo integrado
 
 Cuando ningún filtro atrapa la excepción, cualquier error de un guard, interceptor, pipe o handler se convierte en un frame `exception` con una forma fija.
