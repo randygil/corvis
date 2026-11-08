@@ -36,3 +36,18 @@ On PowerShell, set the variable first: `$env:PROPTEST_CASES = "100000"`.
 When a property fails, proptest shrinks the input and writes its seed to a file under `proptest-regressions/` in the
 crate. Fix the bug, keep the seed file and commit it: the seed is replayed on every later run. Add a plain
 regression test with the shrunk input as well.
+
+## Naming check
+
+Published surfaces (crate sources and metadata, examples, the root README, the benchmark report and scripts, the
+documentation site) do not use the names of the original Node framework and ORM, their packages or their links.
+Nominative uses, such as the `schema.prisma` file format, the `_prisma_migrations` table or test oracles that run the
+original libraries, are listed in the script's allowlist with a reason. Run it from the repository root:
+
+```sh
+node scripts/check-naming.mjs
+```
+
+It prints each violation as `path:line` and exits with status 1 when there is one, when an allowlist entry has no
+reason, or when an entry no longer allows anything. `node scripts/check-naming.mjs --self-test` checks the matcher on
+built-in samples. The documentation site has the same rule in `npm run docs:check` (in `docs/`).

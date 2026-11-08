@@ -2,12 +2,12 @@
 
 ## 1. Naming check first
 
-- [ ] 1.1 Write `scripts/check-naming.mjs` (design Decision 7): file set from `git ls-files` limited to the published
+- [x] 1.1 Write `scripts/check-naming.mjs` (design Decision 7): file set from `git ls-files` limited to the published
   surfaces of the `repo/naming` spec, the case-sensitive pattern, an allowlist with `{ path, pattern?, reason }`
   covering categories D and F of design.md, file:line output and a non-zero exit on violations or empty reasons;
   plus a second pattern for the copied tagline (`efficient and scalable server-side`); verify it reports exactly the
   category A, B and E occurrences on the current tree, and fails on a temporary allowlist entry with no reason
-- [ ] 1.2 Document the script in `CONTRIBUTING.md` next to the other checks; verify the documented command runs as
+- [x] 1.2 Document the script in `CONTRIBUTING.md` next to the other checks; verify the documented command runs as
   written
 
 ## 2. Comments and crate metadata
