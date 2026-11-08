@@ -8,7 +8,7 @@ Aliases (`Provider::use_existing`) and implementations exposed as trait objects 
 
 ### Requirement: An alias hands over the same instance as its target
 `Provider::use_existing(alias, existing)` SHALL register `alias` so that resolving it returns the very instance that
-resolving `existing` returns. Aliases MAY point to other aliases.
+resolving `existing` returns. Aliases MAY point to other aliases, and an alias of a transient provider is transient.
 
 #### Scenario: Alias of a class provider
 - **WHEN** a module registers `CatsService` and `Provider::use_existing("CATS", Token::of::<CatsService>())`, and a
@@ -21,8 +21,8 @@ resolving `existing` returns. Aliases MAY point to other aliases.
 
 #### Scenario: Alias of a transient provider
 - **WHEN** `"TIMER"` is an alias of a transient `OperationTimer` and two providers inject `"TIMER"`
-- **THEN** both receive the same instance (the alias is a singleton that keeps one transient instance), while two
-  providers injecting `OperationTimer` directly receive different instances
+- **THEN** each receives its own instance (an alias takes the scope of its target), and so do two providers
+  injecting `OperationTimer` directly
 
 ### Requirement: An alias resolves its target with its module's visibility
 The `existing` token of an alias SHALL be looked up from the module that registers the alias, with the usual

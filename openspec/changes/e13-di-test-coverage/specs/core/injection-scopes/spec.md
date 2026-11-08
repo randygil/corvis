@@ -30,6 +30,10 @@ honored whether it is declared with `#[injectable(scope = "transient")]` or with
   without a scope attribute, and two providers inject `#[inject("TIMER")] Arc<OperationTimer>`
 - **THEN** the two fields hold different instances
 
+#### Scenario: Two fields of the same transient type
+- **WHEN** one singleton declares two `Arc<OperationTimer>` fields and `OperationTimer` is transient
+- **THEN** the two fields hold different instances
+
 #### Scenario: Resolving a transient provider on demand
 - **WHEN** `module_ref.resolve::<OperationTimer>().await` is called twice
 - **THEN** both calls succeed and return different instances
