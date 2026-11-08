@@ -111,8 +111,8 @@ Prerequisite: #133 (`e13-connection-limit-and-pool-timeout-in-the-database-url`)
 - [x] 6.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 6.3 `cargo test --workspace` passes, including the regression tests of groups 2-4
 - [x] 6.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 6.5 Framework runtime code changed (corvis-orm connection path): run the `corvis-parity` check and verify the three
-  port apps keep 0 apidiff differences (and 0 dbdiff differences) (not run by the implementer: the maintainer runs it)
+- [x] 6.5 Framework runtime code changed (corvis-orm connection path): run the `corvis-parity` check and verify the three
+  port apps keep 0 apidiff differences (and 0 dbdiff differences) (not run by the implementer: the maintainer runs it) (maintainer batch run on batch/phase03-e 3cab956: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 - [x] 6.6 Security review of the change (`security-reviewer`): slot accounting under cancellation, transaction timeout
   and `detach`, no URL parts in any new message (security-reviewer on c5edf23: nothing critical, high or medium; the low finding (cancelled transaction released its slot early) and the informational one (value echo with `@` in the query) are fixed in 6b583c6)
 

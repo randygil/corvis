@@ -40,8 +40,8 @@
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 4.3 `cargo test --workspace` passes, including the regression tests of 1.1 and 2.2-2.3
 - [x] 4.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 4.5 (NOT RUN: the maintainer runs corvis-parity) Framework runtime code changed (`init()`): run the `corvis-parity` check and verify the three port apps keep
-  0 apidiff differences and log no `CorsOptions` warning at startup
+- [x] 4.5 (NOT RUN: the maintainer runs corvis-parity) Framework runtime code changed (`init()`): run the `corvis-parity` check and verify the three port apps keep
+  0 apidiff differences and log no `CorsOptions` warning at startup (maintainer batch run on batch/phase03-e 3cab956: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 
 ## Workflow follow-up
 
