@@ -8,9 +8,10 @@
 
 ## 2. Deployment
 
-- [ ] 2.1 Create the Coolify application (source `randygil/corvis`, branch `main`, base directory `/docs`, Dockerfile
+- [x] 2.1 Create the Coolify application (source `randygil/corvis`, branch `main`, base directory `/docs`, Dockerfile
   build, domain `https://corvis.randygil.com`, automatic deployment on push)
-- [ ] 2.2 Deploy and verify the same URLs as 1.1 on `https://corvis.randygil.com`, with a valid certificate
+- [x] 2.2 Deploy and verify the same URLs as 1.1 on `https://corvis.randygil.com`, with a valid certificate
+  - Result: 200 for `/`, `/es/`, `/controllers`, `/es/controllers`; 404 for unknown paths in both languages; `/es` redirects to `/es/` keeping HTTPS (`absolute_redirect off`, added after the first deployment redirected to `http://`); Let's Encrypt certificate; automatic deployment on push verified with that fix.
 
 ## 3. Definition of done
 
