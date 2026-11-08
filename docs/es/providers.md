@@ -94,9 +94,7 @@ pub struct CatsService {
 Un provider por defecto es un singleton compartido entre todos sus consumidores a través de `Arc`, así que recibe `&self`. El estado que cambia va dentro de un `Mutex`, `RwLock`, atómicos o un `Arc` de estado compartido, como `cats: Mutex<Vec<Cat>>` en el ejemplo anterior.
 :::
 
-::: info `#[optional]`
-El atributo `#[optional]` se acepta en los campos pero no cambia nada: lo que hace opcional a una dependencia es el tipo `Option<Arc<T>>`.
-:::
+Para hacer opcional una dependencia, declara el campo como `Option<Arc<T>>`: vale `None` cuando ningún provider es visible. El atributo `#[optional]` no existe y se rechaza al compilar.
 
 ## Tokens
 

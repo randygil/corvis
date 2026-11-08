@@ -113,3 +113,12 @@ See proposal.md for motivation; the guarantees are in the `core/di` spec delta. 
 - `#[optional]` is rejected everywhere with a message pointing to `Option<Arc<T>>`; no marker exception (simpler rule, nothing uses it).
 - No documentation URL in the circular-dependency message for now; it can be added once the docs URLs are stable.
 - The corvis-swagger `@ApiExtraModels` message belongs to #22's inventory; #22 picks it up.
+
+## Implementation notes
+
+- The circular-dependency regression test declares `AService`/`BService` at module level: types declared inside a
+  function body get a `{{closure}}` prefix in `std::any::type_name`, which would appear in the chain.
+- `Container::construct_injectable` (guards, pipes, interceptors referenced by type) is unchanged: those classes are
+  never registered through `use_class_as`, so they need no hook target.
+- Task 5.6 (`corvis-parity`) is left unticked: it is run by the parity-verifier agent, not by the implementer.
+- The two `cargo doc` warnings (`BACKTRACK_LIMIT`, `ErrorMap` link) predate this change and are unrelated.
