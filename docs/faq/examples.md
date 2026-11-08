@@ -10,7 +10,8 @@ workspace, so they run from the repository root with `cargo run -p <name>`.
 ## `cats-app`: the full tour
 
 ```bash
-cargo run -p cats-app        # http://127.0.0.1:3000/api/v1
+JWT_SECRET="$(openssl rand -hex 32)" cargo run -p cats-app
+# http://127.0.0.1:3000/api/v1 (Swagger UI at http://127.0.0.1:3000/docs)
 ```
 
 A cats API that uses almost every piece of the framework in a single project:
@@ -27,6 +28,9 @@ A cats API that uses almost every piece of the framework in a single project:
 - URI versioning (`/api/v1/cats/:id` and `/api/v2/cats/:id`), a `VERSION_NEUTRAL` endpoint,
   caching with `CacheInterceptor`, SSE at `/api/v1/cats/stream`, events with `#[on_event]`, tasks with
   `#[cron]` and `#[timeout]`, health checks and a WebSocket gateway at `/chat`.
+- An OpenAPI document with [`corvis-swagger`](/openapi/introduction): Swagger UI at `/docs`, JSON at `/docs-json`,
+  DTOs and the `Cat` entity described with `#[derive(ApiSchema)]`, tagged controllers and bearer authentication.
+  The `/docs` routes are outside the global prefix and the global guards, so do not expose them as is in production.
 
 The environment variables are in `examples/cats-app/.env.example` (`PORT`, `JWT_SECRET`,
 `JWT_EXPIRES_IN`). The test users are in `src/users/users_service.rs`: `john`
@@ -38,10 +42,9 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/login \
   -d '{"username":"john","password":"changeme"}'
 ```
 
-::: warning
-If you do not define `JWT_SECRET`, `cats-app` signs with the default value `change-me`. It is an example: do not
-deploy it like that.
-:::
+`JWT_SECRET` is required: without it (or with an empty value) the application does not start, because a
+well-known default secret would let anyone forge tokens. `.env.example` leaves it empty on purpose. The server
+listens on `127.0.0.1` only.
 
 ## `blog-orm`: REST API with a database
 
@@ -50,7 +53,8 @@ cargo run -p blog-orm        # http://127.0.0.1:3000 (DATABASE_URL=file:./dev.db
 ```
 
 Users and posts on SQLite with [corvis-orm](/data/corvis-orm): pagination, search, relations,
-nested writes and statistics. The DTOs are validated with `corvis::z` (`zod_dto!` +
+nested writes and statistics. `GET /posts?published=` is read with `z::stringbool()` (`true`, `false`, `1`, `0`,
+`yes`, `no`...; any other value is a `400`), because `z::coerce::boolean()` would turn `"false"` into `true`. The DTOs are validated with `corvis::z` (`zod_dto!` +
 `ZodValidationPipe::auto()`) and `OrmExceptionFilter` translates database errors to `409` or
 `404`. `OrmModule::for_root_async` reads the URL from `ConfigService` and syncs the tables at startup.
 
@@ -86,9 +90,18 @@ as is.
 
 ## Example tests
 
-`tertulia` has integration tests in `examples/tertulia/tests/` (startup and chat over
-WebSocket). To run all the workspace tests:
+The examples have integration tests in their `tests/` folders: `tertulia` (startup and chat over WebSocket),
+`cats-app` (startup without `JWT_SECRET` and the OpenAPI document) and `blog-orm` (the `published` filter). To run
+all the workspace tests:
 
 ```bash
 cargo test --workspace
+```
+
+To start the real binaries and send the documented requests to each example (on `127.0.0.1`, with a temporary
+database), build them and run the smoke script from the repository root:
+
+```bash
+cargo build -p blog-orm -p tertulia -p cats-app
+node scripts/smoke-examples.mjs
 ```

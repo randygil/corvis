@@ -115,7 +115,7 @@ Se respetan `#[serde(rename)]`, `#[serde(rename_all)]` y `#[serde(skip)]`.
 Las claves de las opciones se escriben en snake_case o camelCase; se convierten a camelCase (`read_only` → `readOnly`). Los valores son expresiones de Rust (`example = 42`, `enum = ["a", "b"]`) salvo `type`, que recibe un tipo: `type = CatDto`, `type = [CatDto]` para un array o `type = "string"`.
 
 ::: warning
-`#[derive(ApiSchema)]` no tiene tests propios en el repositorio todavía (el test de integración de `corvis-swagger` usa DTOs de `corvis::z`). Revisa el documento generado si dependes de opciones poco comunes.
+`#[derive(ApiSchema)]` no lee las restricciones de `#[derive(Validate)]` (`#[max_length]`, `#[is_in]`...): añádelas con `#[api_property(...)]` si el documento debe mostrarlas. El ejemplo `cats-app` lo usa con DTOs `Validate` y prueba el documento generado (`examples/cats-app/tests/openapi.rs`); revisa el documento si dependes de opciones poco comunes.
 :::
 
 ## Parámetros explícitos

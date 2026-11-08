@@ -1,10 +1,12 @@
 use corvis::prelude::*;
+use corvis_swagger::*;
 
 use super::auth_service::AuthService;
 use super::sign_in_dto::SignInDto;
 use crate::common::decorators::{CurrentUser, IS_PUBLIC_KEY, JwtPayload};
 
 #[controller("auth")]
+#[api_tags("auth")]
 pub struct AuthController {
     auth_service: Arc<AuthService>,
 }
@@ -19,6 +21,7 @@ impl AuthController {
     }
 
     #[get("profile")]
+    #[api_bearer_auth]
     fn get_profile(&self, user: CurrentUser) -> JwtPayload {
         user.0
     }

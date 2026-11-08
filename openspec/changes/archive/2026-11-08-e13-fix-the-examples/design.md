@@ -97,3 +97,12 @@ The workspace has three examples (`Cargo.toml` members include `examples/*`): `c
 
 - `/docs` is always mounted in `cats-app`; no minimum length check for `JWT_SECRET` in this change.
 - Also bind `cats-app` to `127.0.0.1` like the other examples (one-line fix, same issue: examples should be safe to run).
+
+## Implementation notes
+
+- `cats-app` binds to `127.0.0.1` (review decision); `/docs` is always mounted and there is no `JWT_SECRET` length check.
+- `sqlite::memory:` worked for the `blog-orm` test; no temp-file fallback was needed.
+- `#[derive(ApiSchema)]` ignores `#[derive(Validate)]` constraints, so the schema of `CreateCatDto` shows types,
+  descriptions and examples only; the types-and-parameters tip now says so instead of claiming the derive is untested.
+- Extra scope approved by the maintainer: `scripts/smoke-examples.mjs` and its `CONTRIBUTING.md` section (not in CI).
+- No framework runtime code changed, so the corvis-parity check is not required.

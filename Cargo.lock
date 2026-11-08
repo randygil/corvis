@@ -186,6 +186,7 @@ name = "cats-app"
 version = "0.1.0"
 dependencies = [
  "corvis",
+ "corvis-swagger",
  "serde",
 ]
 

@@ -96,6 +96,22 @@ When a property fails in CI, the run's `proptest-regressions` artifact holds the
 it from the run's summary page, copy the new lines into the matching files under `crates/<crate>/proptest-regressions/`,
 check that the property now fails locally, then fix the bug and commit the seed with the fix.
 
+## Smoke test of the examples
+
+Close every roadmap phase with a smoke test of the examples. It starts the real `blog-orm`, `tertulia` and `cats-app`
+binaries, sends the documented requests and checks status codes and key fields. It builds nothing, so build the
+examples first:
+
+```sh
+cargo build -p blog-orm -p tertulia -p cats-app
+node scripts/smoke-examples.mjs            # or name the examples: node scripts/smoke-examples.mjs cats-app
+```
+
+The binaries come from `$CARGO_TARGET_DIR/debug` (`target/debug` when the variable is not set). Each server binds to
+`127.0.0.1` on a free port, runs in a temporary directory with a temporary SQLite database and a random `JWT_SECRET`,
+and is stopped at the end, when the temporary files are removed too. The script exits with status 1 when a check
+fails. It is not part of CI.
+
 ## Continuous integration
 
 The workflow `.github/workflows/ci.yml` runs on every pull request to `main` and can be started by hand from the

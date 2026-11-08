@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use corvis::prelude::*;
+use corvis_swagger::*;
 
 use super::cats_service::CatsService;
 use super::dto::{CreateCatDto, ListCatsQuery, UpdateCatDto};
@@ -9,6 +10,7 @@ use crate::common::decorators::{CurrentUser, IS_PUBLIC_KEY, ROLES_KEY, Role};
 use crate::common::interceptors::{TimingInterceptor, TransformInterceptor};
 
 #[controller("cats")]
+#[api_tags("cats")]
 #[use_interceptors(TimingInterceptor)]
 pub struct CatsController {
     cats_service: Arc<CatsService>,
@@ -17,6 +19,10 @@ pub struct CatsController {
 #[routes]
 impl CatsController {
     #[post]
+    #[api_bearer_auth]
+    #[api_operation(summary = "Create a cat owned by the signed-in user")]
+    #[api_created_response(type = Cat)]
+    #[api_unauthorized_response(description = "Missing or invalid token")]
     fn create(&self, #[body] dto: CreateCatDto, user: CurrentUser) -> Cat {
         self.cats_service.create(dto, user.0.sub)
     }
@@ -24,6 +30,7 @@ impl CatsController {
     #[get]
     #[set_metadata(IS_PUBLIC_KEY, true)]
     #[use_interceptors(TransformInterceptor)]
+    #[api_operation(summary = "List cats")]
     fn find_all(&self, #[query] query: ListCatsQuery) -> Vec<Cat> {
         self.cats_service.find_all(&query)
     }
@@ -55,6 +62,8 @@ impl CatsController {
 
     #[get(":id")]
     #[set_metadata(IS_PUBLIC_KEY, true)]
+    #[api_ok_response(type = Cat)]
+    #[api_not_found_response(description = "No cat with that id")]
     fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Cat> {
         self.cats_service.find_one(id)
     }
@@ -68,11 +77,14 @@ impl CatsController {
     }
 
     #[patch(":id")]
+    #[api_bearer_auth]
     fn update(&self, #[param("id", ParseIntPipe)] id: u32, #[body] dto: UpdateCatDto) -> HttpResult<Cat> {
         self.cats_service.update(id, dto)
     }
 
     #[delete(":id")]
+    #[api_bearer_auth]
+    #[api_forbidden_response(description = "Admins only")]
     #[http_code(HttpStatus::NO_CONTENT)]
     #[set_metadata(ROLES_KEY, [Role::Admin])]
     fn remove(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<()> {
