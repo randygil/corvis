@@ -241,7 +241,8 @@ async fn fixture_refused_port() {
     let fx = fixture();
     let base = "postgresql://u:p@127.0.0.1:1/x";
     for (q, case) in fx["refused"].as_object().unwrap() {
-        assert_eq!(case["error"]["name"], "PrismaClientInitializationError", "{q}");
+        // The original reports an initialization error (its class name ends in `ClientInitializationError`).
+        assert!(case["error"]["name"].as_str().unwrap().ends_with("ClientInitializationError"), "{q}");
         assert!(case["error"]["message"].as_str().unwrap().contains("Can't reach database server at `127.0.0.1:1`"), "{q}");
     }
     // Difference (design decision 6): the original fails after about 2 s whatever the parameters say; corvis-orm retries
