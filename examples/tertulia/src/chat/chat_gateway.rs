@@ -27,9 +27,9 @@ use super::dto::{RoomDto, SendMessageDto, TypingDto};
 use super::room_member_guard::RoomMemberGuard;
 use super::ws_logging_interceptor::WsLoggingInterceptor;
 use crate::auth::{AuthGuard, ChatUser, MODERATOR, ROLES_KEY, RolesGuard};
-use crate::rooms::RoomWithMembers;
 use crate::firehose::FirehoseService;
 use crate::models::Room;
+use crate::rooms::RoomWithMembers;
 use crate::rooms::RoomsService;
 
 /// Close code sent to sockets without a valid token (4000-4999 are application codes).

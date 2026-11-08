@@ -310,9 +310,14 @@ async fn typed_operations_data_and_counts_on_postgres() {
         .query_json(User::meta(), "createManyAndReturn", json!({ "data": [{ "email": "c@x.io" }, { "email": "d@x.io" }] }))
         .await
         .unwrap();
-    let typed = db.user().create_many_and_return(json!({ "data": [{ "email": "e@x.io" }, { "email": "f@x.io" }] })).exec_json().await.unwrap();
+    let typed =
+        db.user().create_many_and_return(json!({ "data": [{ "email": "e@x.io" }, { "email": "f@x.io" }] })).exec_json().await.unwrap();
     assert_eq!(raw.as_array().unwrap().len(), typed.as_array().unwrap().len());
-    let updated = db.user().update_many_and_return(json!({ "where": { "email": { "endsWith": "@x.io" } }, "data": { "name": "bulk" } })).await.unwrap();
+    let updated = db
+        .user()
+        .update_many_and_return(json!({ "where": { "email": { "endsWith": "@x.io" } }, "data": { "name": "bulk" } }))
+        .await
+        .unwrap();
     assert_eq!(updated.len(), 6);
     assert!(updated.iter().all(|u| u.name.as_deref() == Some("bulk")));
 
@@ -330,7 +335,8 @@ async fn typed_operations_data_and_counts_on_postgres() {
         .await
         .unwrap();
     let build = || {
-        db.user().find_many(json!({ "where": { "email": { "in": ["ana@x.io", "a@x.io"] } }, "orderBy": { "id": "asc" } }))
+        db.user()
+            .find_many(json!({ "where": { "email": { "in": ["ana@x.io", "a@x.io"] } }, "orderBy": { "id": "asc" } }))
             .include(user::posts::count())
             .include(user::wallets::count())
     };

@@ -71,28 +71,29 @@
 
 ## 6. Documentation
 
-- [ ] 6.1 `docs/controllers.md`: lead the return-value section with a struct example and the status-tuple form with
+- [x] 6.1 `docs/controllers.md`: lead the return-value section with a struct example and the status-tuple form with
   `Json`; replace the fixed-shape `HttpResult<Value>` handlers (lines 212, 257-259, 297, 311-314) with structs; keep
   `Value` as the documented escape hatch; mirror in `docs/es/controllers.md`; verify with `npm run docs:check` in
   `docs/`
-- [ ] 6.2 `docs/exception-filters.md`: new "Domain errors" section (`HttpError`, direct `Result<T, AppError>` return,
+- [x] 6.2 `docs/exception-filters.md`: new "Domain errors" section (`HttpError`, direct `Result<T, AppError>` return,
   `.http()?`, the default body, the warning about `Display` text in 5xx, filters with `downcast_cause`); update the
   `?` sentence at line 26; mirror in `docs/es/exception-filters.md`; verify with `npm run docs:check`
-- [ ] 6.3 `docs/data/corvis-orm.md`: typed helpers first in "Use `OrmService`", `Data`, relation counts with
+- [x] 6.3 `docs/data/corvis-orm.md`: typed helpers first in "Use `OrmService`", `Data`, relation counts with
   `WithCount`, the two `_and_return` operations (line 197 becomes true), `aggregate`/`group_by` with `.exec_as::<T>()`;
   mirror in `docs/es/data/corvis-orm.md`; verify with `npm run docs:check`
-- [ ] 6.4 Update `crates/corvis-orm/README.md` sections that list delegate operations or `_count`, if any; verify by
+- [x] 6.4 Update `crates/corvis-orm/README.md` sections that list delegate operations or `_count`, if any; verify by
   grepping it for `createManyAndReturn` and `_count`
 
 ## 7. Definition of done
 
-- [ ] 7.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 7.3 `cargo test --workspace` passes (with Postgres available for the `pg_*` suites)
-- [ ] 7.4 Regression tests from tasks 1.1, 2.1-2.4, 3.1-3.2 and 4.1-4.3 are in place and pass
-- [ ] 7.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), and `npm run docs:check` in `docs/` passes
+- [x] 7.1 `cargo build --workspace --all-targets` with no warnings
+- [x] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [x] 7.3 `cargo test --workspace` passes (with Postgres available for the `pg_*` suites)
+- [x] 7.4 Regression tests from tasks 1.1, 2.1-2.4, 3.1-3.2 and 4.1-4.3 are in place and pass
+- [x] 7.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), and `npm run docs:check` in `docs/` passes
 - [ ] 7.6 corvis-parity: framework runtime code changes (`corvis` error conversion, `corvis-orm` query builder and
-  derive), so run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences
+  derive), so run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences (not run by the
+  implementer: the maintainer runs it)
 
 ## Workflow follow-up
 

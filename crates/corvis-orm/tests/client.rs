@@ -658,12 +658,14 @@ async fn create_many_and_update_many_and_return_match_the_json_result() {
     assert_eq!(created.len(), 2);
     assert!(created.iter().all(|u| u.id > 0 && u.age == 0));
 
-    let raw = db.user().create_many_and_return(json!({ "data": [{ "email": "c@x.io" }, { "email": "d@x.io" }] })).exec_json().await.unwrap();
+    let raw =
+        db.user().create_many_and_return(json!({ "data": [{ "email": "c@x.io" }, { "email": "d@x.io" }] })).exec_json().await.unwrap();
     let as_models: Vec<User> = serde_json::from_value(raw).unwrap();
     assert_eq!(as_models.len(), 2);
     assert_eq!(as_models[0].email, "c@x.io");
 
-    let updated = db.post().update_many_and_return(json!({ "where": { "published": false }, "data": { "published": true } })).await.unwrap();
+    let updated =
+        db.post().update_many_and_return(json!({ "where": { "published": false }, "data": { "published": true } })).await.unwrap();
     assert_eq!(updated.len(), 1);
     assert!(updated.iter().all(|p| p.published));
     assert_eq!(db.post().count(json!({ "where": { "published": false } })).await.unwrap(), 0);
@@ -679,7 +681,8 @@ async fn data_wrapper_creates_and_updates_from_a_dto() {
     assert_eq!(a.balance, same.balance);
 
     // `Data(T)` by value works too.
-    let b = db.author().create(Data(NewAuthor { email: "dd@corvis.dev".into(), name: Some("Dd".into()), balance: "1".into() })).await.unwrap();
+    let b =
+        db.author().create(Data(NewAuthor { email: "dd@corvis.dev".into(), name: Some("Dd".into()), balance: "1".into() })).await.unwrap();
     assert_eq!(b.name.as_deref(), Some("Dd"));
 
     // Only the present fields change.

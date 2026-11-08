@@ -824,15 +824,15 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let mut field_mods = Vec::new();
     let mut count_fields = Vec::new();
     for f in &fields {
-        if let Some(rel) = &f.relation {
-            if rel.kind == "has_many" || rel.kind == "many_to_many" {
-                let fid = &f.ident;
-                let api = &f.api_name;
-                count_fields.push(quote! {
-                    #[serde(default, rename = #api, skip_serializing_if = "::core::option::Option::is_none")]
-                    pub #fid: ::core::option::Option<i64>,
-                });
-            }
+        if let Some(rel) = &f.relation
+            && (rel.kind == "has_many" || rel.kind == "many_to_many")
+        {
+            let fid = &f.ident;
+            let api = &f.api_name;
+            count_fields.push(quote! {
+                #[serde(default, rename = #api, skip_serializing_if = "::core::option::Option::is_none")]
+                pub #fid: ::core::option::Option<i64>,
+            });
         }
     }
     for f in &fields {

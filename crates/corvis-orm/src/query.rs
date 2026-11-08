@@ -212,10 +212,9 @@ pub struct Data<T>(pub T);
 fn serialize_data<T: Serialize>(d: &Data<T>) -> (Value, Option<OrmError>) {
     match serde_json::to_value(&d.0) {
         Ok(v) => (v, None),
-        Err(e) => (
-            Value::Null,
-            Some(OrmError::validation(format!("Failed to serialize `{}` as query data: {e}", std::any::type_name::<T>()))),
-        ),
+        Err(e) => {
+            (Value::Null, Some(OrmError::validation(format!("Failed to serialize `{}` as query data: {e}", std::any::type_name::<T>()))))
+        }
     }
 }
 

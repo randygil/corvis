@@ -223,6 +223,8 @@ Si vienes del ecosistema de Node.js, esta tabla relaciona la API del cliente Jav
 | `findFirst`, `findUnique`, `*OrThrow` | `find_first`, `find_unique`, `find_first_or_throw`, `find_unique_or_throw` |
 | `create`, `createMany`, `createManyAndReturn`, `update`, `updateMany`, `updateManyAndReturn`, `upsert`, `delete`, `deleteMany` | los mismos nombres en snake_case |
 | `count`, `aggregate`, `groupBy` | `count`, `aggregate`, `group_by` |
+| `include: { _count: { select: { posts: true } } }` | `.include(user::posts::count())`, leído con `.exec_as::<Vec<user::WithCount>>()` |
+| `data` armado desde un objeto propio | `create(Data(&dto))` / `.data(Data(&dto))` (`corvis_orm::Data`) |
 | `$transaction(async (tx) => ..., opciones)` | `db._transaction(\|tx\| ..)` / `_transaction_with(opciones, \|tx\| ..)` |
 | `$transaction([a, b])` | `db._transaction_batch((a, b))` |
 | `` $queryRaw`...${x}` `` / `$executeRaw` | `db._query_raw(sql!("...{x}"))` / `_execute_raw(..)` / `_query_raw_as::<T>(..)` |

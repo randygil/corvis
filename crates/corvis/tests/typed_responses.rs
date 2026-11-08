@@ -3,8 +3,8 @@
 use std::fmt;
 
 use corvis::prelude::*;
-use corvis::{ExceptionBody, StatusCode};
 use corvis::testing::{Test, request};
+use corvis::{ExceptionBody, StatusCode};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -186,12 +186,7 @@ async fn http_error_levels() {
     res.expect_status(404);
     assert_eq!(res.text(), not_found);
 
-    client
-        .get("/t/unit")
-        .send()
-        .await
-        .expect_status(404)
-        .expect_json(json!({ "message": "Not Found", "statusCode": 404 }));
+    client.get("/t/unit").send().await.expect_status(404).expect_json(json!({ "message": "Not Found", "statusCode": 404 }));
 
     for path in ["/t/io", "/t/anyhow", "/t/plain-question"] {
         let res = client.get(path).send().await;

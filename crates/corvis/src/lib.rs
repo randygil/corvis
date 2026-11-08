@@ -172,10 +172,10 @@ pub mod prelude {
         InternalServerErrorException, IntoResponse, Json, Logger, MessageEvent, Middleware, ModuleImport, ModuleRef, Next,
         NotFoundException, OnApplicationBootstrap, OnApplicationShutdown, OnModuleDestroy, OnModuleInit, ParseArrayPipe, ParseBoolPipe,
         ParseEnumPipe, ParseFloatPipe, ParseIntPipe, ParseUUIDPipe, PipeTransform, Provider, Redirect, Reflector, Request, RequestMethod,
-        Response, ResultHttpExt, RouteInfo, RouteSpec, SKIP_THROTTLE, ScheduleModule, SchedulerRegistry, Scope, ServeStaticModule, ServeStaticOptions,
-        Sse, StreamableFile, THROTTLE_LIMIT, THROTTLE_TTL, TerminusModule, ThrottlerGuard, ThrottlerModule, ThrottlerOptions, Token,
-        UnauthorizedException, UnprocessableEntityException, VERSION_NEUTRAL, Validate, ValidationPipe, VersionValue, VersioningOptions,
-        VersioningType, controller, handlers, injectable, json, module, routes,
+        Response, ResultHttpExt, RouteInfo, RouteSpec, SKIP_THROTTLE, ScheduleModule, SchedulerRegistry, Scope, ServeStaticModule,
+        ServeStaticOptions, Sse, StreamableFile, THROTTLE_LIMIT, THROTTLE_TTL, TerminusModule, ThrottlerGuard, ThrottlerModule,
+        ThrottlerOptions, Token, UnauthorizedException, UnprocessableEntityException, VERSION_NEUTRAL, Validate, ValidationPipe,
+        VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json, module, routes,
     };
     pub use crate::{HttpAdapterHost, StreamableFileOptions};
     pub use async_trait::async_trait;
