@@ -111,12 +111,14 @@ corvis posture [--json] [--release] [--timeout <seconds>] [-- <program arguments
 
 Prints the route posture report of the application in the current project: every route with its guards, or `public`, or the exemption and its reason, and `UNPROTECTED` for a route that has none of them. It works whatever posture mode the application uses (off, warn or enforce) and is meant for code review and CI.
 
-It runs `cargo build` (with `--release` if given) and then `cargo run` with `CORVIS_ROUTE_POSTURE_REPORT` set to `text` (`json` with `--json`). The application computes the report when it initializes, after the routes are compiled and before any initialization hook runs or any socket is bound, prints it and exits. The application is never left listening. It needs the same environment as `corvis start` (for example a reachable database if a provider connects while the application is created), because the providers are created before the report is computed. Raw `upgrade` listeners registered in hooks are not counted.
+It runs `cargo build` (with `--release` if given) and then `cargo run` with `CORVIS_ROUTE_POSTURE_REPORT` set to `text` (`json` with `--json`). The application computes the report when it initializes, after the routes are compiled and before any initialization hook runs or any socket is bound, prints it and exits. The application is never left listening. It needs the same environment as `corvis start` (for example a reachable database if a provider connects while the application is created), because the providers are created before the report is computed. Gateway message handlers and `#[sse]` routes are part of the report. Gateway `after_init` hooks and module middleware `configure` do not run. Raw `upgrade` listeners registered in hooks are not counted, and the report lists them under `Not checked:`.
 
 | Output | Where |
 |---|---|
 | The report (table, or JSON with `--json`) | stdout, and nothing else |
 | Cargo output and the application's log lines | stderr |
+
+In text format, the table is followed by the access guards that were counted and by any stale or redundant exemptions; with `--json` the same information is in the JSON report (`entries`, `unchecked`, `access_guards`, `stale_exemptions`, `redundant_exemptions`).
 
 The application writes the report between the lines `----- BEGIN CORVIS ROUTE POSTURE REPORT -----` and `----- END CORVIS ROUTE POSTURE REPORT -----` because its logs share stdout; the command removes those lines, so `corvis posture --json | jq .` works.
 

@@ -159,3 +159,15 @@ Current code, read in this worktree (before #26):
   makes `cargo run` fail with the posture error and `corvis posture` exit 1, a compile error and a blocked `main`
   with `--timeout 3` both exit 2 (no process left behind). The same checks stand in for task 2.4 because
   `examples/tertulia` does not enable posture yet (#29).
+
+### After merging #26 (review fixes) and #27
+
+- The posture check now runs after `compile_gateways` and before `build_middleware` (#27), so report mode runs there,
+  right before `check_routes`, with the compiled gateways: the old statement that gateways were not compiled in report
+  mode no longer holds. Gateway `after_init` hooks (`start_gateways`) and module middleware `configure` still do not
+  run, so report mode stays free of user code beyond provider construction.
+- The report is built by `report_for(table, gateways, options)`, so it contains `Sse` and `WsMessage` entries, the
+  `unchecked` block and the access guard summary. The text format is the report's `Display` (table plus the
+  `Not checked:` block) followed by the `access guards counted: ...` line and one line per stale and per redundant
+  exemption; JSON is the serialized report unchanged. The exit code still depends only on unprotected entries.
+- `route_posture.rs` gains a child-process test with a gateway (entries, summary, `unchecked` in JSON, no hook ran).

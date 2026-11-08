@@ -341,6 +341,38 @@ mod tests {
     }
 
     #[test]
+    fn gateway_rows_and_the_trailing_blocks_are_part_of_the_report() {
+        let lines = [
+            "INFO log",
+            REPORT_BEGIN,
+            "WS  /chat  event \"ping\"  ChatGateway::ping  UNPROTECTED  [no guards]",
+            "",
+            "Not checked:",
+            "  raw upgrade listeners",
+            "",
+            "access guards counted: none",
+            "stale exemption: GET /gone (old) matches no route",
+            REPORT_END,
+        ];
+        let (report, other) = split_report(&lines);
+        let report = report.unwrap();
+        assert!(
+            report.starts_with("WS  /chat")
+                && report.contains(
+                    "
+
+Not checked:
+"
+                )
+                && report.ends_with(
+                    "matches no route
+"
+                )
+        );
+        assert_eq!(other, ["INFO log"]);
+    }
+
+    #[test]
     fn an_empty_report_is_still_a_report() {
         let (report, _) = split_report(&[REPORT_BEGIN, REPORT_END]);
         assert_eq!(report.as_deref(), Some(""));

@@ -42,6 +42,9 @@ pub(crate) struct CompiledRoute {
     pub class_target: Arc<Target>,
     pub handler_target: Arc<Target>,
     pub guards: Vec<Arc<dyn CanActivate>>,
+    /// How many of `guards` are global, then how many are the controller's (the rest are the route's).
+    pub global_guard_count: usize,
+    pub controller_guard_count: usize,
     pub interceptors: Arc<Vec<Arc<dyn CorvisInterceptor>>>,
     pub pipes: Vec<Arc<dyn PipeTransform>>,
     pub filters: Vec<Arc<dyn ExceptionFilter>>,
@@ -54,6 +57,8 @@ pub(crate) struct CompiledRoute {
     pub versions: Option<VersionValue>,
     pub host: Option<String>,
     pub response_mode: Option<crate::http::ResMode>,
+    /// Declared with `#[sse]`.
+    pub sse: bool,
 }
 
 #[derive(Default)]
@@ -443,6 +448,8 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
                                 class_target: class_target.clone(),
                                 handler_target: handler_target.clone(),
                                 guards: guards.clone(),
+                                global_guard_count: cfg.global_guards.len(),
+                                controller_guard_count: c_guards.len(),
                                 interceptors: interceptors.clone(),
                                 pipes: pipes.clone(),
                                 filters: filters.clone(),
@@ -455,6 +462,7 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
                                 versions: version.clone(),
                                 host: cmeta.host.clone(),
                                 response_mode: meta.response_mode,
+                                sse: meta.sse,
                             }));
                             let variants = expand_optional(&full).map_err(|e| {
                                 DiError::Other(format!("Unable to register route {} {} of {}: {e}", meta.method.as_str(), full, def.name))

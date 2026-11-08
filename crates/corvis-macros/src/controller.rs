@@ -178,7 +178,7 @@ const CONSUMED_ROUTE_ATTRS: &[&str] = &[
 ];
 
 /// `#[public]` takes no arguments (`#[public()]` is accepted).
-fn no_public_args(attr: &syn::Attribute) -> syn::Result<()> {
+pub(crate) fn no_public_args(attr: &syn::Attribute) -> syn::Result<()> {
     match &attr.meta {
         syn::Meta::Path(_) => Ok(()),
         syn::Meta::List(list) if list.tokens.is_empty() => Ok(()),

@@ -83,4 +83,6 @@ cuenta que `EventSource` no permite enviar cabeceras, así que un guard que exig
 `Authorization: Bearer` rechazará la conexión desde el navegador. Usa una cookie o un token en la
 query para esos casos.
 
+La revisión de route posture trata las rutas SSE como cualquier otra: un stream sin guard que controle el acceso, sin `#[public]` y sin exención detiene la aplicación en modo enforce. Se marcan como `SSE` en el error y en el reporte, así que un stream de larga duración se distingue fácilmente. Ver [Exigir un guard en cada ruta](/es/guards#exigir-un-guard-en-cada-ruta).
+
 Para una comunicación en los dos sentidos, mira [WebSockets](/es/websockets/gateways).

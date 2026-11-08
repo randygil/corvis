@@ -277,15 +277,30 @@ impl CorvisApplication {
         self
     }
 
-    /// The posture of every controller route (guards, public marker, exemptions), in every mode. `None`
-    /// before `init()`.
+    /// The posture of every controller route and gateway message handler (guards, public marker, exemptions) and
+    /// the surfaces the check cannot enforce, in every mode. `None` before `init()`.
     pub fn route_posture(&self) -> Option<crate::posture::RoutePostureReport> {
         let shared = self.shared.as_ref()?;
         let options = match self.config.route_posture.mode() {
             crate::posture::RoutePostureMode::Off => crate::posture::RoutePostureOptions::off(),
             _ => self.config.route_posture.clone(),
         };
-        Some(crate::posture::report_for_routes(&shared.router, &options))
+        #[cfg(feature = "websockets")]
+        let gateways = crate::websockets::posture_gateways(shared.gateways.values().map(|g| g.as_ref()));
+        #[cfg(not(feature = "websockets"))]
+        let gateways = Vec::new();
+        let mut unchecked: Vec<crate::posture::UncheckedSurface> =
+            shared.static_dirs.iter().map(|d| crate::posture::UncheckedSurface::StaticFiles { serve_root: d.serve_root.clone() }).collect();
+        unchecked.extend(gateways.iter().map(|g| crate::posture::UncheckedSurface::WsHandshake {
+            path: g.path.clone(),
+            gateway: g.name.clone(),
+            verify_client: g.verify_client,
+        }));
+        let listeners = shared.http_server.upgrade_listener_count();
+        if listeners > 0 {
+            unchecked.push(crate::posture::UncheckedSurface::UpgradeListeners { count: listeners });
+        }
+        Some(crate::posture::report_for(&shared.router, &gateways, &options).with_unchecked(unchecked))
     }
 
     /// `app.enableShutdownHooks()` – listen to SIGINT/SIGTERM and run the shutdown hooks.
@@ -523,13 +538,21 @@ impl CorvisApplication {
         if let Some(warning) = self.config.cors.as_ref().and_then(CorsOptions::startup_warning) {
             Logger::new("CorsOptions").warn(warning);
         }
-        // Before module middleware `configure`, gateways and hooks: a failing check must not have run user code.
-        // Report mode (CORVIS_ROUTE_POSTURE_REPORT) prints the report and ends the process here, whatever the mode.
-        crate::posture::run_report_mode(&router, &self.config.route_posture)?;
-        crate::posture::check_routes(&router, &self.config.route_posture)?;
+        #[cfg(feature = "websockets")]
+        let compiled_gateways = crate::websockets::compile_gateways(&self.container, &self.config.router).await?;
+        // Before module middleware `configure`, gateway `after_init` and the init hooks: a failing check must not have
+        // run user code.
+        #[cfg(feature = "websockets")]
+        let gateway_posture = crate::websockets::posture_gateways(&compiled_gateways);
+        #[cfg(not(feature = "websockets"))]
+        let gateway_posture = Vec::new();
+        // Report mode (CORVIS_ROUTE_POSTURE_REPORT) prints the report, gateways included, and ends the process here,
+        // whatever the mode and before the check, so that enforce mode does not swallow the report.
+        crate::posture::run_report_mode(&router, &gateway_posture, &self.config.route_posture)?;
+        crate::posture::check_routes(&router, &gateway_posture, &self.config.route_posture)?;
         let module_middleware = build_middleware(&self.container, &router, &self.config.router).await?;
         #[cfg(feature = "websockets")]
-        let gateways = crate::websockets::build_gateways(&self.container, &self.config.router).await?;
+        let gateways = crate::websockets::start_gateways(compiled_gateways).await;
         self.shared = Some(Arc::new(AppShared {
             router,
             global_middleware: self.config.global_middleware.clone(),

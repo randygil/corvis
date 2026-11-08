@@ -111,12 +111,14 @@ corvis posture [--json] [--release] [--timeout <segundos>] [-- <argumentos del p
 
 Imprime el informe de postura de rutas de la aplicación del proyecto actual: cada ruta con sus guards, o `public`, o la exención y su motivo, y `UNPROTECTED` para una ruta que no tiene nada de eso. Funciona con cualquier modo de postura de la aplicación (off, warn o enforce) y sirve para la revisión de código y la CI.
 
-Ejecuta `cargo build` (con `--release` si se indica) y luego `cargo run` con `CORVIS_ROUTE_POSTURE_REPORT` en `text` (`json` con `--json`). La aplicación calcula el informe al inicializarse, después de compilar las rutas y antes de que corra cualquier hook de inicialización o se abra un socket, lo imprime y termina. La aplicación nunca queda escuchando. Necesita el mismo entorno que `corvis start` (por ejemplo una base de datos accesible si un provider se conecta al crear la aplicación), porque los providers se crean antes de calcular el informe. Los listeners `upgrade` en bruto registrados en hooks no se cuentan.
+Ejecuta `cargo build` (con `--release` si se indica) y luego `cargo run` con `CORVIS_ROUTE_POSTURE_REPORT` en `text` (`json` con `--json`). La aplicación calcula el informe al inicializarse, después de compilar las rutas y antes de que corra cualquier hook de inicialización o se abra un socket, lo imprime y termina. La aplicación nunca queda escuchando. Necesita el mismo entorno que `corvis start` (por ejemplo una base de datos accesible si un provider se conecta al crear la aplicación), porque los providers se crean antes de calcular el informe. Los handlers de mensajes de gateways y las rutas `#[sse]` forman parte del informe. Los hooks `after_init` de los gateways y el `configure` del middleware de módulos no se ejecutan. Los listeners `upgrade` en bruto registrados en hooks no se cuentan, y el informe los lista bajo `Not checked:`.
 
 | Salida | Dónde |
 |---|---|
 | El informe (tabla, o JSON con `--json`) | stdout, y nada más |
 | La salida de Cargo y las líneas de log de la aplicación | stderr |
+
+En formato texto, la tabla va seguida de los guards de acceso contados y de las exenciones obsoletas o redundantes; con `--json` la misma información está en el informe JSON (`entries`, `unchecked`, `access_guards`, `stale_exemptions`, `redundant_exemptions`).
 
 La aplicación escribe el informe entre las líneas `----- BEGIN CORVIS ROUTE POSTURE REPORT -----` y `----- END CORVIS ROUTE POSTURE REPORT -----` porque sus logs comparten stdout; el comando quita esas líneas, así que `corvis posture --json | jq .` funciona.
 
