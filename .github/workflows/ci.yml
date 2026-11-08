@@ -1,0 +1,215 @@
+# The definition-of-done checks of CONTRIBUTING.md, on every pull request to main.
+#
+# The repository is private and Actions minutes are limited, so this workflow runs only on pull requests and on
+# manual dispatch: no push or schedule trigger. A manual run on main also refreshes the caches that every pull
+# request can restore.
+#
+# Third-party actions are pinned to a full commit SHA (version in the comment); actions/* to a major version.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The one place the Rust version is set. Bumping it is a deliberate pull request that fixes any new lints.
+  RUST_TOOLCHAIN: "1.99.0"
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Linux and Windows are separate jobs because service containers only run on Linux runners.
+  test-linux:
+    name: test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Same flags for build and test, so `cargo test` reuses the build's artifacts.
+      RUSTFLAGS: -D warnings
+      CORVIS_ORM_PG: postgres://postgres:postgres@127.0.0.1:55432
+      # The Postgres tests fail instead of skipping when the service is not usable.
+      CORVIS_ORM_PG_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+      - name: Build with warnings denied
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+
+  test-windows:
+    name: test (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+      - name: Build with warnings denied
+        run: cargo build --workspace --all-targets
+      - name: Test (Postgres tests skip, no server)
+        run: cargo test --workspace --no-fail-fast
+
+  # The property-based suites with more cases than the 2,000 that `cargo test` runs. Dev profile, so debug
+  # assertions and overflow checks stay on.
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PROPTEST_CASES: 20000
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Shared with the long run of nightly.yml, which builds the same test targets.
+          shared-key: fuzz
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+      # Every suite runs even when an earlier one failed, so one run reports all failing properties.
+      - name: Parsers, JWT, routes, multipart
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis --lib fuzz
+      - name: Static file serving
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis --test fuzz_static
+      - name: ORM where filters
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis-orm --test fuzz_filters
+      - name: Upload the proptest seeds
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-deny@0.20.2
+      # Policy and exceptions live in deny.toml, each with a reason; no flags here.
+      - run: cargo deny check
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-audit@0.22.2
+      # Reads .cargo/audit.toml (ignored advisories with their reasons, warnings denied); no flags here.
+      - run: cargo audit
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Naming check of the published surfaces
+        run: node scripts/check-naming.mjs
+      - run: npm ci
+        working-directory: docs
+      - run: npm run docs:check
+        working-directory: docs

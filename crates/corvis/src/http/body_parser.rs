@@ -122,8 +122,7 @@ pub(crate) fn parse_body(headers: &HeaderMap, body: &Bytes, options: &BodyParser
     if body.len() > limit {
         return Err(http_error(413, "request entity too large"));
     }
-    let text = decode(body, &charset)
-        .ok_or_else(|| http_error(415, format!("unsupported charset \"{}\"", charset.to_uppercase())))?;
+    let text = decode(body, &charset).ok_or_else(|| http_error(415, format!("unsupported charset \"{}\"", charset.to_uppercase())))?;
     match kind {
         Kind::Json => parse_json(&text, options.max_depth),
         Kind::Urlencoded => parse_urlencoded(&text, &charset, options.max_depth),
@@ -274,7 +273,8 @@ fn parse_urlencoded(text: &[u16], charset: &str, max_depth: usize) -> Result<Val
     }
     // qs nests one level per `[...]` segment below `depth`, plus the root key and the leaf.
     let depth = 32.min(max_depth.saturating_sub(2));
-    let options = qs::Options { array_limit: params.max(100), depth, parameter_limit: 1000, latin1: charset == "iso-8859-1", strict_depth: true };
+    let options =
+        qs::Options { array_limit: params.max(100), depth, parameter_limit: 1000, latin1: charset == "iso-8859-1", strict_depth: true };
     qs::parse(&text, &options).map_err(|_| http_error(400, "The input exceeded the depth"))
 }
 
@@ -453,11 +453,12 @@ pub(crate) mod qs {
             let mut i = 0;
             while i < b.len() {
                 if b[i] == b'%'
-                    && let Some(v) = percent_byte(b, i) {
-                        out.push(v as char);
-                        i += 3;
-                        continue;
-                    }
+                    && let Some(v) = percent_byte(b, i)
+                {
+                    out.push(v as char);
+                    i += 3;
+                    continue;
+                }
                 let ch = plus[i..].chars().next().unwrap_or('\u{FFFD}');
                 out.push(ch);
                 i += ch.len_utf8();
@@ -561,7 +562,8 @@ pub(crate) mod qs {
             let obj = if root == "[]" {
                 if is_overflow(&current) { current } else { combine_plain(Qv::Arr(Vec::new()), current, o.array_limit) }
             } else {
-                let clean = if root.starts_with('[') && root.ends_with(']') && root.len() >= 2 { &root[1..root.len() - 1] } else { root.as_str() };
+                let clean =
+                    if root.starts_with('[') && root.ends_with(']') && root.len() >= 2 { &root[1..root.len() - 1] } else { root.as_str() };
                 let bracketed = clean.len() != root.len();
                 let index = if bracketed && is_canonical_index(clean) { clean.parse::<usize>().ok() } else { None };
                 match index {
@@ -624,16 +626,17 @@ pub(crate) mod qs {
         }
         if let Qv::Str(_) = target {
             if let Qv::Obj(src) = &source
-                && let Some(max) = src.overflow {
-                    let mut result = QObj::default();
-                    result.set("0".into(), target);
-                    for (k, v) in src.entries.clone() {
-                        let n = k.parse::<usize>().unwrap_or(0);
-                        result.set((n + 1).to_string(), v);
-                    }
-                    result.overflow = Some(max + 1);
-                    return Qv::Obj(result);
+                && let Some(max) = src.overflow
+            {
+                let mut result = QObj::default();
+                result.set("0".into(), target);
+                for (k, v) in src.entries.clone() {
+                    let n = k.parse::<usize>().unwrap_or(0);
+                    result.set((n + 1).to_string(), v);
                 }
+                result.overflow = Some(max + 1);
+                return Qv::Obj(result);
+            }
             let combined = concat(target, source);
             if combined.len() > o.array_limit {
                 let max = combined.len() - 1;
@@ -682,9 +685,7 @@ pub(crate) mod qs {
                         let overflow = obj.overflow;
                         (obj.into_js_order(), overflow)
                     }
-                    Qv::Arr(items) => {
-                        (items.into_iter().enumerate().filter_map(|(i, v)| v.map(|v| (i.to_string(), v))).collect(), None)
-                    }
+                    Qv::Arr(items) => (items.into_iter().enumerate().filter_map(|(i, v)| v.map(|v| (i.to_string(), v))).collect(), None),
                     Qv::Str(_) => unreachable!(),
                 };
                 for (key, value) in src_entries {
@@ -700,10 +701,11 @@ pub(crate) mod qs {
                     }
                     if let Some(max) = acc.overflow
                         && is_canonical_index(&key)
-                            && let Ok(n) = key.parse::<usize>()
-                                && n > max {
-                                    acc.overflow = Some(n);
-                                }
+                        && let Ok(n) = key.parse::<usize>()
+                        && n > max
+                    {
+                        acc.overflow = Some(n);
+                    }
                 }
                 Qv::Obj(acc)
             }
@@ -748,7 +750,9 @@ pub(crate) mod qs {
         use super::*;
 
         fn p(s: &str) -> String {
-            parse(s, &Options { array_limit: 100, depth: 32, parameter_limit: 1000, latin1: false, strict_depth: true }).unwrap().to_string()
+            parse(s, &Options { array_limit: 100, depth: 32, parameter_limit: 1000, latin1: false, strict_depth: true })
+                .unwrap()
+                .to_string()
         }
 
         #[test]
@@ -768,7 +772,9 @@ pub(crate) mod qs {
             assert_eq!(p("__proto__[x]=1&b=2"), r#"{"b":"2"}"#);
             assert_eq!(p("b=1&2=x&1=y"), r#"{"1":"y","2":"x","b":"1"}"#);
             let deep = format!("a{}=1", "[b]".repeat(33));
-            assert!(parse(&deep, &Options { array_limit: 100, depth: 32, parameter_limit: 1000, latin1: false, strict_depth: true }).is_err());
+            assert!(
+                parse(&deep, &Options { array_limit: 100, depth: 32, parameter_limit: 1000, latin1: false, strict_depth: true }).is_err()
+            );
         }
 
         #[test]
@@ -836,7 +842,8 @@ mod tests {
             assert_eq!(s, 415, "{ce:?}");
             assert!(b["message"].as_str().unwrap().starts_with("unsupported content encoding"), "{b}");
         }
-        let h = raw_headers(&[(http::header::CONTENT_TYPE, b"application/x-www-form-urlencoded"), (http::header::CONTENT_ENCODING, b"br\xff")]);
+        let h =
+            raw_headers(&[(http::header::CONTENT_TYPE, b"application/x-www-form-urlencoded"), (http::header::CONTENT_ENCODING, b"br\xff")]);
         assert_eq!(run_with(h, "a=1", &BodyParserOptions::default()).unwrap_err().0, 415);
         let h = raw_headers(&[(http::header::CONTENT_TYPE, b"application/json"), (http::header::CONTENT_ENCODING, b"Identity")]);
         assert!(run_with(h, "{}", &BodyParserOptions::default()).is_ok());
@@ -871,7 +878,10 @@ mod tests {
 
     #[test]
     fn urlencoded() {
-        assert_eq!(run(Some("application/x-www-form-urlencoded"), "a[b]=1&c=2").unwrap(), serde_json::json!({ "a": { "b": "1" }, "c": "2" }));
+        assert_eq!(
+            run(Some("application/x-www-form-urlencoded"), "a[b]=1&c=2").unwrap(),
+            serde_json::json!({ "a": { "b": "1" }, "c": "2" })
+        );
         let deep = format!("a{}=1", "[b]".repeat(33));
         let (s, b) = run(Some("application/x-www-form-urlencoded"), &deep).unwrap_err();
         assert_eq!((s, b), (400, serde_json::json!({ "statusCode": 400, "message": "The input exceeded the depth" })));

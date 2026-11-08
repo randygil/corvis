@@ -299,10 +299,11 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
                     let args = attr_args(&attr)?;
                     let mut it = args.into_iter().peekable();
                     if let Some(first) = it.peek()
-                        && let Some(s) = lit_str(first) {
-                            data = Some(s);
-                            it.next();
-                        }
+                        && let Some(s) = lit_str(first)
+                    {
+                        data = Some(s);
+                        it.next();
+                    }
                     pipes.extend(it);
                 } else {
                     keep.push(attr);
@@ -364,11 +365,7 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
             arg_names.push(arg_ident);
         }
 
-        let call = if is_async {
-            quote!(__this.#fname(#(#arg_names),*).await)
-        } else {
-            quote!(__this.#fname(#(#arg_names),*))
-        };
+        let call = if is_async { quote!(__this.#fname(#(#arg_names),*).await) } else { quote!(__this.#fname(#(#arg_names),*)) };
 
         let is_result = match &method.sig.output {
             ReturnType::Default => false,

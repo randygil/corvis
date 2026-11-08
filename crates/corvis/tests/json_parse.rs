@@ -28,5 +28,11 @@ fn json_parse_matches_v8() {
             failures.push(format!("{input:?}\n   want {want:?}\n    got {got:?}"));
         }
     }
-    assert!(failures.is_empty(), "{} of {} cases differ:\n{}", failures.len(), cases.len(), failures.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases differ:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.iter().take(40).cloned().collect::<Vec<_>>().join("\n")
+    );
 }

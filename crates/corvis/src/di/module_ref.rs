@@ -30,10 +30,8 @@ impl ModuleRef {
         }
         .or_else(|| self.container.find_instance(&token))
         .ok_or_else(|| DiError::NotFound { token: token.display_name() })?;
-        downcast::<T>(&instance).ok_or_else(|| DiError::TypeMismatch {
-            token: token.display_name(),
-            expected: std::any::type_name::<T>().to_string(),
-        })
+        downcast::<T>(&instance)
+            .ok_or_else(|| DiError::TypeMismatch { token: token.display_name(), expected: std::any::type_name::<T>().to_string() })
     }
 
     /// Retrieves an instance by token as constructor injection would see it: providers of the
@@ -45,23 +43,16 @@ impl ModuleRef {
             .lookup(self.module, &token)
             .and_then(|(owner, _)| self.container.instance(owner, &token))
             .ok_or_else(|| DiError::NotFound { token: token.display_name() })?;
-        downcast::<T>(&instance).ok_or_else(|| DiError::TypeMismatch {
-            token: token.display_name(),
-            expected: std::any::type_name::<T>().to_string(),
-        })
+        downcast::<T>(&instance)
+            .ok_or_else(|| DiError::TypeMismatch { token: token.display_name(), expected: std::any::type_name::<T>().to_string() })
     }
 
     /// Retrieves an instance only from the current module (`{ strict: true }`).
     pub fn get_strict<T: ?Sized + Send + Sync + 'static>(&self) -> Result<Arc<T>, DiError> {
         let token = Token::of::<T>();
-        let instance = self
-            .container
-            .instance(self.module, &token)
-            .ok_or_else(|| DiError::NotFound { token: token.display_name() })?;
-        downcast::<T>(&instance).ok_or_else(|| DiError::TypeMismatch {
-            token: token.display_name(),
-            expected: std::any::type_name::<T>().to_string(),
-        })
+        let instance = self.container.instance(self.module, &token).ok_or_else(|| DiError::NotFound { token: token.display_name() })?;
+        downcast::<T>(&instance)
+            .ok_or_else(|| DiError::TypeMismatch { token: token.display_name(), expected: std::any::type_name::<T>().to_string() })
     }
 
     /// Resolves a provider (creating a new instance for transient providers).

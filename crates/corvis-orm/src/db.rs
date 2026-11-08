@@ -209,9 +209,48 @@ impl DbPool {
     pub(crate) async fn begin(&self) -> Result<DbTx> {
         Ok(match self {
             DbPool::Sqlite(p) => DbTx::Sqlite(p.begin().await?),
-            DbPool::Postgres(p) => DbTx::Postgres(p.begin().await?),
+            DbPool::Postgres(p) => {
+                let conn = acquire_pg(p).await?;
+                DbTx::Postgres(Transaction::begin(conn, None).await?)
+            }
         })
     }
+}
+
+/// How many times a failed connection attempt is repeated (after the first one).
+const CONNECT_RETRIES: u32 = 4;
+
+/// Whether `e` is an I/O error of the socket layer while a connection was being established.
+/// sqlx's pool already retries `ConnectionRefused` until the acquire timeout; the rest of the
+/// socket errors (on Windows, `WSAEINVAL` / os error 10022 from `set_nodelay` on a socket that
+/// the peer reset right after the handshake) used to reach the application.
+fn is_transient_connect_error(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Io(io) if io.kind() != std::io::ErrorKind::ConnectionRefused)
+}
+
+/// Runs `connect` again while it fails with a transient socket error, with a short backoff.
+/// Nothing is sent to the server before a connection exists, so repeating is always safe. The
+/// last error is returned unchanged when the attempts run out.
+pub(crate) async fn retry_connect<T, F, Fut>(mut connect: F) -> std::result::Result<T, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, sqlx::Error>>,
+{
+    let mut attempt = 0;
+    loop {
+        match connect().await {
+            Err(e) if attempt < CONNECT_RETRIES && is_transient_connect_error(&e) => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Takes a connection from the pool, repeating attempts that fail with a transient socket error.
+pub(crate) async fn acquire_pg(pool: &PgPool) -> std::result::Result<sqlx::pool::PoolConnection<Postgres>, sqlx::Error> {
+    retry_connect(|| pool.acquire()).await
 }
 
 pub(crate) enum DbTx {
@@ -247,10 +286,7 @@ impl Rows {
     /// Rows as JSON objects keyed by column name.
     pub fn into_objects(self) -> Vec<Value> {
         let cols = self.columns;
-        self.rows
-            .into_iter()
-            .map(|r| Value::Object(cols.iter().cloned().zip(r).collect()))
-            .collect()
+        self.rows.into_iter().map(|r| Value::Object(cols.iter().cloned().zip(r).collect())).collect()
     }
 }
 
@@ -366,7 +402,9 @@ fn pg_query(sql: &Sql) -> sqlx::query::Query<'_, Postgres, sqlx::postgres::PgArg
                         let v: Vec<sqlx::types::Json<Value>> = items.iter().map(|x| sqlx::types::Json(sql_value_json(x))).collect();
                         q.bind(v)
                     }
-                    (Some(SqlValue::Bytes(_)), _) | (None, FieldKind::Bytes) => bind_array!(q, items, Bytes, Vec<u8>, |b: &Vec<u8>| b.clone()),
+                    (Some(SqlValue::Bytes(_)), _) | (None, FieldKind::Bytes) => {
+                        bind_array!(q, items, Bytes, Vec<u8>, |b: &Vec<u8>| b.clone())
+                    }
                     _ => bind_array!(q, items, Text, String, |b: &String| b.clone()),
                 }
             }
@@ -567,7 +605,10 @@ fn decode_pg_value(oid: u32, kind: Option<&PgTypeKind>, b: &[u8], type_name: &st
             let us = be_i64(b);
             let days = be_i32(&b[8..]);
             let months = be_i32(&b[12..]);
-            Value::String(format!("{months} mons {days} days {}", NaiveTime::from_num_seconds_from_midnight_opt(0, 0).unwrap() + chrono::Duration::microseconds(us)))
+            Value::String(format!(
+                "{months} mons {days} days {}",
+                NaiveTime::from_num_seconds_from_midnight_opt(0, 0).unwrap() + chrono::Duration::microseconds(us)
+            ))
         }
         2278 => Value::Null,
         25 | 19 | 1042 | 1043 | 142 => Value::String(String::from_utf8_lossy(b).to_string()),
@@ -783,4 +824,51 @@ pub(crate) fn js_number(f: f64) -> Value {
 
 pub(crate) fn map_sqlx(e: sqlx::Error, model: Option<&crate::meta::ModelMeta>) -> OrmError {
     OrmError::from_sqlx(e, model)
+}
+
+#[cfg(test)]
+mod connect_retry_tests {
+    use super::*;
+    use std::io::{Error as IoError, ErrorKind};
+    use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+
+    fn io(kind: ErrorKind) -> sqlx::Error {
+        sqlx::Error::Io(IoError::new(kind, "boom"))
+    }
+
+    #[tokio::test]
+    async fn transient_socket_errors_are_retried_until_a_connection_opens() {
+        let calls = AtomicU32::new(0);
+        let r = retry_connect(|| async { if calls.fetch_add(1, SeqCst) < 3 { Err(io(ErrorKind::InvalidInput)) } else { Ok(7) } }).await;
+        assert_eq!(r.unwrap(), 7);
+        assert_eq!(calls.load(SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn a_persistent_error_is_returned_unchanged_after_the_attempts() {
+        let calls = AtomicU32::new(0);
+        let r: std::result::Result<(), _> = retry_connect(|| async {
+            calls.fetch_add(1, SeqCst);
+            Err(io(ErrorKind::InvalidInput))
+        })
+        .await;
+        assert!(matches!(r, Err(sqlx::Error::Io(e)) if e.kind() == ErrorKind::InvalidInput));
+        assert_eq!(calls.load(SeqCst), CONNECT_RETRIES + 1);
+    }
+
+    #[tokio::test]
+    async fn refused_connections_and_other_errors_are_not_repeated_here() {
+        for e in [io(ErrorKind::ConnectionRefused), sqlx::Error::PoolTimedOut, sqlx::Error::PoolClosed] {
+            let calls = AtomicU32::new(0);
+            let mut e = Some(e);
+            let r: std::result::Result<(), _> = retry_connect(|| {
+                calls.fetch_add(1, SeqCst);
+                let e = e.take().unwrap();
+                async move { Err(e) }
+            })
+            .await;
+            assert!(r.is_err());
+            assert_eq!(calls.load(SeqCst), 1);
+        }
+    }
 }

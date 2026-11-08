@@ -794,9 +794,7 @@ fn parse_subprotocols(header: &str) -> Option<Vec<String>> {
 
 impl WebSocketServer {
     pub fn new(options: WebSocketServerOptions) -> Self {
-        WebSocketServer {
-            inner: Arc::new(WssInner { options, clients: Mutex::new(HashMap::new()), closed: AtomicBool::new(false) }),
-        }
+        WebSocketServer { inner: Arc::new(WssInner { options, clients: Mutex::new(HashMap::new()), closed: AtomicBool::new(false) }) }
     }
 
     /// `wss.clients`: the open connections (requires `client_tracking`).
@@ -826,7 +824,9 @@ impl WebSocketServer {
             return abort_handshake(req, 400, Some("Invalid Upgrade header"), &[]);
         }
         let key = req.header("sec-websocket-key").unwrap_or("");
-        let key_ok = key.len() == 24 && key.ends_with("==") && key.as_bytes()[..22].iter().all(|b| b.is_ascii_alphanumeric() || *b == b'+' || *b == b'/');
+        let key_ok = key.len() == 24
+            && key.ends_with("==")
+            && key.as_bytes()[..22].iter().all(|b| b.is_ascii_alphanumeric() || *b == b'+' || *b == b'/');
         if !key_ok {
             return abort_handshake(req, 400, Some("Missing or invalid Sec-WebSocket-Key header"), &[]);
         }
@@ -865,9 +865,10 @@ impl WebSocketServer {
             headers.insert("sec-websocket-accept", v);
         }
         if let Some(p) = &protocol
-            && let Ok(v) = HeaderValue::from_str(p) {
-                headers.insert("sec-websocket-protocol", v);
-            }
+            && let Ok(v) = HeaderValue::from_str(p)
+        {
+            headers.insert("sec-websocket-protocol", v);
+        }
         let Ok(upgraded) = req.switch_protocols(headers) else {
             Logger::new("WebSocketServer").warn("handleUpgrade() was called for an upgrade request that was already handled");
             return;
@@ -892,11 +893,7 @@ impl WebSocketServer {
                     request,
                     queue: Arc::new(OutQueue::new(options.max_buffered_amount)),
                     control,
-                    unread: Arc::new(UnreadGauge {
-                        bytes: AtomicUsize::new(0),
-                        notify: Notify::new(),
-                        limit: options.max_unread_bytes,
-                    }),
+                    unread: Arc::new(UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit: options.max_unread_bytes }),
                     listeners: Mutex::new(Listeners::default()),
                     closed: watch::channel(None).0,
                 }),

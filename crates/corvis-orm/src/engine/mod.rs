@@ -131,9 +131,23 @@ pub(crate) fn strip_undefined(v: &mut Value) {
 
 /// All the actions of a model delegate.
 pub(crate) const ACTIONS: &[&str] = &[
-    "findMany", "findFirst", "findFirstOrThrow", "findUnique", "findUniqueOrThrow", "create", "createMany",
-    "createManyAndReturn", "update", "updateMany", "updateManyAndReturn", "upsert", "delete", "deleteMany", "count",
-    "aggregate", "groupBy",
+    "findMany",
+    "findFirst",
+    "findFirstOrThrow",
+    "findUnique",
+    "findUniqueOrThrow",
+    "create",
+    "createMany",
+    "createManyAndReturn",
+    "update",
+    "updateMany",
+    "updateManyAndReturn",
+    "upsert",
+    "delete",
+    "deleteMany",
+    "count",
+    "aggregate",
+    "groupBy",
 ];
 
 pub(crate) fn static_action(a: &str) -> Option<&'static str> {
@@ -174,9 +188,8 @@ impl Engine {
     }
 
     pub(crate) fn obj<'v>(&self, v: &'v Value, arg: &str, expected: &str) -> Result<&'v Map<String, Value>> {
-        v.as_object().ok_or_else(|| {
-            self.err(format!("Argument `{arg}`: Invalid value provided. Expected {expected}, provided {}.", json_type(v)))
-        })
+        v.as_object()
+            .ok_or_else(|| self.err(format!("Argument `{arg}`: Invalid value provided. Expected {expected}, provided {}.", json_type(v))))
     }
 
     /// Rejects unknown keys with a "Did you mean ...?" suggestion.
@@ -306,9 +319,7 @@ impl Engine {
             (FieldKind::Enum, Some(e)) => e.name,
             (k, _) => k.schema_name(),
         };
-        let bad = || {
-            self.err(format!("Argument `{}`: Invalid value provided. Expected {expected}, provided {}.", f.name, json_type(v)))
-        };
+        let bad = || self.err(format!("Argument `{}`: Invalid value provided. Expected {expected}, provided {}.", f.name, json_type(v)));
         Ok(match f.kind {
             FieldKind::Int => {
                 let i = match v {
@@ -335,7 +346,9 @@ impl Engine {
                     None => match n.as_f64() {
                         Some(x) if x.fract() == 0.0 && fits_i64(x) && !n.is_u64() => SqlValue::Int(x as i64),
                         _ => {
-                            return Err(self.err(format!("Argument `{}`: Invalid value provided. Expected BigInt, provided Float.", f.name)));
+                            return Err(
+                                self.err(format!("Argument `{}`: Invalid value provided. Expected BigInt, provided Float.", f.name))
+                            );
                         }
                     },
                 },
@@ -386,10 +399,7 @@ impl Engine {
                     Some(e) => match e.to_db(s) {
                         Some(db) => SqlValue::Text(db.to_string()),
                         None => {
-                            return Err(self.err(format!(
-                                "Invalid value for argument `{}`. Expected {}.",
-                                f.name, e.name
-                            )));
+                            return Err(self.err(format!("Invalid value for argument `{}`. Expected {}.", f.name, e.name)));
                         }
                     },
                     None => SqlValue::Text(s.to_string()),
@@ -398,10 +408,7 @@ impl Engine {
             FieldKind::DateTime => {
                 let d = match v {
                     Value::String(s) => parse_datetime(s).ok_or_else(|| {
-                        self.err(format!(
-                            "Argument `{}`: Invalid value provided. Expected ISO-8601 DateTime, provided \"{s}\".",
-                            f.name
-                        ))
+                        self.err(format!("Argument `{}`: Invalid value provided. Expected ISO-8601 DateTime, provided \"{s}\".", f.name))
                     })?,
                     Value::Number(n) => n.as_i64().and_then(chrono::DateTime::from_timestamp_millis).ok_or_else(bad)?,
                     _ => return Err(bad()),
@@ -441,9 +448,8 @@ impl Engine {
                     self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided Float.", f.name))
                 })?),
             },
-            Value::String(s) => crate::Decimal::parse(s).map_err(|_| {
-                self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name))
-            })?,
+            Value::String(s) => crate::Decimal::parse(s)
+                .map_err(|_| self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name)))?,
             other => {
                 return Err(self.err(format!(
                     "Argument `{}`: Invalid value provided. Expected Decimal, provided {}.",
@@ -567,11 +573,8 @@ impl Engine {
                 || (model.field(k).is_none() && model.compound_unique(k).is_some() && v.is_object())
         });
         if !has_unique {
-            let mut names: Vec<String> = model
-                .scalars()
-                .filter(|f| (f.is_id && !model.has_compound_pk()) || f.is_unique)
-                .map(|f| format!("`{}`", f.name))
-                .collect();
+            let mut names: Vec<String> =
+                model.scalars().filter(|f| (f.is_id && !model.has_compound_pk()) || f.is_unique).map(|f| format!("`{}`", f.name)).collect();
             names.extend(model.compound_unique_names().into_iter().map(|n| format!("`{n}`")));
             return Err(self.err(format!(
                 "Argument `where` of type {}WhereUniqueInput needs at least one of {} arguments.",

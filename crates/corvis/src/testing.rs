@@ -21,7 +21,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::application::{LoggerOption, CorvisApplication, CorvisApplicationOptions};
+use crate::application::{CorvisApplication, CorvisApplicationOptions, LoggerOption};
 use crate::common::filter::ExceptionFilter;
 use crate::common::guard::CanActivate;
 use crate::common::interceptor::CorvisInterceptor;
@@ -122,31 +122,19 @@ impl TestingModuleBuilder {
 
     /// `.overrideGuard(AuthGuard).useValue(mock)`.
     pub fn override_guard<G: 'static>(self, mock: impl CanActivate) -> Self {
-        self.override_enhancer(Provider::use_value_arc(
-            enhancer_override_token::<G>(),
-            Arc::new(mock) as Arc<dyn CanActivate>,
-        ))
+        self.override_enhancer(Provider::use_value_arc(enhancer_override_token::<G>(), Arc::new(mock) as Arc<dyn CanActivate>))
     }
     /// `.overrideInterceptor(LoggingInterceptor).useValue(mock)`.
     pub fn override_interceptor<I: 'static>(self, mock: impl CorvisInterceptor) -> Self {
-        self.override_enhancer(Provider::use_value_arc(
-            enhancer_override_token::<I>(),
-            Arc::new(mock) as Arc<dyn CorvisInterceptor>,
-        ))
+        self.override_enhancer(Provider::use_value_arc(enhancer_override_token::<I>(), Arc::new(mock) as Arc<dyn CorvisInterceptor>))
     }
     /// `.overridePipe(ValidationPipe).useValue(mock)`.
     pub fn override_pipe<P: 'static>(self, mock: impl PipeTransform) -> Self {
-        self.override_enhancer(Provider::use_value_arc(
-            enhancer_override_token::<P>(),
-            Arc::new(mock) as Arc<dyn PipeTransform>,
-        ))
+        self.override_enhancer(Provider::use_value_arc(enhancer_override_token::<P>(), Arc::new(mock) as Arc<dyn PipeTransform>))
     }
     /// `.overrideFilter(HttpExceptionFilter).useValue(mock)`.
     pub fn override_filter<F: 'static>(self, mock: impl ExceptionFilter) -> Self {
-        self.override_enhancer(Provider::use_value_arc(
-            enhancer_override_token::<F>(),
-            Arc::new(mock) as Arc<dyn ExceptionFilter>,
-        ))
+        self.override_enhancer(Provider::use_value_arc(enhancer_override_token::<F>(), Arc::new(mock) as Arc<dyn ExceptionFilter>))
     }
 
     fn override_enhancer(mut self, provider: Provider) -> Self {

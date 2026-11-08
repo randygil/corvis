@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
+use corvis::prelude::*;
 use corvis::testing::{TestResponse, request};
 use corvis::{CorsOrigin, EtagMode, StreamableFileOptions};
-use corvis::prelude::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[controller("health")]
@@ -87,7 +87,8 @@ impl InvoicesController {
 
     #[get("file/stream")]
     fn file_stream(&self) -> StreamableFile {
-        let chunks = futures::stream::iter(vec![Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"ab")), Ok(bytes::Bytes::from_static(b"cd"))]);
+        let chunks =
+            futures::stream::iter(vec![Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"ab")), Ok(bytes::Bytes::from_static(b"cd"))]);
         StreamableFile::from_stream(Box::pin(chunks), StreamableFileOptions::new().length(4))
     }
 
@@ -130,9 +131,24 @@ async fn not_found_bodies_and_etags_match_express() {
     let c = request(&app);
     let cases = [
         ("GET", "/x", r#"{"message":"Cannot GET /x","error":"Not Found","statusCode":404}"#, r#"W/"40-Lts3F9bcD4+FSck1x7cIWF0Qf44""#),
-        ("GET", "/api/v1/x", r#"{"message":"Cannot GET /api/v1/x","error":"Not Found","statusCode":404}"#, r#"W/"47-ycl2rmo1sCY1CWn0d//w5zHif+8""#),
-        ("POST", "/health", r#"{"message":"Cannot POST /health","error":"Not Found","statusCode":404}"#, r#"W/"46-PNJ2WZUyGZyD7vY7oJLlfd1w6B4""#),
-        ("GET", "/api/v1/x?a=1", r#"{"message":"Cannot GET /api/v1/x?a=1","error":"Not Found","statusCode":404}"#, r#"W/"4b-ldwy9WRYUkzaIPoNFsNPN+hKdEM""#),
+        (
+            "GET",
+            "/api/v1/x",
+            r#"{"message":"Cannot GET /api/v1/x","error":"Not Found","statusCode":404}"#,
+            r#"W/"47-ycl2rmo1sCY1CWn0d//w5zHif+8""#,
+        ),
+        (
+            "POST",
+            "/health",
+            r#"{"message":"Cannot POST /health","error":"Not Found","statusCode":404}"#,
+            r#"W/"46-PNJ2WZUyGZyD7vY7oJLlfd1w6B4""#,
+        ),
+        (
+            "GET",
+            "/api/v1/x?a=1",
+            r#"{"message":"Cannot GET /api/v1/x?a=1","error":"Not Found","statusCode":404}"#,
+            r#"W/"4b-ldwy9WRYUkzaIPoNFsNPN+hKdEM""#,
+        ),
     ];
     for (method, path, body, etag) in cases {
         let r = c.method(method.parse().unwrap(), path).send().await;
@@ -238,7 +254,10 @@ async fn cors_origin_variants() {
     })
     .await;
     let c = request(&app);
-    assert_eq!(h(&c.get("/health").header("origin", "https://a.example.com").send().await, "access-control-allow-origin"), Some("https://a.example.com"));
+    assert_eq!(
+        h(&c.get("/health").header("origin", "https://a.example.com").send().await, "access-control-allow-origin"),
+        Some("https://a.example.com")
+    );
     assert_eq!(h(&c.get("/health").header("origin", "https://example.org").send().await, "access-control-allow-origin"), None);
     let app = app_with(|a| {
         a.enable_cors(CorsOptions::new().origin_fn(|o| if o == Some("http://ok") { CorsOrigin::Reflect } else { CorsOrigin::Disabled }));
@@ -485,7 +504,10 @@ async fn query_parsers_match_express() {
     app.silence_route_logs();
     app.init().await.unwrap();
     let r = request(&app).get("/q?a[]=x&a[]=y&c[d][e]=f&g[h][i][j][k][l][m]=n").send().await;
-    assert_eq!(r.json_value(), json!({ "a": ["x", "y"], "c": { "d": { "e": "f" } }, "g": { "h": { "i": { "j": { "k": { "l": { "[m]": "n" } } } } } } }));
+    assert_eq!(
+        r.json_value(),
+        json!({ "a": ["x", "y"], "c": { "d": { "e": "f" } }, "g": { "h": { "i": { "j": { "k": { "l": { "[m]": "n" } } } } } } })
+    );
 }
 
 /// Parameters are resolved like `Promise.all`: the earliest failing pipe wins, and on a

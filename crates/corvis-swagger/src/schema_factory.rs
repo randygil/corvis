@@ -121,7 +121,9 @@ pub fn create_api_property(options: &Obj, design_type: Option<Value>) -> Obj {
         let inner = a.first().cloned().unwrap_or(Value::Null);
         let inner_type = match ty(Some(&inner)) {
             Ty::Ctor(c) => map_type_to_openapi(c).map(Value::String).unwrap_or(Value::Null),
-            Ty::Model(k) => Value::String(map_type_to_openapi(&model_info(k).map(|m| m.class_name).unwrap_or_default()).unwrap_or_default()),
+            Ty::Model(k) => {
+                Value::String(map_type_to_openapi(&model_info(k).map(|m| m.class_name).unwrap_or_default()).unwrap_or_default())
+            }
             _ => inner,
         };
         o.insert("type".into(), js::s("array"));
@@ -528,12 +530,13 @@ impl SchemaObjectFactory {
         }
         let def = Value::Object(def);
         if let Some(existing) = schemas.get(&info.name)
-            && !js::deep_equal(existing, &def) {
-                corvis::Logger::new("Logger").warn(format!(
+            && !js::deep_equal(existing, &def)
+        {
+            corvis::Logger::new("Logger").warn(format!(
                     "Duplicate DTO detected: \"{}\" is defined multiple times with different schemas.\nConsider using unique class names or applying @ApiExtraModels() decorator with custom schema names.\nNote: This will throw an error in the next major version.",
                     info.name
                 ));
-            }
+        }
         schemas.insert(info.name.clone(), def);
         info.name
     }
@@ -724,7 +727,12 @@ impl SchemaObjectFactory {
             if js::truthy(meta.get("isArray")) && js::truthy(meta.get("enum")) {
                 meta.insert("type".into(), js::s("array"));
                 let values = enum_values(&meta["enum"]);
-                let item_type = meta.get("items").and_then(|i| i.get("type")).cloned().filter(|v| !v.is_null()).unwrap_or_else(|| js::s(enum_type(&values)));
+                let item_type = meta
+                    .get("items")
+                    .and_then(|i| i.get("type"))
+                    .cloned()
+                    .filter(|v| !v.is_null())
+                    .unwrap_or_else(|| js::s(enum_type(&values)));
                 meta.insert("items".into(), json!({ "type": item_type, "enum": values }));
                 js::delete(&mut meta, "enum");
             } else if js::truthy(meta.get("enum")) {
@@ -813,7 +821,8 @@ impl SchemaObjectFactory {
         }
         if let Ty::Str(s) = t {
             let is_enum = js::truthy(metadata.get("enum"))
-                || (js::truthy(metadata.get("isArray")) && metadata.get("items").and_then(|i| i.get("enum")).is_some_and(|e| js::truthy(Some(e))));
+                || (js::truthy(metadata.get("isArray"))
+                    && metadata.get("items").and_then(|i| i.get("enum")).is_some_and(|e| js::truthy(Some(e))));
             if is_enum {
                 return Self::create_enum_schema_type(key, &metadata, schemas);
             }
@@ -1037,11 +1046,29 @@ mod tests {
     #[test]
     fn builtin_property_schemas() {
         let mut schemas = Obj::new();
-        let m = SchemaObjectFactory::create_schema_metadata("n", js::obj_of(&json!({ "type": { "$ctor": "Number" }, "minimum": 0 })), &mut schemas, &mut Vec::new(), None);
+        let m = SchemaObjectFactory::create_schema_metadata(
+            "n",
+            js::obj_of(&json!({ "type": { "$ctor": "Number" }, "minimum": 0 })),
+            &mut schemas,
+            &mut Vec::new(),
+            None,
+        );
         assert_eq!(js::stringify(&Value::Object(m)), r#"{"type":"number","minimum":0,"name":"n"}"#);
-        let m = SchemaObjectFactory::create_schema_metadata("t", js::obj_of(&json!({ "type": { "$ctor": "String" }, "isArray": true })), &mut schemas, &mut Vec::new(), None);
+        let m = SchemaObjectFactory::create_schema_metadata(
+            "t",
+            js::obj_of(&json!({ "type": { "$ctor": "String" }, "isArray": true })),
+            &mut schemas,
+            &mut Vec::new(),
+            None,
+        );
         assert_eq!(js::stringify(&Value::Object(m)), r#"{"isArray":true,"name":"t","type":"array","items":{"type":"string"}}"#);
-        let m = SchemaObjectFactory::create_schema_metadata("d", js::obj_of(&json!({ "type": { "$ctor": "Date" } })), &mut schemas, &mut Vec::new(), None);
+        let m = SchemaObjectFactory::create_schema_metadata(
+            "d",
+            js::obj_of(&json!({ "type": { "$ctor": "Date" } })),
+            &mut schemas,
+            &mut Vec::new(),
+            None,
+        );
         assert_eq!(js::stringify(&Value::Object(m)), r#"{"format":"date-time","type":"string","name":"d"}"#);
     }
 

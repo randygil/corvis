@@ -165,7 +165,8 @@ async fn nested_create_and_relation_writes() {
     // belongs_to connect / create
     let p = db.post().create(json!({ "data": { "title": "Tres", "author": { "connect": { "email": "nested@corvis.dev" } } }, "include": { "author": true } })).await.unwrap();
     assert_eq!(p.author.unwrap().id, u.id);
-    let p = db.post().create(json!({ "data": { "title": "Cuatro", "author": { "create": { "email": "new@corvis.dev" } } } })).await.unwrap();
+    let p =
+        db.post().create(json!({ "data": { "title": "Cuatro", "author": { "create": { "email": "new@corvis.dev" } } } })).await.unwrap();
     assert_eq!(p.author_id, 2);
 
     // nested update: update/delete posts of a user
@@ -188,11 +189,7 @@ async fn nested_create_and_relation_writes() {
     assert_eq!(titles, [("Uno".to_string(), true), ("Tres".to_string(), false), ("Cinco".to_string(), false)]);
 
     // connect a nonexistent record -> P2025, and the nested write is rolled back
-    let err = db
-        .user()
-        .create(json!({ "data": { "email": "rollback@x.y", "posts": { "connect": [{ "id": 999 }] } } }))
-        .await
-        .unwrap_err();
+    let err = db.user().create(json!({ "data": { "email": "rollback@x.y", "posts": { "connect": [{ "id": 999 }] } } })).await.unwrap_err();
     assert_eq!(err.code(), Some("P2025"));
     assert!(db.user().find_unique(json!({ "where": { "email": "rollback@x.y" } })).await.unwrap().is_none());
 }
@@ -261,7 +258,9 @@ async fn many_operations_and_upsert() {
     let db = seeded().await;
     let r = db
         .user()
-        .create_many(json!({ "data": [{ "email": "x1@x.y" }, { "email": "x2@x.y" }, { "email": "ana@corvis.dev" }], "skipDuplicates": true }))
+        .create_many(
+            json!({ "data": [{ "email": "x1@x.y" }, { "email": "x2@x.y" }, { "email": "ana@corvis.dev" }], "skipDuplicates": true }),
+        )
         .await
         .unwrap();
     assert_eq!(r.count, 2);
@@ -278,7 +277,9 @@ async fn many_operations_and_upsert() {
     assert_eq!(u.name.as_deref(), Some("Dora"));
     let u = db
         .user()
-        .upsert(json!({ "where": { "email": "dora@corvis.dev" }, "create": { "email": "dora@corvis.dev" }, "update": { "name": "Dora 2" } }))
+        .upsert(
+            json!({ "where": { "email": "dora@corvis.dev" }, "create": { "email": "dora@corvis.dev" }, "update": { "name": "Dora 2" } }),
+        )
         .await
         .unwrap();
     assert_eq!(u.name.as_deref(), Some("Dora 2"));
@@ -355,12 +356,8 @@ async fn typed_api() {
     assert_eq!(users[0].email, "carla@corvis.dev");
     assert!(users[1].posts.as_ref().unwrap().len() == 2);
 
-    let users = db
-        .user()
-        .find_many(vec![or(vec![user::name::is_null(), user::name::starts_with("B")]), user::age::lt(40)])
-        .exec()
-        .await
-        .unwrap();
+    let users =
+        db.user().find_many(vec![or(vec![user::name::is_null(), user::name::starts_with("B")]), user::age::lt(40)]).exec().await.unwrap();
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].name.as_deref(), Some("Bob"));
 
@@ -377,14 +374,23 @@ async fn typed_api() {
 
     let created = db
         .user()
-        .create(vec![user::email::set("typed@corvis.dev"), user::name::set("Typed"), user::posts::create(vec![vec![post::title::set("T1")]])])
+        .create(vec![
+            user::email::set("typed@corvis.dev"),
+            user::name::set("Typed"),
+            user::posts::create(vec![vec![post::title::set("T1")]]),
+        ])
         .include(user::posts::include())
         .exec()
         .await
         .unwrap();
     assert_eq!(created.posts.unwrap().len(), 1);
 
-    let updated = db.user().update(user::email::equals("typed@corvis.dev")).data(vec![user::age::increment(5), user::name::set_null()]).await.unwrap();
+    let updated = db
+        .user()
+        .update(user::email::equals("typed@corvis.dev"))
+        .data(vec![user::age::increment(5), user::name::set_null()])
+        .await
+        .unwrap();
     assert_eq!(updated.age, 5);
     assert!(updated.name.is_none());
 
@@ -442,8 +448,5 @@ async fn postgres_sql_generation() {
     )
     .unwrap();
     // Like the reference client: the column is cast to text and Postgres' default `\` escape is used.
-    assert_eq!(
-        sql,
-        "((t0.\"email\"::text ILIKE $1) AND (((t0.\"age\" > $2)) OR ((t0.\"id\" IN ($3, $4)))))"
-    );
+    assert_eq!(sql, "((t0.\"email\"::text ILIKE $1) AND (((t0.\"age\" > $2)) OR ((t0.\"id\" IN ($3, $4)))))");
 }

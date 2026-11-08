@@ -340,10 +340,13 @@ fn v4_unions_and_errors() {
             [{ "expected": "number", "code": "invalid_type", "path": [], "message": "Invalid input: expected number, received boolean" }]
         ], "path": [], "message": "Invalid input" }])
     );
-    let du = z::discriminated_union("type", [
-        z::object! { "type": z::literal(json!("a")), a: z::string() }.into(),
-        z::object! { "type": z::literal(json!("b")), b: z::number() }.into(),
-    ]);
+    let du = z::discriminated_union(
+        "type",
+        [
+            z::object! { "type": z::literal(json!("a")), a: z::string() }.into(),
+            z::object! { "type": z::literal(json!("b")), b: z::number() }.into(),
+        ],
+    );
     assert_eq!(
         v4_issues(&du, json!({ "type": "c" })),
         json!([{ "code": "invalid_union", "errors": [], "note": "No matching discriminator", "discriminator": "type", "options": ["a", "b"], "path": ["type"], "message": "Invalid discriminator value. Expected 'a' | 'b'" }])

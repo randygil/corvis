@@ -312,21 +312,24 @@ impl Engine {
     }
 
     fn by_fields(&self, model: &'static ModelMeta, args: &Map<String, Value>) -> Result<Vec<&'static FieldMeta>> {
-        let scalar = |name: &str| -> Result<&'static FieldMeta> {
-            match model.field(name) {
-                Some(f) if f.is_scalar() => Ok(f),
-                _ => Err(self.err(format!(
-                    "Argument `by`: Invalid value provided. Expected {}ScalarFieldEnum, provided `{name}`.",
-                    model.name
-                ))),
-            }
-        };
+        let scalar =
+            |name: &str| -> Result<&'static FieldMeta> {
+                match model.field(name) {
+                    Some(f) if f.is_scalar() => Ok(f),
+                    _ => Err(self
+                        .err(format!("Argument `by`: Invalid value provided. Expected {}ScalarFieldEnum, provided `{name}`.", model.name))),
+                }
+            };
         match args.get("by") {
             Some(Value::Array(a)) if !a.is_empty() => a
                 .iter()
                 .map(|v| {
                     let name = v.as_str().ok_or_else(|| {
-                        self.err(format!("Argument `by`: Invalid value provided. Expected {}ScalarFieldEnum, provided {}.", model.name, json_type(v)))
+                        self.err(format!(
+                            "Argument `by`: Invalid value provided. Expected {}ScalarFieldEnum, provided {}.",
+                            model.name,
+                            json_type(v)
+                        ))
                     })?;
                     scalar(name)
                 })
@@ -352,7 +355,10 @@ impl Engine {
         if !missing.is_empty() {
             return Err(input_error(
                 model,
-                format!("Every field used for orderBy must be included in the by-arguments of the query. Missing fields: {}", missing.join(", ")),
+                format!(
+                    "Every field used for orderBy must be included in the by-arguments of the query. Missing fields: {}",
+                    missing.join(", ")
+                ),
             ));
         }
         let take = self.int_arg(&args, "take")?;
@@ -394,7 +400,8 @@ impl Engine {
         let mut out = Vec::new();
         for row in rows.rows {
             let mut it = row.into_iter();
-            let keys: Vec<(&'static FieldMeta, Value)> = by.iter().map(|f| (*f, coerce_field_d(f, it.next().unwrap_or(Value::Null), d))).collect();
+            let keys: Vec<(&'static FieldMeta, Value)> =
+                by.iter().map(|f| (*f, coerce_field_d(f, it.next().unwrap_or(Value::Null), d))).collect();
             let mut obj = self.agg_object(&sel, it);
             for (f, v) in keys {
                 obj.insert(f.name.to_string(), v);

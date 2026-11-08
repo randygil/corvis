@@ -85,8 +85,13 @@ pub fn fold_class(entries: &[(String, Value)]) -> Metadata {
     for (k, v) in entries.iter().rev() {
         match k.as_str() {
             keys::API_RESPONSE => m.add_response(v),
-            keys::API_PRODUCES | keys::API_CONSUMES | keys::API_TAGS | keys::API_CALLBACKS | keys::API_SECURITY
-            | keys::API_EXTRA_MODELS | keys::API_EXCLUDE_CONTROLLER => m.concat(k, v),
+            keys::API_PRODUCES
+            | keys::API_CONSUMES
+            | keys::API_TAGS
+            | keys::API_CALLBACKS
+            | keys::API_SECURITY
+            | keys::API_EXTRA_MODELS
+            | keys::API_EXCLUDE_CONTROLLER => m.concat(k, v),
             keys::API_HEADER => m.concat(keys::API_HEADERS, &json!([v])),
             keys::API_OPERATION | keys::API_EXCLUDE_ENDPOINT | keys::API_INCLUDE_ENDPOINT => m.assign(k, v),
             // Applied to the methods (see `fold_method`).
@@ -103,7 +108,11 @@ pub fn fold_method(entries: &[(String, Value)], class_entries: &[(String, Value)
     for (k, v) in entries.iter().rev() {
         match k.as_str() {
             keys::API_RESPONSE => m.add_response(v),
-            keys::API_PRODUCES | keys::API_CONSUMES | keys::API_TAGS | keys::API_CALLBACKS | keys::API_SECURITY
+            keys::API_PRODUCES
+            | keys::API_CONSUMES
+            | keys::API_TAGS
+            | keys::API_CALLBACKS
+            | keys::API_SECURITY
             | keys::API_EXTRA_MODELS => m.concat(k, v),
             keys::API_PARAMETERS => m.push_param(v),
             keys::API_HEADER => m.push_param(&header_param(v)),

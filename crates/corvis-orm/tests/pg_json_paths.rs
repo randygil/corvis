@@ -233,8 +233,13 @@ fn json_path_filters_match_a_rust_evaluation_on_postgres() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let Some(db) = rt.block_on(seeded("property")) else { return };
     let docs = docs();
-    let lits: Vec<Value> = (0..KEYS.len()).map(|i| json!(i)).chain((0..KEYS.len()).map(|i| json!(format!("v{i}")))).chain(KEYS.iter().map(|k| json!(k))).collect();
-    let strategy = (prop::collection::vec(key(), 0..4), prop::sample::select(vec!["equals", "not"]), prop::sample::select(lits), any::<bool>());
+    let lits: Vec<Value> = (0..KEYS.len())
+        .map(|i| json!(i))
+        .chain((0..KEYS.len()).map(|i| json!(format!("v{i}"))))
+        .chain(KEYS.iter().map(|k| json!(k)))
+        .collect();
+    let strategy =
+        (prop::collection::vec(key(), 0..4), prop::sample::select(vec!["equals", "not"]), prop::sample::select(lits), any::<bool>());
     let cases = std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
     let config = ProptestConfig {
         cases,

@@ -5,11 +5,8 @@ use super::dto::CreateRoomDto;
 use crate::models::{ChatMessage, ChatMessageDelegate, Room, RoomDelegate};
 
 /// Rooms created on startup when missing: (name, topic).
-pub const DEFAULT_ROOMS: [(&str, &str); 3] = [
-    ("general", "Anything goes"),
-    ("rust", "Ownership, lifetimes and other joys"),
-    ("random", "Memes and off-topic"),
-];
+pub const DEFAULT_ROOMS: [(&str, &str); 3] =
+    [("general", "Anything goes"), ("rust", "Ownership, lifetimes and other joys"), ("random", "Memes and off-topic")];
 
 /// Rooms and message history (SQLite through corvis-orm). Injected into the gateway and
 /// into the REST controller.
@@ -43,11 +40,8 @@ impl RoomsService {
 
     /// The last `limit` messages of a room, oldest first.
     pub async fn history(&self, room: &str, limit: i64) -> Result<Vec<ChatMessage>, OrmError> {
-        let mut messages: Vec<ChatMessage> = self
-            .db
-            .chat_message()
-            .find_many(json!({ "where": { "room": room }, "orderBy": { "id": "desc" }, "take": limit }))
-            .await?;
+        let mut messages: Vec<ChatMessage> =
+            self.db.chat_message().find_many(json!({ "where": { "room": room }, "orderBy": { "id": "desc" }, "take": limit })).await?;
         messages.reverse();
         Ok(messages)
     }
@@ -72,10 +66,7 @@ impl OnApplicationBootstrap for RoomsService {
     async fn on_application_bootstrap(&self) -> corvis::Result<()> {
         for (name, topic) in DEFAULT_ROOMS {
             if self.find(name).await?.is_none() {
-                self.db
-                    .room()
-                    .create(json!({ "data": { "name": name, "topic": topic, "createdBy": "tertulia" } }))
-                    .await?;
+                self.db.room().create(json!({ "data": { "name": name, "topic": topic, "createdBy": "tertulia" } })).await?;
             }
         }
         Ok(())

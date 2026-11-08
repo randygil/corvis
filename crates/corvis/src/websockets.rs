@@ -39,9 +39,9 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tokio::sync::Notify;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::{Error, Message};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role, WebSocketConfig};
+use tokio_tungstenite::tungstenite::{Error, Message};
 
 use crate::common::context::{ExecutionContext, Target};
 use crate::common::enhancer::EnhancerRef;
@@ -575,8 +575,7 @@ pub(crate) async fn build_gateways(
                         }
                         let target =
                             Arc::new(Target { name: h.method_name.to_string(), metadata: enhancers.metadata.iter().cloned().collect() });
-                        let compiled =
-                            CompiledWsHandler { call, guards, interceptors: Arc::new(interceptors), pipes, params, target };
+                        let compiled = CompiledWsHandler { call, guards, interceptors: Arc::new(interceptors), pipes, params, target };
                         handlers.insert(event, Arc::new(compiled));
                     }
                 }
@@ -622,7 +621,11 @@ fn reject_handshake(status: u16, message: &str, extra: &[(&str, &str)]) -> hyper
 
 /// The checks of `ws`' `handleUpgrade` plus the gateway's `allowed_origins` and
 /// `verify_client`. `Err` carries the rejection response.
-fn validate_handshake(headers: &http::HeaderMap, method: &http::Method, options: &GatewayOptions) -> Result<Vec<u8>, hyper::Response<ResBody>> {
+fn validate_handshake(
+    headers: &http::HeaderMap,
+    method: &http::Method,
+    options: &GatewayOptions,
+) -> Result<Vec<u8>, hyper::Response<ResBody>> {
     if method != http::Method::GET {
         return Err(reject_handshake(405, "Invalid HTTP method", &[]));
     }
@@ -721,8 +724,7 @@ async fn run_handler(
     // Interceptors see the handler's return value as the JSON body of a `Response`: the data
     // for a plain value, `{ event, data }` for a `WsResponse`, `null` for no reply.
     let shape = Arc::new(AtomicU8::new(SHAPE_NONE));
-    let resp =
-        call_interceptors(handler.interceptors.clone(), 0, ctx, handler.clone(), client.clone(), data, shape.clone()).await?;
+    let resp = call_interceptors(handler.interceptors.clone(), 0, ctx, handler.clone(), client.clone(), data, shape.clone()).await?;
     let body = resp.json_body().cloned().unwrap_or(Value::Null);
     Ok(match shape.load(Ordering::SeqCst) {
         SHAPE_RESPONSE if body.get("event").is_some_and(Value::is_string) => Some(body),
@@ -874,9 +876,10 @@ where
     let guard = ConnectionGuard { client: client.clone(), writer: writer.abort_handle() };
     gateway.server.add(client.clone());
     if let Some(h) = &gateway.info.on_connection
-        && !run_hook(&gateway, "handleConnection", h, &client).await {
-            client.close_with(CloseFrame { code: CloseCode::from(CLOSE_INTERNAL_ERROR), reason: Cow::Borrowed("") }, false);
-        }
+        && !run_hook(&gateway, "handleConnection", h, &client).await
+    {
+        client.close_with(CloseFrame { code: CloseCode::from(CLOSE_INTERNAL_ERROR), reason: Cow::Borrowed("") }, false);
+    }
     // Handlers of a connection run concurrently (a slow handler does not block the socket)
     // but start in the order their frames arrived, like RxJS `mergeMap`: a `join` followed
     // by a `message` always sees the room joined. With `max_inflight` handlers running the

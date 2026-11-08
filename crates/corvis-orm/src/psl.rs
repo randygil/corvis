@@ -105,11 +105,7 @@ pub struct Enum {
 
 impl Enum {
     pub fn db_name(&self) -> String {
-        self.attributes
-            .iter()
-            .find(|a| a.name == "map")
-            .and_then(|a| a.arg_str(0, "name"))
-            .unwrap_or_else(|| self.name.clone())
+        self.attributes.iter().find(|a| a.name == "map").and_then(|a| a.arg_str(0, "name")).unwrap_or_else(|| self.name.clone())
     }
     pub fn schema(&self) -> Option<String> {
         self.attributes.iter().find(|a| a.name == "schema").and_then(|a| a.arg_str(0, "name"))

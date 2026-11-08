@@ -39,7 +39,12 @@ impl Parse for ModuleArgs {
                     "global" => {
                         args.global = matches!(list.first(), Some(Expr::Lit(l)) if matches!(&l.lit, Lit::Bool(b) if b.value));
                     }
-                    _ => return Err(syn::Error::new_spanned(key, "unknown #[module] key; expected imports, controllers, providers, exports or global")),
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            key,
+                            "unknown #[module] key; expected imports, controllers, providers, exports or global",
+                        ));
+                    }
                 }
             } else if key_s == "global" {
                 args.global = true;

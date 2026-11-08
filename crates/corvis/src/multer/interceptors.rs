@@ -9,9 +9,9 @@ use serde_json::{Map, Value};
 
 use super::busboy::{self, Event};
 use super::{
-    FileInfo, Limits, MULTER_MODULE_OPTIONS, MulterError, MulterErrorCode, MulterOptions, MultipartData,
-    BodySource, StorageEngine, append_field::{ArrayBudget, append_field}, is_multipart, transform_busboy_error,
-    transform_multer_error,
+    BodySource, FileInfo, Limits, MULTER_MODULE_OPTIONS, MulterError, MulterErrorCode, MulterOptions, MultipartData, StorageEngine,
+    append_field::{ArrayBudget, append_field},
+    is_multipart, transform_busboy_error, transform_multer_error,
 };
 use crate::common::context::ExecutionContext;
 use crate::common::interceptor::{CallHandler, CorvisInterceptor};
@@ -82,9 +82,7 @@ async fn run(ctx: &ExecutionContext, local: &MulterOptions, setup: &Setup) -> Re
     if !is_multipart(req) {
         return Ok(None);
     }
-    let module_opts = ctx
-        .module_ref()
-        .and_then(|m| m.get_token_in_context::<MulterOptions>(MULTER_MODULE_OPTIONS).ok());
+    let module_opts = ctx.module_ref().and_then(|m| m.get_token_in_context::<MulterOptions>(MULTER_MODULE_OPTIONS).ok());
     let options = local.merged_over(module_opts.as_deref());
     let (data, cleanup) = process(req, &options, setup).await?;
     req.insert(data);
@@ -169,8 +167,7 @@ impl Upload<'_> {
         let limits = self.limits;
         match ev {
             Event::Field { name, value, value_truncated } => {
-                handle_field(&mut self.body, &mut self.budget, name, value, value_truncated, limits)
-                    .map_err(transform_multer_error)?;
+                handle_field(&mut self.body, &mut self.budget, name, value, value_truncated, limits).map_err(transform_multer_error)?;
                 Ok(None)
             }
             Event::FileStart { id, name, filename, encoding, mime_type } => {
@@ -180,9 +177,10 @@ impl Upload<'_> {
                 // Parts without a file name are not files for multer.
                 let Some(filename) = filename.filter(|f| !f.is_empty()) else { return Ok(Some(id)) };
                 if let Some(max) = limits.field_name_size
-                    && fieldname.encode_utf16().count() as u64 > max {
-                        return Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFieldKey, None)));
-                    }
+                    && fieldname.encode_utf16().count() as u64 > max
+                {
+                    return Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFieldKey, None)));
+                }
                 let info = FileInfo { fieldname: fieldname.clone(), originalname: filename, encoding, mimetype: mime_type };
                 let slot = self.appender.insert(&fieldname);
                 let filter = if self.setup.fields.is_some() {
@@ -216,10 +214,9 @@ impl Upload<'_> {
                 }
             }
             Event::FileLimit { id } => match self.pending.get(&id) {
-                Some(p) if p.included => Err(transform_multer_error(MulterError::new(
-                    MulterErrorCode::LimitFileSize,
-                    Some(p.info.fieldname.clone()),
-                ))),
+                Some(p) if p.included => {
+                    Err(transform_multer_error(MulterError::new(MulterErrorCode::LimitFileSize, Some(p.info.fieldname.clone()))))
+                }
                 _ => Ok(None),
             },
             Event::FileEnd { id, data } => match self.pending.remove(&id) {
@@ -294,11 +291,10 @@ async fn process(req: &Request, options: &MulterOptions, setup: &Setup) -> Resul
     let preserve_path = options.preserve_path.unwrap_or(false);
     let def_param_charset = options.def_param_charset.clone().unwrap_or_else(|| "latin1".into());
 
-    let boundary = busboy::boundary_of(req.headers().get(http::header::CONTENT_TYPE).map(|v| v.as_bytes()))
-        .map_err(|e| match e {
-            busboy::ConfigError::BoundaryNotFound => transform_busboy_error(busboy::BOUNDARY_NOT_FOUND),
-            other => HttpException::internal(super::BusboyError(other.message())),
-        })?;
+    let boundary = busboy::boundary_of(req.headers().get(http::header::CONTENT_TYPE).map(|v| v.as_bytes())).map_err(|e| match e {
+        busboy::ConfigError::BoundaryNotFound => transform_busboy_error(busboy::BOUNDARY_NOT_FOUND),
+        other => HttpException::internal(super::BusboyError(other.message())),
+    })?;
     let body_limit = options.effective_body_limit(&limits);
     let mut source = BodySource::of(req);
     if crate::server::content_length(req.headers()).is_some_and(|n| n > body_limit) {
@@ -348,10 +344,8 @@ async fn process(req: &Request, options: &MulterOptions, setup: &Setup) -> Resul
         Strategy::None => {}
         Strategy::Value => data.file = appender.single.take().map(|f| Arc::new(Value::Object(f))),
         Strategy::Array => {
-            let list: Vec<Value> = (0..appender.list.len())
-                .filter(|i| appender.list[*i].is_some())
-                .map(|i| appender.placeholder(i, ""))
-                .collect();
+            let list: Vec<Value> =
+                (0..appender.list.len()).filter(|i| appender.list[*i].is_some()).map(|i| appender.placeholder(i, "")).collect();
             data.files = Some(Arc::new(Value::Array(list)));
         }
         Strategy::Object => {
@@ -385,16 +379,17 @@ fn handle_field(
         return Err(MulterError::new(MulterErrorCode::LimitFieldValue, Some(name)));
     }
     if let Some(max) = limits.field_name_size
-        && name.encode_utf16().count() as u64 > max {
-            return Err(MulterError::new(MulterErrorCode::LimitFieldKey, None));
-        }
+        && name.encode_utf16().count() as u64 > max
+    {
+        return Err(MulterError::new(MulterErrorCode::LimitFieldKey, None));
+    }
     if let Some(depth) = limits.field_nesting_depth
-        && name.matches('[').count() as u64 > depth {
-            return Err(MulterError::new(MulterErrorCode::LimitFieldNesting, Some(name)));
-        }
-    let max_depth = limits
-        .field_nesting_depth
-        .map_or(super::append_field::DEFAULT_MAX_FIELD_DEPTH, |d| usize::try_from(d).unwrap_or(usize::MAX));
+        && name.matches('[').count() as u64 > depth
+    {
+        return Err(MulterError::new(MulterErrorCode::LimitFieldNesting, Some(name)));
+    }
+    let max_depth =
+        limits.field_nesting_depth.map_or(super::append_field::DEFAULT_MAX_FIELD_DEPTH, |d| usize::try_from(d).unwrap_or(usize::MAX));
     append_field(body, budget, &name, Value::String(value), max_depth);
     Ok(())
 }

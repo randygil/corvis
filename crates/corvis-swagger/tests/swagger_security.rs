@@ -94,10 +94,7 @@ fn scalar_inline_document_cannot_close_the_script() {
 /// Configuration functions (`{"$js": ...}`) of the developer still work in Scalar.
 #[test]
 fn scalar_configuration_functions_are_kept() {
-    let html = scalar::render_api_reference(
-        &ApiReferenceOptions::new().set("onLoaded", json!({ "$js": "() => console.log('<ok>')" })),
-        "",
-    );
+    let html = scalar::render_api_reference(&ApiReferenceOptions::new().set("onLoaded", json!({ "$js": "() => console.log('<ok>')" })), "");
     assert!(html.contains("\"onLoaded\": () => console.log('<ok>')"), "{html}");
 }
 

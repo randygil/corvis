@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use corvis::prelude::*;
 use corvis::http::res::serialize_cookie;
+use corvis::prelude::*;
 use corvis::testing::{Test, request};
 use corvis::{Body, CookieOptions, Dotfiles, Res, serve_static};
 use futures::StreamExt;
@@ -93,9 +93,7 @@ impl ApiController {
 async fn app_with(fx: &Fixture, configure: impl FnOnce(&mut CorvisApplication, &Path)) -> CorvisApplication {
     let module = Test::create_testing_module()
         .controller::<ApiController>()
-        .import_dynamic(ServeStaticModule::for_root(vec![
-            ServeStaticOptions::new(fx.root.to_string_lossy()).serve_root("/mod"),
-        ]))
+        .import_dynamic(ServeStaticModule::for_root(vec![ServeStaticOptions::new(fx.root.to_string_lossy()).serve_root("/mod")]))
         .with_logger(false)
         .compile()
         .await
@@ -265,23 +263,30 @@ fn panic_message(f: impl FnOnce() + std::panic::UnwindSafe) -> Option<String> {
     std::panic::set_hook(Box::new(|_| {}));
     let r = std::panic::catch_unwind(f);
     std::panic::set_hook(prev);
-    r.err().map(|p| {
-        p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default()
-    })
+    r.err().map(|p| p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default())
 }
 
 /// static-response #5 / auth-ws #11: outgoing cookie attributes are validated like cookie 0.7.
 #[test]
 fn outgoing_cookie_attributes_are_validated() {
     let err = |o: CookieOptions| panic_message(move || drop(serialize_cookie("sid", "abc", &o)));
-    assert_eq!(err(CookieOptions::new().path("/; Domain=evil.example; SameSite=None")).as_deref(), Some("TypeError: option path is invalid"));
+    assert_eq!(
+        err(CookieOptions::new().path("/; Domain=evil.example; SameSite=None")).as_deref(),
+        Some("TypeError: option path is invalid")
+    );
     assert_eq!(err(CookieOptions::new().domain("example.com; Max-Age=99999999")).as_deref(), Some("TypeError: option domain is invalid"));
     assert_eq!(err(CookieOptions::new().domain("a..b")).as_deref(), Some("TypeError: option domain is invalid"));
     assert_eq!(err(CookieOptions::new().domain(".example.com").path("/app/x y")), None);
     assert_eq!(serialize_cookie("sid", "abc", &CookieOptions::new().domain(".Example.com")), "sid=abc; Domain=.Example.com; Path=/");
     // cookie 0.7 name/value grammar.
-    assert_eq!(panic_message(|| drop(serialize_cookie("a;b", "x", &CookieOptions::new()))).as_deref(), Some("TypeError: argument name is invalid"));
-    assert_eq!(panic_message(|| drop(serialize_cookie("a=b", "x", &CookieOptions::new()))).as_deref(), Some("TypeError: argument name is invalid"));
+    assert_eq!(
+        panic_message(|| drop(serialize_cookie("a;b", "x", &CookieOptions::new()))).as_deref(),
+        Some("TypeError: argument name is invalid")
+    );
+    assert_eq!(
+        panic_message(|| drop(serialize_cookie("a=b", "x", &CookieOptions::new()))).as_deref(),
+        Some("TypeError: argument name is invalid")
+    );
     assert_eq!(serialize_cookie("a@b", "\"q\"", &CookieOptions::new().raw(true)), "a@b=\"q\"; Path=/");
 
     // The `Cookie` struct of `Response::with_cookie`.

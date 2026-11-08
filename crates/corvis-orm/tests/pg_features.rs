@@ -40,7 +40,10 @@ async fn interactive_transaction_timeout_rolls_back() {
         .await;
     let err = res.unwrap_err();
     assert_eq!(err.code(), Some("P2028"), "{err}");
-    assert!(err.message().contains("A query cannot be executed on an expired transaction. The timeout for this transaction was 300 ms"), "{err}");
+    assert!(
+        err.message().contains("A query cannot be executed on an expired transaction. The timeout for this transaction was 300 ms"),
+        "{err}"
+    );
     assert_eq!(db.category().count(()).await.unwrap(), 0);
 
     // The commit of an expired transaction fails too.
@@ -56,13 +59,12 @@ async fn interactive_transaction_timeout_rolls_back() {
     assert_eq!(db.category().count(()).await.unwrap(), 0);
 
     // Within the timeout everything is committed.
-    db
-        ._transaction_with(TransactionOptions::new().max_wait(5_000).timeout(10_000), |tx| async move {
-            tx.category().create(category("d")).await?;
-            Ok::<_, OrmError>(())
-        })
-        .await
-        .unwrap();
+    db._transaction_with(TransactionOptions::new().max_wait(5_000).timeout(10_000), |tx| async move {
+        tx.category().create(category("d")).await?;
+        Ok::<_, OrmError>(())
+    })
+    .await
+    .unwrap();
     assert_eq!(db.category().count(()).await.unwrap(), 1);
 }
 
@@ -82,10 +84,8 @@ async fn max_wait_and_isolation_level() {
             .await
     });
     started_rx.await.unwrap();
-    let err = db
-        ._transaction_with(TransactionOptions::new().max_wait(100), |tx| async move { tx.category().count(()).await })
-        .await
-        .unwrap_err();
+    let err =
+        db._transaction_with(TransactionOptions::new().max_wait(100), |tx| async move { tx.category().count(()).await }).await.unwrap_err();
     assert_eq!(err.code(), Some("P2028"));
     assert!(err.message().contains("Unable to start a transaction in the given time."), "{err}");
     hold.await.unwrap().unwrap();
@@ -110,26 +110,22 @@ async fn max_wait_and_isolation_level() {
 async fn sequential_transactions() {
     let Some(db) = setup("feat_batch", 5).await else { return };
     let (a, b, n) = db
-        ._transaction_batch((
-            db.category().create(category("a")),
-            db.category().create(category("b")),
-            db.category().count(()),
-        ))
+        ._transaction_batch((db.category().create(category("a")), db.category().create(category("b")), db.category().count(())))
         .await
         .unwrap();
     assert_eq!((a.name.as_str(), b.name.as_str(), n), ("a", "b", 2));
 
     // A failing query rolls back the whole batch.
-    let err = db
-        ._transaction_batch(vec![db.category().create(category("c")), db.category().create(category("a"))])
-        .await
-        .unwrap_err();
+    let err = db._transaction_batch(vec![db.category().create(category("c")), db.category().create(category("a"))]).await.unwrap_err();
     assert_eq!(err.code(), Some("P2002"));
     assert_eq!(db.category().count(()).await.unwrap(), 2);
 
     let updated = db
         ._transaction_batch(
-            ["a", "b"].iter().map(|n| db.category().update(json!({ "where": { "name": n }, "data": { "name": format!("{n}2") } }))).collect::<Vec<_>>(),
+            ["a", "b"]
+                .iter()
+                .map(|n| db.category().update(json!({ "where": { "name": n }, "data": { "name": format!("{n}2") } })))
+                .collect::<Vec<_>>(),
         )
         .await
         .unwrap();
@@ -150,12 +146,11 @@ async fn typed_raw_queries() {
     let ids = RawSql::join([1, 3], ",", "(", ")");
     let missing: Option<String> = None;
     let cond = if names.is_empty() { RawSql::empty() } else { sql!("AND name <> {\"x\"}") };
-    let n: i64 = db
-        ._query_raw(sql!("SELECT count(*) AS n FROM \"Category\" WHERE id IN {ids} AND {missing}::text IS NULL {cond}"))
-        .await
-        .unwrap()[0]["n"]
-        .as_i64()
-        .unwrap();
+    let n: i64 =
+        db._query_raw(sql!("SELECT count(*) AS n FROM \"Category\" WHERE id IN {ids} AND {missing}::text IS NULL {cond}")).await.unwrap()
+            [0]["n"]
+            .as_i64()
+            .unwrap();
     assert_eq!(n, 2);
 
     #[derive(Deserialize)]
@@ -212,11 +207,7 @@ async fn undefined_arguments_are_dropped() {
     assert_eq!(some.len(), 1);
     // `undefined` in data leaves the column untouched; `null` would write NULL.
     let u: User = db.user().create(json!({ "data": { "email": "x@y.z", "name": "X" } })).await.unwrap();
-    let u: User = db
-        .user()
-        .update(json!({ "where": { "id": u.id }, "data": { "name": undefined(), "active": false } }))
-        .await
-        .unwrap();
+    let u: User = db.user().update(json!({ "where": { "id": u.id }, "data": { "name": undefined(), "active": false } })).await.unwrap();
     assert_eq!((u.name.as_deref(), u.active), (Some("X"), false));
 }
 
@@ -257,4 +248,44 @@ async fn raw_parameters_of_different_types_do_not_share_a_prepared_statement() {
     for sql in ["SELECT $1::int AS v;", "SELECT $1::int AS v -- note"] {
         assert_eq!(db.query_raw(sql, vec![json!(7)]).await.unwrap()[0]["v"], json!(7), "{sql}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The helper itself: `CORVIS_ORM_PG_REQUIRED=1` (set by CI) turns a skip into a failure
+// ---------------------------------------------------------------------------------------------
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(s) => *s,
+        Err(p) => p.downcast_ref::<&str>().map(|s| s.to_string()).unwrap_or_default(),
+    }
+}
+
+/// Runs `fresh_db_at` with the variable's policy set to "required" and returns the panic message.
+async fn required_failure(base: &'static str) -> String {
+    let err = tokio::spawn(pg::fresh_db_at(base, true, "required_check")).await.expect_err("a required server that is down must panic");
+    panic_message(err.into_panic())
+}
+
+#[tokio::test]
+async fn required_postgres_fails_instead_of_skipping() {
+    let base = "postgres://app:p4ss-w0rd@127.0.0.1:5299";
+    // Without the variable: skipped, as in a local run without a server.
+    assert!(pg::fresh_db_at(base, false, "required_check").await.is_none());
+
+    let msg = required_failure(base).await;
+    assert!(msg.contains("CORVIS_ORM_PG_REQUIRED=1") && msg.contains("CORVIS_ORM_PG)"), "{msg}");
+    assert!(msg.contains("127.0.0.1:5299") && msg.contains("is not reachable"), "{msg}");
+    assert!(!msg.contains("p4ss-w0rd") && !msg.contains("app:"), "{msg}");
+
+    let msg = required_failure("postgres://app:p4ss-w0rd@127.0.0.1:not-a-port").await;
+    assert!(msg.contains("has an invalid URL"), "{msg}");
+    assert!(!msg.contains("p4ss-w0rd") && !msg.contains("app:"), "{msg}");
+}
+
+#[test]
+fn server_host_never_includes_credentials() {
+    assert_eq!(pg::host("postgres://postgres:postgres@127.0.0.1:55432"), "127.0.0.1:55432");
+    assert_eq!(pg::host("postgres://u:p@ss@db.internal:5432/app?sslmode=require"), "db.internal:5432");
+    assert_eq!(pg::host("postgres://db.internal"), "db.internal");
 }

@@ -310,9 +310,11 @@ impl PipeTransform for ParseArrayPipe {
             match i {
                 Value::Number(_) => out.push(i),
                 Value::String(s) => match s.parse::<f64>() {
-                    Ok(n) => out.push(
-                        if n.fract() == 0.0 { Value::from(n as i64) } else { serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null) },
-                    ),
+                    Ok(n) => out.push(if n.fract() == 0.0 {
+                        Value::from(n as i64)
+                    } else {
+                        serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)
+                    }),
                     Err(_) => return Err(fail(self.status, "Validation failed (parsable array expected)")),
                 },
                 _ => return Err(fail(self.status, "Validation failed (parsable array expected)")),

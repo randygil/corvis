@@ -50,17 +50,18 @@ fn well_formed_body() -> impl Strategy<Value = Vec<u8>> {
         0..8,
     )
     .prop_map(|v| v.concat());
-    let part = (prop::sample::select(vec!["f", "a[b]", "up", ""]), prop::option::of(prop::sample::select(vec!["a.txt", "../x.bin", ""])), content)
-        .prop_map(|(name, file, data)| {
-            let mut out = format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"").into_bytes();
-            if let Some(f) = file {
-                out.extend_from_slice(format!("; filename=\"{f}\"\r\nContent-Type: application/octet-stream").as_bytes());
-            }
-            out.extend_from_slice(b"\r\n\r\n");
-            out.extend_from_slice(&data);
-            out.extend_from_slice(b"\r\n");
-            out
-        });
+    let part =
+        (prop::sample::select(vec!["f", "a[b]", "up", ""]), prop::option::of(prop::sample::select(vec!["a.txt", "../x.bin", ""])), content)
+            .prop_map(|(name, file, data)| {
+                let mut out = format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"").into_bytes();
+                if let Some(f) = file {
+                    out.extend_from_slice(format!("; filename=\"{f}\"\r\nContent-Type: application/octet-stream").as_bytes());
+                }
+                out.extend_from_slice(b"\r\n\r\n");
+                out.extend_from_slice(&data);
+                out.extend_from_slice(b"\r\n");
+                out
+            });
     prop::collection::vec(part, 0..6).prop_map(|parts| {
         let mut body = parts.concat();
         body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
@@ -90,8 +91,26 @@ fn limits() -> impl Strategy<Value = Limits> {
 fn field_key() -> impl Strategy<Value = String> {
     prop::collection::vec(
         prop::sample::select(vec![
-            "a", "b", "x", "[", "]", "[]", "[0]", "[1]", "[19]", "[20]", "[999]", "[4294967294]", "[-1]", "[b]",
-            "[__proto__]", "[constructor]", ".", "%5B", "]]", "[[",
+            "a",
+            "b",
+            "x",
+            "[",
+            "]",
+            "[]",
+            "[0]",
+            "[1]",
+            "[19]",
+            "[20]",
+            "[999]",
+            "[4294967294]",
+            "[-1]",
+            "[b]",
+            "[__proto__]",
+            "[constructor]",
+            ".",
+            "%5B",
+            "]]",
+            "[[",
         ]),
         0..40,
     )

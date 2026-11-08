@@ -38,16 +38,17 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
 pub use self::core::{
-    CheckOpts, DEFAULT_MAX_DEPTH, Direction, ErrorMap, ErrorParam, IssueInfo, Payload, RawIssue, RunCtx, Val, WhenFn,
-    ZodConfig, ZodVersion, config, configure, en_message, error_fn, get_config, set_version, version, with_version,
+    CheckOpts, DEFAULT_MAX_DEPTH, Direction, ErrorMap, ErrorParam, IssueInfo, Payload, RawIssue, RunCtx, Val, WhenFn, ZodConfig,
+    ZodVersion, config, configure, en_message, error_fn, get_config, set_version, version, with_version,
 };
 pub use self::regex::JsRegex;
 pub use compound::*;
 pub use error::{ZodError, ZodIssue, ZodIssueCode, flatten_error, format_error, prettify_error, to_dot_path, treeify_error};
 pub use json_schema::{JsonSchemaGen, JsonSchemaOptions, Registry, global_registry, to_json_schema};
 pub use pipe::{
-    CreateValidationException, ZOD_SERIALIZER_DTO_OPTIONS, ZodDto, ZodGuard, ZodGuardSource, ZodSchemaDeclarationException, ZodSerializationException, ZodSerializerDto, ZodSerializerInterceptor,
-    ZodValidationException, ZodValidationPipe, ZodValidationPipeOptions, create_zod_validation_pipe, validate, validate_opt,
+    CreateValidationException, ZOD_SERIALIZER_DTO_OPTIONS, ZodDto, ZodGuard, ZodGuardSource, ZodSchemaDeclarationException,
+    ZodSerializationException, ZodSerializerDto, ZodSerializerInterceptor, ZodValidationException, ZodValidationPipe,
+    ZodValidationPipeOptions, create_zod_validation_pipe, validate, validate_opt,
 };
 pub use types::*;
 pub use wrappers::*;
@@ -340,19 +341,9 @@ impl RefinementCtx<'_> {
                     .and_then(|(_, v)| v.as_str())
                     .map(ZodIssueCode::parse)
                     .unwrap_or(ZodIssueCode::Custom);
-                let message = b
-                    .fields
-                    .iter()
-                    .find(|(k, _)| k == "message")
-                    .and_then(|(_, v)| v.as_str())
-                    .unwrap_or("Invalid input")
-                    .to_string();
-                let params = b
-                    .fields
-                    .iter()
-                    .filter(|(k, _)| !matches!(k.as_str(), "code" | "message" | "path"))
-                    .cloned()
-                    .collect();
+                let message =
+                    b.fields.iter().find(|(k, _)| k == "message").and_then(|(_, v)| v.as_str()).unwrap_or("Invalid input").to_string();
+                let params = b.fields.iter().filter(|(k, _)| !matches!(k.as_str(), "code" | "message" | "path")).cloned().collect();
                 // `{ ...issueData, path, message }`.
                 let mut layout: Vec<String> = b.fields.iter().map(|(k, _)| k.clone()).filter(|k| k != "path").collect();
                 if !layout.iter().any(|k| k == "code") {

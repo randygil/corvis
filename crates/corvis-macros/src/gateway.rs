@@ -19,9 +19,10 @@ pub fn expand(args: TokenStream, mut item: ItemStruct) -> syn::Result<TokenStrea
                     _ => String::new(),
                 };
                 if (key == "path" || key == "namespace")
-                    && let Some(s) = lit_str(&a.right) {
-                        path = s;
-                    }
+                    && let Some(s) = lit_str(&a.right)
+                {
+                    path = s;
+                }
             }
             Expr::Lit(_) => {
                 if let Some(s) = lit_str(&e) {

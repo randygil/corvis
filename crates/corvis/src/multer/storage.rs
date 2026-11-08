@@ -190,9 +190,7 @@ pub(crate) fn is_windows_file_name(seg: &str) -> bool {
     }
     let stem = seg.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit())
+        || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit())
         || ((stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(&stem[3..], "\u{b9}" | "\u{b2}" | "\u{b3}"));
     !reserved
 }
@@ -257,7 +255,24 @@ mod tests {
 
     #[test]
     fn windows_names_reject_streams_and_devices() {
-        for bad in ["normal.txt:evil", "a:b", "CON", "con.txt", "NUL", "nul.tar.gz", "COM1", "lpt9.log", "AUX ", "x.", "a?b", "a*b", "a|b", "a<b", "x\u{1}", "COM\u{b9}"] {
+        for bad in [
+            "normal.txt:evil",
+            "a:b",
+            "CON",
+            "con.txt",
+            "NUL",
+            "nul.tar.gz",
+            "COM1",
+            "lpt9.log",
+            "AUX ",
+            "x.",
+            "a?b",
+            "a*b",
+            "a|b",
+            "a<b",
+            "x\u{1}",
+            "COM\u{b9}",
+        ] {
             assert!(!is_windows_file_name(bad), "{bad:?}");
         }
         for ok in ["normal.txt", "123-CONTRACT.pdf", "console.log", "COM10", "LPT", ".env", "a b.png"] {

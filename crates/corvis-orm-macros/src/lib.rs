@@ -299,11 +299,9 @@ fn lit_string(e: &Expr) -> Option<String> {
 
 fn string_list(e: &Expr) -> syn::Result<Vec<String>> {
     match e {
-        Expr::Array(a) => a
-            .elems
-            .iter()
-            .map(|x| lit_string(x).ok_or_else(|| syn::Error::new_spanned(x, "expected a string literal")))
-            .collect(),
+        Expr::Array(a) => {
+            a.elems.iter().map(|x| lit_string(x).ok_or_else(|| syn::Error::new_spanned(x, "expected a string literal"))).collect()
+        }
         Expr::Path(p) if p.path.get_ident().is_some() => Ok(vec![p.path.get_ident().unwrap().to_string()]),
         other => {
             let s = lit_string(other).ok_or_else(|| syn::Error::new_spanned(other, "expected \"a, b\" or [\"a\", \"b\"]"))?;
@@ -417,15 +415,8 @@ fn parse_default(attr: &syn::Attribute) -> syn::Result<DefaultSpec> {
 
 fn parse_relation(attr: &syn::Attribute) -> syn::Result<RelationSpec> {
     let args = attr.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
-    let mut spec = RelationSpec {
-        kind: String::new(),
-        fields: vec![],
-        references: vec![],
-        on_delete: None,
-        on_update: None,
-        name: None,
-        map: None,
-    };
+    let mut spec =
+        RelationSpec { kind: String::new(), fields: vec![], references: vec![], on_delete: None, on_update: None, name: None, map: None };
     for a in args {
         match &a {
             Expr::Path(p) if p.path.get_ident().is_some() => {

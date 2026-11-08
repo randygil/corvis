@@ -533,13 +533,7 @@ impl RunCtx {
         let code = raw.code();
         let explicit = raw.fields.get("message").and_then(|m| m.as_str()).filter(|m| !m.is_empty()).map(str::to_string);
         let message = explicit.unwrap_or_else(|| {
-            let info = IssueInfo {
-                code,
-                fields: &raw.fields,
-                path: &raw.path,
-                input: raw.input.to_json(),
-                input_val: &raw.input,
-            };
+            let info = IssueInfo { code, fields: &raw.fields, path: &raw.path, input: raw.input.to_json(), input_val: &raw.input };
             raw.inst_error
                 .as_ref()
                 .and_then(|f| f(&info))
@@ -562,10 +556,11 @@ impl RunCtx {
             }
         }
         if self.report_input
-            && let Some(input) = raw.input.to_json() {
-                params.insert("input".into(), input);
-                layout.push("input".into());
-            }
+            && let Some(input) = raw.input.to_json()
+        {
+            params.insert("input".into(), input);
+            layout.push("input".into());
+        }
         ZodIssue { code, path: raw.path.clone(), message, params, layout: Some(layout), v3_layout: None }
     }
 

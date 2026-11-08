@@ -344,11 +344,7 @@ impl ServeStatic {
 
     /// `next()` for 4xx errors while no file was found yet (fallthrough), else the error page.
     fn fail(&self, status: u16, file_found: bool) -> Outcome {
-        if self.fallthrough && !file_found && status < 500 {
-            Outcome::Next
-        } else {
-            Outcome::Respond(Self::error_response(status))
-        }
+        if self.fallthrough && !file_found && status < 500 { Outcome::Next } else { Outcome::Respond(Self::error_response(status)) }
     }
 
     /// The checks on disk for `root/parts` ([`check_on_disk`]): `Err(status)` refuses the
@@ -431,14 +427,15 @@ impl ServeStatic {
             for idx in &self.index {
                 let p = file.join(idx);
                 if let Ok(meta) = tokio::fs::metadata(&p).await
-                    && meta.is_file() {
-                        let mut checked = parts.clone();
-                        checked.extend(idx.split('/').filter(|s| !s.is_empty()).map(String::from));
-                        if let Err(status) = self.verify(checked).await {
-                            return self.fail(status, false);
-                        }
-                        return Outcome::Respond(self.send(req, &p, &meta).await);
+                    && meta.is_file()
+                {
+                    let mut checked = parts.clone();
+                    checked.extend(idx.split('/').filter(|s| !s.is_empty()).map(String::from));
+                    if let Err(status) = self.verify(checked).await {
+                        return self.fail(status, false);
                     }
+                    return Outcome::Respond(self.send(req, &p, &meta).await);
+                }
             }
             return self.fail(404, false);
         }
@@ -450,16 +447,17 @@ impl ServeStatic {
                     for ext in &self.extensions {
                         let p = PathBuf::from(format!("{}.{ext}", file.display()));
                         if let Ok(m) = tokio::fs::metadata(&p).await
-                            && m.is_file() {
-                                let mut checked = parts.clone();
-                                if let Some(last) = checked.last_mut() {
-                                    last.push_str(&format!(".{ext}"));
-                                }
-                                if let Err(status) = self.verify(checked).await {
-                                    return self.fail(status, false);
-                                }
-                                return Outcome::Respond(self.send(req, &p, &m).await);
+                            && m.is_file()
+                        {
+                            let mut checked = parts.clone();
+                            if let Some(last) = checked.last_mut() {
+                                last.push_str(&format!(".{ext}"));
                             }
+                            if let Err(status) = self.verify(checked).await {
+                                return self.fail(status, false);
+                            }
+                            return Outcome::Respond(self.send(req, &p, &m).await);
+                        }
                     }
                 }
                 return self.fail(404, false);
@@ -522,7 +520,10 @@ impl ServeStatic {
 
         // Conditional GET.
         let h = |n: &str| req.header(n).map(String::from);
-        let conditional = h("if-match").is_some() || h("if-unmodified-since").is_some() || h("if-none-match").is_some() || h("if-modified-since").is_some();
+        let conditional = h("if-match").is_some()
+            || h("if-unmodified-since").is_some()
+            || h("if-none-match").is_some()
+            || h("if-modified-since").is_some();
         if conditional {
             let precondition_failed = if let Some(m) = h("if-match") {
                 !self.etag
@@ -544,30 +545,31 @@ impl ServeStatic {
         let mut status = 200u16;
         let (mut start, mut len) = (0u64, size);
         if self.accept_ranges
-            && let Some(range) = h("range").filter(|r| r.trim_start().starts_with("bytes=")) {
-                let fresh = match h("if-range") {
-                    None => true,
-                    Some(ir) if ir.contains('"') => self.etag && ir.contains(&etag),
-                    Some(ir) => match (parse_http_date(&last_modified), parse_http_date(&ir)) {
-                        (Some(a), Some(b)) => a <= b,
-                        _ => false,
-                    },
-                };
-                if fresh {
-                    match parse_range(size, &range) {
-                        Some(Err(())) => {
-                            return Self::error_response(416).with_header("Content-Range", format!("bytes */{size}"));
-                        }
-                        Some(Ok((s, e))) => {
-                            status = 206;
-                            headers.push(("Content-Range", format!("bytes {s}-{e}/{size}")));
-                            start = s;
-                            len = e - s + 1;
-                        }
-                        None => {}
+            && let Some(range) = h("range").filter(|r| r.trim_start().starts_with("bytes="))
+        {
+            let fresh = match h("if-range") {
+                None => true,
+                Some(ir) if ir.contains('"') => self.etag && ir.contains(&etag),
+                Some(ir) => match (parse_http_date(&last_modified), parse_http_date(&ir)) {
+                    (Some(a), Some(b)) => a <= b,
+                    _ => false,
+                },
+            };
+            if fresh {
+                match parse_range(size, &range) {
+                    Some(Err(())) => {
+                        return Self::error_response(416).with_header("Content-Range", format!("bytes */{size}"));
                     }
+                    Some(Ok((s, e))) => {
+                        status = 206;
+                        headers.push(("Content-Range", format!("bytes {s}-{e}/{size}")));
+                        start = s;
+                        len = e - s + 1;
+                    }
+                    None => {}
                 }
             }
+        }
         headers.push(("Content-Length", len.to_string()));
         // `createReadStream(path, { start, end })`: only the requested bytes, in chunks.
         let body = if req.method() == http::Method::HEAD || len == 0 {

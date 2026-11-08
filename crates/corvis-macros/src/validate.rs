@@ -7,12 +7,53 @@ use syn::{Data, DeriveInput, Expr, Fields, Type};
 use crate::utils::{attr_args, attr_name, generic_inner, last_ident, lit_str};
 
 pub const RULES: &[&str] = &[
-    "is_string", "is_int", "is_number", "is_boolean", "is_array", "is_object", "is_defined", "is_optional",
-    "is_not_empty", "is_empty", "is_email", "is_url", "is_uuid", "is_alpha", "is_alphanumeric", "is_number_string",
-    "is_numeric_string", "is_date_string", "is_iso8601", "is_hex_color", "is_jwt", "is_mongo_id", "is_ip",
-    "is_lowercase", "is_uppercase", "is_positive", "is_negative", "min_length", "max_length", "length", "min", "max",
-    "matches", "contains", "not_contains", "is_in", "is_not_in", "equals", "not_equals", "array_min_size",
-    "array_max_size", "array_not_empty", "array_unique", "is_enum", "validate_nested", "validate_with", "validate_if",
+    "is_string",
+    "is_int",
+    "is_number",
+    "is_boolean",
+    "is_array",
+    "is_object",
+    "is_defined",
+    "is_optional",
+    "is_not_empty",
+    "is_empty",
+    "is_email",
+    "is_url",
+    "is_uuid",
+    "is_alpha",
+    "is_alphanumeric",
+    "is_number_string",
+    "is_numeric_string",
+    "is_date_string",
+    "is_iso8601",
+    "is_hex_color",
+    "is_jwt",
+    "is_mongo_id",
+    "is_ip",
+    "is_lowercase",
+    "is_uppercase",
+    "is_positive",
+    "is_negative",
+    "min_length",
+    "max_length",
+    "length",
+    "min",
+    "max",
+    "matches",
+    "contains",
+    "not_contains",
+    "is_in",
+    "is_not_in",
+    "equals",
+    "not_equals",
+    "array_min_size",
+    "array_max_size",
+    "array_not_empty",
+    "array_unique",
+    "is_enum",
+    "validate_nested",
+    "validate_with",
+    "validate_if",
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -284,13 +325,19 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 "array_unique" => simple("array_unique", "arrayUnique", "All {}'s elements must be unique"),
                 "min_length" => {
                     let n = need(p0)?;
-                    (quote!(__r::min_length(__x, (#n) as usize)), "minLength".into(),
-                     quote!(::std::format!("{} must be longer than or equal to {} characters", __prop, #n)))
+                    (
+                        quote!(__r::min_length(__x, (#n) as usize)),
+                        "minLength".into(),
+                        quote!(::std::format!("{} must be longer than or equal to {} characters", __prop, #n)),
+                    )
                 }
                 "max_length" => {
                     let n = need(p0)?;
-                    (quote!(__r::max_length(__x, (#n) as usize)), "maxLength".into(),
-                     quote!(::std::format!("{} must be shorter than or equal to {} characters", __prop, #n)))
+                    (
+                        quote!(__r::max_length(__x, (#n) as usize)),
+                        "maxLength".into(),
+                        quote!(::std::format!("{} must be shorter than or equal to {} characters", __prop, #n)),
+                    )
                 }
                 "length" => {
                     let min = need(p0)?;
@@ -303,10 +350,13 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                         Some(m) => quote!(::std::format!("{} must be shorter than or equal to {} characters", __prop, #m)),
                         None => quote!(::std::string::String::new()),
                     };
-                    (quote!(__r::min_length(__x, (#min) as usize) && #max_check), "isLength".into(),
-                     quote!(if !__r::min_length(__val, (#min) as usize) {
+                    (
+                        quote!(__r::min_length(__x, (#min) as usize) && #max_check),
+                        "isLength".into(),
+                        quote!(if !__r::min_length(__val, (#min) as usize) {
                          ::std::format!("{} must be longer than or equal to {} characters", __prop, #min)
-                     } else { #max_msg }))
+                     } else { #max_msg }),
+                    )
                 }
                 "min" => {
                     let n = need(p0)?;
@@ -319,11 +369,15 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 "matches" => {
                     let re = need(p0)?;
                     let re_s = lit_str(&re).unwrap_or_default();
-                    (quote!({
-                        static __RE: ::corvis::__private::LazyLock<::corvis::__private::regex::Regex> =
-                            ::corvis::__private::LazyLock::new(|| ::corvis::__private::regex::Regex::new(#re).expect("invalid regex"));
-                        __r::matches(__x, &__RE)
-                    }), "matches".into(), quote!(::std::format!("{} must match /{}/ regular expression", __prop, #re_s)))
+                    (
+                        quote!({
+                            static __RE: ::corvis::__private::LazyLock<::corvis::__private::regex::Regex> =
+                                ::corvis::__private::LazyLock::new(|| ::corvis::__private::regex::Regex::new(#re).expect("invalid regex"));
+                            __r::matches(__x, &__RE)
+                        }),
+                        "matches".into(),
+                        quote!(::std::format!("{} must match /{}/ regular expression", __prop, #re_s)),
+                    )
                 }
                 "contains" => {
                     let s = need(p0)?;
@@ -331,18 +385,28 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 }
                 "not_contains" => {
                     let s = need(p0)?;
-                    (quote!(__r::not_contains(__x, #s)), "notContains".into(), quote!(::std::format!("{} should not contain a {} string", __prop, #s)))
+                    (
+                        quote!(__r::not_contains(__x, #s)),
+                        "notContains".into(),
+                        quote!(::std::format!("{} should not contain a {} string", __prop, #s)),
+                    )
                 }
                 "is_in" | "is_not_in" => {
                     let vals = crate::utils::flatten_array(args.positional.clone());
                     let vals: Vec<TokenStream> = vals.iter().map(|v| quote!(::corvis::__private::serde_json::json!(#v))).collect();
                     let list = quote!(&[#(#vals),*]);
                     if rule == "is_in" {
-                        (quote!(__r::is_in(__x, #list)), "isIn".into(),
-                         quote!(::std::format!("{} must be one of the following values: {}", __prop, __r::join_values(#list))))
+                        (
+                            quote!(__r::is_in(__x, #list)),
+                            "isIn".into(),
+                            quote!(::std::format!("{} must be one of the following values: {}", __prop, __r::join_values(#list))),
+                        )
                     } else {
-                        (quote!(__r::is_not_in(__x, #list)), "isNotIn".into(),
-                         quote!(::std::format!("{} should not be one of the following values: {}", __prop, __r::join_values(#list))))
+                        (
+                            quote!(__r::is_not_in(__x, #list)),
+                            "isNotIn".into(),
+                            quote!(::std::format!("{} should not be one of the following values: {}", __prop, __r::join_values(#list))),
+                        )
                     }
                 }
                 "equals" | "not_equals" => {
@@ -351,18 +415,28 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                     if rule == "equals" {
                         (quote!(__r::equals(__x, #val)), "equals".into(), quote!(::std::format!("{} must be equal to {}", __prop, #v)))
                     } else {
-                        (quote!(__r::not_equals(__x, #val)), "notEquals".into(), quote!(::std::format!("{} should not be equal to {}", __prop, #v)))
+                        (
+                            quote!(__r::not_equals(__x, #val)),
+                            "notEquals".into(),
+                            quote!(::std::format!("{} should not be equal to {}", __prop, #v)),
+                        )
                     }
                 }
                 "array_min_size" => {
                     let n = need(p0)?;
-                    (quote!(__r::array_min_size(__x, (#n) as usize)), "arrayMinSize".into(),
-                     quote!(::std::format!("{} must contain at least {} elements", __prop, #n)))
+                    (
+                        quote!(__r::array_min_size(__x, (#n) as usize)),
+                        "arrayMinSize".into(),
+                        quote!(::std::format!("{} must contain at least {} elements", __prop, #n)),
+                    )
                 }
                 "array_max_size" => {
                     let n = need(p0)?;
-                    (quote!(__r::array_max_size(__x, (#n) as usize)), "arrayMaxSize".into(),
-                     quote!(::std::format!("{} must contain no more than {} elements", __prop, #n)))
+                    (
+                        quote!(__r::array_max_size(__x, (#n) as usize)),
+                        "arrayMaxSize".into(),
+                        quote!(::std::format!("{} must contain no more than {} elements", __prop, #n)),
+                    )
                 }
                 "is_enum" => {
                     let enum_ty: TokenStream = match p0 {
@@ -372,8 +446,13 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                             quote!(#t)
                         }
                     };
-                    (quote!(__r::is_enum::<#enum_ty>(__x)), "isEnum".into(),
-                     quote!(::std::format!("{} must be one of the following values: {}", __prop, __r::enum_variants::<#enum_ty>().join(", "))))
+                    (
+                        quote!(__r::is_enum::<#enum_ty>(__x)),
+                        "isEnum".into(),
+                        quote!(
+                            ::std::format!("{} must be one of the following values: {}", __prop, __r::enum_variants::<#enum_ty>().join(", "))
+                        ),
+                    )
                 }
                 "validate_with" => {
                     let f = need(p0)?;
@@ -427,11 +506,15 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             Kind::Bool => Some(quote!(__r::Primitive::Bool)),
             _ => None,
         };
-        let coerce = prim.map(|p| quote! {
-            if __opts.coerce_primitives { __r::coerce(__obj, __prop, #p); }
+        let coerce = prim.map(|p| {
+            quote! {
+                if __opts.coerce_primitives { __r::coerce(__obj, __prop, #p); }
+            }
         });
-        let nested_block = nested.map(|t| quote! {
-            __children = __r::nested::<#t>(__obj.get_mut(__prop), __prop, __opts, &mut __c);
+        let nested_block = nested.map(|t| {
+            quote! {
+                __children = __r::nested::<#t>(__obj.get_mut(__prop), __prop, __opts, &mut __c);
+            }
         });
         let cond = condition.map(|c| quote!(&& (#c)(&*__obj))).unwrap_or_default();
 

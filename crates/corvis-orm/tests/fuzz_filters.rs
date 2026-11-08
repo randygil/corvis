@@ -37,8 +37,7 @@ async fn q(db: &OrmClient, action: &str, args: Value) -> corvis_orm::Result<Valu
 }
 
 /// Emails of the seeded rows: plain, quote-shaped and wildcard-shaped on purpose.
-const SEED_EMAILS: [&str; 7] =
-    ["victim@x", "other@x", "a'b", "x\" OR 1=1 --", "100%", "_", "'; DROP TABLE accounts; --"];
+const SEED_EMAILS: [&str; 7] = ["victim@x", "other@x", "a'b", "x\" OR 1=1 --", "100%", "_", "'; DROP TABLE accounts; --"];
 
 async fn seeded() -> OrmClient {
     let db = OrmClient::new("sqlite::memory:").unwrap();
@@ -147,9 +146,39 @@ const FIELDS: [&str; 9] = ["id", "email", "reset_token", "status", "version", "b
 
 /// Every operator name any filter of the model accepts; a key outside this list is certainly unknown.
 const KNOWN_OPS: &[&str] = &[
-    "equals", "not", "in", "notIn", "lt", "lte", "gt", "gte", "contains", "startsWith", "endsWith", "mode", "search", "has",
-    "hasEvery", "hasSome", "isEmpty", "path", "string_contains", "string_starts_with", "string_ends_with", "array_contains",
-    "array_starts_with", "array_ends_with", "is", "isNot", "some", "every", "none", "AND", "OR", "NOT", "$type",
+    "equals",
+    "not",
+    "in",
+    "notIn",
+    "lt",
+    "lte",
+    "gt",
+    "gte",
+    "contains",
+    "startsWith",
+    "endsWith",
+    "mode",
+    "search",
+    "has",
+    "hasEvery",
+    "hasSome",
+    "isEmpty",
+    "path",
+    "string_contains",
+    "string_starts_with",
+    "string_ends_with",
+    "array_contains",
+    "array_starts_with",
+    "array_ends_with",
+    "is",
+    "isNot",
+    "some",
+    "every",
+    "none",
+    "AND",
+    "OR",
+    "NOT",
+    "$type",
 ];
 
 /// True when a `where` has a key the model certainly does not know: a field name or an operator
@@ -221,9 +250,7 @@ fn string_equals_matches_exactly() {
     let mut runner = TestRunner::new(config(cases()));
     let result = runner.run(&(hostile_string(), any::<bool>()), |(s, long_form)| {
         let filter = if long_form { json!({ "email": { "equals": s } }) } else { json!({ "email": s }) };
-        let rows = rt
-            .block_on(q(&db, "findMany", json!({ "where": filter })))
-            .map_err(|e| TestCaseError::fail(format!("{s:?}: {e}")))?;
+        let rows = rt.block_on(q(&db, "findMany", json!({ "where": filter }))).map_err(|e| TestCaseError::fail(format!("{s:?}: {e}")))?;
         let rows = rows.as_array().unwrap();
         let expected = SEED_EMAILS.iter().filter(|e| **e == s).count();
         prop_assert_eq!(rows.len(), expected, "email = {:?}", s);

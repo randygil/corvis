@@ -91,10 +91,7 @@ impl CorvisInterceptor for LoggingInterceptor {
             Ok(r) => r.status().map(|s| s.as_u16()).unwrap_or(200),
             Err(e) => e.get_status(),
         };
-        crate::logger::Logger::new("LoggingInterceptor").log(format!(
-            "{method} {url} {status} - {}ms",
-            start.elapsed().as_millis()
-        ));
+        crate::logger::Logger::new("LoggingInterceptor").log(format!("{method} {url} {status} - {}ms", start.elapsed().as_millis()));
         result
     }
 }

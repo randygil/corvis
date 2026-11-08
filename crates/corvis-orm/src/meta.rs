@@ -464,7 +464,10 @@ pub fn resolve_relation(model: &'static ModelMeta, field: &'static FieldMeta) ->
     let lookup = |m: &'static ModelMeta, names: &[&str]| -> Result<Vec<&'static FieldMeta>, String> {
         names
             .iter()
-            .map(|n| m.field_any(n).ok_or_else(|| format!("Unknown field `{n}` on model `{}` in relation `{}.{}`", m.name, model.name, field.name)))
+            .map(|n| {
+                m.field_any(n)
+                    .ok_or_else(|| format!("Unknown field `{n}` on model `{}` in relation `{}.{}`", m.name, model.name, field.name))
+            })
             .collect()
     };
     match rel.kind {
@@ -479,7 +482,9 @@ pub fn resolve_relation(model: &'static ModelMeta, field: &'static FieldMeta) ->
                     .relations()
                     .find(|f| {
                         f.name != field.name
-                            && f.relation.is_some_and(|r| r.kind == RelationKind::ManyToMany && m2m_relation_name(model.name, target.name, r.name) == name)
+                            && f.relation.is_some_and(|r| {
+                                r.kind == RelationKind::ManyToMany && m2m_relation_name(model.name, target.name, r.name) == name
+                            })
                     })
                     .map(|f| f.name)
                     .unwrap_or(field.name);

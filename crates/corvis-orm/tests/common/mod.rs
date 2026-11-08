@@ -64,8 +64,7 @@ pub async fn client() -> OrmClient {
 /// Ana (2 posts, one published), Bob (1 post), Carla (no name, no posts).
 pub async fn seeded() -> OrmClient {
     let db = client().await;
-    db
-        .user()
+    db.user()
         .create(json!({ "data": {
             "email": "ana@corvis.dev", "name": "Ana", "age": 30,
             "posts": { "create": [
@@ -75,18 +74,13 @@ pub async fn seeded() -> OrmClient {
         } }))
         .await
         .unwrap();
-    db
-        .user()
+    db.user()
         .create(json!({ "data": {
             "email": "bob@example.com", "name": "Bob", "age": 25,
             "posts": { "create": { "title": "Rust y SQL", "published": true, "views": 7 } }
         } }))
         .await
         .unwrap();
-    db
-        .user()
-        .create(json!({ "data": { "email": "carla@corvis.dev", "age": 41 } }))
-        .await
-        .unwrap();
+    db.user().create(json!({ "data": { "email": "carla@corvis.dev", "age": 41 } })).await.unwrap();
     db
 }

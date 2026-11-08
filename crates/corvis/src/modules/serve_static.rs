@@ -94,12 +94,10 @@ impl ServeStaticOptions {
         let inner = server.inner_path(path)?;
         match server.serve(req, inner).await {
             Outcome::Respond(r) => Some(r),
-            Outcome::Next if self.spa_fallback && Path::new(path).extension().is_none() => {
-                match server.serve(req, "/index.html").await {
-                    Outcome::Respond(r) => Some(r),
-                    Outcome::Next => None,
-                }
-            }
+            Outcome::Next if self.spa_fallback && Path::new(path).extension().is_none() => match server.serve(req, "/index.html").await {
+                Outcome::Respond(r) => Some(r),
+                Outcome::Next => None,
+            },
             Outcome::Next => None,
         }
     }

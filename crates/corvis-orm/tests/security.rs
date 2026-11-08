@@ -56,9 +56,13 @@ async fn postgres(name: &str, pool: u32) -> Option<OrmClient> {
 
 async fn seed(db: &OrmClient) {
     for (i, (email, tok, name)) in [("victim@x", "s3cr3t-token", "alice"), ("other@x", "zzz-other", "bob")].iter().enumerate() {
-        q(db, "create", json!({ "data": {
+        q(
+            db,
+            "create",
+            json!({ "data": {
             "email": email, "reset_token": tok, "status": "PENDING", "balance": "1", "data": { "name": name, "n": i }
-        } }))
+        } }),
+        )
         .await
         .unwrap();
     }
@@ -82,10 +86,7 @@ async fn decimal_with_a_huge_exponent_is_an_error_not_an_abort() {
     let db = sqlite().await;
     seed(&db).await;
     // Used to try to allocate 10^14 bytes (`to_fixed_plain`) and abort the process.
-    for args in [
-        json!({ "where": { "balance": { "gt": "1e100000000000000" } } }),
-        json!({ "where": { "balance": "-1e140000" } }),
-    ] {
+    for args in [json!({ "where": { "balance": { "gt": "1e100000000000000" } } }), json!({ "where": { "balance": "-1e140000" } })] {
         let e = q(&db, "findMany", args).await.unwrap_err();
         assert!(e.message().contains("Couldn't convert an integer (possible overflow)."), "{e}");
     }
@@ -135,9 +136,13 @@ async fn sqlite_decimal_columns_are_bounded_like_decimal_65_30() {
     // Postgres rounds to the scale of the column; so does the SQLite column.
     let r = q(&db, "create", json!({ "data": { "email": "b@x", "status": "x", "balance": "1e-300000" } })).await.unwrap();
     assert_eq!(r["balance"], json!("0"));
-    let r = q(&db, "create", json!({ "data": { "email": "c@x", "status": "x", "balance": "0.0000000000000000000000000000015" } })).await.unwrap();
+    let r = q(&db, "create", json!({ "data": { "email": "c@x", "status": "x", "balance": "0.0000000000000000000000000000015" } }))
+        .await
+        .unwrap();
     assert_eq!(r["balance"], json!("2e-30"));
-    let r = q(&db, "update", json!({ "where": { "id": 2 }, "data": { "balance": { "set": "99999999999999999999999999999999999.4" } } })).await.unwrap();
+    let r = q(&db, "update", json!({ "where": { "id": 2 }, "data": { "balance": { "set": "99999999999999999999999999999999999.4" } } }))
+        .await
+        .unwrap();
     assert_eq!(r["balance"], json!("9.99999999999999999999999999999999994e+34"));
     let raw = db.query_raw("SELECT max(length(balance)) AS n FROM accounts", vec![]).await.unwrap();
     assert!(raw[0]["n"].as_i64().unwrap() < 80, "{raw:?}");
@@ -265,7 +270,10 @@ async fn where_unique_only_accepts_values_on_unique_fields() {
         ("findUniqueOrThrow", json!({ "where": { "email": "victim@x", "reset_token": { "startsWith": "" } } })),
         ("update", json!({ "where": { "email": "victim@x", "reset_token": { "startsWith": "" } }, "data": { "status": "PWNED" } })),
         ("delete", json!({ "where": { "id": 1, "email": { "contains": "@" } } })),
-        ("upsert", json!({ "where": { "email": { "equals": "victim@x" } }, "create": { "email": "z@x", "status": "x", "balance": "1" }, "update": {} })),
+        (
+            "upsert",
+            json!({ "where": { "email": { "equals": "victim@x" } }, "create": { "email": "z@x", "status": "x", "balance": "1" }, "update": {} }),
+        ),
         ("findUnique", json!({ "where": { "id": { "equals": 1 } } })),
         ("findUnique", json!({ "where": { "id": 1, "email": null } })),
         ("findMany", json!({ "cursor": { "id": { "gt": 0 } } })),
@@ -295,7 +303,12 @@ async fn race_update(db: &OrmClient) -> (usize, usize, Value) {
         let db = db.clone();
         let id = id.clone();
         hs.push(tokio::spawn(async move {
-            q(&db, "update", json!({ "where": { "id": id, "status": "PENDING" }, "data": { "status": "PAID", "version": { "increment": 1 } } })).await
+            q(
+                &db,
+                "update",
+                json!({ "where": { "id": id, "status": "PENDING" }, "data": { "status": "PAID", "version": { "increment": 1 } } }),
+            )
+            .await
         }));
     }
     let (mut ok, mut not_found) = (0, 0);
@@ -355,10 +368,12 @@ async fn update_many_optimistic_concurrency_has_one_winner_postgres() {
         let db = db.clone();
         hs.push(tokio::spawn(async move {
             if i % 2 == 0 {
-                let r = q(&db, "updateMany", json!({ "where": { "version": 0 }, "data": { "version": { "increment": 1 } }, "limit": 1 })).await;
+                let r =
+                    q(&db, "updateMany", json!({ "where": { "version": 0 }, "data": { "version": { "increment": 1 } }, "limit": 1 })).await;
                 r.unwrap()["count"].as_i64().unwrap()
             } else {
-                let r = q(&db, "updateManyAndReturn", json!({ "where": { "version": 0 }, "data": { "version": { "increment": 1 } } })).await;
+                let r =
+                    q(&db, "updateManyAndReturn", json!({ "where": { "version": 0 }, "data": { "version": { "increment": 1 } } })).await;
                 r.unwrap().as_array().unwrap().len() as i64
             }
         }));
@@ -449,10 +464,14 @@ async fn cancelled_nested_writes_do_not_leak_timer_tasks() {
     let mut cancelled = 0;
     for i in 0..300 {
         // `createMany` runs in a transaction with a one-year timeout; drop it half-way.
-        let fut = q(&db, "createMany", json!({ "data": [
+        let fut = q(
+            &db,
+            "createMany",
+            json!({ "data": [
             { "email": format!("a{i}@x"), "status": "x", "balance": "1" },
             { "email": format!("b{i}@x"), "status": "x", "balance": "1" }
-        ] }));
+        ] }),
+        );
         if tokio::time::timeout(Duration::from_micros(500 + (i as u64 * 37) % 5000), fut).await.is_err() {
             cancelled += 1;
         }
@@ -515,11 +534,19 @@ async fn postgres_supports_tls() {
 async fn json_string_filters_are_literal_on_sqlite() {
     let db = sqlite().await;
     seed(&db).await;
-    for (op, needle) in [("string_contains", "*"), ("string_contains", "%"), ("string_starts_with", "?"), ("string_starts_with", "[a-z]"), ("string_ends_with", "_")] {
+    for (op, needle) in [
+        ("string_contains", "*"),
+        ("string_contains", "%"),
+        ("string_starts_with", "?"),
+        ("string_starts_with", "[a-z]"),
+        ("string_ends_with", "_"),
+    ] {
         let n = q(&db, "count", json!({ "where": { "data": { "path": ["name"], op: needle } } })).await.unwrap();
         assert_eq!(n, json!(0), "{op} {needle}");
     }
-    for (op, needle, expected) in [("string_contains", "lic", 1), ("string_starts_with", "bo", 1), ("string_ends_with", "ce", 1), ("string_ends_with", "", 2)] {
+    for (op, needle, expected) in
+        [("string_contains", "lic", 1), ("string_starts_with", "bo", 1), ("string_ends_with", "ce", 1), ("string_ends_with", "", 2)]
+    {
         let n = q(&db, "count", json!({ "where": { "data": { "path": ["name"], op: needle } } })).await.unwrap();
         assert_eq!(n, json!(expected), "{op} {needle}");
     }
@@ -560,7 +587,13 @@ async fn bigint_and_bytes_out_of_range_are_rejected() {
         assert!(e.is_validation(), "{body}: {e}");
     }
     assert_eq!(q(&db, "count", json!({})).await.unwrap(), json!(0));
-    let r = q(&db, "create", json!({ "data": { "email": "d@x", "status": "x", "balance": "1", "big": 9007199254740991i64, "blob": [0, 255] } })).await.unwrap();
+    let r = q(
+        &db,
+        "create",
+        json!({ "data": { "email": "d@x", "status": "x", "balance": "1", "big": 9007199254740991i64, "blob": [0, 255] } }),
+    )
+    .await
+    .unwrap();
     assert_eq!((r["big"].clone(), r["blob"].clone()), (json!(9007199254740991i64), json!([0, 255])));
     // Raw arguments: an u64 beyond i64 is bound as a number, not wrapped to a negative one.
     let max = u64::MAX;

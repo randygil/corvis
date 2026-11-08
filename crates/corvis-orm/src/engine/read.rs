@@ -285,7 +285,11 @@ impl Engine {
     }
 
     /// Shaped records (honouring `select` / `include` / `omit`).
-    pub(crate) fn find_records<'a>(&'a self, model: &'static ModelMeta, args: Map<String, Value>) -> BoxFuture<'a, Result<Vec<Map<String, Value>>>> {
+    pub(crate) fn find_records<'a>(
+        &'a self,
+        model: &'static ModelMeta,
+        args: Map<String, Value>,
+    ) -> BoxFuture<'a, Result<Vec<Map<String, Value>>>> {
         async move {
             let (rows, sel) = self.fetch_rows(model, args).await?;
             Ok(rows.into_iter().map(|r| self.shape(&sel, r)).collect())
@@ -324,7 +328,9 @@ impl Engine {
         let take = self.int_arg(args, "take")?;
         let skip = self.int_arg(args, "skip")?;
         if skip.is_some_and(|s| s < 0) {
-            return Err(self.err("Invalid value for skip argument: Value can only be positive, found: ".to_string() + &skip.unwrap().to_string()));
+            return Err(
+                self.err("Invalid value for skip argument: Value can only be positive, found: ".to_string() + &skip.unwrap().to_string())
+            );
         }
         let distinct: Option<Vec<&'static FieldMeta>> = match args.get("distinct") {
             None | Some(Value::Null) => None,
@@ -573,7 +579,10 @@ impl Engine {
                 if !keys.is_empty() {
                     let link = if r.target_fields.len() == 1 {
                         let mut w = Map::new();
-                        w.insert(r.target_fields[0].name.to_string(), json!({ "in": keys.iter().map(|k| k[0].clone()).collect::<Vec<_>>() }));
+                        w.insert(
+                            r.target_fields[0].name.to_string(),
+                            json!({ "in": keys.iter().map(|k| k[0].clone()).collect::<Vec<_>>() }),
+                        );
                         Value::Object(w)
                     } else {
                         let ors: Vec<Value> = keys
@@ -635,12 +644,19 @@ impl Engine {
         .boxed()
     }
 
-    async fn load_counts(&self, model: &'static ModelMeta, records: &mut [Map<String, Value>], counts: &[(&'static FieldMeta, Option<Value>)]) -> Result<()> {
+    async fn load_counts(
+        &self,
+        model: &'static ModelMeta,
+        records: &mut [Map<String, Value>],
+        counts: &[(&'static FieldMeta, Option<Value>)],
+    ) -> Result<()> {
         let mut per_record: Vec<Map<String, Value>> = vec![Map::new(); records.len()];
         for (f, w) in counts {
             let r = self.relation(model, f)?;
-            let keys: Vec<Vec<Value>> =
-                records.iter().map(|rec| r.parent_fields.iter().map(|pf| rec.get(pf.name).cloned().unwrap_or(Value::Null)).collect()).collect();
+            let keys: Vec<Vec<Value>> = records
+                .iter()
+                .map(|rec| r.parent_fields.iter().map(|pf| rec.get(pf.name).cloned().unwrap_or(Value::Null)).collect())
+                .collect();
             let counted = self.count_related(&r, &keys, w.as_ref()).await?;
             for (i, k) in keys.iter().enumerate() {
                 let n = counted.get(&key_of(&k.iter().collect::<Vec<_>>())).copied().unwrap_or(0);
@@ -669,7 +685,12 @@ impl Engine {
             let pf = r.parent_fields[0];
             let tf = r.target_fields[0];
             q.push("SELECT ").col("j", join.parent_column).push(", COUNT(*) FROM ").table(join.schema, &join.table).push(" AS j");
-            q.push(" INNER JOIN ").table(r.target.schema, r.target.table).push(" AS t0 ON ").col("t0", tf.column).push(" = ").col("j", join.target_column);
+            q.push(" INNER JOIN ")
+                .table(r.target.schema, r.target.table)
+                .push(" AS t0 ON ")
+                .col("t0", tf.column)
+                .push(" = ")
+                .col("j", join.target_column);
             q.push(" WHERE ").col("j", join.parent_column);
             let vals = keys.iter().map(|k| self.value(pf, &k[0], false)).collect::<Result<Vec<_>>>()?;
             self.push_in_list(&mut q, vals, pf.kind, false);

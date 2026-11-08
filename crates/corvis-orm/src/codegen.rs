@@ -41,10 +41,10 @@ const SCALARS: &[&str] = &["String", "Int", "BigInt", "Float", "Decimal", "Boole
 
 /// Rust strict and reserved keywords.
 const KEYWORDS: &[&str] = &[
-    "as", "break", "const", "continue", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-    "match", "mod", "move", "mut", "pub", "ref", "return", "static", "struct", "trait", "true", "type", "unsafe", "use",
-    "where", "while", "async", "await", "dyn", "abstract", "become", "box", "do", "final", "macro", "override", "priv",
-    "typeof", "unsized", "virtual", "yield", "try", "gen",
+    "as", "break", "const", "continue", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+    "move", "mut", "pub", "ref", "return", "static", "struct", "trait", "true", "type", "unsafe", "use", "where", "while", "async",
+    "await", "dyn", "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield",
+    "try", "gen",
 ];
 
 /// `camelCase` / `PascalCase` → `snake_case` (acronyms kept together: `bcvRateUSD` → `bcv_rate_usd`).
@@ -156,10 +156,8 @@ pub fn generate(schema: &Schema, opts: &Options) -> Result<String, CodegenError>
     // ----- composite types (MongoDB `type`) -----
     for t in &schema.types {
         doc_lines(&mut out, &t.documentation, "", opts.docs);
-        let _ = writeln!(
-            out,
-            "#[derive(Debug, Clone, PartialEq, ::corvis_orm::serde::Serialize, ::corvis_orm::serde::Deserialize{extra})]"
-        );
+        let _ =
+            writeln!(out, "#[derive(Debug, Clone, PartialEq, ::corvis_orm::serde::Serialize, ::corvis_orm::serde::Deserialize{extra})]");
         let _ = writeln!(out, "#[serde(crate = \"::corvis_orm::serde\")]");
         let _ = writeln!(out, "pub struct {} {{", rust_ident(&t.name));
         for f in &t.fields {
@@ -270,7 +268,11 @@ fn default_attr(schema: &Schema, f: &Field, e: &Expr) -> Result<String, CodegenE
         }
         Expr::String(s) => rust_str(s),
         Expr::Number(n) => {
-            if f.ty == "String" || f.ty == "Json" { rust_str(n) } else { n.clone() }
+            if f.ty == "String" || f.ty == "Json" {
+                rust_str(n)
+            } else {
+                n.clone()
+            }
         }
         Expr::Bool(b) => b.to_string(),
         Expr::Ident(id) if is_enum => id.clone(),
@@ -284,16 +286,10 @@ fn default_attr(schema: &Schema, f: &Field, e: &Expr) -> Result<String, CodegenE
 
 fn model(out: &mut String, schema: &Schema, m: &Model, opts: &Options, extra: &str) -> Result<(), CodegenError> {
     let fields: Vec<&Field> = m.fields.iter().filter(|f| !f.has("ignore")).collect();
-    let scalars: Vec<&Field> = fields
-        .iter()
-        .copied()
-        .filter(|f| f.unsupported.is_none() && f.ty != "Unsupported" && !is_relation(schema, f))
-        .collect();
-    let relations: Vec<&Field> = fields
-        .iter()
-        .copied()
-        .filter(|f| is_relation(schema, f) && schema.model(&f.ty).is_some_and(|t| !ignored_model(t)))
-        .collect();
+    let scalars: Vec<&Field> =
+        fields.iter().copied().filter(|f| f.unsupported.is_none() && f.ty != "Unsupported" && !is_relation(schema, f)).collect();
+    let relations: Vec<&Field> =
+        fields.iter().copied().filter(|f| is_relation(schema, f) && schema.model(&f.ty).is_some_and(|t| !ignored_model(t))).collect();
     let unsupported: Vec<&Field> = fields.iter().copied().filter(|f| f.unsupported.is_some()).collect();
 
     // #[model(...)]
@@ -439,9 +435,10 @@ fn model(out: &mut String, schema: &Schema, m: &Model, opts: &Options, extra: &s
             }
         } else if f.arity == Arity::List {
             // The other side: a list too (implicit many-to-many) or a to-one with `fields`.
-            let opposite = target.fields.iter().find(|o| {
-                o.ty == m.name && relation_name(o) == rel_name && !(m.name == target.name && o.name == f.name)
-            });
+            let opposite = target
+                .fields
+                .iter()
+                .find(|o| o.ty == m.name && relation_name(o) == rel_name && !(m.name == target.name && o.name == f.name));
             let m2m = opposite.is_some_and(|o| o.arity == Arity::List);
             args.push(if m2m { "many_to_many".into() } else { "has_many".into() });
         } else {

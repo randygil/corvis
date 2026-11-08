@@ -47,10 +47,7 @@ impl JsRegex {
             Some(re) => Engine::Linear(Arc::new(re)),
             None => {
                 let translated = translate(source, flags)?;
-                let re = fancy_regex::RegexBuilder::new(&translated)
-                    .backtrack_limit(BACKTRACK_LIMIT)
-                    .build()
-                    .map_err(|e| e.to_string())?;
+                let re = fancy_regex::RegexBuilder::new(&translated).backtrack_limit(BACKTRACK_LIMIT).build().map_err(|e| e.to_string())?;
                 Engine::Backtracking(Arc::new(re))
             }
         };
@@ -231,9 +228,7 @@ fn translate_escape(chars: &[char], i: usize, in_class: bool, unicode: bool) -> 
         push_literal(&mut s, ch, in_class);
         s
     };
-    let class = |inner: &str, neg: &str| -> String {
-        if in_class { inner.to_string() } else { format!("[{neg}{inner}]") }
-    };
+    let class = |inner: &str, neg: &str| -> String { if in_class { inner.to_string() } else { format!("[{neg}{inner}]") } };
     Ok(match c {
         'd' => (class(DIGIT, ""), 1),
         'D' => (if in_class { NOT_DIGIT.into() } else { format!("[^{DIGIT}]") }, 1),
@@ -277,10 +272,11 @@ fn translate_escape(chars: &[char], i: usize, in_class: bool, unicode: bool) -> 
                 if (0xD800..0xDC00).contains(&hi)
                     && chars.get(i + 5) == Some(&'\\')
                     && chars.get(i + 6) == Some(&'u')
-                    && let Some(lo) = read_hex(chars, i + 7, 4).filter(|lo| (0xDC00..0xE000).contains(lo)) {
-                        let cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
-                        return Ok((lit(char::from_u32(cp).unwrap_or('\u{FFFD}')), 11));
-                    }
+                    && let Some(lo) = read_hex(chars, i + 7, 4).filter(|lo| (0xDC00..0xE000).contains(lo))
+                {
+                    let cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
+                    return Ok((lit(char::from_u32(cp).unwrap_or('\u{FFFD}')), 11));
+                }
                 match char::from_u32(hi) {
                     Some(ch) => (lit(ch), 5),
                     // Lone surrogate: cannot appear in a Rust string, so it never matches.
@@ -291,9 +287,7 @@ fn translate_escape(chars: &[char], i: usize, in_class: bool, unicode: bool) -> 
             }
         }
         'c' => match chars.get(i + 1) {
-            Some(l) if l.is_ascii_alphabetic() => {
-                (lit(char::from_u32((*l as u32) % 32).unwrap_or('c')), 2)
-            }
+            Some(l) if l.is_ascii_alphabetic() => (lit(char::from_u32((*l as u32) % 32).unwrap_or('c')), 2),
             _ => (r"\\c".into(), 1),
         },
         'p' | 'P' if unicode && chars.get(i + 1) == Some(&'{') => {

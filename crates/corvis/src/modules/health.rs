@@ -79,7 +79,9 @@ impl MemoryHealthIndicator {
     pub fn check_rss(key: impl Into<String>, threshold_bytes: u64) -> HealthIndicator {
         HealthIndicator::new(key, move || async move {
             match rss_bytes() {
-                Some(rss) if rss > threshold_bytes => Err(json!({ "message": "Used rss exceeded the set threshold".to_string(), "rss": rss })),
+                Some(rss) if rss > threshold_bytes => {
+                    Err(json!({ "message": "Used rss exceeded the set threshold".to_string(), "rss": rss }))
+                }
                 Some(rss) => Ok(json!({ "rss": rss })),
                 None => Ok(json!({})),
             }

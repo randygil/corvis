@@ -239,7 +239,9 @@ impl Served {
         if self.options.ui {
             if route_matches(&self.init_js, path) || route_matches(&self.nested_init, path) {
                 let (doc, patched) = self.document_for(req);
-                let build = || swagger_ui::build_swagger_init_js(doc.as_value(), self.options.swagger_url.as_deref(), &self.options.swagger_options);
+                let build = || {
+                    swagger_ui::build_swagger_init_js(doc.as_value(), self.options.swagger_url.as_deref(), &self.options.swagger_options)
+                };
                 let js = if patched {
                     build()
                 } else {
@@ -264,15 +266,17 @@ impl Served {
             }
         }
         if let Some(url) = &self.json_url
-            && route_matches(url, path) {
-                let (doc, _) = self.document_for(req);
-                return Some(typed(doc.to_json(), "application/json"));
-            }
+            && route_matches(url, path)
+        {
+            let (doc, _) = self.document_for(req);
+            return Some(typed(doc.to_json(), "application/json"));
+        }
         if let Some(url) = &self.yaml_url
-            && route_matches(url, path) {
-                let (doc, _) = self.document_for(req);
-                return Some(typed(doc.to_yaml(), "text/yaml"));
-            }
+            && route_matches(url, path)
+        {
+            let (doc, _) = self.document_for(req);
+            return Some(typed(doc.to_yaml(), "text/yaml"));
+        }
         if self.options.ui {
             return self.asset(path);
         }

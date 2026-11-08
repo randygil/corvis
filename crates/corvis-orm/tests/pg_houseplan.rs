@@ -30,11 +30,8 @@ async fn crud_and_includes() {
     assert_eq!(acc.opening_balance.to_string(), "10.5");
     assert!(acc.pay_method_aliases.is_empty());
     let cat: Category = db.category().create(json!({ "data": { "name": "Food" } })).await.unwrap();
-    let child: Category = db
-        .category()
-        .create(json!({ "data": { "name": "Market", "parent": { "connect": { "id": cat.id } } } }))
-        .await
-        .unwrap();
+    let child: Category =
+        db.category().create(json!({ "data": { "name": "Market", "parent": { "connect": { "id": cat.id } } } })).await.unwrap();
     assert_eq!(child.parent_id, Some(cat.id));
     let tx: Transaction = db
         .transaction()
@@ -84,11 +81,7 @@ async fn crud_and_includes() {
         .create(json!({ "data": { "p2pTransactionId": tx.id, "accountId": acc.id, "amountVes": "100", "remainingVes": "100", "rate": "36.5", "openedAt": "2024-05-01T00:00:00.000Z" } }))
         .await
         .unwrap();
-    let b: Bag = db
-        .bag()
-        .update(json!({ "where": { "id": b.id }, "data": { "remainingVes": { "decrement": 12.5 } } }))
-        .await
-        .unwrap();
+    let b: Bag = db.bag().update(json!({ "where": { "id": b.id }, "data": { "remainingVes": { "decrement": 12.5 } } })).await.unwrap();
     assert_eq!(b.remaining_ves.to_string(), "87.5");
     let agg = db.transaction().aggregate(json!({ "_sum": { "amount": true }, "where": { "currency": "VES" } })).await.unwrap();
     assert_eq!(agg, json!({ "_sum": { "amount": null } }));

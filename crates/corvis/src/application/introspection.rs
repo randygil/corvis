@@ -103,7 +103,12 @@ impl CorvisApplication {
 
     /// Like [`resolve_route_paths`](Self::resolve_route_paths); with `global_prefix: false`
     /// the global prefix is left out (`ignore_global_prefix` of the OpenAPI document options).
-    pub fn resolve_route_paths_with(&self, controller: &ControllerMetadata, route: &RouteMeta, global_prefix: bool) -> Vec<ResolvedRoutePath> {
+    pub fn resolve_route_paths_with(
+        &self,
+        controller: &ControllerMetadata,
+        route: &RouteMeta,
+        global_prefix: bool,
+    ) -> Vec<ResolvedRoutePath> {
         let cfg = &self.config.router;
         let version = self.effective_route_version(controller, route);
         let versions: Vec<Option<(String, String)>> = match (cfg.versioning.as_ref(), &version) {

@@ -53,8 +53,8 @@ pub fn injectable_impl(item: &mut ItemStruct, opts: &InjectableOptions) -> syn::
         let value = if let Some(init) = init {
             init
         } else if let Some(tok) = token {
-            let injectable_shape = generic_inner(ty, "Arc").is_some()
-                || generic_inner(ty, "Option").and_then(|t| generic_inner(t, "Arc")).is_some();
+            let injectable_shape =
+                generic_inner(ty, "Arc").is_some() || generic_inner(ty, "Option").and_then(|t| generic_inner(t, "Arc")).is_some();
             if injectable_shape {
                 quote! {
                     (&::corvis::__private::Probe::<#ty>::new())

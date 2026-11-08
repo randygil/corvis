@@ -100,13 +100,8 @@ pub struct DecimalConfig {
 
 impl DecimalConfig {
     /// decimal.js defaults.
-    pub const DEFAULT: DecimalConfig = DecimalConfig {
-        precision: 20,
-        rounding: Rounding::HalfUp,
-        to_exp_neg: -7,
-        to_exp_pos: 21,
-        modulo: Rounding::Down,
-    };
+    pub const DEFAULT: DecimalConfig =
+        DecimalConfig { precision: 20, rounding: Rounding::HalfUp, to_exp_neg: -7, to_exp_pos: 21, modulo: Rounding::Down };
 }
 
 impl Default for DecimalConfig {
@@ -671,8 +666,20 @@ impl Decimal {
         if xz && yz {
             return Some(Ordering::Equal);
         }
-        let xs = if xz { 0 } else if self.neg { -1 } else { 1 };
-        let ys = if yz { 0 } else if y.neg { -1 } else { 1 };
+        let xs = if xz {
+            0
+        } else if self.neg {
+            -1
+        } else {
+            1
+        };
+        let ys = if yz {
+            0
+        } else if y.neg {
+            -1
+        } else {
+            1
+        };
         if xs != ys {
             return Some(xs.cmp(&ys));
         }
@@ -919,11 +926,7 @@ impl Decimal {
         // tiny sticky contribution to avoid huge shifts.
         let (big, small) = if self.sci_exp() >= y.sci_exp() { (self, y) } else { (y, self) };
         let limit = big.sci_exp() - pr as i64 - 3;
-        let (sc, se) = if small.sci_exp() < limit {
-            (BigUint::one(), limit - 1)
-        } else {
-            (small.coeff.clone(), small.exp)
-        };
+        let (sc, se) = if small.sci_exp() < limit { (BigUint::one(), limit - 1) } else { (small.coeff.clone(), small.exp) };
         let e = big.exp.min(se);
         let a = &big.coeff * pow10((big.exp - e) as u64);
         let b = sc * pow10((se - e) as u64);
@@ -1760,9 +1763,9 @@ mod pg {
     }
 }
 
-pub(crate) use pg::{NUMERIC_OVERFLOW, decode_numeric};
 #[allow(unused_imports)]
 pub(crate) use pg::encode_numeric;
+pub(crate) use pg::{NUMERIC_OVERFLOW, decode_numeric};
 
 impl Decimal {
     /// `true` when the value can be stored in a Postgres `NUMERIC`: its binary representation

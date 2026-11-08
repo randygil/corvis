@@ -58,11 +58,7 @@ pub fn num_to_string(x: f64) -> String {
     } else {
         let e = n - 1;
         let sign = if e < 0 { '-' } else { '+' };
-        if k == 1 {
-            format!("{digits}e{sign}{}", e.abs())
-        } else {
-            format!("{}.{}e{sign}{}", &digits[..1], &digits[1..], e.abs())
-        }
+        if k == 1 { format!("{digits}e{sign}{}", e.abs()) } else { format!("{}.{}e{sign}{}", &digits[..1], &digits[1..], e.abs()) }
     }
 }
 
@@ -110,17 +106,16 @@ pub fn to_js_string(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => {
             if let Some(i) = n.as_i64()
-                && (i as f64).abs() < 9.007_199_254_740_992e15 {
-                    return i.to_string();
-                }
+                && (i as f64).abs() < 9.007_199_254_740_992e15
+            {
+                return i.to_string();
+            }
             num_to_string(json_f64(n))
         }
         Value::String(s) => s.clone(),
-        Value::Array(items) => items
-            .iter()
-            .map(|i| if i.is_null() { String::new() } else { to_js_string(i) })
-            .collect::<Vec<_>>()
-            .join(","),
+        Value::Array(items) => {
+            items.iter().map(|i| if i.is_null() { String::new() } else { to_js_string(i) }).collect::<Vec<_>>().join(",")
+        }
         Value::Object(_) => "[object Object]".into(),
     }
 }
@@ -312,9 +307,7 @@ fn local_offset_ms(utc_guess_ms: f64) -> f64 {
     use chrono::{Local, Offset, TimeZone};
     let secs = (utc_guess_ms / 1000.0).floor() as i64;
     match Local.timestamp_opt(secs, 0) {
-        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
-            f64::from(dt.offset().fix().local_minus_utc()) * 1000.0
-        }
+        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => f64::from(dt.offset().fix().local_minus_utc()) * 1000.0,
         chrono::LocalResult::None => 0.0,
     }
 }
@@ -559,7 +552,11 @@ fn parse_legacy_date(s: &str) -> f64 {
     }
     let (y, m, d) = match (month, nums.as_slice()) {
         (Some(m), [d, y]) => {
-            if *d > 31 { (*d, m, *y) } else { (*y, m, *d) }
+            if *d > 31 {
+                (*d, m, *y)
+            } else {
+                (*y, m, *d)
+            }
         }
         (Some(m), [d]) => (2001, m, *d),
         (None, [a, b, c]) => {
@@ -570,7 +567,11 @@ fn parse_legacy_date(s: &str) -> f64 {
             }
         }
         (None, [a, b]) if date_sep.is_some() => {
-            if *a > 12 { (*a, *b, 1) } else { (2001, *a, *b) }
+            if *a > 12 {
+                (*a, *b, 1)
+            } else {
+                (2001, *a, *b)
+            }
         }
         _ => return f64::NAN,
     };

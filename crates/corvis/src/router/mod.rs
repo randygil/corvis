@@ -20,7 +20,7 @@ use crate::common::context::{ExecutionContext, Target};
 use crate::common::filter::{BaseExceptionFilter, ExceptionFilter};
 use crate::common::guard::CanActivate;
 use crate::common::interceptor::{CallHandler, CorvisInterceptor};
-use crate::common::middleware::{Endpoint, MiddlewareConsumer, CorvisMiddleware, Next, RouteSpec, path_matches};
+use crate::common::middleware::{CorvisMiddleware, Endpoint, MiddlewareConsumer, Next, RouteSpec, path_matches};
 use crate::common::pipe::{ParamKind, PipeTransform};
 use crate::di::container::Container;
 use crate::di::{DiError, ModuleRef, ResolveCtx};
@@ -208,14 +208,16 @@ impl RouterTable {
             (m.value.clone(), params)
         };
         if let Some(r) = self.by_method.get(method.as_str())
-            && let Ok(m) = r.at(&lowered) {
-                return Some(decode(m));
-            }
+            && let Ok(m) = r.at(&lowered)
+        {
+            return Some(decode(m));
+        }
         if method == Method::HEAD
             && let Some(r) = self.by_method.get("GET")
-                && let Ok(m) = r.at(&lowered) {
-                    return Some(decode(m));
-                }
+            && let Ok(m) = r.at(&lowered)
+        {
+            return Some(decode(m));
+        }
         self.any.at(&lowered).ok().map(decode)
     }
 }
@@ -289,10 +291,7 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
             let c_interceptors = resolve_all(&cmeta.interceptors, &ctx).await?;
             let c_pipes = resolve_all(&cmeta.pipes, &ctx).await?;
             let c_filters = resolve_all(&cmeta.filters, &ctx).await?;
-            let class_target = Arc::new(Target {
-                name: def.name.clone(),
-                metadata: cmeta.metadata.iter().cloned().collect(),
-            });
+            let class_target = Arc::new(Target { name: def.name.clone(), metadata: cmeta.metadata.iter().cloned().collect() });
             let routes = (def.routes)(&instance);
             let c_paths = if cmeta.paths.is_empty() { vec![String::new()] } else { cmeta.paths.clone() };
             let module_ref = ModuleRef { container: container.clone(), module: module.id };
@@ -323,10 +322,8 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
                     for p in &meta.params {
                         params.push(CompiledParam { def: p.clone(), pipes: resolve_all(&p.pipes, &ctx).await? });
                     }
-                    let handler_target = Arc::new(Target {
-                        name: meta.handler_name.to_string(),
-                        metadata: meta.metadata.iter().cloned().collect(),
-                    });
+                    let handler_target =
+                        Arc::new(Target { name: meta.handler_name.to_string(), metadata: meta.metadata.iter().cloned().collect() });
                     let version = meta
                         .version
                         .clone()
@@ -335,7 +332,12 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
                     // `#[http_code]`, or `__httpCode__` metadata set by a composed decorator
                     // (`applyDecorators(HttpCode(201), ...)`, e.g. `ZodResponse`).
                     let http_code = meta.http_code.or_else(|| {
-                        meta.metadata.iter().rev().find(|(k, _)| k == crate::HTTP_CODE_METADATA).and_then(|(_, v)| v.as_u64()).map(|c| c as u16)
+                        meta.metadata
+                            .iter()
+                            .rev()
+                            .find(|(k, _)| k == crate::HTTP_CODE_METADATA)
+                            .and_then(|(_, v)| v.as_u64())
+                            .map(|c| c as u16)
                     });
                     let default_status = match http_code {
                         Some(c) => StatusCode::from_u16(c).unwrap_or(StatusCode::OK),
@@ -357,10 +359,7 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
                                 interceptors: interceptors.clone(),
                                 pipes: pipes.clone(),
                                 filters: filters.clone(),
-                                params: params
-                                    .iter()
-                                    .map(|p| CompiledParam { def: p.def.clone(), pipes: p.pipes.clone() })
-                                    .collect(),
+                                params: params.iter().map(|p| CompiledParam { def: p.def.clone(), pipes: p.pipes.clone() }).collect(),
                                 handler: r.handler.clone(),
                                 default_status,
                                 headers: meta.headers.clone(),
@@ -459,9 +458,10 @@ pub(crate) struct AppShared {
 /// Entry point for every request.
 pub(crate) async fn dispatch(shared: Arc<AppShared>, req: Request) -> Response {
     if let Some(cors) = &shared.cors
-        && cors.is_preflight(&req) {
-            return cors.preflight(&req);
-        }
+        && cors.is_preflight(&req)
+    {
+        return cors.preflight(&req);
+    }
     let req_for_cors = shared.cors.as_ref().map(|_| req.clone());
 
     // `next(err)` from the body parsers (registered after `cors`): the error is mapped
@@ -742,11 +742,7 @@ fn finalize(mut resp: Response, route: &CompiledRoute) -> Response {
     resp
 }
 
-pub(crate) async fn handle_exception(
-    exception: HttpException,
-    ctx: &ExecutionContext,
-    filters: &[Arc<dyn ExceptionFilter>],
-) -> Response {
+pub(crate) async fn handle_exception(exception: HttpException, ctx: &ExecutionContext, filters: &[Arc<dyn ExceptionFilter>]) -> Response {
     for f in filters {
         if f.catches(&exception) {
             let status = exception.status();

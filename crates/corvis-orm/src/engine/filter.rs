@@ -11,8 +11,20 @@ const SCALAR_OPS: &[&str] =
     &["equals", "not", "in", "notIn", "lt", "lte", "gt", "gte", "contains", "startsWith", "endsWith", "mode", "search"];
 const LIST_OPS: &[&str] = &["equals", "has", "hasEvery", "hasSome", "isEmpty"];
 const JSON_OPS: &[&str] = &[
-    "equals", "not", "path", "mode", "string_contains", "string_starts_with", "string_ends_with", "array_contains",
-    "array_starts_with", "array_ends_with", "lt", "lte", "gt", "gte",
+    "equals",
+    "not",
+    "path",
+    "mode",
+    "string_contains",
+    "string_starts_with",
+    "string_ends_with",
+    "array_contains",
+    "array_starts_with",
+    "array_ends_with",
+    "lt",
+    "lte",
+    "gt",
+    "gte",
 ];
 
 /// Longest `in` list written with one parameter per item (see [`Engine::push_in_list`]).
@@ -53,7 +65,11 @@ fn sqlite_json_path(p: Option<&[String]>) -> String {
 
 /// The `DbNull` / `JsonNull` / `AnyNull` sentinels (`{ "$type": ... }`).
 fn null_sentinel(v: &Value) -> Option<&str> {
-    v.as_object().filter(|o| o.len() == 1).and_then(|o| o.get("$type")).and_then(|t| t.as_str()).filter(|t| matches!(*t, "DbNull" | "JsonNull" | "AnyNull"))
+    v.as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.get("$type"))
+        .and_then(|t| t.as_str())
+        .filter(|t| matches!(*t, "DbNull" | "JsonNull" | "AnyNull"))
 }
 
 /// What an `orderBy` entry sorts on.
@@ -317,8 +333,11 @@ impl Engine {
                         }
                         Dialect::Sqlite => {
                             // No full-text index: every term must appear.
-                            let terms: Vec<String> =
-                                s.split(|c: char| c.is_whitespace() || "&|!()<>:*".contains(c)).filter(|t| !t.is_empty()).map(str::to_string).collect();
+                            let terms: Vec<String> = s
+                                .split(|c: char| c.is_whitespace() || "&|!()<>:*".contains(c))
+                                .filter(|t| !t.is_empty())
+                                .map(str::to_string)
+                                .collect();
                             if terms.is_empty() {
                                 q.push("1=1");
                             }
@@ -326,7 +345,11 @@ impl Engine {
                                 if j > 0 {
                                     q.push(" AND ");
                                 }
-                                q.push("INSTR(LOWER(").col(alias, f.column).push("), LOWER(").bind(SqlValue::Text(t.clone())).push(")) > 0");
+                                q.push("INSTR(LOWER(")
+                                    .col(alias, f.column)
+                                    .push("), LOWER(")
+                                    .bind(SqlValue::Text(t.clone()))
+                                    .push(")) > 0");
                             }
                         }
                     }
@@ -645,15 +668,12 @@ impl Engine {
             Some(Value::String(s)) => {
                 // SQLite / MySQL style `$.a.b[0]`.
                 let s = s.trim_start_matches('$');
-                Some(
-                    s.split(['.', '['])
-                        .map(|p| p.trim_end_matches(']').trim_matches('"').to_string())
-                        .filter(|p| !p.is_empty())
-                        .collect(),
-                )
+                Some(s.split(['.', '[']).map(|p| p.trim_end_matches(']').trim_matches('"').to_string()).filter(|p| !p.is_empty()).collect())
             }
             Some(other) => {
-                return Err(self.err(format!("Argument `path`: Invalid value provided. Expected List<String>, provided {}.", json_type(other))));
+                return Err(
+                    self.err(format!("Argument `path`: Invalid value provided. Expected List<String>, provided {}.", json_type(other)))
+                );
             }
         };
         if let Some(p) = &path
@@ -727,7 +747,9 @@ impl Engine {
                     }
                 }
                 "string_contains" | "string_starts_with" | "string_ends_with" => {
-                    let s = val.as_str().ok_or_else(|| self.err(format!("Argument `{op}`: Invalid value provided. Expected String, provided {}.", json_type(val))))?;
+                    let s = val.as_str().ok_or_else(|| {
+                        self.err(format!("Argument `{op}`: Invalid value provided. Expected String, provided {}.", json_type(val)))
+                    })?;
                     let pattern = match op.as_str() {
                         "string_contains" => format!("%{}%", escape_like(s)),
                         "string_starts_with" => format!("{}%", escape_like(s)),
@@ -800,7 +822,8 @@ impl Engine {
                             }
                         }
                     } else {
-                        let items = if val.is_array() && op == "array_contains" { val.as_array().unwrap().clone() } else { vec![val.clone()] };
+                        let items =
+                            if val.is_array() && op == "array_contains" { val.as_array().unwrap().clone() } else { vec![val.clone()] };
                         let path = sqlite_json_path(p);
                         match op.as_str() {
                             "array_contains" => {
@@ -808,7 +831,10 @@ impl Engine {
                                 self.sqlite_json_type(q, alias, f, p);
                                 q.push(" = 'array'");
                                 for it in items.iter() {
-                                    q.push(" AND EXISTS (SELECT 1 FROM json_each(").col(alias, f.column).push(", ").bind(SqlValue::Text(path.clone()));
+                                    q.push(" AND EXISTS (SELECT 1 FROM json_each(")
+                                        .col(alias, f.column)
+                                        .push(", ")
+                                        .bind(SqlValue::Text(path.clone()));
                                     // Same type and value; objects and arrays come back from `json_each` as JSON text.
                                     q.push(") WHERE ");
                                     match it {
@@ -835,7 +861,11 @@ impl Engine {
                             }
                             other => {
                                 let idx = if other == "array_starts_with" { "[0]" } else { "[#-1]" };
-                                q.push("json_extract(").col(alias, f.column).push(", ").bind(SqlValue::Text(format!("{path}{idx}"))).push(") = json_extract(json(");
+                                q.push("json_extract(")
+                                    .col(alias, f.column)
+                                    .push(", ")
+                                    .bind(SqlValue::Text(format!("{path}{idx}")))
+                                    .push(") = json_extract(json(");
                                 q.bind(SqlValue::Text(json_wrap(val))).push("), '$[0]')");
                             }
                         }
@@ -985,9 +1015,10 @@ impl Engine {
                 };
                 Ok((desc, nulls))
             }
-            other => Err(self.err(format!(
-                "Argument `{field}`: Invalid value provided. Expected SortOrder (\"asc\" | \"desc\"), provided {other}."
-            ))),
+            other => {
+                Err(self
+                    .err(format!("Argument `{field}`: Invalid value provided. Expected SortOrder (\"asc\" | \"desc\"), provided {other}.")))
+            }
         }
     }
 

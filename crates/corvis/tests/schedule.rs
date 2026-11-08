@@ -1,8 +1,8 @@
 //! Scheduling + `cron` parity: CronTime parsing/next dates, CronJob timing semantics,
 //! SchedulerRegistry API and decorated handlers (`#[cron]` options, names, lifecycle).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use corvis::prelude::*;
@@ -13,12 +13,17 @@ use corvis::testing::Test;
 async fn every_second_job_ticks_and_stops() {
     let n = Arc::new(AtomicUsize::new(0));
     let c = n.clone();
-    let job = CronJob::from(CronJobParams::new("* * * * * *", move || {
-        let c = c.clone();
-        async move {
-            c.fetch_add(1, Ordering::SeqCst);
-        }
-    }).start(true).name("sec")).unwrap();
+    let job = CronJob::from(
+        CronJobParams::new("* * * * * *", move || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .start(true)
+        .name("sec"),
+    )
+    .unwrap();
     assert!(job.is_active());
     let next = job.next_date().unwrap();
     assert!(next.timestamp_millis() - chrono::Utc::now().timestamp_millis() <= 1000);
@@ -33,6 +38,12 @@ async fn every_second_job_ticks_and_stops() {
     assert_eq!(n.load(Ordering::SeqCst), ticks);
 }
 
+// The first tick falls on the next whole second, so it comes between 0 and 1 s after `start`
+// (`t0`), then every second. The job runs for 4.5 s and the observation window is 3.5 s:
+//  - at least three ticks (t0, t0 + 1, t0 + 2 <= 3.0 s) fall inside the window, whatever `t0` is;
+//  - the first run is still going at the end of the window (it ends at t0 + 4.5 >= 4.5 s), so with
+//    `wait_for_completion` every tick after the first must have been skipped (exactly one start),
+//    and without it the overlapping ticks must have started their own runs (at least three).
 #[tokio::test]
 async fn wait_for_completion_skips_overlapping_ticks_and_default_overlaps() {
     for wait in [true, false] {
@@ -43,14 +54,14 @@ async fn wait_for_completion_skips_overlapping_ticks_and_default_overlaps() {
                 let s = s.clone();
                 async move {
                     s.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(2500)).await;
+                    tokio::time::sleep(Duration::from_millis(4500)).await;
                 }
             })
             .wait_for_completion(wait)
             .start(true),
         )
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(3100)).await;
+        tokio::time::sleep(Duration::from_millis(3500)).await;
         job.stop();
         let got = started.load(Ordering::SeqCst);
         if wait { assert_eq!(got, 1, "wait") } else { assert!(got >= 3, "overlap: {got}") }
@@ -62,10 +73,16 @@ async fn one_shot_date_run_on_init_on_complete_and_errors() {
     let fired = Arc::new(AtomicUsize::new(0));
     let f = fired.clone();
     let at = chrono::Utc::now() + chrono::Duration::milliseconds(600);
-    let job = CronJob::from(CronJobParams::new(at, move || {
-        let f = f.clone();
-        async move { f.fetch_add(1, Ordering::SeqCst); }
-    }).start(true)).unwrap();
+    let job = CronJob::from(
+        CronJobParams::new(at, move || {
+            let f = f.clone();
+            async move {
+                f.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .start(true),
+    )
+    .unwrap();
     assert!(job.run_once());
     assert_eq!(job.next_dates(5).unwrap().len(), 1);
     tokio::time::sleep(Duration::from_millis(900)).await;
@@ -82,7 +99,9 @@ async fn one_shot_date_run_on_init_on_complete_and_errors() {
             .error_handler(move |e| e2.lock().unwrap().push(e.to_string()))
             .on_complete(move || {
                 let c2 = c2.clone();
-                async move { c2.fetch_add(1, Ordering::SeqCst); }
+                async move {
+                    c2.fetch_add(1, Ordering::SeqCst);
+                }
             }),
     )
     .unwrap();
@@ -90,7 +109,11 @@ async fn one_shot_date_run_on_init_on_complete_and_errors() {
     assert_eq!(*errors.lock().unwrap(), vec!["boom".to_string()]);
     assert!(job.last_date().is_some());
     assert!(!job.is_active());
-    job.add_callback(|| async { if true { panic!("kaput") } });
+    job.add_callback(|| async {
+        if true {
+            panic!("kaput")
+        }
+    });
     job.fire_on_tick().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(errors.lock().unwrap().len(), 3);
@@ -141,13 +164,22 @@ async fn registry_api_and_messages() {
     let r = SchedulerRegistry::default();
     let e = r.get_cron_job("x").unwrap_err().to_string();
     assert_eq!(e, "No Cron Job was found with the given name (x). Check that you created one with a decorator or with the create API.");
-    assert_eq!(r.get_interval("i").unwrap_err().to_string(), "No Interval was found with the given name (i). Check that you created one with a decorator or with the create API.");
-    assert_eq!(r.get_timeout("t").unwrap_err().to_string(), "No Timeout was found with the given name (t). Check that you created one with a decorator or with the create API.");
+    assert_eq!(
+        r.get_interval("i").unwrap_err().to_string(),
+        "No Interval was found with the given name (i). Check that you created one with a decorator or with the create API."
+    );
+    assert_eq!(
+        r.get_timeout("t").unwrap_err().to_string(),
+        "No Timeout was found with the given name (t). Check that you created one with a decorator or with the create API."
+    );
     assert!(r.delete_cron_job("x").is_err());
 
     let job = CronJob::new("0 0 0 1 1 *", || async {}).unwrap();
     r.add_cron_job("yearly", job.clone()).unwrap();
-    assert_eq!(r.add_cron_job("yearly", job.clone()).unwrap_err().to_string(), "Cron Job with the given name (yearly) already exists. Ignored.");
+    assert_eq!(
+        r.add_cron_job("yearly", job.clone()).unwrap_err().to_string(),
+        "Cron Job with the given name (yearly) already exists. Ignored."
+    );
     assert!(r.does_exist("cron", "yearly"));
     assert!(!r.does_exist("cron", "nope"));
     assert!(!r.does_exist("other", "yearly"));

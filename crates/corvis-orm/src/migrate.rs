@@ -57,7 +57,11 @@ impl fmt::Display for MigrateStatus {
             writeln!(f)?;
         }
         if !self.missing_locally.is_empty() {
-            writeln!(f, "The following migration{} applied to the database but missing from the local migrations directory:", if self.missing_locally.len() == 1 { " is" } else { "s are" })?;
+            writeln!(
+                f,
+                "The following migration{} applied to the database but missing from the local migrations directory:",
+                if self.missing_locally.len() == 1 { " is" } else { "s are" }
+            )?;
             for m in &self.missing_locally {
                 writeln!(f, "{m}")?;
             }
@@ -84,19 +88,15 @@ pub fn checksum(script: &[u8]) -> String {
 
 /// Reads `dir/*/migration.sql`, sorted by folder name.
 pub fn read_migrations(dir: &Path) -> Result<Vec<MigrationInfo>> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| OrmError::init(format!("Could not read the migrations directory `{}`: {e}", dir.display())))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| OrmError::init(format!("Could not read the migrations directory `{}`: {e}", dir.display())))?;
     let mut out = Vec::new();
     for e in entries.flatten() {
         let path = e.path();
         let file = path.join("migration.sql");
         if path.is_dir() && file.is_file() {
             let bytes = std::fs::read(&file).map_err(|e| OrmError::init(format!("{}: {e}", file.display())))?;
-            out.push(MigrationInfo {
-                name: e.file_name().to_string_lossy().into_owned(),
-                path: file,
-                checksum: checksum(&bytes),
-            });
+            out.push(MigrationInfo { name: e.file_name().to_string_lossy().into_owned(), path: file, checksum: checksum(&bytes) });
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -250,7 +250,10 @@ impl OrmClient {
                 }
                 Err(e) => {
                     let (code, message) = db_error_parts(&e, self.dialect());
-                    let logs = format!("{message}\n\n0: sql_schema_connector::apply_migration::apply_script\n           with migration_name=\"{}\"", m.name);
+                    let logs = format!(
+                        "{message}\n\n0: sql_schema_connector::apply_migration::apply_script\n           with migration_name=\"{}\"",
+                        m.name
+                    );
                     let _ = self
                         .execute_raw(
                             &format!(r#"UPDATE "_prisma_migrations" SET "logs" = {} WHERE "id" = {}"#, ph(d, 1), ph(d, 2)),
@@ -313,17 +316,22 @@ fn db_error_parts(e: &sqlx::Error, d: Dialect) -> (String, String) {
             let code = db.code().map(|c| c.to_string()).unwrap_or_default();
             let mut message = db.message().to_string();
             if d == Dialect::Postgres
-                && let Some(pg) = db.try_downcast_ref::<sqlx::postgres::PgDatabaseError>() {
-                    message = format!("ERROR: {}", pg.message());
-                    if let Some(detail) = pg.detail() {
-                        message.push_str(&format!("
-DETAIL: {detail}"));
-                    }
-                    if let Some(hint) = pg.hint() {
-                        message.push_str(&format!("
-HINT: {hint}"));
-                    }
+                && let Some(pg) = db.try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+            {
+                message = format!("ERROR: {}", pg.message());
+                if let Some(detail) = pg.detail() {
+                    message.push_str(&format!(
+                        "
+DETAIL: {detail}"
+                    ));
                 }
+                if let Some(hint) = pg.hint() {
+                    message.push_str(&format!(
+                        "
+HINT: {hint}"
+                    ));
+                }
+            }
             (code, message)
         }
         other => (String::new(), other.to_string()),

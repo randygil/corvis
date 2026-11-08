@@ -14,13 +14,28 @@ use super::Limits;
 #[derive(Debug)]
 pub(crate) enum Event {
     /// A file part started (`busboy.on('file')`).
-    FileStart { id: usize, name: Option<String>, filename: Option<String>, encoding: String, mime_type: String },
+    FileStart {
+        id: usize,
+        name: Option<String>,
+        filename: Option<String>,
+        encoding: String,
+        mime_type: String,
+    },
     /// The file reached `limits.fileSize` (`fileStream.on('limit')`).
-    FileLimit { id: usize },
+    FileLimit {
+        id: usize,
+    },
     /// The file part ended; `data` is its (possibly truncated) content.
-    FileEnd { id: usize, data: Bytes },
+    FileEnd {
+        id: usize,
+        data: Bytes,
+    },
     /// A non-file field (`busboy.on('field')`).
-    Field { name: Option<String>, value: String, value_truncated: bool },
+    Field {
+        name: Option<String>,
+        value: String,
+        value_truncated: bool,
+    },
     FilesLimit,
     FieldsLimit,
     PartsLimit,
@@ -408,11 +423,7 @@ impl<'a> Parser<'a> {
             } else if let Some(field) = self.field.take() {
                 let value = decode_text(&field, &self.part_charset);
                 self.field_size = 0;
-                self.events.push(Event::Field {
-                    name: self.part_name.clone(),
-                    value,
-                    value_truncated: self.part_truncated,
-                });
+                self.events.push(Event::Field { name: self.part_name.clone(), value, value_truncated: self.part_truncated });
             }
             self.parts += 1;
             if self.parts == self.parts_limit() {
@@ -454,16 +465,18 @@ impl<'a> Parser<'a> {
             filename = Some(f);
         }
         if let Some(f) = filename.as_mut()
-            && !self.cfg.preserve_path {
-                *f = basename(f);
-            }
+            && !self.cfg.preserve_path
+        {
+            *f = basename(f);
+        }
         if let Some(ct) = get("content-type")
-            && let Some((t, s, p)) = parse_content_type(ct) {
-                part_type = format!("{t}/{s}");
-                if let Some((_, cs)) = p.iter().find(|(k, _)| k == "charset") {
-                    self.part_charset = cs.to_lowercase();
-                }
+            && let Some((t, s, p)) = parse_content_type(ct)
+        {
+            part_type = format!("{t}/{s}");
+            if let Some((_, cs)) = p.iter().find(|(k, _)| k == "charset") {
+                self.part_charset = cs.to_lowercase();
             }
+        }
         if let Some(enc) = get("content-transfer-encoding") {
             part_encoding = latin1(enc).to_lowercase();
         }
@@ -697,12 +710,7 @@ fn parse_disposition(s: &[u8], def_charset: &str) -> Option<(String, Vec<(String
 
 /// Shared implementation of `parseContentTypeParams` / `parseDispositionParams`.
 /// `decode(value_bytes, hint)` converts a non-extended value.
-fn parse_params(
-    s: &[u8],
-    mut i: usize,
-    extended: bool,
-    decode: &dyn Fn(Vec<u8>, u8) -> Option<String>,
-) -> Option<Vec<(String, String)>> {
+fn parse_params(s: &[u8], mut i: usize, extended: bool, decode: &dyn Fn(Vec<u8>, u8) -> Option<String>) -> Option<Vec<(String, String)>> {
     let mut params: Vec<(String, String)> = Vec::new();
     while i < s.len() {
         while i < s.len() && (s[i] == b' ' || s[i] == b'\t') {
@@ -735,7 +743,7 @@ fn parse_params(
             return None;
         }
         let name = &s[name_start..i];
-        
+
         let value: String = if extended && name.last() == Some(&b'*') {
             // Extended value: charset'lang'percent-encoded.
             i += 1;
@@ -771,17 +779,18 @@ fn parse_params(
                 if !is_extended_value(c) {
                     if c == b'%' {
                         if i + 2 < s.len()
-                            && let (Some(h), Some(l)) = (hex(s[i + 1]), hex(s[i + 2])) {
-                                let b = (h << 4) + l;
-                                bytes.push(b);
-                                i += 3;
-                                if b >= 128 {
-                                    encode = 2;
-                                } else if encode == 0 {
-                                    encode = 1;
-                                }
-                                continue;
+                            && let (Some(h), Some(l)) = (hex(s[i + 1]), hex(s[i + 2]))
+                        {
+                            let b = (h << 4) + l;
+                            bytes.push(b);
+                            i += 3;
+                            if b >= 128 {
+                                encode = 2;
+                            } else if encode == 0 {
+                                encode = 1;
                             }
+                            continue;
+                        }
                         return None;
                     }
                     break;
@@ -900,8 +909,8 @@ fn decode_text(bytes: &[u8], charset: &str) -> String {
 fn normalize_charset(c: &str) -> String {
     match c.to_ascii_lowercase().as_str() {
         "utf-8" | "utf8" => "utf8".into(),
-        "latin1" | "ascii" | "us-ascii" | "iso-8859-1" | "iso8859-1" | "iso88591" | "iso_8859-1" | "windows-1252"
-        | "iso_8859-1:1987" | "cp1252" | "x-cp1252" => "latin1".into(),
+        "latin1" | "ascii" | "us-ascii" | "iso-8859-1" | "iso8859-1" | "iso88591" | "iso_8859-1" | "windows-1252" | "iso_8859-1:1987"
+        | "cp1252" | "x-cp1252" => "latin1".into(),
         "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => "utf16le".into(),
         "base64" => "base64".into(),
         other => other.to_string(),

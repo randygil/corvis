@@ -272,7 +272,9 @@ async fn unknown_upgrade_paths_are_destroyed() {
     assert_eq!(r, "");
 
     // Handshake validation of `ws`' handleUpgrade.
-    let r = raw(addr, "GET /ws/bridge HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n").await;
+    let r =
+        raw(addr, "GET /ws/bridge HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n")
+            .await;
     assert!(r.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{r}");
     assert!(r.to_ascii_lowercase().contains("connection: close"), "{r}");
     assert!(r.to_ascii_lowercase().contains("content-type: text/html"), "{r}");

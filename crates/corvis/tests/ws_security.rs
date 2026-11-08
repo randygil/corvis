@@ -81,10 +81,7 @@ impl MainGateway {
 impl OnGatewayInit for MainGateway {
     async fn after_init(&self, server: WsServer) {
         server.set_options(
-            GatewayOptions::default()
-                .max_buffered_amount(1024 * 1024)
-                .max_inflight(4)
-                .close_timeout(Duration::from_millis(300)),
+            GatewayOptions::default().max_buffered_amount(1024 * 1024).max_inflight(4).close_timeout(Duration::from_millis(300)),
         );
     }
 }
@@ -116,9 +113,7 @@ impl StrictGateway {
 impl OnGatewayInit for StrictGateway {
     async fn after_init(&self, server: WsServer) {
         server.set_options(
-            GatewayOptions::default()
-                .allowed_origins(["https://chat.example"])
-                .verify_client(|req| req.query_param("deny").is_none()),
+            GatewayOptions::default().allowed_origins(["https://chat.example"]).verify_client(|req| req.query_param("deny").is_none()),
         );
     }
 }

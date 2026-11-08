@@ -239,9 +239,8 @@ pub fn parse_dotenv(src: &str) -> Vec<(String, String)> {
 /// are looked up in the process environment first, then in the other `.env` values (expanded
 /// recursively, up to a fixed depth); unknown variables expand to an empty string.
 fn expand(value: &str, process: &HashMap<String, String>, file: &HashMap<String, String>, depth: usize) -> String {
-    static VAR: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\\\$|\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}|\$([A-Za-z0-9_]+)").expect("expand regex")
-    });
+    static VAR: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\\\$|\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}|\$([A-Za-z0-9_]+)").expect("expand regex"));
     const MAX_DEPTH: usize = 16;
     VAR.replace_all(value, |c: &regex::Captures<'_>| {
         if &c[0] == "\\$" {

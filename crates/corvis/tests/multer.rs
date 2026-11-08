@@ -9,9 +9,8 @@ use corvis::multer::{DiskStorageOptions, Limits, MulterOptions, disk_storage, me
 use corvis::prelude::*;
 use corvis::testing::request;
 use corvis::{
-    AnyFilesInterceptor, FileFieldsInterceptor, FileInterceptor, FileTypeValidator, FilesInterceptor,
-    MaxFileSizeValidator, MulterField, MulterModule, NoFilesInterceptor, ParseFilePipe, ParseFilePipeBuilder,
-    UploadedFile,
+    AnyFilesInterceptor, FileFieldsInterceptor, FileInterceptor, FileTypeValidator, FilesInterceptor, MaxFileSizeValidator, MulterField,
+    MulterModule, NoFilesInterceptor, ParseFilePipe, ParseFilePipeBuilder, UploadedFile,
 };
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89";
@@ -232,11 +231,25 @@ async fn malformed_bodies() {
     let app = app().await;
     let r = raw_multipart(&app, "/files/single", "multipart/form-data", "x").send().await;
     r.expect_status(400).expect_json(json!({ "message": "Multipart: Boundary not found", "error": "Bad Request", "statusCode": 400 }));
-    let r = raw_multipart(&app, "/files/single", "multipart/form-data; boundary=XX", "--XX\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhola").send().await;
+    let r = raw_multipart(
+        &app,
+        "/files/single",
+        "multipart/form-data; boundary=XX",
+        "--XX\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhola",
+    )
+    .send()
+    .await;
     r.expect_status(400).expect_json(json!({ "message": "Multipart: Unexpected end of form", "error": "Bad Request", "statusCode": 400 }));
     let r = raw_multipart(&app, "/files/single", "multipart/form-data; boundary=XX", "--XX\r\nNo Colon\r\n\r\nx\r\n--XX--").send().await;
     r.expect_status(400).expect_json(json!({ "message": "Multipart: Malformed part header", "error": "Bad Request", "statusCode": 400 }));
-    let r = raw_multipart(&app, "/files/single", "multipart/form-data; boundary=XX", "--XX\r\nContent-Disposition: form-data\r\n\r\nx\r\n--XX--").send().await;
+    let r = raw_multipart(
+        &app,
+        "/files/single",
+        "multipart/form-data; boundary=XX",
+        "--XX\r\nContent-Disposition: form-data\r\n\r\nx\r\n--XX--",
+    )
+    .send()
+    .await;
     r.expect_status(400).expect_json(json!({ "message": "Field name missing", "error": "Bad Request", "statusCode": 400 }));
     // Not form-data: busboy throws a plain Error -> 500.
     let r = raw_multipart(&app, "/files/single", "multipart/mixed; boundary=XX", "--XX--").send().await;

@@ -182,7 +182,6 @@ impl CanActivate for ThrottlerGuard {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -166,13 +166,12 @@ fn schema(name: &str) -> z::Schema {
             case_sensitive: true,
             ..Default::default()
         })),
-        "templateLiteral" => s(z::template_literal([
-            z::TemplatePart::from("id-"),
-            s(z::number()).into(),
-            "-".into(),
-            s(z::enum_(["a", "b"])).into(),
-        ])),
-        "templateLiteral.str" => s(z::template_literal([s(z::string().min(2)).into(), z::TemplatePart::from("@"), s(z::literal("x")).into()])),
+        "templateLiteral" => {
+            s(z::template_literal([z::TemplatePart::from("id-"), s(z::number()).into(), "-".into(), s(z::enum_(["a", "b"])).into()]))
+        }
+        "templateLiteral.str" => {
+            s(z::template_literal([s(z::string().min(2)).into(), z::TemplatePart::from("@"), s(z::literal("x")).into()]))
+        }
         "nan" => s(z::nan()),
 
         // ----- coerce
@@ -217,10 +216,8 @@ fn schema(name: &str) -> z::Schema {
         "object.required" => s(z::object! { a: z::string().optional(), b: z::number().optional() }.required()),
         "object.required.keys" => s(z::object! { a: z::string().optional(), b: z::number().optional() }.required_fields(&["a"])),
         "object.keyof" => s(z::object! { a: z::string(), b: z::number() }.keyof()),
-        "object.refine" => z::object! { a: z::number(), b: z::number() }.refine(
-            |v| v["a"].as_f64() <= v["b"].as_f64(),
-            z::params().message("a<=b").path(["b"]),
-        ),
+        "object.refine" => z::object! { a: z::number(), b: z::number() }
+            .refine(|v| v["a"].as_f64() <= v["b"].as_f64(), z::params().message("a<=b").path(["b"])),
         "object.refine.skip" => z::object! { a: z::number(), b: z::number() }.refine(|_| false, z::params().message("never")),
         "object.refine.when" => {
             z::object! { a: z::number(), b: z::number() }.refine(|_| false, z::params().message("always").when(|_| true))
@@ -327,9 +324,7 @@ fn schema(name: &str) -> z::Schema {
         ),
         "refine" => z::string().refine(|v| v.as_str().unwrap().len() > 2, ()),
         "refine.msg" => z::string().refine(|v| v.as_str().unwrap().len() > 2, "muy corto"),
-        "refine.abort" => z::string()
-            .refine(|v| v.as_str().unwrap().len() > 2, z::params().message("r1").abort())
-            .refine(|_| false, "r2"),
+        "refine.abort" => z::string().refine(|v| v.as_str().unwrap().len() > 2, z::params().message("r1").abort()).refine(|_| false, "r2"),
         "min.then.refine" => z::string().min(3).refine(|_| false, ()),
         "refine.params" => z::string().refine(|_| false, z::params().params(json!({ "foo": 1 }))),
         "superRefine.fatal" => z::string()
@@ -366,9 +361,8 @@ fn schema(name: &str) -> z::Schema {
         }),
 
         // ----- errors
-        "error.param.fn" => s(z::string().error(z::error_fn(|iss| {
-            Some(if iss.input_is_undefined() { "requerido".to_string() } else { "no es string".to_string() })
-        }))),
+        "error.param.fn" => s(z::string()
+            .error(z::error_fn(|iss| Some(if iss.input_is_undefined() { "requerido".to_string() } else { "no es string".to_string() })))),
         "error.param.str" => s(z::string().error("debe ser texto")),
         "error.min.fn" => s(z::string().min(3).error(z::error_fn(|iss| Some(format!("min {}", iss.get("minimum").unwrap()))))),
         "error.object.fn" => s(z::object! { a: z::string() }.error(z::error_fn(|_| Some("obj".to_string())))),
@@ -426,15 +420,14 @@ fn json_schema_of(name: &str) -> z::Schema {
         "partialRecord" => s(z::partial_record(z::enum_(["a", "b"]), z::string())),
         "looseRecord" => s(z::loose_record(z::string().regex("^a"), z::string())),
         "union" => z::union([s(z::string()), s(z::number())]),
-        "discriminatedUnion" => {
-            z::discriminated_union("t", [s(z::object! { t: z::literal("a") }), s(z::object! { t: z::literal("b") })])
-        }
+        "discriminatedUnion" => z::discriminated_union("t", [s(z::object! { t: z::literal("a") }), s(z::object! { t: z::literal("b") })]),
         "intersection" => z::intersection(z::object! { a: z::string() }, z::object! { b: z::number() }),
         "nullable" => z::string().nullable(),
         "nullable.object" => z::object! { a: z::string() }.nullable(),
         "describe" => z::string().describe("Un texto"),
-        "meta" => z::object! { a: z::string().meta(json!({ "title": "A", "examples": ["x"] })) }
-            .meta(json!({ "id": "Obj", "description": "d" })),
+        "meta" => {
+            z::object! { a: z::string().meta(json!({ "title": "A", "examples": ["x"] })) }.meta(json!({ "id": "Obj", "description": "d" }))
+        }
         "default" => z::string().default("x"),
         "templateLiteral" => s(z::template_literal([z::TemplatePart::from("id-"), s(z::number()).into()])),
         "stringbool" => s(z::stringbool()),
@@ -515,9 +508,7 @@ fn same(got: &Value, want: &Value) -> bool {
         }
         (Value::Number(a), Value::String(b)) if b.ends_with('n') => b[..b.len() - 1].parse::<f64>().ok() == a.as_f64(),
         (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b)),
-        (Value::Object(a), Value::Object(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|((ka, va), (kb, vb))| ka == kb && same(va, vb))
-        }
+        (Value::Object(a), Value::Object(b)) => a.len() == b.len() && a.iter().zip(b).all(|((ka, va), (kb, vb))| ka == kb && same(va, vb)),
         (a, b) => a == b,
     }
 }

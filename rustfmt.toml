@@ -1,0 +1,5 @@
+# Stable options only, so the pinned stable toolchain of CI can check formatting (`cargo fmt --all --check`).
+# Chosen as the closest match to the existing style: of max_width 120/130/140/150/160 with "Max" heuristics and the
+# defaults, 140 changed the fewest lines.
+max_width = 140
+use_small_heuristics = "Max"

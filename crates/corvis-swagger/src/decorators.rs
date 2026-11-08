@@ -519,10 +519,7 @@ mod tests {
     #[test]
     fn response_entry() {
         let d = api_status_response(200, json!({ "type": [ { "$model": "A" } ] }));
-        assert_eq!(
-            js::stringify(entry(&d).1),
-            r#"{"status":"200","entry":{"type":{"$model":"A"},"isArray":true,"description":""}}"#
-        );
+        assert_eq!(js::stringify(entry(&d).1), r#"{"status":"200","entry":{"type":{"$model":"A"},"isArray":true,"description":""}}"#);
         let d = api_default_response(json!({ "description": "d" }));
         assert_eq!(entry(&d).1["status"], "default");
     }
@@ -537,20 +534,11 @@ mod tests {
     #[test]
     fn params() {
         let d = api_param(json!({ "name": "id", "enum": ["a", "b"] }));
-        assert_eq!(
-            js::stringify(entry(&d).1),
-            r#"{"name":"id","required":true,"in":"path","schema":{"enum":["a","b"],"type":"string"}}"#
-        );
+        assert_eq!(js::stringify(entry(&d).1), r#"{"name":"id","required":true,"in":"path","schema":{"enum":["a","b"],"type":"string"}}"#);
         let d = api_query(json!({ "name": "q", "type": [{ "$ctor": "String" }], "required": false }));
-        assert_eq!(
-            js::stringify(entry(&d).1),
-            r#"{"name":"q","required":false,"in":"query","type":{"$ctor":"String"},"isArray":true}"#
-        );
+        assert_eq!(js::stringify(entry(&d).1), r#"{"name":"q","required":false,"in":"query","type":{"$ctor":"String"},"isArray":true}"#);
         let d = api_header(json!({ "name": "X-Key", "description": "k" }));
-        assert_eq!(
-            js::stringify(entry(&d).1),
-            r#"{"name":"X-Key","in":"header","description":"k","schema":{"type":"string"}}"#
-        );
+        assert_eq!(js::stringify(entry(&d).1), r#"{"name":"X-Key","in":"header","description":"k","schema":{"type":"string"}}"#);
     }
 
     #[test]

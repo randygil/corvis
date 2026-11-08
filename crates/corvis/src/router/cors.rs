@@ -58,8 +58,7 @@ impl From<regex::Regex> for OriginMatcher {
 pub type OriginFn = Arc<dyn Fn(Option<&str>) -> CorsOrigin + Send + Sync>;
 
 /// The `origin` option.
-#[derive(Clone)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub enum CorsOrigin {
     /// `'*'` (the default).
     #[default]
@@ -75,7 +74,6 @@ pub enum CorsOrigin {
     /// Computed per request. Returning `Disabled` skips CORS for that request.
     Dynamic(OriginFn),
 }
-
 
 impl std::fmt::Debug for CorsOrigin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -301,9 +299,10 @@ fn set_cors_header(res: &mut Response, name: &'static str, value: &str, overwrit
     if name == "vary" {
         let current = res.headers().get(&n).and_then(|v| v.to_str().ok()).map(str::to_string);
         if let Some(v) = vary_append(current.as_deref().unwrap_or(""), value)
-            && let Ok(v) = HeaderValue::from_str(&v) {
-                res.headers_mut().insert(n, v);
-            }
+            && let Ok(v) = HeaderValue::from_str(&v)
+        {
+            res.headers_mut().insert(n, v);
+        }
         return;
     }
     if !overwrite && res.headers().contains_key(&n) {

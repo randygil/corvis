@@ -122,11 +122,8 @@ fn generate(args: &mut Args) -> Result<(), String> {
     let docs = !args.flag("--no-docs");
     let derives = args.values("--derive");
     let schema = corvis_orm::psl::parse_path(&schema_path).map_err(|e| e.to_string())?;
-    let opts = corvis_orm::codegen::Options {
-        extra_derives: derives,
-        docs,
-        source: Some(schema_path.to_string_lossy().replace('\\', "/")),
-    };
+    let opts =
+        corvis_orm::codegen::Options { extra_derives: derives, docs, source: Some(schema_path.to_string_lossy().replace('\\', "/")) };
     let code = corvis_orm::codegen::generate(&schema, &opts).map_err(|e| e.to_string())?;
     if let Some(dir) = out.parent()
         && !dir.as_os_str().is_empty()
@@ -151,10 +148,8 @@ fn migrate(sub: &str, args: &mut Args) -> Result<(), String> {
         let base = if schema_path.is_dir() { schema_path.clone() } else { schema_path.parent().map(Path::to_path_buf).unwrap_or_default() };
         base.join("migrations")
     });
-    let url = args
-        .value("--url")
-        .or_else(|| std::env::var("DATABASE_URL").ok())
-        .ok_or("no database URL: pass --url or set DATABASE_URL")?;
+    let url =
+        args.value("--url").or_else(|| std::env::var("DATABASE_URL").ok()).ok_or("no database URL: pass --url or set DATABASE_URL")?;
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let client = corvis_orm::OrmClient::new(url).map_err(|e| e.to_string())?;

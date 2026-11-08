@@ -89,17 +89,12 @@ impl ResolveCtx {
     pub async fn get_token<T: ?Sized + Send + Sync + 'static>(&self, token: impl Into<Token>) -> Result<Arc<T>, DiError> {
         let token = token.into();
         let instance = self.resolve_instance(token.clone()).await?;
-        downcast::<T>(&instance).ok_or_else(|| DiError::TypeMismatch {
-            token: token.display_name(),
-            expected: std::any::type_name::<T>().to_string(),
-        })
+        downcast::<T>(&instance)
+            .ok_or_else(|| DiError::TypeMismatch { token: token.display_name(), expected: std::any::type_name::<T>().to_string() })
     }
 
     /// Resolve an optional dependency (`@Optional()`).
-    pub async fn get_optional<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        token: impl Into<Token>,
-    ) -> Result<Option<Arc<T>>, DiError> {
+    pub async fn get_optional<T: ?Sized + Send + Sync + 'static>(&self, token: impl Into<Token>) -> Result<Option<Arc<T>>, DiError> {
         let token = token.into();
         if self.container.lookup(self.module, &token).is_none() {
             return Ok(None);
@@ -113,11 +108,7 @@ impl ResolveCtx {
 
     /// Used by generated constructors: resolves the dependency at `index`, producing
     /// a descriptive error message if it cannot be found.
-    pub async fn resolve_dependency<T: ?Sized + Send + Sync + 'static>(
-        &self,
-        token: Token,
-        index: usize,
-    ) -> Result<Arc<T>, DiError> {
+    pub async fn resolve_dependency<T: ?Sized + Send + Sync + 'static>(&self, token: Token, index: usize) -> Result<Arc<T>, DiError> {
         if self.container.lookup(self.module, &token).is_none() {
             let deps = self
                 .deps

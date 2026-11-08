@@ -17,9 +17,7 @@ pub type TaskCall = Arc<dyn Fn() -> BoxFuture<'static, crate::Result<()>> + Send
 /// A `#[subscribe_message]` handler: receives the client and the message body arguments
 /// (one per `#[message_body]` parameter, after the pipes) and returns the reply frame.
 pub type WsCall = Arc<
-    dyn Fn(Arc<dyn Any + Send + Sync>, Vec<Value>) -> BoxFuture<'static, Result<Option<Value>, crate::http::HttpException>>
-        + Send
-        + Sync,
+    dyn Fn(Arc<dyn Any + Send + Sync>, Vec<Value>) -> BoxFuture<'static, Result<Option<Value>, crate::http::HttpException>> + Send + Sync,
 >;
 
 /// Enhancers and metadata of a gateway (`#[use_guards]`, ... below `#[websocket_gateway]`)

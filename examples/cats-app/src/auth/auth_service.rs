@@ -1,5 +1,5 @@
-use corvis::prelude::*;
 use corvis::JwtService;
+use corvis::prelude::*;
 
 use crate::common::decorators::JwtPayload;
 use crate::users::UsersService;

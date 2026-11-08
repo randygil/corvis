@@ -352,7 +352,8 @@ impl<'a> Parser<'a> {
         }
         let pos = self.pos.min(self.src.len());
         let (line, column) = self.file_location(pos);
-        let message = format!("Maximum nesting depth of {} exceeded in JSON at position {pos} (line {line} column {column})", self.max_depth);
+        let message =
+            format!("Maximum nesting depth of {} exceeded in JSON at position {pos} (line {line} column {column})", self.max_depth);
         Err(JsonParseError { message, position: pos })
     }
 
@@ -688,7 +689,10 @@ mod tests {
 
     #[test]
     fn values() {
-        assert_eq!(parse(r#"{"b":1,"a":[1,2.5,"x",true,false,null],"2":0,"1":-0}"#).unwrap().to_string(), r#"{"1":0,"2":0,"b":1,"a":[1,2.5,"x",true,false,null]}"#);
+        assert_eq!(
+            parse(r#"{"b":1,"a":[1,2.5,"x",true,false,null],"2":0,"1":-0}"#).unwrap().to_string(),
+            r#"{"1":0,"2":0,"b":1,"a":[1,2.5,"x",true,false,null]}"#
+        );
         assert_eq!(parse("12345678901234567890").unwrap().to_string(), "12345678901234567000");
         assert_eq!(parse("1.0").unwrap().to_string(), "1");
         assert_eq!(parse("1e400").unwrap(), Value::Null);

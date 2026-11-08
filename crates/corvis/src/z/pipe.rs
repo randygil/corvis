@@ -39,11 +39,8 @@ pub struct ZodValidationException;
 impl ZodValidationException {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(error: ZodError) -> HttpException {
-        HttpException::new(
-            json!({ "statusCode": 400, "message": "Validation failed", "errors": error.to_json() }),
-            HttpStatus::BAD_REQUEST,
-        )
-        .with_cause(error)
+        HttpException::new(json!({ "statusCode": 400, "message": "Validation failed", "errors": error.to_json() }), HttpStatus::BAD_REQUEST)
+            .with_cause(error)
     }
 
     /// `exception.getZodError()`: the [`ZodError`] behind an exception built by
@@ -254,9 +251,7 @@ impl crate::common::guard::CanActivate for ZodGuard {
         let data = match self.source {
             ZodGuardSource::Body => req.body().clone(),
             ZodGuardSource::Query => Value::Object(req.query().clone()),
-            ZodGuardSource::Params => {
-                Value::Object(req.params().iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect())
-            }
+            ZodGuardSource::Params => Value::Object(req.params().iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect()),
         };
         let input = (!data.is_null()).then_some(&data);
         validate_opt(input, &self.schema, self.create_validation_exception.as_ref())?;
@@ -325,11 +320,8 @@ impl ZodSerializerDto {
                 None => return Ok(value.clone()),
             }
         };
-        let schema = if meta.get("array").and_then(Value::as_bool).unwrap_or(false) {
-            Schema::new(entry.schema.array())
-        } else {
-            entry.schema
-        };
+        let schema =
+            if meta.get("array").and_then(Value::as_bool).unwrap_or(false) { Schema::new(entry.schema.array()) } else { entry.schema };
         let mut opts = ParseOptions::new();
         if let Some(r) = report_input {
             opts = opts.report_input(r);
@@ -366,8 +358,7 @@ impl ZodSerializerInterceptor {
 #[async_trait]
 impl CorvisInterceptor for ZodSerializerInterceptor {
     async fn intercept(&self, context: &ExecutionContext, next: CallHandler) -> HandlerResult {
-        let meta: Option<Value> =
-            Reflector.get_all_and_override(ZOD_SERIALIZER_DTO_OPTIONS, &[context.get_handler(), context.get_class()]);
+        let meta: Option<Value> = Reflector.get_all_and_override(ZOD_SERIALIZER_DTO_OPTIONS, &[context.get_handler(), context.get_class()]);
         let response = next.handle().await?;
         let Some(meta) = meta else { return Ok(response) };
         let Some(body) = response.json_body().cloned() else { return Ok(response) };
