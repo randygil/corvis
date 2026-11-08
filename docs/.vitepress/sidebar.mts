@@ -79,6 +79,7 @@ const tree: Entry[] = [
   group('Security', 'Seguridad', [
     ['Authentication', 'Autenticación', '/security/authentication'],
     ['Authorization', 'Autorización', '/security/authorization'],
+    ['Route posture', 'Postura de rutas', '/security/route-posture'],
     ['Encryption and hashing', 'Cifrado y hashing', '/security/encryption-and-hashing'],
     ['Security headers', 'Cabeceras de seguridad', '/security/helmet'],
     ['CORS', 'CORS', '/security/cors'],

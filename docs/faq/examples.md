@@ -19,7 +19,7 @@ A cats API that uses almost every piece of the framework in a single project:
 - Modules with `imports`/`exports` (`AuthModule`, `UsersModule`, `CatsModule`) and included modules:
   `ConfigModule`, `EventEmitterModule`, `ScheduleModule`, `CacheModule`, `ThrottlerModule` and
   `TerminusModule`.
-- JWT authentication with a global `AuthGuard`, public routes with `#[set_metadata(IS_PUBLIC_KEY, true)]`
+- JWT authentication with a global `AuthGuard`, public routes with `#[public]`
   and a global `RolesGuard` (see [Authentication](/security/authentication) and
   [Authorization](/security/authorization)).
 - Global `ValidationPipe` with `#[derive(Validate)]` DTOs, a custom exception filter,

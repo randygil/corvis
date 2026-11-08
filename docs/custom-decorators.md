@@ -80,7 +80,7 @@ A parameter decorator that takes an argument (for example, "give me only the `em
 
 To "mark" a handler or a controller, define a key and use it with `#[set_metadata]`. A guard or an interceptor reads it later with `Reflector`.
 
-Corvis defines one marker for you: `#[public]` stores `PUBLIC_METADATA` (`"isPublic"`) with the value `true`, and the route posture check reads it (see [Guards](/guards)). Your own keys work the same way with `#[set_metadata]`:
+Corvis defines one marker for you: `#[public]` stores `PUBLIC_METADATA` (`"isPublic"`) with the value `true`, and the route posture check reads it (see [Route posture](/security/route-posture#marking-routes-public)). Your own keys work the same way with `#[set_metadata]`:
 
 ```rust
 pub const ROLES_KEY: &str = "roles";

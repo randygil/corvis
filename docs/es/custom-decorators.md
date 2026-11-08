@@ -80,7 +80,7 @@ Un decorador de parámetro que recibe un argumento (por ejemplo, "dame solo el c
 
 Para "marcar" un handler o un controlador, define una clave y úsala con `#[set_metadata]`. Un guard o un interceptor la lee después con `Reflector`.
 
-Corvis define un marcador por ti: `#[public]` guarda `PUBLIC_METADATA` (`"isPublic"`) con el valor `true`, y la verificación de postura de rutas lo lee (ver [Guards](/es/guards)). Tus propias claves funcionan igual con `#[set_metadata]`:
+Corvis define un marcador por ti: `#[public]` guarda `PUBLIC_METADATA` (`"isPublic"`) con el valor `true`, y la verificación de postura de rutas lo lee (ver [Postura de rutas](/es/security/route-posture#marcar-rutas-como-publicas)). Tus propias claves funcionan igual con `#[set_metadata]`:
 
 ```rust
 pub const ROLES_KEY: &str = "roles";
