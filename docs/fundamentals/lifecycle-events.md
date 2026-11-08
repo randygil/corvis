@@ -60,7 +60,9 @@ In `examples/tertulia/src/firehose.rs`, `FirehoseService` uses `on_application_b
    3. calls `on_application_bootstrap` on all modules.
 3. `listen` opens the socket and starts serving requests.
 
-`init()` is idempotent: calling it twice does not repeat the hooks.
+After a successful `init()`, calling it again (directly, or through `listen`, `handle` or `TestingModule::init`) does nothing: the hooks are not repeated.
+
+After a **failed** `init()` the application cannot be started again. The first call returns the original error; every later call returns `corvis::InitFailedError`, whose message says the application failed to initialize earlier, quotes the first error and asks you to create a new application. Hooks that already ran (open connections, spawned tasks) cannot be undone, so retrying on the same application would either repeat them or skip them. Create a new application with `CorvisFactory::create` instead. You can recognize the error with `err.downcast_ref::<corvis::InitFailedError>()`. A `listen` that fails to bind after a successful `init()` is not an init failure: you can call it again on another address.
 
 ### Shutdown
 
@@ -77,7 +79,7 @@ In `examples/tertulia/src/firehose.rs`, `FirehoseService` uses `on_application_b
 
 Hooks are walked module by module, starting with those **farthest** from the root module (the most deeply imported) and ending at the root. Within each module the order is: controllers, providers, and finally the module's own class. Shutdown follows the same order as startup.
 
-If a hook returns `Err`, the walk stops and the error comes out of `init()`, `listen()`, or `close()`.
+If a hook returns `Err`, the walk stops and the error comes out of `init()`, `listen()`, or `close()`. After an `init()` failure, see [the startup sequence](#startup) for what happens on a retry.
 
 ### Which instances receive hooks
 

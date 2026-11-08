@@ -242,6 +242,9 @@ pub struct TestClient {
 impl TestClient {
     /// Panics if the application was not initialized with `app.init().await`.
     pub fn new(app: &CorvisApplication) -> Self {
+        if app.init_failed() {
+            panic!("app.init() failed; create a new application instead of reusing this one");
+        }
         let shared = app.shared().expect("call `app.init().await` before creating a TestClient");
         TestClient { shared }
     }
