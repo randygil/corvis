@@ -7,25 +7,31 @@ Order in which global enhancers registered as providers (`Provider::app_guard`, 
 
 ## ADDED Requirements
 
-### Requirement: Global filters registered as providers keep registration order
-When several exception filters are registered with `Provider::app_filter`, the framework SHALL try them in the order
-they were registered (module scan order, then order inside a module's `providers`), after the route's and the
-controller's filters and before the filters added with `use_global_filters`. The first filter whose `catches` returns
-`true` MUST be the one that answers.
+### Requirement: Global exception filters are tried last registered first
+Global exception filters SHALL be tried in reverse registration order, like the original framework (verified against
+it): the filters added with `use_global_filters` from the last call to the first, then the filters registered with
+`Provider::app_filter` from the last (module scan order, then order inside a module's `providers`) to the first. They
+come after the route's and the controller's filters. The first filter whose `catches` returns `true` MUST be the one
+that answers.
 
 #### Scenario: Two provider filters catch the same exception
 - **WHEN** a module registers `Provider::app_filter::<A>()` and then `Provider::app_filter::<B>()`, both catch every
   exception, and a handler fails
-- **THEN** filter `A` answers the request
+- **THEN** filter `B` answers the request
 
-#### Scenario: Provider filters come before bootstrap filters
+#### Scenario: Bootstrap filters come before provider filters
 - **WHEN** a module registers `Provider::app_filter::<A>()`, the bootstrap code calls `use_global_filters(C)`, both
   catch every exception, and a handler fails
-- **THEN** filter `A` answers the request
+- **THEN** filter `C` answers the request
 
-### Requirement: Global enhancers of every kind share the same ordering rule
-Global guards, interceptors, pipes and filters registered as providers SHALL be applied in registration order and
-ahead of the ones registered with the matching `use_global_*` method.
+#### Scenario: Several bootstrap filters
+- **WHEN** the bootstrap code calls `use_global_filters(C)` and then `use_global_filters(D)`, both catch every
+  exception, and a handler fails
+- **THEN** filter `D` answers the request
+
+### Requirement: Global guards, interceptors and pipes registered as providers keep registration order
+Global guards, interceptors and pipes registered as providers SHALL be applied in registration order and ahead of the
+ones registered with the matching `use_global_*` method.
 
 #### Scenario: Two provider guards
 - **WHEN** a module registers `Provider::app_guard::<A>()` and then `Provider::app_guard::<B>()`

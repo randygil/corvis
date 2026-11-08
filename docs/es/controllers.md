@@ -77,6 +77,7 @@ Todos los handlers reciben `&self` como primer parámetro (el macro rechaza los 
 ### Patrones de ruta
 
 - `:nombre` captura un segmento: `#[get(":id")]`, `#[get(":room/messages")]`.
+- `:nombre?` hace opcional el segmento: `#[get(":id?")]` en `#[controller("cats")]` responde `GET /cats` y `GET /cats/7`, y `#[get("files/:dir?/list")]` responde `/files/list` y `/files/docs/list`. Cuando el segmento falta, el parámetro no existe: `#[param("id")] id: Option<String>` recibe `None`. Una ruta puede tener hasta 4 segmentos opcionales (más es un error de arranque); con varios seguidos (`:a?/:b?`) los valores se asignan de izquierda a derecha. Las rutas estáticas conservan prioridad sobre una opcional. OpenAPI documenta el parámetro como parámetro de ruta obligatorio, como exige OpenAPI para los parámetros de ruta.
 - `*`, `*nombre` o `{*nombre}` al final capturan el resto de la ruta.
 - Las rutas no distinguen mayúsculas (`/CATS` = `/cats`) y admiten una sola barra final opcional (`/cats/` sí, `/cats//` no), como el router de Express 5.
 - Los segmentos estáticos tienen prioridad sobre los parámetros, sin importar el orden de declaración: `#[get("count")]` y `#[get(":id")]` pueden convivir en cualquier orden.

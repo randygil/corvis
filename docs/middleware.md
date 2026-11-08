@@ -142,8 +142,11 @@ Pattern rules:
 - A `*` inside a segment (`"admin*"`) covers the rest of the path, like `/admin(.*)` in Express: `/api/admin`, `/api/ADMINpanel`, and `/api/admin/users/1` all match.
 - Comparison is case-insensitive, the same rule the router uses, so a middleware can't be skipped by changing the capitalization of the URL.
 
-::: warning URI versioning
-Text patterns do not include the version segment (`/v1`). If the application uses URI versioning, cover the routes with `RouteSpec::controller::<...>()` or with a wildcard.
+- With [URI versioning](/http/versioning), a text pattern also matches the route under every version the application publishes: `for_routes("cats")` covers `/cats`, `/v1/cats` and `/v2/cats`, and so does `exclude("cats")`. Routes marked `VERSION_NEUTRAL` have no version segment and match as usual.
+- `:name?` (an optional segment) matches with and without the segment.
+
+::: info Targeting one version
+A text pattern cannot target a single version. To do that, write the version in the pattern (`"v2/cats"`) or use `RouteSpec::controller::<...>()`.
 :::
 
 ## Functional middleware

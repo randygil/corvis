@@ -99,9 +99,9 @@ See proposal.md for motivation; the behavior is in the three spec deltas. Curren
    `global guard APP_GUARD:<type> could not be applied: the provider value is not a guard` instead of `continue`.
    Alternative considered: keep skipping and log a warning. Rejected: a missing guard is a security-relevant silent
    failure, and tests are where it would be hidden.
-3. **Provider filters in registration order.** Replace `insert(0, x)` with an increasing `filter_at` index, the same
-   pattern as guards, interceptors and pipes. Provider filters still come before `use_global_filters` ones, as
-   documented. See Open questions about the original framework's order.
+3. **Global filters in the original framework's order (reverse registration).** Superseded by task 1.1 and the review
+   notes (parity first): see Implementation notes. The text originally proposed an increasing `filter_at` index
+   (registration order).
 4. **Prefix exclusion per route.** Move the decision inside the route loop: for each `(c_path, r_path)` compute
    `relative = join_paths(&[c_path, r_path])` and use `prefix = ""` when any exclusion `path_matches` it. The version
    segment is not part of `relative`, so exclusions keep working when URI versioning is on. The controller-level
@@ -159,3 +159,39 @@ See proposal.md for motivation; the behavior is in the three spec deltas. Curren
   recorded here. Diverge only for security.
 - Prefix exclusions compare without the version segment, as proposed.
 - The cap of 4 optional segments per route is accepted; exceeding it is a startup error with the route name.
+
+## Implementation notes
+
+- **Task 1.1, original framework (checked with `@nestjs/core` from the facten original, Node 24, Express adapter).** A
+  module with `{ provide: APP_FILTER, useClass: A }` then `B`, all filters catching everything, and a failing route:
+  - providers only: `B` answers;
+  - plus `app.useGlobalFilters(new C())` after the application is created: `C` answers;
+  - plus a second `useGlobalFilters(new D())`: `D` answers.
+
+  So the original tries global filters last registered first, and bootstrap filters before provider filters. The
+  review notes say the spec follows the original, so the spec delta (`core/enhancers`), the proposal and the docs
+  changed from "registration order" to this order. Corvis already ordered provider filters in reverse
+  (`insert(0, x)`), but put them before the `use_global_filters` ones, which were in call order; `init()` now builds
+  the list as the bootstrap filters reversed followed by the provider filters reversed. Guards, interceptors and
+  pipes are unchanged.
+- **Prefix exclusion matching confirmed against the original.** `setGlobalPrefix('api', { exclude: ['health'] })` with
+  `@Controller('health')` having `@Get()` and `@Get('live')`: `/health` answers without the prefix, `/api/health/live`
+  answers, `/health/live` does not. This matches the spec scenarios.
+- **Deliberate differences from the original** (both from the approved design): (1) `forRoutes('cats')` does not run
+  the middleware on `/v1/cats` in the original (verified), here it does, because a skipped middleware is a silent
+  failure that can drop an authentication or logging layer. (2) `:id?` is a startup error in the original (path-to-regexp
+  8 rejects it, verified; the original writes `{/:id}`), here it is optional as the design specifies.
+- `GlobalEnhancer` variants carry the cast and the testing override token. The cast accepts the concrete type and the
+  trait object, so an override stored as `Arc<dyn Trait>` works. The override instance is found with
+  `Container::find_instance` on the override token.
+- The `init()` error for an unusable global enhancer names the enhancer by its provider token, for example
+  `global guard APP_GUARD:my_crate::JwtGuard could not be applied: the provider value is not a guard`.
+- `to_matchit` keeps the `?` inside the parameter name for an optional segment that was not expanded, so it can never
+  silently become a required parameter (a unit test pins it).
+- `RouteSpec::controller` and the text patterns of module middleware also expand optional segments, so a middleware
+  covers both `/cats` and `/cats/7` for `#[get(":id?")]`.
+- When consecutive optional segments give the same route shape (`:a?/:b?`), the variant that keeps the earlier segment
+  is registered, so `/x/1` binds `a` (otherwise `{a}` and `{b}` would conflict).
+- Overriding the provider behind an `app_*` registration needs its token, `APP_GUARD:<type name>` (`APP_INTERCEPTOR:`,
+  `APP_PIPE:`, `APP_FILTER:`); the docs show `override_provider_token`.
+- The resolver log line of a controller shows the prefix only when every route of the controller is outside it.

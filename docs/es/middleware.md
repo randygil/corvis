@@ -142,8 +142,11 @@ Reglas de los patrones:
 - Un `*` dentro de un segmento (`"admin*"`) cubre el resto de la ruta, igual que `/admin(.*)` en Express: `/api/admin`, `/api/ADMINpanel` y `/api/admin/users/1` coinciden.
 - La comparación no distingue mayúsculas, la misma regla que usa el router, así que no se puede saltar un middleware cambiando la capitalización de la URL.
 
-::: warning Versionado por URI
-Los patrones de texto no incluyen el segmento de versión (`/v1`). Si la aplicación usa versionado por URI, cubre las rutas con `RouteSpec::controller::<...>()` o con un comodín.
+- Con [versionado por URI](/es/http/versioning), un patrón de texto también coincide con la ruta bajo cada versión que publica la aplicación: `for_routes("cats")` cubre `/cats`, `/v1/cats` y `/v2/cats`, y `exclude("cats")` igual. Las rutas marcadas `VERSION_NEUTRAL` no tienen segmento de versión y coinciden como siempre.
+- `:nombre?` (un segmento opcional) coincide con y sin el segmento.
+
+::: info Apuntar a una sola versión
+Un patrón de texto no puede apuntar a una sola versión. Para eso, escribe la versión en el patrón (`"v2/cats"`) o usa `RouteSpec::controller::<...>()`.
 :::
 
 ## Middleware funcional
