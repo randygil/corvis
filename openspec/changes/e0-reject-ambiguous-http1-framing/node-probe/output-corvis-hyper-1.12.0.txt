@@ -1,0 +1,31 @@
+# Corvis before this change (hyper 1.12.0, httparse 1.10.1): examples/cats-app debug build, 127.0.0.1, 2026-11-08.
+# GET /api/v1 answers 200; POST /api/v1 has no route (404), but non-multipart bodies are read before routing,
+# so a body that fails to decode answers 400 (request aborted). Second status = the pipelined GET was processed.
+127.0.0.1:38517 /api/v1
+ok-get: valid GET => 200 | 200
+bare-lf-head: bare LF request line and headers => 200 | 200
+bare-lf-request-line: bare LF after the request line only => 200 | 200
+crlf-lf-head-end: header block ended by CRLF LF => 200 | 200
+lf-crlf-head-end: last header ended by LF, then CRLF => 200 | 200
+bare-cr-header: bare CR inside a header line => 400
+leading-crlf: empty line (CRLF) before the request line => 200 | 200
+leading-lf: empty line (bare LF) before the request line => 200 | 200
+obs-fold: obsolete line folding in a header => 400
+chunked-ok: valid chunked body => 404 | 200
+chunk-leading-zeros: chunk size with leading zeros (26 digits) => 404 | 200
+chunk-overflow: chunk size over 64 bits => 400
+chunk-size-space: space after chunk size => 404 | 200
+chunk-size-tab: tab after chunk size => 404 | 200
+chunk-size-space-ext: space before chunk extension => 404 | 200
+chunk-ext-ok: chunk extension without whitespace => 404 | 200
+chunk-ext-lf: chunk extension containing LF => 400
+chunked-bare-lf: bare LF in the chunked framing => 400
+trailer-ok: valid trailer field => 404 | 200
+trailer-bare-lf: bare LF inside a trailer line (two fields) => 400
+trailer-bare-lf-end: bare LF LF inside the trailer section => 404 | 200
+cl-then-te: Content-Length, then Transfer-Encoding: chunked => 404
+te-then-cl: Transfer-Encoding: chunked, then Content-Length => 404
+dup-cl-identical: two identical Content-Length headers => 404 | 200
+te-chunked-twice: Transfer-Encoding: chunked, chunked => 404 | 200
+http10-te: HTTP/1.0 request with Transfer-Encoding: chunked => 400
+pipelined-valid-then-bare-lf: valid GET, then a pipelined GET with bare LF => 200 | 200 | 200

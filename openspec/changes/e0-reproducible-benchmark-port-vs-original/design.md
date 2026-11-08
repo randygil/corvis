@@ -170,3 +170,6 @@
   for that answer.
 - `bench/run.sh` building in its own `bench/target`, the missing `connection_limit` URL parameter in corvis-orm, and a
   startup warning for CORS origin reflection with credentials are filed as separate issues.
+- **Maintainer decision (2026-11-08):** the published numbers describe the reference application generically (for
+  example "a real invoicing API with 74 routes on Postgres"), without its name or code; the numbers and the method
+  are published.
