@@ -15,6 +15,7 @@ mod global_modules;
 mod module_ref;
 mod module_ref_cycles;
 mod transient;
+mod transient_validation;
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 

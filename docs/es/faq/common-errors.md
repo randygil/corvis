@@ -26,6 +26,8 @@ Causas habituales:
   exportar lo que comparten.
 - Pediste `Arc<T>` de un tipo que no está registrado en `providers` de ningún módulo.
 - El token de `#[inject("TOKEN")]` no coincide con el de `Provider::use_value("TOKEN", ...)`.
+- El provider es transient y nadie lo inyecta todavía: las dependencias de los providers transient se comprueban al
+  arrancar, así que el error aparece incluso antes de la primera resolución.
 
 Si la dependencia es opcional, decláralo con `Option<Arc<T>>`: recibirás `None` en lugar del error.
 

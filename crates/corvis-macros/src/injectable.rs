@@ -19,6 +19,7 @@ pub fn injectable_impl(item: &mut ItemStruct, opts: &InjectableOptions) -> syn::
 
     let mut inits = Vec::new();
     let mut deps = Vec::new();
+    let mut dep_items: Vec<TokenStream> = Vec::new();
     let is_named = matches!(item.fields, Fields::Named(_));
     let is_unit = matches!(item.fields, Fields::Unit);
 
@@ -55,11 +56,29 @@ pub fn injectable_impl(item: &mut ItemStruct, opts: &InjectableOptions) -> syn::
             (Some(t), _) => lit_str(t).map(|s| format!("\"{s}\"")).unwrap_or_else(|| quote!(#t).to_string()),
             _ => type_display(ty),
         });
+        // The static description of the field for the startup validation of transient providers: it dispatches
+        // exactly like the construction below, so the two cannot disagree.
+        let injectable_shape =
+            generic_inner(ty, "Arc").is_some() || generic_inner(ty, "Option").and_then(|t| generic_inner(t, "Arc")).is_some();
+        match (&token, &init) {
+            (_, Some(_)) => {}
+            (Some(tok), None) if injectable_shape => dep_items.push(quote! {
+                (&::corvis::__private::Probe::<#ty>::new())
+                    .__corvis_inject_kind()
+                    .dependency::<#ty>(::std::option::Option::Some(::corvis::Token::from(#tok)), #index)
+            }),
+            (Some(tok), None) => dep_items.push(quote! {
+                ::std::option::Option::Some(::corvis::di::Dependency { token: ::corvis::Token::from(#tok), index: #index, optional: false })
+            }),
+            (None, None) => dep_items.push(quote! {
+                (&::corvis::__private::Probe::<#ty>::new())
+                    .__corvis_inject_kind()
+                    .dependency::<#ty>(::std::option::Option::None, #index)
+            }),
+        }
         let value = if let Some(init) = init {
             init
         } else if let Some(tok) = token {
-            let injectable_shape =
-                generic_inner(ty, "Arc").is_some() || generic_inner(ty, "Option").and_then(|t| generic_inner(t, "Arc")).is_some();
             if injectable_shape {
                 quote! {
                     (&::corvis::__private::Probe::<#ty>::new())
@@ -116,6 +135,15 @@ pub fn injectable_impl(item: &mut ItemStruct, opts: &InjectableOptions) -> syn::
                     let __ctx = __ctx.with_dependencies(#name_str, &[#(#deps_lits),*]);
                     ::std::result::Result::Ok(#construct)
                 })
+            }
+
+            fn dependencies() -> ::std::option::Option<::corvis::di::Dependencies> {
+                #[allow(unused_imports)]
+                use ::corvis::__private::{InjectKind as _, DefaultKind as _};
+                #[allow(unused_mut)]
+                let mut items = ::std::vec::Vec::new();
+                #(items.extend(#dep_items);)*
+                ::std::option::Option::Some(::corvis::di::Dependencies { requester: #name_str, names: &[#(#deps_lits),*], items })
             }
 
             fn hooks() -> ::corvis::Hooks<Self> {

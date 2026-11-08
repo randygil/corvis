@@ -10,6 +10,8 @@ pub mod token;
 
 pub use container::{Container, ModuleId};
 pub use error::DiError;
+#[doc(hidden)]
+pub use injectable::{Dependencies, Dependency};
 pub use injectable::{Hooks, InjectField, Injectable, ResolveCtx};
 pub use module::{ConfigureFn, CorvisModule, DynamicModule, ExportItem, Module, ModuleDefinition, ModuleImport};
 pub use module_ref::ModuleRef;

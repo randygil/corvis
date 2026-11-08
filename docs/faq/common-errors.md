@@ -26,6 +26,8 @@ Common causes:
   export what they share.
 - You asked for `Arc<T>` of a type that is not registered in the `providers` of any module.
 - The token in `#[inject("TOKEN")]` does not match the one in `Provider::use_value("TOKEN", ...)`.
+- The provider is transient and nothing injects it yet: the dependencies of transient providers are checked at startup,
+  so the error appears even before the first resolution.
 
 If the dependency is optional, declare it as `Option<Arc<T>>`: you will receive `None` instead of the error.
 

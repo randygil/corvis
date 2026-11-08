@@ -9,9 +9,9 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 
 use super::error::DiError;
-use super::injectable::{Injectable, ResolveCtx};
+use super::injectable::{Injectable, ResolveCtx, unknown_dependency};
 use super::module::{ConfigureFn, ExportItem, ModuleDefinition, ModuleImport};
-use super::provider::{Built, ErasedHooks, Instance, Provider, Scope, downcast, erase};
+use super::provider::{Built, DeclaredDeps, ErasedHooks, Instance, Provider, Scope, downcast, erase};
 use super::token::Token;
 use crate::common::lifecycle::HookKind;
 use crate::router::controller::ControllerDef;
@@ -291,14 +291,73 @@ impl Container {
         }
 
         let globals = modules.iter().filter(|m| m.global).map(|m| m.id).collect();
-        Ok(Arc::new(Container {
+        let container = Container {
             modules,
             globals,
             root,
             instances: Mutex::new(HashMap::new()),
             hook_targets: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
-        }))
+        };
+        container.validate_transients()?;
+        Ok(Arc::new(container))
+    }
+
+    /// Checks the declared dependencies of every transient provider without creating anything, so a missing
+    /// dependency stops startup instead of the first resolution. Singletons are validated by being instantiated;
+    /// factory providers declare nothing and are not checked.
+    fn validate_transients(&self) -> Result<(), DiError> {
+        let mut done = HashSet::new();
+        for node in &self.modules {
+            for provider in &node.providers {
+                if self.is_transient(node.id, provider) {
+                    self.validate_transient(node.id, provider, &mut Vec::new(), &mut done)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_transient(
+        &self,
+        owner: ModuleId,
+        provider: &Provider,
+        path: &mut Vec<(ModuleId, Token)>,
+        done: &mut HashSet<(ModuleId, Token)>,
+    ) -> Result<(), DiError> {
+        let key = (owner, provider.token.clone());
+        if done.contains(&key) {
+            return Ok(());
+        }
+        if path.contains(&key) {
+            let mut chain: Vec<String> = path.iter().map(|(_, t)| t.display_name()).collect();
+            chain.push(provider.token.display_name());
+            return Err(DiError::Circular { chain: chain.join(" -> ") });
+        }
+        path.push(key.clone());
+        if let Some(target) = &provider.alias_of {
+            let (o, p) = self.lookup(owner, target).ok_or_else(|| DiError::NotFound { token: target.display_name() })?;
+            if self.is_transient(o, p) {
+                self.validate_transient(o, p, path, done)?;
+            }
+        } else if let DeclaredDeps::Fields(declared) = &provider.deps {
+            for dep in &declared.items {
+                match self.lookup(owner, &dep.token) {
+                    Some((o, p)) => {
+                        if self.is_transient(o, p) {
+                            self.validate_transient(o, p, path, done)?;
+                        }
+                    }
+                    None if dep.optional => {}
+                    None => {
+                        return Err(unknown_dependency(declared.requester, declared.names, dep.index, &dep.token, self.module_name(owner)));
+                    }
+                }
+            }
+        }
+        path.pop();
+        done.insert(key);
+        Ok(())
     }
 
     pub(crate) fn module_name(&self, id: ModuleId) -> String {

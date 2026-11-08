@@ -39,7 +39,7 @@ Cada punto de inyección (cada campo `Arc<OperationTimer>`, incluso dos en el mi
 
 Consecuencias que conviene conocer:
 
-- **No se crean al arrancar.** El contenedor no instancia los providers transient por adelantado; los construye al inyectarlos.
+- **No se crean al arrancar.** El contenedor no instancia los providers transient por adelantado; los construye al inyectarlos. Sus dependencias sí se comprueban al arrancar: un provider transient de clase (o un alias de uno) que pide algo que su módulo no ve hace fallar el arranque con el error habitual de "can't resolve dependencies", aunque nadie lo inyecte todavía. Los campos opcionales (`Option<Arc<T>>`) se omiten, y los providers de factory no se comprueban porque sus dependencias son código: el error de una factory transient aparece la primera vez que se resuelve. Prefiere los providers de clase cuando importe validar pronto.
 - **No se guardan.** Por eso `ModuleRef::get::<T>()` y `app.get::<T>()`, que solo devuelven instancias existentes, no encuentran un provider transient. Usa `module_ref.resolve::<T>().await`.
 - **No reciben hooks del ciclo de vida.** Los hooks (`on_module_init`, `on_application_bootstrap`, los de cierre) se ejecutan sobre las instancias guardadas, así que un provider transient no los recibe.
 - **El scope no se propaga.** Un singleton que depende de un transient recibe una sola instancia al crearse y la conserva.
