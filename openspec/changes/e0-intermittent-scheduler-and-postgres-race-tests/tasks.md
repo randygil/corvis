@@ -25,4 +25,4 @@
 - [x] 4.1 Postgres test: 300 runs of the filtered binary and repeated full `cargo test -p corvis-orm` runs, all green
 - [x] 4.2 `cargo build --workspace --all-targets` without warnings, `cargo clippy --workspace --all-targets -- -D
   warnings`, `cargo test --workspace`, `cargo fmt --all --check` if `rustfmt.toml` exists
-- [ ] 4.3 Run the corvis-parity check before archiving (runtime code of corvis-orm changed)
+- [x] 4.3 Run the corvis-parity check before archiving (runtime code of corvis-orm changed) — maintainer run on 5500e5b: consi 832/832, facten 727/727, houseplan 598/598 (quiet-hours count), routes identical, databases equivalent
