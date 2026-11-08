@@ -13,7 +13,7 @@ use crate::common::context::ExecutionContext;
 use crate::common::interceptor::{CallHandler, CorvisInterceptor};
 use crate::common::pipe::{ArgumentMetadata, ParamKind, PipeTransform};
 use crate::common::reflector::Reflector;
-use crate::http::{HandlerResult, HttpException, HttpStatus};
+use crate::http::{Body, HandlerResult, HttpException, HttpStatus};
 
 /// A DTO with an attached schema (`createZodDto(schema, { codec })`).
 /// Implement it with [`zod_dto!`](crate::zod_dto).
@@ -361,7 +361,12 @@ impl CorvisInterceptor for ZodSerializerInterceptor {
         let meta: Option<Value> = Reflector.get_all_and_override(ZOD_SERIALIZER_DTO_OPTIONS, &[context.get_handler(), context.get_class()]);
         let response = next.handle().await?;
         let Some(meta) = meta else { return Ok(response) };
-        let Some(body) = response.json_body().cloned() else { return Ok(response) };
+        // An empty result is validated as `null`, like the original validates `null`/`undefined`.
+        let body = match response.body() {
+            Body::Json(v) => v.clone(),
+            Body::Empty => Value::Null,
+            _ => return Ok(response),
+        };
         let out = ZodSerializerDto::serialize(&meta, &body, self.report_input)?;
         Ok(response.map_data(|_| out))
     }

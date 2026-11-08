@@ -126,6 +126,7 @@ pub(crate) fn into_hyper(resp: Response, head: bool) -> hyper::Response<ResBody>
             headers.insert(name.clone(), value.clone());
         }
     }
+    let is_empty = matches!(resp.body, Body::Empty);
     let (content_type, body): (Option<String>, ResBody) = match resp.body {
         Body::Empty => (None, full(Bytes::new())),
         Body::Json(v) => (Some("application/json; charset=utf-8".into()), full(serde_json::to_vec(&v).unwrap_or_default())),
@@ -146,7 +147,8 @@ pub(crate) fn into_hyper(resp: Response, head: bool) -> hyper::Response<ResBody>
     }
     // `X-Powered-By`, ETag, ... are added by `http::express::finalize` (see `handle`).
     let bodyless = status == http::StatusCode::NO_CONTENT || status == http::StatusCode::NOT_MODIFIED || status.is_informational();
-    if head && !bodyless && !headers.contains_key(http::header::CONTENT_LENGTH) {
+    // An empty answer (`res.send()` without a body) sends no length for HEAD.
+    if head && !bodyless && !is_empty && !headers.contains_key(http::header::CONTENT_LENGTH) {
         // HEAD keeps the length of the body it would have sent (like Node).
         if let Some(len) = hyper::body::Body::size_hint(&body).exact() {
             headers.insert(http::header::CONTENT_LENGTH, http::HeaderValue::from(len));

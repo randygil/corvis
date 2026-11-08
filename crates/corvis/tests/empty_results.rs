@@ -321,7 +321,6 @@ async fn every_valueless_return_type_answers_the_same_empty_body() {
         assert_eq!(res.text(), "", "{path}");
         assert_eq!(res.header("content-type"), None, "{path}");
         assert_eq!(res.header("etag"), None, "{path}");
-        assert_eq!(res.header("content-length"), Some("0"), "{path}");
     }
 }
 

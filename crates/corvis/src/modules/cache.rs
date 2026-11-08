@@ -190,6 +190,7 @@ impl CorvisInterceptor for CacheInterceptor {
                 Value::Object(mut o) if o.contains_key("__corvis_text") => {
                     Response::text(o.remove("__corvis_text").and_then(|v| v.as_str().map(String::from)).unwrap_or_default())
                 }
+                Value::Null => Response::new(),
                 v => Response { body: Body::Json(v), ..Default::default() },
             };
             r.set_status(200);

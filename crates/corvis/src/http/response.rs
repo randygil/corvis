@@ -92,6 +92,8 @@ impl Response {
     pub fn new() -> Self {
         Self::default()
     }
+    /// JSON body, literal even when the value is `null` (the text `null` with a JSON type); a
+    /// handler result with no value answers an empty body instead (`None`, `Value::Null`).
     pub fn json(value: impl Serialize) -> Self {
         Response { body: Body::Json(serde_json::to_value(value).unwrap_or(Value::Null)), ..Default::default() }
     }
@@ -187,7 +189,9 @@ impl Response {
         }
     }
     /// Maps the response data – the RxJS `map()` of an interceptor.
-    /// Text bodies are given as JSON strings; empty bodies as `null`.
+    /// Text bodies are given as JSON strings; empty bodies as `null`. A `null` result of `f` is
+    /// stored as an empty body (like an RxJS `map` that returns `null`), so an identity closure
+    /// keeps an empty answer empty.
     pub fn map_data(mut self, f: impl FnOnce(Value) -> Value) -> Self {
         let current = std::mem::replace(&mut self.body, Body::Empty);
         let value = match current {
@@ -199,7 +203,10 @@ impl Response {
                 return self;
             }
         };
-        self.body = Body::Json(f(value));
+        self.body = match f(value) {
+            Value::Null => Body::Empty,
+            v => Body::Json(v),
+        };
         self
     }
 }
@@ -342,6 +349,11 @@ impl IntoResponse for &'static str {
 }
 impl IntoResponse for Value {
     fn into_response(self) -> HandlerResult {
+        // `Value::Null` is "no value" and answers an empty body; use `Json(Value::Null)` or
+        // `Response::json(Value::Null)` to send the JSON text `null`.
+        if self.is_null() {
+            return Ok(Response::new());
+        }
         Ok(Response { body: Body::Json(self), ..Default::default() })
     }
 }
@@ -391,7 +403,8 @@ impl<T: IntoResponse> IntoResponse for (u16, T) {
     }
 }
 
-/// Explicit JSON response wrapper.
+/// Explicit JSON response wrapper. It serializes the value as is, so `Json(None::<T>)` answers the
+/// text `null` with a JSON type, unlike returning `None` directly (an empty body).
 pub struct Json<T>(pub T);
 impl<T: Serialize> IntoResponse for Json<T> {
     fn into_response(self) -> HandlerResult {
