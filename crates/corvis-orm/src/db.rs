@@ -5,8 +5,9 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sqlx::TransactionManager;
 use sqlx::pool::PoolConnection;
-use sqlx::postgres::{PgConnection, PgPool, PgRow, PgTypeKind};
+use sqlx::postgres::{PgConnection, PgPool, PgRow, PgTransactionManager, PgTypeKind};
 use sqlx::sqlite::{SqlitePool, SqliteRow};
 use sqlx::{Column, Postgres, Row, Sqlite, Transaction, TypeInfo, ValueRef};
 
@@ -220,8 +221,9 @@ impl DbPool {
         Ok(match self {
             DbPool::Sqlite(p) => DbTx::Sqlite(p.begin().await?),
             DbPool::Postgres(h) => {
-                let (conn, slot) = acquire_pg(h).await??.into_parts();
-                DbTx::Postgres(PgTx { tx: Transaction::begin(conn, None).await?, _slot: slot })
+                // The slot stays inside the `PgConn` while BEGIN runs, and until the connection is back in the pool.
+                let conn = acquire_pg(h).await??;
+                DbTx::Postgres(PgTx::begin(conn).await?)
             }
         })
     }
@@ -250,9 +252,6 @@ pub(crate) struct PgConn {
 }
 
 impl PgConn {
-    fn into_parts(mut self) -> (PoolConnection<Postgres>, OwnedSemaphorePermit) {
-        (self.conn.take().expect("connection present"), self.slot.take().expect("slot present"))
-    }
     /// The raw connection, out of the pool, with the slot: the caller keeps the slot until the
     /// connection is closed, so the server never sees more than `max_connections` of this client.
     pub(crate) fn detach(mut self) -> (PgConnection, OwnedSemaphorePermit) {
@@ -293,32 +292,54 @@ impl Drop for PgConn {
     }
 }
 
-/// An interactive transaction on Postgres. The slot is released when the transaction is dropped,
-/// which is before sqlx has put the connection back (`Transaction` owns it and gives no way to wait).
+/// An interactive transaction on Postgres. It owns the [`PgConn`], so when it is dropped (committed, rolled
+/// back, cancelled or timed out) the slot is released only after sqlx has finished the rollback and put the
+/// connection back, as for any other use of the connection.
 pub(crate) struct PgTx {
-    tx: Transaction<'static, Postgres>,
-    _slot: OwnedSemaphorePermit,
+    conn: PgConn,
+    open: bool,
 }
 
 impl PgTx {
-    async fn commit(self) -> std::result::Result<(), sqlx::Error> {
-        self.tx.commit().await
+    async fn begin(mut conn: PgConn) -> std::result::Result<PgTx, sqlx::Error> {
+        PgTransactionManager::begin(&mut conn, None).await?;
+        Ok(PgTx { conn, open: true })
     }
-    async fn rollback(self) -> std::result::Result<(), sqlx::Error> {
-        self.tx.rollback().await
+    async fn commit(mut self) -> std::result::Result<(), sqlx::Error> {
+        let r = PgTransactionManager::commit(&mut self.conn).await;
+        if r.is_ok() {
+            self.open = false;
+        }
+        r
+    }
+    async fn rollback(mut self) -> std::result::Result<(), sqlx::Error> {
+        let r = PgTransactionManager::rollback(&mut self.conn).await;
+        if r.is_ok() {
+            self.open = false;
+        }
+        r
+    }
+}
+
+impl Drop for PgTx {
+    fn drop(&mut self) {
+        if self.open {
+            // Queues the ROLLBACK; the connection's own drop then waits for it before the slot is released.
+            PgTransactionManager::start_rollback(&mut self.conn);
+        }
     }
 }
 
 impl std::ops::Deref for PgTx {
     type Target = PgConnection;
     fn deref(&self) -> &PgConnection {
-        &self.tx
+        &self.conn
     }
 }
 
 impl std::ops::DerefMut for PgTx {
     fn deref_mut(&mut self) -> &mut PgConnection {
-        &mut self.tx
+        &mut self.conn
     }
 }
 

@@ -46,11 +46,12 @@ fn parse_schema(raw: &str) -> Result<String> {
     Ok(v)
 }
 
-fn invalid(what: &str, value: &str) -> OrmError {
+fn invalid(what: &str, value: &str, echo: bool) -> OrmError {
     // The value is echoed only when it is short and made of plain characters: a parameter key can
     // appear inside an unencoded password (`...:S3cr?connection_limit=etPw@host/db`), and the rest of
-    // the URL is never shown.
-    let plain = value.len() <= 40 && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'_' | b'-'));
+    // the URL is never shown. `echo` is false when the query string contains `@`: the URL was then split
+    // inside the user info, and the value may be a piece of the password.
+    let plain = echo && value.len() <= 40 && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'_' | b'-'));
     let message = if plain {
         format!("The provided database string is invalid. {what}, got `{value}`.")
     } else {
@@ -94,11 +95,11 @@ fn digits(v: &str) -> Option<&str> {
 /// process while allocating.
 pub(crate) const MAX_POOL_SIZE: u32 = 262_143;
 
-fn parse_limit(raw: &str) -> Result<u32> {
+fn parse_limit(raw: &str, echo: bool) -> Result<u32> {
     let v = percent_decode(raw);
     match digits(&v).and_then(|d| d.parse::<u32>().ok()) {
         Some(n) if (1..=MAX_POOL_SIZE).contains(&n) => Ok(n),
-        _ => Err(invalid("`connection_limit` must be a positive integer no greater than 262143", &v)),
+        _ => Err(invalid("`connection_limit` must be a positive integer no greater than 262143", &v, echo)),
     }
 }
 
@@ -110,6 +111,11 @@ fn parse_timeout(raw: &str) -> Option<Timeout> {
         Ok(0) | Err(_) => Timeout::Unlimited,
         Ok(n) => Timeout::Seconds(n),
     })
+}
+
+/// Whether a decimal value fits `u64` (after form decoding).
+fn fits_u64(raw: &str) -> bool {
+    percent_decode(raw).parse::<u64>().is_ok()
 }
 
 /// Splits `url` into the URL for the driver and the parameters read from it.
@@ -133,6 +139,8 @@ pub(crate) fn split_url_params(url: &str, dialect: Dialect) -> Result<(String, U
     let Some((head, query)) = url_no_fragment.split_once('?') else {
         return Ok((url.to_string(), UrlParams::default()));
     };
+    // An `@` after the first `?` means the authority was cut inside the user info (an unencoded `?` in the password).
+    let echo = !query.contains('@');
     let mut params = UrlParams::default();
     let mut kept: Vec<&str> = Vec::new();
     for pair in query.split('&') {
@@ -140,17 +148,18 @@ pub(crate) fn split_url_params(url: &str, dialect: Dialect) -> Result<(String, U
         // Keys are decoded before matching (`schem%61` is `schema`), as the original client does.
         let key = percent_decode(key);
         match key.as_str() {
-            "connection_limit" => params.connection_limit = Some(parse_limit(value)?),
+            "connection_limit" => params.connection_limit = Some(parse_limit(value, echo)?),
             "schema" => params.schema = Some(parse_schema(value)?),
             "pool_timeout" => match parse_timeout(value) {
                 Some(t) => params.pool_timeout = Some(t),
                 None if dialect == Dialect::Sqlite => params.pool_timeout = None,
-                None => return Err(invalid("`pool_timeout` must be a whole number of seconds", &percent_decode(value))),
+                None => return Err(invalid("`pool_timeout` must be a whole number of seconds", &percent_decode(value), echo)),
             },
-            "connect_timeout" => match parse_timeout(value) {
+            // Unlike `pool_timeout`, a value that overflows `u64` is invalid: the original client rejects it.
+            "connect_timeout" => match parse_timeout(value).filter(|_| fits_u64(value)) {
                 Some(t) => params.connect_timeout = Some(t),
                 None if dialect == Dialect::Sqlite => params.connect_timeout = None,
-                None => return Err(invalid("`connect_timeout` must be a whole number of seconds", &percent_decode(value))),
+                None => return Err(invalid("`connect_timeout` must be a whole number of seconds", &percent_decode(value), echo)),
             },
             _ => kept.push(pair),
         }
@@ -390,6 +399,18 @@ mod tests {
     }
 
     #[test]
+    fn values_are_not_echoed_when_the_query_holds_an_at_sign() {
+        // The password `pa?connect_timeout=Secret1&x=` contains `?` and `&`: the "query" starts inside it.
+        for key in ["connect_timeout", "pool_timeout", "connection_limit"] {
+            let m = msg(pg(&format!("postgres://app:pa?{key}=Secret1&x=@127.0.0.1/db")));
+            assert!(m.contains(&format!("`{key}`")) && m.contains("got an invalid value"), "{key}: {m}");
+            assert!(!m.contains("Secret1") && !m.contains("127.0.0.1"), "{key}: {m}");
+        }
+        // Without an `@` in the query a short plain value is still shown.
+        assert!(msg(pg("postgres://app:pa@h/db?connect_timeout=Secret1")).contains("got `Secret1`"));
+    }
+
+    #[test]
     fn query_ends_at_the_fragment() {
         let (u, p) = pg("postgresql://h/db?sslmode=disable#schema=x&connection_limit=3").unwrap();
         assert_eq!(u, "postgresql://h/db?sslmode=disable#schema=x&connection_limit=3");
@@ -459,7 +480,14 @@ mod tests {
     #[test]
     fn connect_timeout_zero_overflow_and_repeats() {
         assert_eq!(pg("postgresql://h/db?connect_timeout=0").unwrap().1.connect_timeout, Some(Timeout::Unlimited));
-        assert_eq!(pg("postgresql://h/db?connect_timeout=99999999999999999999").unwrap().1.connect_timeout, Some(Timeout::Unlimited));
+        // The largest `u64` is accepted; one more is invalid, as in the original client.
+        assert_eq!(pg("postgresql://h/db?connect_timeout=4294967296").unwrap().1.connect_timeout, Some(Timeout::Seconds(4294967296)));
+        assert!(pg("postgresql://h/db?connect_timeout=18446744073709551615").is_ok());
+        for v in ["18446744073709551616", "99999999999999999999"] {
+            assert_eq!(pg(&format!("postgresql://h/db?connect_timeout={v}")).unwrap_err().code(), Some("P1013"), "{v}");
+            // SQLite ignores every value.
+            assert!(sq(&format!("file:./a.db?connect_timeout={v}")).is_ok());
+        }
         assert_eq!(pg("postgresql://h/db?connect_timeout=1&connect_timeout=3").unwrap().1.connect_timeout, Some(Timeout::Seconds(3)));
         assert_eq!(pg("postgresql://h/db?connect_timeout=3&connect_timeout=1").unwrap().1.connect_timeout, Some(Timeout::Seconds(1)));
         let (u, p) = pg("postgresql://h/db?connect%5Ftimeout=4&pool%5Ftimeout=7").unwrap();

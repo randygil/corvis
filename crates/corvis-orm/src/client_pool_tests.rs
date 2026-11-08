@@ -184,7 +184,8 @@ async fn connect_timeout_zero_has_no_limit() {
     let c = OrmClient::new(silent_url(port, "?connect_timeout=0&pool_timeout=0")).unwrap();
     assert_eq!(c.connect_timeout(), None);
     assert!(tokio::time::timeout(Duration::from_secs(3), c.connect()).await.is_err());
-    let c = OrmClient::new(silent_url(port, "?connect_timeout=99999999999999999999")).unwrap();
+    // A value above `u32::MAX` seconds is "no limit" too (sqlx cannot add it to the clock).
+    let c = OrmClient::new(silent_url(port, "?connect_timeout=18446744073709551615")).unwrap();
     assert_eq!(c.connect_timeout(), None);
 }
 

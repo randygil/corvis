@@ -1,0 +1,241 @@
+{
+  "recorded_with": "@prisma/client 6.19.3",
+  "script": "corvis-tests/tmp/orm/connect/cases.js",
+  "refused": {
+    "default": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:1`\n\nPlease make sure your database server is running at `127.0.0.1:1`."
+      },
+      "elapsed_ms": 2009
+    },
+    "connect_timeout=1": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:1`\n\nPlease make sure your database server is running at `127.0.0.1:1`."
+      },
+      "elapsed_ms": 1011
+    },
+    "connect_timeout=0": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:1`\n\nPlease make sure your database server is running at `127.0.0.1:1`."
+      },
+      "elapsed_ms": 2057
+    },
+    "pool_timeout=0": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:1`\n\nPlease make sure your database server is running at `127.0.0.1:1`."
+      },
+      "elapsed_ms": 2028
+    }
+  },
+  "silent": {
+    "default": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:63765`\n\nPlease make sure your database server is running at `127.0.0.1:63765`."
+      },
+      "elapsed_ms": 5004
+    },
+    "connect_timeout=1": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:63765`\n\nPlease make sure your database server is running at `127.0.0.1:63765`."
+      },
+      "elapsed_ms": 1011
+    },
+    "connect_timeout=2": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:63765`\n\nPlease make sure your database server is running at `127.0.0.1:63765`."
+      },
+      "elapsed_ms": 2015
+    },
+    "connect_timeout=1&connect_timeout=3": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:63765`\n\nPlease make sure your database server is running at `127.0.0.1:63765`."
+      },
+      "elapsed_ms": 3005
+    },
+    "connect_timeout=1&pool_timeout=0": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nCan't reach database server at `127.0.0.1:63765`\n\nPlease make sure your database server is running at `127.0.0.1:63765`."
+      },
+      "elapsed_ms": 1017
+    },
+    "connect_timeout=0&pool_timeout=0": {
+      "pending": true,
+      "elapsed_ms": 8001
+    }
+  },
+  "silent_connect": {
+    "connect_timeout=1 ($connect)": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": "P1001",
+        "message": "Can't reach database server at `127.0.0.1:63765`\n\nPlease make sure your database server is running at `127.0.0.1:63765`."
+      },
+      "elapsed_ms": 1002
+    }
+  },
+  "busy_pool": {
+    "connection_limit=1&pool_timeout=0&connect_timeout=1 (hold 3s)": {
+      "ok": true,
+      "waited_ms": 3011
+    }
+  },
+  "setup_rejected": {
+    "$connect": {
+      "ok": true,
+      "elapsed_ms": 18
+    },
+    "$queryRaw": {
+      "ok": true,
+      "elapsed_ms": 6
+    }
+  },
+  "role_at_limit": {
+    "default": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nToo many database connections opened: FATAL: too many connections for role \"orm_connect_full\""
+      },
+      "elapsed_ms": 5
+    },
+    "connect_timeout=1&pool_timeout=0": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nToo many database connections opened: FATAL: too many connections for role \"orm_connect_full\""
+      },
+      "elapsed_ms": 17
+    }
+  },
+  "invalid_postgres": {
+    "connect_timeout=-1": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      },
+      "elapsed_ms": 1
+    },
+    "connect_timeout=1.5": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      },
+      "elapsed_ms": 1
+    },
+    "connect_timeout=abc": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      },
+      "elapsed_ms": 1
+    },
+    "connect_timeout=": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      },
+      "elapsed_ms": 1
+    },
+    "connect_timeout=4294967296": {
+      "ok": true,
+      "elapsed_ms": 6
+    },
+    "connect_timeout=18446744073709551615": {
+      "ok": true,
+      "elapsed_ms": 5
+    },
+    "connect_timeout=18446744073709551616": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      },
+      "elapsed_ms": 1
+    },
+    "connect_timeout=99999999999999999999": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      },
+      "elapsed_ms": 1
+    },
+    "pool_timeout=99999999999999999999": {
+      "ok": false,
+      "error": {
+        "name": "PrismaClientInitializationError",
+        "code": null,
+        "message": "\nInvalid `prisma.$queryRawUnsafe()` invocation:\n\n\nThe provided database string is invalid. The provided arguments are not supported in database URL. Please refer to the documentation in https://www.prisma.io/docs/reference/database-reference/connection-urls for constructing a correct connection string. In some cases, certain characters must be escaped. Please check the string for any illegal characters."
+      },
+      "elapsed_ms": 1
+    }
+  },
+  "valid_postgres": {
+    "connect_timeout=3": {
+      "ok": true,
+      "elapsed_ms": 5
+    }
+  },
+  "sqlite": {
+    "file:<db>?connect_timeout=1": {
+      "ok": true,
+      "elapsed_ms": 4
+    },
+    "file:<db>?connect_timeout=0": {
+      "ok": true,
+      "elapsed_ms": 1
+    },
+    "file:<db>?connect_timeout=abc": {
+      "ok": true,
+      "elapsed_ms": 1
+    },
+    "file:<db>?connect_timeout=-1": {
+      "ok": true,
+      "elapsed_ms": 2
+    },
+    "file:<db>?connect_timeout=": {
+      "ok": true,
+      "elapsed_ms": 1
+    }
+  }
+}

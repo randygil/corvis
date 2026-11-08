@@ -292,9 +292,8 @@ Maintainer decisions; they override the text above where they differ.
   - after: sequential 3990 / 3921 / 3831 ms and 3878 / 3955 / 3993 ms in a second run (about 390 us per query, +5%);
     concurrent 1351 ms and 1364 ms (no difference). The measuring test was temporary and is not part of the change.
 - `PgConn` releases its slot only after `PoolConnection::return_to_pool()` has finished (spawned on drop), as review note 2
-  asks. `Transaction` owns its pool connection and gives no way to wait for its return, so `PgTx` releases the slot when
-  it is dropped, before sqlx has put the connection back: the window of the Risks section stays for transactions (a
-  following request may spend a round trip of its `connect_timeout` on that return).
+  asks. (First version: `PgTx` wrapped sqlx's `Transaction` and released the slot on drop, before the connection was
+  back; see the security review fix below.)
 - `report_setup_error` stores the error text (`String`) and a flag instead of a `sqlx::Error` (it is not `Clone` and only
   the text is shown); `open_connection` is generic over the acquire future and holds the timeout, the `select!` and the
   mapping of sqlx's own `PoolTimedOut` (set equal to `connect_timeout`) to the same `P1001`.
@@ -303,3 +302,47 @@ Maintainer decisions; they override the text above where they differ.
   allowed by task 4.1; a role at its limit is reported by sqlx as a timeout, without the database's message (53300 is
   retried inside its connect loop), as design.md predicted.
 - `DbPool::close` closes the slot semaphore before the sqlx pool so waiting requests fail at once.
+
+## Fixture results
+
+Recorded with `@prisma/client` 6.19.3 by `corvis-tests/tmp/orm/connect/cases.js` into
+`crates/corvis-orm/tests/fixtures/connect_timeout.json`; replayed by `tests/pg_connect_timeout.rs` (`fixture_*`).
+
+- Default: 5 s. A silent server fails after 5017 ms with no parameter, 1014 ms with `connect_timeout=1`, 2015 ms with
+  `=2`, 3007 ms with `=1&=3` (last wins), 1003 ms with `connect_timeout=1&pool_timeout=0`. The error is
+  `PrismaClientInitializationError` "Can't reach database server at `127.0.0.1:<port>`" (`P1001` on `$connect`).
+- `connect_timeout=0&pool_timeout=0` against the silent server was still pending after 8 s: `0` is no limit.
+- Refused port (`127.0.0.1:1`): fails after about 2 s whatever the parameters are (none, `connect_timeout=1`,
+  `connect_timeout=0`, `pool_timeout=0`), with the same "Can't reach database server" text. corvis-orm retries the refused
+  connection inside `connect_timeout` (decision 6) and fails with the same `P1001` after that time; with
+  `connect_timeout=0` it keeps retrying where the original fails after 2 s.
+- Busy pool with `connection_limit=1&pool_timeout=0&connect_timeout=1`: the second query waits the 3 s and succeeds
+  (3004 ms), so waiting for a slot is not cut by `connect_timeout`.
+- Setup statement rejected: the original connects to a LATIN1 database with `?schema=%E2%82%AC&pool_timeout=0` (both
+  `$connect` and `$queryRaw` succeed in about 20 ms): it does not run a `SET search_path` per connection. corvis-orm,
+  which does (#137 decision 2), reports `P1001` with the database's message at once. Kept and documented as a difference.
+- Role with `CONNECTION LIMIT 0` (53300): the original fails after 5 ms with "Too many database connections opened:
+  FATAL: too many connections for role ..." (a specific code, `P2037`, is out of scope). corvis-orm reports `P1001`
+  after `connect_timeout` (sqlx retries 53300). Documented difference.
+- Invalid values on Postgres: `-1`, `1.5`, `abc` and the empty value fail with "The provided database string is invalid.
+  The provided arguments are not supported in database URL." `4294967296` and `18446744073709551615` are accepted;
+  `18446744073709551616` and `99999999999999999999` are rejected: the original parses `u64`. The spec delta was changed to
+  match for `connect_timeout` (values beyond 64 bits are `P1013`; code: `fits_u64` in `url_params.rs`). `pool_timeout`
+  has the same rejection in the original (`pool_timeout=99999999999999999999` fails), but #133 made that case "no limit";
+  this change leaves it alone.
+- SQLite: `connect_timeout=1`, `=0`, `=abc`, `=-1` and the empty value are all accepted, as for `pool_timeout`.
+
+Open questions answered: default 5 s and `0` = no limit (confirmed); SQLite accepts any value (confirmed); the original's
+errors for 22P05 (none: it connects) and 53300 (immediate "Too many database connections opened"); refused-port timing
+(about 2 s, independent of the parameters).
+
+### Security review fixes (c5edf23)
+
+- LOW, cancelled transaction released its slot early: `PgTx` now owns the `PgConn` and drives BEGIN, COMMIT and ROLLBACK
+  through `PgTransactionManager`; when it is dropped while open it calls `start_rollback` and the `PgConn` drop waits for
+  sqlx's return (rollback and ping) before releasing the slot. So the "window" for transactions is gone, and a request
+  after a cancelled transaction waits for the slot (no `P1001` after `connect_timeout`, nor an unbounded wait with
+  `connect_timeout=0`). Regression test: `a_cancelled_transaction_keeps_its_slot_until_the_connection_is_back`.
+- INFORMATIONAL, `P1013` could echo a password fragment: when the query string contains `@` (the URL was split inside the
+  user info) values are never echoed, for every parameter. Test: `values_are_not_echoed_when_the_query_holds_an_at_sign`.
+- `fits_u64` (values beyond 64 bits are invalid for `connect_timeout`) stays, tested in `url_params.rs`.

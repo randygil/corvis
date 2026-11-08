@@ -5,7 +5,7 @@ Prerequisite: #133 (`e13-connection-limit-and-pool-timeout-in-the-database-url`)
 
 ## 1. Record the original's behavior
 
-- [ ] 1.1 Write `corvis-tests/tmp/orm/connect/cases.js` next to `tmp/orm/pool/cases.js`, reusing its scratch clients
+- [x] 1.1 Write `corvis-tests/tmp/orm/connect/cases.js` next to `tmp/orm/pool/cases.js`, reusing its scratch clients
   (`gen-pg`, `gen-sqlite`, generated from `../pool/schema-pg.prisma` / `schema-sqlite.prisma`) and its `describe()`
   helper, with `@prisma/client` 6.19.3. Per case record `{ ok, error: { name, code, message }, elapsed_ms }`. Cases
   (design decisions 1, 3, 5, 6, 8):
@@ -27,7 +27,7 @@ Prerequisite: #133 (`e13-connection-limit-and-pool-timeout-in-the-database-url`)
   Postgres (`127.0.0.1:55432`) and creates and drops `orm_connect_scratch`, the LATIN1 database and the scratch role.
   Verify: the file exists, every case has a result, and the scratch objects are gone afterwards
   (`SELECT datname FROM pg_database`, `SELECT rolname FROM pg_roles`).
-- [ ] 1.2 Update design.md with a "Fixture results" section: the default (5 s?), `0`, SQLite handling, the original's
+- [x] 1.2 Update design.md with a "Fixture results" section: the default (5 s?), `0`, SQLite handling, the original's
   error for 22P05 and 53300 and its timing for the refused port; adjust the spec delta where the fixture disagrees
   (except the documented differences of decisions 5 and 6). Verify the open questions it answers are marked answered.
 
@@ -88,7 +88,7 @@ Prerequisite: #133 (`e13-connection-limit-and-pool-timeout-in-the-database-url`)
   cannot encode" (LATIN1 scratch database, `connect()` and `query_raw` both `P1001` in under 1 s, message contains "has
   no equivalent in encoding"), and "Parameter removed from the driver URL" with `sslmode=disable&connect_timeout=3&schema=s`.
   Verify it passes against the local Postgres and leaves no scratch database or role.
-- [ ] 4.2 Replay `tests/fixtures/connect_timeout.json` in the same file: codes, the elapsed-time class of each case
+- [x] 4.2 Replay `tests/fixtures/connect_timeout.json` in the same file: codes, the elapsed-time class of each case
   (immediate / about N s / pending) with a tolerance, invalid-value messages compared on their first sentence, SQLite
   acceptance. Cases where corvis-orm deliberately differs (refused port timing, 53300) assert corvis-orm's documented
   behavior and name the difference in a comment. Verify the test passes.
