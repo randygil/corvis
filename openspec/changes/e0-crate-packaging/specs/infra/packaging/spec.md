@@ -5,17 +5,17 @@
 ### Requirement: Every published crate packages cleanly
 
 Every workspace crate without `publish = false` (`corvis`, `corvis-macros`, `corvis-orm`, `corvis-orm-macros`,
-`corvis-swagger`, `corvis-swagger-macros`, `corvis-cli`) SHALL package with `cargo package --workspace` without errors
+`corvis-swagger`, `corvis-swagger-macros`, `corvis-cli`) SHALL package with `cargo package` (naming the seven crates with `-p`; `--workspace` also tries the examples with Cargo 1.99 and fails on them) without errors
 and without manifest warnings. Crates with `publish = false` (the examples and `bench/corvis-app`) MUST NOT be
 packaged.
 
 #### Scenario: Packaging the workspace succeeds
-- **WHEN** a contributor runs `cargo package --workspace --allow-dirty` on a clean checkout of `main`
+- **WHEN** a contributor runs `cargo package --allow-dirty -p <each of the seven crates>` on a clean checkout of `main`
 - **THEN** seven `.crate` files are produced under `target/package/`, each crate's verification build succeeds, and
   cargo prints no `warning: manifest has no ...` line
 
 #### Scenario: Examples are never packaged
-- **WHEN** `cargo package --workspace` runs
+- **WHEN** `cargo package` runs for the seven crates
 - **THEN** no `.crate` file is produced for `blog-orm`, `cats-app`, `tertulia` or `corvis-app`
 
 ### Requirement: Intra-workspace dependencies declare a version

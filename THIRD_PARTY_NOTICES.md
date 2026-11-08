@@ -1,70 +1,70 @@
-# Avisos de terceros
+# Third-party notices
 
-Corvis es software original, publicado bajo la licencia MIT (ver `LICENSE`). Para ser compatible
-con el ecosistema de Node.js, replica la API, el comportamiento, los mensajes y algunos algoritmos de
-los proyectos de abajo, y en algunos casos traduce su lógica a Rust o incluye pequeñas plantillas y
-datos suyos. Este archivo conserva sus avisos de copyright y sus licencias, como ellas lo exigen.
+Corvis is original software, published under the MIT license (see `LICENSE`). To be compatible
+with the Node.js ecosystem, it replicates the API, behavior, messages and some algorithms of
+the projects below, and in some cases it translates their logic to Rust or includes small templates and
+data of theirs. This file keeps their copyright notices and licenses, as those licenses require.
 
-Corvis no está afiliado a estos proyectos ni respaldado por ellos. Los nombres de los proyectos y de
-sus productos son marcas de sus respectivos dueños y se usan aquí solo para identificarlos.
+Corvis is not affiliated with or endorsed by these projects. The names of the projects and of
+their products are trademarks of their respective owners and are used here only to identify them.
 
-## Componentes
+## Components
 
-| Proyecto | Licencia | Copyright | Qué toma Corvis |
+| Project | License | Copyright | What Corvis takes |
 |---|---|---|---|
-| NestJS (`@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`, `@nestjs/testing`, `@nestjs/cli` y los paquetes oficiales `@nestjs/config`, `@nestjs/jwt`, `@nestjs/schedule`, `@nestjs/swagger`, `@nestjs/throttler`, `@nestjs/terminus`, `@nestjs/cache-manager`, `@nestjs/event-emitter`, `@nestjs/serve-static`, `@nestjs/websockets`, `@nestjs/platform-ws`) | MIT | Copyright (c) 2017-present Kamil Mysliwiec <https://kamilmysliwiec.com> | Diseño de la API (módulos, inyección de dependencias, decoradores, ciclo de vida, enhancers), comportamiento, mensajes de error y de log; plantillas HTML/JS de Swagger UI de `@nestjs/swagger` (`crates/corvis-swagger/src/assets/swagger-ui-*.tpl`). |
-| zod | MIT | Copyright (c) 2025 Colin McDonnell | `corvis::z`: API, semántica de validación, mensajes de error, expresiones regulares de formatos y `toJSONSchema`. |
-| nestjs-zod | MIT | Copyright (c) Ben Lorantfy <ben@lorantfy.com> | `ZodValidationPipe`, serializer, guard y la limpieza del documento OpenAPI. |
-| Prisma (`prisma`, `@prisma/client`, prisma-engines) | Apache-2.0 | Copyright Prisma Data, Inc. | `corvis-orm`: lenguaje de esquema (`schema.prisma`), forma de la API del cliente, semántica de las consultas, formato de migraciones y tabla `_prisma_migrations`, códigos y mensajes de error. |
-| Express | MIT | Copyright (c) 2009-2014 TJ Holowaychuk <tj@vision-media.ca><br>Copyright (c) 2013-2014 Roman Shtylman <shtylman+expressjs@gmail.com><br>Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Semántica del router, de la respuesta (`res.*`) y de las cabeceras por defecto. |
-| body-parser | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com> | `http/body_parser.rs`: límites, tipos y errores. |
-| raw-body | MIT | Copyright (c) 2013-2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014-2022 Douglas Christopher Wilson <doug@somethingdoug.com> | Lectura del cuerpo y sus errores. |
-| qs | BSD-3-Clause | Copyright (c) 2014, Nathan LaFreniere and other [contributors](https://github.com/ljharb/qs/graphs/contributors) | Parser de `application/x-www-form-urlencoded` y de query strings. |
-| busboy | MIT | Copyright Brian White. All rights reserved. | Parser de `multipart/form-data` (`multer/busboy.rs`). |
-| multer | MIT | Copyright (c) 2014 Hage Yaapa <[http://www.hacksparrow.com](http://www.hacksparrow.com)> | `corvis::multer`: almacenamiento, límites y errores. |
-| append-field | MIT | Copyright (c) 2015 Linus Unnebäck | Armado de campos anidados en multipart. |
+| NestJS (`@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`, `@nestjs/testing`, `@nestjs/cli` and the official packages `@nestjs/config`, `@nestjs/jwt`, `@nestjs/schedule`, `@nestjs/swagger`, `@nestjs/throttler`, `@nestjs/terminus`, `@nestjs/cache-manager`, `@nestjs/event-emitter`, `@nestjs/serve-static`, `@nestjs/websockets`, `@nestjs/platform-ws`) | MIT | Copyright (c) 2017-present Kamil Mysliwiec <https://kamilmysliwiec.com> | API design (modules, dependency injection, decorators, lifecycle, enhancers), behavior, error and log messages; the Swagger UI HTML/JS templates of `@nestjs/swagger` (`crates/corvis-swagger/src/assets/swagger-ui-*.tpl`). |
+| zod | MIT | Copyright (c) 2025 Colin McDonnell | `corvis::z`: API, validation semantics, error messages, format regular expressions and `toJSONSchema`. |
+| nestjs-zod | MIT | Copyright (c) Ben Lorantfy <ben@lorantfy.com> | `ZodValidationPipe`, serializer, guard and the cleanup of the OpenAPI document. |
+| Prisma (`prisma`, `@prisma/client`, prisma-engines) | Apache-2.0 | Copyright Prisma Data, Inc. | `corvis-orm`: schema language (`schema.prisma`), shape of the client API, query semantics, migration format and `_prisma_migrations` table, error codes and messages. |
+| Express | MIT | Copyright (c) 2009-2014 TJ Holowaychuk <tj@vision-media.ca><br>Copyright (c) 2013-2014 Roman Shtylman <shtylman+expressjs@gmail.com><br>Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Router semantics, response (`res.*`) semantics and default headers. |
+| body-parser | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com> | `http/body_parser.rs`: limits, types and errors. |
+| raw-body | MIT | Copyright (c) 2013-2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014-2022 Douglas Christopher Wilson <doug@somethingdoug.com> | Body reading and its errors. |
+| qs | BSD-3-Clause | Copyright (c) 2014, Nathan LaFreniere and other [contributors](https://github.com/ljharb/qs/graphs/contributors) | Parser for `application/x-www-form-urlencoded` and query strings. |
+| busboy | MIT | Copyright Brian White. All rights reserved. | Parser for `multipart/form-data` (`multer/busboy.rs`). |
+| multer | MIT | Copyright (c) 2014 Hage Yaapa <[http://www.hacksparrow.com](http://www.hacksparrow.com)> | `corvis::multer`: storage, limits and errors. |
+| append-field | MIT | Copyright (c) 2015 Linus Unnebäck | Assembly of nested multipart fields. |
 | cors | MIT | Copyright (c) 2013 Troy Goode <troygoode@gmail.com> | `router/cors.rs`. |
-| cookie | MIT | Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Serialización y lectura de cookies. |
-| send | MIT | Copyright (c) 2012 TJ Holowaychuk<br>Copyright (c) 2014-2022 Douglas Christopher Wilson | Envío de archivos estáticos. |
+| cookie | MIT | Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Cookie serialization and parsing. |
+| send | MIT | Copyright (c) 2012 TJ Holowaychuk<br>Copyright (c) 2014-2022 Douglas Christopher Wilson | Static file delivery. |
 | serve-static | MIT | Copyright (c) 2010 Sencha Inc.<br>Copyright (c) 2011 LearnBoost<br>Copyright (c) 2011 TJ Holowaychuk<br>Copyright (c) 2014-2016 Douglas Christopher Wilson | `corvis::serve_static`. |
-| etag | MIT | Copyright (c) 2014-2016 Douglas Christopher Wilson | Generación de ETag. |
-| fresh | MIT | Copyright (c) 2012 TJ Holowaychuk <tj@vision-media.ca><br>Copyright (c) 2016-2017 Douglas Christopher Wilson <doug@somethingdoug.com> | Respuestas 304 condicionales. |
-| range-parser | MIT | Copyright (c) 2012-2014 TJ Holowaychuk <tj@vision-media.ca><br>Copyright (c) 2015-2016 Douglas Christopher Wilson <doug@somethingdoug.com | Peticiones con `Range`. |
-| content-disposition | MIT | Copyright (c) 2014-2017 Douglas Christopher Wilson | Cabecera `Content-Disposition`. |
-| type-is | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Comparación de `Content-Type`. |
-| mime-types | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Búsqueda de tipos MIME. |
-| mime-db | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015-2022 Douglas Christopher Wilson <doug@somethingdoug.com> | Datos de tipos MIME y charsets. |
-| accepts | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Negociación de contenido. |
-| negotiator | MIT | Copyright (c) 2012-2014 Federico Romero<br>Copyright (c) 2012-2014 Isaac Z. Schlueter<br>Copyright (c) 2014-2015 Douglas Christopher Wilson | Negociación de contenido. |
-| vary | MIT | Copyright (c) 2014-2017 Douglas Christopher Wilson | Cabecera `Vary`. |
-| statuses | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2016 Douglas Christopher Wilson <doug@somethingdoug.com> | Textos de los códigos HTTP. |
-| http-errors | MIT | Copyright (c) 2014 Jonathan Ong me@jongleberry.com<br>Copyright (c) 2016 Douglas Christopher Wilson doug@somethingdoug.com | Errores HTTP del body-parser. |
-| encodeurl | MIT | Copyright (c) 2016 Douglas Christopher Wilson | Codificación de `Location`. |
-| escape-html | MIT | Copyright (c) 2012-2013 TJ Holowaychuk<br>Copyright (c) 2015 Andreas Lubbe<br>Copyright (c) 2015 Tiancheng "Timothy" Gu | Escapado de HTML en respuestas. |
-| iconv-lite | MIT | Copyright (c) 2011 Alexander Shtuchkin | Charsets admitidos en los cuerpos. |
-| path-to-regexp | MIT | Copyright (c) 2014 Blake Embrey (hello@blakeembrey.com) | Sintaxis y comparación de rutas. |
-| file-type | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) | Detección de tipo por *magic number* (`FileTypeValidator`). |
-| class-validator | MIT | Copyright (c) 2015-2020 TypeStack | Reglas y mensajes de `corvis::validation`. |
-| validator.js | MIT | Copyright (c) 2018 Chris O'Hara <cohara87@gmail.com> | Reglas de formato de `corvis::validation`. |
-| js-yaml | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin | Serializador YAML de `corvis-swagger`. |
-| Swagger UI (`swagger-ui-dist`) | Apache-2.0 | Copyright 2020-2021 SmartBear Software Inc. | Plantillas HTML/JS de Swagger UI (`crates/corvis-swagger/src/assets/swagger-ui-*.tpl`). |
-| @scalar/nestjs-api-reference | MIT | Copyright (c) 2023-present Scalar | Tema CSS de Scalar (`crates/corvis-swagger/src/assets/scalar-*.css`) y la página de referencia. |
-| decimal.js | MIT | Copyright (c) 2025 Michael Mclaughlin | `corvis_orm::Decimal`: aritmética, redondeo y `toString`. |
-| jsonwebtoken | MIT | Copyright (c) 2015 Auth0, Inc. <support@auth0.com> (http://auth0.com) | `corvis::jwt`: opciones, validación y errores. |
-| jws | MIT | Copyright (c) 2013 Brian J. Brennan | Firma y verificación JWS. |
-| cron | MIT | Copyright © 2017 Nicholas Campbell <nicholas.j.campbell@gmail.com> | Expresiones cron y cálculo de la próxima ejecución (`modules/schedule`). |
-| Luxon | MIT | Copyright 2019 JS Foundation and other contributors | Manejo de zonas horarias en `modules/schedule`. |
-| cuid / @paralleldrive/cuid2 | MIT | Copyright (c) 2022 Eric Elliott | Generadores `cuid()` y `cuid(2)` de `corvis-orm`. |
-| ws | MIT | Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com><br>Copyright (c) 2013 Arnout Kazemier and contributors<br>Copyright (c) 2016 Luigi Pinca and contributors | `corvis::ws` y los gateways de WebSocket. |
-| supertest | MIT | Copyright (c) 2014 TJ Holowaychuk <tj@vision-media.ca> and other | Forma de la API de pruebas HTTP (`corvis::testing`). |
-| Lodash | MIT | Copyright OpenJS Foundation and other contributors <https://openjsf.org/> | Semántica de utilidades usadas por `corvis-swagger`. |
-| V8 | BSD-3-Clause | Copyright 2014, the V8 project authors. All rights reserved. | Mensajes de error de `JSON.parse` y formato de números de JavaScript. |
+| etag | MIT | Copyright (c) 2014-2016 Douglas Christopher Wilson | ETag generation. |
+| fresh | MIT | Copyright (c) 2012 TJ Holowaychuk <tj@vision-media.ca><br>Copyright (c) 2016-2017 Douglas Christopher Wilson <doug@somethingdoug.com> | Conditional 304 responses. |
+| range-parser | MIT | Copyright (c) 2012-2014 TJ Holowaychuk <tj@vision-media.ca><br>Copyright (c) 2015-2016 Douglas Christopher Wilson <doug@somethingdoug.com | `Range` requests. |
+| content-disposition | MIT | Copyright (c) 2014-2017 Douglas Christopher Wilson | `Content-Disposition` header. |
+| type-is | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com> | `Content-Type` matching. |
+| mime-types | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | MIME type lookup. |
+| mime-db | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015-2022 Douglas Christopher Wilson <doug@somethingdoug.com> | MIME type and charset data. |
+| accepts | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Content negotiation. |
+| negotiator | MIT | Copyright (c) 2012-2014 Federico Romero<br>Copyright (c) 2012-2014 Isaac Z. Schlueter<br>Copyright (c) 2014-2015 Douglas Christopher Wilson | Content negotiation. |
+| vary | MIT | Copyright (c) 2014-2017 Douglas Christopher Wilson | `Vary` header. |
+| statuses | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2016 Douglas Christopher Wilson <doug@somethingdoug.com> | HTTP status code texts. |
+| http-errors | MIT | Copyright (c) 2014 Jonathan Ong me@jongleberry.com<br>Copyright (c) 2016 Douglas Christopher Wilson doug@somethingdoug.com | HTTP errors of the body parser. |
+| encodeurl | MIT | Copyright (c) 2016 Douglas Christopher Wilson | `Location` encoding. |
+| escape-html | MIT | Copyright (c) 2012-2013 TJ Holowaychuk<br>Copyright (c) 2015 Andreas Lubbe<br>Copyright (c) 2015 Tiancheng "Timothy" Gu | HTML escaping in responses. |
+| iconv-lite | MIT | Copyright (c) 2011 Alexander Shtuchkin | Charsets supported in bodies. |
+| path-to-regexp | MIT | Copyright (c) 2014 Blake Embrey (hello@blakeembrey.com) | Route syntax and matching. |
+| file-type | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com) | Detection of the type by *magic number* (`FileTypeValidator`). |
+| class-validator | MIT | Copyright (c) 2015-2020 TypeStack | Rules and messages of `corvis::validation`. |
+| validator.js | MIT | Copyright (c) 2018 Chris O'Hara <cohara87@gmail.com> | Format rules of `corvis::validation`. |
+| js-yaml | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin | YAML serializer of `corvis-swagger`. |
+| Swagger UI (`swagger-ui-dist`) | Apache-2.0 | Copyright 2020-2021 SmartBear Software Inc. | Swagger UI HTML/JS templates (`crates/corvis-swagger/src/assets/swagger-ui-*.tpl`). |
+| @scalar/nestjs-api-reference | MIT | Copyright (c) 2023-present Scalar | Scalar CSS theme (`crates/corvis-swagger/src/assets/scalar-*.css`) and the reference page. |
+| decimal.js | MIT | Copyright (c) 2025 Michael Mclaughlin | `corvis_orm::Decimal`: arithmetic, rounding and `toString`. |
+| jsonwebtoken | MIT | Copyright (c) 2015 Auth0, Inc. <support@auth0.com> (http://auth0.com) | `corvis::jwt`: options, validation and errors. |
+| jws | MIT | Copyright (c) 2013 Brian J. Brennan | JWS signing and verification. |
+| cron | MIT | Copyright © 2017 Nicholas Campbell <nicholas.j.campbell@gmail.com> | Cron expressions and next-run calculation (`modules/schedule`). |
+| Luxon | MIT | Copyright 2019 JS Foundation and other contributors | Time zone handling in `modules/schedule`. |
+| cuid / @paralleldrive/cuid2 | MIT | Copyright (c) 2022 Eric Elliott | `cuid()` and `cuid(2)` generators of `corvis-orm`. |
+| ws | MIT | Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com><br>Copyright (c) 2013 Arnout Kazemier and contributors<br>Copyright (c) 2016 Luigi Pinca and contributors | `corvis::ws` and the WebSocket gateways. |
+| supertest | MIT | Copyright (c) 2014 TJ Holowaychuk <tj@vision-media.ca> and other | Shape of the HTTP testing API (`corvis::testing`). |
+| Lodash | MIT | Copyright OpenJS Foundation and other contributors <https://openjsf.org/> | Semantics of the utilities used by `corvis-swagger`. |
+| V8 | BSD-3-Clause | Copyright 2014, the V8 project authors. All rights reserved. | Error messages of `JSON.parse` and JavaScript number formatting. |
 
-## Licencias
+## Licenses
 
 ### MIT
 
-Se aplica a todos los proyectos marcados como MIT en la tabla, con sus avisos de copyright:
+Applies to all the projects marked as MIT in the table, with their copyright notices:
 
 ```text
 Copyright (c) 2017-present Kamil Mysliwiec <https://kamilmysliwiec.com>
@@ -220,9 +220,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Apache-2.0: Prisma y Swagger UI
+### Apache-2.0: Prisma and Swagger UI
 
-Prisma: Copyright Prisma Data, Inc. Swagger UI: aviso `NOTICE` del proyecto:
+Prisma: Copyright Prisma Data, Inc. Swagger UI: the project `NOTICE`:
 
 ```text
 swagger-ui

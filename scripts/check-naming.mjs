@@ -53,6 +53,9 @@ const ALLOW = [
   { path: 'crates/corvis-orm/src/error.rs', pattern: /http:\/\/pris\.ly\/d\/connection-pool/, reason: 'P2024 message copied verbatim for parity' },
   { path: 'crates/corvis-orm/src/migrate.rs', pattern: /https:\/\/pris\.ly\/d\/migrate-resolve/, reason: 'P3009 and P3018 messages copied verbatim for parity' },
 
+  // The legally required notices of the replicated projects; the root file is not a scanned surface.
+  { path: 'crates/*/THIRD_PARTY_NOTICES.md', reason: 'copy of the root third-party notices: the names of the projects whose licenses must travel with the crate' },
+
   // Tests and fixtures that run against or record the output of an original Node library.
   { path: 'crates/corvis/tests/fixtures/**', reason: 'oracle scripts and recorded output of the original Node libraries' },
   { path: 'crates/corvis-orm/tests/fixtures/**', reason: 'oracle schema and recorded output of the original client' },

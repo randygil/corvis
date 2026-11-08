@@ -4,11 +4,13 @@ description = "A modular backend framework for Rust: modules, dependency injecti
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 readme = "../../README.md"
 keywords = ["web", "framework", "http", "dependency-injection"]
-categories = ["web-programming::http-server"]
+categories = ["web-programming::http-server", "asynchronous"]
 
 [dependencies]
 corvis-macros = { workspace = true }
