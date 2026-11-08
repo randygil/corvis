@@ -561,7 +561,7 @@ fn short_timeouts() -> ServerOptions {
 
 #[corvis::test]
 async fn silent_and_slow_header_connections_are_closed() {
-    let addr = serve(Some(short_timeouts())).await;
+    let addr = serve(Some(short_timeouts().h2c(true))).await;
     // A connection that sends nothing.
     let mut silent = TcpStream::connect(addr).await.unwrap();
     // Headers dripped byte by byte.
@@ -613,6 +613,38 @@ async fn h2c_can_be_disabled() {
     let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf)).await.unwrap().unwrap_or(0);
     // No HTTP/2 SETTINGS frame comes back: the connection is closed (or answered as HTTP/1).
     assert!(n == 0 || buf.starts_with(b"HTTP/1.1"), "{:?}", &buf[..n]);
+}
+
+#[corvis::test]
+async fn h2c_is_off_by_default() {
+    let addr = serve(None).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00").await.unwrap();
+    let mut buf = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(3), s.read_to_end(&mut buf)).await;
+    assert!(read.is_ok(), "the connection stayed open");
+    assert!(buf.is_empty(), "a prior-knowledge connection got a response: {:?}", String::from_utf8_lossy(&buf));
+    // HTTP/1.1 still works.
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(GET_SLOW).await.unwrap();
+    assert!(read_head(&mut s, Duration::from_secs(5)).await.starts_with("HTTP/1.1 200"));
+}
+
+#[corvis::test]
+async fn h2c_can_be_enabled() {
+    use http_body_util::{BodyExt, Empty};
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    let addr = serve(Some(ServerOptions::new().h2c(true))).await;
+    let io = TokioIo::new(TcpStream::connect(addr).await.unwrap());
+    let (mut sender, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), io).await.unwrap();
+    tokio::spawn(conn);
+    let req = hyper::Request::get(format!("http://{addr}/t/slow")).body(Empty::<bytes::Bytes>::new()).unwrap();
+    let res = sender.send_request(req).await.unwrap();
+    assert_eq!(res.version(), hyper::Version::HTTP_2);
+    assert_eq!(res.status(), 200);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], br#"{"ok":true}"#);
 }
 
 #[corvis::test]

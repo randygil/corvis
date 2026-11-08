@@ -99,8 +99,8 @@ postura de las rutas.
   Indícalos en cada llamada.
 - CORS: un origen dado como expresión regular no está anclado, como `regex.test` de JavaScript, y `reflect_origin()`
   con `credentials(true)` refleja cualquier origen. Consulta [CORS](/es/security/cors).
-- HTTP/2 sin TLS (h2c) está activo por defecto, y el módulo `http` de Node no lo habla. Si debe seguir activo por
-  defecto se decide en el issue #144; hoy `ServerOptions::new().h2c(false)` lo desactiva. Consulta
-  [Rendimiento](/es/http/performance).
+- HTTP/2 sin TLS (h2c) está desactivado por defecto, como en el módulo `http` de Node, que no lo habla.
+  `ServerOptions::new().h2c(true)` lo activa para un proxy o plataforma configurado para enviarlo; los límites de
+  HTTP/2 son entonces distintos de los de HTTP/1. Consulta [Rendimiento](/es/http/performance).
 - La cabecera de la petición está limitada a 32 KiB por defecto (Node: 16 KiB); `ServerOptions` tiene
   `max_header_size`.

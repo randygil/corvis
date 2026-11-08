@@ -60,7 +60,7 @@ Dentro de un contenedor necesitas escuchar en todas las interfaces (`0.0.0.0`), 
 
 ## Detrás de un proxy inverso
 
-Corvis sirve HTTP/1.1 y HTTP/2 sin cifrar; **no termina TLS**. En producción ponlo detrás de un proxy inverso o balanceador (nginx, Caddy, Traefik, el de tu proveedor) que atienda HTTPS.
+Corvis sirve HTTP/1.1 sin cifrar (HTTP/2 con `h2c(true)`); **no termina TLS**. En producción ponlo detrás de un proxy inverso o balanceador (nginx, Caddy, Traefik, el de tu proveedor) que atienda HTTPS.
 
 Detrás de un proxy, la IP del socket es la del proxy. Para que `req.ip()`, `#[ip]` y el `ThrottlerGuard` vean la del cliente, indica en quién confiar:
 
@@ -93,7 +93,7 @@ app.set_server_options(
 
 Cada timeout acepta `None` para desactivarlo (`.request_timeout(None)`). Las conexiones que superan `max_connections` esperan en la cola de `accept`. La cabecera de una petición HTTP/1 está limitada a 32 KiB (Node usa 16 KiB). Una conexión que no envía nada o que gotea las cabeceras se cierra, mientras que las peticiones en curso (un handler lento, una respuesta SSE) no cuentan como inactividad.
 
-`ServerOptions::h2c(false)` desactiva HTTP/2 sin TLS si tu proxy no lo usa. Llama a `set_server_options` antes de `listen`. Ver [Conexiones keep-alive](/es/faq/keep-alive-connections).
+`ServerOptions::h2c(true)` activa HTTP/2 sin TLS si tu proxy está configurado para enviarlo (desactivado por defecto). Llama a `set_server_options` antes de `listen`. Ver [Conexiones keep-alive](/es/faq/keep-alive-connections).
 
 ## Apagado ordenado
 

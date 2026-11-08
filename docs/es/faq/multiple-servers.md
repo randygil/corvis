@@ -6,7 +6,7 @@ status: partial
 
 ## HTTPS
 
-Corvis no termina TLS: el servidor solo acepta HTTP/1.1 y HTTP/2 sin cifrar (h2c). No hay opciones
+Corvis no termina TLS: el servidor solo acepta HTTP/1.1 sin cifrar (HTTP/2 con `h2c(true)`). No hay opciones
 para cargar un certificado y una clave en la aplicación.
 
 La forma recomendada de servir HTTPS es poner un proxy inverso delante (nginx, Caddy, Traefik, un

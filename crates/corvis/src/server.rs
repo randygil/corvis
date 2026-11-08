@@ -30,7 +30,7 @@ mod h1_framing;
 
 pub(crate) type ResBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
-/// Options of the HTTP server: timeouts, connection and header limits, h2c.
+/// Options of the HTTP server: timeouts, connection and header limits, opt-in h2c.
 ///
 /// The defaults follow Node's `http.Server` (`headersTimeout` 60 s, `requestTimeout` 300 s,
 /// `keepAliveTimeout` 5 s) and protect against slow clients (slowloris) that would otherwise keep
@@ -60,7 +60,7 @@ impl Default for ServerOptions {
             keep_alive_timeout: Some(Duration::from_secs(5)),
             max_connections: None,
             max_header_size: 32 * 1024,
-            h2c: true,
+            h2c: false,
             insecure_http_parser: false,
         }
     }
@@ -104,8 +104,11 @@ impl ServerOptions {
         self.max_header_size = bytes.max(8 * 1024);
         self
     }
-    /// HTTP/2 over cleartext with prior knowledge (h2c). Enabled by default; `false` accepts
-    /// only HTTP/1.x, like Node's `http` module.
+    /// HTTP/2 over cleartext with prior knowledge (h2c), for a proxy or platform configured to
+    /// send it. Disabled by default, like Node's `http` module, which accepts only HTTP/1.x; a
+    /// prior-knowledge connection is closed without a response. With it on, one connection carries
+    /// up to 200 concurrent requests, so `max_connections` limits connections rather than
+    /// requests, and the HTTP/2 header list limit is 16 KiB (`max_header_size` is HTTP/1 only).
     pub fn h2c(mut self, enabled: bool) -> Self {
         self.h2c = enabled;
         self
