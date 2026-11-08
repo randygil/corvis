@@ -86,7 +86,10 @@ impl ServerOptions {
         self
     }
     /// Maximum number of open connections (`server.maxConnections`); when reached, new
-    /// connections wait in the accept queue. Default: unlimited.
+    /// connections wait in the accept queue. Default: unlimited. Upgraded (WebSocket)
+    /// connections count until they close, and so do sockets in their short closing drain
+    /// (up to 2 s after an early error response); with a cap, give gateways a heartbeat so
+    /// dead WebSocket clients do not hold slots.
     pub fn max_connections(mut self, n: impl Into<Option<usize>>) -> Self {
         self.max_connections = n.into();
         self

@@ -38,7 +38,10 @@ app.set_server_options(
 ```
 
 Cada timeout acepta `None` para desactivarlo, por ejemplo `.request_timeout(None)`. Al alcanzar
-`max_connections`, las conexiones nuevas esperan en la cola de `accept`.
+`max_connections`, las conexiones nuevas esperan en la cola de `accept`. Las conexiones WebSocket abiertas cuentan
+hasta que se cierran, y también un socket durante hasta 2 s después de una respuesta de error temprana (`413`, `431`,
+...), mientras el servidor deja que el cliente la lea antes de cerrar. Con un tope, agrega un heartbeat a tus gateways
+para que los clientes caídos no ocupen lugares.
 
 ## Cuerpos de las peticiones
 
