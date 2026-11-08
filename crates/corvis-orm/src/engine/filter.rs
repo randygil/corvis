@@ -514,7 +514,7 @@ impl Engine {
         Ok(())
     }
 
-    /// The JSON value at `path` (`col #> '{a,b}'` / `json_extract(col, '$.a.b')`).
+    /// The JSON value at `path` (`col #> $1::text[]` / `json_extract(col, ?)`); the path is always a parameter.
     fn json_at(&self, q: &mut Sql, alias: &str, f: &FieldMeta, path: Option<&[String]>, as_text: bool) {
         let jsonb = |q: &mut Sql| {
             if f.native_name() == Some("Json") {
@@ -537,8 +537,9 @@ impl Engine {
                 q.push("(");
                 jsonb(q);
                 q.push(if as_text { " #>> " } else { " #> " });
-                let lit = format!("{{{}}}", p.iter().map(|s| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))).collect::<Vec<_>>().join(","));
-                q.push(&format!("'{}'", lit.replace('\'', "''"))).push(")");
+                // The path is one `text[]` parameter: segments never touch the SQL text or an array literal.
+                let segments = p.iter().cloned().map(SqlValue::Text).collect();
+                q.bind(SqlValue::Cast(Box::new(SqlValue::Array(segments, FieldKind::String)), "text[]".into())).push(")");
             }
             (Dialect::Sqlite, p) => {
                 let path = sqlite_json_path(p);
