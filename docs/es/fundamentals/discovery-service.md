@@ -72,7 +72,7 @@ let public: Vec<String> = app
     .iter()
     .flat_map(|m| m.controllers.iter())
     .flat_map(|c| c.routes.iter().map(move |r| (c, r)))
-    .filter(|(_, r)| r.metadata.iter().any(|(k, v)| k == IS_PUBLIC_KEY && v == &json!(true)))
+    .filter(|(_, r)| r.metadata.iter().any(|(k, v)| k == PUBLIC_METADATA && v == &json!(true)))
     .map(|(c, r)| format!("{}.{}", c.name, r.handler_name))
     .collect();
 ```

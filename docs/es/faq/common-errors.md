@@ -102,6 +102,24 @@ Un campo de un `#[injectable]` que no es `Arc<T>`, `Option<Arc<T>>` ni `ModuleRe
 `Default`. Si su tipo no implementa `Default`, el error del compilador lo menciona: inicialízalo con
 `#[init(expr)]`.
 
+## "Route posture check failed: ..."
+
+```text
+Route posture check failed: 1 route has no guard and is not marked #[public].
+  GET  /api/rooms  RoomsController::list
+Add #[use_guards(...)] to the route or its controller (or register a global guard), mark it #[public] if it is meant to be open, or add an exemption with a reason. Guards that do not control access (ThrottlerGuard, ZodGuard) do not count.
+```
+
+La aplicación llamó a `require_route_posture()` y las rutas, los streams `SSE` o los handlers de mensajes `WS` listados no tienen un guard que controle el acceso, no son públicos y no coinciden con ninguna exención. Falla antes de enlazar el servidor. Se lista cada entrada desprotegida, con su método, su ruta completa y `Controller::handler`.
+
+Corrige cada entrada de una de estas tres formas:
+
+- añade `#[use_guards(...)]` a la ruta o a su controlador, o registra un guard global (un limitador como `ThrottlerGuard` no cuenta);
+- márcala `#[public]` si debe estar abierta;
+- si algo fuera del framework la protege, añade una exención con una razón.
+
+Ver [Postura de rutas](/es/security/route-posture), o ejecuta `corvis posture` para listar todas las rutas (ver [`corvis posture`](/es/cli/usages#corvis-posture)).
+
 ## El puerto está ocupado
 
 ```text

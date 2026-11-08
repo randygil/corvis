@@ -19,7 +19,7 @@ Una API de gatos que usa casi todas las piezas del framework en un solo proyecto
 - Módulos con `imports`/`exports` (`AuthModule`, `UsersModule`, `CatsModule`) y módulos incluidos:
   `ConfigModule`, `EventEmitterModule`, `ScheduleModule`, `CacheModule`, `ThrottlerModule` y
   `TerminusModule`.
-- Autenticación JWT con un `AuthGuard` global, rutas públicas con `#[set_metadata(IS_PUBLIC_KEY, true)]`
+- Autenticación JWT con un `AuthGuard` global, rutas públicas con `#[public]`
   y un `RolesGuard` global (ver [Autenticación](/es/security/authentication) y
   [Autorización](/es/security/authorization)).
 - `ValidationPipe` global con DTOs `#[derive(Validate)]`, un filtro de excepciones propio,

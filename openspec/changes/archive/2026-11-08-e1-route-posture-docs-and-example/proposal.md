@@ -62,8 +62,8 @@ None.
 
 ## Out of scope
 
-- Switching `examples/cats-app` (and the docs samples built on it) from `#[set_metadata(IS_PUBLIC_KEY, true)]` to
-  `#[public]`. Both work, since they write the same key. Possible follow-up for the examples (#21 area).
+- (Moved into scope by the review notes in design.md: `examples/cats-app` and the docs samples built on it now use
+  `#[public]`.)
 - Enabling posture in the three port apps (spike "Out of scope").
 - An OpenAPI `security` section derived from `#[public]` (spike "Out of scope"; possible issue in the OpenAPI area).
 - Naming middleware and raw `upgrade` listeners so they can be checked (spike "Out of scope").

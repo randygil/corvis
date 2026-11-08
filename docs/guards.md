@@ -109,7 +109,7 @@ For each route, guards run as follows:
 The first one that returns `false` or an error cuts the chain short. Guards run after all middleware and before interceptors.
 
 ::: warning What global guards do not cover
-`use_global_guards` and `Provider::app_guard` protect the controllers' routes. They also run on WebSocket gateway messages (see [WebSocket guards](/websockets/guards)), but not on the `upgrade` listeners of `corvis::ws`, to static files, or to the Swagger or Scalar routes. A static file with the same path as a protected endpoint is served before the endpoint. Protect those surfaces separately (middleware, `verify_client`, a different static root).
+`use_global_guards` and `Provider::app_guard` protect the controllers' routes. They also run on WebSocket gateway messages (see [WebSocket guards](/websockets/guards)), but not on the `upgrade` listeners of `corvis::ws`, to static files, or to the Swagger or Scalar routes. A static file with the same path as a protected endpoint is served before the endpoint. Protect those surfaces separately (middleware, `verify_client`, a different static root). To make the application refuse to start when a route has no guard, and to see which surfaces the check cannot see, read [Route posture](/security/route-posture).
 :::
 
 ## Role-based authorization with metadata
@@ -179,48 +179,19 @@ fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Cat> { ..
 
 `request.set_user(..)` stores the payload as JSON; it is read with `request.user_as::<JwtPayload>()`.
 
-`#[public]` goes on a route method inside `#[routes]` or below `#[controller]` (the whole controller is public). It takes no arguments and does not change how requests are handled: it only stores the metadata entry. A route's value wins over the controller's, so `#[set_metadata(PUBLIC_METADATA, false)]` on a route makes it private again inside a public controller. Applications that already mark routes with `#[set_metadata(IS_PUBLIC_KEY, true)]` and `IS_PUBLIC_KEY = "isPublic"` keep working: it is the same key.
+`#[public]` goes on a route method inside `#[routes]` or below `#[controller]` (the whole controller is public). It takes no arguments and does not change how requests are handled: it only stores the metadata entry. A route's value wins over the controller's, so `#[set_metadata(PUBLIC_METADATA, false)]` on a route makes it private again inside a public controller. Applications that already mark routes with `#[set_metadata(IS_PUBLIC_KEY, true)]` and `IS_PUBLIC_KEY = "isPublic"` keep working: it is the same key. With the [route posture check](/security/route-posture#marking-routes-public) enabled, `#[public]` is also how you tell the framework that a route is open on purpose.
 
 ## Require a guard on every route
 
-Forgetting `#[use_guards(...)]` is silent: the route works and is open to everyone. Ask the application to check at startup that every controller route has a guard, is marked `#[public]` or is exempt:
+Forgetting `#[use_guards(...)]` is silent: the route works and is open to everyone. Ask the application to check at startup that every controller route and gateway message handler has a guard that controls access, is marked `#[public]` or is exempt, and to refuse to start otherwise:
 
 ```rust
 let mut app = CorvisFactory::create::<AppModule>().await?;
 app.require_route_posture();
-app.listen(3000).await?;
+app.listen("127.0.0.1:3000").await?;
 ```
 
-In this mode `init()` (so `listen()` too) fails before the server binds and before any module hook runs, with an error that lists every route that has no guard:
-
-```text
-Route posture check failed: 2 routes have no guard and are not marked #[public].
-  GET   /api/rooms                 RoomsController::list
-  POST  /api/rooms/:room/messages  RoomsController::post
-Add #[use_guards(...)] to the route or its controller (or register a global guard), mark it #[public] if it is meant to be open, or add an exemption with a reason. Guards that do not control access (ThrottlerGuard, ZodGuard) do not count.
-```
-
-Guards count at every level the router runs them: `use_global_guards`, `Provider::app_guard`, the controller and the route. Each path alias and URI version of a route is checked on its own.
-
-To adopt it step by step, use warn mode, which logs the same list once and starts normally. Routes that are protected outside the framework (a reverse proxy, a private network) can be exempted, always with a reason:
-
-```rust
-use corvis::{RequestMethod, RoutePostureOptions};
-
-app.set_route_posture(
-    RoutePostureOptions::warn()
-        .exempt(RequestMethod::Get, "/metrics", "scraped from the private network only"),
-);
-```
-
-- The exemption pattern is compared literally with the route's full path template (global prefix and version included), segment by segment: a literal segment matches the same literal (ignoring case), `:id` or `{id}` matches only a `:param` segment (so `/files/:id` does not exempt `/files/export-all`), `*` as a whole segment is exactly one segment (`/api/*/internal/*`), `**` is zero or more segments (`/metrics/**`), and `*` inside a segment (`/health*`) never crosses a `/`. `RequestMethod::All` matches any method; a route declared with `#[all]` is matched only by an `All` exemption.
-- A blank reason makes `init()` fail. An exemption that matches no route logs a warning, and so does one that matches only routes that already have a guard or are public (it would silently accept them if the guard were removed).
-- A guard that only limits or validates requests does not decide who may call a route. `ThrottlerGuard` and `ZodGuard` do not count. Your own guard counts by default; override `controls_access()` to return `false` when it lets every request through unless configured (a roles guard without roles, for example). Only the declaration changes, not how the guard runs.
-- `app.route_posture()` returns, after `init()` and in every mode (also off), the posture of every route: method, path, controller and handler, guards, and whether it is protected, public (and whether the marker is on the handler or the controller), exempt (with its reason) or unprotected. It also lists the guards that counted as access control (`access_guards()`) and the redundant exemptions. It implements `Display` (a table) and `serde::Serialize`.
-- Call `require_route_posture()` or `set_route_posture()` before `init()` or `listen()`; they have no effect afterwards.
-- `#[sse]` routes are checked like any other route and are labelled `SSE` in the error and the report.
-- Every `#[subscribe_message]` handler of a WebSocket gateway is checked too, and appears in the same error as `WS  /chat  event "rooms"  ChatGateway::rooms`. See [WebSocket guards](/websockets/guards#route-posture-for-gateways).
-- The check cannot enforce the WebSocket handshake, `ServeStaticModule` mounts or raw `upgrade` listeners. `app.route_posture()` lists them under "Not checked" so a reviewer sees they exist; they never make `init()` fail.
+The [Route posture](/security/route-posture) page explains the whole feature: the rule, warn mode and exemptions with a reason, `#[public]`, the error, `app.route_posture()` and `corvis posture`. Guards count at every level the router runs them: `use_global_guards`, `Provider::app_guard`, the controller and the route. A guard that only limits or validates requests (`ThrottlerGuard`, `ZodGuard`) does not count, and your own guard counts by default. The sections below cover the two limits of that check that concern guards.
 
 Counting a guard is a declaration, not proof that it authenticates: the check cannot tell a real authentication guard from one that always returns `true`.
 

@@ -27,7 +27,7 @@ impl ChatGateway {
 
 Los guards del gateway corren primero y después los del handler, en el orden en que aparecen. Si uno devuelve `Ok(false)`, el cliente recibe `{ "event": "exception", "data": { "status": "error", "message": "Forbidden resource" } }`. Si devuelve `Err(...)`, recibe ese error (ver [Gateways](/es/websockets/gateways#errores-wsexception)).
 
-Los guards globales (`app.use_global_guards`, `Provider::app_guard`) también corren en cada mensaje de un gateway, antes que los guards del gateway y del handler. Un guard escrito para HTTP puede distinguir los transportes con `ctx.get_type()`, o dejar pasar un gateway marcado con `#[set_metadata(...)]`; `app.apply_global_enhancers_to_gateways(false)` mantiene los guards globales solo en HTTP (ver [Gateways](/es/websockets/gateways#enhancers-globales)). No cubren los listeners `upgrade` de [`corvis::ws`](/es/websockets/adapter), los archivos estáticos (`serve_static`, `ServeStaticModule`) ni las rutas de Swagger/Scalar. Un archivo estático con la misma ruta que un endpoint protegido se sirve antes que el endpoint. Protege esas superficies por separado (middleware, `verify_client`, otra raíz de estáticos).
+Los guards globales (`app.use_global_guards`, `Provider::app_guard`) también corren en cada mensaje de un gateway, antes que los guards del gateway y del handler. Un guard escrito para HTTP puede distinguir los transportes con `ctx.get_type()`, o dejar pasar un gateway marcado con `#[public]` (o `#[set_metadata(...)]`); `app.apply_global_enhancers_to_gateways(false)` mantiene los guards globales solo en HTTP (ver [Gateways](/es/websockets/gateways#enhancers-globales)). No cubren los listeners `upgrade` de [`corvis::ws`](/es/websockets/adapter), los archivos estáticos (`serve_static`, `ServeStaticModule`) ni las rutas de Swagger/Scalar. Un archivo estático con la misma ruta que un endpoint protegido se sirve antes que el endpoint. Protege esas superficies por separado (middleware, `verify_client`, otra raíz de estáticos). La [verificación de postura de rutas](/es/security/route-posture) cuenta estos guards también para los handlers de los gateways.
 
 ## El contexto en un gateway
 
@@ -100,6 +100,8 @@ impl CanActivate for AuthGuard {
 `ChatUser::of(ctx)` lee el usuario del cliente WebSocket (`client.get::<ChatUser>()`) o de la request HTTP (`ctx.request().get::<ChatUser>()`), según el tipo de contexto. El mismo `RolesGuard`, que lee los roles con `Reflector::get_all_and_override`, protege tanto `POST /api/rooms/:room/announcements` como el mensaje `clear`.
 
 ## Route posture en gateways
+
+Esta sección cubre lo específico de los gateways. La regla, el modo de advertencia y el informe se explican en [Postura de rutas](/es/security/route-posture).
 
 Con [`require_route_posture()`](/es/guards#exigir-un-guard-en-cada-ruta) la aplicación revisa cada handler `#[subscribe_message]`, no solo las rutas HTTP. Un handler se acepta si le corre un guard que controla el acceso, si es público o si una exención de mensajes lo cubre. Si no, `init()` falla, antes de que corra el `after_init` de cualquier gateway:
 

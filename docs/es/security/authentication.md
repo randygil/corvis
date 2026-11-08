@@ -115,7 +115,7 @@ pub struct AuthController {
 impl AuthController {
     #[post("login")]
     #[http_code(HttpStatus::OK)]
-    #[set_metadata(IS_PUBLIC_KEY, true)]
+    #[public]
     async fn sign_in(&self, #[body] dto: SignInDto) -> HttpResult<Value> {
         self.auth_service.sign_in(&dto.username, &dto.password).await
     }
@@ -150,7 +150,7 @@ impl CanActivate for AuthGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let is_public: bool = self
             .reflector
-            .get_all_and_override(IS_PUBLIC_KEY, &[ctx.get_handler(), ctx.get_class()])
+            .get_all_and_override(PUBLIC_METADATA, &[ctx.get_handler(), ctx.get_class()])
             .unwrap_or(false);
         if is_public {
             return Ok(true);
@@ -192,22 +192,23 @@ controladores y puede recibir dependencias por inyección:
 pub struct AppModule;
 ```
 
-Las rutas abiertas se marcan con metadata que el guard consulta mediante `Reflector`:
+Las rutas abiertas se marcan con `#[public]`, que guarda la metadata `"isPublic"` (`PUBLIC_METADATA`) que el guard
+consulta mediante `Reflector`:
 
 ```rust
-pub const IS_PUBLIC_KEY: &str = "isPublic";
-
 #[get]
-#[set_metadata(IS_PUBLIC_KEY, true)]
+#[public]
 fn find_all(&self) -> Vec<Cat> { /* ... */ }
 ```
 
-`#[set_metadata]` también puede ir debajo de `#[controller]` para abrir un controlador completo.
+`#[public]` también puede ir debajo de `#[controller]` para abrir un controlador completo. Para que la aplicación se
+niegue a arrancar cuando una ruta no tiene guard ni `#[public]`, consulta [Postura de rutas](/es/security/route-posture).
 
 ::: warning Alcance de los guards globales
-`Provider::app_guard` y `app.use_global_guards` solo protegen rutas de controladores. No se aplican
-a los gateways de WebSocket, a los listeners `upgrade` de `corvis::ws`, a los archivos estáticos ni a
-las rutas de Swagger/Scalar. Protege esas superficies por separado.
+`Provider::app_guard` y `app.use_global_guards` protegen las rutas de los controladores y se ejecutan en los
+mensajes de los gateways de WebSocket. No se aplican a los listeners `upgrade` de `corvis::ws`, a los archivos
+estáticos ni a las rutas de Swagger/Scalar. Protege esas superficies por separado; [Postura de rutas](/es/security/route-posture#lo-que-no-se-comprueba)
+las lista.
 :::
 
 ## Leer el usuario en el handler

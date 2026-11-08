@@ -1,11 +1,8 @@
-//! Custom decorators: metadata keys (used with `#[set_metadata]`) and param decorators.
+//! Custom decorators: metadata keys (used with `#[set_metadata]`) and param decorators. Public routes use the
+//! built-in `#[public]` marker.
 
 use corvis::prelude::*;
 use serde::{Deserialize, Serialize};
-
-/// `export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);`
-/// Usage: `#[set_metadata(IS_PUBLIC_KEY, true)]`.
-pub const IS_PUBLIC_KEY: &str = "isPublic";
 
 /// `export const Roles = (...roles: Role[]) => SetMetadata(ROLES_KEY, roles);`
 /// Usage: `#[set_metadata(ROLES_KEY, [Role::Admin])]`.

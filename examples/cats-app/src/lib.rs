@@ -26,6 +26,8 @@ pub async fn create_app() -> corvis::Result<CorvisApplication> {
     app.use_global_pipes(ValidationPipe::new().whitelist(true).forbid_non_whitelisted(true));
     app.use_global_filters(HttpExceptionFilter);
     app.enable_cors(CorsOptions::default());
+    // Every route needs a guard that controls access or `#[public]` (see docs/security/route-posture.md).
+    app.require_route_posture();
     app.enable_versioning(VersioningOptions::uri().default_version("1"));
     // The document reads the routes, so it is built after the prefix and versioning are set.
     // `/docs` and `/docs-json` are mounted outside the global prefix and guards: do not expose

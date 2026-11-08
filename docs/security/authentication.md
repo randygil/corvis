@@ -115,7 +115,7 @@ pub struct AuthController {
 impl AuthController {
     #[post("login")]
     #[http_code(HttpStatus::OK)]
-    #[set_metadata(IS_PUBLIC_KEY, true)]
+    #[public]
     async fn sign_in(&self, #[body] dto: SignInDto) -> HttpResult<Value> {
         self.auth_service.sign_in(&dto.username, &dto.password).await
     }
@@ -150,7 +150,7 @@ impl CanActivate for AuthGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let is_public: bool = self
             .reflector
-            .get_all_and_override(IS_PUBLIC_KEY, &[ctx.get_handler(), ctx.get_class()])
+            .get_all_and_override(PUBLIC_METADATA, &[ctx.get_handler(), ctx.get_class()])
             .unwrap_or(false);
         if is_public {
             return Ok(true);
@@ -192,22 +192,23 @@ can receive dependencies by injection:
 pub struct AppModule;
 ```
 
-Open routes are marked with metadata that the guard checks through `Reflector`:
+Open routes are marked with `#[public]`, which stores the `"isPublic"` metadata (`PUBLIC_METADATA`) that the guard
+checks through `Reflector`:
 
 ```rust
-pub const IS_PUBLIC_KEY: &str = "isPublic";
-
 #[get]
-#[set_metadata(IS_PUBLIC_KEY, true)]
+#[public]
 fn find_all(&self) -> Vec<Cat> { /* ... */ }
 ```
 
-`#[set_metadata]` can also go below `#[controller]` to open a whole controller.
+`#[public]` can also go below `#[controller]` to open a whole controller. To make the application refuse to start when
+a route has neither a guard nor `#[public]`, see [Route posture](/security/route-posture).
 
 ::: warning Scope of global guards
-`Provider::app_guard` and `app.use_global_guards` only protect controller routes. They do not apply
-to WebSocket gateways, to the `upgrade` listeners of `corvis::ws`, to static files or to
-the Swagger/Scalar routes. Protect those surfaces separately.
+`Provider::app_guard` and `app.use_global_guards` protect controller routes and run on WebSocket gateway
+messages. They do not apply to the `upgrade` listeners of `corvis::ws`, to static files or to
+the Swagger/Scalar routes. Protect those surfaces separately; [Route posture](/security/route-posture#what-is-not-checked)
+lists them.
 :::
 
 ## Reading the user in the handler

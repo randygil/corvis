@@ -1,10 +1,9 @@
 use corvis::prelude::*;
 
 use crate::app_service::AppService;
-use crate::common::decorators::IS_PUBLIC_KEY;
 
 #[controller]
-#[set_metadata(IS_PUBLIC_KEY, true)]
+#[public]
 pub struct AppController {
     app_service: Arc<AppService>,
     health: Arc<HealthCheckService>,

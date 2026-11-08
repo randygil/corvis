@@ -15,6 +15,7 @@ impl AuthController {
     /// `POST /api/auth/login { "username": "ana" }` -> `{ accessToken, user }`.
     #[post("login")]
     #[http_code(200)]
+    #[public]
     fn login(&self, #[body] dto: LoginDto) -> HttpResult<LoginResponse> {
         self.auth_service.login(&dto.username)
     }

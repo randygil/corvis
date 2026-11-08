@@ -105,11 +105,41 @@ feature. This change documents it and enables it in an example. Current state, r
 
 ## Open questions
 
-1. Sidebar placement: right after Authorization (proposed) or at the top of the Security group?
-2. Should `examples/cats-app` move to `#[public]` in this change, so the docs samples built on it can use the
-   attribute? Proposed: no, leave it for a follow-up (proposal "Out of scope").
+Both were settled in the review notes below: the page goes after Authorization, and `examples/cats-app` moves to
+`#[public]` in this change.
 
 ## Review notes (2026-11-08)
 
 - The new page goes right after Authorization in the sidebar.
 - Migrate `examples/cats-app` to `#[public]` in this change (it runs after #21 and #116, which also touch cats-app).
+
+## Implementation notes
+
+Differences between this design and what was implemented, after #26, #27 and #28 were merged and archived:
+
+- **Existing docs already covered parts of the feature.** `docs/guards.md` ("Require a guard on every route",
+  "Pass-through global guards", "Report mode", "What the check does not see"), `docs/websockets/guards.md`,
+  `docs/cli/usages.md` and `docs/first-steps.md` were written by the earlier changes. The new page is now the one place
+  that explains the feature end to end (rule, enabling, exemptions, `#[public]`, counted guards, gateways and SSE,
+  limits, error, review tools, migration). The guards page keeps a short "Require a guard on every route" section that
+  links to it, and keeps the sections about pass-through guards, report mode and unseen surfaces, which the new page
+  links to instead of copying. The gateway section of the WebSocket guards page keeps the gateway-specific details.
+- **Final API**: the page documents the literal exemption matcher (`*` is one segment, `**` the rest), `exempt_message`,
+  `access_guards()`, `public_source`, the `unchecked` surfaces, `RoutePostureError`, and `corvis posture` with exit
+  codes 0, 1 and 2 (the application's own report-mode exit codes 40 and 41, and the warning not to set
+  `CORVIS_ROUTE_POSTURE_REPORT` in production or test jobs). It also says that `corvis g guard` generates a guard that
+  denies by default and that `corvis new` enables the check.
+- **Static files in tertulia are not in the report.** The example serves them with `serve_static` (middleware), which
+  the report never lists; only `ServeStaticModule` mounts appear under "Not checked". The tertulia test asserts the
+  handshake and the raw `upgrade` listener, and the README says `serve_static` is invisible to the report.
+- **Wrong statement fixed**: `docs/security/authentication.md` said that global guards do not apply to WebSocket
+  gateways; they do (unless `apply_global_enhancers_to_gateways(false)`). It now says so and links to the page.
+- **cats-app**: besides `#[public]`, its global `RolesGuard` returns `Ok(true)` when a route declares no roles, so it now
+  overrides `controls_access()` to return `false`. Without that the check would count it as access control for every
+  route. `ChatGateway` keeps being public as a whole, now with `#[public]`. `create_app()` enables
+  `require_route_posture()`, and `tests/posture.rs` pins the report. `scripts/smoke-examples.mjs` is unchanged
+  (32/32); `corvis posture` was run by hand in both examples (exit 0).
+- **Docs samples**: the samples built on cats-app (authentication, terminus, discovery service, examples FAQ) now show
+  `#[public]` and `PUBLIC_METADATA`.
+- **No framework code changed** (`git diff --stat` shows nothing under `crates/`), so the corvis-parity check does not
+  apply.

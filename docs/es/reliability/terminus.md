@@ -24,7 +24,7 @@ pub struct AppModule;
 
 ```rust
 #[controller]
-#[set_metadata(IS_PUBLIC_KEY, true)]
+#[public]
 pub struct AppController {
     app_service: Arc<AppService>,
     health: Arc<HealthCheckService>,
@@ -45,7 +45,7 @@ impl AppController {
 }
 ```
 
-Dos detalles de ese ejemplo: la metadata `IS_PUBLIC_KEY` hace que el guard global de autenticación de la app deje pasar la ruta, y `VERSION_NEUTRAL` la mantiene accesible sin prefijo de versión. Un health check que exige token o versión suele ser un problema para el orquestador.
+Dos detalles de ese ejemplo: el marcador `#[public]` hace que el guard global de autenticación de la app deje pasar la ruta, y `VERSION_NEUTRAL` la mantiene accesible sin prefijo de versión. Un health check que exige token o versión suele ser un problema para el orquestador.
 
 ## Formato de la respuesta
 
