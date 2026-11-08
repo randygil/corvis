@@ -10,8 +10,37 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Use the shared Cargo target directory of the repository; do not create one per task. The Postgres tests of
-`corvis-orm` read `CORVIS_ORM_PG` and are skipped when the server is not reachable.
+Use the shared Cargo target directory of the repository; do not create one per task.
+
+Code is formatted with rustfmt and the root `rustfmt.toml` (stable options only). Check it with:
+
+```sh
+cargo fmt --all --check
+```
+
+Install rustfmt once with `rustup component add rustfmt`. The one-time reformat of the workspace is listed in
+`.git-blame-ignore-revs`; to keep `git blame` pointing at the real author of each line, run once per clone:
+
+```sh
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+### Postgres tests
+
+The Postgres tests of `corvis-orm` (`pg_features`, `pg_oracle`, `pg_json_paths`, `pg_houseplan` and the Postgres
+cases of `security`) connect to `CORVIS_ORM_PG` (default `postgres://postgres:postgres@127.0.0.1:55432`) and create
+databases named `orm_test_*`. When the server is not reachable they print `skipping: Postgres not reachable` and
+pass. Set `CORVIS_ORM_PG_REQUIRED=1` to make them fail instead, as CI does, so a green run means they really ran. The
+failure names the server's host and port, never the password. Start a matching server, bound to the loopback interface,
+with:
+
+```sh
+docker run -d --name corvis-pg -e POSTGRES_PASSWORD=postgres -p 127.0.0.1:55432:5432 postgres:16
+CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm
+```
+
+`pg_houseplan` also needs the original reference application outside this repository (`CORVIS_TESTS_DIR`) and still
+skips without it, even with `CORVIS_ORM_PG_REQUIRED=1`.
 
 ### Debug info in dev and test builds
 
@@ -62,6 +91,41 @@ On PowerShell, set the variable first: `$env:PROPTEST_CASES = "100000"`.
 When a property fails, proptest shrinks the input and writes its seed to a file under `proptest-regressions/` in the
 crate. Fix the bug, keep the seed file and commit it: the seed is replayed on every later run. Add a plain
 regression test with the shrunk input as well.
+
+When a property fails in CI, the run's `proptest-regressions` artifact holds the seed files of both crates. Download
+it from the run's summary page, copy the new lines into the matching files under `crates/<crate>/proptest-regressions/`,
+check that the property now fails locally, then fix the bug and commit the seed with the fix.
+
+## Continuous integration
+
+The workflow `.github/workflows/ci.yml` runs on every pull request to `main` and can be started by hand from the
+Actions tab (`workflow_dispatch`). The repository is private and Actions minutes are limited, so there is no push or
+schedule trigger; a newer push to the same pull request cancels the run in progress. Every job must pass before
+merging. Each one reproduces locally with the command in the table (on PowerShell, set environment variables first,
+for example `$env:PROPTEST_CASES = "20000"`):
+
+| Job | Runs on | Local command |
+| --- | --- | --- |
+| `fmt` | Linux | `cargo fmt --all --check` |
+| `clippy` | Linux, Windows | `cargo clippy --workspace --all-targets -- -D warnings` |
+| `test` | Linux (Postgres 16 service, `CORVIS_ORM_PG_REQUIRED=1`), Windows (no Postgres) | `RUSTFLAGS="-D warnings" cargo build --workspace --all-targets`, then `RUSTFLAGS="-D warnings" cargo test --workspace` |
+| `fuzz` | Linux | the three commands of [Fuzzing](#fuzzing) with `PROPTEST_CASES=20000` |
+| `deny` | Linux | `cargo deny check` |
+| `audit` | Linux | `cargo audit` |
+| `docs` | Linux | `node scripts/check-naming.mjs`, then `npm ci` and `npm run docs:check` in `docs/` |
+
+CI uses Rust 1.99.0, set once in `RUST_TOOLCHAIN` at the top of `ci.yml` (and repeated in `nightly.yml`), so a new
+stable release cannot turn pull requests red without a code change. Bumping it is its own pull request that fixes any
+new lints. `cargo deny` (0.20.2) reads `deny.toml` and `cargo audit` (0.22.2) reads `.cargo/audit.toml`; the
+workflow passes no ignore flags, so every exception lives in those files with its reason. Install the same versions
+with `cargo install --locked cargo-deny@0.20.2 cargo-audit@0.22.2`.
+
+The workflow `.github/workflows/nightly.yml` (Actions > Nightly checks > Run workflow) is manual only. It runs the
+fuzzing suites with 100,000 cases per property (the `cases` input changes it) and `cargo audit` against the latest
+advisory database. Run it on `main` before a release, after a change to a parser, and every few weeks.
+
+The Rust jobs restore a dependency cache. Pull requests save their own caches, which only later runs of the same pull
+request can use; a manual run of `ci.yml` on `main` saves caches that every pull request can restore.
 
 ## Naming check
 
