@@ -26,7 +26,8 @@
 ## 5. Definition of done
 
 - [x] 5.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [x] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
+  - Result: the code added by this change is clippy-clean; the workspace run still fails on lints that predate it (Rust 1.99), moved to #108, which is the next issue of the same phase (#111).
 - [x] 5.3 `cargo test --workspace` passes
 - [x] 5.4 If any task changed framework code (not only tests), run the `corvis-parity` check and verify the three ports keep 0 differences; otherwise record that no runtime code changed
 - [x] 5.5 Docs: this change adds no user-facing feature, so no `docs/` page (EN/ES) is needed beyond `CONTRIBUTING.md`; confirm
