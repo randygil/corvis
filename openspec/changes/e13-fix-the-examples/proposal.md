@@ -28,6 +28,10 @@ Examples are copied. The docs review found two examples that teach a bug and a d
   `Cat` entity described with `#[derive(ApiSchema)]`, controllers tagged, bearer auth declared.
 - `cats-app` and `blog-orm` get a `lib.rs` with `create_app()` (the `tertulia` pattern) so integration tests in their
   `tests/` folders can cover the three fixes.
+- `cats-app` binds to `127.0.0.1` like the other examples (maintainer decision of the design review).
+- `scripts/smoke-examples.mjs` (Node, no dependencies) starts the built `blog-orm`, `tertulia` and `cats-app`
+  binaries on `127.0.0.1` with temporary databases, sends the documented requests and checks status codes and key
+  fields; documented in `CONTRIBUTING.md`, not in CI (the roadmap tracking issue asks every phase to close with it).
 - Docs (`faq/examples`, `openapi/introduction`, `openapi/types-and-parameters`, and any page quoting the changed code)
   in English and Spanish.
 
@@ -41,7 +45,8 @@ Examples are copied. The docs review found two examples that teach a bug and a d
 
 - Code: `examples/cats-app/` (`Cargo.toml` adds `corvis-swagger`; `src/lib.rs` new; `src/main.rs`,
   `src/auth/auth_module.rs`, DTOs, entity, controllers, `.env.example`; `tests/` new) and `examples/blog-orm/`
-  (`src/lib.rs` new, `src/main.rs`, `src/posts/dto.rs`; `tests/` new).
+  (`src/lib.rs` new, `src/main.rs`, `src/posts/dto.rs`; `tests/` new), `scripts/smoke-examples.mjs` and
+  `CONTRIBUTING.md`.
 - No framework crate changes.
 - Docs: `docs/faq/examples.md`, `docs/openapi/introduction.md`, `docs/openapi/types-and-parameters.md` and their
   `docs/es/` translations.
@@ -51,8 +56,6 @@ Examples are copied. The docs review found two examples that teach a bug and a d
 - The rustdoc of `z::coerce::boolean()` (`crates/corvis/src/z/types.rs:3190-3191`) claims zod 3 mode maps `"false"`
   to `false`, but the zod 3 path (`ZBoolean::check`, `types.rs:2024`) uses `Boolean(x)` too: fix the comment in a
   separate issue (framework doc, not an example).
-- `cats-app` listens on all interfaces (`app.listen(port)` in `src/main.rs:27`) while `blog-orm` and `tertulia` bind
-  to `127.0.0.1`: separate small issue.
 - `#[derive(ApiSchema)]` reading `#[derive(Validate)]` constraints (`#[max_length]`, `#[is_in]`...) into the schema, as
   the original framework's CLI plugin does with class-validator: feature request.
 - OpenAPI for `blog-orm`'s zod DTOs and for `tertulia`.

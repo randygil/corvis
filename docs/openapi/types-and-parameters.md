@@ -115,7 +115,7 @@ pub struct CatResponse {
 Option keys are written in snake_case or camelCase; they are converted to camelCase (`read_only` → `readOnly`). Values are Rust expressions (`example = 42`, `enum = ["a", "b"]`) except `type`, which takes a type: `type = CatDto`, `type = [CatDto]` for an array or `type = "string"`.
 
 ::: warning
-`#[derive(ApiSchema)]` does not have tests of its own in the repository yet (the `corvis-swagger` integration test uses `corvis::z` DTOs). Check the generated document if you depend on uncommon options.
+`#[derive(ApiSchema)]` does not read the constraints of `#[derive(Validate)]` (`#[max_length]`, `#[is_in]`...): add them with `#[api_property(...)]` if the document must show them. The `cats-app` example uses it with `Validate` DTOs and tests the generated document (`examples/cats-app/tests/openapi.rs`); check the document if you depend on uncommon options.
 :::
 
 ## Explicit parameters

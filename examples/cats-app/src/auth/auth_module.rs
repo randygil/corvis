@@ -10,8 +10,10 @@ use crate::users::UsersModule;
         UsersModule,
         JwtModule::register_async(true, |ctx| async move {
             let config = ctx.get::<ConfigService>().await?;
-            Ok(JwtModuleOptions::new(config.get_or("JWT_SECRET", "change-me".to_string()))
-                .expires_in(config.get_or("JWT_EXPIRES_IN", "1h".to_string())))
+            // There is no default secret: a well-known one would let anyone forge tokens.
+            let secret = config.get::<String>("JWT_SECRET").filter(|s| !s.trim().is_empty());
+            let secret = secret.ok_or_else(|| corvis::anyhow::anyhow!("JWT_SECRET is required (set it in the environment or in .env)"))?;
+            Ok(JwtModuleOptions::new(secret).expires_in(config.get_or("JWT_EXPIRES_IN", "1h".to_string())))
         }),
     ],
     controllers = [AuthController],

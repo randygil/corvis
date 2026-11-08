@@ -34,14 +34,16 @@ pub struct ListPostsQuery {
     pub published: Option<bool>,
 }
 
-// Query strings arrive as text: `z::coerce` converts them before validating.
+// Query strings arrive as text: `z::coerce` converts the numbers before validating, and
+// `z::stringbool()` reads the flag (`true/false/1/0/yes/no/...`; anything else is a 400).
+// `z::coerce::boolean()` would follow JavaScript's `Boolean(x)`: `"false"` would become `true`.
 zod_dto!(
     ListPostsQuery,
     z::object! {
         page: z::coerce::number().int().min(1).optional(),
         limit: z::coerce::number().int().min(1).max(100).optional(),
         search: z::string().optional(),
-        published: z::coerce::boolean().optional(),
+        published: z::stringbool().optional(),
     }
     .strict()
 );

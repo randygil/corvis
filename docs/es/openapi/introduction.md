@@ -150,6 +150,10 @@ scalar::mount(&mut app, "/reference", ApiReferenceOptions::new().document(&docum
 
 La página es la que genera `@scalar/client-side-rendering` 0.3, con su tema por defecto salvo que indiques `.theme(..)`. No envía el campo `_integration` de las integraciones de servidor de Scalar; si lo necesitas (por ejemplo, para servir una página idéntica a una existente), indícalo con `ApiReferenceOptions::integration("...")`. El JSON de configuración embebido en la página (que incluye el documento) escapa `<`, `>`, `&`, U+2028 y U+2029, así que ningún texto del documento puede cerrar el `<script>`. Los valores `{"$js": "..."}` indicados con `.set(..)` se emiten como código, porque los escribe el desarrollador.
 
+## Ejemplo
+
+`examples/cats-app` en el repositorio es una aplicación completa con un documento OpenAPI: DTOs `#[derive(Validate)]` descritos con `#[derive(ApiSchema)]`, controllers con etiquetas, autenticación bearer y `SwaggerModule::setup("docs", ..)` en `create_app()`. Su test (`examples/cats-app/tests/openapi.rs`) comprueba el documento.
+
 ## Siguientes pasos
 
 - [Tipos y parámetros](/es/openapi/types-and-parameters): cómo se describen los DTOs y los parámetros.

@@ -1,8 +1,10 @@
 use corvis::Validate;
+use corvis_swagger::ApiSchema;
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize, Validate)]
+#[derive(Debug, Clone, Deserialize, Validate, ApiSchema)]
 pub struct CreateCatDto {
+    #[api_property(description = "Name of the cat", example = "Tom")]
     #[is_string]
     #[is_not_empty]
     #[max_length(50)]
@@ -10,14 +12,16 @@ pub struct CreateCatDto {
     #[is_int]
     #[min(0)]
     #[max(40)]
+    #[api_property(description = "Age in years", example = 3)]
     pub age: u32,
+    #[api_property(description = "Breed", example = "siamese")]
     #[is_string]
     #[is_in("persian", "siamese", "maine coon", "mixed")]
     pub breed: String,
 }
 
 /// `PartialType(CreateCatDto)`.
-#[derive(Debug, Clone, Deserialize, Validate)]
+#[derive(Debug, Clone, Deserialize, Validate, ApiSchema)]
 pub struct UpdateCatDto {
     #[is_optional]
     #[is_string]
@@ -32,7 +36,7 @@ pub struct UpdateCatDto {
     pub breed: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Validate)]
+#[derive(Debug, Clone, Deserialize, Validate, ApiSchema)]
 pub struct ListCatsQuery {
     #[is_optional]
     #[is_int]
