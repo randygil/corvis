@@ -115,3 +115,26 @@ async fn for_root_async_reads_config() {
     assert!(db.is_connected().await);
     module.close().await.unwrap();
 }
+
+// `corvis::prelude::*` (`ResultHttpExt`) and `OrmResultExt` both define `.http()`; they apply to disjoint error types.
+#[derive(Debug)]
+struct DomainError;
+impl std::fmt::Display for DomainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "domain failure")
+    }
+}
+impl std::error::Error for DomainError {}
+impl HttpError for DomainError {
+    fn status(&self) -> corvis::StatusCode {
+        corvis::StatusCode::CONFLICT
+    }
+}
+
+#[test]
+fn both_http_extensions_resolve_without_ambiguity() {
+    let orm: Result<u8, OrmError> = Err(OrmError::validation("bad"));
+    assert_eq!(orm.http().unwrap_err().get_status(), 400);
+    let domain: Result<u8, DomainError> = Err(DomainError);
+    assert_eq!(domain.http().unwrap_err().get_status(), 409);
+}

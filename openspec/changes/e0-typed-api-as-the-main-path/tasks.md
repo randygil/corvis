@@ -2,38 +2,38 @@
 
 ## 1. Typed responses: pin current behavior
 
-- [ ] 1.1 Add regression tests in `crates/corvis/tests/app.rs` (or a new `tests/typed_responses.rs`): a handler
+- [x] 1.1 Add regression tests in `crates/corvis/tests/app.rs` (or a new `tests/typed_responses.rs`): a handler
   returning `HttpResult<CatDto>` answers the struct as JSON with a JSON content type; a struct and the equivalent
   `json!` give byte-identical bodies; `(HttpStatus::ACCEPTED, Json(dto))` answers 202; `#[http_code(201)]` with a
   struct answers 201; verify with `cargo test -p corvis --test <file>`
 
 ## 2. `HttpError`
 
-- [ ] 2.1 Add `pub trait HttpError` (`status()`, provided `body()` returning the `Display` text) and
+- [x] 2.1 Add `pub trait HttpError` (`status()`, provided `body()` returning the `Display` text) and
   `HttpException::from_http_error` in `crates/corvis/src/http/exception.rs`, using `with_error` and `with_cause`;
   export the trait from `corvis` and the prelude (`crates/corvis/src/lib.rs`); unit tests for the default body, a
   custom `ExceptionBody::Object` body, `is_internal() == false` and `downcast_cause::<AppError>()`; verify with
   `cargo test -p corvis --lib exception`
-- [ ] 2.2 Add `pub trait ResultHttpExt<T> { fn http(self) -> HttpResult<T>; }` for `Result<T, E: HttpError>`, exported
+- [x] 2.2 Add `pub trait ResultHttpExt<T> { fn http(self) -> HttpResult<T>; }` for `Result<T, E: HttpError>`, exported
   from the prelude; unit test; verify that a scratch file importing both `corvis::prelude::*` and
   `corvis_orm::OrmResultExt` calls `.http()` on `Result<_, OrmError>` and on `Result<_, AppError>` without ambiguity
   (add it as a test in `crates/corvis-orm/tests/corvis_module.rs`)
-- [ ] 2.3 Add the `HttpError` level to the handler error conversion in `crates/corvis/src/__private.rs` (and the call
+- [x] 2.3 Add the `HttpError` level to the handler error conversion in `crates/corvis/src/__private.rs` (and the call
   in `crates/corvis-macros/src/controller.rs:378-383` if the receiver depth changes), keeping the existing order;
   integration tests, one route per error kind: `Result<T, AppError>` (404 with the built-in body),
   `HttpResult<T>` with `NotFoundException::new`, `Result<T, NotFoundException>` (unit type), `Result<T,
   std::io::Error>` (500 internal), `anyhow::Result<T>` (500 internal), and `HttpResult<T>` with `.http()?` and with
   plain `?` on an `AppError` (404 and 500); verify with `cargo test -p corvis --test <file>`
-- [ ] 2.4 Check that `#[handlers]` (`crates/corvis-macros/src/handlers.rs:283-288`) still compiles and behaves the same
+- [x] 2.4 Check that `#[handlers]` (`crates/corvis-macros/src/handlers.rs:283-288`) still compiles and behaves the same
   (no `HttpError` level there); verify with `cargo test -p corvis --test websockets --test schedule`
 
 ## 3. ORM: typed operations and DTO data
 
-- [ ] 3.1 Add `CreateManyAndReturn` and `UpdateManyAndReturn` to `actions!` (`Vec<M>`) and `create_many_and_return` /
+- [x] 3.1 Add `CreateManyAndReturn` and `UpdateManyAndReturn` to `actions!` (`Vec<M>`) and `create_many_and_return` /
   `update_many_and_return` to `delegate_ops!` in `crates/corvis-orm/src/query.rs`; tests in
   `crates/corvis-orm/tests/client.rs` (SQLite) and `pg_features.rs` (Postgres) comparing with `query_json` results;
   verify with `cargo test -p corvis-orm --test client` (and `--test pg_features` with Postgres running)
-- [ ] 3.2 Add `pub struct Data<T>(pub T)` with conversions into `Args<M>` (`{ data }`) and `DataArg<M>`, for `T:
+- [x] 3.2 Add `pub struct Data<T>(pub T)` with conversions into `Args<M>` (`{ data }`) and `DataArg<M>`, for `T:
   Serialize` and `&T`; carry a serialization error to a validation `OrmError` raised before any SQL; export from
   `corvis_orm`; tests: create from a DTO equals the `json!` version, partial update with `skip_serializing_if` fields
   changes only the present ones, a type whose `Serialize` fails returns a validation error and runs no query; verify
@@ -41,15 +41,15 @@
 
 ## 4. ORM: relation counts
 
-- [ ] 4.1 Add `pub struct WithCount<M, C>` (`#[serde(flatten)] pub model: M`, `#[serde(rename = "_count")] pub count:
+- [x] 4.1 Add `pub struct WithCount<M, C>` (`#[serde(flatten)] pub model: M`, `#[serde(rename = "_count")] pub count:
   C`) to `corvis-orm`, and make `Query::include` merge `_count.select` objects; unit test of the merged arguments
   (`.args()`); verify with `cargo test -p corvis-orm --lib query`
-- [ ] 4.2 In `crates/corvis-orm-macros/src/lib.rs`, generate for each to-many relation `<m>::<f>::count()`, and per
+- [x] 4.2 In `crates/corvis-orm-macros/src/lib.rs`, generate for each to-many relation `<m>::<f>::count()`, and per
   model `<m>::Count` (one `Option<i64>` per to-many relation, `#[serde(default)]`, renamed like the field) and
   `<m>::WithCount`; models without to-many relations get an empty `Count`; regenerate nothing by hand (the generated
   test models under `crates/corvis-orm/tests/generated/` come from the derive); verify with `cargo test -p
   corvis-orm --test codegen_schemas`
-- [ ] 4.3 Tests on SQLite and Postgres: counts per user equal the `.exec_json()` result, two counts merge, a typed
+- [x] 4.3 Tests on SQLite and Postgres: counts per user equal the `.exec_json()` result, two counts merge, a typed
   result serializes to the same string as `.exec_json()` for a model with `corvis_orm::DateTime`, and models with
   `i64`, `Decimal` and `Option` relation fields round-trip through `WithCount`; verify with `cargo test -p corvis-orm
   --test client` (and `--test pg_features`)

@@ -413,7 +413,7 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
             quote! {
                 match __ret {
                     ::std::result::Result::Ok(__v) => (&__v).__corvis_reply_kind().convert(__v),
-                    ::std::result::Result::Err(__e) => ::std::result::Result::Err((&__e).__corvis_exc_kind().convert(__e)),
+                    ::std::result::Result::Err(__e) => ::std::result::Result::Err((&&::corvis::__private::err_probe(&__e)).__corvis_err_kind().convert(__e)),
                 }
             }
         } else {
@@ -437,7 +437,7 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 ::std::sync::Arc::new(|__this: ::std::sync::Arc<Self>, __ctx: ::corvis::ExecutionContext, mut __args: ::std::vec::Vec<::corvis::__private::serde_json::Value>| -> ::corvis::__private::BoxFuture<'static, ::corvis::HandlerResult> {
                     ::std::boxed::Box::pin(async move {
                         #[allow(unused_imports)]
-                        use ::corvis::__private::{ReplyKind as _, SerializeKind as _, ExcKind as _, AnyhowKind as _};
+                        use ::corvis::__private::{ReplyKind as _, SerializeKind as _, ExcKind as _, AnyhowKind as _, HttpErrKind as _, ExcErrKind as _, AnyhowErrKind as _};
                         let _ = &__ctx;
                         let _ = &mut __args;
                         #(#arg_lets)*

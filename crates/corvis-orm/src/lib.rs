@@ -67,8 +67,8 @@ pub use migrate::{MigrateStatus, MigrationInfo};
 #[cfg(feature = "corvis")]
 pub use module::{ORM_MODULE_OPTIONS, OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};
 pub use query::{
-    Action, Args, BatchPayload, DataArg, Delegate, IncludeParam, OrderByParam, Query, SelectParam, SetParam, SortOrder, WhereArg,
-    WhereParam, and, data_object, not, or, to_json, where_object,
+    Action, Args, BatchPayload, Data, DataArg, Delegate, IncludeParam, OrderByParam, Query, SelectParam, SetParam, SortOrder, WhereArg,
+    WhereParam, WithCount, and, data_object, not, or, to_json, where_object,
 };
 
 pub use raw::{Bytes, RawArg, RawSql, ToSqlArg};

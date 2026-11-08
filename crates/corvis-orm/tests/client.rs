@@ -2,7 +2,8 @@ mod common;
 
 use common::*;
 use corvis_orm::prelude::*;
-use corvis_orm::{and, or};
+use corvis_orm::{Data, and, or};
+use typed::AuthorDelegate as _;
 
 #[tokio::test]
 async fn crud_roundtrip() {
@@ -560,4 +561,216 @@ async fn pool_timeout_zero_waits_without_limit() {
     res.unwrap();
     assert!(waited >= std::time::Duration::from_millis(1000), "{waited:?}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- typed operations, `Data` and counts
+
+mod typed {
+    use corvis_orm::prelude::*;
+    use corvis_orm::{DateTime, Decimal};
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Model)]
+    #[model(table = "t_authors")]
+    pub struct Author {
+        #[id]
+        #[default(autoincrement)]
+        pub id: i64,
+        #[unique]
+        pub email: String,
+        pub name: Option<String>,
+        pub rating: Option<i64>,
+        #[db("Decimal(20,2)")]
+        pub balance: Decimal,
+        #[default(now)]
+        pub created_at: DateTime,
+        #[relation(has_many)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub books: Option<Vec<Book>>,
+        #[relation(has_many)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub notes: Option<Vec<Note>>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Model)]
+    #[model(table = "t_books")]
+    pub struct Book {
+        #[id]
+        #[default(autoincrement)]
+        pub id: i64,
+        pub title: String,
+        #[default(false)]
+        pub published: bool,
+        pub author_id: i64,
+        #[relation(belongs_to, fields = "author_id", references = "id")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub author: Option<Box<Author>>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Model)]
+    #[model(table = "t_notes")]
+    pub struct Note {
+        #[id]
+        #[default(autoincrement)]
+        pub id: i64,
+        pub text: String,
+        pub author_id: i64,
+        #[relation(belongs_to, fields = "author_id", references = "id")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub author: Option<Box<Author>>,
+    }
+
+    pub async fn seeded() -> OrmClient {
+        let db = OrmClient::new("sqlite::memory:").unwrap();
+        db.db_push::<(Author, Book, Note)>().await.unwrap();
+        db.author()
+            .create(json!({ "data": {
+                "email": "ana@corvis.dev", "name": "Ana", "rating": 5, "balance": "10.50",
+                "books": { "create": [{ "title": "One" }, { "title": "Two" }, { "title": "Three" }] },
+                "notes": { "create": [{ "text": "n1" }] }
+            } }))
+            .await
+            .unwrap();
+        db.author().create(json!({ "data": { "email": "bob@corvis.dev", "balance": "0" } })).await.unwrap();
+        db
+    }
+}
+
+#[derive(Serialize)]
+struct NewAuthor {
+    email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    balance: String,
+}
+
+#[derive(Serialize)]
+struct AuthorPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+#[tokio::test]
+async fn create_many_and_update_many_and_return_match_the_json_result() {
+    let db = seeded().await;
+    let created = db.user().create_many_and_return(json!({ "data": [{ "email": "a@x.io" }, { "email": "b@x.io" }] })).await.unwrap();
+    assert_eq!(created.len(), 2);
+    assert!(created.iter().all(|u| u.id > 0 && u.age == 0));
+
+    let raw = db.user().create_many_and_return(json!({ "data": [{ "email": "c@x.io" }, { "email": "d@x.io" }] })).exec_json().await.unwrap();
+    let as_models: Vec<User> = serde_json::from_value(raw).unwrap();
+    assert_eq!(as_models.len(), 2);
+    assert_eq!(as_models[0].email, "c@x.io");
+
+    let updated = db.post().update_many_and_return(json!({ "where": { "published": false }, "data": { "published": true } })).await.unwrap();
+    assert_eq!(updated.len(), 1);
+    assert!(updated.iter().all(|p| p.published));
+    assert_eq!(db.post().count(json!({ "where": { "published": false } })).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn data_wrapper_creates_and_updates_from_a_dto() {
+    let db = typed::seeded().await;
+    let dto = NewAuthor { email: "cy@corvis.dev".into(), name: None, balance: "3.25".into() };
+    let a = db.author().create(Data(&dto)).await.unwrap();
+    let same = db.author().create(json!({ "data": { "email": "cz@corvis.dev", "balance": "3.25" } })).await.unwrap();
+    assert_eq!(a.name, None);
+    assert_eq!(a.balance, same.balance);
+
+    // `Data(T)` by value works too.
+    let b = db.author().create(Data(NewAuthor { email: "dd@corvis.dev".into(), name: Some("Dd".into()), balance: "1".into() })).await.unwrap();
+    assert_eq!(b.name.as_deref(), Some("Dd"));
+
+    // Only the present fields change.
+    let patch = AuthorPatch { email: None, name: Some("Ana B".into()) };
+    let updated = db.author().update(typed::author::id::equals(1)).data(Data(&patch)).await.unwrap();
+    assert_eq!(updated.name.as_deref(), Some("Ana B"));
+    assert_eq!(updated.email, "ana@corvis.dev");
+    assert_eq!(updated.rating, Some(5));
+
+    // the branches of an upsert
+    let up = db
+        .author()
+        .upsert(json!({ "where": { "email": "up@corvis.dev" } }))
+        .create(Data(NewAuthor { email: "up@corvis.dev".into(), name: None, balance: "0".into() }))
+        .update(Data(&patch))
+        .await
+        .unwrap();
+    assert_eq!(up.email, "up@corvis.dev");
+}
+
+struct Unserializable;
+impl Serialize for Unserializable {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("cannot be serialized"))
+    }
+}
+
+#[tokio::test]
+async fn data_that_fails_to_serialize_is_a_validation_error_without_sql() {
+    let db = seeded().await;
+    let err = db.user().create(Data(Unserializable)).await.unwrap_err();
+    assert!(err.is_validation(), "{err}");
+    assert!(err.message().contains("Unserializable"), "{err}");
+    assert!(err.message().contains("cannot be serialized"), "{err}");
+
+    let err = db.user().update(user::id::equals(1)).data(Data(Unserializable)).await.unwrap_err();
+    assert!(err.is_validation(), "{err}");
+    assert_eq!(db.user().find_unique(user::id::equals(1)).await.unwrap().unwrap().name.as_deref(), Some("Ana"));
+    assert_eq!(db.user().count(()).await.unwrap(), 3);
+}
+
+#[tokio::test]
+async fn count_includes_merge_into_one_count() {
+    let db = typed::seeded().await;
+    let q = db.author().find_many(()).include(typed::author::books::count()).include(typed::author::notes::count());
+    assert_eq!(q.args(), &json!({ "include": { "_count": { "select": { "books": true, "notes": true } } } }));
+
+    let single = db.author().find_many(()).include(typed::author::books::count());
+    assert_eq!(single.args(), &json!({ "include": { "_count": { "select": { "books": true } } } }));
+}
+
+#[tokio::test]
+async fn relation_counts_read_as_with_count() {
+    let db = typed::seeded().await;
+    let rows = db
+        .author()
+        .find_many(())
+        .include(typed::author::books::count())
+        .include(typed::author::notes::count())
+        .exec_as::<Vec<typed::author::WithCount>>()
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].model.id, 1);
+    assert_eq!(rows[0].count.books, Some(3));
+    assert_eq!(rows[0].count.notes, Some(1));
+    assert_eq!(rows[1].count.books, Some(0));
+
+    // One count only: the other stays `None`.
+    let rows = db.author().find_many(()).include(typed::author::books::count()).exec_as::<Vec<typed::author::WithCount>>().await.unwrap();
+    assert_eq!(rows[0].count.books, Some(3));
+    assert_eq!(rows[0].count.notes, None);
+}
+
+#[tokio::test]
+async fn typed_result_serializes_like_exec_json() {
+    let db = typed::seeded().await;
+    let build = || db.author().find_many(()).include(typed::author::books::count()).include(typed::author::notes::count());
+    let json = build().exec_json().await.unwrap();
+    let typed_rows = build().exec_as::<Vec<typed::author::WithCount>>().await.unwrap();
+    assert_eq!(serde_json::to_string(&typed_rows).unwrap(), serde_json::to_string(&json).unwrap());
+    // `i64`, `Decimal`, `DateTime` and `Option` fields survive the flatten round trip.
+    assert_eq!(typed_rows[0].model.rating, Some(5));
+    assert_eq!(typed_rows[1].model.rating, None);
+    assert_eq!(typed_rows[0].model.balance.to_string(), "10.5");
+    assert!(typed_rows[0].model.name.is_some());
+
+    // With a relation included too.
+    let build = || db.author().find_many(()).include(typed::author::books::include()).include(typed::author::books::count());
+    let json = build().exec_json().await.unwrap();
+    let typed_rows = build().exec_as::<Vec<typed::author::WithCount>>().await.unwrap();
+    assert_eq!(typed_rows[0].model.books.as_ref().unwrap().len(), 3);
+    assert_eq!(serde_json::to_string(&typed_rows).unwrap(), serde_json::to_string(&json).unwrap());
 }
