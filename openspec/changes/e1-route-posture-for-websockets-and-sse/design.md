@@ -174,3 +174,20 @@ re-reads the touched functions after they land.
   public gateways instead.
 - The out-of-scope defects found (non-idempotent `init()` after a failure, enhancers on methods without a route
   attribute dropped silently, duplicate gateway events replaced silently) are filed as separate issues.
+
+## Implementation record (task 1.1)
+
+Read after #116 and #26 landed (base `80fb87c`):
+
+- The #116 switch is `CorvisApplication::apply_global_enhancers_to_gateways(bool)` (default `true`), stored in
+  `RouterConfig::gateway_global_enhancers` (`crates/corvis/src/router/mod.rs`). Open question 1 is answered: with it
+  off, global guards are not in the handler guard list and do not count.
+- Global guards enter the list in the compile step (`compile_gateways`, formerly `build_gateways`): they are the first
+  elements of the gateway guard list, then the gateway's, then the handler's, in the same `Vec` that `run_handler`
+  iterates. No move was needed (task 1.2).
+- The posture check receives plain data (`GatewayPosture`, built by `websockets::posture_gateways`), so `posture.rs`
+  compiles without the `websockets` feature.
+- JSON tags follow the `type` key #26 already uses for kinds: `{"type":"sse"}`, `{"type":"ws_message","event":"ping"}`;
+  not-checked surfaces serialize as `{"type":"static_files"|"ws_handshake"|"upgrade_listeners", ...}` under
+  `unchecked`. A message exemption serializes with `"method":"WS"` and an extra `"event"` field.
+- `PostureKind` is no longer `Copy` (`WsMessage` owns its event).
