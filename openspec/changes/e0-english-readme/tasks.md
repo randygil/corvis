@@ -10,23 +10,23 @@
 
 ## 2. Doctest harness
 
-- [ ] 2.1 Add `#[cfg(doctest)] #[doc = include_str!("../../README.md")] pub struct ReadmeDoctests;` to
+- [x] 2.1 Add `#[cfg(doctest)] #[doc = include_str!("../../README.md")] pub struct ReadmeDoctests;` to
   `crates/corvis/src/lib.rs` (with a one-line comment saying why); verify that a deliberately broken non-ignored block
-  in a scratch copy of the README makes `cargo test --doc -p corvis` fail, then restore it (cargo verification left to the maintainer)
+  in a scratch copy of the README makes `cargo test --doc -p corvis` fail, then restore it (cargo verification done by the maintainer on main, see the Definition of done)
 
 ## 3. Rewrite
 
-- [ ] 3.1 Write the top of the new README in English: tagline, hello-world (compiled, `no_run`), its log output,
+- [x] 3.1 Write the top of the new README in English: tagline, hello-world (compiled, `no_run`), its log output,
   links to `https://corvis.randygil.com` and `https://corvis.randygil.com/es/`, install and CLI quick start (with the
-  `corvis build` behavior the CLI has at that moment), repository layout; verify `cargo test --doc -p corvis` (cargo verification left to the maintainer)
+  `corvis build` behavior the CLI has at that moment), repository layout; verify `cargo test --doc -p corvis` (cargo verification done by the maintainer on main, see the Definition of done)
 - [x] 3.2 Translate the "coming from Node.js" mapping tables, fixing `#[global]` (below `#[module]`, or
   `#[module(global, ...)]`), `corvis::config::register_as` with `ConfigModule::for_feature`, `ServeStaticModule::for_root(vec![ServeStaticOptions::new(..)])`
   and "wildcards when `wildcard: true`"; verify each corrected entry against `module.rs:39-66`, `config.rs:30,288`,
   `serve_static.rs:37,123`, `event_emitter.rs:37-40`
-- [ ] 3.3 Write the short feature examples (modules and providers with a compiled `#[global]` example, DTO
+- [x] 3.3 Write the short feature examples (modules and providers with a compiled `#[global]` example, DTO
   validation, guards, configuration with `register_as`, events with wildcards enabled, scheduling, testing, WebSocket
   gateway, static files with `for_root(vec![...])`), each with a link to its docs page; verify the compiled ones with
-  `cargo test --doc -p corvis` and that the events example matches `crates/corvis/tests/modules.rs:100-112` (cargo verification left to the maintainer)
+  `cargo test --doc -p corvis` and that the events example matches `crates/corvis/tests/modules.rs:100-112` (cargo verification done by the maintainer on main, see the Definition of done)
 - [x] 3.4 Write the ORM and OpenAPI summaries (`rust,ignore` blocks), the performance table (numbers copied from the
   current README and `bench/results.md`), the security summary, known limitations and license; verify the numbers match
   `bench/results.md`
@@ -41,10 +41,10 @@
 
 ## 5. Definition of done
 
-- [ ] 5.1 Builds with no warnings (cargo verification left to the maintainer)
-- [ ] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes (cargo verification left to the maintainer)
-- [ ] 5.3 `cargo test --workspace` passes, including the README doctests (cargo verification left to the maintainer)
-- [ ] 5.4 Regression tests: the README doctest harness (task 2.1) is the regression test for the examples (cargo verification left to the maintainer)
+- [x] 5.1 Builds with no warnings — verified on main after merging #106/#3/#22: build without warnings, clippy -D warnings clean, `cargo test --workspace` 369 passed / 0 failed; the five `rust,no_run` README blocks compile as doctests, and a deliberately broken hello-world block made `cargo test --doc -p corvis` fail (restored).
+- [x] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes — verified on main after merging #106/#3/#22: build without warnings, clippy -D warnings clean, `cargo test --workspace` 369 passed / 0 failed; the five `rust,no_run` README blocks compile as doctests, and a deliberately broken hello-world block made `cargo test --doc -p corvis` fail (restored).
+- [x] 5.3 `cargo test --workspace` passes, including the README doctests — verified on main after merging #106/#3/#22: build without warnings, clippy -D warnings clean, `cargo test --workspace` 369 passed / 0 failed; the five `rust,no_run` README blocks compile as doctests, and a deliberately broken hello-world block made `cargo test --doc -p corvis` fail (restored).
+- [x] 5.4 Regression tests: the README doctest harness (task 2.1) is the regression test for the examples — verified on main after merging #106/#3/#22: build without warnings, clippy -D warnings clean, `cargo test --workspace` 369 passed / 0 failed; the five `rust,no_run` README blocks compile as doctests, and a deliberately broken hello-world block made `cargo test --doc -p corvis` fail (restored).
 - [x] 5.5 Docs pages that received README content are updated in English (`docs/`) and Spanish (`docs/es/`);
   `npm run docs:check` in `docs/` passes
 - [x] 5.6 No framework runtime code changes (only a `#[cfg(doctest)]` item): record that the corvis-parity check
