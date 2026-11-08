@@ -70,6 +70,17 @@ already contains SSE labels and gateway handlers.
 - [ ] 5.6 Framework runtime code changed (`init()`): run the `corvis-parity` check and verify the three port apps
   (consi, facten, houseplan) keep 0 apidiff differences (not run by the implementer: the maintainer runs it)
 
+## 6. Security review fixes (L1 to L6)
+
+- [x] 6.1 L1: reader thread plus deadline in the main thread, drain grace after the application exits, Job Object (Windows) or process group (Unix) killed at timeout and at exit, Ctrl-C forwarded on Unix; verified with the fake-cargo tests (`crates/corvis-cli/tests/cli_posture.rs`)
+- [x] 6.2 L2: per-run nonce in the markers, last complete report wins, exit status from the report; unit and fake-cargo tests
+- [x] 6.3 L3: report mode fills `unchecked` (static mounts, handshakes with unknown `verify_client`, upgrade listeners not counted); content test
+- [x] 6.4 L4: exit codes 40/41, testing-module applications ignore report mode, production and test-job warnings in the docs
+- [x] 6.5 L5: limits documented (first `init()` only, default binary only)
+- [x] 6.6 L6: `corvis g guard` template denies by default
+- [x] 6.7 Informational: exemptions validated in report mode
+- [x] 6.8 Definition of done again (fmt, clippy, tests, naming, docs:check, examples smoke)
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

@@ -241,6 +241,10 @@ impl CanActivate for RolesGuard {
 
 To spot the case, in warn and enforce mode the check logs one line with the guards it counted, their scope and how many routes each covers, for example `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller CatsController, 5 routes)`. Gateway message handlers are counted in the same line, with the scopes `gateway ChatGateway` and `message handler ChatGateway::rooms`. A global guard that covers every route and is not your authentication guard is the one to review. The same data is in `app.route_posture().unwrap().access_guards()`.
 
+### Report mode
+
+`corvis posture` runs the application with `CORVIS_ROUTE_POSTURE_REPORT` set so that it prints this report and stops (see [`corvis posture`](/cli/usages#corvis-posture)). Never set that variable in production or in a CI job that runs `cargo test`: any binary that reads it stops at `init()` with exit code 40 or 41.
+
 ### What the check does not see
 
 The check covers controller routes and gateway message handlers. These HTTP surfaces are outside it, so protect them on their own:
