@@ -429,6 +429,12 @@ pub enum UncheckedSurface {
     WsHandshake { path: String, gateway: String, verify_client: bool },
     /// Raw `upgrade` listeners registered on the HTTP server (`on_upgrade`).
     UpgradeListeners { count: usize },
+    /// The WebSocket handshake of a gateway, reported by report mode: `verify_client` is not known yet because
+    /// the gateway's `after_init` has not run.
+    WsHandshakeUnknown { path: String, gateway: String },
+    /// Raw `upgrade` listeners, reported by report mode: they are registered in init hooks, which do not run, so
+    /// they cannot be counted.
+    UpgradeListenersUnknown,
 }
 
 impl fmt::Display for UncheckedSurface {
@@ -437,6 +443,12 @@ impl fmt::Display for UncheckedSurface {
             UncheckedSurface::StaticFiles { serve_root } => write!(f, "static files served at {serve_root}"),
             UncheckedSurface::WsHandshake { path, gateway, verify_client } => {
                 write!(f, "WebSocket handshake of {gateway} at {path} (verify_client {})", if *verify_client { "set" } else { "not set" })
+            }
+            UncheckedSurface::WsHandshakeUnknown { path, gateway } => {
+                write!(f, "WebSocket handshake of {gateway} at {path} (verify_client unknown: after_init has not run)")
+            }
+            UncheckedSurface::UpgradeListenersUnknown => {
+                write!(f, "raw upgrade listeners (registered in init hooks, not counted in report mode)")
             }
             UncheckedSurface::UpgradeListeners { count } => write!(f, "{count} raw upgrade listener{}", if *count == 1 { "" } else { "s" }),
         }
@@ -760,12 +772,41 @@ fn access_guards_line(guards: &[AccessGuardSummary]) -> String {
     format!("Route posture: access guards counted: {}", list.join(", "))
 }
 
-/// The line that opens the report in report mode.
+/// The line that opens the report in report mode when no nonce is set.
 pub const REPORT_BEGIN: &str = "----- BEGIN CORVIS ROUTE POSTURE REPORT -----";
-/// The line that closes the report in report mode.
+/// The line that closes the report in report mode when no nonce is set.
 pub const REPORT_END: &str = "----- END CORVIS ROUTE POSTURE REPORT -----";
 /// The environment variable that turns report mode on (`text` or `json`).
 pub const REPORT_ENV: &str = "CORVIS_ROUTE_POSTURE_REPORT";
+/// The environment variable that carries the nonce `corvis posture` generates for each run. When it is set, the
+/// marker lines contain it (`----- BEGIN CORVIS ROUTE POSTURE REPORT <nonce> -----`), so that output printed by
+/// the application or a library cannot pass for the report.
+pub const REPORT_NONCE_ENV: &str = "CORVIS_ROUTE_POSTURE_NONCE";
+/// The exit code of a report-mode process when nothing is unprotected. It is not 0 on purpose: a process that
+/// stopped in report mode must never look like a normal successful exit to a supervisor or to `cargo test`.
+pub const REPORT_EXIT_CLEAN: i32 = 40;
+/// The exit code of a report-mode process when at least one entry is unprotected.
+pub const REPORT_EXIT_UNPROTECTED: i32 = 41;
+
+/// The marker lines for `nonce` (the plain ones when there is none).
+pub fn report_markers(nonce: Option<&str>) -> (String, String) {
+    match nonce {
+        Some(n) => {
+            (format!("----- BEGIN CORVIS ROUTE POSTURE REPORT {n} -----"), format!("----- END CORVIS ROUTE POSTURE REPORT {n} -----"))
+        }
+        None => (REPORT_BEGIN.to_string(), REPORT_END.to_string()),
+    }
+}
+
+/// Reads the value of [`REPORT_NONCE_ENV`]: unset or blank means no nonce; otherwise 8 to 64 ASCII letters or
+/// digits, anything else is an error naming the variable.
+pub fn report_nonce_from_env(value: Option<&str>) -> crate::Result<Option<String>> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(n) if (8..=64).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_alphanumeric()) => Ok(Some(n.to_string())),
+        Some(_) => anyhow::bail!("{REPORT_NONCE_ENV} must be 8 to 64 ASCII letters or digits"),
+    }
+}
 
 /// How report mode prints the report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -787,43 +828,30 @@ pub fn report_format_from_env(value: Option<&str>) -> crate::Result<Option<Repor
     }
 }
 
-/// What report mode writes to stdout and the exit code it ends the process with (0 when nothing is
-/// unprotected, 1 otherwise).
-pub fn render_report_mode(report: &RoutePostureReport, format: ReportFormat) -> (String, i32) {
+/// What report mode writes to stdout and the exit code it ends the process with ([`REPORT_EXIT_CLEAN`] when
+/// nothing is unprotected, [`REPORT_EXIT_UNPROTECTED`] otherwise).
+pub fn render_report_mode(report: &RoutePostureReport, format: ReportFormat, nonce: Option<&str>) -> (String, i32) {
+    let (begin, end) = report_markers(nonce);
     let mut out = String::new();
-    out.push_str(REPORT_BEGIN);
+    out.push_str(&begin);
     out.push('\n');
     match format {
         ReportFormat::Text => {
             let table = report.to_string();
             if table.is_empty() {
-                out.push_str(
-                    "(no routes)
-",
-                );
+                out.push_str("(no routes)\n");
             } else {
                 out.push_str(&table);
             }
             let notes = access_guards_line(report.access_guards());
-            out.push_str(&format!(
-                "
-{}
-",
-                notes.trim_start_matches("Route posture: ")
-            ));
+            out.push_str(&format!("\n{}\n", notes.trim_start_matches("Route posture: ")));
             for e in report.stale_exemptions() {
                 let what = if e.event.is_some() { "handler" } else { "route" };
-                out.push_str(&format!(
-                    "stale exemption: {} ({}) matches no {what}
-",
-                    e.describe(),
-                    e.reason
-                ));
+                out.push_str(&format!("stale exemption: {} ({}) matches no {what}\n", e.describe(), e.reason));
             }
             for e in report.redundant_exemptions() {
                 out.push_str(&format!(
-                    "redundant exemption: {} ({}) matches only guarded or public {}
-",
+                    "redundant exemption: {} ({}) matches only guarded or public {}\n",
                     e.describe(),
                     e.reason,
                     if e.event.is_some() { "message handlers" } else { "routes" }
@@ -835,20 +863,43 @@ pub fn render_report_mode(report: &RoutePostureReport, format: ReportFormat) -> 
             out.push('\n');
         }
     }
-    out.push_str(REPORT_END);
+    out.push_str(&end);
     out.push('\n');
-    (out, if report.unprotected().is_empty() { 0 } else { 1 })
+    (out, if report.unprotected().is_empty() { REPORT_EXIT_CLEAN } else { REPORT_EXIT_UNPROTECTED })
+}
+
+/// The surfaces report mode lists as not checked: what is known when it runs, which is before gateway `after_init`
+/// hooks and the init hooks (where `on_upgrade` listeners are registered).
+pub(crate) fn report_mode_unchecked(gateways: &[GatewayPosture], static_roots: Vec<String>) -> Vec<UncheckedSurface> {
+    let mut unchecked: Vec<UncheckedSurface> =
+        static_roots.into_iter().map(|serve_root| UncheckedSurface::StaticFiles { serve_root }).collect();
+    unchecked.extend(gateways.iter().map(|g| UncheckedSurface::WsHandshakeUnknown { path: g.path.clone(), gateway: g.name.clone() }));
+    unchecked.push(UncheckedSurface::UpgradeListenersUnknown);
+    unchecked
 }
 
 /// Report mode of `init()`: when [`REPORT_ENV`] asks for it, prints the report between the marker lines,
-/// flushes stdout and ends the process. Returns `Ok` (and does nothing) when the variable is unset or blank.
-pub(crate) fn run_report_mode(table: &RouterTable, gateways: &[GatewayPosture], options: &RoutePostureOptions) -> crate::Result<()> {
+/// flushes stdout and ends the process with [`REPORT_EXIT_CLEAN`] or [`REPORT_EXIT_UNPROTECTED`]. Returns `Ok`
+/// (and does nothing) when the variable is unset or blank, or when `allowed` is false (applications created by
+/// the testing module).
+pub(crate) fn run_report_mode(
+    allowed: bool,
+    table: &RouterTable,
+    gateways: &[GatewayPosture],
+    static_roots: Vec<String>,
+    options: &RoutePostureOptions,
+) -> crate::Result<()> {
+    if !allowed {
+        return Ok(());
+    }
     let value = std::env::var(REPORT_ENV).ok();
     let Some(format) = report_format_from_env(value.as_deref())? else {
         return Ok(());
     };
-    let report = report_for(table, gateways, options);
-    let (text, code) = render_report_mode(&report, format);
+    let nonce = report_nonce_from_env(std::env::var(REPORT_NONCE_ENV).ok().as_deref())?;
+    options.validate()?;
+    let report = report_for(table, gateways, options).with_unchecked(report_mode_unchecked(gateways, static_roots));
+    let (text, code) = render_report_mode(&report, format, nonce.as_deref());
     {
         use std::io::Write;
         let mut out = std::io::stdout().lock();
@@ -1048,6 +1099,21 @@ mod tests {
     fn the_markers_have_a_fixed_text() {
         assert_eq!(REPORT_BEGIN, "----- BEGIN CORVIS ROUTE POSTURE REPORT -----");
         assert_eq!(REPORT_END, "----- END CORVIS ROUTE POSTURE REPORT -----");
+        assert_eq!(REPORT_NONCE_ENV, "CORVIS_ROUTE_POSTURE_NONCE");
+        let (begin, end) = report_markers(Some("abc123XYZ"));
+        assert_eq!(begin, "----- BEGIN CORVIS ROUTE POSTURE REPORT abc123XYZ -----");
+        assert_eq!(end, "----- END CORVIS ROUTE POSTURE REPORT abc123XYZ -----");
+        assert_eq!(report_markers(None), (REPORT_BEGIN.to_string(), REPORT_END.to_string()));
+    }
+
+    #[test]
+    fn the_nonce_is_validated() {
+        assert_eq!(report_nonce_from_env(None).unwrap(), None);
+        assert_eq!(report_nonce_from_env(Some("  ")).unwrap(), None);
+        assert_eq!(report_nonce_from_env(Some(" abcd1234 ")).unwrap().as_deref(), Some("abcd1234"));
+        for bad in ["short", "with space1234", "semi;colon1234", &"a".repeat(65)] {
+            assert!(report_nonce_from_env(Some(bad)).unwrap_err().to_string().contains("CORVIS_ROUTE_POSTURE_NONCE"), "{bad}");
+        }
     }
 
     #[test]
@@ -1057,24 +1123,59 @@ mod tests {
         let bad = RoutePostureReport::new(vec![open, fine.clone()], Vec::new());
         let good = RoutePostureReport::new(vec![fine], Vec::new());
 
-        let (text, code) = render_report_mode(&bad, ReportFormat::Text);
-        assert_eq!(code, 1);
+        let (text, code) = render_report_mode(&bad, ReportFormat::Text, None);
+        assert_eq!(code, 41);
         assert!(text.starts_with(&format!("{REPORT_BEGIN}\n")) && text.ends_with(&format!("{REPORT_END}\n")), "{text}");
         assert!(text.contains("UNPROTECTED") && text.contains("C::open"), "{text}");
 
-        let (text, code) = render_report_mode(&good, ReportFormat::Text);
-        assert_eq!(code, 0);
+        let (text, code) = render_report_mode(&good, ReportFormat::Text, None);
+        assert_eq!(code, 40);
         assert!(!text.contains("UNPROTECTED"), "{text}");
 
-        let (text, code) = render_report_mode(&bad, ReportFormat::Json);
-        assert_eq!(code, 1);
+        let (text, code) = render_report_mode(&bad, ReportFormat::Json, None);
+        assert_eq!(code, REPORT_EXIT_UNPROTECTED);
         let body = text.strip_prefix(&format!("{REPORT_BEGIN}\n")).unwrap().strip_suffix(&format!("{REPORT_END}\n")).unwrap();
         let json: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(json["entries"].as_array().unwrap().len(), 2);
-        assert_eq!(render_report_mode(&good, ReportFormat::Json).1, 0);
+        assert_eq!(render_report_mode(&good, ReportFormat::Json, None).1, REPORT_EXIT_CLEAN);
 
-        let (text, _) = render_report_mode(&RoutePostureReport::new(Vec::new(), Vec::new()), ReportFormat::Text);
+        let (text, _) = render_report_mode(&RoutePostureReport::new(Vec::new(), Vec::new()), ReportFormat::Text, None);
         assert!(text.contains("(no routes)"), "{text}");
+    }
+
+    #[test]
+    fn report_mode_puts_the_nonce_in_both_markers() {
+        let good = RoutePostureReport::new(Vec::new(), Vec::new());
+        let (text, _) = render_report_mode(&good, ReportFormat::Json, Some("n0nce1234"));
+        assert!(text.starts_with("----- BEGIN CORVIS ROUTE POSTURE REPORT n0nce1234 -----\n"), "{text}");
+        assert!(text.ends_with("----- END CORVIS ROUTE POSTURE REPORT n0nce1234 -----\n"), "{text}");
+        assert!(!text.contains(REPORT_BEGIN), "{text}");
+    }
+
+    #[test]
+    fn report_mode_lists_what_it_cannot_know_yet() {
+        let gateways = vec![GatewayPosture {
+            path: "/chat".into(),
+            name: "ChatGateway".into(),
+            class_target: Arc::new(Target::new("ChatGateway")),
+            verify_client: false,
+            handlers: Vec::new(),
+        }];
+        let unchecked = report_mode_unchecked(&gateways, vec!["/files".to_string()]);
+        let report = RoutePostureReport::new(Vec::new(), Vec::new()).with_unchecked(unchecked);
+        let (text, _) = render_report_mode(&report, ReportFormat::Text, None);
+        assert!(text.contains("static files served at /files"), "{text}");
+        assert!(text.contains("WebSocket handshake of ChatGateway at /chat (verify_client unknown"), "{text}");
+        assert!(text.contains("raw upgrade listeners (registered in init hooks, not counted in report mode)"), "{text}");
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            json["unchecked"],
+            serde_json::json!([
+                { "type": "static_files", "serve_root": "/files" },
+                { "type": "ws_handshake_unknown", "path": "/chat", "gateway": "ChatGateway" },
+                { "type": "upgrade_listeners_unknown" },
+            ])
+        );
     }
 
     #[test]

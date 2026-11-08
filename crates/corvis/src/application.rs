@@ -126,6 +126,8 @@ pub struct CorvisApplication {
     shutdown_hooks: bool,
     log_routes: bool,
     started: Instant,
+    /// `false` for applications created by the testing module: they ignore `CORVIS_ROUTE_POSTURE_REPORT`.
+    pub(crate) report_mode_allowed: bool,
     local_addr: Option<SocketAddr>,
 }
 
@@ -178,6 +180,7 @@ impl CorvisApplication {
             shutdown_hooks: false,
             log_routes: true,
             started,
+            report_mode_allowed: true,
             local_addr: None,
         })
     }
@@ -548,7 +551,13 @@ impl CorvisApplication {
         let gateway_posture = Vec::new();
         // Report mode (CORVIS_ROUTE_POSTURE_REPORT) prints the report, gateways included, and ends the process here,
         // whatever the mode and before the check, so that enforce mode does not swallow the report.
-        crate::posture::run_report_mode(&router, &gateway_posture, &self.config.route_posture)?;
+        let static_roots = self
+            .container
+            .instances_of::<crate::modules::serve_static::ServeStaticOptions>()
+            .iter()
+            .map(|d| d.serve_root.clone())
+            .collect();
+        crate::posture::run_report_mode(self.report_mode_allowed, &router, &gateway_posture, static_roots, &self.config.route_posture)?;
         crate::posture::check_routes(&router, &gateway_posture, &self.config.route_posture)?;
         let module_middleware = build_middleware(&self.container, &router, &self.config.router).await?;
         #[cfg(feature = "websockets")]
