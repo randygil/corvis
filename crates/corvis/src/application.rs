@@ -61,6 +61,11 @@ impl CorvisFactory {
 
     /// A standalone application context
     /// (DI container without HTTP server), handy for CLIs, workers and scripts.
+    ///
+    /// It registers the `#[on_event]`, `#[cron]`, `#[interval]` and `#[timeout]` handlers, runs
+    /// `on_module_init`, starts the scheduled jobs and runs `on_application_bootstrap`, in the same order
+    /// as [`CorvisApplication::init`]. Routes, middleware and gateways are not built. Use
+    /// `ScheduleModule::for_root_with` to turn a kind of scheduled handler off.
     pub async fn create_application_context<M: Module>() -> crate::Result<CorvisApplication> {
         let mut app = Self::create::<M>().await?;
         app.call_init_hooks().await?;
@@ -347,13 +352,19 @@ impl CorvisApplication {
             return Ok(());
         }
         self.hooks_called = true;
+        // Handlers are registered here, once per application, so a standalone context runs them too and
+        // `init()` after `create_application_context` does not register them a second time.
+        let discovered = crate::discovery::discover(&self.container);
+        crate::modules::register_handlers(&self.container, &discovered)?;
         self.container.call_hook(HookKind::OnModuleInit, None).await?;
         crate::modules::mount_scheduler(&self.container)?;
         self.container.call_hook(HookKind::OnApplicationBootstrap, None).await?;
         Ok(())
     }
 
-    /// `app.init()` – registers routes, middleware and calls the init lifecycle hooks.
+    /// `app.init()` – registers routes, middleware and calls the init lifecycle hooks. Event and scheduled
+    /// handlers are registered once per application, so calling it after `create_application_context` does
+    /// not register them again.
     pub async fn init(&mut self) -> crate::Result<()> {
         if self.initialized {
             return Ok(());
@@ -411,8 +422,6 @@ impl CorvisApplication {
             http_server: self.get_http_server(),
             http_settings: self.config.http_settings.clone(),
         }));
-        let discovered = crate::discovery::discover(&self.container);
-        crate::modules::register_handlers(&self.container, &discovered)?;
         self.call_init_hooks().await?;
         self.initialized = true;
         Ok(())

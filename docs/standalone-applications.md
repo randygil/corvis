@@ -73,11 +73,20 @@ async fn main() -> corvis::Result<()> {
 
 ## `create_application_context`
 
-`CorvisFactory::create_application_context::<M>()` is a shortcut that creates the application and runs the initialization hooks (`on_module_init`, `on_application_bootstrap`) without preparing routes or gateways.
+`CorvisFactory::create_application_context::<M>()` is a shortcut for a worker or script that needs no routes or gateways. It creates the application, registers the `#[on_event]`, `#[cron]`, `#[interval]`, and `#[timeout]` handlers, runs `on_module_init`, starts the scheduled jobs, and runs `on_application_bootstrap`, in the same order as `app.init()`. `app.close()` stops the jobs.
 
-::: warning
-`create_application_context` does not register the `#[on_event]`, `#[cron]`, `#[interval]`, or `#[timeout]` handlers: that registration happens in `app.init()`. If your standalone application uses events or scheduled tasks, create the application with `CorvisFactory::create` and call `app.init()`, as in the examples above.
-:::
+```rust
+#[corvis::main]
+async fn main() -> corvis::Result<()> {
+    let mut app = CorvisFactory::create_application_context::<WorkerModule>().await?;
+    corvis::tokio::signal::ctrl_c().await?;
+    app.close().await
+}
+```
+
+Calling `app.init()` on that application is allowed and never registers the handlers twice.
+
+A one-shot script that imports a module with `#[cron]`, `#[interval]`, or `#[timeout]` handlers will also run them while it is alive. To avoid that, turn a kind off with `ScheduleModule::for_root_with(ScheduleModuleOptions { cron_jobs: false, ..Default::default() })` (the fields are `cron_jobs`, `intervals`, and `timeouts`), or use a root module that does not import `ScheduleModule`.
 
 ## Creation options
 

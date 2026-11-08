@@ -125,8 +125,6 @@ Cuando el apagado lo inicia una señal, las conexiones HTTP ya terminaron antes 
 
 `CorvisFactory::create_application_context::<M>()` crea el contenedor y ejecuta `on_module_init` y `on_application_bootstrap` sin registrar rutas ni abrir sockets. Es la base de los scripts y workers (ver [Aplicaciones standalone](/es/standalone-applications)). Cierra con `app.close().await` para que corran los hooks de apagado.
 
-::: warning
-En la versión actual, `create_application_context` no registra los handlers de `#[handlers]` (`#[on_event]`, `#[cron]`, `#[interval]`, `#[timeout]`): ese registro solo ocurre en `app.init()`. Si tu worker depende de ellos, crea la aplicación con `CorvisFactory::create` y llama a `app.init().await` en lugar de usar el contexto standalone.
-:::
+`create_application_context` también registra los handlers de `#[handlers]` (`#[on_event]`, `#[cron]`, `#[interval]`, `#[timeout]`) antes de `on_module_init` y arranca los programados antes de `on_application_bootstrap`, así que un worker recibe sus eventos y ejecuta sus tareas. `app.close().await` los detiene. Llamar a `app.init()` después nunca los registra dos veces.
 
 En los tests, `TestingModule::init()` y `TestingModule::close()` disparan las mismas fases (ver [Testing](/es/fundamentals/testing)).

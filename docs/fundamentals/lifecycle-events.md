@@ -125,8 +125,6 @@ When shutdown is started by a signal, the HTTP connections have already finished
 
 `CorvisFactory::create_application_context::<M>()` creates the container and runs `on_module_init` and `on_application_bootstrap` without registering routes or opening sockets. It is the basis of scripts and workers (see [Standalone applications](/standalone-applications)). Close with `app.close().await` so the shutdown hooks run.
 
-::: warning
-In the current version, `create_application_context` does not register the `#[handlers]` handlers (`#[on_event]`, `#[cron]`, `#[interval]`, `#[timeout]`): that registration only happens in `app.init()`. If your worker depends on them, create the application with `CorvisFactory::create` and call `app.init().await` instead of using the standalone context.
-:::
+`create_application_context` also registers the `#[handlers]` handlers (`#[on_event]`, `#[cron]`, `#[interval]`, `#[timeout]`) before `on_module_init` and starts the scheduled ones before `on_application_bootstrap`, so a worker receives its events and runs its jobs. `app.close().await` stops them. Calling `app.init()` afterwards never registers them twice.
 
 In tests, `TestingModule::init()` and `TestingModule::close()` trigger the same phases (see [Testing](/fundamentals/testing)).
