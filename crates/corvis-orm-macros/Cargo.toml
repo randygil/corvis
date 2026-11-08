@@ -4,8 +4,13 @@ description = "Procedural macros (#[derive(Model)]) for corvis-orm."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["corvis", "macros", "orm"]
+categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true

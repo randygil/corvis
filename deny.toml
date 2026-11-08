@@ -26,11 +26,10 @@ private = { ignore = true }
 
 [bans]
 multiple-versions = "warn"
-# Versiones `*`: aviso. Hoy solo las producen las dependencias por `path` entre crates del
-# workspace sin `version` (`corvis`, `corvis-macros` y `corvis-orm-macros`), que no son un riesgo
-# de seguridad pero impiden publicar en crates.io; al publicar, agregarles `version` y pasar este
-# valor a "deny".
-wildcards = "warn"
+# Versiones `*`: error. Las dependencias entre crates del workspace llevan `version` (en
+# `[workspace.dependencies]`); las dependencias por `path` de los crates `publish = false` siguen
+# permitidas por `allow-wildcard-paths`.
+wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 

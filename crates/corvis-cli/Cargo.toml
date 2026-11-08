@@ -1,8 +1,16 @@
 [package]
 name = "corvis-cli"
+description = "Command-line tool for Corvis: scaffolds new projects and generates modules, controllers, services and other schematics."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["corvis", "cli", "scaffolding", "generator"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "corvis"
