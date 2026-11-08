@@ -613,6 +613,9 @@ impl<M: Model> Delegate<M> {
         /// The `updateMany` action: `{ where, data }`.
         update_many => UpdateMany;
         /// The `updateManyAndReturn` action: like `updateMany`, returning the updated rows.
+        ///
+        /// Warning: without a `where` it updates every row of the table and returns all of them, held in
+        /// memory at once. Always pass a filter, and bound it when the matching set can be large.
         update_many_and_return => UpdateManyAndReturn;
         /// The `upsert` action: `{ where, create, update }`.
         upsert => Upsert;

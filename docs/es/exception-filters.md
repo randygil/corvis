@@ -141,15 +141,15 @@ async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> Result<CatDto,
 { "message": "Cat #42 not found", "error": "Not Found", "statusCode": 404 }
 ```
 
-El cuerpo por defecto es el texto de `Display` con el formato de las [excepciones incluidas](#excepciones-incluidas). Sobrescribe `body()` para enviar otra cosa, por ejemplo un código que los clientes puedan evaluar:
+Para un `4xx` el cuerpo por defecto es el texto de `Display` con el formato de las [excepciones incluidas](#excepciones-incluidas). Para un `5xx` es el cuerpo genérico de error interno (`{ "statusCode": 500, "message": "Internal server error" }`, con la frase del estado para otros `5xx`) y el error se registra como cualquier error inesperado, así que un `Display` con texto de la base de datos o del driver nunca llega al cliente. Sobrescribe `body()`, que devuelve `Option<ExceptionBody>`, para enviar otra cosa, por ejemplo un código que los clientes puedan evaluar:
 
 ```rust
-fn body(&self) -> ExceptionBody {
-    ExceptionBody::Object(json!({ "code": "CAT_EXISTS", "statusCode": 409 }))
+fn body(&self) -> Option<ExceptionBody> {
+    Some(ExceptionBody::Object(json!({ "code": "CAT_EXISTS", "statusCode": 409 })))
 }
 ```
 
-El objeto se envía tal cual. `ExceptionBody` lo exporta `corvis`, no el prelude.
+El objeto se envía tal cual, también para un `5xx`: no pongas detalles internos en él. `ExceptionBody` lo exporta `corvis`, no el prelude. Un estado menor que 400 es un error del tipo y se responde como `500`.
 
 ### Usar `?` dentro de un handler con `HttpResult`
 
@@ -168,8 +168,8 @@ async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Cat
 ### Qué lleva la excepción
 
 - El error queda como causa de la excepción, así que un [filtro propio](#filtros-propios) todavía puede leerlo con `exception.downcast_cause::<AppError>()`.
-- `is_internal()` es `false`: el estado se eligió a propósito, incluso para un `5xx`, así que no se registra como error inesperado.
-- El texto de `Display` llega al cliente. No pongas detalles internos (SQL, rutas de archivos, URLs de servicios) en el `Display` de una variante `5xx`; usa un mensaje genérico o sobrescribe `body()`.
+- Un `4xx` no es interno: `is_internal()` es `false`. Un `5xx` sin `body()` propio es interno (`is_internal()` es `true`), así que se registra con el contexto `ExceptionsHandler`, y un filtro general que omite las excepciones internas no lo ve. Un `5xx` con `body()` propio no es interno.
+- El texto de `Display` llega al cliente solo en un `4xx` con el cuerpo por defecto y en un `body()` propio. No pongas detalles internos (SQL, rutas de archivos, URLs de servicios) en ninguno de los dos.
 
 Los errores que no implementan `HttpError` conservan su comportamiento: `Result<T, std::io::Error>` y `anyhow::Result<T>` responden `500`, y `HttpResult<T>` con una excepción incluida responde el estado de esa excepción. `HttpError` se aplica solo a los handlers HTTP; los handlers de WebSocket y de eventos no lo usan.
 
