@@ -218,7 +218,9 @@ app.set_route_posture(
 - Un guard que solo limita o valida peticiones no decide quién puede llamar a una ruta. `ThrottlerGuard` y `ZodGuard` no cuentan. Tu propio guard cuenta por defecto; sobrescribe `controls_access()` para que devuelva `false` cuando deja pasar todo salvo que esté configurado (un guard de roles sin roles, por ejemplo). Solo cambia la declaración, no cómo se ejecuta el guard.
 - `app.route_posture()` devuelve, después de `init()` y en cualquier modo (también apagado), la postura de cada ruta: método, ruta, controlador y handler, guards, y si está protegida, pública, exenta (con su razón) o sin protección. Implementa `Display` (una tabla) y `serde::Serialize`.
 - Llama a `require_route_posture()` o `set_route_posture()` antes de `init()` o `listen()`; después no tienen efecto.
-- Las rutas `#[sse]` se revisan como cualquier otra. Los handlers de mensajes de gateways todavía no se revisan.
+- Las rutas `#[sse]` se revisan como cualquier otra y se marcan como `SSE` en el error y en el reporte.
+- Cada handler `#[subscribe_message]` de un gateway de WebSocket también se revisa y aparece en el mismo error como `WS  /chat  event "rooms"  ChatGateway::rooms`. Ver [guards en WebSockets](/es/websockets/guards#route-posture-en-gateways).
+- La revisión no puede exigir nada sobre el handshake de WebSocket, los montajes de `ServeStaticModule` ni los listeners `upgrade` directos. `app.route_posture()` los lista en "Not checked" para que quien revisa vea que existen; nunca hacen fallar `init()`.
 
 Contar un guard es una declaración, no una prueba de que autentique: la verificación no distingue un guard de autenticación real de uno que siempre devuelve `true`.
 

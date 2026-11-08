@@ -99,6 +99,53 @@ impl CanActivate for AuthGuard {
 
 `ChatUser::of(ctx)` reads the user from the WebSocket client (`client.get::<ChatUser>()`) or from the HTTP request (`ctx.request().get::<ChatUser>()`), depending on the context type. The same `RolesGuard`, which reads the roles with `Reflector::get_all_and_override`, protects both `POST /api/rooms/:room/announcements` and the `clear` message.
 
+## Route posture for gateways
+
+With [`require_route_posture()`](/guards#require-a-guard-on-every-route) the application checks every `#[subscribe_message]` handler, not only HTTP routes. A handler is accepted when a guard that controls access runs for it, when it is public, or when a message exemption matches it. Otherwise `init()` fails, before any gateway `after_init` runs:
+
+```text
+Route posture check failed: 1 message handler has no guard and is not marked #[public].
+  WS  /chat  event "rooms"  ChatGateway::rooms
+Add #[use_guards(...)] to the route, the message handler, its controller or the gateway (or register a global guard), mark it #[public] if it is meant to be open, or add an exemption with a reason. Guards that do not control access (ThrottlerGuard, ZodGuard) do not count.
+```
+
+The check counts the guards that run for each message: global guards first, then the gateway's, then the handler's. A global guard counts only while global enhancers apply to gateways; after `app.apply_global_enhancers_to_gateways(false)` it does not, and a gateway that relied on it is reported. A global `ThrottlerGuard` never counts.
+
+To open a gateway or a handler on purpose, mark it `#[public]`. It takes no arguments and only stores the `PUBLIC_METADATA` entry; a handler's value wins over the gateway's:
+
+```rust
+#[websocket_gateway(path = "/status")]
+#[public]
+pub struct StatusGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl StatusGateway {
+    #[subscribe_message("ping")]
+    #[public]
+    fn ping(&self) {}
+}
+```
+
+Mark public gateways `#[public]` instead of letting a global guard return `Ok(true)` for `ContextType::Ws`. A global guard that lets WebSocket contexts through counts as protection, so the check would accept every handler while the report shows no real authentication; `#[public]` keeps the intent visible.
+
+A handler protected outside the framework can be exempted with a reason, by gateway path and event name (exact, or `*` for every event of the gateway):
+
+```rust
+use corvis::RoutePostureOptions;
+
+app.set_route_posture(
+    RoutePostureOptions::enforce()
+        .exempt_message("/chat", "ping", "health probe, no data"),
+);
+```
+
+A blank reason makes `init()` fail, and an exemption that matches no handler logs a warning. Route exemptions never match handlers and message exemptions never match routes.
+
+The handshake is not a message: it runs no guard, so the check cannot enforce it. `app.route_posture()` lists each gateway handshake under "Not checked" with whether `verify_client` is set.
+
 ## Authenticating on connect
 
 A guard is evaluated on every message. To reject the whole connection:

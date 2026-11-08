@@ -276,6 +276,8 @@ impl OnGatewayInit for ChatGateway {
 | `allowed_origins([...])` | No list | An `Origin` that isn't in the list receives `403`; requests without an `Origin` are accepted |
 | `verify_client(f)` | None | If `f` returns `false`, the handshake receives `401` |
 
+The route posture report lists each gateway handshake as not checked, with whether `verify_client` is set: the check cannot enforce what runs before the first message. See [WebSocket guards](/websockets/guards#route-posture-for-gateways).
+
 `allowed_origins` is important if you authenticate the gateway with cookies: without that list, a page from another domain could open a connection on the user's behalf.
 
 `client.buffered_amount()` returns the pending bytes. Pings are answered automatically (a single pong stays pending). A `panic` in `handle_connection` closes the connection with `1011`, and one in `handle_disconnect` is logged; in both cases the client leaves `server.clients()`.

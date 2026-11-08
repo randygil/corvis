@@ -218,7 +218,9 @@ app.set_route_posture(
 - A guard that only limits or validates requests does not decide who may call a route. `ThrottlerGuard` and `ZodGuard` do not count. Your own guard counts by default; override `controls_access()` to return `false` when it lets every request through unless configured (a roles guard without roles, for example). Only the declaration changes, not how the guard runs.
 - `app.route_posture()` returns, after `init()` and in every mode (also off), the posture of every route: method, path, controller and handler, guards, and whether it is protected, public, exempt (with its reason) or unprotected. It implements `Display` (a table) and `serde::Serialize`.
 - Call `require_route_posture()` or `set_route_posture()` before `init()` or `listen()`; they have no effect afterwards.
-- `#[sse]` routes are checked like any other route. Gateway message handlers are not checked yet.
+- `#[sse]` routes are checked like any other route and are labelled `SSE` in the error and the report.
+- Every `#[subscribe_message]` handler of a WebSocket gateway is checked too, and appears in the same error as `WS  /chat  event "rooms"  ChatGateway::rooms`. See [WebSocket guards](/websockets/guards#route-posture-for-gateways).
+- The check cannot enforce the WebSocket handshake, `ServeStaticModule` mounts or raw `upgrade` listeners. `app.route_posture()` lists them under "Not checked" so a reviewer sees they exist; they never make `init()` fail.
 
 Counting a guard is a declaration, not proof that it authenticates: the check cannot tell a real authentication guard from one that always returns `true`.
 
