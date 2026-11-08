@@ -133,3 +133,22 @@ in these places:
 2. Open question 2: the script only warns about an old `bench/target`; it does not delete it.
 3. Open question 3: translate the Spanish messages of `run.sh` to English in this change (same file, small, and public
    repository text is English); no separate issue.
+
+## Implementation notes (2026-11-08)
+
+- Messages of `bench/run.sh` (comments, log lines, errors) are translated to English, as the review notes ask. Two
+  strings stay Spanish on purpose because they are written into `bench/raw/meta.json` and end up verbatim in
+  `bench/results.md`, whose report (`bench/report.js`) is Spanish and out of scope: the `BENCH_NOTES` warning and the
+  `hilos` word of the `loadgen` field. Translating them alone would mix two languages inside the report.
+- The script prints the resolved target directory in the build log line and a notice (not an error) for a leftover
+  `bench/target`.
+- The script was not run end to end and no release build was made (disk budget on the maintainer's machine). Checked
+  instead: `bash -n`; the `target_dir` function extracted and run with `CARGO_TARGET_DIR` set
+  (`C:/Users/Usuario/Devel/nestrs/target`) and unset (`<worktree>/target`, already with forward slashes, so the
+  backslash conversion works); `SKIP_BUILD=1 bash bench/run.sh` with an empty `bench/target` and no release binary:
+  the notice appears, the folder is left in place and the run stops with the full path and
+  `cargo build --release -p corvis-app` before starting any server.
+- `docs:check` could not run (`docs/node_modules` is not installed); no page of `docs/` changed.
+- The Rust checks (`cargo build`, `clippy`, `test`) were not run: no Rust code, manifest or lockfile changed. Only
+  `cargo fmt --all --check` was run.
+- Unticked: 3.1 and 3.2 (need a real benchmark build and run), 4.2 to 4.6 (see above).

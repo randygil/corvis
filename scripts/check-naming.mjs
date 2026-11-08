@@ -21,6 +21,7 @@ const SURFACES = [
   'crates/**',
   'examples/**',
   'docs/**',
+  'bench/README.md',
   'bench/report.js',
   'bench/results.md',
   'bench/run.sh',
