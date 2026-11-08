@@ -69,3 +69,12 @@ message on stderr, when the application ends without printing a complete report.
 - **WHEN** `corvis posture` runs in a project whose application returns a dependency injection error before `init()`
 - **THEN** the command prints on stderr that the application ended without producing a posture report, with the
   application's exit code, and exits with status 2
+
+### Requirement: Timeout for applications that never report
+`corvis posture` SHALL stop the application and exit with status 2 when it has not printed a complete report within
+`--timeout <seconds>` (default 120) after it started running. The time spent building MUST NOT count.
+
+#### Scenario: Application that never reaches init
+- **WHEN** `corvis posture --timeout 3` runs in a project whose `main` blocks before the application initializes
+- **THEN** the command stops the application and its child processes, prints on stderr that no report arrived within
+  3 seconds, and exits with status 2

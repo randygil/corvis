@@ -99,6 +99,55 @@ impl CanActivate for AuthGuard {
 
 `ChatUser::of(ctx)` lee el usuario del cliente WebSocket (`client.get::<ChatUser>()`) o de la request HTTP (`ctx.request().get::<ChatUser>()`), según el tipo de contexto. El mismo `RolesGuard`, que lee los roles con `Reflector::get_all_and_override`, protege tanto `POST /api/rooms/:room/announcements` como el mensaje `clear`.
 
+## Route posture en gateways
+
+Con [`require_route_posture()`](/es/guards#exigir-un-guard-en-cada-ruta) la aplicación revisa cada handler `#[subscribe_message]`, no solo las rutas HTTP. Un handler se acepta si le corre un guard que controla el acceso, si es público o si una exención de mensajes lo cubre. Si no, `init()` falla, antes de que corra el `after_init` de cualquier gateway:
+
+```text
+Route posture check failed: 1 message handler has no guard and is not marked #[public].
+  WS  /chat  event "rooms"  ChatGateway::rooms
+Add #[use_guards(...)] to the route, the message handler, its controller or the gateway (or register a global guard), mark it #[public] if it is meant to be open, or add an exemption with a reason. Guards that do not control access (ThrottlerGuard, ZodGuard) do not count.
+```
+
+(El mensaje del error está en inglés.) La revisión cuenta los guards que corren en cada mensaje: primero los globales, luego los del gateway y luego los del handler. Un guard global cuenta solo mientras los enhancers globales se aplican a los gateways; tras `app.apply_global_enhancers_to_gateways(false)` no cuenta, y un gateway que dependía de él se reporta. Un `ThrottlerGuard` global nunca cuenta.
+
+Para abrir un gateway o un handler a propósito, márcalo con `#[public]`. No recibe argumentos y solo guarda la entrada `PUBLIC_METADATA`; el valor del handler gana sobre el del gateway:
+
+```rust
+#[websocket_gateway(path = "/status")]
+#[public]
+pub struct StatusGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl StatusGateway {
+    #[subscribe_message("ping")]
+    #[public]
+    fn ping(&self) {}
+}
+```
+
+En el reporte un handler público indica si la marca está en el handler o en el gateway (`public (gateway)`), y la línea de guards de acceso que se registra en modo warn y enforce cuenta también los handlers, con los alcances `global`, `gateway ChatGateway` y `message handler ChatGateway::rooms`.
+
+Marca los gateways públicos con `#[public]` en lugar de hacer que un guard global devuelva `Ok(true)` para `ContextType::Ws`. Un guard global que deja pasar los contextos WebSocket cuenta como protección: la revisión aceptaría todos los handlers aunque el reporte no muestre autenticación real. `#[public]` deja la intención a la vista.
+
+Un handler protegido fuera del framework se puede eximir con un motivo, por ruta del gateway y nombre de evento (exacto, o `*` para todos los eventos del gateway):
+
+```rust
+use corvis::RoutePostureOptions;
+
+app.set_route_posture(
+    RoutePostureOptions::enforce()
+        .exempt_message("/chat", "ping", "health probe, no data"),
+);
+```
+
+La ruta del gateway se compara con las mismas reglas literales que las exenciones de rutas (`/chat`, `/c*`; `/chat/*` necesitaría un segmento más). Un motivo en blanco hace fallar `init()`, y una exención que no coincide con ningún handler, o solo con handlers que ya tienen guard o son públicos, registra una advertencia. Las exenciones de rutas nunca coinciden con handlers y las de mensajes nunca con rutas.
+
+El handshake no es un mensaje: no corre ningún guard, así que la revisión no puede exigir nada sobre él. `app.route_posture()` lista el handshake de cada gateway en "Not checked", con si `verify_client` está configurado.
+
 ## Autenticar al conectar
 
 Un guard se evalúa en cada mensaje. Para rechazar la conexión completa:

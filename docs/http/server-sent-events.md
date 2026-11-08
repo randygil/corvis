@@ -83,4 +83,6 @@ mind that `EventSource` does not allow sending headers, so a guard that requires
 `Authorization: Bearer` will reject the connection from the browser. Use a cookie or a token in the
 query for those cases.
 
+The route posture check treats SSE routes like any other route: a stream with no guard that controls access, no `#[public]` and no exemption stops the application in enforce mode. They are labelled `SSE` in the error and the report, so a long-lived stream is easy to spot. See [Require a guard on every route](/guards#require-a-guard-on-every-route).
+
 For two-way communication, see [WebSockets](/websockets/gateways).

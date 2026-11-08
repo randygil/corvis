@@ -4,10 +4,13 @@
 //! It is off by default; see [`CorvisApplication::require_route_posture`](crate::CorvisApplication::require_route_posture).
 
 use std::fmt;
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde::ser::{SerializeStruct, Serializer};
 
+use crate::common::context::Target;
+use crate::common::guard::CanActivate;
 use crate::common::reflector::Reflector;
 use crate::di::token::short_type_name;
 use crate::http::RequestMethod;
@@ -31,15 +34,23 @@ pub struct PostureExemption {
     method: RequestMethod,
     pattern: String,
     reason: String,
+    /// `Some` for a gateway message exemption: an event name, or `*` for every event of the gateway.
+    event: Option<String>,
 }
 
 impl PostureExemption {
-    /// The HTTP method; [`RequestMethod::All`] matches every method.
+    /// The HTTP method; [`RequestMethod::All`] matches every method. A message exemption has no method and
+    /// returns [`RequestMethod::All`] here; check [`event`](Self::event).
     pub fn method(&self) -> RequestMethod {
         self.method
     }
 
-    /// The path pattern compared with the route's full path template.
+    /// For a gateway message exemption, the event name (or `*`); `None` for a route exemption.
+    pub fn event(&self) -> Option<&str> {
+        self.event.as_deref()
+    }
+
+    /// The path pattern compared with the route's full path template (or the gateway path).
     pub fn pattern(&self) -> &str {
         &self.pattern
     }
@@ -49,17 +60,31 @@ impl PostureExemption {
         &self.reason
     }
 
+    fn matches_message(&self, path: &str, event: &str) -> bool {
+        self.event.as_deref().is_some_and(|e| e == "*" || e == event) && template_matches(&self.pattern, path)
+    }
+
+    fn describe(&self) -> String {
+        match &self.event {
+            Some(event) => format!("WS {} event \"{}\"", self.pattern, event),
+            None => format!("{} {}", self.method.as_str(), self.pattern),
+        }
+    }
+
     fn matches(&self, method: RequestMethod, path: &str) -> bool {
-        (self.method == RequestMethod::All || self.method == method) && template_matches(&self.pattern, path)
+        self.event.is_none() && (self.method == RequestMethod::All || self.method == method) && template_matches(&self.pattern, path)
     }
 }
 
 impl Serialize for PostureExemption {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut s = serializer.serialize_struct("PostureExemption", 3)?;
-        s.serialize_field("method", self.method.as_str())?;
+        let mut s = serializer.serialize_struct("PostureExemption", if self.event.is_some() { 4 } else { 3 })?;
+        s.serialize_field("method", if self.event.is_some() { "WS" } else { self.method.as_str() })?;
         s.serialize_field("pattern", &self.pattern)?;
         s.serialize_field("reason", &self.reason)?;
+        if let Some(event) = &self.event {
+            s.serialize_field("event", event)?;
+        }
         s.end()
     }
 }
@@ -158,7 +183,20 @@ impl RoutePostureOptions {
     /// and version included, with the same rules as middleware route matching) although they have no guard and
     /// are not public. `reason` is mandatory: a blank one makes `init()` fail.
     pub fn exempt(mut self, method: RequestMethod, pattern: impl Into<String>, reason: impl Into<String>) -> Self {
-        self.exemptions.push(PostureExemption { method, pattern: pattern.into(), reason: reason.into() });
+        self.exemptions.push(PostureExemption { method, pattern: pattern.into(), reason: reason.into(), event: None });
+        self
+    }
+
+    /// Accepts the message handlers of the gateways whose path matches `pattern` (same rules as [`exempt`](Self::exempt))
+    /// for `event`, compared exactly, or for every event of the gateway with `*`, although they have no guard
+    /// and are not public. `reason` is mandatory: a blank one makes `init()` fail.
+    pub fn exempt_message(mut self, pattern: impl Into<String>, event: impl Into<String>, reason: impl Into<String>) -> Self {
+        self.exemptions.push(PostureExemption {
+            method: RequestMethod::All,
+            pattern: pattern.into(),
+            reason: reason.into(),
+            event: Some(event.into()),
+        });
         self
     }
 
@@ -177,9 +215,8 @@ impl RoutePostureOptions {
         for e in &self.exemptions {
             if e.reason.trim().is_empty() {
                 anyhow::bail!(
-                    "Route posture exemption {} {} has no reason: say why the route is open or protected outside the framework",
-                    e.method.as_str(),
-                    e.pattern
+                    "Route posture exemption {} has no reason: say why the route is open or protected outside the framework",
+                    e.describe()
                 );
             }
         }
@@ -187,12 +224,16 @@ impl RoutePostureOptions {
     }
 }
 
-/// What a posture entry is: a controller route. Other kinds are added in later versions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a posture entry is: a controller route, an SSE stream or a gateway message handler.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PostureKind {
-    /// An HTTP route (`#[get]`, `#[post]`, ..., `#[sse]`).
+    /// An HTTP route (`#[get]`, `#[post]`, ...).
     Http { method: RequestMethod },
+    /// A route declared with `#[sse]` (a long-lived `GET` stream).
+    Sse,
+    /// A `#[subscribe_message]` handler of a WebSocket gateway.
+    WsMessage { event: String },
 }
 
 impl Serialize for PostureKind {
@@ -204,6 +245,17 @@ impl Serialize for PostureKind {
                 s.serialize_field("method", method.as_str())?;
                 s.end()
             }
+            PostureKind::Sse => {
+                let mut s = serializer.serialize_struct("PostureKind", 1)?;
+                s.serialize_field("type", "sse")?;
+                s.end()
+            }
+            PostureKind::WsMessage { event } => {
+                let mut s = serializer.serialize_struct("PostureKind", 2)?;
+                s.serialize_field("type", "ws_message")?;
+                s.serialize_field("event", event)?;
+                s.end()
+            }
         }
     }
 }
@@ -212,6 +264,16 @@ impl PostureKind {
     fn label(&self) -> &'static str {
         match self {
             PostureKind::Http { method } => method.as_str(),
+            PostureKind::Sse => "SSE",
+            PostureKind::WsMessage { .. } => "WS",
+        }
+    }
+
+    /// `event "name"` for a message handler, empty otherwise.
+    fn detail(&self) -> String {
+        match self {
+            PostureKind::WsMessage { event } => format!("event \"{event}\""),
+            _ => String::new(),
         }
     }
 }
@@ -239,7 +301,7 @@ pub struct GuardInfo {
     pub controls_access: bool,
 }
 
-/// The posture of one compiled route (each path alias and URI version is its own entry).
+/// The posture of one compiled route or gateway message handler (each path alias and URI version of a route is its own entry).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct PostureEntry {
@@ -248,9 +310,9 @@ pub struct PostureEntry {
     pub path: String,
     /// The host the controller is restricted to, if any.
     pub host: Option<String>,
-    /// The controller's name.
+    /// The controller's name (the gateway's for a message handler).
     pub owner: String,
-    /// The handler's name.
+    /// The handler's name (the method of a message handler).
     pub handler: String,
     /// Every guard the router runs for the route, in order.
     pub guards: Vec<GuardInfo>,
@@ -267,6 +329,8 @@ pub enum PublicSource {
     Handler,
     /// `#[public]` (or `PUBLIC_METADATA`) on the controller.
     Controller,
+    /// `#[public]` (or `PUBLIC_METADATA`) on the gateway.
+    Gateway,
 }
 
 impl PublicSource {
@@ -274,6 +338,7 @@ impl PublicSource {
         match self {
             PublicSource::Handler => "handler",
             PublicSource::Controller => "controller",
+            PublicSource::Gateway => "gateway",
         }
     }
 }
@@ -289,6 +354,10 @@ pub enum GuardScope {
     Controller { controller: String },
     /// `#[use_guards]` on a route method.
     Route { controller: String, handler: String },
+    /// `#[use_guards]` below `#[websocket_gateway]`: every message handler of the gateway.
+    Gateway { gateway: String },
+    /// `#[use_guards]` on a `#[subscribe_message]` method.
+    Message { gateway: String, handler: String },
 }
 
 impl fmt::Display for GuardScope {
@@ -297,6 +366,8 @@ impl fmt::Display for GuardScope {
             GuardScope::Global => write!(f, "global"),
             GuardScope::Controller { controller } => write!(f, "controller {controller}"),
             GuardScope::Route { controller, handler } => write!(f, "route {controller}::{handler}"),
+            GuardScope::Gateway { gateway } => write!(f, "gateway {gateway}"),
+            GuardScope::Message { gateway, handler } => write!(f, "message handler {gateway}::{handler}"),
         }
     }
 }
@@ -306,7 +377,7 @@ impl fmt::Display for GuardScope {
 pub struct AccessGuardSummary {
     pub name: String,
     pub scope: GuardScope,
-    /// Compiled routes (each path alias and URI version counts) the guard runs for.
+    /// Compiled routes (each path alias and URI version counts) and gateway message handlers the guard runs for.
     pub routes: usize,
 }
 
@@ -333,7 +404,7 @@ impl PostureEntry {
     }
 
     fn sort_key(&self) -> (&str, &'static str, String) {
-        (self.path.as_str(), self.kind.label(), format!("{}::{}", self.owner, self.handler))
+        (self.path.as_str(), self.kind.label(), format!("{}::{}::{}", self.kind.detail(), self.owner, self.handler))
     }
 }
 
@@ -342,15 +413,62 @@ impl PostureEntry {
 pub struct RoutePostureReport {
     entries: Vec<PostureEntry>,
     stale_exemptions: Vec<PostureExemption>,
+    unchecked: Vec<UncheckedSurface>,
     access_guards: Vec<AccessGuardSummary>,
     redundant_exemptions: Vec<PostureExemption>,
+}
+
+/// A surface the check cannot enforce, listed so that a reviewer sees it exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum UncheckedSurface {
+    /// A `ServeStaticModule` mount.
+    StaticFiles { serve_root: String },
+    /// The WebSocket handshake of a gateway: it runs no guard; `verify_client` is the only check.
+    WsHandshake { path: String, gateway: String, verify_client: bool },
+    /// Raw `upgrade` listeners registered on the HTTP server (`on_upgrade`).
+    UpgradeListeners { count: usize },
+}
+
+impl fmt::Display for UncheckedSurface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UncheckedSurface::StaticFiles { serve_root } => write!(f, "static files served at {serve_root}"),
+            UncheckedSurface::WsHandshake { path, gateway, verify_client } => {
+                write!(f, "WebSocket handshake of {gateway} at {path} (verify_client {})", if *verify_client { "set" } else { "not set" })
+            }
+            UncheckedSurface::UpgradeListeners { count } => write!(f, "{count} raw upgrade listener{}", if *count == 1 { "" } else { "s" }),
+        }
+    }
+}
+
+/// One message handler: the guards that run for it, in order, and how many of them are global and gateway-level.
+pub(crate) struct GatewayHandlerPosture {
+    pub event: String,
+    pub target: Arc<Target>,
+    pub guards: Vec<Arc<dyn CanActivate>>,
+    /// The leading guards that are global (0 when global enhancers are kept HTTP-only).
+    pub global_guard_count: usize,
+    /// The guards after the global ones that come from the gateway.
+    pub gateway_guard_count: usize,
+}
+
+/// A gateway as the posture check sees it: the handlers with the guards that run for each message.
+pub(crate) struct GatewayPosture {
+    pub path: String,
+    pub name: String,
+    pub class_target: Arc<Target>,
+    pub verify_client: bool,
+    /// `(event, handler target, guards in the order they run)`.
+    pub handlers: Vec<GatewayHandlerPosture>,
 }
 
 impl RoutePostureReport {
     /// Builds a report; the entries are sorted.
     pub fn new(mut entries: Vec<PostureEntry>, stale_exemptions: Vec<PostureExemption>) -> Self {
         entries.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
-        RoutePostureReport { entries, stale_exemptions, access_guards: Vec::new(), redundant_exemptions: Vec::new() }
+        RoutePostureReport { entries, stale_exemptions, unchecked: Vec::new(), access_guards: Vec::new(), redundant_exemptions: Vec::new() }
     }
 
     fn with_details(mut self, access_guards: Vec<AccessGuardSummary>, redundant_exemptions: Vec<PostureExemption>) -> Self {
@@ -371,7 +489,19 @@ impl RoutePostureReport {
         &self.redundant_exemptions
     }
 
-    /// Every route.
+    /// Sets the surfaces listed as not checked.
+    pub fn with_unchecked(mut self, unchecked: Vec<UncheckedSurface>) -> Self {
+        self.unchecked = unchecked;
+        self
+    }
+
+    /// The surfaces the check cannot enforce (static mounts, WebSocket handshakes, raw upgrade listeners). Filled
+    /// by `route_posture()`, which reads live state; empty in the report the startup check builds.
+    pub fn unchecked(&self) -> &[UncheckedSurface] {
+        &self.unchecked
+    }
+
+    /// Every route and message handler.
     pub fn entries(&self) -> &[PostureEntry] {
         &self.entries
     }
@@ -381,7 +511,7 @@ impl RoutePostureReport {
         self.entries.iter().filter(|e| e.status == PostureStatus::Unprotected).collect()
     }
 
-    /// The exemptions that match no route.
+    /// The exemptions that match no route or handler.
     pub fn stale_exemptions(&self) -> &[PostureExemption] {
         &self.stale_exemptions
     }
@@ -403,6 +533,7 @@ impl fmt::Display for RoutePostureReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let method_w = self.entries.iter().map(|e| e.kind.label().len()).max().unwrap_or(0);
         let path_w = self.entries.iter().map(|e| e.path.len()).max().unwrap_or(0);
+        let detail_w = self.entries.iter().map(|e| e.kind.detail().len()).max().unwrap_or(0);
         let route_w = self.entries.iter().map(|e| e.owner.len() + 2 + e.handler.len()).max().unwrap_or(0);
         for e in &self.entries {
             let route = format!("{}::{}", e.owner, e.handler);
@@ -415,7 +546,23 @@ impl fmt::Display for RoutePostureReport {
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            writeln!(f, "{:<method_w$}  {:<path_w$}  {:<route_w$}  {}  [{}]", e.kind.label(), e.path, route, status_label(e), guards)?;
+            let detail = if detail_w == 0 { String::new() } else { format!("{:<detail_w$}  ", e.kind.detail()) };
+            writeln!(
+                f,
+                "{:<method_w$}  {:<path_w$}  {detail}{:<route_w$}  {}  [{}]",
+                e.kind.label(),
+                e.path,
+                route,
+                status_label(e),
+                guards
+            )?;
+        }
+        if !self.unchecked.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Not checked:")?;
+            for u in &self.unchecked {
+                writeln!(f, "  {u}")?;
+            }
         }
         Ok(())
     }
@@ -442,19 +589,31 @@ impl RoutePostureError {
 impl fmt::Display for RoutePostureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let n = self.unprotected.len();
-        if n == 1 {
-            writeln!(f, "Route posture check failed: 1 route has no guard and is not marked #[public].")?;
-        } else {
-            writeln!(f, "Route posture check failed: {n} routes have no guard and are not marked #[public].")?;
-        }
+        let messages = self.unprotected.iter().filter(|e| matches!(e.kind, PostureKind::WsMessage { .. })).count();
+        let (noun, verb) = match (n, messages) {
+            (1, 0) => ("route", "has"),
+            (1, _) => ("message handler", "has"),
+            (_, 0) => ("routes", "have"),
+            _ if messages == n => ("message handlers", "have"),
+            _ => ("routes or message handlers", "have"),
+        };
+        writeln!(
+            f,
+            "Route posture check failed: {n} {noun} {verb} no guard and {} not marked #[public].",
+            if n == 1 { "is" } else { "are" }
+        )?;
         let method_w = self.unprotected.iter().map(|e| e.kind.label().len()).max().unwrap_or(0);
         let path_w = self.unprotected.iter().map(|e| e.path.len()).max().unwrap_or(0);
+        let detail_w = self.unprotected.iter().map(|e| e.kind.detail().len()).max().unwrap_or(0);
         for e in &self.unprotected {
-            writeln!(f, "  {:<method_w$}  {:<path_w$}  {}::{}", e.kind.label(), e.path, e.owner, e.handler)?;
+            let detail = if detail_w == 0 { String::new() } else { format!("{:<detail_w$}  ", e.kind.detail()) };
+            writeln!(f, "  {:<method_w$}  {:<path_w$}  {detail}{}::{}", e.kind.label(), e.path, e.owner, e.handler)?;
         }
+        let place =
+            if messages > 0 { "the route, the message handler, its controller or the gateway" } else { "the route or its controller" };
         write!(
             f,
-            "Add #[use_guards(...)] to the route or its controller (or register a global guard), mark it #[public] if it is \
+            "Add #[use_guards(...)] to {place} (or register a global guard), mark it #[public] if it is \
              meant to be open, or add an exemption with a reason. Guards that do not control access (ThrottlerGuard, ZodGuard) \
              do not count."
         )
@@ -463,20 +622,30 @@ impl fmt::Display for RoutePostureError {
 
 impl std::error::Error for RoutePostureError {}
 
-/// The posture of every route of `table`, with `options`' exemptions (none matter in off mode, but they are
-/// applied anyway so that a report read in off mode is the same as one read in warn mode).
-pub(crate) fn report_for_routes(table: &RouterTable, options: &RoutePostureOptions) -> RoutePostureReport {
+/// The posture of every route of `table` and every handler of `gateways`, with `options`' exemptions (none matter in
+/// off mode, but they are applied anyway so that a report read in off mode is the same as one read in warn mode).
+pub(crate) fn report_for(table: &RouterTable, gateways: &[GatewayPosture], options: &RoutePostureOptions) -> RoutePostureReport {
     let reflector = Reflector;
     let mut matched = vec![false; options.exemptions.len()];
     let mut needed = vec![false; options.exemptions.len()];
     let mut summaries: Vec<AccessGuardSummary> = Vec::new();
     let mut entries = Vec::with_capacity(table.routes.len());
+    let guard_infos = |guards: &[Arc<dyn CanActivate>]| -> Vec<GuardInfo> {
+        guards.iter().map(|g| GuardInfo { name: short_type_name(g.guard_name()), controls_access: g.controls_access() }).collect()
+    };
+    let status_of = |guards: &[GuardInfo], public: bool, exemption: Option<&PostureExemption>| {
+        if public {
+            PostureStatus::Public
+        } else if guards.iter().any(|g| g.controls_access) {
+            PostureStatus::Protected
+        } else if let Some(e) = exemption {
+            PostureStatus::Exempt { reason: e.reason.clone() }
+        } else {
+            PostureStatus::Unprotected
+        }
+    };
     for route in &table.routes {
-        let guards: Vec<GuardInfo> = route
-            .guards
-            .iter()
-            .map(|g| GuardInfo { name: short_type_name(g.guard_name()), controls_access: g.controls_access() })
-            .collect();
+        let guards = guard_infos(&route.guards);
         let public =
             reflector.get_all_and_override::<bool>(crate::PUBLIC_METADATA, &[&route.handler_target, &route.class_target]) == Some(true);
         let guarded = guards.iter().any(|g| g.controls_access);
@@ -512,17 +681,9 @@ pub(crate) fn report_for_routes(table: &RouterTable, options: &RoutePostureOptio
                 None => summaries.push(AccessGuardSummary { name, scope, routes: 1 }),
             }
         }
-        let status = if public {
-            PostureStatus::Public
-        } else if guarded {
-            PostureStatus::Protected
-        } else if let Some(e) = exemption {
-            PostureStatus::Exempt { reason: e.reason.clone() }
-        } else {
-            PostureStatus::Unprotected
-        };
+        let status = status_of(&guards, public, exemption);
         entries.push(PostureEntry {
-            kind: PostureKind::Http { method: route.method },
+            kind: if route.sse { PostureKind::Sse } else { PostureKind::Http { method: route.method } },
             path: route.path.clone(),
             host: route.host.clone(),
             owner: route.class_target.name.clone(),
@@ -531,6 +692,57 @@ pub(crate) fn report_for_routes(table: &RouterTable, options: &RoutePostureOptio
             status,
             public_source,
         });
+    }
+    for gateway in gateways {
+        for h in &gateway.handlers {
+            let (event, target) = (&h.event, &h.target);
+            let guards = guard_infos(&h.guards);
+            let guarded = guards.iter().any(|g| g.controls_access);
+            let public = reflector.get_all_and_override::<bool>(crate::PUBLIC_METADATA, &[target, &gateway.class_target]) == Some(true);
+            let mut exemption = None;
+            for (i, e) in options.exemptions.iter().enumerate() {
+                if e.matches_message(&gateway.path, event) {
+                    matched[i] = true;
+                    needed[i] |= !public && !guarded;
+                    exemption.get_or_insert(e);
+                }
+            }
+            let public_source = public.then(|| {
+                if reflector.get::<bool>(crate::PUBLIC_METADATA, target) == Some(true) {
+                    PublicSource::Handler
+                } else {
+                    PublicSource::Gateway
+                }
+            });
+            for (i, g) in h.guards.iter().enumerate() {
+                if !g.controls_access() {
+                    continue;
+                }
+                let scope = if i < h.global_guard_count {
+                    GuardScope::Global
+                } else if i < h.global_guard_count + h.gateway_guard_count {
+                    GuardScope::Gateway { gateway: gateway.name.clone() }
+                } else {
+                    GuardScope::Message { gateway: gateway.name.clone(), handler: target.name.clone() }
+                };
+                let name = short_type_name(g.guard_name());
+                match summaries.iter_mut().find(|s| s.name == name && s.scope == scope) {
+                    Some(s) => s.routes += 1,
+                    None => summaries.push(AccessGuardSummary { name, scope, routes: 1 }),
+                }
+            }
+            let status = status_of(&guards, public, exemption);
+            entries.push(PostureEntry {
+                kind: PostureKind::WsMessage { event: event.clone() },
+                path: gateway.path.clone(),
+                host: None,
+                owner: gateway.name.clone(),
+                handler: target.name.clone(),
+                guards,
+                status,
+                public_source,
+            });
+        }
     }
     let stale = options.exemptions.iter().zip(&matched).filter(|(_, m)| !**m).map(|(e, _)| e.clone()).collect();
     let redundant = options.exemptions.iter().enumerate().filter(|(i, _)| matched[*i] && !needed[*i]).map(|(_, e)| e.clone()).collect();
@@ -548,21 +760,120 @@ fn access_guards_line(guards: &[AccessGuardSummary]) -> String {
     format!("Route posture: access guards counted: {}", list.join(", "))
 }
 
+/// The line that opens the report in report mode.
+pub const REPORT_BEGIN: &str = "----- BEGIN CORVIS ROUTE POSTURE REPORT -----";
+/// The line that closes the report in report mode.
+pub const REPORT_END: &str = "----- END CORVIS ROUTE POSTURE REPORT -----";
+/// The environment variable that turns report mode on (`text` or `json`).
+pub const REPORT_ENV: &str = "CORVIS_ROUTE_POSTURE_REPORT";
+
+/// How report mode prints the report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportFormat {
+    /// The aligned table of [`RoutePostureReport`]'s `Display`.
+    Text,
+    /// The pretty-printed JSON of the serialized report.
+    Json,
+}
+
+/// Reads the value of [`REPORT_ENV`]: unset or blank means no report mode; `text` and `json` (surrounding
+/// whitespace ignored, case-sensitive) select the format; anything else is an error naming the variable.
+pub fn report_format_from_env(value: Option<&str>) -> crate::Result<Option<ReportFormat>> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some("text") => Ok(Some(ReportFormat::Text)),
+        Some("json") => Ok(Some(ReportFormat::Json)),
+        Some(other) => anyhow::bail!("{REPORT_ENV} must be \"text\" or \"json\" (got \"{other}\")"),
+    }
+}
+
+/// What report mode writes to stdout and the exit code it ends the process with (0 when nothing is
+/// unprotected, 1 otherwise).
+pub fn render_report_mode(report: &RoutePostureReport, format: ReportFormat) -> (String, i32) {
+    let mut out = String::new();
+    out.push_str(REPORT_BEGIN);
+    out.push('\n');
+    match format {
+        ReportFormat::Text => {
+            let table = report.to_string();
+            if table.is_empty() {
+                out.push_str(
+                    "(no routes)
+",
+                );
+            } else {
+                out.push_str(&table);
+            }
+            let notes = access_guards_line(report.access_guards());
+            out.push_str(&format!(
+                "
+{}
+",
+                notes.trim_start_matches("Route posture: ")
+            ));
+            for e in report.stale_exemptions() {
+                let what = if e.event.is_some() { "handler" } else { "route" };
+                out.push_str(&format!(
+                    "stale exemption: {} ({}) matches no {what}
+",
+                    e.describe(),
+                    e.reason
+                ));
+            }
+            for e in report.redundant_exemptions() {
+                out.push_str(&format!(
+                    "redundant exemption: {} ({}) matches only guarded or public {}
+",
+                    e.describe(),
+                    e.reason,
+                    if e.event.is_some() { "message handlers" } else { "routes" }
+                ));
+            }
+        }
+        ReportFormat::Json => {
+            out.push_str(&serde_json::to_string_pretty(report).expect("the report serializes"));
+            out.push('\n');
+        }
+    }
+    out.push_str(REPORT_END);
+    out.push('\n');
+    (out, if report.unprotected().is_empty() { 0 } else { 1 })
+}
+
+/// Report mode of `init()`: when [`REPORT_ENV`] asks for it, prints the report between the marker lines,
+/// flushes stdout and ends the process. Returns `Ok` (and does nothing) when the variable is unset or blank.
+pub(crate) fn run_report_mode(table: &RouterTable, gateways: &[GatewayPosture], options: &RoutePostureOptions) -> crate::Result<()> {
+    let value = std::env::var(REPORT_ENV).ok();
+    let Some(format) = report_format_from_env(value.as_deref())? else {
+        return Ok(());
+    };
+    let report = report_for(table, gateways, options);
+    let (text, code) = render_report_mode(&report, format);
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(text.as_bytes());
+        let _ = out.flush();
+    }
+    std::process::exit(code);
+}
+
 /// Runs the startup check of `init()`: enforce returns the error, warn logs the list, off does nothing.
-pub(crate) fn check_routes(table: &RouterTable, options: &RoutePostureOptions) -> crate::Result<()> {
+pub(crate) fn check_routes(table: &RouterTable, gateways: &[GatewayPosture], options: &RoutePostureOptions) -> crate::Result<()> {
     if options.mode == RoutePostureMode::Off {
         return Ok(());
     }
-    let report = report_for_routes(table, options);
+    let report = report_for(table, gateways, options);
     let log = crate::logger::Logger::new("RoutePosture");
     for e in report.stale_exemptions() {
-        log.warn(format!("Route posture exemption {} {} matches no route", e.method.as_str(), e.pattern));
+        let what = if e.event.is_some() { "handler" } else { "route" };
+        log.warn(format!("Route posture exemption {} matches no {what}", e.describe()));
     }
     for e in report.redundant_exemptions() {
         log.warn(format!(
-            "Route posture exemption {} {} matches only guarded or public routes: it accepts nothing today, but it would accept them if their guard were removed",
-            e.method.as_str(),
-            e.pattern
+            "Route posture exemption {} matches only guarded or public {}: it accepts nothing today, but it would accept them if their guard were removed",
+            e.describe(),
+            if e.event.is_some() { "message handlers" } else { "routes" }
         ));
     }
     log.log(access_guards_line(report.access_guards()));
@@ -650,6 +961,7 @@ mod tests {
                     "public_source": null,
                 }],
                 "stale_exemptions": [{"method": "GET", "pattern": "/gone", "reason": "old"}],
+                "unchecked": [],
                 "access_guards": [],
                 "redundant_exemptions": [],
             })
@@ -665,8 +977,8 @@ mod tests {
 
     #[test]
     fn exemption_methods_match_exactly_unless_all() {
-        let all = PostureExemption { method: RequestMethod::All, pattern: "/x".into(), reason: "r".into() };
-        let get = PostureExemption { method: RequestMethod::Get, pattern: "/x".into(), reason: "r".into() };
+        let all = PostureExemption { method: RequestMethod::All, pattern: "/x".into(), reason: "r".into(), event: None };
+        let get = PostureExemption { method: RequestMethod::Get, pattern: "/x".into(), reason: "r".into(), event: None };
         assert!(all.matches(RequestMethod::Post, "/x"));
         assert!(all.matches(RequestMethod::All, "/x"));
         assert!(get.matches(RequestMethod::Get, "/x"));
@@ -716,6 +1028,53 @@ mod tests {
         assert!(!m("/health*", "/healthcare/records/:id"));
         assert!(m("/a*c/x", "/abc/x"));
         assert!(!m("/health*", "/:id"), "a glob never matches a :param segment");
+    }
+
+    #[test]
+    fn report_format_reads_the_variable() {
+        assert_eq!(report_format_from_env(None).unwrap(), None);
+        assert_eq!(report_format_from_env(Some("")).unwrap(), None);
+        assert_eq!(report_format_from_env(Some("  ")).unwrap(), None);
+        assert_eq!(report_format_from_env(Some("text")).unwrap(), Some(ReportFormat::Text));
+        assert_eq!(report_format_from_env(Some(" json\n")).unwrap(), Some(ReportFormat::Json));
+        for bad in ["yaml", "TEXT", "Json", "1"] {
+            let err = report_format_from_env(Some(bad)).unwrap_err().to_string();
+            assert!(err.contains("CORVIS_ROUTE_POSTURE_REPORT") && err.contains("\"text\"") && err.contains("\"json\""), "{err}");
+            assert!(err.contains(bad), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_markers_have_a_fixed_text() {
+        assert_eq!(REPORT_BEGIN, "----- BEGIN CORVIS ROUTE POSTURE REPORT -----");
+        assert_eq!(REPORT_END, "----- END CORVIS ROUTE POSTURE REPORT -----");
+    }
+
+    #[test]
+    fn report_mode_renders_both_formats_and_picks_the_exit_code() {
+        let open = entry(RequestMethod::Get, "/open", "C", "open", PostureStatus::Unprotected);
+        let fine = entry(RequestMethod::Get, "/fine", "C", "fine", PostureStatus::Public);
+        let bad = RoutePostureReport::new(vec![open, fine.clone()], Vec::new());
+        let good = RoutePostureReport::new(vec![fine], Vec::new());
+
+        let (text, code) = render_report_mode(&bad, ReportFormat::Text);
+        assert_eq!(code, 1);
+        assert!(text.starts_with(&format!("{REPORT_BEGIN}\n")) && text.ends_with(&format!("{REPORT_END}\n")), "{text}");
+        assert!(text.contains("UNPROTECTED") && text.contains("C::open"), "{text}");
+
+        let (text, code) = render_report_mode(&good, ReportFormat::Text);
+        assert_eq!(code, 0);
+        assert!(!text.contains("UNPROTECTED"), "{text}");
+
+        let (text, code) = render_report_mode(&bad, ReportFormat::Json);
+        assert_eq!(code, 1);
+        let body = text.strip_prefix(&format!("{REPORT_BEGIN}\n")).unwrap().strip_suffix(&format!("{REPORT_END}\n")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(json["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(render_report_mode(&good, ReportFormat::Json).1, 0);
+
+        let (text, _) = render_report_mode(&RoutePostureReport::new(Vec::new(), Vec::new()), ReportFormat::Text);
+        assert!(text.contains("(no routes)"), "{text}");
     }
 
     #[test]

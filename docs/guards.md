@@ -218,7 +218,9 @@ app.set_route_posture(
 - A guard that only limits or validates requests does not decide who may call a route. `ThrottlerGuard` and `ZodGuard` do not count. Your own guard counts by default; override `controls_access()` to return `false` when it lets every request through unless configured (a roles guard without roles, for example). Only the declaration changes, not how the guard runs.
 - `app.route_posture()` returns, after `init()` and in every mode (also off), the posture of every route: method, path, controller and handler, guards, and whether it is protected, public (and whether the marker is on the handler or the controller), exempt (with its reason) or unprotected. It also lists the guards that counted as access control (`access_guards()`) and the redundant exemptions. It implements `Display` (a table) and `serde::Serialize`.
 - Call `require_route_posture()` or `set_route_posture()` before `init()` or `listen()`; they have no effect afterwards.
-- `#[sse]` routes are checked like any other route. Gateway message handlers are not checked yet.
+- `#[sse]` routes are checked like any other route and are labelled `SSE` in the error and the report.
+- Every `#[subscribe_message]` handler of a WebSocket gateway is checked too, and appears in the same error as `WS  /chat  event "rooms"  ChatGateway::rooms`. See [WebSocket guards](/websockets/guards#route-posture-for-gateways).
+- The check cannot enforce the WebSocket handshake, `ServeStaticModule` mounts or raw `upgrade` listeners. `app.route_posture()` lists them under "Not checked" so a reviewer sees they exist; they never make `init()` fail.
 
 Counting a guard is a declaration, not proof that it authenticates: the check cannot tell a real authentication guard from one that always returns `true`.
 
@@ -237,16 +239,16 @@ impl CanActivate for RolesGuard {
 }
 ```
 
-To spot the case, in warn and enforce mode the check logs one line with the guards it counted, their scope and how many routes each covers, for example `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller CatsController, 5 routes)`. A global guard that covers every route and is not your authentication guard is the one to review. The same data is in `app.route_posture().unwrap().access_guards()`.
+To spot the case, in warn and enforce mode the check logs one line with the guards it counted, their scope and how many routes each covers, for example `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller CatsController, 5 routes)`. Gateway message handlers are counted in the same line, with the scopes `gateway ChatGateway` and `message handler ChatGateway::rooms`. A global guard that covers every route and is not your authentication guard is the one to review. The same data is in `app.route_posture().unwrap().access_guards()`.
 
 ### What the check does not see
 
-The check covers controller routes only. These HTTP surfaces are outside it, so protect them on their own:
+The check covers controller routes and gateway message handlers. These HTTP surfaces are outside it, so protect them on their own:
 
 - the Swagger and Scalar UI and their JSON document (they are mounted as middleware);
 - `ServeStaticModule` and `serve_static` (static files);
 - any middleware from `use_fn` or `configure` that answers without calling `next`;
-- raw `upgrade` listeners and WebSocket handshakes (gateways are covered by a later version).
+- raw `upgrade` listeners and WebSocket handshakes (the message handlers of gateways are covered, see [WebSocket guards](/websockets/guards#route-posture-for-gateways)).
 
 ## Guards in tests
 

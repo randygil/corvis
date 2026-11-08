@@ -218,7 +218,9 @@ app.set_route_posture(
 - Un guard que solo limita o valida peticiones no decide quién puede llamar a una ruta. `ThrottlerGuard` y `ZodGuard` no cuentan. Tu propio guard cuenta por defecto; sobrescribe `controls_access()` para que devuelva `false` cuando deja pasar todo salvo que esté configurado (un guard de roles sin roles, por ejemplo). Solo cambia la declaración, no cómo se ejecuta el guard.
 - `app.route_posture()` devuelve, después de `init()` y en cualquier modo (también apagado), la postura de cada ruta: método, ruta, controlador y handler, guards, y si está protegida, pública (y si el marcador está en el handler o en el controlador), exenta (con su razón) o sin protección. También lista los guards que contaron como control de acceso (`access_guards()`) y las exenciones redundantes. Implementa `Display` (una tabla) y `serde::Serialize`.
 - Llama a `require_route_posture()` o `set_route_posture()` antes de `init()` o `listen()`; después no tienen efecto.
-- Las rutas `#[sse]` se revisan como cualquier otra. Los handlers de mensajes de gateways todavía no se revisan.
+- Las rutas `#[sse]` se revisan como cualquier otra y se marcan como `SSE` en el error y en el reporte.
+- Cada handler `#[subscribe_message]` de un gateway de WebSocket también se revisa y aparece en el mismo error como `WS  /chat  event "rooms"  ChatGateway::rooms`. Ver [guards en WebSockets](/es/websockets/guards#route-posture-en-gateways).
+- La revisión no puede exigir nada sobre el handshake de WebSocket, los montajes de `ServeStaticModule` ni los listeners `upgrade` directos. `app.route_posture()` los lista en "Not checked" para que quien revisa vea que existen; nunca hacen fallar `init()`.
 
 Contar un guard es una declaración, no una prueba de que autentique: la verificación no distingue un guard de autenticación real de uno que siempre devuelve `true`.
 
@@ -237,16 +239,16 @@ impl CanActivate for RolesGuard {
 }
 ```
 
-Para detectar el caso, en modo warn y enforce la verificación registra una línea con los guards que contó, su alcance y cuántas rutas cubre cada uno, por ejemplo `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller CatsController, 5 routes)`. Un guard global que cubre todas las rutas y no es tu guard de autenticación es el que hay que revisar. Los mismos datos están en `app.route_posture().unwrap().access_guards()`.
+Para detectar el caso, en modo warn y enforce la verificación registra una línea con los guards que contó, su alcance y cuántas rutas cubre cada uno, por ejemplo `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller CatsController, 5 routes)`. Los handlers de mensajes de gateways se cuentan en la misma línea, con los alcances `gateway ChatGateway` y `message handler ChatGateway::rooms`. Un guard global que cubre todas las rutas y no es tu guard de autenticación es el que hay que revisar. Los mismos datos están en `app.route_posture().unwrap().access_guards()`.
 
 ### Lo que la verificación no ve
 
-La verificación cubre solo las rutas de controladores. Estas superficies HTTP quedan fuera, así que protégelas por separado:
+La verificación cubre las rutas de controladores y los handlers de mensajes de gateways. Estas superficies HTTP quedan fuera, así que protégelas por separado:
 
 - la interfaz de Swagger y Scalar y su documento JSON (se montan como middleware);
 - `ServeStaticModule` y `serve_static` (archivos estáticos);
 - cualquier middleware de `use_fn` o `configure` que responda sin llamar a `next`;
-- los listeners `upgrade` directos y los handshakes de WebSocket (los gateways los cubre una versión posterior).
+- los listeners `upgrade` directos y los handshakes de WebSocket (los handlers de mensajes de los gateways sí se cubren, ver [guards en WebSockets](/es/websockets/guards#route-posture-en-gateways)).
 
 ## Guards en los tests
 

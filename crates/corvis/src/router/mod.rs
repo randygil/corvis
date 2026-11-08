@@ -57,6 +57,8 @@ pub(crate) struct CompiledRoute {
     pub versions: Option<VersionValue>,
     pub host: Option<String>,
     pub response_mode: Option<crate::http::ResMode>,
+    /// Declared with `#[sse]`.
+    pub sse: bool,
 }
 
 #[derive(Default)]
@@ -460,6 +462,7 @@ pub(crate) async fn build_router(container: &Arc<Container>, cfg: &RouterConfig,
                                 versions: version.clone(),
                                 host: cmeta.host.clone(),
                                 response_mode: meta.response_mode,
+                                sse: meta.sse,
                             }));
                             let variants = expand_optional(&full).map_err(|e| {
                                 DiError::Other(format!("Unable to register route {} {} of {}: {e}", meta.method.as_str(), full, def.name))

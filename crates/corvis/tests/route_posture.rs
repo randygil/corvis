@@ -824,3 +824,717 @@ async fn the_report_says_where_a_public_status_comes_from() {
     let e = json["entries"].as_array().unwrap().iter().find(|e| e["path"] == "/marked/public").unwrap();
     assert_eq!(e["public_source"], "handler");
 }
+
+// ---------------------------------------------------------------------------
+// SSE streams.
+// ---------------------------------------------------------------------------
+
+fn stream() -> Sse {
+    Sse::new(futures::stream::iter((1..=2).map(|i| MessageEvent::new(json!({ "n": i })))))
+}
+
+#[controller("feeds")]
+pub struct FeedController;
+
+#[routes]
+impl FeedController {
+    #[sse("stream")]
+    fn stream(&self) -> Sse {
+        stream()
+    }
+
+    #[sse("open")]
+    #[public]
+    fn open(&self) -> Sse {
+        stream()
+    }
+
+    #[sse("guarded")]
+    #[use_guards(AuthGuard)]
+    fn guarded(&self) -> Sse {
+        stream()
+    }
+
+    #[get("plain")]
+    #[public]
+    fn plain(&self) -> Value {
+        json!({})
+    }
+}
+
+#[module(controllers = [FeedController])]
+pub struct FeedModule;
+
+#[tokio::test]
+async fn an_unguarded_sse_stream_fails_enforce_mode_with_an_sse_line() {
+    let _g = SERIAL.lock().await;
+    let (mut app, _) = app_of::<FeedModule>().await;
+    app.require_route_posture();
+    let err = app.init().await.unwrap_err();
+    assert_eq!(unprotected_of(&err), ["/feeds/stream FeedController::stream"]);
+    let text = err.to_string();
+    assert!(text.contains("  SSE  /feeds/stream  FeedController::stream"), "{text}");
+    assert!(text.starts_with("Route posture check failed: 1 route has no guard"), "{text}");
+}
+
+#[tokio::test]
+async fn sse_routes_are_reported_with_their_kind_and_public_or_guarded_ones_pass() {
+    let _g = SERIAL.lock().await;
+    let (mut app, _) = app_of::<FeedModule>().await;
+    app.set_route_posture(RoutePostureOptions::warn().exempt(RequestMethod::Get, "/feeds/stream", "fan-out proxy authenticates"));
+    app.init().await.unwrap();
+    let report = app.route_posture().unwrap();
+    let find = |path: &str| report.entries().iter().find(|e| e.path == path).unwrap().clone();
+    assert_eq!(find("/feeds/open").status, PostureStatus::Public);
+    assert_eq!(find("/feeds/open").kind, corvis::PostureKind::Sse);
+    assert_eq!(find("/feeds/guarded").status, PostureStatus::Protected);
+    assert_eq!(find("/feeds/stream").status, PostureStatus::Exempt { reason: "fan-out proxy authenticates".into() });
+    assert_eq!(find("/feeds/plain").kind, corvis::PostureKind::Http { method: RequestMethod::Get });
+    let json = serde_json::to_value(&report).unwrap();
+    let open = json["entries"].as_array().unwrap().iter().find(|e| e["path"] == "/feeds/open").unwrap();
+    assert_eq!(open["kind"], serde_json::json!({ "type": "sse" }));
+    assert!(report.to_string().contains("SSE  /feeds/open"), "{report}");
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket gateways.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "websockets")]
+mod gateways {
+    use super::*;
+    use corvis::{OnGatewayInit, PostureKind, UncheckedSurface, WsServer, websocket_gateway};
+
+    static AFTER_INIT_RAN: AtomicBool = AtomicBool::new(false);
+
+    macro_rules! gateway {
+        ($name:ident, $path:tt, [$($attr:meta),*], { $($body:tt)* }) => {
+            #[websocket_gateway(path = $path)]
+            $(#[$attr])*
+            pub struct $name {
+                #[websocket_server]
+                server: WsServer,
+            }
+
+            #[handlers]
+            impl $name {
+                $($body)*
+            }
+        };
+    }
+
+    gateway!(GuardedGateway, "/guarded", [use_guards(AuthGuard)], {
+        #[subscribe_message("a")]
+        fn a(&self) {}
+        #[subscribe_message("b")]
+        fn b(&self) {}
+    });
+
+    gateway!(HandlerGuardGateway, "/handler-guard", [], {
+        #[subscribe_message("secure")]
+        #[use_guards(AuthGuard)]
+        fn secure(&self) {}
+        #[subscribe_message("open")]
+        fn open(&self) {}
+    });
+
+    gateway!(PublicGateway, "/public", [public], {
+        #[subscribe_message("a")]
+        fn a(&self) {}
+        #[subscribe_message("b")]
+        fn b(&self) {}
+    });
+
+    gateway!(PublicHandlerGateway, "/public-handler", [], {
+        #[subscribe_message("ping")]
+        #[public]
+        fn ping(&self) {}
+        #[subscribe_message("other")]
+        fn other(&self) {}
+    });
+
+    gateway!(ChatGateway, "/chat", [], {
+        #[subscribe_message("ping")]
+        fn ping(&self) {}
+        #[subscribe_message("rooms")]
+        fn rooms(&self) {}
+    });
+
+    #[websocket_gateway(path = "/hooked")]
+    pub struct HookedGateway {
+        #[websocket_server]
+        server: WsServer,
+    }
+
+    #[handlers]
+    impl HookedGateway {
+        #[subscribe_message("ping")]
+        fn ping(&self) {}
+    }
+
+    #[async_trait]
+    impl OnGatewayInit for HookedGateway {
+        async fn after_init(&self, _server: WsServer) {
+            AFTER_INIT_RAN.store(true, Ordering::SeqCst);
+        }
+    }
+
+    gateway!(ReportGateway, "/report-ws", [], {
+        #[subscribe_message("chat")]
+        fn chat(&self) {}
+    });
+
+    #[module(providers = [ReportGateway, HookProbe])]
+    pub struct ReportGatewayModule;
+
+    #[module(providers = [GuardedGateway])]
+    pub struct GuardedModule;
+
+    #[module(providers = [HandlerGuardGateway])]
+    pub struct HandlerGuardModule;
+
+    #[module(providers = [PublicGateway])]
+    pub struct PublicModule;
+
+    #[module(providers = [PublicHandlerGateway])]
+    pub struct PublicHandlerModule;
+
+    #[module(providers = [ChatGateway])]
+    pub struct ChatModule;
+
+    #[module(providers = [HookedGateway])]
+    pub struct HookedModule;
+
+    #[module(controllers = [RoomsController], providers = [HookedGateway])]
+    pub struct MixedGatewayModule;
+
+    #[module(providers = [ChatGateway, Provider::app_guard::<AuthGuard>()])]
+    pub struct GlobalGuardModule;
+
+    #[module(
+        imports = [ThrottlerModule::for_root(vec![ThrottlerOptions::new(60_000, 100)])],
+        providers = [ChatGateway, Provider::app_guard::<ThrottlerGuard>()]
+    )]
+    pub struct GlobalThrottlerModule;
+
+    fn unprotected_events(err: &anyhow::Error) -> Vec<String> {
+        let err = err.downcast_ref::<RoutePostureError>().expect("a RoutePostureError");
+        err.unprotected()
+            .iter()
+            .map(|e| match &e.kind {
+                PostureKind::WsMessage { event } => format!("{} {event} {}::{}", e.path, e.owner, e.handler),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    }
+
+    async fn enforced<M: corvis::Module>() -> Result<RoutePostureReport, anyhow::Error> {
+        let (mut app, _) = app_of::<M>().await;
+        app.require_route_posture();
+        app.init().await?;
+        Ok(app.route_posture().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_gateway_guard_covers_every_handler() {
+        let _g = SERIAL.lock().await;
+        let report = enforced::<GuardedModule>().await.unwrap();
+        assert_eq!(report.entries().len(), 2);
+        assert!(report.entries().iter().all(|e| e.status == PostureStatus::Protected), "{report}");
+    }
+
+    #[tokio::test]
+    async fn a_handler_guard_covers_only_its_handler() {
+        let _g = SERIAL.lock().await;
+        let err = enforced::<HandlerGuardModule>().await.unwrap_err();
+        assert_eq!(unprotected_events(&err), ["/handler-guard open HandlerGuardGateway::open"]);
+        let text = err.to_string();
+        assert!(text.starts_with("Route posture check failed: 1 message handler has no guard and is not marked #[public]."), "{text}");
+        assert!(text.contains("  WS  /handler-guard  event \"open\"  HandlerGuardGateway::open"), "{text}");
+        assert!(text.contains("the message handler") && text.contains("the gateway"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn public_on_the_gateway_or_on_a_handler() {
+        let _g = SERIAL.lock().await;
+        let report = enforced::<PublicModule>().await.unwrap();
+        assert!(report.entries().iter().all(|e| e.status == PostureStatus::Public), "{report}");
+
+        let err = enforced::<PublicHandlerModule>().await.unwrap_err();
+        assert_eq!(unprotected_events(&err), ["/public-handler other PublicHandlerGateway::other"]);
+        let (mut app, _) = app_of::<PublicHandlerModule>().await;
+        app.set_route_posture(RoutePostureOptions::warn());
+        app.init().await.unwrap();
+        let report = app.route_posture().unwrap();
+        let ping = report.entries().iter().find(|e| e.kind == PostureKind::WsMessage { event: "ping".into() }).unwrap();
+        assert_eq!(ping.status, PostureStatus::Public);
+    }
+
+    #[tokio::test]
+    async fn an_unguarded_handler_stops_init_before_after_init_runs() {
+        let _g = SERIAL.lock().await;
+        AFTER_INIT_RAN.store(false, Ordering::SeqCst);
+        let err = enforced::<HookedModule>().await.unwrap_err();
+        assert_eq!(unprotected_events(&err), ["/hooked ping HookedGateway::ping"]);
+        assert!(!AFTER_INIT_RAN.load(Ordering::SeqCst), "after_init must not run when the check fails");
+
+        let (mut app, _) = app_of::<HookedModule>().await;
+        app.set_route_posture(RoutePostureOptions::warn());
+        app.init().await.unwrap();
+        assert!(AFTER_INIT_RAN.load(Ordering::SeqCst), "after_init runs once the check passes");
+    }
+
+    #[tokio::test]
+    async fn routes_and_message_handlers_share_one_error() {
+        let _g = SERIAL.lock().await;
+        let (mut app, _) = app_of::<MixedGatewayModule>().await;
+        app.require_route_posture();
+        let err = app.init().await.unwrap_err();
+        let text = err.to_string();
+        assert!(text.starts_with("Route posture check failed: 3 routes or message handlers have no guard"), "{text}");
+        assert!(text.contains("RoomsController::list"), "{text}");
+        assert!(text.contains("event \"ping\"  HookedGateway::ping"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn global_guards_count_for_gateways_unless_they_are_kept_http_only() {
+        let _g = SERIAL.lock().await;
+        let report = enforced::<GlobalGuardModule>().await.unwrap();
+        assert!(report.entries().iter().all(|e| e.status == PostureStatus::Protected), "{report}");
+        let guards = &report.entries()[0].guards;
+        assert_eq!((guards[0].name.as_str(), guards[0].controls_access), ("AuthGuard", true));
+
+        let (mut app, _) = app_of::<GlobalGuardModule>().await;
+        app.apply_global_enhancers_to_gateways(false);
+        app.require_route_posture();
+        let err = app.init().await.unwrap_err();
+        assert_eq!(unprotected_events(&err), ["/chat ping ChatGateway::ping", "/chat rooms ChatGateway::rooms"]);
+    }
+
+    #[tokio::test]
+    async fn a_global_rate_limiter_alone_leaves_handlers_unprotected() {
+        let _g = SERIAL.lock().await;
+        let err = enforced::<GlobalThrottlerModule>().await.unwrap_err();
+        assert_eq!(unprotected_events(&err).len(), 2);
+        let (mut app, _) = app_of::<GlobalThrottlerModule>().await;
+        app.init().await.unwrap();
+        let report = app.route_posture().unwrap();
+        let guards = &report.entries()[0].guards;
+        assert_eq!((guards[0].name.as_str(), guards[0].controls_access), ("ThrottlerGuard", false));
+    }
+
+    #[tokio::test]
+    async fn message_exemptions_match_by_path_and_event() {
+        let _g = SERIAL.lock().await;
+        let (mut app, captured) = app_of::<ChatModule>().await;
+        app.set_route_posture(
+            RoutePostureOptions::enforce()
+                .exempt_message("/chat", "ping", "health probe, no data")
+                .exempt_message("/chat", "rooms", "public listing")
+                .exempt_message("/chat", "gone", "removed"),
+        );
+        app.init().await.unwrap();
+        let report = app.route_posture().unwrap();
+        assert_eq!(report.entries().len(), 2);
+        let ping = report.entries().iter().find(|e| e.handler == "ping").unwrap();
+        assert_eq!(ping.status, PostureStatus::Exempt { reason: "health probe, no data".into() });
+        let warns: Vec<_> = posture_logs(&captured).into_iter().filter(|(l, _)| *l == LogLevel::Warn).collect();
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(warns[0].1.contains("WS /chat event \"gone\" matches no handler"), "{}", warns[0].1);
+        assert_eq!(report.stale_exemptions().len(), 1);
+        assert_eq!(report.stale_exemptions()[0].event(), Some("gone"));
+
+        let (mut app, _) = app_of::<ChatModule>().await;
+        app.set_route_posture(RoutePostureOptions::enforce().exempt_message("/chat", "*", "private network only"));
+        app.init().await.unwrap();
+        assert!(app.route_posture().unwrap().entries().iter().all(|e| matches!(e.status, PostureStatus::Exempt { .. })));
+
+        let (mut app, _) = app_of::<ChatModule>().await;
+        app.set_route_posture(RoutePostureOptions::enforce().exempt_message("/chat", "ping", "only ping"));
+        let err = app.init().await.unwrap_err();
+        assert_eq!(unprotected_events(&err), ["/chat rooms ChatGateway::rooms"]);
+    }
+
+    #[tokio::test]
+    async fn exemption_kinds_do_not_cross() {
+        let _g = SERIAL.lock().await;
+        let (mut app, _) = app_of::<ChatModule>().await;
+        app.set_route_posture(RoutePostureOptions::enforce().exempt(RequestMethod::All, "/chat", "an http exemption"));
+        let err = app.init().await.unwrap_err();
+        assert_eq!(unprotected_events(&err).len(), 2);
+
+        let (mut app, _) = app_of::<OpenModule>().await;
+        app.set_route_posture(RoutePostureOptions::enforce().exempt_message("/rooms", "*", "not a route"));
+        let err = app.init().await.unwrap_err();
+        assert_eq!(unprotected_of(&err).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_blank_message_exemption_reason_names_path_and_event() {
+        let _g = SERIAL.lock().await;
+        let (mut app, _) = app_of::<ChatModule>().await;
+        app.set_route_posture(RoutePostureOptions::warn().exempt_message("/chat", "ping", " "));
+        let err = app.init().await.unwrap_err().to_string();
+        assert!(err.contains("WS /chat event \"ping\""), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Not-checked surfaces.
+    // -----------------------------------------------------------------------
+
+    #[websocket_gateway(path = "/secured")]
+    #[public]
+    pub struct SecuredGateway {
+        #[websocket_server]
+        server: WsServer,
+    }
+
+    #[handlers]
+    impl SecuredGateway {
+        #[subscribe_message("ping")]
+        fn ping(&self) {}
+    }
+
+    #[async_trait]
+    impl OnGatewayInit for SecuredGateway {
+        async fn after_init(&self, server: WsServer) {
+            server.set_options(corvis::websockets::GatewayOptions::default().verify_client(|_| true));
+        }
+    }
+
+    #[injectable]
+    pub struct UpgradeProbe {
+        host: Arc<corvis::HttpAdapterHost>,
+    }
+
+    #[async_trait]
+    impl OnApplicationBootstrap for UpgradeProbe {
+        async fn on_application_bootstrap(&self) -> corvis::Result<()> {
+            self.host.http_adapter().get_http_server().on_upgrade(|req| req.destroy());
+            Ok(())
+        }
+    }
+
+    #[module(
+        imports = [ServeStaticModule::for_root(vec![ServeStaticOptions::new(env!("CARGO_MANIFEST_DIR")).serve_root("/assets")])],
+        providers = [SecuredGateway, UpgradeProbe],
+    )]
+    pub struct SurfacesModule;
+
+    #[tokio::test]
+    async fn unchecked_surfaces_are_listed_and_never_fail_init() {
+        let _g = SERIAL.lock().await;
+        let (mut app, _) = app_of::<SurfacesModule>().await;
+        app.require_route_posture();
+        app.init().await.unwrap();
+        let report = app.route_posture().unwrap();
+        let unchecked = report.unchecked();
+        assert!(unchecked.contains(&UncheckedSurface::StaticFiles { serve_root: "/assets".into() }), "{unchecked:?}");
+        assert!(
+            unchecked.contains(&UncheckedSurface::WsHandshake {
+                path: "/secured".into(),
+                gateway: "SecuredGateway".into(),
+                verify_client: true
+            }),
+            "{unchecked:?}"
+        );
+        assert!(unchecked.contains(&UncheckedSurface::UpgradeListeners { count: 1 }), "{unchecked:?}");
+        let table = report.to_string();
+        assert!(table.contains("Not checked:") && table.contains("static files served at /assets"), "{table}");
+        assert!(table.contains("verify_client set") && table.contains("1 raw upgrade listener"), "{table}");
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["unchecked"][0], serde_json::json!({ "type": "static_files", "serve_root": "/assets" }));
+    }
+
+    gateway!(ShapeGateway, "/shape", [use_guards(AuthGuard)], {
+        #[subscribe_message("rooms")]
+        fn rooms(&self) {}
+    });
+
+    #[module(controllers = [FeedController], providers = [ShapeGateway])]
+    pub struct ShapeModule;
+
+    #[tokio::test]
+    async fn the_report_lists_handlers_sse_routes_and_handshakes_in_off_mode() {
+        let _g = SERIAL.lock().await;
+        let (mut app, captured) = app_of::<ShapeModule>().await;
+        app.init().await.unwrap();
+        assert!(posture_logs(&captured).is_empty());
+        let report = app.route_posture().unwrap();
+        let json = serde_json::to_value(&report).unwrap();
+        let entries = json["entries"].as_array().unwrap();
+        let ws = entries.iter().find(|e| e["path"] == "/shape").unwrap();
+        assert_eq!(ws["kind"], serde_json::json!({ "type": "ws_message", "event": "rooms" }));
+        assert_eq!(ws["owner"], "ShapeGateway");
+        assert_eq!(ws["handler"], "rooms");
+        assert_eq!(ws["guards"], serde_json::json!([{ "name": "AuthGuard", "controls_access": true }]));
+        assert_eq!(ws["status"], serde_json::json!({ "state": "protected" }));
+        assert!(entries.iter().any(|e| e["kind"] == serde_json::json!({ "type": "sse" })));
+        assert_eq!(
+            json["unchecked"],
+            serde_json::json!([{ "type": "ws_handshake", "path": "/shape", "gateway": "ShapeGateway", "verify_client": false }])
+        );
+    }
+}
+
+#[cfg(feature = "websockets")]
+mod gateway_details {
+    use super::gateways::{ChatModule, GuardedModule, PublicHandlerModule};
+    use super::*;
+    use corvis::{GuardScope, PublicSource};
+
+    #[tokio::test]
+    async fn the_summary_counts_gateway_handlers_with_their_scope() {
+        let _g = SERIAL.lock().await;
+        let (mut app, captured) = app_of::<ScopesModule>().await;
+        app.set_route_posture(RoutePostureOptions::warn());
+        app.init().await.unwrap();
+        assert_eq!(
+            summary_logs(&captured),
+            ["Route posture: access guards counted: AllowGuard (global, 2 routes), AuthGuard (gateway ScopedGateway, 2 routes), \
+              AuthGuard (message handler ScopedGateway::b, 1 route)"]
+        );
+        let report = app.route_posture().unwrap();
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["access_guards"][1]["scope"], serde_json::json!({ "level": "gateway", "gateway": "ScopedGateway" }));
+        assert!(report.access_guards().iter().any(|g| matches!(&g.scope, GuardScope::Message { handler, .. } if handler == "b")));
+
+        let (mut app, captured) = app_of::<ScopesModule>().await;
+        app.apply_global_enhancers_to_gateways(false);
+        app.set_route_posture(RoutePostureOptions::warn());
+        app.init().await.unwrap();
+        assert_eq!(
+            summary_logs(&captured),
+            ["Route posture: access guards counted: AuthGuard (gateway ScopedGateway, 2 routes), \
+              AuthGuard (message handler ScopedGateway::b, 1 route)"]
+        );
+    }
+
+    #[tokio::test]
+    async fn public_source_names_the_gateway_or_the_handler() {
+        let _g = SERIAL.lock().await;
+        let (mut app, _) = app_of::<super::gateways::PublicModule>().await;
+        app.init().await.unwrap();
+        let report = app.route_posture().unwrap();
+        assert!(report.entries().iter().all(|e| e.public_source == Some(PublicSource::Gateway)), "{report}");
+        assert!(report.to_string().contains("public (gateway)"), "{report}");
+
+        let (mut app, _) = app_of::<PublicHandlerModule>().await;
+        app.init().await.unwrap();
+        let report = app.route_posture().unwrap();
+        let ping = report.entries().iter().find(|e| e.handler == "ping").unwrap();
+        assert_eq!(ping.public_source, Some(PublicSource::Handler));
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json["entries"].as_array().unwrap().iter().any(|e| e["public_source"] == "handler"));
+    }
+
+    #[tokio::test]
+    async fn message_exemptions_use_the_literal_path_matcher_and_redundant_ones_warn() {
+        let _g = SERIAL.lock().await;
+        let (mut app, captured) = app_of::<ChatModule>().await;
+        app.set_route_posture(
+            RoutePostureOptions::enforce().exempt_message("/c*", "ping", "glob inside a segment").exempt_message("/chat", "rooms", "ok"),
+        );
+        app.init().await.unwrap();
+        assert!(app.route_posture().unwrap().entries().iter().all(|e| matches!(e.status, PostureStatus::Exempt { .. })));
+
+        let (mut app, _) = app_of::<ChatModule>().await;
+        app.set_route_posture(RoutePostureOptions::enforce().exempt_message("/chat/*", "*", "needs one more segment"));
+        app.init().await.unwrap_err();
+
+        let (mut app, captured2) = app_of::<GuardedModule>().await;
+        app.set_route_posture(RoutePostureOptions::warn().exempt_message("/guarded", "a", "already guarded"));
+        app.init().await.unwrap();
+        let warns: Vec<_> = posture_logs(&captured2).into_iter().filter(|(l, _)| *l == LogLevel::Warn).collect();
+        assert!(
+            warns.iter().any(|(_, m)| m.contains("WS /guarded event \"a\" matches only guarded or public message handlers")),
+            "{warns:?}"
+        );
+        assert_eq!(app.route_posture().unwrap().redundant_exemptions().len(), 1);
+        let _ = captured;
+    }
+
+    #[corvis::websocket_gateway(path = "/scoped")]
+    #[use_guards(AuthGuard)]
+    pub struct ScopedGateway {
+        #[websocket_server]
+        server: corvis::WsServer,
+    }
+
+    #[handlers]
+    impl ScopedGateway {
+        #[subscribe_message("a")]
+        fn a(&self) {}
+        #[subscribe_message("b")]
+        #[use_guards(AuthGuard)]
+        fn b(&self) {}
+    }
+
+    #[module(providers = [ScopedGateway, Provider::app_guard::<AllowGuard>()])]
+    pub struct ScopesModule;
+}
+
+// ---------------------------------------------------------------------------
+// Report mode (CORVIS_ROUTE_POSTURE_REPORT): the test binary runs itself as a child process.
+// ---------------------------------------------------------------------------
+
+#[injectable]
+pub struct HookProbe;
+
+#[async_trait]
+impl OnModuleInit for HookProbe {
+    async fn on_module_init(&self) -> corvis::Result<()> {
+        println!("HOOK RAN");
+        Ok(())
+    }
+}
+
+#[controller("report-open")]
+pub struct ReportOpenController;
+
+#[routes]
+impl ReportOpenController {
+    #[get]
+    fn unguarded(&self) -> Value {
+        json!({})
+    }
+}
+
+#[controller("report-public")]
+#[public]
+pub struct ReportPublicController;
+
+#[routes]
+impl ReportPublicController {
+    #[get]
+    fn open_on_purpose(&self) -> Value {
+        json!({})
+    }
+}
+
+#[module(controllers = [ReportOpenController], providers = [HookProbe])]
+pub struct ReportOpenModule;
+
+#[module(controllers = [ReportPublicController], providers = [HookProbe])]
+pub struct ReportPublicModule;
+
+const FIXTURE_VAR: &str = "CORVIS_TEST_POSTURE_FIXTURE";
+
+/// The child of the `report_mode_*` tests: does nothing unless the parent selected a fixture.
+#[test]
+fn report_mode_child() {
+    let Ok(fixture) = std::env::var(FIXTURE_VAR) else { return };
+    tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
+        let mut app = match fixture.as_str() {
+            "open" => CorvisFactory::create::<ReportOpenModule>().await.unwrap(),
+            #[cfg(feature = "websockets")]
+            "gateway" => CorvisFactory::create::<gateways::ReportGatewayModule>().await.unwrap(),
+            _ => CorvisFactory::create::<ReportPublicModule>().await.unwrap(),
+        };
+        app.silence_route_logs();
+        if fixture == "init" {
+            match app.init().await {
+                Ok(()) => println!("INIT OK"),
+                Err(e) => println!("INIT ERROR: {e}"),
+            }
+            return;
+        }
+        let result = app.listen_in_background(0).await;
+        println!("AFTER LISTEN {}", result.is_ok());
+    });
+}
+
+struct Child {
+    code: Option<i32>,
+    stdout: String,
+}
+
+fn run_child(fixture: &str, report: Option<&str>) -> Child {
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["--exact", "report_mode_child", "--nocapture", "--test-threads=1"]).env(FIXTURE_VAR, fixture);
+    match report {
+        Some(v) => cmd.env("CORVIS_ROUTE_POSTURE_REPORT", v),
+        None => cmd.env_remove("CORVIS_ROUTE_POSTURE_REPORT"),
+    };
+    let out = cmd.output().unwrap();
+    Child { code: out.status.code(), stdout: String::from_utf8_lossy(&out.stdout).into_owned() }
+}
+
+fn between_markers(stdout: &str) -> Vec<&str> {
+    let lines: Vec<&str> = stdout.lines().collect();
+    let begin = lines.iter().position(|l| *l == corvis::posture::REPORT_BEGIN).expect("BEGIN marker");
+    let end = lines.iter().position(|l| *l == corvis::posture::REPORT_END).expect("END marker");
+    assert!(begin < end);
+    lines[begin + 1..end].to_vec()
+}
+
+#[test]
+fn report_mode_text_lists_the_unprotected_route_and_stops_before_hooks_and_listening() {
+    let child = run_child("open", Some("text"));
+    assert_eq!(child.code, Some(1), "{}", child.stdout);
+    let body = between_markers(&child.stdout).join("\n");
+    assert!(body.contains("/report-open") && body.contains("ReportOpenController::unguarded") && body.contains("UNPROTECTED"), "{body}");
+    assert!(!child.stdout.contains("HOOK RAN") && !child.stdout.contains("AFTER LISTEN"), "{}", child.stdout);
+}
+
+#[test]
+fn report_mode_json_with_only_public_routes_exits_zero() {
+    let child = run_child("public", Some("json"));
+    assert_eq!(child.code, Some(0), "{}", child.stdout);
+    let json: serde_json::Value = serde_json::from_str(&between_markers(&child.stdout).join("\n")).unwrap();
+    assert_eq!(json["entries"][0]["status"]["state"], "public");
+    assert_eq!(json["entries"][0]["path"], "/report-public");
+    assert!(!child.stdout.contains("HOOK RAN") && !child.stdout.contains("AFTER LISTEN"), "{}", child.stdout);
+}
+
+#[test]
+fn report_mode_json_has_only_the_report_between_the_markers() {
+    let child = run_child("open", Some(" json "));
+    assert_eq!(child.code, Some(1), "{}", child.stdout);
+    let lines = between_markers(&child.stdout);
+    assert!(lines.first().is_some_and(|l| *l == "{"), "{lines:?}");
+    assert!(lines.last().is_some_and(|l| *l == "}"), "{lines:?}");
+}
+
+#[test]
+fn report_mode_with_an_unknown_value_makes_init_fail_without_ending_the_process() {
+    let child = run_child("init", Some("yaml"));
+    assert_eq!(child.code, Some(0), "{}", child.stdout);
+    assert!(!child.stdout.contains(corvis::posture::REPORT_BEGIN), "{}", child.stdout);
+    let line = child.stdout.lines().find(|l| l.starts_with("INIT ERROR")).expect("init failed");
+    assert!(line.contains("CORVIS_ROUTE_POSTURE_REPORT") && line.contains("text") && line.contains("json"), "{line}");
+}
+
+#[test]
+fn report_mode_unset_or_blank_leaves_init_unchanged() {
+    for value in [None, Some(""), Some("  ")] {
+        let child = run_child("init", value);
+        assert_eq!(child.code, Some(0));
+        assert!(child.stdout.contains("INIT OK") && child.stdout.contains("HOOK RAN"), "{value:?}: {}", child.stdout);
+        assert!(!child.stdout.contains(corvis::posture::REPORT_BEGIN));
+    }
+}
+
+#[cfg(feature = "websockets")]
+#[test]
+fn report_mode_includes_gateway_handlers_and_the_summary() {
+    let text = run_child("gateway", Some("text"));
+    assert_eq!(text.code, Some(1), "{}", text.stdout);
+    let body = between_markers(&text.stdout).join(
+        "
+",
+    );
+    assert!(body.contains("/report-ws") && body.contains("chat") && body.contains("UNPROTECTED"), "{body}");
+    assert!(body.contains("access guards counted: none"), "{body}");
+    assert!(!text.stdout.contains("HOOK RAN") && !text.stdout.contains("AFTER LISTEN"), "{}", text.stdout);
+
+    let json = run_child("gateway", Some("json"));
+    assert_eq!(json.code, Some(1));
+    let report: serde_json::Value = serde_json::from_str(&between_markers(&json.stdout).join(
+        "
+",
+    ))
+    .unwrap();
+    assert!(report["entries"].as_array().unwrap().iter().any(|e| e["path"] == "/report-ws"), "{report}");
+    assert!(report.get("unchecked").is_some(), "{report}");
+}

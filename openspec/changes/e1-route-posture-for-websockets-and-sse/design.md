@@ -174,3 +174,30 @@ re-reads the touched functions after they land.
   public gateways instead.
 - The out-of-scope defects found (non-idempotent `init()` after a failure, enhancers on methods without a route
   attribute dropped silently, duplicate gateway events replaced silently) are filed as separate issues.
+
+## Implementation record (task 1.1)
+
+Read after #116 and #26 landed (base `80fb87c`):
+
+- The #116 switch is `CorvisApplication::apply_global_enhancers_to_gateways(bool)` (default `true`), stored in
+  `RouterConfig::gateway_global_enhancers` (`crates/corvis/src/router/mod.rs`). Open question 1 is answered: with it
+  off, global guards are not in the handler guard list and do not count.
+- Global guards enter the list in the compile step (`compile_gateways`, formerly `build_gateways`): they are the first
+  elements of the gateway guard list, then the gateway's, then the handler's, in the same `Vec` that `run_handler`
+  iterates. No move was needed (task 1.2).
+- The posture check receives plain data (`GatewayPosture`, built by `websockets::posture_gateways`), so `posture.rs`
+  compiles without the `websockets` feature.
+- JSON tags follow the `type` key #26 already uses for kinds: `{"type":"sse"}`, `{"type":"ws_message","event":"ping"}`;
+  not-checked surfaces serialize as `{"type":"static_files"|"ws_handshake"|"upgrade_listeners", ...}` under
+  `unchecked`. A message exemption serializes with `"method":"WS"` and an extra `"event"` field.
+- `PostureKind` is no longer `Copy` (`WsMessage` owns its event).
+
+### Combination with the #26 security-review fixes
+
+- Message exemptions match the gateway path with the same literal matcher as route exemptions (`template_matches`);
+  event patterns stay exact or `*`.
+- Redundant message exemptions (matching only guarded or public handlers) warn like route ones.
+- `GuardScope` gains `Gateway { gateway }` and `Message { gateway, handler }`; `PublicSource` gains `Gateway`. The
+  compiled handler records how many leading guards are global (0 with HTTP-only global enhancers) and how many come
+  from the gateway, so scopes follow what runs.
+- The access-guards summary counts gateway message handlers in the same line and in `access_guards()`.
