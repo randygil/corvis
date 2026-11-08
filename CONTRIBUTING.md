@@ -129,6 +129,7 @@ for example `$env:PROPTEST_CASES = "20000"`):
 | `deny` | Linux | `cargo deny check` |
 | `audit` | Linux | `cargo audit` |
 | `docs` | Linux | `node scripts/check-naming.mjs`, then `npm ci` and `npm run docs:check` in `docs/` |
+| `packaging` | Linux | the commands of [Packaging](#packaging) |
 
 CI uses Rust 1.99.0, set once in `RUST_TOOLCHAIN` at the top of `ci.yml` (and repeated in `nightly.yml`), so a new
 stable release cannot turn pull requests red without a code change. Bumping it is its own pull request that fixes any
@@ -142,6 +143,48 @@ advisory database. Run it on `main` before a release, after a change to a parser
 
 The Rust jobs restore a dependency cache. Pull requests save their own caches, which only later runs of the same pull
 request can use; a manual run of `ci.yml` on `main` saves caches that every pull request can restore.
+
+## Packaging
+
+Seven crates are published to crates.io: `corvis`, `corvis-macros`, `corvis-orm`, `corvis-orm-macros`,
+`corvis-swagger`, `corvis-swagger-macros` and `corvis-cli` (the examples and `bench/corvis-app` have
+`publish = false`). Each `.crate` file must contain the license and the third-party notices, so every crate folder
+holds a copy of the root `LICENSE` and `THIRD_PARTY_NOTICES.md`. The root files are the only ones edited by hand;
+after changing one, refresh the copies:
+
+```sh
+for c in corvis corvis-macros corvis-orm corvis-orm-macros corvis-swagger corvis-swagger-macros corvis-cli; do
+  cp LICENSE THIRD_PARTY_NOTICES.md crates/$c/
+done
+```
+
+The check needs no build. It fails when a copy differs from the root, when a published crate lacks `description`,
+`license`, `authors`, `repository`, `homepage`, `rust-version`, `readme`, one to five `keywords` or a category, when
+those shared fields are not inherited from `[workspace.package]`, or when a dependency on a workspace crate has no
+version:
+
+```sh
+node scripts/check-crate-files.mjs
+```
+
+Dependencies between workspace crates are declared once in `[workspace.dependencies]` with `path` and `version`.
+The three proc-macro crates are pinned with `=` (for example `=0.1.0`), because the code they generate calls hidden
+items of their parent crate: a release always publishes every crate with the same version. `cargo deny check bans`
+rejects any dependency without a version (`wildcards = "deny"`).
+
+To package the crates as crates.io would, name the seven crates (`cargo package --workspace` also tries the
+`publish = false` examples and fails on them). Cargo builds each package under `target/package/`, against a temporary
+registry that holds the crates packaged before it, so this works before anything is published:
+
+```sh
+cargo package --allow-dirty -p corvis-macros -p corvis -p corvis-orm-macros -p corvis-orm -p corvis-swagger-macros -p corvis-swagger -p corvis-cli
+cargo package --list -p corvis-swagger --allow-dirty    # the files of one package, without building
+```
+
+Delete `target/package/` afterwards: it holds a copy of each crate and its build output. Publishing is a separate,
+explicitly approved step; never run `cargo publish` without `--dry-run`. The order is the one above: each proc-macro
+crate, then the crate that uses it. `rust-version` in `[workspace.package]` is the lowest toolchain on which
+`cargo check --workspace` passes with the committed `Cargo.lock`; it is informative, and CI runs one toolchain only.
 
 ## Naming check
 
