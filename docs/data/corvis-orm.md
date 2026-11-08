@@ -263,6 +263,10 @@ let created: Vec<User> = db.user().create_many_and_return(json!({ "data": [{ "em
 let published: Vec<Post> = db.post().update_many_and_return(json!({ "where": { "published": false }, "data": { "published": true } })).await?;
 ```
 
+::: warning Always filter `update_many_and_return`
+Without a `where` it updates every row of the table and returns all of them, held in memory at once (the same as `updateManyAndReturn` in the reference client). Always pass a filter, and bound it when the matching set can be large.
+:::
+
 ### Writing a DTO
 
 `corvis_orm::Data` wraps any `Serialize` value (or a reference to one) as the data of a write, so a validated DTO needs no `json!`:

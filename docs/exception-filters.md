@@ -141,15 +141,15 @@ async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> Result<CatDto,
 { "message": "Cat #42 not found", "error": "Not Found", "statusCode": 404 }
 ```
 
-The default body is the `Display` text in the format of the [built-in exceptions](#built-in-exceptions). Override `body()` to send something else, for example a code the clients can switch on:
+For a `4xx` the default body is the `Display` text in the format of the [built-in exceptions](#built-in-exceptions). For a `5xx` the default body is the generic internal-error one (`{ "statusCode": 500, "message": "Internal server error" }`, with the reason phrase for other `5xx` statuses) and the error is logged like any unexpected error, so a `Display` that embeds database or driver text never reaches the client. Override `body()`, which returns `Option<ExceptionBody>`, to send something else, for example a code the clients can switch on:
 
 ```rust
-fn body(&self) -> ExceptionBody {
-    ExceptionBody::Object(json!({ "code": "CAT_EXISTS", "statusCode": 409 }))
+fn body(&self) -> Option<ExceptionBody> {
+    Some(ExceptionBody::Object(json!({ "code": "CAT_EXISTS", "statusCode": 409 })))
 }
 ```
 
-The object is sent as it is. `ExceptionBody` is exported by `corvis`, not by the prelude.
+The object is sent as it is, also for a `5xx`: keep internal details out of it. `ExceptionBody` is exported by `corvis`, not by the prelude. A status below 400 is a bug in the error type and is answered as `500`.
 
 ### Using `?` inside an `HttpResult` handler
 
@@ -168,8 +168,8 @@ async fn find_one(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<Cat
 ### What the exception carries
 
 - The error is attached as the exception's cause, so a [custom filter](#custom-filters) can still read it with `exception.downcast_cause::<AppError>()`.
-- `is_internal()` is `false`: the status was chosen on purpose, even for a `5xx`, so it is not logged as an unexpected error.
-- The `Display` text reaches the client. Do not put internal details (SQL, file paths, upstream URLs) in the `Display` of a `5xx` variant; give it a generic message or override `body()`.
+- A `4xx` is not internal: `is_internal()` is `false`. A `5xx` without a custom `body()` is internal (`is_internal()` is `true`), so it is logged with the `ExceptionsHandler` context, and a catch-all filter that skips internal exceptions does not see it. A `5xx` with a custom `body()` is not internal.
+- The `Display` text reaches the client only for a `4xx` with the default body and in a custom `body()`. Do not put internal details (SQL, file paths, upstream URLs) in either.
 
 Errors that do not implement `HttpError` keep their behavior: `Result<T, std::io::Error>` and `anyhow::Result<T>` answer `500`, and `HttpResult<T>` with a built-in exception answers that exception's status. `HttpError` applies to HTTP handlers only; WebSocket and event handlers do not use it.
 

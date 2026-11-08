@@ -5,10 +5,14 @@
 ### Requirement: Domain errors declare their HTTP status
 
 `corvis` SHALL provide a public trait `HttpError: std::error::Error + Send + Sync + 'static`, exported from the
-prelude, with a required `fn status(&self) -> StatusCode` and a provided `fn body(&self) -> ExceptionBody` whose
-default is the error's `Display` text. `HttpException::from_http_error(err)` SHALL build an exception with that
-status and a body in the format of the built-in exceptions (`{ "message", "error", "statusCode" }`, where `error` is
-the status reason phrase), keep `err` as the cause, and report `is_internal() == false`.
+prelude, with a required `fn status(&self) -> StatusCode` and a provided `fn body(&self) -> Option<ExceptionBody>`
+whose default is `None` (the standard body). `HttpException::from_http_error(err)` SHALL keep `err` as the cause and:
+for a status below 400, use 500; for a 4xx, answer `err.body()` or, by default, the `Display` text in the format of the
+built-in exceptions (`{ "message", "error", "statusCode" }`, where `error` is the status reason phrase) with
+`is_internal() == false`; for a 5xx without a custom body, answer the generic internal-error body
+(`{ "statusCode", "message": "Internal server error" }`, the reason phrase for statuses other than 500), never the
+`Display` text, with `is_internal() == true` so the error is logged; for a 5xx with a custom body, send it as written
+with `is_internal() == false`.
 
 #### Scenario: Default body
 - **WHEN** `AppError::CatNotFound(42)` implements `HttpError` with status 404 and `Display` "Cat #42 not found", and is

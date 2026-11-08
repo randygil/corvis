@@ -37,6 +37,34 @@ impl HttpError for AppError {
 }
 
 #[derive(Debug)]
+struct DbDown;
+impl fmt::Display for DbDown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "postgres://user:secret@db/app refused the connection")
+    }
+}
+impl std::error::Error for DbDown {}
+impl HttpError for DbDown {
+    fn status(&self) -> StatusCode {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+}
+
+#[derive(Debug)]
+struct Misdeclared;
+impl fmt::Display for Misdeclared {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "misdeclared")
+    }
+}
+impl std::error::Error for Misdeclared {}
+impl HttpError for Misdeclared {
+    fn status(&self) -> StatusCode {
+        StatusCode::OK
+    }
+}
+
+#[derive(Debug)]
 struct Teapot;
 impl fmt::Display for Teapot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -48,8 +76,8 @@ impl HttpError for Teapot {
     fn status(&self) -> StatusCode {
         StatusCode::IM_A_TEAPOT
     }
-    fn body(&self) -> ExceptionBody {
-        ExceptionBody::Object(json!({ "code": "TEAPOT", "statusCode": 418 }))
+    fn body(&self) -> Option<ExceptionBody> {
+        Some(ExceptionBody::Object(json!({ "code": "TEAPOT", "statusCode": 418 })))
     }
 }
 
@@ -96,6 +124,16 @@ impl TypedController {
     #[get("direct-body")]
     async fn direct_body(&self) -> Result<CatDto, Teapot> {
         Err(Teapot)
+    }
+
+    #[get("db-down")]
+    async fn db_down(&self) -> Result<CatDto, DbDown> {
+        Err(DbDown)
+    }
+
+    #[get("misdeclared")]
+    async fn misdeclared(&self) -> Result<CatDto, Misdeclared> {
+        Err(Misdeclared)
     }
 
     #[get("builtin")]
@@ -187,6 +225,12 @@ async fn http_error_levels() {
     assert_eq!(res.text(), not_found);
 
     client.get("/t/unit").send().await.expect_status(404).expect_json(json!({ "message": "Not Found", "statusCode": 404 }));
+
+    for path in ["/t/db-down", "/t/misdeclared"] {
+        let res = client.get(path).send().await;
+        res.expect_status(500);
+        assert_eq!(res.text(), r#"{"statusCode":500,"message":"Internal server error"}"#, "{path}");
+    }
 
     for path in ["/t/io", "/t/anyhow", "/t/plain-question"] {
         let res = client.get(path).send().await;
