@@ -1,11 +1,11 @@
-//! App mínima de Corvis para el benchmark de throughput contra NestJS.
-//! Expone exactamente los mismos endpoints que `bench/nest-app`.
+//! App mínima de Corvis para el benchmark de throughput contra Node.js.
+//! Expone exactamente los mismos endpoints que `bench/node-app`.
 
 use corvis::Validate;
 use corvis::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// ---------- Servicio inyectado (como el starter de Nest) ----------
+// ---------- Servicio inyectado (como en `bench/node-app`) ----------
 
 #[injectable]
 pub struct AppService;

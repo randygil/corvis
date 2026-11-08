@@ -43,7 +43,7 @@ impl MessageEvent {
         self
     }
 
-    /// The event as written on the wire (Nest 11 `SseStream`): `event`/`id` lose their CR and
+    /// The event as written on the wire: `event`/`id` lose their CR and
     /// LF, and `data` gets one `data:` line per line, splitting on `\r\n`, `\r` and `\n` (the
     /// three line endings of an event stream), so a value cannot start another field or event.
     pub fn to_frame(&self) -> String {

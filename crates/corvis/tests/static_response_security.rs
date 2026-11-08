@@ -249,7 +249,7 @@ async fn streamable_file_from_path_streams() {
     assert!(StreamableFile::from_path(fx.root.join("nope")).await.is_err());
 }
 
-/// static-response #4: SSE framing like Nest 11 (`split(/\r\n|\r|\n/)`, CR/LF stripped).
+/// static-response #4: SSE framing (`data` split on `\r\n`, `\r` and `\n`; CR/LF stripped from fields).
 #[test]
 fn sse_splits_cr_and_strips_newlines_from_fields() {
     let e = MessageEvent::new("hola\r\revent: admin\rdata: {\"cmd\":\"logout\"}\r");

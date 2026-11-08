@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark reproducible de throughput: NestJS vs Corvis.
+# Benchmark reproducible de throughput: Node.js vs Corvis.
 #
 # Uso (Git Bash, desde cualquier directorio):
 #   bash bench/run.sh
@@ -8,7 +8,7 @@
 #   CONNS=100          conexiones concurrentes
 #   DURATION=15        segundos de medición por escenario
 #   WARMUP=5           segundos de warmup por escenario (no se mide)
-#   FRAMEWORKS="corvis corvis-1t nest-express nest-fastify"
+#   FRAMEWORKS="corvis corvis-1t node-express node-fastify"
 #   SCENARIOS="hello json param post"
 #   OHA_THREADS=8      hilos del generador de carga (vacío = valor por defecto de oha = nº de núcleos).
 #                      Con 8 hilos oha satura el loopback de Windows (~100k req/s) y deja núcleos al servidor.
@@ -27,14 +27,14 @@ LOG_DIR="$BENCH_DIR/logs"
 CONNS="${CONNS:-100}"
 DURATION="${DURATION:-15}"
 WARMUP="${WARMUP:-5}"
-FRAMEWORKS="${FRAMEWORKS:-corvis corvis-1t nest-express nest-fastify}"
+FRAMEWORKS="${FRAMEWORKS:-corvis corvis-1t node-express node-fastify}"
 SCENARIOS="${SCENARIOS:-hello json param post}"
 OHA_THREADS="${OHA_THREADS-8}"
 PORT_BASE="${PORT_BASE:-3200}"
 HOST="127.0.0.1"
 
 CORVIS_EXE="$BENCH_DIR/target/release/corvis-app.exe"
-NEST_MAIN="$BENCH_DIR/nest-app/dist/main.js"
+NODE_MAIN="$BENCH_DIR/node-app/dist/main.js"
 
 POST_BODY='{"name":"Ada","email":"ada@example.com","age":36}'
 
@@ -89,14 +89,14 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     BENCH_NOTES="AVISO: cargo build falló en esta ejecución; se usó un binario de corvis-app compilado previamente ($(date -r "$CORVIS_EXE" '+%Y-%m-%d %H:%M'))."
   fi
 
-  log "Instalando dependencias y compilando nest-app..."
-  if [ ! -d "$BENCH_DIR/nest-app/node_modules" ]; then
-    (cd "$BENCH_DIR/nest-app" && npm install --no-audit --no-fund)
+  log "Instalando dependencias y compilando node-app..."
+  if [ ! -d "$BENCH_DIR/node-app/node_modules" ]; then
+    (cd "$BENCH_DIR/node-app" && npm install --no-audit --no-fund)
   fi
-  (cd "$BENCH_DIR/nest-app" && npm run build --silent)
+  (cd "$BENCH_DIR/node-app" && npm run build --silent)
 fi
 [ -f "$CORVIS_EXE" ] || die "No existe $CORVIS_EXE"
-[ -f "$NEST_MAIN" ] || die "No existe $NEST_MAIN"
+[ -f "$NODE_MAIN" ] || die "No existe $NODE_MAIN"
 
 rm -rf "$RAW_DIR" "$LOG_DIR"
 mkdir -p "$RAW_DIR" "$LOG_DIR"
@@ -108,8 +108,8 @@ fw_label() {
   case "$1" in
     corvis) echo "Corvis (Tokio, todos los núcleos)" ;;
     corvis-1t) echo "Corvis (Tokio, 1 worker)" ;;
-    nest-express) echo "NestJS + Express" ;;
-    nest-fastify) echo "NestJS + Fastify" ;;
+    node-express) echo "Node.js + Express" ;;
+    node-fastify) echo "Node.js + Fastify" ;;
     *) die "Framework desconocido: $1" ;;
   esac
 }
@@ -120,8 +120,8 @@ start_server() {
   case "$fw" in
     corvis) PORT="$port" "$CORVIS_EXE" > "$logf" 2>&1 & ;;
     corvis-1t) PORT="$port" TOKIO_WORKER_THREADS=1 "$CORVIS_EXE" > "$logf" 2>&1 & ;;
-    nest-express) PORT="$port" NODE_ENV=production node "$NEST_MAIN" > "$logf" 2>&1 & ;;
-    nest-fastify) PORT="$port" NODE_ENV=production node "$NEST_MAIN" --fastify > "$logf" 2>&1 & ;;
+    node-express) PORT="$port" NODE_ENV=production node "$NODE_MAIN" > "$logf" 2>&1 & ;;
+    node-fastify) PORT="$port" NODE_ENV=production node "$NODE_MAIN" --fastify > "$logf" 2>&1 & ;;
   esac
   pid=$!
   SERVER_WINPID="$(cat "/proc/$pid/winpid" 2> /dev/null || echo "")"

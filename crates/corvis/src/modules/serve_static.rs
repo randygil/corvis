@@ -1,6 +1,6 @@
 //! Static files: `ServeStaticModule.forRoot({ rootPath, serveRoot, exclude })`.
 //!
-//! Like `@nestjs/serve-static` on Express, the files are served by `express.static`
+//! The files are served with the behavior of `express.static`
 //! ([`crate::http::ServeStatic`]): dotfiles ignored by default, `Range`, `ETag`,
 //! `Last-Modified`, conditional GET, a `301` to `dir/` for directories and streamed bodies.
 

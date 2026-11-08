@@ -176,3 +176,44 @@ The maintainer's review narrows decisions 4 and 5 to what the issue asks (remove
 - Adding `db/schema.prisma` to the CLI's schema search fixes a mismatch between the docs (`docs/data/corvis-orm.md`)
   and the CLI, so it belongs to #20 (CLI defaults that contradict the docs), not to this change.
 - `pris.ly` links in P2024/P3009/P3018 messages stay for parity (they contain no banned word).
+
+## Implementation notes
+
+- **Naming check patterns.** Besides the case-sensitive brand pattern of Decision 7, `scripts/check-naming.mjs` has
+  four more groups: packages and ids (`@nestjs/`, `nestjs`, `nest-<id>`, `NEST_<VAR>`), a lowercase `prisma` that is
+  not a file extension (folders, commands, the client variable; `schema.prisma` and `*.prisma` do not match because of
+  the leading dot) plus `_prisma_migrations`, vendor links (`pris.ly`, `prisma.io`, `nestjs.com`) and the copied
+  tagline. Without the lowercase and link groups, categories C and D would never match, and the allowlist entries the
+  spec and task 3.1 ask for would allow nothing. A lowercase `nest` is not matched: it is an English verb
+  (`multer/fuzz.rs` uses it).
+- **File set.** `git ls-files --cached --others --exclude-standard`, so untracked files a contributor is about to commit
+  are checked too, filtered to `Cargo.toml`, `README.md`, `crates/**` (sources, tests, fixtures, crate READMEs and
+  manifests), `examples/**`, `docs/**`, `bench/report.js`, `bench/results.md`, `bench/run.sh` and
+  `bench/corvis-app/**`. `bench/node-app/` is not a published surface: its sources import the framework they measure.
+- **Allowlist semantics.** An entry with a `pattern` blanks only the text that pattern matches, so another mention on
+  the same line is still reported; an entry without one allows the whole file. Besides an empty reason, an entry that
+  no longer allows any banned word fails the check, so entries such as the temporary root `README.md` one (#3) have
+  to be removed when their reason goes away. The `crates/corvis-orm/README.md` folder paths are allowlisted as
+  compatibility identifiers; that README's rewrite is out of scope.
+- **Self-test.** `node scripts/check-naming.mjs --self-test` runs the matcher on built-in samples (planted mentions
+  are reported; `nested`, `schema.prisma`, `_prisma_migrations` and allowlisted fixtures pass; an empty reason
+  fails). This is the regression test of task 6.4, runnable without cargo. Verified as well by planting
+  `// As in @nestjs/jwt` in an untracked file under `crates/corvis/src/`: the check reported it with file and line
+  and exited 1. The naming check does not run inside `npm run docs:check` (open question left for CI, #6).
+- **Comments.** The `asymmetric_keys` test comment in `jwt.rs` described the test with the original option names (`publicKey` / `privateKey`); it now uses
+  the Rust field names. The `serve_static.rs` module doc keeps `express.static`, the library whose behavior it copies,
+  which is not a banned name.
+- **Crate description.** Used the wording proposed in Decision 2 for `Cargo.toml`; the `lib.rs` opening became "A
+  modular backend framework for Rust, built around modules, controllers, ...", keeping its existing list.
+  `git grep 'efficient and scalable'` now only finds this change's planning files and the check's own pattern and
+  self-test sample.
+- **Benchmark language.** The report and `run.sh` stay in Spanish (translation is #12); only the labels changed:
+  "Benchmark de throughput: Node.js vs Corvis", "Node.js + Express", "Node.js + Fastify". `bench/results.md` was
+  edited, not regenerated (no run was made); every number is unchanged. `bash -n bench/run.sh` and
+  `node --check bench/report.js` pass; a real run needs `cargo build` and was left to the maintainer. The
+  `package-lock.json` name fields follow the new package name. The `e0-reproducible-benchmark-port-vs-original`
+  change still mentions `bench/nest-app` in its design; it was not edited (another change).
+- **Docs.** No docs page changed: the benchmark pages already say "Node.js + Express" / "Node.js + Fastify" and no
+  page quotes the old crate description or the rewritten comments. `npm run docs:check` passes (173 + 173 pages).
+- **Parity.** No runtime string or code path changed (comments, crate metadata, benchmark scripts and a new Node
+  script only), so the corvis-parity check is not needed.

@@ -62,7 +62,7 @@ struct Counters {
 
 /// In-memory storage of hit counters.
 ///
-/// Like `@nestjs/throttler`, keys are stored as `sha256(key)`, so their size does not depend
+/// Keys are stored as `sha256(key)`, so their size does not depend
 /// on the request. Expired counters are removed on every `increment` (each one once, in
 /// expiration order) and the table never holds more than `max_entries` counters: when it is
 /// full, the counter closest to expiring is dropped.

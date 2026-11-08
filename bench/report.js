@@ -57,7 +57,7 @@ for (const sc of meta.scenarios) {
 }
 
 let md = '';
-md += '# Benchmark de throughput: NestJS vs Corvis\n\n';
+md += '# Benchmark de throughput: Node.js vs Corvis\n\n';
 md += `Generado: ${meta.date}\n\n`;
 md += '## Entorno\n\n';
 md += `- SO: ${meta.os}\n`;
@@ -67,7 +67,7 @@ md += `- Generador de carga: ${meta.loadgen}\n`;
 md += `- Parámetros: ${meta.conns} conexiones, ${meta.duration}s por escenario, warmup de ${meta.warmup}s, HTTP/1.1 keep-alive, 127.0.0.1\n`;
 md += '- Cliente y servidor corren en la misma máquina (compiten por CPU).\n';
 md += '- Corvis: build `--release`, runtime Tokio multi-hilo (un worker por núcleo salvo que se indique `TOKIO_WORKER_THREADS`).\n';
-md += '- NestJS: `node dist/main.js` (compilado con tsc), un solo proceso (sin cluster).\n\n';
+md += '- Node.js: `node dist/main.js` (compilado con tsc), un solo proceso (sin cluster).\n\n';
 
 md += '## Resultados\n\n';
 md += '| Escenario | Framework | req/s | req/min | p50 (ms) | p99 (ms) | Errores / non-2xx | RSS bajo carga (MB) |\n';
@@ -77,11 +77,11 @@ for (const r of rows) {
 }
 md += '\n';
 
-// Relación Corvis vs Nest (Express) por escenario.
-const base = meta.frameworks.find((f) => f.id === 'nest-express');
+// Relación Corvis vs Node.js (Express) por escenario.
+const base = meta.frameworks.find((f) => f.id === 'node-express');
 const mainCorvis = meta.frameworks.find((f) => f.id === 'corvis');
 if (base && mainCorvis) {
-  md += '## Relación de throughput (respecto a NestJS + Express)\n\n';
+  md += '## Relación de throughput (respecto a Node.js + Express)\n\n';
   md += '| Escenario | ' + meta.frameworks.map((f) => f.label).join(' | ') + ' |\n';
   md += '|---|' + meta.frameworks.map(() => '---:').join('|') + '|\n';
   for (const sc of meta.scenarios) {
@@ -122,12 +122,12 @@ md += `- Antes de medir, run.sh comprueba con curl que cada endpoint devuelve ex
 if (meta.notes) md += `- ${meta.notes}\n`;
 
 md += '\n## Cómo interpretar\n\n';
-md += '- **Corvis (todos los núcleos)** frente a NestJS es la comparación "tal cual sale de la caja": Tokio usa todos los núcleos y Node ejecuta el JS en un solo hilo. ';
+md += '- **Corvis (todos los núcleos)** frente a Node.js es la comparación "tal cual sale de la caja": Tokio usa todos los núcleos y Node ejecuta el JS en un solo hilo. ';
 md += 'En esta máquina, con cliente y servidor en el mismo equipo, el techo de oha + loopback de Windows ronda los ~100-110k req/s (un servidor hyper sin framework se queda en esa misma cifra), ';
 md += 'así que esa fila mide sobre todo el techo del entorno, no el límite de Corvis.\n';
 md += '- **Corvis (1 worker)** (`TOKIO_WORKER_THREADS=1`) es la comparación por núcleo, más justa frente a un proceso Node sin cluster.\n';
 md += '- req/min = req/s × 60 (extrapolado de la ventana medida).\n';
-md += '\n## Cómo reejecutar\n\n```bash\n# Desde la raíz del workspace, en Git Bash\nbash bench/run.sh\n\n# Parámetros opcionales (variables de entorno)\nCONNS=100 DURATION=15 WARMUP=5 OHA_THREADS=8 FRAMEWORKS="corvis corvis-1t nest-express nest-fastify" bash bench/run.sh\n```\n';
+md += '\n## Cómo reejecutar\n\n```bash\n# Desde la raíz del workspace, en Git Bash\nbash bench/run.sh\n\n# Parámetros opcionales (variables de entorno)\nCONNS=100 DURATION=15 WARMUP=5 OHA_THREADS=8 FRAMEWORKS="corvis corvis-1t node-express node-fastify" bash bench/run.sh\n```\n';
 
 fs.writeFileSync(outFile, md);
 console.log(`Escrito ${outFile}`);
