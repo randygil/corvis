@@ -20,7 +20,7 @@ Creates the project folder (the name in kebab-case) with `Cargo.toml`, `.env`, `
 | `--corvis-version <requirement>` | Dependency `corvis = { version = "<requirement>" }` (a Cargo version requirement) |
 | `--skip-git` | Does not run `git init` |
 
-The name must start with a letter and contain only letters, digits, `-` and `_`.
+The name must start with a letter and contain only letters, digits, `-` and `_`. `--corvis-version` must be a Cargo version requirement (for example `0.1`, `^0.1.2` or `>=0.1, <0.3`) and `--corvis-path` cannot contain quotes or control characters. This way nothing is written outside `src/` and no text is injected into the generated files. `corvis generate` applies the same name rule.
 
 ## `corvis generate`
 

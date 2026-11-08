@@ -53,6 +53,10 @@ Y sus opciones, como métodos de `StreamableFile` o de `StreamableFileOptions`:
 - `.length(n)`: `Content-Length` para un stream; sin él, el stream se envía con
   `Transfer-Encoding: chunked`.
 
+`Content-Length` se completa automáticamente solo para datos en memoria. Para escribir la respuesta exactamente como
+`res.setHeader(...); res.end(buffer)`, devuelve
+`Response::bytes(buf, "application/pdf").with_header("Content-Disposition", "...")`.
+
 ## Un stream propio
 
 `Response::stream` envía cualquier `ByteStream`, que es un

@@ -71,7 +71,7 @@ app.set_trust_proxy(1usize);                                         // one prox
 app.set_trust_proxy(TrustProxy::parse("loopback, 10.0.0.0/8")?);    // addresses or subnets
 ```
 
-Don't use `set_trust_proxy(true)` unless **all** requests go through a proxy that rewrites `X-Forwarded-For`: otherwise any client can choose its IP. See [Rate limiting](/security/rate-limiting).
+Lists accept IPs, CIDR ranges (`fc00::/7`), masks (`10.0.0.0/255.0.0.0`) and the names `loopback`, `linklocal` and `uniquelocal`. `X-Forwarded-For` is read from right to left starting at the socket: the first untrusted address is the client's. Don't use `set_trust_proxy(true)` unless **all** requests go through a proxy that rewrites `X-Forwarded-For`: otherwise any client can choose its IP. See [Rate limiting](/security/rate-limiting).
 
 ## Server limits
 
@@ -90,6 +90,8 @@ app.set_server_options(
         .max_header_size(16 * 1024),                 // default 32 KiB (responds 431)
 );
 ```
+
+Each timeout accepts `None` to disable it (`.request_timeout(None)`). Connections beyond `max_connections` wait in the `accept` queue. An HTTP/1 request head is limited to 32 KiB (Node uses 16 KiB). A connection that sends nothing or drips its headers is closed, while requests in progress (a slow handler, an SSE response) do not count as idle.
 
 `ServerOptions::h2c(false)` disables HTTP/2 without TLS if your proxy doesn't use it. Call `set_server_options` before `listen`. See [Keep-alive connections](/faq/keep-alive-connections).
 

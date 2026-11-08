@@ -130,14 +130,14 @@ Rules for coexisting with gateways:
 | `WebSocketServerOptions` | Default | Effect |
 |---|---|---|
 | `max_payload(bytes)` | 100 MiB | Maximum size of a message. Lower it on public routes (the example uses 1024) |
-| `max_buffered_amount(bytes)` | 8 MiB | Pending bytes per connection; when exceeded `send` fails and it closes with `1008` |
-| `close_timeout(duration)` | 30 s | Wait for the close response |
+| `max_buffered_amount(bytes)` | 8 MiB | Pending bytes per connection; when exceeded `send` fails with `WS_ERR_BUFFER_FULL` and it closes with `1008`. `ws.buffered_amount()` is the equivalent of `bufferedAmount` |
+| `close_timeout(duration)` | 30 s | Wait for the close response (also when the peer does not read) |
 | `max_unread_bytes(bytes)` | 16 MiB | Unread data in `messages()` before the socket stops being read |
 | `client_tracking(bool)` | `true` | Keep sockets in `wss.clients()` |
 | `handle_protocols(f)` | First requested subprotocol | Choose the subprotocol |
 
-A `panic` inside a listener or the `handle_upgrade` callback is logged and closes the socket with `1011`.
+A `panic` inside a listener or the `handle_upgrade` callback is logged and closes the socket with `1011`; the socket leaves `wss.clients()` and `on_close` is always emitted.
 
 ## Security
 
-Global guards and gateway guards do not protect `upgrade` listeners: validate access inside the listener, as the example does with the moderator token.
+Global guards and gateway guards do not protect `upgrade` listeners: validate access inside the listener, as the example does with the moderator token. The same goes for static files and the Swagger/Scalar routes; see [Guards](/websockets/guards).

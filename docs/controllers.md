@@ -80,7 +80,7 @@ All handlers receive `&self` as their first parameter (the macro rejects those t
 - `*`, `*name`, or `{*name}` at the end capture the rest of the path.
 - Routes are case-insensitive (`/CATS` = `/cats`) and accept a single optional trailing slash (`/cats/` works, `/cats//` does not), like the Express 5 router.
 - Static segments take priority over parameters regardless of declaration order: `#[get("count")]` and `#[get(":id")]` can coexist in either order.
-- Parameters are decoded with `decodeURIComponent` semantics; a badly encoded one responds `400 Failed to decode param '...'`.
+- Parameters are decoded with `decodeURIComponent` semantics; a badly encoded one responds `400 Failed to decode param '...'`. `%XX` escapes need two hexadecimal digits: `%+A` is not valid.
 
 ### Host-based routing
 
@@ -149,7 +149,13 @@ The handler's return value is converted into the response:
 | `Bytes`, `Vec<u8>` | Raw bytes |
 | `Option<T>`, `Result<T, E>` | Depends on the content |
 
-Text and JSON bodies get `ETag`, `Content-Length`, and the `304` response to conditional requests, just like in Express.
+Every response also goes through Express's defaults:
+
+- Bodies sent as text, JSON or HTML carry a weak `ETag` (`W/"<hex length>-<base64 sha1>"`, the same as the `etag` package) and `Content-Length`. A `GET` or `HEAD` with a still-valid `If-None-Match` or `If-Modified-Since` gets `304` without a body. `app.set_etag(EtagMode::Strong)` or `app.disable("etag")` change this.
+- An explicit `Content-Type` on a text or JSON body gets `charset=utf-8` (like `res.send(string)`), and `#[header("Content-Type", "text/plain")]` adds the default charset too (`text/plain; charset=utf-8`).
+- Raw bodies (`Response::bytes`, `StreamableFile`, streams, an empty body) are written untouched, like `res.end(buffer)`: no `ETag` and the exact `Content-Type` (`text/plain; charset=windows-1252` is kept).
+- `HEAD` keeps the `Content-Length` and `ETag` of the `GET`, without a body.
+- `X-Powered-By: corvis` is sent by default. `app.set_x_powered_by("Express")` reproduces byte for byte what an Express app sends; `app.disable("x-powered-by")` removes it.
 
 ### Status code
 
@@ -186,6 +192,8 @@ fn legacy(&self) {}
 ```
 
 The code is optional (`302` by default). If the handler returns a JSON object with `url` (and optionally `statusCode`), those values replace the ones from the attribute.
+
+`Response::redirect` and `Redirect::to` encode `Location` like `res.redirect` does (the `encodeurl` package). They still accept absolute URLs, so redirecting to a URL sent by the client is an open redirect: validate it in your application.
 
 ### Errors
 
@@ -241,7 +249,14 @@ async fn login(&self, #[body] b: Value, #[res(passthrough)] res: Res) -> HttpRes
 }
 ```
 
-`Res` has the Express methods in `snake_case`: `status`, `status_code`, `send_status`, `set`, `header`, `set_header`, `append`, `get`, `get_header`, `get_headers`, `has_header`, `remove_header`, `type_`, `content_type`, `vary`, `links`, `attachment`, `location`, `cookie`, `cookie_json`, `clear_cookie`, `redirect`, `redirect_with`, `send`, `json`, `end`, `end_empty`, `headers_sent`, and `writable_ended`.
+- `res` already carries the route's status (`#[http_code]`, `201` on `POST`, `200` otherwise) and the `#[header(...)]` values before the interceptors run, and the handler can change them.
+- If the handler fails before responding, the exception filter builds the response and the headers set on `res` are kept (those from the filter take priority).
+- `send(string)` uses `text/html` when there is no type and `send(Vec<u8>)` uses `application/octet-stream`; both (like `json`) carry `ETag`, `Content-Length`, the charset and `304`. `end(bytes)` writes the bytes untouched, without `ETag` or charset. `set` and `header` add the default charset to `Content-Type`.
+- `redirect` encodes the URL, adds `Vary: Accept` and a body negotiated with `Accept` (`Found. Redirecting to /` as `text/plain`, `<p>...</p>` as `text/html`, or empty).
+- `cookie` and `clear_cookie` follow the `cookie` 0.7 package and validate the name, value, `path` and `domain` (see [Cookies](/http/cookies)).
+- Interceptors and filters can read the object with `ctx.switch_to_http().get_response()`.
+
+`Res` has the Express methods in `snake_case`: `status`, `status_code`, `send_status`, `set`, `header`, `set_header`, `append`, `get`, `get_header`, `get_header_values`, `get_headers`, `has_header`, `remove_header`, `type_`, `content_type`, `vary`, `links`, `attachment`, `location`, `cookie`, `cookie_json`, `clear_cookie`, `redirect`, `redirect_with`, `send`, `json`, `end`, `end_empty`, `headers_sent`, and `writable_ended`.
 
 ::: warning
 Prefer returning values. With `#[res]` in full mode you lose the automatic conversion of the return value, and whatever an interceptor does with the response does not reach the client: what the handler wrote to `res` is what gets sent.

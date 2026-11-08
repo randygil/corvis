@@ -85,12 +85,14 @@ The `CorsOrigin` variants are `Any`, `Reflect`, `Disabled`, `Fixed(String)`, `Li
 
 - Any `OPTIONS` is treated as a preflight, even if it carries no `Access-Control-Request-Method` and
   even if the route does not exist: `204` is returned with `Content-Length: 0` and the
-  `Access-Control-*` headers. This happens before middleware and guards. The exceptions are
+  `Access-Control-*` headers (including `Access-Control-Expose-Headers`). This happens before middleware and guards. The exceptions are
   `preflight_continue(true)` and an `origin_fn` that returns `CorsOrigin::Disabled` for that request:
   in those cases the `OPTIONS` continues to the application.
 - `Vary: Origin` is always sent when the configured origin is not `*`, also when the request's
   origin is not allowed (in that case `Access-Control-Allow-Origin` is missing and the browser
-  blocks the response).
+  blocks the response). It is merged with an existing `Vary` header, like the `vary` package does.
+- Without `allowed_headers`, the headers requested by the browser are reflected and
+  `Vary: Access-Control-Request-Headers` is added.
 - CORS headers are also added to error responses, including those from the body parser.
 - Headers set by the handler take priority over those from CORS.
 

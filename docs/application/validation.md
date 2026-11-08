@@ -93,7 +93,9 @@ To validate a DTO already built outside a handler, use `corvis::validation::vali
 
 ## Schemas with `corvis::z`
 
-`corvis::z` reproduces the zod 4 API with Rust functions. A DTO is associated with its schema with the `zod_dto!` macro:
+`corvis::z` is a port of [zod](https://zod.dev) **4.4.3** and of its usual integration with DTOs, pipes and serialization in Node.js frameworks (version **5.5.0**). It produces the same error codes, messages (`en` locale), key order, check order and JSON shape as zod 4, and `ZodValidationPipe` responds with the same error bodies as that integration. The zod 3 behavior is still available with `z::set_version(z::ZodVersion::V3)` (global), `z::with_version(..)` (current thread) or `ParseOptions::v3()` (a single call).
+
+It reproduces the zod 4 API with Rust functions. A DTO is associated with its schema with the `zod_dto!` macro:
 
 ```rust
 use corvis::prelude::*;
@@ -137,6 +139,8 @@ An error responds like this:
 }
 ```
 
+A missing body, query, parameter or header is validated as `undefined`, as in Express. `ZodValidationPipe` and `ValidationPipe` can coexist: each ignores the types that do not belong to it.
+
 Other ways to use the pipe:
 
 - `ZodValidationPipe::new(schema)` validates a specific argument with an explicit schema, for example for query strings: `#[query(ZodValidationPipe::new(z::object! { page: z::coerce::number().int().min(1.0).default(1) }))] q: ListQuery`.
@@ -159,7 +163,7 @@ if let Some(error) = result.error {
 }
 ```
 
-`parse`, `safe_parse`, `parse_as::<T>` (validates and deserializes), `flatten_error`, `treeify_error` and `prettify_error` are available. The full catalog of types and methods follows the zod 4 API; the equivalence table is in the repository's `README.md`.
+`parse`, `safe_parse`, `parse_as::<T>` (validates and deserializes), `flatten_error`, `treeify_error` and `prettify_error` are available. `format_error`, `error.to_json()` and `error.message()` are also available. The full catalog of types and methods follows the zod 4 API; the equivalence tables are below.
 
 ### Messages in Spanish
 
@@ -169,12 +173,97 @@ zod messages use the `en` locale by default. `corvis::z` also includes `es`:
 z::configure(|c| c.locale_error = Some(z::locales::es()));
 ```
 
+### zod 4 equivalence
+
+| zod 4 | `corvis::z` |
+|---|---|
+| `z.string().min(3, "msg")`, `.min(3, { error: (iss) => ... })` | `z::string().min(3).message("msg")`, `.min(3).error(z::error_fn(\|iss\| Some(..)))` |
+| `z.string({ error: "msg" })` | `z::string().error("msg")` (without checks, applies to the schema) |
+| `.max() .length() .nonempty() .regex(/re/i) .startsWith() .endsWith() .includes(s, { position })` | `.max() .length() .nonempty() .regex(("re", "i")) .starts_with() .ends_with() .includes_at(s, pos)` |
+| `.trim() .toLowerCase() .toUpperCase() .normalize() .slugify() .lowercase() .uppercase()` | `.trim() .to_lower_case() .to_upper_case() .normalize("NFC") .slugify() .lowercase() .uppercase()` |
+| `z.email()`, `z.email({ pattern: z.regexes.html5Email })` | `z::email()`, `z::email_with(z::regexes::HTML5_EMAIL.clone())` |
+| `z.uuid() z.uuidv4() z.guid() z.url({ hostname, protocol, normalize }) z.httpUrl()` | `z::uuid() z::uuidv4() z::guid() z::url_with(UrlOptions {..}) z::http_url()` |
+| `z.cuid() z.cuid2() z.ulid() z.xid() z.ksuid() z.nanoid() z.emoji()` | the same |
+| `z.ipv4() z.ipv6() z.cidrv4() z.cidrv6() z.mac({ delimiter }) z.hostname()` | `z::ipv4() ... z::mac(Some("-")) z::hostname()` |
+| `z.base64() z.base64url() z.hex() z.hash("sha256") z.jwt({ alg }) z.e164()` | `z::base64() ... z::hash("sha256", None) z::jwt(Some("HS256")) z::e164()` |
+| `z.iso.datetime({ offset, local, precision }) z.iso.date() z.iso.time() z.iso.duration()` | `z::iso::datetime_with(IsoDatetime {..})`, `z::iso::date()`, `z::iso::time_with(p)`, ... (`z::time_precision::MILLISECOND`) |
+| `z.stringFormat("code", /re/ \| fn)` | `z::string_format("code", "re")`, `z::string_format_fn("code", \|s\| ..)` |
+| `z.number().int().gt().gte().lt().lte().positive().multipleOf().step()` | the same (`gt(0.0)`, ...); `z::int()`, `z::int32()`, `z::uint32()`, `z::float32()`, `z::float64()` |
+| `z.bigint() z.int64() z.uint64()`, `z.boolean()`, `z.null()`, `z.undefined()`, `z.void()`, `z.nan()` | the same |
+| `z.any() z.unknown() z.never() z.date()` | the same (`z::date()` receives the dates from `z::coerce::date()` or from a transform; with `ParseOptions::date_strings(true)` it also accepts ISO strings) |
+| `z.literal("a")`, `z.literal(["a", 1, null])` | `z::literal("a")`, `z::literal(json!(["a", 1, null]))` |
+| `z.enum(["a", "b"])`, `z.enum({ A: "x" })`, `z.nativeEnum(E)`, `.extract() .exclude()` | `z::enum_(["a", "b"])`, `z::enum_entries([("A", json!("x"))])`, `z::native_enum::<E>()`, `.extract(&[..]) .exclude(&[..])` |
+| `z.stringbool({ truthy, falsy, case })` | `z::stringbool()`, `z::stringbool_with(StringBoolOptions {..})` |
+| `z.templateLiteral(["id-", z.number()])` | `z::template_literal([TemplatePart::from("id-"), z::number().into()])` |
+| `z.object({...})`, `z.strictObject`, `z.looseObject` | `z::object! { field: s, "with-hyphen": s }`, `z::strict_object! {..}`, `z::loose_object! {..}` |
+| `.strict() .strip() .passthrough() .loose() .catchall(s)` | the same |
+| `.extend() .safeExtend() .merge() .pick({ a: true }) .omit() .partial() .required() .keyof() .shape` | `.extend(o) .safe_extend(o) .merge(o) .pick(&["a"]) .omit(&[..]) .partial() .partial_fields(&[..]) .required() .required_fields(&[..]) .keyof() .shape()` |
+| `z.array(s).min().max().length().nonempty()`, `s.array()` | the same |
+| `z.tuple([a, b], rest)` | `z::tuple([a, b]).rest(rest)` |
+| `z.record(k, v)`, `z.partialRecord(k, v)`, `z.looseRecord(k, v)` | `z::record_with(k, v)`, `z::partial_record(k, v)`, `z::loose_record(k, v)` (`z::record(v)` uses string keys) |
+| `z.union([..])`, `z.xor([..])`, `z.discriminatedUnion("k", [..])`, `z.intersection(a, b)` | `z::union([..])`, `z::xor([..])`, `z::discriminated_union("k", [..])`, `z::intersection(a, b)`; `a.or(b)`, `a.and(b)` |
+| `.optional() .exactOptional() .nullable() .nullish() .nonoptional() .readonly() .brand()` | the same (`.exact_optional()`) |
+| `.default(v) .default(() => v) .prefault(v) .catch(v) .catch((ctx) => v)` | `.default(v) .default_fn(\|\| v) .prefault(v) .catch(v) .catch_fn(\|ctx\| v)` |
+| `.refine(fn, { message, path, abort, when, params })` | `.refine(fn, "msg")`, `.refine(fn, z::params().message(..).path([..]).abort().when(..).params(json!(..)))`, `.refine_at(fn, msg, [..])` |
+| `.superRefine((v, ctx) => ctx.addIssue({...}))`, `.check((ctx) => ...)`, `.overwrite(fn)` | `.super_refine(\|v, ctx\| ctx.add(z::issue().code(..).message(..).path([..])))`, `.check_fn(\|payload\| ..)`, `.overwrite(\|v\| ..)` |
+| `.transform(fn)`, `.transform((v, ctx) => { ctx.addIssue(..); return z.NEVER })` | `.transform(\|v\| ..)`, `.try_transform(\|v, ctx\| { ctx.add(..); None })` |
+| `.pipe(s)`, `z.preprocess(fn, s)`, `z.codec(a, b, { decode, encode })`, `z.invertCodec(c)` | the same (`z::invert_codec(&c)`); `schema.decode(&v)`, `schema.encode(&v)` |
+| `z.lazy(() => s)`, recursive getters, `z.custom(fn)`, `z.json()`, `z.success(s)` | `z::lazy(f)`, `z::custom(fn, msg)`, `z::json()`, `z::success(s)` |
+| `z.coerce.number()/string()/boolean()/bigint()/date()` | `z::coerce::number()/...` (`boolean` is `Boolean(x)`: `"false"` gives `true`) |
+| `schema.parse / safeParse / parse(v, { reportInput, error })` | `parse`, `safe_parse`, `parse_with(&v, &ParseOptions::new().report_input(true).error(..))`, `parse_as::<T>`, `parse_str`, `is_valid`; with `undefined`: `parse_opt(None, ..)`, `safe_parse_opt(None, ..)` |
+| `z.flattenError / treeifyError / prettifyError / formatError`, `error.issues`, `error.message` | `z::flatten_error(&e)` (or `e.flatten()`), `z::treeify_error`, `z::prettify_error`, `z::format_error`, `e.issues`, `e.message()` |
+| `z.config({ customError })`, `z.config(z.locales.es())` | `z::configure(\|c\| c.custom_error = Some(..))`, `z::configure(\|c\| c.locale_error = Some(z::locales::es()))` |
+| `.describe()`, `.meta({ id, title })`, `z.registry()`, `z.globalRegistry`, `.register(r, meta)` | the same (`z::Registry::new()`, `z::global_registry()`) |
+| `z.toJSONSchema(s, { target, io, unrepresentable, cycles, reused, override })` | `z::to_json_schema(&s, &JsonSchemaOptions::new().target("draft-07").input()...)` or `s.to_json_schema()` |
+
+### Differences specific to Rust
+
+- Values are `serde_json::Value`. `undefined` is the absence of a value (`parse_opt(None, ..)` or a missing key), and an `undefined` output is omitted in objects, like `JSON.stringify`. Numbers follow JavaScript semantics (`f64`, `Number(x)`, `String(x)`) and object keys are ordered as in V8 (numeric indexes first).
+- `.refine()`, `.super_refine()`, `.overwrite()` and `.check_fn()` return a `Schema`, so the type's own checks (`.min()`, ...) go before them. zod also accepts `z.string().refine(..).min(3)`; that order cannot be written in Rust.
+- What zod *throws* as an `Error` (an intersection that cannot be merged, a `transform` when doing `encode`) is a `panic!` in Rust. `ZodValidationPipe` and the serializer turn it into the same response as the original integration.
+- Recursive schemas: a function that returns the schema and `z::lazy(f)` where it repeats (`fn category() -> Schema { z::object! { children: z::array(z::lazy(category)) }.into() }`). For `to_json_schema` to produce `"$ref": "#"` as zod does, use `z::lazy(category)` as the root.
+- `z.map`, `z.set`, `z.symbol`, `z.file`, `z.promise`, `z.function` and `z.instanceof` do not exist because they describe values that do not travel in JSON. Of the locales only `en` (default) and `es` exist; add other languages with `locale_error` and `z::error_fn`.
+- Depth of recursive schemas (`z.lazy`, `z.json()`): at most 128 levels per parse. See [Security limits](#security-limits).
+
+### Behaviors inherited from zod
+
+These come from zod and from its Node.js integration, and are worth keeping in mind:
+
+- Guards and interceptors see the **unvalidated** body (see [What guards and interceptors see](#what-guards-and-interceptors-see)).
+- A parameter whose type has no schema (`zod_dto!`) passes through unvalidated with `ZodValidationPipe::auto()`.
+- `.strict()` does not report the `__proto__` key: it silently drops it, like zod. With duplicate keys in the JSON the last one wins.
+- `z::coerce::number()` converts `""` and `null` into `0`; `z::coerce::boolean()` is `Boolean(x)`, so `"false"` gives `true` (use `z::stringbool()` for text).
+- `z::jwt()` only checks the shape of the token; it does not verify the signature.
+- The only known divergence: a number that does not fit in an `f64` (`1e309`) arrives as `null` (JSON has no `Infinity`), so `z::number().nullable()` accepts it; in Node it would be `Infinity` and zod would reject it.
+
+### Equivalence with the Node.js integration
+
+| Node.js (zod integration 5) | Corvis |
+|---|---|
+| `class Dto extends createZodDto(schema)`, `{ codec: true }`, `Dto.create(input)` | `zod_dto!(Dto, schema)`, `zod_dto!(Dto, schema, codec = true)`, `Dto::create(&input)` |
+| `new ZodValidationPipe(schemaOrDto)` | `ZodValidationPipe::new(schema)`, `ZodValidationPipe::dto::<Dto>()` |
+| `{ provide: APP_PIPE, useClass: ZodValidationPipe }` | `app.use_global_pipes(ZodValidationPipe::auto())` |
+| `createZodValidationPipe({ createValidationException, strictSchemaDeclaration })` | `z::create_zod_validation_pipe(ZodValidationPipeOptions::new().create_validation_exception(\|e\| ..).strict_schema_declaration(true))` |
+| `ZodValidationException`, `getZodError()` | `z::ZodValidationException::new(e)`, `ZodValidationException::get_zod_error(&ex)` |
+| `ZodSerializationException`, `ZodSchemaDeclarationException` | the same (`z::...::new(..)`) |
+| `@ZodSerializerDto(Dto)` / `([Dto])` + `ZodSerializerInterceptor` | `#[set_metadata(z::ZOD_SERIALIZER_DTO_OPTIONS, z::ZodSerializerDto::dto::<Dto>())]` (`dto_array`, `schema`, `schema_array`) + `app.use_global_interceptors(z::ZodSerializerInterceptor::new())` (see [Serialization](/application/serialization)) |
+| `createZodSerializerInterceptor({ reportInput })` | `z::ZodSerializerInterceptor::create(Some(true))` |
+| `@ZodResponse({ status, type })` | `#[apply_decorators(corvis_swagger::decorators::zod_response::<Dto>(Some(status), None))]`: status code + `ZodSerializerDto` + the OpenAPI response (`Dto_Output`) |
+| `ZodGuard`, `UseZodGuard('body', Dto)`, `createZodGuard({ createValidationException })` | `#[use_guards(z::ZodGuard::dto::<Dto>(z::ZodGuardSource::Body))]`, `.create_validation_exception(..)` |
+| `validate(value, schemaOrDto, createValidationException?)` | `z::validate(&value, &schema, None)` |
+
+### How fidelity is tested
+
+Fidelity is checked against the real packages: `tests/fixtures/zod4/cases.mjs` runs zod 4.4.3 (and its `zod/v3` build) over almost 300 schemas with about 600 inputs and almost 100 `toJSONSchema` cases, and `tests/fixtures/zod4/pipe.mjs` runs the original 5.5.0 integration. `tests/zod4_fixtures.rs` and `tests/zod_pipe.rs` require the same result, including key order.
+
 ## What guards and interceptors see
 
 Pipes validate the handler's argument; they do not replace `req.body()`. A guard or an interceptor that reads the body sees the **unvalidated** value. If a guard needs already validated data, validate there or move the logic to the handler.
 
 ## Security limits
 
-- Recursive schemas (`z::lazy`, `z::json()`) allow at most 128 levels per parse; change it with `z::configure(|c| c.max_depth = n)`.
-- `regex` patterns without lookarounds or backreferences run in linear time; those that use them have a step cap. Avoid them in rules that receive text from the client.
+- **Depth of recursive schemas.** `z::lazy` and `z::json()` allow at most 128 levels of nesting per parse. Past that limit the parse stops recursing and returns a `custom` issue with the message `Too deeply nested: the input exceeds the maximum depth of 128` at the path of the first value that exceeds it (without `input`, to avoid copying the subtree). zod has no such limit: in Node.js the parse throws `RangeError: Maximum call stack size exceeded`; in Rust a stack overflow aborts the whole process, so the limit is mandatory. Unions do not wrap it in `invalid_union`, so it reaches the `400` of `ZodValidationPipe` as is. Change it with `z::configure(|c| c.max_depth = n)` (global, `z::DEFAULT_MAX_DEPTH` = 128) or per parse with `ParseOptions::new().max_depth(n)`. 128 levels leave plenty of margin: a typical recursive tree needs about 670 levels to exhaust the 2 MiB stack of a tokio worker in release (about 220 in debug).
+- **Linear cost.** Objects, records, arrays and tuples move each value to its child instead of copying the subtree at every level (3000 levels used to take minutes; now it takes milliseconds), and `z::json()` validates a JSON input in a single pass with the same result as zod's `z.lazy` union. A value is copied only when an issue needs it.
+- **Regular expressions.** Patterns without lookarounds or backreferences (including those that use `\b`) run with the `regex` crate, in linear time. Those that need them stay on the backtracking `fancy-regex` engine, as in V8, with a cap of 1,000,000 steps per `test`: when it is reached the text is considered invalid and a `[JsRegex]` `WARN` is logged. Avoid backreferences and lookarounds in `.regex()` rules applied to client text.
+- **`#[array_unique]`** compares with a hash table (linear) instead of pairwise.
 - `z::url()` accepts any scheme (`javascript:` included); for links that will be displayed use `z::http_url()`.

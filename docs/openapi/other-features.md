@@ -108,7 +108,9 @@ SwaggerModule::setup_with("docs", &mut app, document, SwaggerCustomOptions {
 | `custom_swagger_ui_path` | Local folder with `swagger-ui-dist`; without it, resources are redirected to jsDelivr |
 | `patch_document_on_request` | Function that receives the `Request` and the document and returns the document to serve |
 
-`custom_swagger_ui_path` is the option to use if the server has no internet access or your security policy does not allow loading scripts from a CDN. Only files inside that folder are served.
+`custom_swagger_ui_path` is the option to use if the server has no internet access or your security policy does not allow loading scripts from a CDN. Only files inside that folder are served, as `express.static` does: the path is decoded and every segment must be a plain file name (no empty segments, `.`/`..`, dotfiles, `\`, `:`, control characters or Windows device names such as `CON` or `NUL`), and the canonical path (symbolic links and 8.3 short names resolved) must still be inside the folder and be a file. Anything else falls through to the next handler (`404`).
+
+The `{"$js": "..."}` marker is only turned into code inside `swagger_options`; inside the document it is plain data.
 
 ## Lazy document
 

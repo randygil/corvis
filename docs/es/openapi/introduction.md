@@ -66,7 +66,7 @@ Con la aplicación en marcha:
 `DocumentBuilder` define la parte fija del documento (título, versión, servidores, esquemas de seguridad). `SwaggerModule::create_document` recorre los controladores de la aplicación y completa `paths` y `components.schemas`. `cleanup_open_api_doc` convierte los schemas de los DTOs de `corvis::z` al formato de OpenAPI; si no usas esos DTOs no hace falta, pero tampoco molesta.
 
 ::: tip Rutas planas
-Las rutas que monta `SwaggerModule::setup` no son rutas de controlador: no aparecen en los logs `Mapped {...}` ni pasan por guards, pipes o interceptors. Si la documentación no debe ser pública, protégela con un middleware o no la montes en producción.
+Las rutas que monta `SwaggerModule::setup` (la página, `swagger-ui-init.js`, `-json` y `-yaml`, más los archivos de `swagger-ui-dist`) son rutas planas al estilo de Express, no rutas de controlador: no aparecen en los logs `Mapped {...}` ni pasan por guards, pipes o interceptors. Si la documentación no debe ser pública, protégela con un middleware o no la montes en producción.
 :::
 
 ## Un controlador documentado
@@ -147,6 +147,8 @@ scalar::mount(&mut app, "/reference", ApiReferenceOptions::new().document(&docum
 ```
 
 `mount` responde la página en esa ruta y en todo lo que cuelga de ella, para cualquier método. `ApiReferenceOptions` permite cambiar el tema (`.theme("purple")`), el título (`.page_title(..)`), el CDN (`.cdn(..)`), un `nonce` para CSP o cualquier clave de la configuración de Scalar con `.set(clave, valor)`. En lugar del documento embebido puedes apuntar a una URL con `.url("/docs-json")`.
+
+La página es la que genera `@scalar/client-side-rendering` 0.3, con su tema por defecto salvo que indiques `.theme(..)`. No envía el campo `_integration` de las integraciones de servidor de Scalar; si lo necesitas (por ejemplo, para servir una página idéntica a una existente), indícalo con `ApiReferenceOptions::integration("...")`. El JSON de configuración embebido en la página (que incluye el documento) escapa `<`, `>`, `&`, U+2028 y U+2029, así que ningún texto del documento puede cerrar el `<script>`. Los valores `{"$js": "..."}` indicados con `.set(..)` se emiten como código, porque los escribe el desarrollador.
 
 ## Siguientes pasos
 

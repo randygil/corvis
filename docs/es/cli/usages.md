@@ -20,7 +20,7 @@ Crea la carpeta del proyecto (el nombre en kebab-case) con `Cargo.toml`, `.env`,
 | `--corvis-version <requisito>` | Dependencia `corvis = { version = "<requisito>" }` (un requisito de versión de Cargo) |
 | `--skip-git` | No ejecuta `git init` |
 
-El nombre debe empezar con una letra y contener solo letras, dígitos, `-` y `_`.
+El nombre debe empezar con una letra y contener solo letras, dígitos, `-` y `_`. `--corvis-version` debe ser un requisito de versión de Cargo (por ejemplo `0.1`, `^0.1.2` o `>=0.1, <0.3`) y `--corvis-path` no puede contener comillas ni caracteres de control. Así nada se escribe fuera de `src/` ni se inyecta texto en los archivos generados. `corvis generate` aplica la misma regla de nombres.
 
 ## `corvis generate`
 
