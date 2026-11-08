@@ -34,7 +34,7 @@
 - [x] 5.3 `cargo test --workspace` passes (375 passed, 0 failed)
 - [x] 5.4 50 consecutive green runs of `cargo test -p corvis --test transport_security` on Windows (60 of 60 runs green on the compiled test binary)
 - [x] 5.5 `npm run docs:check` in `docs/` passes
-- [x] 5.6 Runtime code changed: the corvis-parity check is needed (the maintainer runs it): recorded, not run by this task
+- [x] 5.6 Runtime code changed: the corvis-parity check is needed (the maintainer runs it); maintainer run on 82fd104: consi 832/832, facten 727/727, houseplan 598/598 (quiet-hours count), routes identical, databases equivalent. Security review: ship (both findings fixed and re-verified with the PoCs).
 
 ## Workflow follow-up
 
