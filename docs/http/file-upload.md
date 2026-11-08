@@ -95,7 +95,7 @@ async fn upload(&self, #[param("id")] id: String, #[uploaded_file] file: Uploade
 | `.fields(n)`, `.parts(n)` | `400` with the multer message |
 | `.field_size(bytes)` | `400 Field value too long - <field>` (1 MiB by default) |
 | `.field_name_size(bytes)` | Maximum length of a field name |
-| `.field_nesting_depth(n)` | Bracket depth in field names |
+| `.field_nesting_depth(n)` | `400 Field name nesting too deep - <field>` when a name has more than `n` brackets |
 
 The other multipart errors use the same bodies as the reference app: `400 Field name missing`,
 `400 Multipart: Boundary not found`, `400 Multipart: Unexpected end of form` and
@@ -128,7 +128,7 @@ Field names are bounded too: `x[1000000]=v` does not allocate an array of a mill
 can create at most 1000 array holes, and an index that needs more turns that array into an object
 (`{ "1000000": "v" }`), as `qs` does. Names with more than 32 bracket levels (`a[b][b]...`) are stored as a
 literal key, so a small body cannot build a value deep enough to overflow the stack.
-`limits.field_nesting_depth(n)` changes that cap (up to 256) and also responds with an error, as multer does.
+`limits.field_nesting_depth(n)` changes that cap (up to 256) and also responds with `400 Field name nesting too deep - <field>`. See [HTTP parsing and compatibility](/security/http-parsing).
 
 ### Per-module options
 
