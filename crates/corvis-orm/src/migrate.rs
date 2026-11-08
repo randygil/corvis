@@ -164,7 +164,19 @@ impl OrmClient {
         use std::str::FromStr;
         let url = self.inner.driver_url.clone();
         let opts = sqlx::postgres::PgConnectOptions::from_str(&url).map_err(|e| OrmError::init(format!("Invalid database URL: {e}")))?;
-        match opts.connect().await {
+        let limit = self.connect_timeout();
+        let server = crate::client::server_of(&url);
+        // Both direct connections are bounded like the pool's: a server that never answers fails here, at once,
+        // instead of once here and once more when the pool connects.
+        let bounded = |r: std::result::Result<_, tokio::time::error::Elapsed>| match (r, limit) {
+            (Ok(r), _) => Ok(r),
+            (Err(_), l) => Err(crate::db::connect_timed_out(&server, l.unwrap_or_default(), None)),
+        };
+        let first = match limit {
+            Some(d) => bounded(tokio::time::timeout(d, opts.connect()).await)?,
+            None => opts.connect().await,
+        };
+        match first {
             Ok(c) => {
                 let _ = sqlx::Connection::close(c).await;
                 Ok(())
@@ -172,7 +184,11 @@ impl OrmClient {
             Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("3D000") => {
                 let Some(name) = opts.get_database().map(str::to_string) else { return Ok(()) };
                 let admin = opts.clone().database("postgres");
-                let mut c = admin.connect().await.map_err(|e| OrmError::init(e.to_string()))?;
+                let second = match limit {
+                    Some(d) => bounded(tokio::time::timeout(d, admin.connect()).await)?,
+                    None => admin.connect().await,
+                };
+                let mut c = second.map_err(|e| OrmError::init(e.to_string()))?;
                 sqlx::Executor::execute(&mut c, format!("CREATE DATABASE \"{}\"", name.replace('"', "\"\"")).as_str())
                     .await
                     .map_err(|e| OrmError::init(e.to_string()))?;

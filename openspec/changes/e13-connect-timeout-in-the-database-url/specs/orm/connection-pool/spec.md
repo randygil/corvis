@@ -85,6 +85,9 @@ by the database, the request that opened the connection SHALL fail at once, with
 `pool_timeout`, with an initialization error `P1001` whose message starts with "Can't reach database server at
 `host:port`" and contains the database's message. It MUST NOT be reported as `P2024`, `P2010` or a timeout.
 
+The original client does not run a per-connection statement for `schema` and connects to such a database; this is a
+documented difference (the statement is part of #137's design).
+
 #### Scenario: Schema name the database cannot encode
 - **WHEN** a client is created for a database with `LATIN1` encoding with `?schema=%E2%82%AC&pool_timeout=0` and
   `connect()` is called
@@ -115,16 +118,21 @@ at most 40 characters of `[0-9A-Za-z+._-]`, and no other part of the URL MUST ap
   `secret`
 
 ### Requirement: `connect_timeout` is parsed like the other URL parameters
-The key SHALL be matched after percent-decoding, the last occurrence of a repeated key MUST win, and a value too large
-for 64 bits MUST mean no limit.
+The key SHALL be matched after percent-decoding and the last occurrence of a repeated key MUST win. A value that does not
+fit 64 bits is invalid, as in the original client; a value that fits but is larger than the clock can add (more than
+`u32::MAX` seconds) MUST mean no limit.
 
 #### Scenario: Repeated key
 - **WHEN** a client is created with `postgresql://h/db?connect_timeout=1&connect_timeout=3`
 - **THEN** the connect timeout is 3 seconds
 
 #### Scenario: Huge value
-- **WHEN** a client is created with `postgresql://h/db?connect_timeout=99999999999999999999`
+- **WHEN** a client is created with `postgresql://h/db?connect_timeout=18446744073709551615`
 - **THEN** creation succeeds and connecting has no time limit
+
+#### Scenario: Value beyond 64 bits
+- **WHEN** a client is created with `postgresql://h/db?connect_timeout=99999999999999999999`
+- **THEN** creation fails with `P1013` naming `connect_timeout`
 
 ### Requirement: SQLite ignores `connect_timeout`
 For SQLite URLs (`file:` and `sqlite:`) the client SHALL remove `connect_timeout` from the URL and accept any value,
