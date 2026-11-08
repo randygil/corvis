@@ -213,3 +213,24 @@ jobs:
         working-directory: docs
       - run: npm run docs:check
         working-directory: docs
+
+  # Every published crate packages (license, notices, metadata, versioned dependencies). Cargo builds the packages
+  # against a temporary registry, so crates that depend on each other verify before anything is on crates.io.
+  packaging:
+    name: packaging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+      - name: Crate files and metadata
+        run: node scripts/check-crate-files.mjs
+      - name: Package the published crates
+        run: cargo package -p corvis-macros -p corvis -p corvis-orm-macros -p corvis-orm -p corvis-swagger-macros -p corvis-swagger -p corvis-cli

@@ -4,8 +4,11 @@ description = "ORM for Corvis: models with #[derive(Model)], JSON query argument
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
+categories = ["database", "asynchronous"]
 readme = "README.md"
 keywords = ["orm", "sqlx", "corvis", "database", "postgres"]
 
@@ -19,7 +22,7 @@ tls-rustls = ["sqlx/tls-rustls"]
 
 [dependencies]
 corvis = { workspace = true, optional = true }
-corvis-orm-macros = { path = "../corvis-orm-macros" }
+corvis-orm-macros = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

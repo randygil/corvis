@@ -1,7 +1,7 @@
 # examples/blog-orm Specification
 
 ## Purpose
-TBD - created by archiving change e13-fix-the-examples. Update Purpose after archive.
+Behavior the blog-orm example must keep so it stays a correct reference for the ORM.
 
 ## Requirements
 

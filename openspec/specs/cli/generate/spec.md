@@ -1,7 +1,7 @@
 # cli/generate Specification
 
 ## Purpose
-TBD - created by archiving change e13-cli-defaults-that-contradict-the-docs. Update Purpose after archive.
+How `corvis generate` places generated files and registers them in the module of the target folder.
 
 ## Requirements
 

@@ -136,3 +136,23 @@ dependencies are the only source of `wildcards` warnings and asks to switch to `
   repository text is English); add it as a task before the copy step.
 - `documentation` stays on docs.rs (the default); `homepage` points to https://corvis.randygil.com.
 - The `corvis new` path dependency problem for a CLI installed from crates.io is filed as a separate issue.
+
+## Implementation results (2026-11-08)
+
+- **`rust-version = "1.89"`.** `cargo +1.88 check --workspace` fails before compiling: the committed `Cargo.lock` has
+  `uuid 1.29.1`, which requires 1.89 (`time` and `proptest` ask for 1.88). `cargo +1.89 check --workspace` passes, so
+  1.89 is the recorded value (informative, no MSRV job). The extra toolchains were uninstalled afterwards.
+- **`cargo package --workspace` is not usable.** With Cargo 1.99 it also verifies the `publish = false` examples and
+  stops on `blog-orm` (`corvis` has no version). The spec, tasks and CONTRIBUTING name the seven crates with `-p`
+  instead; the `.crate` files are produced for exactly those seven.
+- **Package sizes** (`cargo package` output, files / size / compressed): `corvis-macros` 15 / 133.0 KiB / 30.3 KiB;
+  `corvis` 161 / 3.9 MiB / 639.2 KiB; `corvis-orm-macros` 8 / 87.7 KiB / 21.0 KiB; `corvis-orm` 63 / 3.2 MiB /
+  682.8 KiB; `corvis-swagger-macros` 10 / 58.7 KiB / 16.2 KiB; `corvis-swagger` 26 / 332.0 KiB / 82.4 KiB;
+  `corvis-cli` 15 / 123.3 KiB / 33.2 KiB. `target/package/` was about 12 MB and was deleted.
+- **`cargo publish --dry-run`** passes for the three proc-macro crates and `corvis-cli` on their own. `corvis`,
+  `corvis-orm` and `corvis-swagger` fail alone with "no matching package named ... found" until their dependencies
+  are on crates.io, as expected; naming all seven crates with `-p` dry-runs all of them successfully. Publish order:
+  `corvis-macros`, `corvis`, `corvis-orm-macros`, `corvis-orm`, `corvis-swagger-macros`, `corvis-swagger`,
+  `corvis-cli`.
+- **CI.** #6 is in `main`, so `ci.yml` gets a `packaging` job (check script and `cargo package`).
+- `.gitattributes` keeps the license and notices copies at LF so they stay byte-identical on Windows checkouts.
