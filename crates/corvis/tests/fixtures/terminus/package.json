@@ -1,0 +1,17 @@
+{
+  "name": "corvis-terminus-fixture",
+  "private": true,
+  "type": "module",
+  "description": "Records the HealthCheckService responses of the original framework into terminus.json",
+  "scripts": { "generate": "node generate.mjs" },
+  "dependencies": {
+    "@nestjs/axios": "4.0.1",
+    "@nestjs/common": "11.2.1",
+    "@nestjs/core": "11.2.1",
+    "@nestjs/platform-express": "11.2.1",
+    "@nestjs/terminus": "11.1.1",
+    "axios": "1.13.2",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  }
+}

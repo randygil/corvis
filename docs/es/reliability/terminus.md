@@ -125,6 +125,38 @@ corvis = { version = "0.1", features = ["health-tls"] }
 
 Sin ella, una URL `https://` se informa `down` con un mensaje que nombra la feature, y no se envía ninguna petición.
 
+### Redirecciones
+
+`ping_check` sigue hasta 5 redirecciones, pero solo dentro del mismo origen (mismo esquema, host y puerto; una subida de `http` a `https` del mismo host también cuenta). Una redirección a otro origen no se sigue: el indicador queda `down` con `statusCode` `302` (o el estado recibido) y un mensaje que lo dice. Una redirección de `https` a `http` nunca se sigue. Esto difiere de la librería original, que sigue redirecciones a cualquier sitio (valor por defecto de axios), porque la redirección la controla el servidor destino y podría apuntar la comprobación a una dirección interna.
+
+Cambia el comportamiento con `ping_check_with` y `PingOptions`:
+
+```rust
+use corvis::{HttpHealthIndicator, PingOptions};
+
+HttpHealthIndicator::ping_check_with(
+    "api",
+    "https://api.example.com/health",
+    PingOptions::new().max_redirects(0), // 0 = no seguir ninguna redirección
+);
+
+HttpHealthIndicator::ping_check_with(
+    "cdn",
+    "https://example.com/",
+    PingOptions::new().follow_cross_origin(true),
+);
+```
+
+Incluso con `follow_cross_origin(true)`, una redirección a una dirección de loopback, link-local o privada (`127.0.0.1`, `10.x`, `192.168.x`, `169.254.x`, `localhost` y los equivalentes IPv6) se rechaza salvo que la URL configurada ya apuntara a una. Solo se reconocen IP literales y `localhost`: los nombres de host no se resuelven.
+
+Los mensajes sobre URLs inválidas y redirecciones son texto fijo: la URL configurada (que podría contener credenciales) y la cabecera `Location` de la respuesta nunca se copian a la respuesta de salud.
+
+### Exposición de detalles
+
+Los detalles `down` de un indicador van a la respuesta de salud tal cual: `ping_check` y `tcp_check` pueden incluir el `host:puerto` de destino y el texto de error del sistema operativo (por ejemplo `connect ECONNREFUSED 10.0.0.5:6379`), y los indicadores propios incluyen lo que devuelvan. Si el endpoint es público, cualquiera puede leerlos: no pongas texto sensible en los detalles o protege la ruta.
+
+Cada llamada al endpoint de salud también abre conexiones salientes: una por cada `ping_check` o `tcp_check` (más las redirecciones), cada una abierta hasta el límite de tiempo del indicador. Un endpoint público que se llama a menudo puede usarse para generar ese tráfico, así que limita su tasa (ver [Límite de peticiones](/es/security/rate-limiting)) o guarda el resultado en caché unos segundos.
+
 ## Límites de tiempo
 
 Cada indicador se ejecuta con un límite de 5 segundos. Uno que no termina a tiempo se informa `down` con `"message": "timeout of <ms>ms exceeded"`, y los demás indicadores se siguen informando, así que una dependencia colgada no puede colgar el endpoint de salud. Los indicadores corren de forma concurrente: el tiempo de respuesta lo acota el mayor límite, no la suma.

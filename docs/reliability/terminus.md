@@ -125,6 +125,38 @@ corvis = { version = "0.1", features = ["health-tls"] }
 
 Without it, an `https://` URL is reported `down` with a message naming the feature, and no request is sent.
 
+### Redirects
+
+`ping_check` follows up to 5 redirects, but only within the same origin (same scheme, host and port; an `http` to `https` upgrade of the same host also counts). A redirect to another origin is not followed: the indicator is `down` with `statusCode` `302` (or the status received) and a message saying so. A redirect from `https` to `http` is never followed. This differs from the original library, which follows redirects anywhere (axios default), because a redirect is controlled by the target server and could point the health check at an internal address.
+
+Change the behavior with `ping_check_with` and `PingOptions`:
+
+```rust
+use corvis::{HttpHealthIndicator, PingOptions};
+
+HttpHealthIndicator::ping_check_with(
+    "api",
+    "https://api.example.com/health",
+    PingOptions::new().max_redirects(0), // 0 = do not follow any redirect
+);
+
+HttpHealthIndicator::ping_check_with(
+    "cdn",
+    "https://example.com/",
+    PingOptions::new().follow_cross_origin(true),
+);
+```
+
+Even with `follow_cross_origin(true)`, a redirect to a loopback, link-local or private address (`127.0.0.1`, `10.x`, `192.168.x`, `169.254.x`, `localhost`, and the IPv6 equivalents) is refused unless the configured URL already pointed to one. Only IP literals and `localhost` are recognized: host names are not resolved.
+
+Messages about invalid URLs and redirects are fixed text: the configured URL (which could contain credentials) and the `Location` header of the response are never copied into the health response.
+
+### Exposure of details
+
+The `down` details of an indicator go into the health response as they are: `ping_check` and `tcp_check` can include the target `host:port` and the operating system error text (for example `connect ECONNREFUSED 10.0.0.5:6379`), and custom indicators include whatever they return. If the endpoint is public, anyone can read them, so keep sensitive text out of the details or protect the route.
+
+Each call to a health endpoint also opens outbound connections: one per `ping_check` or `tcp_check` (plus redirects), each held for up to the indicator time limit. A public endpoint that is called often can be used to generate that traffic, so rate limit it (see [Rate limiting](/security/rate-limiting)) or cache the result for a few seconds.
+
 ## Time limits
 
 Every indicator runs with a time limit of 5 seconds. One that does not finish in time is reported `down` with `"message": "timeout of <ms>ms exceeded"`, and the other indicators are still reported, so a hung dependency cannot hang the health endpoint. Indicators run concurrently: the response time is bounded by the largest limit, not by their sum.

@@ -40,11 +40,11 @@
 
 ## 5. Differential fixture against @nestjs/terminus
 
-- [ ] 5.1 Add `crates/corvis/tests/fixtures/terminus/` with a `package.json` pinning `@nestjs/terminus`,
+- [x] 5.1 Add `crates/corvis/tests/fixtures/terminus/` with a `package.json` pinning `@nestjs/terminus`,
   `@nestjs/core`, `@nestjs/common`, `@nestjs/axios`, `axios`, and a `generate.mjs` that runs the scenarios of the
   spec (200, 500, 302→200, closed port, RSS huge and tiny thresholds) and writes `terminus.json`; verify by running
   `node generate.mjs` once and committing the JSON (not `node_modules`)
-- [ ] 5.2 Add a Rust test that replays the same scenarios and compares with `terminus.json` (exact keys and status
+- [x] 5.2 Add a Rust test that replays the same scenarios and compares with `terminus.json` (exact keys and status
   values; OS-dependent message text compared by presence); settle the `rss` key question from design.md and record
   the decision here; verify `cargo test -p corvis --test health`
 

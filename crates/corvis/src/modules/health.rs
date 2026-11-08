@@ -81,23 +81,68 @@ async fn run_indicator(ind: &HealthIndicator) -> Result<Value, Value> {
     }
 }
 
-const MAX_REDIRECTS: usize = 5;
+const DEFAULT_MAX_REDIRECTS: usize = 5;
+
+/// Options of [`HttpHealthIndicator::ping_check_with`].
+///
+/// By default up to 5 redirects are followed, and only within the same origin (an `http` to `https` upgrade of the
+/// same host is also allowed). A redirect from `https` to `http` is never followed.
+#[derive(Debug, Clone)]
+pub struct PingOptions {
+    max_redirects: usize,
+    follow_cross_origin: bool,
+}
+
+impl Default for PingOptions {
+    fn default() -> Self {
+        PingOptions { max_redirects: DEFAULT_MAX_REDIRECTS, follow_cross_origin: false }
+    }
+}
+
+impl PingOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Most redirects to follow; `0` follows none, so a redirect response is reported `down` like any non-2xx one.
+    pub fn max_redirects(mut self, n: usize) -> Self {
+        self.max_redirects = n;
+        self
+    }
+
+    /// Follow redirects to another origin (scheme, host or port). Off by default. Even when on, a redirect to a
+    /// loopback, link-local or private address is refused unless the configured URL already pointed to one, and an
+    /// `https` to `http` redirect is refused.
+    pub fn follow_cross_origin(mut self, follow: bool) -> Self {
+        self.follow_cross_origin = follow;
+        self
+    }
+}
 
 /// Built-in indicators for HTTP endpoints and TCP services.
 pub struct HttpHealthIndicator;
 
 impl HttpHealthIndicator {
     /// Sends an HTTP `GET` to `url` (`http://`, or `https://` with the `health-tls` feature) and is `up` only when
-    /// the final response is 2xx. Up to 5 redirects are followed. When a response arrived but is not 2xx, the
-    /// details include `statusCode` and `statusText`.
+    /// the final response is 2xx. Up to 5 same-origin redirects are followed (see [`PingOptions`] to change that).
+    /// When a response arrived but is not 2xx, the details include `statusCode` and `statusText`.
     ///
     /// A value without `http://` or `https://` (such as `host:port`) is reported `down`: use
     /// [`tcp_check`](Self::tcp_check) for plain TCP addresses.
+    ///
+    /// The `down` details can contain the host and port of the target and operating system error text, so a public
+    /// health endpoint exposes them.
     pub fn ping_check(key: impl Into<String>, url: impl Into<String>) -> HealthIndicator {
+        Self::ping_check_with(key, url, PingOptions::default())
+    }
+
+    /// [`ping_check`](Self::ping_check) with explicit redirect options.
+    pub fn ping_check_with(key: impl Into<String>, url: impl Into<String>, options: PingOptions) -> HealthIndicator {
         let url = url.into();
         HealthIndicator::new(key, move || {
             let url = url.clone();
-            async move { http_ping(&url).await }
+            let options = options.clone();
+            async move { http_ping(&url, &options).await }
         })
     }
 
@@ -121,43 +166,98 @@ fn down(message: impl Into<String>) -> Value {
     json!({ "message": message.into() })
 }
 
-async fn http_ping(start: &str) -> Result<Value, Value> {
-    let mut url = match url::Url::parse(start) {
-        Ok(u) if matches!(u.scheme(), "http" | "https") => u,
-        _ => {
-            return Err(down(format!("invalid URL {start:?}: expected http:// or https://; use tcp_check for plain TCP addresses")));
-        }
+fn response_failure(status: http::StatusCode, message: Option<&str>) -> Value {
+    let message = match message {
+        Some(m) => m.to_string(),
+        None => format!("Request failed with status code {}", status.as_u16()),
     };
+    json!({
+        "message": message,
+        "statusCode": status.as_u16(),
+        "statusText": status.canonical_reason().unwrap_or(""),
+    })
+}
+
+fn is_internal(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(d) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d == "localhost" || d.ends_with(".localhost")
+        }
+        url::Host::Ipv4(a) => a.is_loopback() || a.is_private() || a.is_link_local() || a.is_unspecified(),
+        url::Host::Ipv6(a) => {
+            let seg = a.segments();
+            a.is_loopback() || a.is_unspecified() || (seg[0] & 0xfe00) == 0xfc00 || (seg[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+fn same_origin_or_upgrade(from: &url::Url, to: &url::Url) -> bool {
+    if from.host_str() != to.host_str() {
+        return false;
+    }
+    let same_port = from.port_or_known_default() == to.port_or_known_default();
+    match (from.scheme(), to.scheme()) {
+        (a, b) if a == b => same_port,
+        ("http", "https") => to.port().is_none(),
+        _ => false,
+    }
+}
+
+/// Why a redirect from `from` to `next` must not be followed, if it must not. `origin` is the configured URL.
+fn redirect_refusal(origin: &url::Url, from: &url::Url, next: &url::Url, options: &PingOptions) -> Option<&'static str> {
+    if !matches!(next.scheme(), "http" | "https") || next.host().is_none() {
+        return Some("redirect to an unsupported URL was not followed");
+    }
+    if from.scheme() == "https" && next.scheme() == "http" {
+        return Some("redirect from https to http was not followed");
+    }
+    if !options.follow_cross_origin && !same_origin_or_upgrade(from, next) {
+        return Some("redirect to another origin was not followed (see PingOptions::follow_cross_origin)");
+    }
+    let next_internal = next.host().is_some_and(|h| is_internal(&h));
+    let origin_internal = origin.host().is_some_and(|h| is_internal(&h));
+    if next_internal && !origin_internal {
+        return Some("redirect to an internal address was not followed");
+    }
+    None
+}
+
+async fn http_ping(start: &str, options: &PingOptions) -> Result<Value, Value> {
+    // The configured URL can carry credentials (`user:pass@`), so it is never echoed in a message.
+    let origin = match url::Url::parse(start) {
+        Ok(u) if matches!(u.scheme(), "http" | "https") => u,
+        _ => return Err(down("invalid URL: expected http:// or https:// (use tcp_check for host:port)")),
+    };
+    let mut url = origin.clone();
     let mut redirects = 0;
     loop {
         let (status, location) = request(&url).await?;
         if status.is_success() {
             return Ok(json!({}));
         }
-        if matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308)
-            && let Some(location) = location
-        {
-            if redirects >= MAX_REDIRECTS {
-                return Err(down(format!("Maximum number of redirects exceeded ({MAX_REDIRECTS})")));
-            }
-            redirects += 1;
-            url = url.join(&location).map_err(|e| down(format!("invalid redirect location {location:?}: {e}")))?;
-            if !matches!(url.scheme(), "http" | "https") {
-                return Err(down(format!("redirect to unsupported scheme {:?}", url.scheme())));
-            }
-            continue;
+        let redirect = matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308);
+        let Some(location) = location.filter(|_| redirect && options.max_redirects > 0) else {
+            return Err(response_failure(status, None));
+        };
+        if redirects >= options.max_redirects {
+            return Err(down("maximum number of redirects exceeded"));
         }
-        return Err(json!({
-            "message": format!("Request failed with status code {}", status.as_u16()),
-            "statusCode": status.as_u16(),
-            "statusText": status.canonical_reason().unwrap_or(""),
-        }));
+        redirects += 1;
+        // The `Location` value is attacker-controlled data: it never goes into a message.
+        let Ok(next) = url.join(&location) else {
+            return Err(response_failure(status, Some("redirect with an invalid location was not followed")));
+        };
+        if let Some(reason) = redirect_refusal(&origin, &url, &next, options) {
+            return Err(response_failure(status, Some(reason)));
+        }
+        url = next;
     }
 }
 
 /// One `GET` request without redirects. Returns the status and the `Location` header, if any.
 async fn request(url: &url::Url) -> Result<(http::StatusCode, Option<String>), Value> {
-    let host = url.host().ok_or_else(|| down(format!("invalid URL {url}: no host")))?;
+    let host = url.host().ok_or_else(|| down("invalid URL: no host"))?;
     let https = url.scheme() == "https";
     let port = url.port_or_known_default().unwrap_or(if https { 443 } else { 80 });
     let tcp = match &host {
@@ -219,13 +319,22 @@ mod tls {
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
     use tokio_rustls::client::TlsStream;
+    use tokio_rustls::rustls::crypto::{CryptoProvider, ring};
     use tokio_rustls::rustls::pki_types::ServerName;
     use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
     pub(super) async fn connect(tcp: TcpStream, host: &str) -> Result<TlsStream<TcpStream>, String> {
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let config = ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        // `ClientConfig::builder()` panics when no process-wide provider is installed and both `ring` and `aws-lc-rs`
+        // are compiled in (any app that also uses reqwest, hyper-rustls or the AWS SDK). Use the installed provider,
+        // or ring explicitly, and never panic: a panic here would turn the health endpoint into a 500.
+        let provider = CryptoProvider::get_default().cloned().unwrap_or_else(|| Arc::new(ring::default_provider()));
+        let config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| format!("TLS configuration failed: {e}"))?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
         let name = ServerName::try_from(host.trim_matches(['[', ']']).to_string()).map_err(|e| e.to_string())?;
         TlsConnector::from(Arc::new(config)).connect(name, tcp).await.map_err(|e| format!("TLS handshake failed: {e}"))
     }
@@ -255,6 +364,56 @@ fn rss_verdict(rss: Option<u64>, threshold_bytes: u64) -> Result<Value, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn u(s: &str) -> url::Url {
+        url::Url::parse(s).unwrap()
+    }
+
+    fn refusal(origin: &str, from: &str, next: &str, opts: &PingOptions) -> Option<&'static str> {
+        redirect_refusal(&u(origin), &u(from), &u(next), opts)
+    }
+
+    #[test]
+    fn https_to_http_is_never_followed() {
+        let open = PingOptions::new().follow_cross_origin(true);
+        let r = refusal("https://a.example/", "https://a.example/", "http://a.example/x", &open);
+        assert_eq!(r, Some("redirect from https to http was not followed"));
+        let r = refusal("https://a.example/", "https://a.example/", "http://b.example/x", &PingOptions::new());
+        assert_eq!(r, Some("redirect from https to http was not followed"));
+    }
+
+    #[test]
+    fn cross_origin_is_refused_by_default_and_allowed_on_request() {
+        let d = PingOptions::new();
+        let o = "https://a.example/";
+        assert!(refusal(o, o, "https://b.example/", &d).is_some());
+        assert!(refusal(o, o, "https://a.example:8443/", &d).is_some());
+        assert!(refusal(o, o, "https://a.example/other", &d).is_none());
+        assert!(refusal("http://a.example/", "http://a.example/", "https://a.example/", &d).is_none());
+        let open = PingOptions::new().follow_cross_origin(true);
+        assert!(refusal(o, o, "https://b.example/", &open).is_none());
+    }
+
+    #[test]
+    fn internal_targets_are_refused_unless_the_origin_was_internal() {
+        let open = PingOptions::new().follow_cross_origin(true);
+        let o = "http://a.example/";
+        for t in [
+            "http://127.0.0.1/",
+            "http://localhost/",
+            "http://10.0.0.5/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://[fd00::1]/",
+        ] {
+            assert_eq!(refusal(o, o, t, &open), Some("redirect to an internal address was not followed"), "{t}");
+        }
+        let internal = "http://10.1.1.1/";
+        assert!(refusal(internal, internal, "http://127.0.0.1/", &open).is_none());
+        assert!(refusal(o, o, "http://8.8.8.8/", &open).is_none());
+    }
 
     #[test]
     fn unmeasurable_rss_is_down() {
