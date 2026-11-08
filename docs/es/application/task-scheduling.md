@@ -147,6 +147,10 @@ impl ReportsService {
 
 Las funciones `corvis::schedule::send_at`, `timeout` y `validate_cron_expression` calculan la próxima fecha, los milisegundos que faltan o validan una expresión sin crear un job.
 
+`CronTime::new(expr, time_zone, utc_offset)` es la expresión ya interpretada. Ofrece `send_at`, `send_at_n`, `get_timeout`, `get_next_date_from`, `to_string()` y `to_json()`.
+
+Las pruebas están en `crates/corvis/tests/schedule.rs`: interpretación y mensajes de error, zonas horarias y horario de verano, temporización de `CronJob`, `wait_for_completion`, jobs de una sola vez, el registro, opciones de los atributos y ciclo de vida. Además, el cálculo de fechas se comparó con la versión 4.4 del paquete `cron` en Node sobre 48 expresiones, 9 zonas horarias (incluidas zonas con horario de verano de 1 hora y de 30 minutos) y 7 instantes de partida, sin diferencias.
+
 ## Límites
 
 - Las tareas viven en el proceso: si ejecutas varias instancias de la aplicación, cada una dispara sus propias tareas. Para que una tarea corra una sola vez en un clúster necesitas coordinación externa (ver [Bloqueos distribuidos](/es/reliability/locks)).

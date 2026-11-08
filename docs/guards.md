@@ -109,7 +109,7 @@ For each route, guards run as follows:
 The first one that returns `false` or an error cuts the chain short. Guards run after all middleware and before interceptors.
 
 ::: warning What global guards do not cover
-`use_global_guards` and `Provider::app_guard` protect the controllers' routes. They do not apply to WebSocket gateways (declare them on the gateway), to the `upgrade` listeners of `corvis::ws`, to static files, or to the Swagger or Scalar routes. Protect those surfaces separately.
+`use_global_guards` and `Provider::app_guard` protect the controllers' routes. They do not apply to WebSocket gateways (declare them on the gateway), to the `upgrade` listeners of `corvis::ws`, to static files, or to the Swagger or Scalar routes. A static file with the same path as a protected endpoint is served before the endpoint. Protect those surfaces separately (middleware, `verify_client`, a different static root).
 :::
 
 ## Role-based authorization with metadata

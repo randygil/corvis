@@ -99,13 +99,14 @@ async fn login(&self, #[res(passthrough)] res: Res) -> HttpResult<()> {
 | Pieza de Express | En Corvis |
 |---|---|
 | `express.json()` y `express.urlencoded({ extended: true })` | Activos por defecto, con el límite de 100 kB y los mismos errores `400`, `413` y `415`. `app.use_body_parser("json", bytes)` cambia el límite y `app.disable_body_parser()` los desactiva |
-| `req.query` (parser `simple` de Express 5) | Igual; `app.set_query_parser(corvis::http::body_parser::QueryParser::Extended)` usa `qs` como Express 4 |
+| `req.query` (parser `simple` de Express 5) | Igual (`a[]=1` conserva la clave `a[]`, como mucho 1000 pares); `app.set_query_parser(corvis::http::body_parser::QueryParser::Extended)` usa `qs` como Express 4 |
 | `cookie-parser` | `req.cookies()` y `req.cookie("sid")` |
 | `res.cookie`, `res.clear_cookie` | Mismos valores por defecto (`Path=/`) y misma serialización |
 | `express.static` | [`corvis::serve_static(raíz)`](/es/recipes/serve-static) |
 | `multer` | `FileInterceptor`, `FilesInterceptor`... (ver [Subida de archivos](/es/http/file-upload)) |
 | `cors` | `app.enable_cors(CorsOptions::...)` (ver [CORS](/es/security/cors)) |
 | `app.set('trust proxy', ...)` | `app.set_trust_proxy(...)` |
+| `req.hostname` | `req.hostname()`; conserva los literales IPv6 (`Host: [::1]:3000` da `[::1]`) |
 | `ETag` débil por defecto, `app.set('etag', ...)` | Igual; `app.set_etag(EtagMode::Strong)` o `app.disable("etag")` |
 | `X-Powered-By` | `X-Powered-By: corvis` por defecto; `app.set_x_powered_by("Express")` o `app.disable("x-powered-by")` |
 | Rutas sin distinguir mayúsculas y barra final opcional | Igual que el router de Express 5 |

@@ -92,7 +92,8 @@ solo pasan por los filtros globales.
 
 ## Respuesta
 
-El estado por defecto es `201` en `POST` y `200` en el resto, salvo `#[http_code(...)]`. Después de
+El estado por defecto es `201` en `POST` y `200` en el resto, salvo `#[http_code(...)]`. Se fija antes de correr la ruta, así que los guards y los interceptors lo ven con
+`ctx.switch_to_http().status_code()`. Después de
 los filtros se aplican las cabeceras CORS (las que fijó el handler tienen prioridad), el `ETag` y
 `Content-Length` en los cuerpos en memoria, y la respuesta `304` si la petición condicional sigue
 vigente.

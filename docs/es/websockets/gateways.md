@@ -276,6 +276,8 @@ impl OnGatewayInit for ChatGateway {
 
 `allowed_origins` es importante si autenticas el gateway con cookies: sin esa lista, una página de otro dominio podría abrir una conexión en nombre del usuario.
 
+`client.buffered_amount()` devuelve los bytes pendientes. Los pings se responden automáticamente (queda un solo pong pendiente). Un `panic` en `handle_connection` cierra la conexión con `1011`, y uno en `handle_disconnect` se registra; en ambos casos el cliente sale de `server.clients()`.
+
 El handshake se valida igual que en el paquete `ws`: `405` si el método no es `GET` y `400` si faltan o son inválidas `Sec-WebSocket-Key` o `Sec-WebSocket-Version`.
 
 ## Concurrencia y orden

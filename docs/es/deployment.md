@@ -71,7 +71,7 @@ app.set_trust_proxy(1usize);                                         // un proxy
 app.set_trust_proxy(TrustProxy::parse("loopback, 10.0.0.0/8")?);    // direcciones o subredes
 ```
 
-No uses `set_trust_proxy(true)` salvo que **todas** las peticiones pasen por un proxy que reescribe `X-Forwarded-For`: si no, cualquier cliente puede elegir su IP. Ver [Límite de peticiones](/es/security/rate-limiting).
+Las listas aceptan IPs, rangos CIDR (`fc00::/7`), máscaras (`10.0.0.0/255.0.0.0`) y los nombres `loopback`, `linklocal` y `uniquelocal`. `X-Forwarded-For` se recorre de derecha a izquierda empezando por el socket: la primera dirección en la que no se confía es la del cliente. No uses `set_trust_proxy(true)` salvo que **todas** las peticiones pasen por un proxy que reescribe `X-Forwarded-For`: si no, cualquier cliente puede elegir su IP. Ver [Límite de peticiones](/es/security/rate-limiting).
 
 ## Límites del servidor
 
@@ -90,6 +90,8 @@ app.set_server_options(
         .max_header_size(16 * 1024),                 // por defecto 32 KiB (responde 431)
 );
 ```
+
+Cada timeout acepta `None` para desactivarlo (`.request_timeout(None)`). Las conexiones que superan `max_connections` esperan en la cola de `accept`. La cabecera de una petición HTTP/1 está limitada a 32 KiB (Node usa 16 KiB). Una conexión que no envía nada o que gotea las cabeceras se cierra, mientras que las peticiones en curso (un handler lento, una respuesta SSE) no cuentan como inactividad.
 
 `ServerOptions::h2c(false)` desactiva HTTP/2 sin TLS si tu proxy no lo usa. Llama a `set_server_options` antes de `listen`. Ver [Conexiones keep-alive](/es/faq/keep-alive-connections).
 

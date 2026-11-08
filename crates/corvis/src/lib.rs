@@ -70,6 +70,11 @@ pub use server::ServerOptions;
 #[doc(hidden)]
 pub mod __private;
 
+// Compiles the Rust blocks of the repository README with `cargo test --doc -p corvis`, so they cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../../../README.md")]
+pub struct ReadmeDoctests;
+
 /// `Result` alias used by bootstrap code, lifecycle hooks and factories.
 pub type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 

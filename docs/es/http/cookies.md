@@ -28,7 +28,7 @@ Reglas del parseo:
 - Si un nombre se repite, gana el primero.
 - Se quitan las comillas dobles que envuelven el valor.
 - Solo se decodifican los valores que contienen `%`; si el escape no es válido se conserva el valor
-  original.
+  original. Un escape exige dos dígitos hexadecimales (`%+A` no es válido).
 
 No hay cookies firmadas (`signedCookies`): si necesitas que el cliente no pueda alterar el valor,
 guarda un JWT firmado con `JwtService` o un identificador opaco.

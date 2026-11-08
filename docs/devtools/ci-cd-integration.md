@@ -15,4 +15,4 @@ cargo build --release
 cargo test --workspace
 ```
 
-The Corvis repository also uses `cargo deny check` (configured in `deny.toml`: security advisories, allowed licenses and sources) and `cargo audit` (`.cargo/audit.toml`); you can reuse that configuration. End-to-end tests are written with the [Testing](/fundamentals/testing) utilities and do not need to open a port.
+The Corvis repository also uses `cargo deny check` (configured in `deny.toml`: security advisories, allowed licenses and sources) and `cargo audit` (`.cargo/audit.toml`, which ignores RUSTSEC-2023-0071 in `rsa` because `rsa` only reaches `Cargo.lock` through `sqlx-mysql`, which is never compiled); you can reuse that configuration. The workspace libraries declare `#![forbid(unsafe_code)]`. End-to-end tests are written with the [Testing](/fundamentals/testing) utilities and do not need to open a port.

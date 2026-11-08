@@ -257,9 +257,12 @@ Desde código: `db.migrate_deploy(dir).await` y `db.migrate_status(dir).await`. 
 
 ## Seguridad
 
-- En producción con Postgres usa `sslmode=verify-full` en la URL; `prefer` (el valor por defecto) no protege contra un atacante en la red.
+- En producción con Postgres usa `sslmode=verify-full` en la URL; `prefer` (el valor por defecto) no protege contra un atacante en la red. El TLS viene de la feature `tls-rustls` (activa por defecto); los errores de conexión muestran solo `host:puerto`, nunca el usuario, la contraseña ni la query string.
 - Pasar el JSON de una petición directamente a una consulta le da al cliente todos los operadores, `select` e `include`. Construye los argumentos con los campos que la ruta permite o valida el cuerpo con un schema estricto.
-- Los argumentos con más de 125 niveles de anidamiento se rechazan antes de procesarse.
+- Los argumentos con más de 125 niveles de anidamiento se rechazan antes de procesarse (`max_query_depth`, se cambia con `OrmClientOptions::max_query_depth(n)`).
+- En los inputs únicos (`findUnique`, `update`, `upsert`, `delete`, ...) los campos `@id` y `@unique` solo aceptan el valor (`{ email: "a@b.c" }`), nunca un filtro como `{ equals }` o `{ not }` ni `null`.
+- Los números fuera de rango son errores, nunca valores truncados: un `BigInt` de más de 64 bits, un byte de `Bytes` fuera de `0..=255`, un `Decimal` que no cabe en un `NUMERIC` de Postgres o un `limit` negativo en `update_many`/`delete_many` (`P2019`).
+- `update`, `delete` y las operaciones `*_many` repiten su `where` en el `UPDATE`/`DELETE`, así que la concurrencia optimista (`where: { id, version }`) tiene un solo ganador.
 - `log_queries` escribe los valores de los parámetros en los logs.
 
 ## Qué no está soportado

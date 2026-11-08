@@ -26,7 +26,7 @@ Los parámetros que se resuelven con `FromContext` (sin atributo, o con `#[req]`
 | `ParseIntPipe` | Convierte un string numérico en entero | `Validation failed (numeric string is expected)` |
 | `ParseFloatPipe` | Convierte un string numérico en número | `Validation failed (numeric string is expected)` |
 | `ParseBoolPipe` | `"true"`/`"false"` a booleano | `Validation failed (boolean string is expected)` |
-| `ParseUUIDPipe` (alias `ParseUuidPipe`) | Valida un UUID | `Validation failed (uuid is expected)` |
+| `ParseUUIDPipe` (alias `ParseUuidPipe`) | Valida un UUID | `Validation failed (uuid is expected)`; con `.version(4)`, `Validation failed (uuid v 4 is expected)`; un valor que no es string, `The value passed as UUID is not a string` |
 | `ParseArrayPipe` | Parte `"1,2,3"` en un array | `Validation failed (parsable array expected)` |
 | `ParseEnumPipe` | Acepta solo los valores dados | `Validation failed (enum string is expected)` |
 | `DefaultValuePipe` | Pone un valor cuando falta | — |

@@ -85,12 +85,14 @@ Las variantes de `CorsOrigin` son `Any`, `Reflect`, `Disabled`, `Fixed(String)`,
 
 - Cualquier `OPTIONS` se trata como preflight, aunque no traiga `Access-Control-Request-Method` y
   aunque la ruta no exista: se responde `204` con `Content-Length: 0` y las cabeceras
-  `Access-Control-*`. Esto ocurre antes de los middleware y de los guards. Las excepciones son
+  `Access-Control-*` (incluida `Access-Control-Expose-Headers`). Esto ocurre antes de los middleware y de los guards. Las excepciones son
   `preflight_continue(true)` y un `origin_fn` que devuelve `CorsOrigin::Disabled` para esa petición:
   entonces el `OPTIONS` sigue a la aplicación.
 - `Vary: Origin` se envía siempre que el origen configurado no sea `*`, también cuando el origen de
   la petición no está permitido (en ese caso falta `Access-Control-Allow-Origin` y el navegador
-  bloquea la respuesta).
+  bloquea la respuesta). Se combina con una cabecera `Vary` existente, como hace el paquete `vary`.
+- Sin `allowed_headers`, se reflejan las cabeceras que pide el navegador y se agrega
+  `Vary: Access-Control-Request-Headers`.
 - Las cabeceras CORS se añaden también a las respuestas de error, incluidas las del body parser.
 - Las cabeceras que fija el handler tienen prioridad sobre las de CORS.
 

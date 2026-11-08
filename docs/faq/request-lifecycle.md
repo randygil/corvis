@@ -91,7 +91,8 @@ only go through the global filters.
 
 ## Response
 
-The default status is `201` on `POST` and `200` on the rest, unless `#[http_code(...)]` is set. After
+The default status is `201` on `POST` and `200` on the rest, unless `#[http_code(...)]` is set. It is set before the route runs, so guards and interceptors see it with
+`ctx.switch_to_http().status_code()`. After
 the filters, the CORS headers are applied (those set by the handler take priority), the `ETag` and
 `Content-Length` on in-memory bodies, and the `304` response if the conditional request is still
 valid.

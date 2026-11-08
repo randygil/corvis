@@ -96,7 +96,7 @@ Si un handler propaga con `?` un error que no es una `HttpException` (un `std::i
 
 El cliente no ve el mensaje original. El filtro por defecto lo registra en el log con el contexto `ExceptionsHandler`, incluida la cadena de causas. Lo mismo ocurre con un `panic` dentro de un handler: se captura y se responde como `500`.
 
-`HttpException::http_error(estado, mensaje)` representa un error con estado propio que tampoco es intencional, como el `413` o el `415` del body parser: responde `{ statusCode, message }` con ese estado, pero `is_internal()` es `true`.
+`HttpException::http_error(estado, mensaje)` representa un error con estado propio que tampoco es intencional, como el `413` o el `415` del body parser: responde `{ statusCode, message }` con ese estado, pero `is_internal()` es `true`, así que un filtro propio que captura todo lo trata como un error desconocido.
 
 ## Filtros propios
 

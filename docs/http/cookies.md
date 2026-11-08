@@ -27,7 +27,7 @@ Parsing rules:
 
 - If a name is repeated, the first one wins.
 - The double quotes wrapping the value are removed.
-- Only values that contain `%` are decoded; if the escape is not valid, the original value is kept.
+- Only values that contain `%` are decoded; if the escape is not valid, the original value is kept. An escape needs two hexadecimal digits (`%+A` is not valid).
 
 There are no signed cookies (`signedCookies`): if you need the client not to be able to alter the value,
 store a JWT signed with `JwtService` or an opaque identifier.

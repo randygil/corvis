@@ -108,7 +108,9 @@ SwaggerModule::setup_with("docs", &mut app, document, SwaggerCustomOptions {
 | `custom_swagger_ui_path` | Carpeta local con `swagger-ui-dist`; sin ella, los recursos se redirigen a jsDelivr |
 | `patch_document_on_request` | Función que recibe la `Request` y el documento y devuelve el documento a servir |
 
-`custom_swagger_ui_path` es la opción a usar si el servidor no tiene salida a internet o tu política de seguridad no permite cargar scripts de un CDN. Solo se sirven archivos que están dentro de esa carpeta.
+`custom_swagger_ui_path` es la opción a usar si el servidor no tiene salida a internet o tu política de seguridad no permite cargar scripts de un CDN. Solo se sirven archivos que están dentro de esa carpeta, como hace `express.static`: la ruta se decodifica y cada segmento debe ser un nombre de archivo simple (sin segmentos vacíos, `.`/`..`, archivos que empiecen con punto, `\`, `:`, caracteres de control ni nombres de dispositivo de Windows como `CON` o `NUL`), y la ruta canónica (enlaces simbólicos y nombres cortos 8.3 resueltos) tiene que seguir dentro de la carpeta y ser un archivo. Cualquier otra cosa pasa al siguiente handler (`404`).
+
+El marcador `{"$js": "..."}` solo se convierte en código dentro de `swagger_options`; dentro del documento es un dato más.
 
 ## Documento perezoso
 

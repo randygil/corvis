@@ -40,6 +40,18 @@ Límites:
   Se cambian con `app.use_body_parser("json", bytes)` y `app.use_body_parser("urlencoded", bytes)`.
 - Otros tipos se leen hasta el límite de transporte, 1 MiB por defecto (`app.set_body_limit(bytes)`).
 
+Detalles del parser:
+
+- `application/json` y `application/x-www-form-urlencoded` se parsean con o sin parámetros como `charset`. Una petición sin cuerpo deja `#[body]` en `null`.
+- El JSON es estricto (solo `{` o `[` al nivel superior), un cuerpo vacío es `{}`, el BOM se ignora y los errores de sintaxis usan los mismos mensajes que `JSON.parse` de V8 (`Expected property name or '}' in JSON at position 1 (line 1 column 2)`, `Unexpected token '"', ""x"" is not valid JSON`...). La respuesta es `400 { "message": ..., "error": "Bad Request", "statusCode": 400 }`.
+- A diferencia de Express, la profundidad de anidamiento del JSON está limitada a 256 niveles (`400 Maximum nesting depth of 256 exceeded in JSON at position 256 (line 1 column 257)`). El `serde_json::Value` recursivo desbordaría la pila con unos pocos kB de `[[[...]]]`. `app.set_body_parser_max_depth(n)` lo cambia y también acota la profundidad de los cuerpos urlencoded. `corvis::http::json_parse::parse` aplica el mismo límite; para otro valor usa `parse_utf16_with_depth`.
+- urlencoded usa `qs` con las opciones de `body-parser` (objetos y arrays anidados). Más de 32 niveles responde `400 The input exceeded the depth` y más de 1000 parámetros, `413 too many parameters`. Los escapes `%XX` exigen dos dígitos hexadecimales (`%+A` no es válido).
+- El límite de 100 kb responde `413 { "statusCode": 413, "message": "request entity too large" }`.
+- El cuerpo se lee solo hasta el límite del parser que lo va a procesar: un JSON o urlencoded que anuncia un `Content-Length` mayor responde `413` sin leerlo. Los demás tipos se leen hasta el límite de transporte para que `req.raw_body()` siga disponible.
+- Un cuerpo que no se puede leer (el cliente corta, *chunked* mal formado) responde `400 request aborted` y uno que no llega a tiempo, `408 Request Timeout`.
+- Un charset no soportado responde `415 unsupported charset "LATIN1"`. `Content-Type` y `Content-Encoding` se leen como latin1, igual que Node.
+- Los errores del parser pasan por CORS y por los filtros de excepciones globales, como un `next(err)` de Express.
+
 `app.disable_body_parser()` desactiva el parseo de JSON y urlencoded: `#[body]` recibe `null` y
 `req.raw_body()` sigue teniendo los bytes. Útil si quieres parsear tú mismo con `serde_json`.
 
