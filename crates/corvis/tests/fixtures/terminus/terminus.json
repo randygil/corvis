@@ -1,0 +1,164 @@
+{
+  "meta": {
+    "generatedWith": {
+      "@nestjs/terminus": "11.1.1",
+      "@nestjs/core": "11.2.1",
+      "axios": "1.13.2"
+    },
+    "note": "Port placeholders: {port} is the local HTTP server, {closed} a port with no listener."
+  },
+  "scenarios": {
+    "ping_200": {
+      "status": 200,
+      "body": {
+        "status": "ok",
+        "info": {
+          "api": {
+            "status": "up"
+          }
+        },
+        "error": {},
+        "details": {
+          "api": {
+            "status": "up"
+          }
+        }
+      }
+    },
+    "ping_500": {
+      "status": 503,
+      "body": {
+        "status": "error",
+        "info": {},
+        "error": {
+          "api": {
+            "message": "Request failed with status code 500",
+            "statusCode": 500,
+            "statusText": "Internal Server Error",
+            "status": "down"
+          }
+        },
+        "details": {
+          "api": {
+            "message": "Request failed with status code 500",
+            "statusCode": 500,
+            "statusText": "Internal Server Error",
+            "status": "down"
+          }
+        }
+      }
+    },
+    "ping_302_then_200": {
+      "status": 200,
+      "body": {
+        "status": "ok",
+        "info": {
+          "api": {
+            "status": "up"
+          }
+        },
+        "error": {},
+        "details": {
+          "api": {
+            "status": "up"
+          }
+        }
+      }
+    },
+    "ping_closed_port": {
+      "status": 503,
+      "body": {
+        "status": "error",
+        "info": {},
+        "error": {
+          "api": {
+            "message": "connect ECONNREFUSED 127.0.0.1:{closed}",
+            "status": "down"
+          }
+        },
+        "details": {
+          "api": {
+            "message": "connect ECONNREFUSED 127.0.0.1:{closed}",
+            "status": "down"
+          }
+        }
+      }
+    },
+    "ping_no_scheme": {
+      "status": 500,
+      "body": {
+        "statusCode": 500,
+        "message": "Internal server error"
+      }
+    },
+    "rss_huge_threshold": {
+      "status": 200,
+      "body": {
+        "status": "ok",
+        "info": {
+          "memory_rss": {
+            "status": "up"
+          }
+        },
+        "error": {},
+        "details": {
+          "memory_rss": {
+            "status": "up"
+          }
+        }
+      }
+    },
+    "rss_tiny_threshold": {
+      "status": 503,
+      "body": {
+        "status": "error",
+        "info": {},
+        "error": {
+          "memory_rss": {
+            "message": "Used rss exceeded the set threshold",
+            "status": "down"
+          }
+        },
+        "details": {
+          "memory_rss": {
+            "message": "Used rss exceeded the set threshold",
+            "status": "down"
+          }
+        }
+      }
+    },
+    "mixed": {
+      "status": 503,
+      "body": {
+        "status": "error",
+        "info": {
+          "db": {
+            "status": "up"
+          }
+        },
+        "error": {
+          "redis": {
+            "message": "down",
+            "status": "down"
+          }
+        },
+        "details": {
+          "db": {
+            "status": "up"
+          },
+          "redis": {
+            "message": "down",
+            "status": "down"
+          }
+        }
+      }
+    },
+    "throws_plain_error": {
+      "status": 500,
+      "body": {
+        "statusCode": 500,
+        "message": "Internal server error"
+      }
+    }
+  }
+}

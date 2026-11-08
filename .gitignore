@@ -26,3 +26,5 @@ docs/.vitepress/dist
 
 # Worktrees de los agentes de Claude Code
 .claude/worktrees/
+
+crates/corvis/tests/fixtures/terminus/node_modules

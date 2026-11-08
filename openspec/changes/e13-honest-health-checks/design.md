@@ -102,3 +102,35 @@ All health code lives in `crates/corvis/src/modules/health.rs` (148 lines), re-e
 - `health-tls` off by default, as recommended.
 - The response follows the recorded `@nestjs/terminus` fixture exactly, so the extra `rss` field goes.
 - A global timeout option in `TerminusModule::for_root` is out of scope.
+
+## Implementation notes
+
+- Differential fixture (tasks 5.1, 5.2): `crates/corvis/tests/fixtures/terminus/generate.mjs` runs a real application with
+  `@nestjs/terminus` 11.1.1 (`@nestjs/core`/`common`/`platform-express` 11.2.1, `@nestjs/axios` 4.0.1, axios 1.13.2)
+  and records HTTP status and body of each scenario into the committed `terminus.json`; `tests/health.rs` replays
+  them (exact keys and values, `connect ECONNREFUSED` text compared by presence). The fixture confirmed the response
+  shape and that the original has no `rss` detail. Recorded facts: a plain `Error` thrown by an indicator is not
+  caught by the original: it answers `500 {"statusCode":500,"message":"Internal server error"}` with no health body
+  (`throws_plain_error`, for #126, which currently plans to report `down` instead: a decision for that change); a URL
+  without scheme (`ping_no_scheme`) gives the same bare 500.
+- Intentional divergences from the original: a URL without scheme is `down` (503) with a message naming `tcp_check`
+  instead of a bare 500; redirects are followed only within the same origin by default, never from https to http,
+  and the original follows them anywhere. `PingOptions` (`max_redirects`, `follow_cross_origin`) and
+  `HttpHealthIndicator::ping_check_with` were added for that; documented in the docs page.
+- Security review fixes: the TLS config uses the installed `CryptoProvider` or ring explicitly
+  (`builder_with_provider`), so it cannot panic when several providers are compiled in; that exact condition needs
+  `aws-lc-rs` in the dependency tree and is not reproduced by a test (the test only checks that the check reports
+  `down` and does not panic without an installed provider). Invalid-URL and redirect messages are fixed text (no
+  configured URL, no `Location`). Decision on private targets: with `follow_cross_origin(true)` a redirect to a
+  loopback, link-local or private IP literal or `localhost` is refused unless the configured URL was already one;
+  host names are not resolved, so DNS-based redirection to an internal address is not caught.
+- The per-indicator limit lives in the private `run_indicator` in `health.rs`, the single place an indicator runs, so
+  the panic isolation of `e13-isolate-panicking-health-indicators` can add `catch_unwind` inside the timeout there.
+- Task 3.3: the TLS tests are limited to the cases that need no certificate: feature disabled (down, names the
+  feature, no byte reaches the server) and feature enabled against a plain-HTTP server (handshake fails, down). A
+  successful HTTPS ping against a self-signed server is not tested. `tokio-rustls` uses the `ring` provider, so no
+  C build tools are needed.
+- `memory-stats` reports `physical_mem` as RSS on every supported OS; the Linux page size handling is inherited from
+  that crate. `cargo deny check` passes.
+- `tokio` with `test-util` was added to the dev-dependencies of `corvis` for the paused-clock tests.
+- Task 7.5 (corvis-parity) is not run here: framework runtime code changed, so the parity check is still needed.
