@@ -61,7 +61,6 @@ const ALLOW = [
   { path: 'crates/corvis-orm/tests/pg_houseplan.rs', pattern: /houseplan\/api\/prisma\/migrations/, reason: 'migrations folder of the reference app the test runs' },
 
   // Out of scope here, with their own tasks.
-  { path: 'README.md', pattern: /`@nestjs\/serve-static`|`@nestjs\/jwt`|como Nest 11|\(en Nest,/, reason: 'temporary: #3 rewrites the root README; remove this entry then' },
   { path: 'crates/corvis-orm/README.md', pattern: /prisma\/(?:migrations|schema\.prisma)/, reason: `${COMPAT}: folder layout in the corvis-orm README` },
 
   // Files that state or enforce the rule.
