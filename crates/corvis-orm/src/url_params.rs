@@ -27,46 +27,57 @@ const MAX_SCHEMA_BYTES: usize = 63;
 /// The value is not echoed: unlike a number, a schema name can carry arbitrary text.
 fn invalid_schema() -> OrmError {
     OrmError::Initialization(InitializationError {
-        message:
-            "The provided database string is invalid. `schema` must be a non-empty schema name of at most 63 bytes without NUL characters."
-                .into(),
+        message: "The provided database string is invalid. `schema` must be a non-empty schema name of at most 63 bytes, without NUL \
+                  characters, other than `$user` and not starting with `pg_`."
+            .into(),
         error_code: Some("P1013".into()),
     })
 }
 
 fn parse_schema(raw: &str) -> Result<String> {
     let v = percent_decode(raw);
-    if v.is_empty() || v.len() > MAX_SCHEMA_BYTES || v.contains('\0') {
+    // `"$user"` is the server's special token in a search path, and `pg_` names are reserved
+    // (`pg_temp` would send every object to temporary tables).
+    if v.is_empty() || v.len() > MAX_SCHEMA_BYTES || v.contains('\0') || v == "$user" || v.starts_with("pg_") {
         return Err(invalid_schema());
     }
     Ok(v)
 }
 
 fn invalid(what: &str, value: &str) -> OrmError {
-    // Only the value of a pool parameter is echoed (bounded, without control characters), never
-    // the rest of the URL: it carries the password.
-    let shown: String = value.chars().filter(|c| !c.is_control()).take(40).collect();
-    OrmError::Initialization(InitializationError {
-        message: format!("The provided database string is invalid. {what}, got `{shown}`."),
-        error_code: Some("P1013".into()),
-    })
+    // The value is echoed only when it is short and made of plain characters: a parameter key can
+    // appear inside an unencoded password (`...:S3cr?connection_limit=etPw@host/db`), and the rest of
+    // the URL is never shown.
+    let plain = value.len() <= 40 && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'_' | b'-'));
+    let message = if plain {
+        format!("The provided database string is invalid. {what}, got `{value}`.")
+    } else {
+        format!("The provided database string is invalid. {what}, got an invalid value.")
+    };
+    OrmError::Initialization(InitializationError { message, error_code: Some("P1013".into()) })
 }
 
+/// Form decoding of a key or a value: `%XX` with two ASCII hex digits, and `+` as a space.
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            let hex = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok());
-            if let Some(v) = hex {
-                out.push(v);
+        match b[i] {
+            b'%' if i + 2 < b.len() && b[i + 1].is_ascii_hexdigit() && b[i + 2].is_ascii_hexdigit() => {
+                let hex = std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("00");
+                out.push(u8::from_str_radix(hex, 16).unwrap_or(0));
                 i += 3;
-                continue;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
             }
         }
-        out.push(b[i]);
-        i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
 }
@@ -101,24 +112,32 @@ fn parse_timeout(raw: &str) -> Option<PoolTimeout> {
 
 /// Splits `url` into the URL for the driver and the parameters read from it.
 ///
-/// The query string is cut at the first `?` and on `&`. A pair is removed when its key is exactly
+/// The query string starts at the first `?`, ends at the first `#` (the fragment is kept and never read
+/// as parameters) and is cut on `&`. A pair is removed when its percent-decoded key is exactly
 /// `connection_limit`, `pool_timeout` or `schema`; the others are copied byte for byte, in order, and the
-/// `?` disappears when nothing remains. Values are percent-decoded; a repeated key keeps its last
-/// value (what the original client does).
+/// `?` disappears when nothing remains. Values are decoded as form data (`%XX` with two hex digits,
+/// `+` for a space); a repeated key keeps its last value (what the original client does).
 ///
 /// `connection_limit` must be an integer of at least 1. An invalid `pool_timeout` fails too,
 /// except for SQLite, where the original client accepts and ignores any value. `schema` must be 1 to
 /// 63 bytes without NUL characters on both providers (SQLite then ignores it).
 pub(crate) fn split_url_params(url: &str, dialect: Dialect) -> Result<(String, UrlParams)> {
     let url = url.trim();
-    let Some((head, query)) = url.split_once('?') else {
+    // The query ends at the first `#`; the fragment is never read as parameters and is kept as given.
+    let (url_no_fragment, fragment) = match url.find('#') {
+        Some(i) => url.split_at(i),
+        None => (url, ""),
+    };
+    let Some((head, query)) = url_no_fragment.split_once('?') else {
         return Ok((url.to_string(), UrlParams::default()));
     };
     let mut params = UrlParams::default();
     let mut kept: Vec<&str> = Vec::new();
     for pair in query.split('&') {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        match key {
+        // Keys are decoded before matching (`schem%61` is `schema`), as the original client does.
+        let key = percent_decode(key);
+        match key.as_str() {
             "connection_limit" => params.connection_limit = Some(parse_limit(value)?),
             "schema" => params.schema = Some(parse_schema(value)?),
             "pool_timeout" => match parse_timeout(value) {
@@ -129,7 +148,7 @@ pub(crate) fn split_url_params(url: &str, dialect: Dialect) -> Result<(String, U
             _ => kept.push(pair),
         }
     }
-    let driver = if kept.is_empty() { head.to_string() } else { format!("{head}?{}", kept.join("&")) };
+    let driver = if kept.is_empty() { format!("{head}{fragment}") } else { format!("{head}?{}{fragment}", kept.join("&")) };
     Ok((driver, params))
 }
 
@@ -216,7 +235,9 @@ mod tests {
     fn pool_invalid_connection_limit() {
         for v in ["0", "-1", "abc", "1.5", "", "4294967296", "+1", " 1"] {
             let m = msg(pg(&format!("postgresql://h/db?connection_limit={v}")));
-            assert!(m.contains("`connection_limit`") && m.contains(&format!("got `{v}`")), "{v}: {m}");
+            // `+1` decodes to ` 1` (a space), which is not shown.
+            let shown = if v.starts_with('+') || v.starts_with(' ') { "got an invalid value".to_string() } else { format!("got `{v}`") };
+            assert!(m.contains("`connection_limit`") && m.contains(&shown), "{v}: {m}");
             assert!(m.starts_with("The provided database string is invalid."), "{m}");
             assert!(sq(&format!("file:./a.db?connection_limit={v}")).is_err(), "{v}");
         }
@@ -343,6 +364,79 @@ mod tests {
         let long = format!("topsecretname{}", "z".repeat(60));
         let m = msg(pg(&format!("postgresql://app:secret@host/db?schema={long}")));
         assert!(!m.contains("topsecretname") && !m.contains("secret@"), "{m}");
+    }
+
+    #[test]
+    fn error_does_not_echo_part_of_a_password() {
+        // An unencoded password that contains a parameter key.
+        let m = msg(pg("postgres://app:S3cr?connection_limit=etPw%40host@127.0.0.1:55432/postgres"));
+        assert!(m.contains("`connection_limit`") && m.contains("got an invalid value"), "{m}");
+        for leak in ["etPw", "S3cr", "host", "127.0.0.1"] {
+            assert!(!m.contains(leak), "{leak} leaked in {m}");
+        }
+        let m = msg(pg("postgres://app:S3cr?pool_timeout=etPw%40host@127.0.0.1:55432/postgres"));
+        assert!(m.contains("`pool_timeout`") && !m.contains("etPw"), "{m}");
+        // Plain short values are still shown; long ones are not.
+        assert!(msg(pg("postgresql://h/db?connection_limit=abc")).contains("got `abc`"));
+        let long = "a".repeat(41);
+        assert!(msg(pg(&format!("postgresql://h/db?connection_limit={long}"))).contains("got an invalid value"));
+    }
+
+    #[test]
+    fn query_ends_at_the_fragment() {
+        let (u, p) = pg("postgresql://h/db?sslmode=disable#schema=x&connection_limit=3").unwrap();
+        assert_eq!(u, "postgresql://h/db?sslmode=disable#schema=x&connection_limit=3");
+        assert_eq!(p, UrlParams::default());
+        let (u, p) = pg("postgresql://h/db?schema=a#frag").unwrap();
+        assert_eq!((u.as_str(), p.schema.as_deref()), ("postgresql://h/db#frag", Some("a")));
+        // A `?` inside the fragment starts no query.
+        let (u, p) = pg("postgresql://h/db#a?schema=x").unwrap();
+        assert_eq!((u.as_str(), p.schema), ("postgresql://h/db#a?schema=x", None));
+        // An invalid value in the fragment is not validated.
+        assert!(pg("postgresql://h/db?x=1#connection_limit=0").is_ok());
+    }
+
+    #[test]
+    fn keys_are_percent_decoded_before_matching() {
+        let (u, p) = pg("postgresql://h/db?schem%61=t&connection%5Flimit=5&pool%5ftimeout=7&sslmode=disable").unwrap();
+        assert_eq!(u, "postgresql://h/db?sslmode=disable");
+        assert_eq!(p.schema.as_deref(), Some("t"));
+        assert_eq!(p.connection_limit, Some(5));
+        assert_eq!(p.pool_timeout, Some(PoolTimeout::Seconds(7)));
+        // A decoded key that is not one of ours is copied as written.
+        let (u, _) = pg("postgresql://h/db?a%20b=1").unwrap();
+        assert_eq!(u, "postgresql://h/db?a%20b=1");
+    }
+
+    #[test]
+    fn plus_is_a_space_in_values() {
+        assert_eq!(pg("postgresql://h/db?schema=My+Schema").unwrap().1.schema.as_deref(), Some("My Schema"));
+        assert_eq!(pg("postgresql://h/db?schema=a%2Bb").unwrap().1.schema.as_deref(), Some("a+b"));
+        assert!(pg("postgresql://h/db?connection_limit=+1").is_err());
+    }
+
+    #[test]
+    fn percent_needs_two_ascii_hex_digits() {
+        // `%+1` is not an escape (from_str_radix would accept the sign): the `%` stays, the `+` is a space.
+        assert_eq!(percent_decode("%+1"), "% 1");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("%4"), "%4");
+        assert_eq!(percent_decode("%-1"), "%-1");
+        assert_eq!(percent_decode("%41"), "A");
+        assert_eq!(pg("postgresql://h/db?schema=a%+1").unwrap().1.schema.as_deref(), Some("a% 1"));
+    }
+
+    #[test]
+    fn special_schema_names_are_rejected() {
+        for v in ["%24user", "$user", "pg_temp", "pg_catalog", "pg_x", "pg_toast_temp_1"] {
+            let e = pg(&format!("postgresql://h/db?schema={v}")).unwrap_err();
+            assert_eq!(e.code(), Some("P1013"), "{v}");
+            assert!(e.to_string().contains("`schema`"), "{v}: {e}");
+        }
+        // Only the exact token and the lowercase prefix are reserved.
+        for v in ["user", "$users", "PG_x", "pgx", "mypg_x"] {
+            assert!(pg(&format!("postgresql://h/db?schema={v}")).is_ok(), "{v}");
+        }
     }
 
     #[test]

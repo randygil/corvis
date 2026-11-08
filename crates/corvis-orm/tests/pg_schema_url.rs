@@ -234,6 +234,48 @@ async fn migrations_apply_inside_a_missing_schema_like_the_original() {
 }
 
 #[tokio::test]
+async fn a_script_that_resets_search_path_does_not_leak_into_the_pool() {
+    let Some(base) = pg::fresh_db("schema_sticky").await else { return };
+    let dir = std::env::temp_dir().join(format!("corvis-orm-sticky-migrations-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (name, sql) in [
+        ("20260101000000_set_config", "SELECT set_config('search_path', 'public', false); CREATE TABLE public.marker1 (id int);"),
+        ("20260102000000_reset_all", "RESET ALL; CREATE TABLE marker2 (id int);"),
+    ] {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+        std::fs::write(dir.join(name).join("migration.sql"), sql).unwrap();
+    }
+    // One connection only: without detaching, the script's connection would be the one every later query uses.
+    let db = OrmClient::new(with_query(&base, "schema=sticky&connection_limit=1")).unwrap();
+    let applied = db.migrate_deploy(&dir).await.unwrap();
+    assert_eq!(applied.len(), 2);
+
+    // The history is recorded in the URL schema although the scripts changed the session path.
+    let rows = db
+        .query_raw(r#"SELECT count(*)::int8 AS n FROM "sticky"."_prisma_migrations" WHERE finished_at IS NOT NULL"#, vec![])
+        .await
+        .unwrap();
+    assert_eq!(rows[0]["n"], json!(2));
+    let (_, tables) = catalog(&base).await;
+    assert!(tables.contains(&"public.marker1".to_string()), "{tables:?}");
+    assert!(!tables.contains(&"public._prisma_migrations".to_string()), "{tables:?}");
+    assert_eq!(db.migrate_status(&dir).await.unwrap().pending.len(), 0);
+
+    // Later queries still go to the URL schema.
+    assert_eq!(first_string(&db, "SELECT current_schema() AS cs", "cs").await, json!("sticky"));
+    db.execute_raw("CREATE TABLE plain_rows (id bigint primary key, label text not null)", vec![]).await.unwrap();
+    db.execute_raw("INSERT INTO plain_rows VALUES (1, 'in sticky')", vec![]).await.unwrap();
+    let found: Vec<Plain> = db.model::<Plain>().find_many(json!({})).await.unwrap();
+    assert_eq!(found.len(), 1);
+
+    // `db_execute` runs on a throw-away connection as well.
+    db.db_execute("SET search_path TO public").await.unwrap();
+    assert_eq!(first_string(&db, "SELECT current_schema() AS cs", "cs").await, json!("sticky"));
+    db.disconnect().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn db_push_creates_the_schema() {
     let Some(base) = pg::fresh_db("schema_push").await else { return };
     let db = OrmClient::new(with_query(&base, "schema=pushed")).unwrap();

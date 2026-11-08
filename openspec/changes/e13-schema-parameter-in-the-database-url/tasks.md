@@ -84,8 +84,9 @@
 - [ ] 6.5 Framework runtime code changed (corvis-orm connection and migrations): run the `corvis-parity` check and (not run by the implementer: the maintainer runs it)
   verify the three port apps keep 0 apidiff differences (and equivalent databases); consi and facten exercise
   `?schema=public`, houseplan the no-parameter path
-- [ ] 6.6 Security review of the parsing and quoting (`security-reviewer` agent): no injection through `schema`, no URL (not run by the implementer: the maintainer runs it)
-  parts in error messages
+- [x] 6.6 Security review of the parsing and quoting (`security-reviewer` agent): no injection through `schema`, no URL
+  parts in error messages. Note: maintainer security review 2026-11-08: no critical/high/medium findings; low/informational
+  fixes applied in the commit "Harden the database URL parameters after review"; connect timeout filed as #142
 
 ## Workflow follow-up
 

@@ -37,6 +37,29 @@ impl Drop for TempDir {
 }
 
 #[test]
+fn debug_output_redacts_the_password() {
+    let o = OrmClientOptions::new("postgresql://app:S3cretPw@db.example:5432/main?sslmode=disable&password=Other");
+    let d = format!("{o:?}");
+    assert!(d.contains("postgresql://app:***@db.example:5432/main?..."), "{d}");
+    for leak in ["S3cretPw", "Other", "sslmode"] {
+        assert!(!d.contains(leak), "{leak} leaked in {d}");
+    }
+    // Unencoded `/` and `@` in the password.
+    let d = format!("{:?}", OrmClientOptions::new("postgres://app:p/w@d@host/db"));
+    assert!(d.contains("postgres://app:***@host/db") && !d.contains("p/w"), "{d}");
+    assert_eq!(crate::client::redact_url("file:./dev.db?connection_limit=1"), "file:./dev.db?...");
+    assert_eq!(crate::client::redact_url("postgres://host/db"), "postgres://host/db");
+}
+
+#[tokio::test]
+async fn acquire_timeout_in_code_is_clamped_like_the_url_value() {
+    let mut o = OrmClientOptions::new("sqlite::memory:");
+    o.acquire_timeout = Some(Duration::MAX);
+    let (_, t) = limits(o).await;
+    assert_eq!(t, UNLIMITED_POOL_TIMEOUT);
+}
+
+#[test]
 fn pool_size_in_code_is_bounded() {
     for n in [0, MAX_POOL_SIZE + 1, u32::MAX] {
         let e = OrmClient::with_options(OrmClientOptions::new("sqlite::memory:").max_connections(n)).unwrap_err();

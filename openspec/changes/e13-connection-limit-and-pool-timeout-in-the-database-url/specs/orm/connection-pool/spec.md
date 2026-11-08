@@ -56,8 +56,9 @@ parameters MUST override the defaults.
 
 ### Requirement: Invalid pool parameters fail at creation
 `connection_limit` MUST be an integer of at least 1 and `pool_timeout` a non-negative integer. Any other value SHALL
-make `OrmClient::with_options` (and `OrmClient::new`) return an initialization error that names the parameter and the
-rejected value. The error message MUST NOT contain the user, the password or any other part of the URL.
+make `OrmClient::with_options` (and `OrmClient::new`) return an initialization error that names the parameter and, when
+the value is at most 40 characters of `[0-9A-Za-z+._-]`, the rejected value (otherwise "got an invalid value": an
+unencoded password can contain a parameter key). The error message MUST NOT contain the user, the password or any other part of the URL.
 
 #### Scenario: Non-numeric limit
 - **WHEN** a client is created with `postgresql://app:secret@host/db?connection_limit=abc`

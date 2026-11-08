@@ -260,6 +260,26 @@ by `crates/corvis-orm/tests/pg_schema_url.rs`.
 - **`sslmode=disable&schema=other`** works in the original; the parameters are independent.
 - **SQLite**: `file:...?schema=main`, `schema=` and `schema=other` are all accepted and ignored by the original, as here.
 
+### Security review fixes (2026-11-08)
+
+- **Sticky `search_path`.** A script that changes the session (`set_config(..., false)`, `RESET ALL`, `SET search_path`)
+  used to leave the pooled connection changed for good. `execute_script_raw` (migration scripts, `db_execute`, the
+  `CREATE TABLE` of the history table and `CREATE SCHEMA`) now runs on a Postgres connection taken with
+  `PoolConnection::detach()` and closed afterwards, at the cost of one new connection per script. `_prisma_migrations` is
+  written and read with its name qualified by the URL schema (`history_table()` in `migrate.rs`), so recording a
+  migration no longer depends on the session path. A migration that itself switches the path and creates tables
+  unqualified still creates them where it says; qualifying generated SQL stays out of scope.
+- **Error echo.** The numeric parameters' `P1013` message shows the value only when it is at most 40 characters of
+  `[0-9A-Za-z+._-]` after decoding; otherwise "got an invalid value". An unencoded password can contain a key
+  (`...:S3cr?connection_limit=etPw%40host@...`), which used to echo part of it.
+- **Parsing.** The query ends at the first `#` (the fragment is kept in the driver URL, never parsed); keys are
+  percent-decoded before matching; `+` in a value is a space; `%` needs two ASCII hex digits (`%+1` stays literal, the old
+  `from_str_radix` accepted the sign). A `#` before the first `?` means there is no query.
+- **Reserved names.** `$user` and names starting with `pg_` (case-sensitive, as the server) fail with `P1013`.
+- **Pre-existing.** `OrmClientOptions` has a manual `Debug` that prints the URL with the password as `***` and the query
+  as `?...`; a code `acquire_timeout` is clamped to the same cap as the URL value (`Duration::MAX` panicked in sqlx).
+- Not done here: a separate connect timeout (issue #142).
+
 ### Open questions, answered
 
 1. Absent `schema`: the server's `search_path`, nothing forced (fixture).

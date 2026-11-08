@@ -199,3 +199,9 @@ temp SQLite file). Where it settles the open questions, and where corvis-orm del
   integer no greater than 262143"); a code-provided `max_connections` of 0 or above the cap fails in
   `OrmClient::with_options` with an initialization error that names the field. The original accepts these values; corvis-orm
   bounds them because of the preallocation.
+- **Review fixes (2026-11-08).** The message of an invalid value now shows the value only when it is at most 40
+  characters of `[0-9A-Za-z+._-]` after decoding, otherwise "got an invalid value" (an unencoded password can contain a
+  parameter key and was echoed in part). The parser also follows the original and the `url` crate: the query ends at
+  the first `#`, keys are percent-decoded before matching, `+` in a value is a space, and `%` needs two ASCII hex
+  digits. A code `acquire_timeout` is clamped like `pool_timeout` (`Duration::MAX` panicked). `OrmClientOptions` prints
+  its URL without the password in `Debug`. See #137's design for the details.
