@@ -67,6 +67,7 @@ use self::core::raw_from_v3;
 /// `run_v4` implements zod 4 semantics on a [`Payload`]. Custom types that only implement
 /// `check` still work under v4 through a default adapter.
 pub trait ZodType: Send + Sync + 'static {
+    #[allow(clippy::result_unit_err)] // `Err(())`: the issue is already recorded in `ctx`, part of the public trait
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()>;
 
     /// Short type name used in messages (`"string"`, `"object"`, ...).
@@ -447,6 +448,7 @@ impl Schema {
     }
 
     /// Parses a value at the current position of `ctx` with zod 3 semantics (custom [`ZodType`]s).
+    #[allow(clippy::result_unit_err)] // same contract as `ZodType::check`
     pub fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
         self.0.check(input, ctx)
     }

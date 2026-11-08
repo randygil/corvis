@@ -1,0 +1,4 @@
+# `HttpException` (the handler error type) and the ORM error are returned by value across the public API;
+# boxing them would change it. Raise the `result_large_err` limit instead of allowing the lint, so an
+# error type that grows well past today's size is still reported.
+large-error-threshold = 256

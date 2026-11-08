@@ -21,6 +21,10 @@ While working:
 - Builds share one Cargo target dir (`CARGO_TARGET_DIR`, set by the project settings). Never set your own target dir
   and never copy the repository. Other agents may hold Cargo's lock: "Blocking waiting for file lock" is normal, so
   run long builds and test suites with a long timeout or in the background instead of retrying.
+- The shared target dir is also shared by other git worktrees, and Cargo gives a workspace crate the same artifact hash
+  in every worktree, so a build can silently reuse another worktree's newer artifact and test the wrong code. Before
+  each build or test run, run `cargo clean -p corvis -p corvis-macros -p corvis-orm -p corvis-orm-macros -p
+  corvis-swagger -p corvis-swagger-macros -p corvis-cli` (workspace crates only; dependencies stay cached).
 - Do not touch files outside the change's scope, and never edit `openspec/specs/` directly (archiving does that).
 - No Claude or AI attribution in code, comments, docs or commit messages. Do not commit or push unless asked.
 

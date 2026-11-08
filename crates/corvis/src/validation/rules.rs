@@ -279,11 +279,10 @@ pub fn coerce(obj: &mut Map<String, Value>, prop: &str, kind: Primitive) {
                 }
             }
             Primitive::Float => {
-                if let Ok(n) = s.parse::<f64>() {
-                    if let Some(num) = serde_json::Number::from_f64(n) {
+                if let Ok(n) = s.parse::<f64>()
+                    && let Some(num) = serde_json::Number::from_f64(n) {
                         *v = Value::Number(num);
                     }
-                }
             }
             Primitive::Bool => match s.as_str() {
                 "true" | "1" => *v = Value::Bool(true),

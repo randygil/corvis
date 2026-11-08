@@ -347,7 +347,7 @@ async fn guards_interceptors_filters_and_params() {
 async fn lifecycle_and_overrides() {
     let before = INIT_CALLS.load(Ordering::SeqCst);
     let mut app = app().await;
-    assert!(INIT_CALLS.load(Ordering::SeqCst) >= before + 1);
+    assert!(INIT_CALLS.load(Ordering::SeqCst) > before);
     let svc = app.get::<CatsService>().unwrap();
     assert_eq!(svc.find_all().len(), 0);
     let d = DESTROY_CALLS.load(Ordering::SeqCst);

@@ -278,16 +278,14 @@ impl JwtService {
             }
         };
         number("iat")?;
-        if let Some(nbf) = number("nbf")? {
-            if nbf > now {
+        if let Some(nbf) = number("nbf")?
+            && nbf > now {
                 anyhow::bail!("jwt not active");
             }
-        }
-        if let Some(exp) = number("exp")? {
-            if now >= exp {
+        if let Some(exp) = number("exp")?
+            && now >= exp {
                 anyhow::bail!("jwt expired");
             }
-        }
         Ok(serde_json::from_value(claims)?)
     }
 

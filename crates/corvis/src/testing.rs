@@ -122,34 +122,34 @@ impl TestingModuleBuilder {
 
     /// `.overrideGuard(AuthGuard).useValue(mock)`.
     pub fn override_guard<G: 'static>(self, mock: impl CanActivate) -> Self {
-        self.override_enhancer::<G>(Provider::use_value_arc(
+        self.override_enhancer(Provider::use_value_arc(
             enhancer_override_token::<G>(),
             Arc::new(mock) as Arc<dyn CanActivate>,
         ))
     }
     /// `.overrideInterceptor(LoggingInterceptor).useValue(mock)`.
     pub fn override_interceptor<I: 'static>(self, mock: impl CorvisInterceptor) -> Self {
-        self.override_enhancer::<I>(Provider::use_value_arc(
+        self.override_enhancer(Provider::use_value_arc(
             enhancer_override_token::<I>(),
             Arc::new(mock) as Arc<dyn CorvisInterceptor>,
         ))
     }
     /// `.overridePipe(ValidationPipe).useValue(mock)`.
     pub fn override_pipe<P: 'static>(self, mock: impl PipeTransform) -> Self {
-        self.override_enhancer::<P>(Provider::use_value_arc(
+        self.override_enhancer(Provider::use_value_arc(
             enhancer_override_token::<P>(),
             Arc::new(mock) as Arc<dyn PipeTransform>,
         ))
     }
     /// `.overrideFilter(HttpExceptionFilter).useValue(mock)`.
     pub fn override_filter<F: 'static>(self, mock: impl ExceptionFilter) -> Self {
-        self.override_enhancer::<F>(Provider::use_value_arc(
+        self.override_enhancer(Provider::use_value_arc(
             enhancer_override_token::<F>(),
             Arc::new(mock) as Arc<dyn ExceptionFilter>,
         ))
     }
 
-    fn override_enhancer<E: 'static>(mut self, provider: Provider) -> Self {
+    fn override_enhancer(mut self, provider: Provider) -> Self {
         self.overrides.enhancers.push(provider);
         self
     }
@@ -290,6 +290,8 @@ impl TestClient {
     }
 }
 
+type MultipartPart = (String, Option<(String, String)>, Bytes);
+
 pub struct TestRequest {
     shared: Arc<AppShared>,
     method: Method,
@@ -297,7 +299,7 @@ pub struct TestRequest {
     headers: HeaderMap,
     body: Bytes,
     /// `.field()` / `.attach()` parts: (name, Some((filename, content type)), data).
-    multipart: Vec<(String, Option<(String, String)>, Bytes)>,
+    multipart: Vec<MultipartPart>,
 }
 
 impl TestRequest {

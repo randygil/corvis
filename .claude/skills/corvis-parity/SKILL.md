@@ -68,6 +68,12 @@ grep -n "✗\|!!" ../../tmp/houseplan/final.txt | head; grep -E "checks:|routes|
 `PROFILE=release` matters: without it the script runs a possibly stale debug binary.
 Expected: `636 checks: 636 equal`, `A: 31 routes, B: 31 routes`, identical routes, equivalent databases.
 
+The check count depends on the time of day: `13-nudges` exercises the per-minute dispatcher, which stays silent during
+`QUIET_HOURS` (default `22:00-08:00`, Caracas time = UTC-4). Outside quiet hours the run gives 636 checks; during them
+the dispatcher sends nothing, the `buttons` group of `13-nudges` loses its 38 checks and the run gives 598 (still all
+equal, same routes, equivalent databases). Both numbers are valid; for full coverage run between 08:00 and 22:00
+Caracas time.
+
 ## 5. Cleanup (always)
 
 ```powershell

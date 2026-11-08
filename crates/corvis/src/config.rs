@@ -19,6 +19,8 @@ use serde_json::{Map, Value};
 use crate::di::{DynamicModule, Module, ModuleDefinition, Provider, Token};
 use crate::logger::Logger;
 
+type EnvValidator = fn(&HashMap<String, String>) -> Result<(), String>;
+
 /// A namespaced configuration factory (`registerAs('database', () => ({...}))`).
 #[derive(Clone)]
 pub struct ConfigFactory {
@@ -50,7 +52,7 @@ pub struct ConfigModuleOptions {
     /// Custom configuration factories (`load: [configuration]`).
     pub load: Vec<ConfigFactory>,
     /// Validates the environment; return `Err(message)` to abort bootstrap.
-    pub validate: Option<fn(&HashMap<String, String>) -> Result<(), String>>,
+    pub validate: Option<EnvValidator>,
     /// `expandVariables`: expand `$VAR`, `${VAR}` and `${VAR:-default}` inside the values read
     /// from `.env` files (`dotenv-expand`). Off by default: values are taken verbatim, so a
     /// secret such as `pa$$w0rd` is not altered.

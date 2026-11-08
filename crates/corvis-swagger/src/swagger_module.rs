@@ -263,18 +263,16 @@ impl Served {
                 return Some(Err(NotFoundException::empty()));
             }
         }
-        if let Some(url) = &self.json_url {
-            if route_matches(url, path) {
+        if let Some(url) = &self.json_url
+            && route_matches(url, path) {
                 let (doc, _) = self.document_for(req);
                 return Some(typed(doc.to_json(), "application/json"));
             }
-        }
-        if let Some(url) = &self.yaml_url {
-            if route_matches(url, path) {
+        if let Some(url) = &self.yaml_url
+            && route_matches(url, path) {
                 let (doc, _) = self.document_for(req);
                 return Some(typed(doc.to_yaml(), "text/yaml"));
             }
-        }
         if self.options.ui {
             return self.asset(path);
         }

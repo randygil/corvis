@@ -18,6 +18,11 @@ use crate::db::{Sql, SqlValue};
 use crate::error::{OrmError, Result};
 use crate::meta::{FieldMeta, ModelMeta, RelationKind, ResolvedRelation};
 
+/// Selected `_count` relations: (relation field, optional nested `where`).
+type CountSelection = (&'static FieldMeta, Option<Value>);
+/// Rows with their relation selection.
+type FetchedRows = (Vec<Map<String, Value>>, Selection);
+
 pub(crate) const FIND_MANY_ARGS: &[&str] =
     &["where", "orderBy", "take", "skip", "cursor", "select", "include", "omit", "distinct", "relationLoadStrategy"];
 pub(crate) const FIND_UNIQUE_ARGS: &[&str] = &["where", "select", "include", "omit", "relationLoadStrategy"];
@@ -187,7 +192,7 @@ impl Engine {
         }
     }
 
-    fn parse_count_selection(&self, model: &'static ModelMeta, v: &Value) -> Result<Option<Vec<(&'static FieldMeta, Option<Value>)>>> {
+    fn parse_count_selection(&self, model: &'static ModelMeta, v: &Value) -> Result<Option<Vec<CountSelection>>> {
         let to_many_rel = |f: &FieldMeta| f.is_relation() && f.list;
         match v {
             Value::Bool(false) | Value::Null => Ok(None),
@@ -289,7 +294,7 @@ impl Engine {
     }
 
     /// Records with every scalar plus the selected relations and `_count` attached (not shaped).
-    pub(crate) fn fetch_rows<'a>(&'a self, model: &'static ModelMeta, args: Map<String, Value>) -> BoxFuture<'a, Result<(Vec<Map<String, Value>>, Selection)>> {
+    pub(crate) fn fetch_rows<'a>(&'a self, model: &'static ModelMeta, args: Map<String, Value>) -> BoxFuture<'a, Result<FetchedRows>> {
         async move {
             self.check_keys(&args, FIND_MANY_ARGS)?;
             if let Some(s) = args.get("relationLoadStrategy").filter(|v| !v.is_null())

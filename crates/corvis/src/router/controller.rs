@@ -258,6 +258,9 @@ pub trait Controller: ControllerBase {
     fn routes() -> Vec<RouteDef<Self>>;
 }
 
+/// Builds the routes of a controller instance.
+type RoutesFn = Arc<dyn Fn(&Instance) -> Vec<ErasedRoute> + Send + Sync>;
+
 pub(crate) struct ErasedRoute {
     pub meta: RouteMeta,
     pub handler: ErasedHandler,
@@ -270,7 +273,7 @@ pub struct ControllerDef {
     pub(crate) name: String,
     pub(crate) provider: Provider,
     pub(crate) metadata: fn() -> ControllerMetadata,
-    pub(crate) routes: Arc<dyn Fn(&Instance) -> Vec<ErasedRoute> + Send + Sync>,
+    pub(crate) routes: RoutesFn,
     pub(crate) route_metas: fn() -> Vec<RouteMeta>,
 }
 

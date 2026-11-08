@@ -452,13 +452,12 @@ pub(crate) mod qs {
             let mut out = String::new();
             let mut i = 0;
             while i < b.len() {
-                if b[i] == b'%' {
-                    if let Some(v) = percent_byte(b, i) {
+                if b[i] == b'%'
+                    && let Some(v) = percent_byte(b, i) {
                         out.push(v as char);
                         i += 3;
                         continue;
                     }
-                }
                 let ch = plus[i..].chars().next().unwrap_or('\u{FFFD}');
                 out.push(ch);
                 i += ch.len_utf8();
@@ -624,8 +623,8 @@ pub(crate) mod qs {
             };
         }
         if let Qv::Str(_) = target {
-            if let Qv::Obj(src) = &source {
-                if let Some(max) = src.overflow {
+            if let Qv::Obj(src) = &source
+                && let Some(max) = src.overflow {
                     let mut result = QObj::default();
                     result.set("0".into(), target);
                     for (k, v) in src.entries.clone() {
@@ -635,7 +634,6 @@ pub(crate) mod qs {
                     result.overflow = Some(max + 1);
                     return Qv::Obj(result);
                 }
-            }
             let combined = concat(target, source);
             if combined.len() > o.array_limit {
                 let max = combined.len() - 1;
@@ -700,15 +698,12 @@ pub(crate) mod qs {
                     if let (Some(max), None) = (src_overflow, acc.overflow) {
                         acc.overflow = Some(max);
                     }
-                    if let Some(max) = acc.overflow {
-                        if is_canonical_index(&key) {
-                            if let Ok(n) = key.parse::<usize>() {
-                                if n > max {
+                    if let Some(max) = acc.overflow
+                        && is_canonical_index(&key)
+                            && let Ok(n) = key.parse::<usize>()
+                                && n > max {
                                     acc.overflow = Some(n);
                                 }
-                            }
-                        }
-                    }
                 }
                 Qv::Obj(acc)
             }
