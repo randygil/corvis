@@ -9,6 +9,7 @@ use crate::rooms::RoomsService;
 /// Live numbers, as JSON and as a Server-Sent Events stream (one-way, plain HTTP: a good
 /// fit for dashboards that only listen).
 #[controller("stats")]
+#[public]
 pub struct StatsController {
     chat: Arc<ChatGateway>,
     rooms: Arc<RoomsService>,

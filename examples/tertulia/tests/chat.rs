@@ -498,3 +498,53 @@ async fn the_browser_client_is_served() {
     t.http().get("/app.js").send().await.expect_status(200);
     t.http().get("/styles.css").send().await.expect_status(200);
 }
+
+#[corvis::test]
+async fn route_posture_matches_the_routes() {
+    use corvis::{PostureKind, PostureStatus, UncheckedSurface};
+
+    // `create_app()` enforces route posture, so `start()` already proves that every route is accepted.
+    let t = start().await;
+    let report = t.app.route_posture().expect("the report exists after init()");
+    assert!(report.unprotected().is_empty(), "{report}");
+
+    let status_of = |kind: PostureKind, path: &str| {
+        report
+            .entries()
+            .iter()
+            .find(|e| e.kind == kind && e.path == path)
+            .unwrap_or_else(|| panic!("no entry for {kind:?} {path}:\n{report}"))
+            .status
+            .clone()
+    };
+    let http = |method| PostureKind::Http { method };
+
+    for (method, path) in [
+        (RequestMethod::Post, "/api/auth/login"),
+        (RequestMethod::Get, "/api/rooms"),
+        (RequestMethod::Get, "/api/rooms/:room/messages"),
+        (RequestMethod::Get, "/api/rooms/:room/members"),
+        (RequestMethod::Get, "/api/stats"),
+    ] {
+        assert_eq!(status_of(http(method), path), PostureStatus::Public, "{path}");
+    }
+    assert_eq!(status_of(PostureKind::Sse, "/api/stats/stream"), PostureStatus::Public);
+
+    for (method, path) in
+        [(RequestMethod::Get, "/api/auth/me"), (RequestMethod::Post, "/api/rooms"), (RequestMethod::Post, "/api/rooms/:room/announcements")]
+    {
+        assert_eq!(status_of(http(method), path), PostureStatus::Protected, "{path}");
+    }
+
+    let handlers: Vec<_> = report.entries().iter().filter(|e| matches!(e.kind, PostureKind::WsMessage { .. })).collect();
+    assert_eq!(handlers.len(), 7, "{report}");
+    assert!(handlers.iter().all(|e| e.path == "/chat" && e.status == PostureStatus::Protected), "{report}");
+
+    assert!(report.entries().iter().all(|e| !matches!(e.status, PostureStatus::Exempt { .. })), "{report}");
+    let unchecked = report.unchecked();
+    assert!(
+        unchecked.iter().any(|s| matches!(s, UncheckedSurface::WsHandshake { path, verify_client: false, .. } if path == "/chat")),
+        "{unchecked:?}"
+    );
+    assert!(unchecked.iter().any(|s| matches!(s, UncheckedSurface::UpgradeListeners { count: 1 })), "{unchecked:?}");
+}

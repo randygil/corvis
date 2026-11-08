@@ -1,9 +1,9 @@
 use corvis::prelude::*;
 use corvis::{JwtService, extract_bearer_token};
 
-use crate::common::decorators::{IS_PUBLIC_KEY, JwtPayload};
+use crate::common::decorators::JwtPayload;
 
-/// Global JWT guard; routes marked with `#[set_metadata(IS_PUBLIC_KEY, true)]` are skipped.
+/// Global JWT guard; routes marked with `#[public]` are skipped.
 #[injectable]
 pub struct AuthGuard {
     jwt_service: Arc<JwtService>,
@@ -13,7 +13,7 @@ pub struct AuthGuard {
 #[async_trait]
 impl CanActivate for AuthGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
-        let is_public: bool = self.reflector.get_all_and_override(IS_PUBLIC_KEY, &[ctx.get_handler(), ctx.get_class()]).unwrap_or(false);
+        let is_public: bool = self.reflector.get_all_and_override(PUBLIC_METADATA, &[ctx.get_handler(), ctx.get_class()]).unwrap_or(false);
         if is_public {
             return Ok(true);
         }

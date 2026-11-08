@@ -101,6 +101,17 @@ Todas bajo `/api`:
 | `GET /stats` | | Conexiones, usuarios en línea, mensajes y salas |
 | `GET /stats/stream` | | Lo mismo como Server-Sent Events (`event: stats`) |
 
+### Postura de rutas
+
+`create_app()` llama a `require_route_posture()`: la aplicación se niega a arrancar si una ruta o un manejador del
+gateway no tiene un guard que controle el acceso ni está marcado `#[public]`. Son públicas, y con `#[public]`,
+`POST /auth/login`, las lecturas de salas (`GET /rooms`, `/rooms/:room/messages` y `/rooms/:room/members`) y todo
+`StatsController` (JSON y SSE, marcado a nivel de controlador). Las demás rutas y todos los mensajes de `/chat`
+están protegidos por `AuthGuard`. El handshake de `/chat` y el listener de `/ws/firehose` quedan fuera de la
+comprobación y el informe los lista como "Not checked"; `serve_static` es middleware y el informe ni siquiera lo ve. Para ver el informe,
+ejecuta `corvis posture` en esta carpeta; el test `route_posture_matches_the_routes` lo fija. Más en
+[Postura de rutas](../../docs/es/security/route-posture.md).
+
 ## WebSocket plano: `/ws/firehose`
 
 `ws://127.0.0.1:5150/ws/firehose?token=<token de moderador>` transmite cada evento del chat (mensajes,

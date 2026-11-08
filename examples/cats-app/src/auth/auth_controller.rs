@@ -3,7 +3,7 @@ use corvis_swagger::*;
 
 use super::auth_service::AuthService;
 use super::sign_in_dto::{SignInDto, TokenDto};
-use crate::common::decorators::{CurrentUser, IS_PUBLIC_KEY, JwtPayload};
+use crate::common::decorators::{CurrentUser, JwtPayload};
 
 #[controller("auth")]
 #[api_tags("auth")]
@@ -15,7 +15,7 @@ pub struct AuthController {
 impl AuthController {
     #[post("login")]
     #[http_code(HttpStatus::OK)]
-    #[set_metadata(IS_PUBLIC_KEY, true)]
+    #[public]
     async fn sign_in(&self, #[body] dto: SignInDto) -> HttpResult<TokenDto> {
         self.auth_service.sign_in(&dto.username, &dto.password).await
     }

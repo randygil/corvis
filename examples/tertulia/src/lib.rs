@@ -35,5 +35,8 @@ pub async fn create_app() -> corvis::Result<CorvisApplication> {
     app.use_global_pipes(ZodValidationPipe::auto());
     app.use_global_filters(OrmExceptionFilter::new());
     app.use_middleware(corvis::serve_static(PUBLIC_DIR));
+    // Every route and gateway handler needs a guard or `#[public]`: the application refuses to start otherwise.
+    // The static files above are middleware, which the check cannot see (docs/security/route-posture.md).
+    app.require_route_posture();
     Ok(app)
 }

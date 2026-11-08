@@ -16,4 +16,10 @@ impl CanActivate for RolesGuard {
         let user = ctx.switch_to_http().get_request().user_as::<JwtPayload>();
         Ok(user.map(|u| required.iter().any(|r| u.roles.contains(r))).unwrap_or(false))
     }
+
+    /// It lets every request through when the route declares no roles, so it must not count as access control
+    /// for the route posture check (`AuthGuard` is the guard that decides who may call a route).
+    fn controls_access(&self) -> bool {
+        false
+    }
 }

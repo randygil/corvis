@@ -18,6 +18,7 @@ pub struct RoomsController {
 impl RoomsController {
     /// `GET /api/rooms`: every room with the users connected to it right now.
     #[get]
+    #[public]
     async fn list(&self) -> HttpResult<Vec<RoomWithMembers>> {
         let rooms = self.rooms.list().await?;
         Ok(self.chat.with_members(rooms))
@@ -32,6 +33,7 @@ impl RoomsController {
 
     /// `GET /api/rooms/:room/messages?limit=20`: the persisted history.
     #[get(":room/messages")]
+    #[public]
     async fn messages(&self, #[param("room")] room: String, #[query] q: HistoryQuery) -> HttpResult<Vec<ChatMessage>> {
         self.find(&room).await?;
         Ok(self.rooms.history(&room, q.limit.unwrap_or(50).clamp(1, 200)).await?)
@@ -39,6 +41,7 @@ impl RoomsController {
 
     /// `GET /api/rooms/:room/members`: read straight from the gateway's sockets.
     #[get(":room/members")]
+    #[public]
     async fn members(&self, #[param("room")] room: String) -> HttpResult<Vec<ChatUser>> {
         self.find(&room).await?;
         Ok(self.chat.members(&room))
