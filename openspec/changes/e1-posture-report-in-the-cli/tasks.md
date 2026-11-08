@@ -67,8 +67,8 @@ already contains SSE labels and gateway handlers.
 - [x] 5.4 Regression tests: every scenario of `specs/security/route-posture/spec.md` and `specs/cli/new/spec.md` maps
   to an automated test or to a recorded manual verification (tasks 2.4 and 3.2); list the mapping in the PR description
 - [x] 5.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/` passes
-- [ ] 5.6 Framework runtime code changed (`init()`): run the `corvis-parity` check and verify the three port apps
-  (consi, facten, houseplan) keep 0 apidiff differences (not run by the implementer: the maintainer runs it)
+- [x] 5.6 Framework runtime code changed (`init()`): run the `corvis-parity` check and verify the three port apps
+  (consi, facten, houseplan) keep 0 apidiff differences (not run by the implementer: the maintainer runs it) (maintainer batch run on batch/phase05-h 66ff09a: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 
 ## 6. Security review fixes (L1 to L6)
 

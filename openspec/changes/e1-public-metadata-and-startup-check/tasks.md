@@ -41,7 +41,7 @@ Refines task group 2 of the route posture spike (`openspec/changes/archive/2026-
 - [x] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 7.3 `cargo test --workspace` passes, including the regression tests of groups 1–5 and the doctests of 2.3
 - [x] 7.4 Docs updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/` passes
-- [ ] 7.5 Framework runtime code changed (`init()`, `CanActivate`, macros): run the `corvis-parity` check and verify the three port apps (consi, facten, houseplan) keep 0 apidiff differences and equivalent databases (not run by the implementer: the maintainer runs it)
+- [x] 7.5 Framework runtime code changed (`init()`, `CanActivate`, macros): run the `corvis-parity` check and verify the three port apps (consi, facten, houseplan) keep 0 apidiff differences and equivalent databases (not run by the implementer: the maintainer runs it) (maintainer batch run on batch/phase05-h 66ff09a: consi 832/832, facten 727/727, houseplan 636/636; routes identical, databases equivalent)
 - [x] 7.6 Confirm no public API, doc text or error message added by this change uses the words "Nest", "NestJS" or "Prisma"
 
 ## Workflow follow-up
