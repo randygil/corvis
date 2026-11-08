@@ -11,7 +11,6 @@ use serde::ser::{SerializeStruct, Serializer};
 
 use crate::common::context::Target;
 use crate::common::guard::CanActivate;
-use crate::common::middleware::path_matches;
 use crate::common::reflector::Reflector;
 use crate::di::token::short_type_name;
 use crate::http::RequestMethod;
@@ -62,7 +61,7 @@ impl PostureExemption {
     }
 
     fn matches_message(&self, path: &str, event: &str) -> bool {
-        self.event.as_deref().is_some_and(|e| e == "*" || e == event) && path_matches(&self.pattern, path)
+        self.event.as_deref().is_some_and(|e| e == "*" || e == event) && template_matches(&self.pattern, path)
     }
 
     fn describe(&self) -> String {
@@ -73,7 +72,7 @@ impl PostureExemption {
     }
 
     fn matches(&self, method: RequestMethod, path: &str) -> bool {
-        self.event.is_none() && (self.method == RequestMethod::All || self.method == method) && path_matches(&self.pattern, path)
+        self.event.is_none() && (self.method == RequestMethod::All || self.method == method) && template_matches(&self.pattern, path)
     }
 }
 
@@ -88,6 +87,66 @@ impl Serialize for PostureExemption {
         }
         s.end()
     }
+}
+
+fn is_param_segment(segment: &str) -> bool {
+    segment.starts_with(':') || segment.starts_with('*') || (segment.starts_with('{') && segment.ends_with('}'))
+}
+
+/// `*` inside a segment matches any run of characters except `/` (segments never contain one); everything else
+/// is compared ignoring ASCII case.
+fn segment_glob(pattern: &str, text: &str) -> bool {
+    let (p, t) = (pattern.as_bytes(), text.as_bytes());
+    let (mut pi, mut ti) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if pi < p.len() && p[pi].eq_ignore_ascii_case(&t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if let Some((sp, st)) = star {
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|b| *b == b'*')
+}
+
+/// Matches an exemption pattern against a route's path template, literally:
+/// - a literal segment matches the same literal segment (ignoring ASCII case), never a `:param`;
+/// - `:x` or `{x}` matches only a `:param` or `{param}` segment of the template;
+/// - `*` as a whole segment matches exactly one segment, `**` matches zero or more segments;
+/// - `*` inside a segment (`health*`) matches within that segment and never crosses a `/`.
+fn template_matches(pattern: &str, template: &str) -> bool {
+    fn rec(pat: &[&str], segs: &[&str]) -> bool {
+        match pat.first() {
+            None => segs.is_empty(),
+            Some(&"**") => (0..=segs.len()).any(|i| rec(&pat[1..], &segs[i..])),
+            Some(p) => match segs.first() {
+                None => false,
+                Some(s) => {
+                    let ok = if *p == "*" {
+                        true
+                    } else if p.starts_with(':') || (p.starts_with('{') && p.ends_with('}')) {
+                        is_param_segment(s)
+                    } else if p.contains('*') {
+                        !is_param_segment(s) && segment_glob(p, s)
+                    } else {
+                        p.eq_ignore_ascii_case(s)
+                    };
+                    ok && rec(&pat[1..], &segs[1..])
+                }
+            },
+        }
+    }
+    let pat: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let segs: Vec<&str> = template.split('/').filter(|s| !s.is_empty()).collect();
+    rec(&pat, &segs)
 }
 
 /// Options of the route posture check: a mode and the exemptions.
@@ -258,6 +317,68 @@ pub struct PostureEntry {
     /// Every guard the router runs for the route, in order.
     pub guards: Vec<GuardInfo>,
     pub status: PostureStatus,
+    /// Where a [`PostureStatus::Public`] status comes from; `None` for any other status.
+    pub public_source: Option<PublicSource>,
+}
+
+/// Where the public marker of a route is set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicSource {
+    /// `#[public]` (or `PUBLIC_METADATA`) on the route method.
+    Handler,
+    /// `#[public]` (or `PUBLIC_METADATA`) on the controller.
+    Controller,
+    /// `#[public]` (or `PUBLIC_METADATA`) on the gateway.
+    Gateway,
+}
+
+impl PublicSource {
+    fn label(self) -> &'static str {
+        match self {
+            PublicSource::Handler => "handler",
+            PublicSource::Controller => "controller",
+            PublicSource::Gateway => "gateway",
+        }
+    }
+}
+
+/// The level at which a guard is registered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "level", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum GuardScope {
+    /// `use_global_guards` or `Provider::app_guard`: every route.
+    Global,
+    /// `#[use_guards]` below `#[controller]`.
+    Controller { controller: String },
+    /// `#[use_guards]` on a route method.
+    Route { controller: String, handler: String },
+    /// `#[use_guards]` below `#[websocket_gateway]`: every message handler of the gateway.
+    Gateway { gateway: String },
+    /// `#[use_guards]` on a `#[subscribe_message]` method.
+    Message { gateway: String, handler: String },
+}
+
+impl fmt::Display for GuardScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GuardScope::Global => write!(f, "global"),
+            GuardScope::Controller { controller } => write!(f, "controller {controller}"),
+            GuardScope::Route { controller, handler } => write!(f, "route {controller}::{handler}"),
+            GuardScope::Gateway { gateway } => write!(f, "gateway {gateway}"),
+            GuardScope::Message { gateway, handler } => write!(f, "message handler {gateway}::{handler}"),
+        }
+    }
+}
+
+/// A guard that counted as access control, where it is registered and how many routes it covers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AccessGuardSummary {
+    pub name: String,
+    pub scope: GuardScope,
+    /// Compiled routes (each path alias and URI version counts) and gateway message handlers the guard runs for.
+    pub routes: usize,
 }
 
 impl PostureEntry {
@@ -270,7 +391,16 @@ impl PostureEntry {
         guards: Vec<GuardInfo>,
         status: PostureStatus,
     ) -> Self {
-        PostureEntry { kind, path: path.into(), host: None, owner: owner.into(), handler: handler.into(), guards, status }
+        PostureEntry {
+            kind,
+            path: path.into(),
+            host: None,
+            owner: owner.into(),
+            handler: handler.into(),
+            guards,
+            status,
+            public_source: None,
+        }
     }
 
     fn sort_key(&self) -> (&str, &'static str, String) {
@@ -284,6 +414,8 @@ pub struct RoutePostureReport {
     entries: Vec<PostureEntry>,
     stale_exemptions: Vec<PostureExemption>,
     unchecked: Vec<UncheckedSurface>,
+    access_guards: Vec<AccessGuardSummary>,
+    redundant_exemptions: Vec<PostureExemption>,
 }
 
 /// A surface the check cannot enforce, listed so that a reviewer sees it exists.
@@ -311,8 +443,16 @@ impl fmt::Display for UncheckedSurface {
     }
 }
 
-/// `(event, handler target, guards in the order they run)`.
-pub(crate) type GatewayHandlerPosture = (String, Arc<Target>, Vec<Arc<dyn CanActivate>>);
+/// One message handler: the guards that run for it, in order, and how many of them are global and gateway-level.
+pub(crate) struct GatewayHandlerPosture {
+    pub event: String,
+    pub target: Arc<Target>,
+    pub guards: Vec<Arc<dyn CanActivate>>,
+    /// The leading guards that are global (0 when global enhancers are kept HTTP-only).
+    pub global_guard_count: usize,
+    /// The guards after the global ones that come from the gateway.
+    pub gateway_guard_count: usize,
+}
 
 /// A gateway as the posture check sees it: the handlers with the guards that run for each message.
 pub(crate) struct GatewayPosture {
@@ -328,7 +468,25 @@ impl RoutePostureReport {
     /// Builds a report; the entries are sorted.
     pub fn new(mut entries: Vec<PostureEntry>, stale_exemptions: Vec<PostureExemption>) -> Self {
         entries.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
-        RoutePostureReport { entries, stale_exemptions, unchecked: Vec::new() }
+        RoutePostureReport { entries, stale_exemptions, unchecked: Vec::new(), access_guards: Vec::new(), redundant_exemptions: Vec::new() }
+    }
+
+    fn with_details(mut self, access_guards: Vec<AccessGuardSummary>, redundant_exemptions: Vec<PostureExemption>) -> Self {
+        self.access_guards = access_guards;
+        self.redundant_exemptions = redundant_exemptions;
+        self
+    }
+
+    /// The guards that counted as access control, with their scope and the number of routes they cover. A
+    /// guard that lets every request through shows up here with all the routes it makes look protected.
+    pub fn access_guards(&self) -> &[AccessGuardSummary] {
+        &self.access_guards
+    }
+
+    /// The exemptions that match only routes that are already protected or public: they accept nothing today
+    /// but would silently accept those routes if their guard were removed.
+    pub fn redundant_exemptions(&self) -> &[PostureExemption] {
+        &self.redundant_exemptions
     }
 
     /// Sets the surfaces listed as not checked.
@@ -359,10 +517,13 @@ impl RoutePostureReport {
     }
 }
 
-fn status_label(status: &PostureStatus) -> String {
-    match status {
+fn status_label(entry: &PostureEntry) -> String {
+    match &entry.status {
         PostureStatus::Protected => "protected".to_string(),
-        PostureStatus::Public => "public".to_string(),
+        PostureStatus::Public => match entry.public_source {
+            Some(source) => format!("public ({})", source.label()),
+            None => "public".to_string(),
+        },
         PostureStatus::Exempt { reason } => format!("exempt ({reason})"),
         PostureStatus::Unprotected => "UNPROTECTED".to_string(),
     }
@@ -392,7 +553,7 @@ impl fmt::Display for RoutePostureReport {
                 e.kind.label(),
                 e.path,
                 route,
-                status_label(&e.status),
+                status_label(e),
                 guards
             )?;
         }
@@ -466,6 +627,8 @@ impl std::error::Error for RoutePostureError {}
 pub(crate) fn report_for(table: &RouterTable, gateways: &[GatewayPosture], options: &RoutePostureOptions) -> RoutePostureReport {
     let reflector = Reflector;
     let mut matched = vec![false; options.exemptions.len()];
+    let mut needed = vec![false; options.exemptions.len()];
+    let mut summaries: Vec<AccessGuardSummary> = Vec::new();
     let mut entries = Vec::with_capacity(table.routes.len());
     let guard_infos = |guards: &[Arc<dyn CanActivate>]| -> Vec<GuardInfo> {
         guards.iter().map(|g| GuardInfo { name: short_type_name(g.guard_name()), controls_access: g.controls_access() }).collect()
@@ -483,15 +646,41 @@ pub(crate) fn report_for(table: &RouterTable, gateways: &[GatewayPosture], optio
     };
     for route in &table.routes {
         let guards = guard_infos(&route.guards);
+        let public =
+            reflector.get_all_and_override::<bool>(crate::PUBLIC_METADATA, &[&route.handler_target, &route.class_target]) == Some(true);
+        let guarded = guards.iter().any(|g| g.controls_access);
         let mut exemption = None;
         for (i, e) in options.exemptions.iter().enumerate() {
             if e.matches(route.method, &route.path) {
                 matched[i] = true;
+                needed[i] |= !public && !guarded;
                 exemption.get_or_insert(e);
             }
         }
-        let public =
-            reflector.get_all_and_override::<bool>(crate::PUBLIC_METADATA, &[&route.handler_target, &route.class_target]) == Some(true);
+        let public_source = public.then(|| {
+            if reflector.get::<bool>(crate::PUBLIC_METADATA, &route.handler_target) == Some(true) {
+                PublicSource::Handler
+            } else {
+                PublicSource::Controller
+            }
+        });
+        for (i, g) in route.guards.iter().enumerate() {
+            if !g.controls_access() {
+                continue;
+            }
+            let scope = if i < route.global_guard_count {
+                GuardScope::Global
+            } else if i < route.global_guard_count + route.controller_guard_count {
+                GuardScope::Controller { controller: route.class_target.name.clone() }
+            } else {
+                GuardScope::Route { controller: route.class_target.name.clone(), handler: route.handler_target.name.clone() }
+            };
+            let name = short_type_name(g.guard_name());
+            match summaries.iter_mut().find(|s| s.name == name && s.scope == scope) {
+                Some(s) => s.routes += 1,
+                None => summaries.push(AccessGuardSummary { name, scope, routes: 1 }),
+            }
+        }
         let status = status_of(&guards, public, exemption);
         entries.push(PostureEntry {
             kind: if route.sse { PostureKind::Sse } else { PostureKind::Http { method: route.method } },
@@ -501,19 +690,47 @@ pub(crate) fn report_for(table: &RouterTable, gateways: &[GatewayPosture], optio
             handler: route.handler_target.name.clone(),
             guards,
             status,
+            public_source,
         });
     }
     for gateway in gateways {
-        for (event, target, handler_guards) in &gateway.handlers {
-            let guards = guard_infos(handler_guards);
+        for h in &gateway.handlers {
+            let (event, target) = (&h.event, &h.target);
+            let guards = guard_infos(&h.guards);
+            let guarded = guards.iter().any(|g| g.controls_access);
+            let public = reflector.get_all_and_override::<bool>(crate::PUBLIC_METADATA, &[target, &gateway.class_target]) == Some(true);
             let mut exemption = None;
             for (i, e) in options.exemptions.iter().enumerate() {
                 if e.matches_message(&gateway.path, event) {
                     matched[i] = true;
+                    needed[i] |= !public && !guarded;
                     exemption.get_or_insert(e);
                 }
             }
-            let public = reflector.get_all_and_override::<bool>(crate::PUBLIC_METADATA, &[target, &gateway.class_target]) == Some(true);
+            let public_source = public.then(|| {
+                if reflector.get::<bool>(crate::PUBLIC_METADATA, target) == Some(true) {
+                    PublicSource::Handler
+                } else {
+                    PublicSource::Gateway
+                }
+            });
+            for (i, g) in h.guards.iter().enumerate() {
+                if !g.controls_access() {
+                    continue;
+                }
+                let scope = if i < h.global_guard_count {
+                    GuardScope::Global
+                } else if i < h.global_guard_count + h.gateway_guard_count {
+                    GuardScope::Gateway { gateway: gateway.name.clone() }
+                } else {
+                    GuardScope::Message { gateway: gateway.name.clone(), handler: target.name.clone() }
+                };
+                let name = short_type_name(g.guard_name());
+                match summaries.iter_mut().find(|s| s.name == name && s.scope == scope) {
+                    Some(s) => s.routes += 1,
+                    None => summaries.push(AccessGuardSummary { name, scope, routes: 1 }),
+                }
+            }
             let status = status_of(&guards, public, exemption);
             entries.push(PostureEntry {
                 kind: PostureKind::WsMessage { event: event.clone() },
@@ -523,11 +740,24 @@ pub(crate) fn report_for(table: &RouterTable, gateways: &[GatewayPosture], optio
                 handler: target.name.clone(),
                 guards,
                 status,
+                public_source,
             });
         }
     }
     let stale = options.exemptions.iter().zip(&matched).filter(|(_, m)| !**m).map(|(e, _)| e.clone()).collect();
-    RoutePostureReport::new(entries, stale)
+    let redundant = options.exemptions.iter().enumerate().filter(|(i, _)| matched[*i] && !needed[*i]).map(|(_, e)| e.clone()).collect();
+    summaries.sort_by_key(|s| (s.scope != GuardScope::Global, s.name.clone(), s.scope.to_string()));
+    RoutePostureReport::new(entries, stale).with_details(summaries, redundant)
+}
+
+/// `Route posture: access guards counted: RolesGuard (global, 42 routes), AuthGuard (controller CatsController, 5 routes)`
+fn access_guards_line(guards: &[AccessGuardSummary]) -> String {
+    if guards.is_empty() {
+        return "Route posture: access guards counted: none".to_string();
+    }
+    let list: Vec<String> =
+        guards.iter().map(|g| format!("{} ({}, {} route{})", g.name, g.scope, g.routes, if g.routes == 1 { "" } else { "s" })).collect();
+    format!("Route posture: access guards counted: {}", list.join(", "))
 }
 
 /// Runs the startup check of `init()`: enforce returns the error, warn logs the list, off does nothing.
@@ -541,6 +771,14 @@ pub(crate) fn check_routes(table: &RouterTable, gateways: &[GatewayPosture], opt
         let what = if e.event.is_some() { "handler" } else { "route" };
         log.warn(format!("Route posture exemption {} matches no {what}", e.describe()));
     }
+    for e in report.redundant_exemptions() {
+        log.warn(format!(
+            "Route posture exemption {} matches only guarded or public {}: it accepts nothing today, but it would accept them if their guard were removed",
+            e.describe(),
+            if e.event.is_some() { "message handlers" } else { "routes" }
+        ));
+    }
+    log.log(access_guards_line(report.access_guards()));
     let unprotected: Vec<PostureEntry> = report.unprotected().into_iter().cloned().collect();
     if unprotected.is_empty() {
         return Ok(());
@@ -622,9 +860,12 @@ mod tests {
                     "handler": "metrics",
                     "guards": [{"name": "ThrottlerGuard", "controls_access": false}],
                     "status": {"state": "exempt", "reason": "private network"},
+                    "public_source": null,
                 }],
                 "stale_exemptions": [{"method": "GET", "pattern": "/gone", "reason": "old"}],
                 "unchecked": [],
+                "access_guards": [],
+                "redundant_exemptions": [],
             })
         );
     }
@@ -647,16 +888,48 @@ mod tests {
         assert!(!get.matches(RequestMethod::All, "/x"), "a route declared with #[all] needs an All exemption");
     }
 
+    fn m(pattern: &str, template: &str) -> bool {
+        template_matches(pattern, template)
+    }
+
     #[test]
-    fn exemption_paths_use_the_middleware_pattern_rules() {
-        let e = PostureExemption { method: RequestMethod::Get, pattern: "cats/*".into(), reason: "r".into(), event: None };
-        assert!(!e.matches(RequestMethod::Get, "/api/v1/cats/:id"), "the pattern is compared with the full path");
-        for pattern in ["/api/*/cats/*", "*/cats/*"] {
-            let e = PostureExemption { method: RequestMethod::Get, pattern: pattern.into(), reason: "r".into(), event: None };
-            assert!(e.matches(RequestMethod::Get, "/api/v1/cats/:id"), "{pattern}");
-        }
-        let e = PostureExemption { method: RequestMethod::Get, pattern: "/Api/V1/CATS/:id".into(), reason: "r".into(), event: None };
-        assert!(e.matches(RequestMethod::Get, "/api/v1/cats/:id"), "literals ignore ASCII case");
+    fn exemption_literals_ignore_case_and_never_match_a_param() {
+        assert!(m("/Api/V1/CATS", "/api/v1/cats"));
+        assert!(m("api/v1/cats/", "/api/v1/cats"), "slashes at the ends are ignored");
+        assert!(!m("/files/export-all", "/files/:id"), "a literal pattern segment does not match a :param segment");
+        assert!(!m("/files/:id", "/files/export-all"), "a :param pattern segment does not match a literal template segment");
+    }
+
+    #[test]
+    fn exemption_params_match_only_params() {
+        assert!(m("/files/:id", "/files/:id"));
+        assert!(m("/files/:id", "/files/:file"));
+        assert!(m("/files/{id}", "/files/:id"));
+        assert!(m("/files/:id", "/files/{id}"));
+        assert!(!m("/files/:id", "/files/export-all"));
+        assert!(!m("/files/:id", "/files"));
+    }
+
+    #[test]
+    fn exemption_star_is_one_segment_and_double_star_is_the_rest() {
+        assert!(m("/api/*/internal/*", "/api/v1/internal/jobs"));
+        assert!(m("/api/*/cats/*", "/api/v1/cats/:id"));
+        assert!(!m("/api/*/cats/*", "/api/v1/cats/:id/toys"), "a trailing * is one segment");
+        assert!(!m("/metrics/*", "/metrics"), "* needs a segment");
+        assert!(m("/metrics/**", "/metrics"));
+        assert!(m("/metrics/**", "/metrics/a/b/:c"));
+        assert!(m("**/cats/*", "/api/v1/cats/:id"));
+        assert!(m("/**", "/anything/at/all"));
+        assert!(!m("*", "/a/b"));
+    }
+
+    #[test]
+    fn exemption_star_inside_a_segment_does_not_cross_a_slash() {
+        assert!(m("/health*", "/healthz"));
+        assert!(m("/health*", "/health"));
+        assert!(!m("/health*", "/healthcare/records/:id"));
+        assert!(m("/a*c/x", "/abc/x"));
+        assert!(!m("/health*", "/:id"), "a glob never matches a :param segment");
     }
 
     #[test]

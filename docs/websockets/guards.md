@@ -129,6 +129,8 @@ impl StatusGateway {
 }
 ```
 
+In the report a public handler shows whether the marker is on the handler or on the gateway (`public (gateway)`), and the access guards line logged in warn and enforce mode counts handlers too, with the scopes `global`, `gateway ChatGateway` and `message handler ChatGateway::rooms`.
+
 Mark public gateways `#[public]` instead of letting a global guard return `Ok(true)` for `ContextType::Ws`. A global guard that lets WebSocket contexts through counts as protection, so the check would accept every handler while the report shows no real authentication; `#[public]` keeps the intent visible.
 
 A handler protected outside the framework can be exempted with a reason, by gateway path and event name (exact, or `*` for every event of the gateway):
@@ -142,7 +144,7 @@ app.set_route_posture(
 );
 ```
 
-A blank reason makes `init()` fail, and an exemption that matches no handler logs a warning. Route exemptions never match handlers and message exemptions never match routes.
+The gateway path is compared with the same literal rules as route exemptions (`/chat`, `/c*`; `/chat/*` would need one more segment). A blank reason makes `init()` fail, and an exemption that matches no handler, or only handlers that already have a guard or are public, logs a warning. Route exemptions never match handlers and message exemptions never match routes.
 
 The handshake is not a message: it runs no guard, so the check cannot enforce it. `app.route_posture()` lists each gateway handshake under "Not checked" with whether `verify_client` is set.
 

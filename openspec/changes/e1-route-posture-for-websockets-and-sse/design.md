@@ -191,3 +191,13 @@ Read after #116 and #26 landed (base `80fb87c`):
   not-checked surfaces serialize as `{"type":"static_files"|"ws_handshake"|"upgrade_listeners", ...}` under
   `unchecked`. A message exemption serializes with `"method":"WS"` and an extra `"event"` field.
 - `PostureKind` is no longer `Copy` (`WsMessage` owns its event).
+
+### Combination with the #26 security-review fixes
+
+- Message exemptions match the gateway path with the same literal matcher as route exemptions (`template_matches`);
+  event patterns stay exact or `*`.
+- Redundant message exemptions (matching only guarded or public handlers) warn like route ones.
+- `GuardScope` gains `Gateway { gateway }` and `Message { gateway, handler }`; `PublicSource` gains `Gateway`. The
+  compiled handler records how many leading guards are global (0 with HTTP-only global enhancers) and how many come
+  from the gateway, so scopes follow what runs.
+- The access-guards summary counts gateway message handlers in the same line and in `access_guards()`.

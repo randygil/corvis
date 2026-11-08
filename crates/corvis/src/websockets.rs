@@ -524,6 +524,9 @@ struct CompiledWsHandler {
     /// The handler's exception filters, then the gateway's (global filters never apply).
     filters: Vec<Arc<dyn ExceptionFilter>>,
     target: Arc<Target>,
+    /// How many of the leading `guards` are global, and how many after them come from the gateway.
+    global_guard_count: usize,
+    gateway_guard_count: usize,
 }
 
 /// Runtime data of a mounted gateway.
@@ -562,7 +565,9 @@ pub(crate) async fn compile_gateways(container: &Arc<Container>, cfg: &RouterCon
                 c_interceptors.extend(cfg.global_interceptors.iter().cloned());
                 c_pipes.extend(cfg.global_pipes.iter().cloned());
             }
+            let global_guard_count = c_guards.len();
             c_guards.extend(resolve_all(&c.guards, &ctx).await?);
+            let gateway_guard_count = c_guards.len() - global_guard_count;
             c_interceptors.extend(resolve_all(&c.interceptors, &ctx).await?);
             c_pipes.extend(resolve_all(&c.pipes, &ctx).await?);
             let c_filters = resolve_all(&c.filters, &ctx).await?;
@@ -592,8 +597,17 @@ pub(crate) async fn compile_gateways(container: &Arc<Container>, cfg: &RouterCon
                         }
                         let target =
                             Arc::new(Target { name: h.method_name.to_string(), metadata: enhancers.metadata.iter().cloned().collect() });
-                        let compiled =
-                            CompiledWsHandler { call, guards, interceptors: Arc::new(interceptors), pipes, params, filters, target };
+                        let compiled = CompiledWsHandler {
+                            call,
+                            guards,
+                            interceptors: Arc::new(interceptors),
+                            pipes,
+                            params,
+                            filters,
+                            target,
+                            global_guard_count,
+                            gateway_guard_count,
+                        };
                         handlers.insert(event, Arc::new(compiled));
                     }
                 }
@@ -629,7 +643,17 @@ pub(crate) fn posture_gateways<'a>(gateways: impl IntoIterator<Item = &'a Gatewa
             name: g.name.clone(),
             class_target: g.class_target.clone(),
             verify_client: g.server.options().verify_client.is_some(),
-            handlers: g.handlers.iter().map(|(event, h)| (event.clone(), h.target.clone(), h.guards.clone())).collect(),
+            handlers: g
+                .handlers
+                .iter()
+                .map(|(event, h)| crate::posture::GatewayHandlerPosture {
+                    event: event.clone(),
+                    target: h.target.clone(),
+                    guards: h.guards.clone(),
+                    global_guard_count: h.global_guard_count,
+                    gateway_guard_count: h.gateway_guard_count,
+                })
+                .collect(),
         })
         .collect()
 }

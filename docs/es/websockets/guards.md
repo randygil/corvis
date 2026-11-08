@@ -129,6 +129,8 @@ impl StatusGateway {
 }
 ```
 
+En el reporte un handler público indica si la marca está en el handler o en el gateway (`public (gateway)`), y la línea de guards de acceso que se registra en modo warn y enforce cuenta también los handlers, con los alcances `global`, `gateway ChatGateway` y `message handler ChatGateway::rooms`.
+
 Marca los gateways públicos con `#[public]` en lugar de hacer que un guard global devuelva `Ok(true)` para `ContextType::Ws`. Un guard global que deja pasar los contextos WebSocket cuenta como protección: la revisión aceptaría todos los handlers aunque el reporte no muestre autenticación real. `#[public]` deja la intención a la vista.
 
 Un handler protegido fuera del framework se puede eximir con un motivo, por ruta del gateway y nombre de evento (exacto, o `*` para todos los eventos del gateway):
@@ -142,7 +144,7 @@ app.set_route_posture(
 );
 ```
 
-Un motivo en blanco hace fallar `init()`, y una exención que no coincide con ningún handler registra una advertencia. Las exenciones de rutas nunca coinciden con handlers y las de mensajes nunca con rutas.
+La ruta del gateway se compara con las mismas reglas literales que las exenciones de rutas (`/chat`, `/c*`; `/chat/*` necesitaría un segmento más). Un motivo en blanco hace fallar `init()`, y una exención que no coincide con ningún handler, o solo con handlers que ya tienen guard o son públicos, registra una advertencia. Las exenciones de rutas nunca coinciden con handlers y las de mensajes nunca con rutas.
 
 El handshake no es un mensaje: no corre ningún guard, así que la revisión no puede exigir nada sobre él. `app.route_posture()` lista el handshake de cada gateway en "Not checked", con si `verify_client` está configurado.
 

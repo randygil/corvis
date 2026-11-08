@@ -76,7 +76,24 @@ fn install(app: &mut CorvisApplication) -> Captured {
 }
 
 fn posture_logs(captured: &Captured) -> Vec<(LogLevel, String)> {
-    captured.lock().unwrap().iter().filter(|(_, _, ctx)| ctx.as_deref() == Some("RoutePosture")).map(|(l, m, _)| (*l, m.clone())).collect()
+    captured
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(l, _, ctx)| *l != LogLevel::Log && ctx.as_deref() == Some("RoutePosture"))
+        .map(|(l, m, _)| (*l, m.clone()))
+        .collect()
+}
+
+/// The info-level lines of the posture check (the access guards summary).
+fn summary_logs(captured: &Captured) -> Vec<String> {
+    captured
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(l, _, ctx)| *l == LogLevel::Log && ctx.as_deref() == Some("RoutePosture"))
+        .map(|(_, m, _)| m.clone())
+        .collect()
 }
 
 async fn app_of<M: corvis::Module>() -> (CorvisApplication, Captured) {
@@ -146,6 +163,7 @@ async fn off_mode_starts_with_unguarded_routes_and_logs_nothing_about_posture() 
     assert!(app.route_posture().is_none(), "no report before init()");
     app.init().await.unwrap();
     assert!(posture_logs(&captured).is_empty(), "{:?}", posture_logs(&captured));
+    assert!(summary_logs(&captured).is_empty(), "off mode logs no summary");
     // The report exists in off mode and says what is open.
     let report = app.route_posture().unwrap();
     assert_eq!(report.entries().len(), 2);
@@ -679,6 +697,135 @@ fn the_default_mode_is_off() {
 }
 
 // ---------------------------------------------------------------------------
+// Security review: visible pass-through guards, literal exemptions, public source.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_access_guards_summary_names_each_guard_scope_and_route_count() {
+    let _g = SERIAL.lock().await;
+    let (mut app, captured) = app_of::<ProviderGlobalModule>().await;
+    app.set_route_posture(RoutePostureOptions::warn());
+    app.init().await.unwrap();
+    assert_eq!(summary_logs(&captured), ["Route posture: access guards counted: AuthGuard (global, 1 route)"]);
+    let report = app.route_posture().unwrap();
+    assert_eq!(report.access_guards().len(), 1);
+    assert_eq!(report.access_guards()[0].scope, corvis::GuardScope::Global);
+    assert_eq!(report.access_guards()[0].routes, 1);
+
+    let (mut app, captured) = app_of::<LevelsModule>().await;
+    app.use_global_guards(AllowGuard);
+    app.set_route_posture(RoutePostureOptions::warn());
+    app.init().await.unwrap();
+    assert_eq!(
+        summary_logs(&captured),
+        ["Route posture: access guards counted: AllowGuard (global, 3 routes), AuthGuard (controller ClassLevelController, 1 route), \
+             AuthGuard (route RouteLevelController::guarded, 1 route)"]
+    );
+    let json = serde_json::to_value(app.route_posture().unwrap()).unwrap();
+    assert_eq!(json["access_guards"][0], serde_json::json!({ "name": "AllowGuard", "scope": { "level": "global" }, "routes": 3 }));
+}
+
+#[tokio::test]
+async fn the_summary_is_logged_in_enforce_mode_even_when_init_fails_and_lists_none_without_guards() {
+    let _g = SERIAL.lock().await;
+    let (mut app, captured) = app_of::<OpenModule>().await;
+    app.require_route_posture();
+    app.init().await.unwrap_err();
+    assert_eq!(summary_logs(&captured), ["Route posture: access guards counted: none"]);
+}
+
+#[tokio::test]
+async fn guards_that_do_not_control_access_are_not_in_the_summary() {
+    let _g = SERIAL.lock().await;
+    let (mut app, captured) = app_of::<RolesModule>().await;
+    app.set_route_posture(RoutePostureOptions::warn());
+    app.init().await.unwrap();
+    assert_eq!(summary_logs(&captured), ["Route posture: access guards counted: none"]);
+}
+
+#[controller("files")]
+pub struct FilesController;
+
+#[routes]
+impl FilesController {
+    #[get(":id")]
+    fn one(&self) -> Value {
+        json!({})
+    }
+
+    #[get("export-all")]
+    fn export_all(&self) -> Value {
+        json!({})
+    }
+}
+
+#[module(controllers = [FilesController])]
+pub struct FilesModule;
+
+#[tokio::test]
+async fn a_param_exemption_does_not_cover_a_literal_sibling_route() {
+    let _g = SERIAL.lock().await;
+    let (mut app, _) = app_of::<FilesModule>().await;
+    app.set_route_posture(RoutePostureOptions::enforce().exempt(RequestMethod::Get, "/files/:id", "public downloads"));
+    let err = app.init().await.unwrap_err();
+    assert_eq!(unprotected_of(&err), ["/files/export-all FilesController::export_all"]);
+
+    let (mut app, _) = app_of::<FilesModule>().await;
+    app.set_route_posture(RoutePostureOptions::warn().exempt(RequestMethod::Get, "/files/*", "both"));
+    app.init().await.unwrap();
+    assert!(app.route_posture().unwrap().unprotected().is_empty());
+}
+
+#[tokio::test]
+async fn a_glob_exemption_does_not_cross_segments() {
+    let _g = SERIAL.lock().await;
+    let (mut app, _) = app_of::<FilesModule>().await;
+    app.set_route_posture(RoutePostureOptions::warn().exempt(RequestMethod::Get, "/fil*", "r"));
+    app.init().await.unwrap();
+    // `/fil*` is one segment: it matches no `/files/...` route and is stale.
+    let report = app.route_posture().unwrap();
+    assert_eq!(report.unprotected().len(), 2);
+    assert_eq!(report.stale_exemptions().len(), 1);
+}
+
+#[tokio::test]
+async fn an_exemption_that_matches_only_guarded_or_public_routes_warns() {
+    let _g = SERIAL.lock().await;
+    let (mut app, captured) = app_of::<LevelsModule>().await;
+    app.set_route_posture(RoutePostureOptions::warn().exempt(RequestMethod::Get, "/class-level", "already guarded").exempt(
+        RequestMethod::Get,
+        "/route-level/*",
+        "covers one guarded and one open route",
+    ));
+    app.init().await.unwrap();
+    let report = app.route_posture().unwrap();
+    assert_eq!(report.redundant_exemptions().len(), 1);
+    assert_eq!(report.redundant_exemptions()[0].pattern(), "/class-level");
+    let logs = posture_logs(&captured);
+    let redundant: Vec<_> =
+        logs.iter().filter(|(l, m)| *l == LogLevel::Warn && m.contains("matches only guarded or public routes")).collect();
+    assert_eq!(redundant.len(), 1, "{logs:?}");
+    assert!(redundant[0].1.contains("GET /class-level"));
+}
+
+#[tokio::test]
+async fn the_report_says_where_a_public_status_comes_from() {
+    let _g = SERIAL.lock().await;
+    let (mut app, _) = app_of::<PublicUnguardedModule>().await;
+    app.init().await.unwrap();
+    let report = app.route_posture().unwrap();
+    let source = |path: &str| report.entries().iter().find(|e| e.path == path).unwrap().public_source;
+    assert_eq!(source("/open"), Some(corvis::PublicSource::Controller));
+    assert_eq!(source("/marked/public"), Some(corvis::PublicSource::Handler));
+    assert_eq!(source("/marked/secret"), None);
+    let table = report.to_string();
+    assert!(table.contains("public (controller)") && table.contains("public (handler)"), "{table}");
+    let json = serde_json::to_value(&report).unwrap();
+    let e = json["entries"].as_array().unwrap().iter().find(|e| e["path"] == "/marked/public").unwrap();
+    assert_eq!(e["public_source"], "handler");
+}
+
+// ---------------------------------------------------------------------------
 // SSE streams.
 // ---------------------------------------------------------------------------
 
@@ -1120,4 +1267,101 @@ mod gateways {
             serde_json::json!([{ "type": "ws_handshake", "path": "/shape", "gateway": "ShapeGateway", "verify_client": false }])
         );
     }
+}
+
+#[cfg(feature = "websockets")]
+mod gateway_details {
+    use super::gateways::{ChatModule, GuardedModule, PublicHandlerModule};
+    use super::*;
+    use corvis::{GuardScope, PublicSource};
+
+    #[tokio::test]
+    async fn the_summary_counts_gateway_handlers_with_their_scope() {
+        let _g = SERIAL.lock().await;
+        let (mut app, captured) = app_of::<ScopesModule>().await;
+        app.set_route_posture(RoutePostureOptions::warn());
+        app.init().await.unwrap();
+        assert_eq!(
+            summary_logs(&captured),
+            ["Route posture: access guards counted: AllowGuard (global, 2 routes), AuthGuard (gateway ScopedGateway, 2 routes), \
+              AuthGuard (message handler ScopedGateway::b, 1 route)"]
+        );
+        let report = app.route_posture().unwrap();
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["access_guards"][1]["scope"], serde_json::json!({ "level": "gateway", "gateway": "ScopedGateway" }));
+        assert!(report.access_guards().iter().any(|g| matches!(&g.scope, GuardScope::Message { handler, .. } if handler == "b")));
+
+        let (mut app, captured) = app_of::<ScopesModule>().await;
+        app.apply_global_enhancers_to_gateways(false);
+        app.set_route_posture(RoutePostureOptions::warn());
+        app.init().await.unwrap();
+        assert_eq!(
+            summary_logs(&captured),
+            ["Route posture: access guards counted: AuthGuard (gateway ScopedGateway, 2 routes), \
+              AuthGuard (message handler ScopedGateway::b, 1 route)"]
+        );
+    }
+
+    #[tokio::test]
+    async fn public_source_names_the_gateway_or_the_handler() {
+        let _g = SERIAL.lock().await;
+        let (mut app, _) = app_of::<super::gateways::PublicModule>().await;
+        app.init().await.unwrap();
+        let report = app.route_posture().unwrap();
+        assert!(report.entries().iter().all(|e| e.public_source == Some(PublicSource::Gateway)), "{report}");
+        assert!(report.to_string().contains("public (gateway)"), "{report}");
+
+        let (mut app, _) = app_of::<PublicHandlerModule>().await;
+        app.init().await.unwrap();
+        let report = app.route_posture().unwrap();
+        let ping = report.entries().iter().find(|e| e.handler == "ping").unwrap();
+        assert_eq!(ping.public_source, Some(PublicSource::Handler));
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json["entries"].as_array().unwrap().iter().any(|e| e["public_source"] == "handler"));
+    }
+
+    #[tokio::test]
+    async fn message_exemptions_use_the_literal_path_matcher_and_redundant_ones_warn() {
+        let _g = SERIAL.lock().await;
+        let (mut app, captured) = app_of::<ChatModule>().await;
+        app.set_route_posture(
+            RoutePostureOptions::enforce().exempt_message("/c*", "ping", "glob inside a segment").exempt_message("/chat", "rooms", "ok"),
+        );
+        app.init().await.unwrap();
+        assert!(app.route_posture().unwrap().entries().iter().all(|e| matches!(e.status, PostureStatus::Exempt { .. })));
+
+        let (mut app, _) = app_of::<ChatModule>().await;
+        app.set_route_posture(RoutePostureOptions::enforce().exempt_message("/chat/*", "*", "needs one more segment"));
+        app.init().await.unwrap_err();
+
+        let (mut app, captured2) = app_of::<GuardedModule>().await;
+        app.set_route_posture(RoutePostureOptions::warn().exempt_message("/guarded", "a", "already guarded"));
+        app.init().await.unwrap();
+        let warns: Vec<_> = posture_logs(&captured2).into_iter().filter(|(l, _)| *l == LogLevel::Warn).collect();
+        assert!(
+            warns.iter().any(|(_, m)| m.contains("WS /guarded event \"a\" matches only guarded or public message handlers")),
+            "{warns:?}"
+        );
+        assert_eq!(app.route_posture().unwrap().redundant_exemptions().len(), 1);
+        let _ = captured;
+    }
+
+    #[corvis::websocket_gateway(path = "/scoped")]
+    #[use_guards(AuthGuard)]
+    pub struct ScopedGateway {
+        #[websocket_server]
+        server: corvis::WsServer,
+    }
+
+    #[handlers]
+    impl ScopedGateway {
+        #[subscribe_message("a")]
+        fn a(&self) {}
+        #[subscribe_message("b")]
+        #[use_guards(AuthGuard)]
+        fn b(&self) {}
+    }
+
+    #[module(providers = [ScopedGateway, Provider::app_guard::<AllowGuard>()])]
+    pub struct ScopesModule;
 }
