@@ -90,7 +90,7 @@ Get-NetTCPConnection -State Listen -LocalPort 3001,3101,3200,3300,3399,4000,4001
 # consi's helper scripts keep running after their server dies (restart-all.sh, start-corvis.sh, the webhook sink);
 # a leftover consi-backend.exe locks the release binary for the next build ("Acceso denegado", os error 5).
 Get-CimInstance Win32_Process |
-  Where-Object { $_.CommandLine -match 'restart-all\.sh|start-corvis\.sh|start-nest\.sh|sink\.mjs|consi-backend\.exe' } |
+  Where-Object { $_.CommandLine -match 'restart-(all|nest)\.sh|start-corvis\.sh|start-nest2?\.sh|sink\.mjs|consi-backend\.exe' } |
   ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }
 ```
 Then check that nothing listens on those ports and that no process command line mentions `consi-backend`,
