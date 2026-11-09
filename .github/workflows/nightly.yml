@@ -33,7 +33,8 @@ jobs:
   fuzz:
     name: fuzz (long)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # 100,000 cases took 18 minutes on 2026-11-09 (dependencies cached); a manual run with more cases needs more.
+    timeout-minutes: 45
     env:
       # Passed through the environment, never expanded into a script.
       PROPTEST_CASES: ${{ inputs.cases || '100000' }}
