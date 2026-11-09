@@ -437,3 +437,44 @@ async fn upgrade_listener_ignores_forged_headers_from_an_untrusted_peer() {
     let trust = corvis::TrustProxy::parse("10.0.0.0/8").unwrap();
     assert_eq!(upgrade_seen_ip(Some(trust), "203.0.113.7").await, "127.0.0.1");
 }
+
+/// An `upgrade` listener that answers `401` with its parsed query in `x-seen-*` headers.
+async fn upgrade_seen_query(parser: corvis::http::body_parser::QueryParser, target: &str) -> String {
+    let mut app = CorvisFactory::create::<PlainModule>().await.unwrap();
+    app.set_query_parser(parser);
+    app.get_http_server().on_upgrade(|req| {
+        if req.pathname() == "/raw" {
+            let _ = req.respond(
+                Response::new()
+                    .with_status(401)
+                    .with_header("x-seen-query", serde_json::to_string(req.request().query()).unwrap())
+                    .with_header("x-seen-token", req.query_param("token").unwrap_or("none"))
+                    .with_header("x-seen-raw", req.query_string().unwrap_or("none")),
+            );
+        }
+    });
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let out = raw(addr, &format!("GET {target} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")).await;
+    app.close().await.unwrap();
+    out
+}
+
+fn header_of(response: &str, name: &str) -> String {
+    let prefix = format!("{name}: ");
+    response.lines().find(|l| l.to_ascii_lowercase().starts_with(&prefix)).map(|l| l[prefix.len()..].to_string()).unwrap_or_default()
+}
+
+#[corvis::test]
+async fn upgrade_listener_with_the_extended_parser() {
+    let out = upgrade_seen_query(corvis::http::body_parser::QueryParser::Extended, "/raw?user[name]=ana").await;
+    assert_eq!(serde_json::from_str::<Value>(&header_of(&out, "x-seen-query")).unwrap(), json!({ "user": { "name": "ana" } }));
+    assert_eq!(header_of(&out, "x-seen-raw"), "user[name]=ana");
+}
+
+#[corvis::test]
+async fn upgrade_listener_with_the_parser_disabled() {
+    let out = upgrade_seen_query(corvis::http::body_parser::QueryParser::Disabled, "/raw?token=abc").await;
+    assert_eq!(header_of(&out, "x-seen-token"), "none");
+    assert_eq!(header_of(&out, "x-seen-query"), "{}");
+    assert_eq!(header_of(&out, "x-seen-raw"), "token=abc");
+}

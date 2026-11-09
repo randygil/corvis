@@ -180,6 +180,56 @@ fn forwarded(socket: String, headers: &HeaderMap) -> Vec<String> {
     addrs
 }
 
+/// Drops the spaces around an `X-Forwarded-For` entry.
+fn trim_spaces(entry: &[u8]) -> &[u8] {
+    let start = entry.iter().position(|b| *b != b' ').unwrap_or(entry.len());
+    let end = entry.iter().rposition(|b| *b != b' ').map_or(start, |i| i + 1);
+    &entry[start..end]
+}
+
+/// The `X-Forwarded-For` entries from right to left as raw bytes (several headers count as joined with
+/// `, ` like Node; empty entries and the spaces around each entry are dropped).
+fn entries_rev(headers: &HeaderMap) -> impl Iterator<Item = &[u8]> {
+    headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .rev()
+        .flat_map(|v| v.as_bytes().rsplit(|b| *b == b','))
+        .map(trim_spaces)
+        .filter(|e| !e.is_empty())
+}
+
+/// The client address (`proxyaddr(req, trust)`): the same result as the last element of
+/// [`all_addrs`], without building the chain. It walks the entries from the right and stops at the
+/// first untrusted address; with `All` it takes the left-most entry. Only the entries it examines are
+/// converted to strings, so a long `X-Forwarded-For` costs nothing past the answer.
+pub(crate) fn client_addr(socket: String, headers: &HeaderMap, trust: &TrustProxy) -> String {
+    match trust {
+        TrustProxy::None => socket,
+        TrustProxy::All => headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .flat_map(|v| v.as_bytes().split(|b| *b == b','))
+            .map(trim_spaces)
+            .find(|e| !e.is_empty())
+            .map(super::body_parser::latin1)
+            .unwrap_or(socket),
+        _ => {
+            if !trust.trusts(&socket, 0) {
+                return socket;
+            }
+            let mut last = socket;
+            for (i, entry) in entries_rev(headers).enumerate() {
+                last = super::body_parser::latin1(entry);
+                if !trust.trusts(&last, i + 1) {
+                    break;
+                }
+            }
+            last
+        }
+    }
+}
+
 /// `proxyaddr.all(req, trust)`: the socket address followed by the trusted chain, ending with
 /// the client address.
 pub(crate) fn all_addrs(socket: String, headers: &HeaderMap, trust: &TrustProxy) -> Vec<String> {
@@ -261,5 +311,70 @@ mod tests {
         assert!(TrustProxy::parse("10.0.0.0/255.0.255.0").is_err());
         assert!(TrustProxy::parse("::1/1.2.3.4").is_err());
         assert!(TrustProxy::subnets(["linklocal", "uniquelocal", "1.2.3.4"]).is_ok());
+    }
+
+    /// `client_addr` must give what the last element of `all_addrs` gives, for every setting.
+    fn assert_same(socket: &str, xff: &[&str]) {
+        let h = headers(xff);
+        let subnets = TrustProxy::parse("loopback, 10.0.0.0/8, fc00::/7").unwrap();
+        let settings = [
+            TrustProxy::None,
+            TrustProxy::All,
+            TrustProxy::Hops(0),
+            TrustProxy::Hops(1),
+            TrustProxy::Hops(2),
+            TrustProxy::Hops(50),
+            subnets,
+        ];
+        for trust in settings {
+            let expected = all_addrs(socket.into(), &h, &trust).pop().unwrap();
+            assert_eq!(client_addr(socket.into(), &h, &trust), expected, "{socket} {xff:?} {trust:?}");
+        }
+    }
+
+    #[test]
+    fn the_lazy_client_address_matches_the_full_chain() {
+        let cases: &[&[&str]] = &[
+            &[],
+            &[""],
+            &[" "],
+            &[",,,"],
+            &[" , 10.0.0.9 ,,  "],
+            &["1.2.3.4"],
+            &["1.2.3.4, 10.0.0.1"],
+            &["6.6.6.6, 1.2.3.4, 10.1.1.1"],
+            &["10.0.0.1, 10.0.0.2", "10.0.0.3"],
+            &["10.0.0.1,", ",10.0.0.2", " 10.0.0.3 "],
+            &["2001:db8::1, fd00::1, ::1"],
+            &["[2001:db8::1]:4000, 10.0.0.1"],
+            &["1.2.3.4, garbage"],
+            &["garbage, 10.0.0.1, 10.0.0.2"],
+            &["10.0.0.1", "", "10.0.0.2"],
+            &["a\tb , 10.0.0.1"],
+        ];
+        for socket in ["127.0.0.1", "10.9.9.9", "8.8.8.8", "::1", "::ffff:127.0.0.1", "fd00::5"] {
+            for xff in cases {
+                assert_same(socket, xff);
+            }
+        }
+    }
+
+    #[test]
+    fn hops_beyond_the_header_length_give_the_left_most_entry() {
+        assert_eq!(ip("127.0.0.1", &["1.1.1.1, 2.2.2.2"], &TrustProxy::Hops(10)), "1.1.1.1");
+        assert_eq!(client_addr("127.0.0.1".into(), &headers(&["1.1.1.1, 2.2.2.2"]), &TrustProxy::Hops(10)), "1.1.1.1");
+        assert_eq!(client_addr("127.0.0.1".into(), &headers(&[]), &TrustProxy::Hops(10)), "127.0.0.1");
+    }
+
+    #[test]
+    fn long_headers_resolve_like_short_ones() {
+        let long = vec!["10.0.0.1"; 4000].join(", ");
+        let one_hop = TrustProxy::Hops(1);
+        assert_same("127.0.0.1", &[&long]);
+        assert_same("127.0.0.1", &[&format!("6.6.6.6, {long}")]);
+        assert_eq!(client_addr("127.0.0.1".into(), &headers(&[&format!("{long}, 203.0.113.7")]), &one_hop), "203.0.113.7");
+        assert_eq!(client_addr("127.0.0.1".into(), &headers(&[&format!("203.0.113.7, {long}")]), &TrustProxy::All), "203.0.113.7");
+        let subnets = TrustProxy::parse("10.0.0.0/8, loopback").unwrap();
+        assert_eq!(client_addr("127.0.0.1".into(), &headers(&[&format!("5.5.5.5, {long}")]), &subnets), "5.5.5.5");
     }
 }

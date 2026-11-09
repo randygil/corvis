@@ -237,7 +237,9 @@ struct ClientInner {
     id: String,
     queue: Arc<OutQueue>,
     rooms: Mutex<HashSet<String>>,
-    handshake: Request,
+    handshake: Arc<Request>,
+    /// The client address of the handshake (`handshake.ip()`), resolved once per connection.
+    ip: String,
     server: WsServer,
     /// Set by `disconnect()`: frames received afterwards are not dispatched.
     closing: AtomicBool,
@@ -291,6 +293,13 @@ impl WsClient {
     pub fn in_room(&self, room: &str) -> bool {
         self.inner.rooms.lock().unwrap().contains(room)
     }
+    /// The client address of the connection, `handshake().ip()` resolved once when the connection
+    /// was accepted (`set_trust_proxy` applies). Messages read this value, so their cost does not
+    /// depend on the size of the handshake's `X-Forwarded-For`.
+    pub fn ip(&self) -> &str {
+        &self.inner.ip
+    }
+
     /// The HTTP upgrade request (headers, query string, ...).
     pub fn handshake(&self) -> &Request {
         &self.inner.handshake
@@ -717,7 +726,7 @@ pub(crate) fn upgrade(
     gateway: Arc<GatewayRuntime>,
     mut req: hyper::Request<Incoming>,
     remote: SocketAddr,
-    trust: &crate::http::proxy_addr::TrustProxy,
+    parser: &crate::http::body_parser::BodyParserOptions,
 ) -> hyper::Response<ResBody> {
     let options = gateway.server.options();
     let key = match validate_handshake(req.headers(), req.method(), &options) {
@@ -727,7 +736,7 @@ pub(crate) fn upgrade(
     let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(&key);
     let on_upgrade = hyper::upgrade::on(&mut req);
     let (parts, _) = req.into_parts();
-    let Ok(handshake) = Request::for_upgrade(parts, remote, trust) else {
+    let Ok(handshake) = Request::for_upgrade(parts, remote, parser) else {
         return reject_handshake(400, "Bad Request", &[]);
     };
     if let Some(verify) = &options.verify_client {
@@ -892,7 +901,7 @@ async fn dispatch(
     id: Option<Value>,
 ) {
     let ctx = ExecutionContext::for_ws(
-        client.handshake().clone(),
+        client.inner.handshake.clone(),
         gateway.class_target.clone(),
         handler.target.clone(),
         Some(gateway.module_ref.clone()),
@@ -976,7 +985,8 @@ where
             id,
             queue,
             rooms: Mutex::new(HashSet::new()),
-            handshake,
+            ip: handshake.ip(),
+            handshake: Arc::new(handshake),
             server: gateway.server.clone(),
             closing: AtomicBool::new(false),
             close_signal: Notify::new(),

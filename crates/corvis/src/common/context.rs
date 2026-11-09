@@ -45,7 +45,7 @@ impl ContextType {
 }
 
 struct CtxInner {
-    request: Request,
+    request: Arc<Request>,
     handler: Arc<Target>,
     class: Arc<Target>,
     module_ref: Option<ModuleRef>,
@@ -67,7 +67,7 @@ impl ExecutionContext {
     pub fn new(request: Request, class: Arc<Target>, handler: Arc<Target>, module_ref: Option<ModuleRef>) -> Self {
         ExecutionContext {
             inner: Arc::new(CtxInner {
-                request,
+                request: Arc::new(request),
                 handler,
                 class,
                 module_ref,
@@ -81,8 +81,11 @@ impl ExecutionContext {
     /// The context of a WebSocket message (`context.getType() === 'ws'`): `request` is the
     /// handshake request of the connection, `client` the connected socket and `data` the
     /// message payload.
+    ///
+    /// The handshake is shared, not copied: a message costs a reference count, whatever the size
+    /// of the handshake's query and headers.
     pub fn for_ws(
-        request: Request,
+        request: impl Into<Arc<Request>>,
         class: Arc<Target>,
         handler: Arc<Target>,
         module_ref: Option<ModuleRef>,
@@ -91,7 +94,7 @@ impl ExecutionContext {
     ) -> Self {
         ExecutionContext {
             inner: Arc::new(CtxInner {
-                request,
+                request: request.into(),
                 handler,
                 class,
                 module_ref,

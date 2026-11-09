@@ -24,7 +24,9 @@ This page gathers what can be configured on that server.
   `Transfer-Encoding`) are answered with `400` and the connection is closed.
   `ServerOptions::new().insecure_http_parser(true)` accepts them again for legacy clients and logs a warning at
   startup; see [HTTP parsing and compatibility](/security/http-parsing).
-- There is no HTTPS: terminate TLS in a reverse proxy. See [HTTPS and multiple servers](/faq/multiple-servers).
+- HTTPS is available with the `tls` feature (`listen_tls`): ALPN `h2` serves HTTP/2 and `http/1.1` serves HTTP/1.x, with
+  the same `ServerOptions` limits. Without it, terminate TLS in a reverse proxy. See
+  [HTTPS and multiple servers](/faq/multiple-servers).
 - WebSocket upgrades, with gateways or with `corvis::ws`. See [Gateways](/websockets/gateways).
 
 ## Timeouts and connections
@@ -198,7 +200,7 @@ These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 o
 | Disable parsing | Enabled | `app.disable_body_parser()` |
 | Transport limit for other types | 1 MiB | `app.set_body_limit(bytes)` |
 | Maximum JSON depth | 256 levels (`400`) | `app.set_body_parser_max_depth(n)` |
-| `req.query` parser | `simple` (as in Express 5) | `app.set_query_parser(QueryParser::Extended)` |
+| `req.query` parser (also the query of WebSocket handshakes and `upgrade` requests) | `simple` (as in Express 5) | `app.set_query_parser(QueryParser::Extended)` |
 
 Only `application/json` and `application/x-www-form-urlencoded` are parsed; everything else leaves the body
 unparsed and available in `req.raw_body()` (see [Raw body](/faq/raw-body)). `multipart/*`

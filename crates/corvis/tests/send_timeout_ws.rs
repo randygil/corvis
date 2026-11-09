@@ -19,8 +19,10 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 const MESSAGES: usize = 24;
 const PAYLOAD: usize = 128 * 1024;
 
-static DISCONNECTS: AtomicUsize = AtomicUsize::new(0);
-static CLIENTS_AT_DISCONNECT: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// Ids of the `/feed` clients that connected, and `(id, clients left in the server)` of each `handle_disconnect`.
+/// Connections of earlier tests close after their test ended, so a test only looks at the id of its own client.
+static FEED_CONNECTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static FEED_DISCONNECTS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
 static RAW_MESSAGE_LEN: AtomicUsize = AtomicUsize::new(0);
 static SPLIT_WRITER_DONE: AtomicUsize = AtomicUsize::new(0);
 static RAW_CLOSES: AtomicUsize = AtomicUsize::new(0);
@@ -49,15 +51,15 @@ impl FeedGateway {}
 #[async_trait]
 impl OnGatewayConnection for FeedGateway {
     async fn handle_connection(&self, client: WsClient) {
+        FEED_CONNECTED.lock().unwrap().push(client.id().to_string());
         emit_burst(&client);
     }
 }
 
 #[async_trait]
 impl OnGatewayDisconnect for FeedGateway {
-    async fn handle_disconnect(&self, _client: WsClient) {
-        CLIENTS_AT_DISCONNECT.store(self.server.clients().len(), Ordering::SeqCst);
-        DISCONNECTS.fetch_add(1, Ordering::SeqCst);
+    async fn handle_disconnect(&self, client: WsClient) {
+        FEED_DISCONNECTS.lock().unwrap().push((client.id().to_string(), self.server.clients().len()));
     }
 }
 
@@ -205,14 +207,17 @@ async fn wait_for(what: &str, limit: Duration, mut cond: impl FnMut() -> bool) {
 #[corvis::test]
 async fn a_gateway_client_that_never_reads_is_dropped() {
     let _g = SERIAL.lock().await;
-    DISCONNECTS.store(0, Ordering::SeqCst);
+    FEED_CONNECTED.lock().unwrap().clear();
     let (_app, addr) = start(timeout_1s()).await;
     let mut ws = connect(addr, "/feed").await;
+    wait_for("handle_connection", Duration::from_secs(8), || FEED_CONNECTED.lock().unwrap().len() == 1).await;
+    let id = FEED_CONNECTED.lock().unwrap()[0].clone();
+    let mine = || FEED_DISCONNECTS.lock().unwrap().iter().filter(|(i, _)| *i == id).cloned().collect::<Vec<_>>();
 
-    wait_for("handle_disconnect", Duration::from_secs(8), || DISCONNECTS.load(Ordering::SeqCst) == 1).await;
+    wait_for("handle_disconnect", Duration::from_secs(8), || mine().len() == 1).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(DISCONNECTS.load(Ordering::SeqCst), 1, "handle_disconnect runs once");
-    assert_eq!(CLIENTS_AT_DISCONNECT.load(Ordering::SeqCst), 0, "server.clients() is empty");
+    assert_eq!(mine().len(), 1, "handle_disconnect runs once");
+    assert_eq!(mine()[0].1, 0, "server.clients() is empty");
     let (_, done) = read_to_end(&mut ws, Duration::from_secs(5)).await;
     assert!(!done, "the connection ended before the burst was delivered");
 }

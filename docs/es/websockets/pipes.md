@@ -6,6 +6,8 @@ status: documented
 
 Los [pipes](/es/pipes) de un gateway funcionan igual que en HTTP: reciben el valor de un argumento como `serde_json::Value`, lo validan o lo transforman y devuelven el resultado, que después se deserializa en el tipo del parámetro. La diferencia está en qué argumentos procesan: en un gateway solo hay uno con datos de entrada, el `data` del frame.
 
+Los pipes solo se ejecutan sobre parámetros `#[message_body]` (y `#[payload]`). Los parámetros `#[connected_socket]` e `#[ip]` vienen del servidor, no del frame, así que ningún pipe se ejecuta sobre ellos.
+
 ## Dónde se declaran
 
 | Nivel | Cómo | Se aplica a |

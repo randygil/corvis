@@ -180,7 +180,14 @@ ThrottlerModule::for_root_storage(
   it with `with_named_tracker("by-email", f)` or `with_named_key_generator("shared", f)` and select it with
   `throttle("login").tracker("by-email")` or `.key_generator("shared")`. An id that is not registered answers `500`
   (the route is not left unlimited). Registering an id twice panics.
-- For each throttler the guard uses the route's function, then the module hook, then the built-in.
+- One throttler can have its own hooks, like an entry of the original's throttler list with `getTracker` or
+  `generateKey`: `with_tracker_for("login", f)` and `with_key_generator_for("login", f)` take the same functions as the
+  module-level ones and apply to that throttler only. They panic when no configured throttler has that name; calling
+  one twice for a name keeps the last function.
+- For each throttler the guard uses the route's function (handler, then controller), then the throttler's hook, then
+  the module hook, then the built-in.
+- Keys from a throttler's generator are stored under their own source marker, so they never meet the keys of the
+  built-in, module or registered generators.
 - A custom tracker replaces the built-in one entirely, including IPv6 grouping: call `normalize_ip` yourself, as in the
   example.
 - The throttler name is always part of the stored key. A key generator that ignores the name (`|_, tracker, _|
@@ -207,6 +214,52 @@ example) so that spelling variants do not get separate counters, and remember th
 a victim out on purpose: anyone can send the victim's identifier. A tracker that returns one value for every anonymous
 request puts all of them in one counter, and one client can exhaust it for everybody.
 :::
+
+### Limits that depend on the request
+
+The original library accepts functions for `limit`, `ttl` and `blockDuration`. In Corvis they are builders of
+`ThrottlerStorage` named after the throttler, each taking an async function of the `ExecutionContext`:
+
+```rust
+use corvis::prelude::*;
+
+ThrottlerModule::for_root_storage(
+    ThrottlerStorage::new(vec![ThrottlerOptions { name: "api".into(), ttl: 60_000, limit: 100 }])
+        // Result<u32, HttpException>: the limit of this request
+        .with_limit_fn("api", |ctx| async move {
+            let plan = plan_of(&ctx).await?; // server-side lookup, e.g. the authenticated user
+            Ok(if plan == "pro" { 1000 } else { 100 })
+        })
+        // Result<u64, HttpException> in milliseconds
+        .with_block_duration_fn("api", |_ctx| async { Ok(20_000) }),
+)
+```
+
+- `with_limit_fn(name, f)` returns a `u32`; `with_ttl_fn(name, f)` and `with_block_duration_fn(name, f)` return
+  milliseconds as `u64`. The value type is `ThrottlerValueFn<T>`. The results are typed, so no non-numeric or negative
+  value can reach the counters.
+- For each throttler and option the guard uses the route override (`throttle("api").limit(5)`), else the function, else
+  the static value, whatever the order of the builder calls. The function is not called when a route override applies,
+  nor for a skipped throttler. The block duration then falls back to `with_block_duration` and then to the effective
+  ttl, as before.
+- An `Err` is returned by the guard unchanged (a 500 for an internal error, the exception's own status otherwise) and
+  no hit is counted for that throttler or the ones after it.
+- An `Err` stops the check: the throttlers after it do not count the request, so keep the IP throttler static with
+  the shortest ttl so that it is checked first.
+- Keep each value stable per key. A key that is blocked stays blocked until its block ends, whatever value a later
+  request gets, but the length of a new block follows the request that causes it.
+- A ttl function that returns `0` disables that throttler for the request, as a static ttl of `0` does. A warning is
+  logged once per throttler; do not map a missing value (a failed lookup) to `0`.
+- The builders panic when no configured throttler has that name, while the module is configured.
+- Throttlers with a ttl function are checked after the throttlers with a static ttl, in configured order, as in the
+  original; their static `ttl` is not used. Keep the IP throttler static with the shortest ttl so that it is checked
+  first.
+- Function-valued overrides on a route (`@Throttle({ short: { limit: (ctx) => .. } })`) are not supported: route
+  metadata holds JSON.
+- Derive the values from server-side state, never from a header the client sets (`x-plan: pro`): the client would
+  choose its own limit. The functions run on every request for every throttler that is not skipped, so keep them cheap
+  and cache lookups. Use a ttl that depends on stable properties of the client: each hit expires after the ttl it was
+  counted with.
 
 ### Skipping throttlers
 

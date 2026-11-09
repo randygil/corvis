@@ -88,6 +88,10 @@ pub fn routes(_args: TokenStream, input: TokenStream) -> TokenStream {
 
 /// Collects method handlers of a provider: `#[on_event("order.created")]`, `#[cron(expr)]`,
 /// `#[interval(ms)]`, `#[timeout(ms)]` and `#[subscribe_message("event")]` (gateways).
+///
+/// A `#[subscribe_message]` method takes `#[message_body]` / `#[payload]`, `#[connected_socket]`
+/// and `#[ip]` parameters; `#[ip]` is the handshake's client address (`client.handshake().ip()`),
+/// takes no arguments and is a compile error on the other handler kinds.
 #[proc_macro_attribute]
 pub fn handlers(_args: TokenStream, input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as ItemImpl);

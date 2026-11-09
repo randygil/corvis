@@ -11,8 +11,10 @@ use serde_json::{Map, Value};
 
 use super::exception::{BadRequestException, HttpException};
 
-/// An HTTP request. Cheap to clone; clones share the same `extensions`
-/// (so a guard can attach the authenticated user and the handler can read it).
+/// An HTTP request. Cloning copies the parsed query, the headers and the body (the cost grows with
+/// their size), but clones share the same `extensions` (so a guard can attach the authenticated user
+/// and the handler can read it). Code that needs the same request in many places should share it
+/// through an `Arc`, as WebSocket gateways do with the handshake.
 #[derive(Clone)]
 pub struct Request {
     pub(crate) method: Method,
@@ -57,17 +59,20 @@ impl Request {
     }
 
     /// The handshake request of an upgrade (WebSocket gateways and `upgrade` listeners): the hyper
-    /// parts with an empty body, the peer address and the application's `trust proxy` setting, so
-    /// `ip()`, `ips()` and `hostname()` resolve like they do for HTTP requests.
+    /// parts with an empty body and the peer address, built with the application's request
+    /// settings like an HTTP request: the query parser fills `query()` and `trust proxy` makes
+    /// `ip()`, `ips()` and `hostname()` resolve the same way.
     pub(crate) fn for_upgrade(
         parts: http::request::Parts,
         remote: SocketAddr,
-        trust: &super::proxy_addr::TrustProxy,
+        parser: &super::body_parser::BodyParserOptions,
     ) -> Result<Self, HttpException> {
-        let mut req = Request::new(parts.method, parts.uri, parts.headers, Bytes::new())?;
+        let mut req = Self::with_parser(parts.method, parts.uri, parts.headers, Bytes::new(), parser);
+        if let Some(e) = req.body_error.take() {
+            return Err(e);
+        }
         req.version = parts.version;
         req.remote_addr = Some(remote);
-        req.trust_proxy = trust.clone();
         Ok(req)
     }
 
@@ -167,7 +172,7 @@ impl Request {
     /// `trust proxy` setting ([`crate::CorvisApplication::set_trust_proxy`]) the closest
     /// `X-Forwarded-For` address that is not a trusted proxy, like `proxy-addr`.
     pub fn ip(&self) -> String {
-        self.proxy_addrs().pop().unwrap_or_default()
+        super::proxy_addr::client_addr(self.socket_ip(), &self.headers, &self.trust_proxy)
     }
     /// `req.ips`: the trusted `X-Forwarded-For` chain, from the client to the closest proxy
     /// (empty unless `trust proxy` is set).
@@ -352,24 +357,43 @@ pub(crate) fn parse_query_with(q: &str, mode: super::body_parser::QueryParser) -
 #[cfg(test)]
 mod upgrade_tests {
     use super::*;
+    use crate::http::body_parser::{BodyParserOptions, QueryParser};
     use crate::http::proxy_addr::TrustProxy;
 
     fn parts(xff: &str) -> http::request::Parts {
-        http::Request::builder().uri("/ws?a=1").header("x-forwarded-for", xff).body(()).unwrap().into_parts().0
+        http::Request::builder().uri("/ws?a=1&r[k]=2").header("x-forwarded-for", xff).body(()).unwrap().into_parts().0
+    }
+
+    fn options(query_parser: QueryParser, trust_proxy: TrustProxy) -> BodyParserOptions {
+        BodyParserOptions { query_parser, trust_proxy, ..BodyParserOptions::default() }
     }
 
     #[test]
     fn for_upgrade_resolves_the_address_with_the_given_setting() {
         let remote: SocketAddr = "127.0.0.1:4000".parse().unwrap();
-        let trusted = Request::for_upgrade(parts("203.0.113.7"), remote, &TrustProxy::from(1usize)).unwrap();
+        let trusted = Request::for_upgrade(parts("203.0.113.7"), remote, &options(QueryParser::Simple, TrustProxy::from(1usize))).unwrap();
         assert_eq!(trusted.ip(), "203.0.113.7");
         assert_eq!(trusted.remote_addr(), Some(remote));
         assert_eq!(trusted.query_param("a"), Some("1"));
 
-        let default = Request::for_upgrade(parts("203.0.113.7"), remote, &TrustProxy::default()).unwrap();
+        let default = Request::for_upgrade(parts("203.0.113.7"), remote, &BodyParserOptions::default()).unwrap();
         assert_eq!(default.ip(), "127.0.0.1");
 
-        let untrusted = Request::for_upgrade(parts("203.0.113.7"), remote, &TrustProxy::parse("10.0.0.0/8").unwrap()).unwrap();
+        let untrusted =
+            Request::for_upgrade(parts("203.0.113.7"), remote, &options(QueryParser::Simple, TrustProxy::parse("10.0.0.0/8").unwrap()))
+                .unwrap();
         assert_eq!(untrusted.ip(), "127.0.0.1");
+    }
+
+    #[test]
+    fn for_upgrade_parses_the_query_with_the_given_parser() {
+        let remote: SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let simple = Request::for_upgrade(parts("1.1.1.1"), remote, &BodyParserOptions::default()).unwrap();
+        assert_eq!(simple.query().get("r[k]"), Some(&serde_json::json!("2")));
+        let extended = Request::for_upgrade(parts("1.1.1.1"), remote, &options(QueryParser::Extended, TrustProxy::default())).unwrap();
+        assert_eq!(extended.query().get("r"), Some(&serde_json::json!({ "k": "2" })));
+        let disabled = Request::for_upgrade(parts("1.1.1.1"), remote, &options(QueryParser::Disabled, TrustProxy::default())).unwrap();
+        assert!(disabled.query().is_empty());
+        assert_eq!(disabled.uri().query(), Some("a=1&r[k]=2"));
     }
 }
