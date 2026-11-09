@@ -21,7 +21,9 @@ use syn::{ItemFn, ItemImpl, ItemStruct, parse_macro_input};
 ///
 /// * `#[inject("TOKEN")]` – inject by custom token (`@Inject('TOKEN')`).
 /// * `#[init(Logger::new("CatsService"))]` – field initializer.
-/// * `#[injectable(scope = "transient")]` – `Scope.TRANSIENT`.
+/// * `#[injectable(scope = "transient")]` – a new instance for each consumer.
+/// * `#[injectable(scope = "request")]` – one instance per HTTP request, created on first use (see the
+///   injection scopes guide). Only `"default"`, `"transient"` and `"request"` are accepted.
 #[proc_macro_attribute]
 pub fn injectable(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut item = parse_macro_input!(input as ItemStruct);

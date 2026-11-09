@@ -195,7 +195,7 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
   has the same default; `send_timeout(None)` or a larger value restores the old behavior. Docs say so.
 - [An HTTP/2 client that pauses one stream for 60 s while reading others loses all its streams] → Decision 5; rare
   outside media, documented, and configurable. Open question 3.
-- [Trickling clients defeat any progress timeout] → one byte (or one WINDOW_UPDATE) per `send_timeout` keeps the
+- [Trickling clients defeat any progress timeout] → about 16 KiB per stream (HTTP/2) or tens of KiB (HTTP/1) per `send_timeout` keeps the
   connection; the memory a client can pin is bounded by `max_connections × http2_max_concurrent_streams` responses,
   as for a slow legitimate client. A minimum rate is out of scope.
 - [Slicing relies on h2 not granting capacity while more than the window is buffered] → if a future h2 version granted
@@ -222,3 +222,94 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
 - Q3: one stalled stream closes the whole connection, as the issue asks.
 - Q4: established WebSocket connections stay exempt here; their own write deadline is filed as a separate issue.
 - Implement after #150 is merged, reusing its raw-frame client.
+
+## Review notes (2026-11-10)
+
+- Supersedes Q3 of the 2026-11-09 notes. The connection is closed only when no response body of it has made progress
+  for `send_timeout` (some body waits for hyper, and no body of the connection has had a frame taken for that long),
+  not when one stream stalls. The security review measured that the per-stream rule cuts legitimate HTTP/2 clients on
+  slow links with many streams (100 streams at 20 KB/s were cut at 65 s), and that it does not bound memory better: an
+  RST cycle and a 16 KiB WINDOW_UPDATE trickle hold memory under either rule. Memory is tracked in #163 (a cap on
+  pending response bytes). Decision 3 (per-stream clocks) and Decision 5 (close the connection, not the stream) stand;
+  only the rule over the clocks changed. Progress is a poll of a body after its first one, and the stall counts from
+  the later of the oldest wait and the last progress.
+- Idle HTTP/2 connections: only DATA, HEADERS and CONTINUATION written by the server refresh the keep-alive phase (an
+  outgoing frame scanner advanced by the bytes the socket accepted), so PONGs, SETTINGS acknowledgements and the
+  server's own PING keep-alive do not keep an idle connection open. Without this a client PING every half second kept
+  a connection open past 12 s where the base closed it at 2 s.
+- The docs and rustdoc say what `send_timeout` does not bound: about 16 KiB per stream per period over HTTP/2, about
+  64 KiB per period over HTTP/1 on a Windows loopback connection, nothing for an RST cycle; they point to #163 and
+  recommend `max_connections`.
+- Timeouts that cannot be added to an `Instant` (`Duration::MAX`) are off: `checked_add` in the write deadline, the
+  watchdog, `poll_idle` and the request deadline, and the options handed to hyper (`header_read_timeout`, the HTTP/2
+  keep-alive interval and timeout) are filtered the same way, because hyper panics on the overflow itself.
+
+## Implementation notes
+
+- Implemented as designed: `send_timeout` (60 s, `None` off), the write deadline in `TimedIo` (`poll_write_deadline`, a
+  second `Sleep`), the per-body `BodyClock` with the connection watchdog in `finish_connection`, and 16 KiB slicing of
+  HTTP/2 data frames in `GuardedBody`. `finish_connection` takes the `send_timeout` as a new parameter.
+- `poll_flush` clears the stall only when the last write was not pending (`write_blocked`): a TCP flush completes
+  trivially and must not restart the clock of a blocked write.
+- Keep-alive phase fix (comment on #157): done, because `on_read` was reworked anyway. `TimedIo` now matches the HTTP/2
+  preface on every connection (rejecting it when h2c is off, as before) and, with h2c on, walks the client's frame
+  boundaries (`H2Frames`); only a HEADERS frame moves an idle connection from the keep-alive phase to the headers
+  phase, so WINDOW_UPDATE, PING, SETTINGS and the like keep `keep_alive_timeout`. HTTP/1 is unchanged (any byte starts
+  the next head). Test: `stray_http2_frames_do_not_end_the_keep_alive_phase`.
+- Tests are in `tests/send_timeout.rs` and, for the WebSocket case (feature `websockets`), `tests/send_timeout_ws.rs`.
+  The raw HTTP/2 client was copied and extended (SETTINGS parameters, PING answers) instead of moved to a shared module,
+  to leave `tests/http2_limits.rs` untouched.
+- Stalled HTTP/1 clients use `/t/forever` (an endless stream), not the 8 MiB route of the spec: on a Windows loopback
+  connection the kernel buffers swallowed a whole 8 MiB response while the client did not read, so the server never
+  blocked and the test proved nothing. HTTP/2 stalls are application-level (flow control) and keep `/t/huge` and
+  `/t/big`. Each stall test has a twin with `send_timeout(None)` that shows the slot is not released, and the
+  WebSocket test was checked to fail when the upgraded exemption is removed.
+- Slow live reader: the server sees progress when the OS reports the socket writable. With a tiny receive buffer a
+  reader that takes 4 KiB every 400 ms was cut by a 1 s timeout (the socket became writable only after tens of KiB were
+  read), while 128 KiB per 400 ms was not; HTTP/2 readers (flow control) are exact. The HTTP/1 test therefore reads what
+  its socket holds every 400 ms, and the docs say that progress is observed in steps for very slow readers (the 60 s
+  default is far above the time such a reader needs for a step).
+- Compression: the test uses `max_concurrent(1)`; while a stalled client holds the slot a second client gets an
+  uncompressed response, and after `send_timeout` it is compressed again.
+- Mutation checks done: without slicing the one-byte-window test fails; without the write deadline the HTTP/1
+  pipelined and PING flood tests fail; without the watchdog the zero-window test fails.
+- Not done here: task 6.5 (parity) and 6.6 (security review proofs of concept re-run) belong to the maintainer's
+  session; the regression tests reproduce both scenarios of the review (zero window, never-read PING flood, and the
+  HTTP/1 pipelined variant).
+
+### Implementation notes, review of 0c659e1
+
+- The new rule is implemented with `ConnState::progress` (set when hyper polls a body that is waiting for it, after the
+  body's first poll) and a watchdog that computes `max(oldest wait, last progress) + send_timeout`. Unit tests with
+  paused time cover one body moving next to a stalled one, all stalled, bodies waiting for the application, and
+  `Duration::MAX`; integration tests cover the h2c scenarios.
+- The outgoing scanner reuses `H2Frames`, which now returns the kinds of frame that own the bytes that pass (a frame
+  header counts once complete, then its payload bytes). Mutation check: counting every write as response progress
+  makes the three idle-connection tests fail.
+
+### Implementation notes, Linux CI (`http1_slow_but_live_reader_is_not_cut`)
+
+- Failure: on ubuntu-latest a reader taking 128 KiB per 400 ms was cut by a 1 s timeout after 1.79 MB. Cause: for a TCP
+  socket `tcp_poll` reports `EPOLLOUT` through `__sk_stream_is_writeable(sk, 1)`, which needs
+  `sk_stream_wspace >= sk_stream_min_wspace` (free space of at least half of what is queued) and
+  `tcp_stream_memory_free`. Autotuning had grown the send buffer to MiB and the server had filled it, so the socket was
+  writable again only after about half of it drained: no visible progress for many seconds although the client read
+  steadily. With the 60 s default a 30 KB/s client draining a 2 MB buffer would have been cut while reading.
+- Decision: while `send_timeout` is on, the server sets `TCP_NOTSENT_LOWAT` to 64 KiB on accepted sockets (Linux and
+  Android, through `socket2` with the `all` feature, because the crate forbids `unsafe`). `tcp_sendmsg` then stops
+  copying once the unsent bytes reach the mark, so the queue holds at most the receiver's window plus the mark and the
+  half-of-queue rule is satisfied at once; `tcp_stream_memory_free` with the wake-up shift (`tcp_poll` passes `wake = 1`)
+  reports writable when the unsent bytes fall under half the mark (32 KiB). Progress therefore shows in steps of about
+  32 KiB, independent of buffer autotuning. 64 KiB rather than 128 KiB because of that halving.
+- HTTP/2 shares the socket and gets the option too. Its flow control bounds what h2 writes (and the watchdog measures
+  window progress, not the socket), but a client with large windows (hyper's client accepts 8 MiB) can still fill the
+  kernel buffers and trip the write deadline in the same way.
+- SIOCOUTQ (unsent plus unacked bytes) in the watchdog was not needed and was not added: the low-water mark restores
+  writability as the progress signal, which keeps one mechanism for all platforms and avoids a Linux-only ioctl.
+- macOS: `socket2` 0.6 exposes the option on Linux and Android only, so macOS and the BSDs keep the platform's autotuned
+  buffers (granularity possibly MiB; documented). Windows keeps the measured behavior, about 64 KiB per period.
+- The test now uses `read_exact` of a per-platform piece every 400 ms, so its rate does not depend on how much the
+  client socket holds per `read`: 256 KiB per period on Linux, Android and Windows (guaranteed there: about 32 KiB on
+  Linux, 64 KiB measured on Windows loopback), 8 MiB per period elsewhere. It prints the rate it exercises. A unit test
+  checks that accepted sockets carry the mark (Linux and Android). Nothing was run on Linux from this branch: the
+  reasoning above is from the kernel semantics, so the Linux CI run is the check.

@@ -109,7 +109,7 @@ Two type tokens are equal if the type is the same; two text tokens, if the text 
 
 - **When they are created.** `CorvisFactory::create` walks the module graph and creates all the instances before returning the application (except *transient* providers, which are created when injected). A missing dependency or a cycle is detected at startup, not on the first request.
 - **How many instances.** One per provider and per module that registers it. If two modules put `RoomsService` in their `providers`, each will have its own. To share a single one, register it in one module and export it (see [Modules](/modules)).
-- **Scopes.** Singleton by default. `#[injectable(scope = "transient")]` creates one instance per consumer. There is no request scope. See [Injection scopes](/fundamentals/injection-scopes).
+- **Scopes.** Singleton by default. `#[injectable(scope = "transient")]` creates one instance per consumer. `#[injectable(scope = "request")]` creates one instance per HTTP request. See [Injection scopes](/fundamentals/injection-scopes).
 - **Hooks.** If the struct implements `OnModuleInit`, `OnApplicationBootstrap`, `OnModuleDestroy`, `BeforeApplicationShutdown`, or `OnApplicationShutdown`, Corvis detects it without registering it anywhere. `RoomsService` uses `OnApplicationBootstrap` to create the default rooms:
 
 ```rust

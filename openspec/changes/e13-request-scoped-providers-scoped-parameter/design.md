@@ -85,3 +85,18 @@ Current code this change builds on (verified):
 
 - Q1: the parameter is named `Scoped<T>`.
 - Q2: no per-message scope for WebSocket handlers is planned; the error stays.
+
+## Implementation notes
+
+- `Scoped<T>` lives in `crates/corvis/src/common/param.rs` and is exported at the crate root and in the prelude. It
+  calls `ModuleRef::resolve_for`, which finds the store through `RequestCtx::of(&Request)`. After the maintainer's
+  decision on part 1, `resolve_for` works without a store for non request-scoped providers, so `Scoped<CatsService>`
+  works for singletons and transients even in an app with no request-scoped provider.
+- A factory `HttpException` is detected by downcasting the `DiError::Factory` cause to `HttpExceptionError`. Every other
+  error, a context without `ModuleRef` and a WebSocket context are a `500` with `InternalServerErrorException::empty()`
+  and a log line under the `Scoped` context.
+- The `RequestScopedDependency` hint names `Scoped<{dependency}>` first and `ModuleRef::resolve_for` second.
+- cats-app: `RequestContext` (header or generated id, `OnceLock` because `#[init]` cannot read another field),
+  `RequestIdInterceptor` on `CatsController`, and a public `GET /api/v1/cats/request-id` route that takes
+  `Scoped<RequestContext>`. The OpenAPI test asserts that the parameter adds nothing to the document.
+- Not done here: task 5.6 (the parity check), which the maintainer's session runs.

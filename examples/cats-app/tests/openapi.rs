@@ -31,6 +31,12 @@ async fn document_describes_the_cats_api() {
     assert!(v["paths"]["/api/v1/cats/{id}"]["patch"].is_object());
     assert_eq!(v["paths"]["/api/v1/auth/login"]["post"]["tags"], json!(["auth"]));
 
+    // `Scoped<RequestContext>` is a custom parameter: it adds no parameter or body to the document.
+    let request_id = &v["paths"]["/api/v1/cats/request-id"]["get"];
+    assert!(request_id.is_object());
+    assert!(request_id["requestBody"].is_null(), "{request_id}");
+    assert!(request_id["parameters"].as_array().is_none_or(Vec::is_empty), "{request_id}");
+
     // Schemas derived with `#[derive(ApiSchema)]`.
     let create = &v["components"]["schemas"]["CreateCatDto"];
     for p in ["name", "age", "breed"] {

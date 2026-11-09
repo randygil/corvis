@@ -34,7 +34,9 @@ pub(crate) type ResBody = UnsyncBoxBody<Bytes, std::io::Error>;
 ///
 /// The defaults follow Node's `http.Server` (`headersTimeout` 60 s, `requestTimeout` 300 s,
 /// `keepAliveTimeout` 5 s) and protect against slow clients (slowloris) that would otherwise keep
-/// connections and buffered bodies alive forever.
+/// connections and buffered bodies alive forever. [`send_timeout`](ServerOptions::send_timeout) (default 60 s)
+/// is not one of Node's defaults: Node's `server.timeout` is off, so a client that stops reading its response
+/// keeps its connection there; here it is closed.
 ///
 /// ```ignore
 /// app.set_server_options(
@@ -46,6 +48,7 @@ pub struct ServerOptions {
     pub(crate) headers_timeout: Option<Duration>,
     pub(crate) request_timeout: Option<Duration>,
     pub(crate) keep_alive_timeout: Option<Duration>,
+    pub(crate) send_timeout: Option<Duration>,
     pub(crate) max_connections: Option<usize>,
     pub(crate) max_header_size: usize,
     pub(crate) h2c: bool,
@@ -62,6 +65,7 @@ impl Default for ServerOptions {
             headers_timeout: Some(Duration::from_secs(60)),
             request_timeout: Some(Duration::from_secs(300)),
             keep_alive_timeout: Some(Duration::from_secs(5)),
+            send_timeout: Some(Duration::from_secs(60)),
             max_connections: None,
             max_header_size: 32 * 1024,
             h2c: false,
@@ -95,6 +99,37 @@ impl ServerOptions {
     /// (`server.keepAliveTimeout`, default 5 s).
     pub fn keep_alive_timeout(mut self, t: impl Into<Option<Duration>>) -> Self {
         self.keep_alive_timeout = t.into();
+        self
+    }
+    /// Longest the server waits for a client to accept response bytes (default 60 s, like nginx's `send_timeout`).
+    /// A connection whose client accepts no byte of a response for that long is closed, over HTTP/1 and HTTP/2:
+    /// either the socket stays blocked (the client does not read), or an HTTP/2 stream waits for flow-control
+    /// window the client never grants, even while PING, SETTINGS or WINDOW_UPDATE frames keep flowing. The
+    /// connection is closed when no response body of it has made progress for `send_timeout`: a stalled stream
+    /// next to streams that keep moving does not cost the connection its other streams. The connection is dropped
+    /// without the closing drain and without a GOAWAY. `None` disables it, and so does a value too long to add to
+    /// an `Instant` (`Duration::MAX`).
+    ///
+    /// It measures lack of progress, not total time: progress restarts it, so slow but live downloads are not cut;
+    /// it never runs while the server has nothing to send (slow handlers, idle Server-Sent Events streams, idle
+    /// keep-alive connections), and it does not apply to upgraded connections (WebSockets).
+    ///
+    /// What it does not bound: how little a client may read to keep a connection. A client needs to take about
+    /// 16 KiB (one HTTP/2 frame) from some stream each period over HTTP/2. Over HTTP/1 the server notices progress
+    /// when the operating system reports the socket writable: on Linux the server sets `TCP_NOTSENT_LOWAT` to
+    /// 64 KiB on its sockets while this timeout is on, so a client that reads steadily is seen when it takes about
+    /// 32 KiB per period (the kernel reports the socket writable at half the mark); on Windows about 64 KiB per period were needed on a loopback connection; on other platforms (macOS,
+    /// the BSDs) it depends on the autotuned send buffer, which can be several MiB. A client that resets and
+    /// reopens HTTP/2 streams needs to read nothing at all. Nor does it bound the response bytes held for such
+    /// clients: see
+    /// [#163](https://github.com/randygil/corvis/issues/163), and use
+    /// [`max_connections`](Self::max_connections) meanwhile.
+    ///
+    /// Node's `server.timeout` (default 0, off) measures inactivity in both directions and also cuts slow
+    /// handlers, which is why it is off there; with Node's defaults a client that stops reading is never
+    /// disconnected. This default is a deliberate divergence.
+    pub fn send_timeout(mut self, t: impl Into<Option<Duration>>) -> Self {
+        self.send_timeout = t.into();
         self
     }
     /// Maximum number of open connections (`server.maxConnections`); when reached, new
@@ -154,15 +189,15 @@ impl ServerOptions {
     /// HTTP/2 streams, where a peer that stopped answering (a vanished client or middlebox) would
     /// otherwise never be noticed; see [`http2_keep_alive_timeout`](Self::http2_keep_alive_timeout).
     ///
-    /// Known limitation (#157): it does not detect a live peer that stops reading. While writing to
-    /// the client is blocked, neither the PING timeout nor the idle timeouts fire.
+    /// A live peer that answers PINGs but stops reading is handled by
+    /// [`send_timeout`](Self::send_timeout), not by this.
     pub fn http2_keep_alive_interval(mut self, t: impl Into<Option<Duration>>) -> Self {
         self.http2_keep_alive_interval = t.into().filter(|d| !d.is_zero());
         self
     }
     /// Time an HTTP/2 peer has to acknowledge a PING before the connection is closed (default
     /// 20 s, minimum 1 s). Only used when [`http2_keep_alive_interval`](Self::http2_keep_alive_interval)
-    /// is set. It does not fire while writing to the client is blocked (#157).
+    /// is set. It does not fire while writing to the client is blocked; [`send_timeout`](Self::send_timeout) covers that.
     pub fn http2_keep_alive_timeout(mut self, t: Duration) -> Self {
         self.http2_keep_alive_timeout = t.max(Duration::from_secs(1));
         self
@@ -358,7 +393,7 @@ pub(crate) async fn from_hyper(
     request_timeout: Option<Duration>,
 ) -> Result<Request, Response> {
     let (parts, body) = req.into_parts();
-    let deadline = request_timeout.map(|t| Instant::now() + t);
+    let deadline = request_timeout.and_then(|t| Instant::now().checked_add(t));
     if crate::multer::is_multipart_content_type(&parts.headers) {
         let mut r = Request::with_parser(parts.method, parts.uri, parts.headers, Bytes::new(), parser);
         r.version = parts.version;
@@ -439,13 +474,14 @@ async fn handle(
     #[cfg(feature = "websockets")]
     {
         if let Some(gw) = crate::websockets::match_upgrade(&shared, req.headers(), req.uri().path()) {
-            return Ok(crate::websockets::upgrade(gw, req, remote));
+            return Ok(crate::websockets::upgrade(gw, req, remote, &shared.http_settings.body_parser.trust_proxy));
         }
     }
     // `server.on('upgrade', ...)` listeners take every upgrade request (Node semantics).
     if crate::http_adapter::is_upgrade_request(&req) {
         if shared.http_server.upgrade_listener_count() > 0 {
-            return crate::http_adapter::dispatch_upgrade(&shared.http_server, req, remote).await;
+            return crate::http_adapter::dispatch_upgrade(&shared.http_server, req, remote, &shared.http_settings.body_parser.trust_proxy)
+                .await;
         }
         // Like the `ws` adapter, upgrades for paths without a gateway are destroyed.
         #[cfg(feature = "websockets")]
@@ -522,6 +558,60 @@ struct ConnState {
     flooded: AtomicBool,
     /// `http2_max_cancelled_streams`: cancellations over the window that close the connection whatever it completed.
     cancel_ceiling: u32,
+    /// Origin of the times the response-body clocks record.
+    epoch: Epoch,
+    /// Clocks of the response bodies of the connection that are alive (send timeout watchdog).
+    clocks: Mutex<Vec<Arc<BodyClock>>>,
+    /// When hyper last took a frame from any response body of the connection (milliseconds since `epoch` plus
+    /// one; `0` = never): the connection's progress.
+    progress: AtomicU64,
+    /// Signalled when a clock is registered, so a watchdog that had nothing to watch looks again.
+    clocks_changed: tokio::sync::Notify,
+}
+
+struct Epoch(Instant);
+
+impl Default for Epoch {
+    fn default() -> Self {
+        Epoch(Instant::now())
+    }
+}
+
+/// When a response body started waiting for hyper to take its next frame, to tell a stalled client from an
+/// application that has nothing to send. `0` means the body is not waiting for hyper (its last poll was pending,
+/// or it ended); otherwise milliseconds since the connection's epoch plus one.
+#[derive(Default)]
+struct BodyClock {
+    waiting_since: AtomicU64,
+}
+
+impl ConnState {
+    fn note_progress(&self) {
+        let ms = Instant::now().saturating_duration_since(self.epoch.0).as_millis() as u64;
+        self.progress.store(ms + 1, Ordering::Relaxed);
+    }
+    fn last_progress(&self) -> Option<Instant> {
+        match self.progress.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(self.epoch.0 + Duration::from_millis(v - 1)),
+        }
+    }
+}
+
+impl BodyClock {
+    fn wait_for_hyper(&self, epoch: &Epoch) {
+        let ms = Instant::now().saturating_duration_since(epoch.0).as_millis() as u64;
+        self.waiting_since.store(ms + 1, Ordering::Relaxed);
+    }
+    fn wait_for_application(&self) {
+        self.waiting_since.store(0, Ordering::Relaxed);
+    }
+    fn since(&self, epoch: &Epoch) -> Option<Instant> {
+        match self.waiting_since.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(epoch.0 + Duration::from_millis(v - 1)),
+        }
+    }
 }
 
 /// Rapid reset (CVE-2023-44487) detection. A connection is closed when the requests it cancelled before their
@@ -625,10 +715,39 @@ impl Drop for InflightGuard {
     }
 }
 
-/// A response body that releases its [`InflightGuard`] when hyper drops it.
+/// Largest data frame of an HTTP/2 response body (the default `SETTINGS_MAX_FRAME_SIZE`).
+const H2_SLICE: usize = 16 * 1024;
+
+/// A response body that releases its [`InflightGuard`] when hyper drops it, and keeps a [`BodyClock`] so that the
+/// watchdog of the connection can tell when the client does not let it move (`send_timeout`).
 struct GuardedBody {
     inner: ResBody,
-    _guard: InflightGuard,
+    clock: Arc<BodyClock>,
+    /// HTTP/2: data frames are handed to hyper in slices of [`H2_SLICE`], so the body does not finish (and leave the
+    /// watchdog's sight) while a window of a few bytes holds back megabytes already given to h2.
+    slice: bool,
+    /// What is left of a data frame that was cut.
+    rest: Bytes,
+    /// Hyper has polled the body at least once.
+    polled: bool,
+    guard: InflightGuard,
+}
+
+impl GuardedBody {
+    fn new(inner: ResBody, guard: InflightGuard, http2: bool) -> Self {
+        let clock = Arc::new(BodyClock::default());
+        clock.wait_for_hyper(&guard.0.epoch);
+        guard.0.clocks.lock().unwrap_or_else(|e| e.into_inner()).push(clock.clone());
+        guard.0.clocks_changed.notify_one();
+        GuardedBody { inner, clock, slice: http2, rest: Bytes::new(), polled: false, guard }
+    }
+}
+
+impl Drop for GuardedBody {
+    fn drop(&mut self) {
+        let mut clocks = self.guard.0.clocks.lock().unwrap_or_else(|e| e.into_inner());
+        clocks.retain(|c| !Arc::ptr_eq(c, &self.clock));
+    }
 }
 
 impl hyper::body::Body for GuardedBody {
@@ -636,13 +755,57 @@ impl hyper::body::Body for GuardedBody {
     type Error = io::Error;
 
     fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
-        Pin::new(&mut self.inner).poll_frame(cx)
+        let this = &mut *self;
+        // Hyper asks for the next frame only once it took the previous one: the connection moves. The first poll is
+        // not that: it takes nothing.
+        if std::mem::replace(&mut this.polled, true) && this.clock.since(&this.guard.0.epoch).is_some() {
+            this.guard.0.note_progress();
+        }
+        if !this.rest.is_empty() {
+            let n = this.rest.len().min(H2_SLICE);
+            let part = this.rest.split_to(n);
+            this.clock.wait_for_hyper(&this.guard.0.epoch);
+            return Poll::Ready(Some(Ok(Frame::data(part))));
+        }
+        match Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Pending => {
+                this.clock.wait_for_application();
+                Poll::Pending
+            }
+            Poll::Ready(Some(Ok(frame))) => {
+                this.clock.wait_for_hyper(&this.guard.0.epoch);
+                if this.slice {
+                    match frame.into_data() {
+                        Ok(mut data) if data.len() > H2_SLICE => {
+                            let first = data.split_to(H2_SLICE);
+                            this.rest = data;
+                            return Poll::Ready(Some(Ok(Frame::data(first))));
+                        }
+                        Ok(data) => return Poll::Ready(Some(Ok(Frame::data(data)))),
+                        Err(frame) => return Poll::Ready(Some(Ok(frame))),
+                    }
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            other => {
+                this.clock.wait_for_application();
+                other
+            }
+        }
     }
     fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
+        self.rest.is_empty() && self.inner.is_end_stream()
     }
     fn size_hint(&self) -> SizeHint {
-        self.inner.size_hint()
+        let mut hint = self.inner.size_hint();
+        let rest = self.rest.len() as u64;
+        if rest > 0 {
+            hint.set_lower(hint.lower().saturating_add(rest));
+            if let Some(upper) = hint.upper() {
+                hint.set_upper(upper.saturating_add(rest));
+            }
+        }
+        hint
     }
 }
 
@@ -659,6 +822,47 @@ enum Phase {
 const IGNORE_INVALID_HEADERS: bool = false;
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// Frame boundaries of one direction of an HTTP/2 connection: which kinds of frame the bytes that pass belong to.
+#[derive(Default)]
+struct H2Frames {
+    head: [u8; 9],
+    head_len: usize,
+    payload_left: usize,
+    kind: u8,
+}
+
+const H2_DATA: u16 = 1 << 0x0;
+const H2_HEADERS: u16 = 1 << 0x1;
+const H2_CONTINUATION: u16 = 1 << 0x9;
+
+impl H2Frames {
+    /// Walks `data`; the bit of every frame kind (`1 << type`) that has a byte in it. A frame header counts for its
+    /// frame once complete.
+    fn scan(&mut self, mut data: &[u8]) -> u16 {
+        let mut kinds = 0u16;
+        while !data.is_empty() {
+            if self.payload_left > 0 {
+                let n = data.len().min(self.payload_left);
+                self.payload_left -= n;
+                data = &data[n..];
+                kinds |= 1 << self.kind.min(15);
+                continue;
+            }
+            let n = data.len().min(9 - self.head_len);
+            self.head[self.head_len..self.head_len + n].copy_from_slice(&data[..n]);
+            self.head_len += n;
+            data = &data[n..];
+            if self.head_len == 9 {
+                self.head_len = 0;
+                self.payload_left = u32::from_be_bytes([0, self.head[0], self.head[1], self.head[2]]) as usize;
+                self.kind = self.head[3];
+                kinds |= 1 << self.kind.min(15);
+            }
+        }
+        kinds
+    }
+}
 
 /// The socket of a connection, with the `headersTimeout` / `keepAliveTimeout` of Node: while no
 /// request is in flight, a read that waits past the deadline fails and hyper closes the
@@ -677,8 +881,21 @@ struct TimedIo {
     phase: Phase,
     seen_generation: u64,
     sleep: Option<Pin<Box<Sleep>>>,
-    /// h2c disabled: bytes of the HTTP/2 preface matched so far (`None` = not a preface).
+    /// Bytes of the HTTP/2 preface matched so far (`None` = done: not a preface, or an h2c connection).
     preface: Option<usize>,
+    /// h2c enabled: the preface was seen and the frames that follow are tracked, so only a HEADERS frame (a request)
+    /// ends the idle keep-alive phase.
+    h2: Option<H2Frames>,
+    /// The frames the server writes, tracked once the connection is HTTP/2: only DATA, HEADERS and CONTINUATION
+    /// refresh the keep-alive phase (a PONG or a SETTINGS acknowledgement does not make a connection busy).
+    h2_out: Option<H2Frames>,
+    h2c: bool,
+    send_timeout: Option<Duration>,
+    /// Since when `poll_write` or `poll_flush` have been pending without the socket accepting a byte.
+    write_stalled_since: Option<Instant>,
+    write_sleep: Option<Pin<Box<Sleep>>>,
+    /// The last write was pending (a flush that completes does not mean the socket accepts bytes).
+    write_blocked: bool,
     /// The HTTP/1 framing check; `None` with `insecure_http_parser(true)`.
     framing: Option<Box<h1_framing::Framing>>,
     /// Bytes the check released that did not fit in hyper's buffer yet, served before the socket.
@@ -734,6 +951,50 @@ fn is_hyper_timeout(err: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
+/// Resolves when the connection has stalled: some response body waits for hyper to take its next frame and no body
+/// of the connection has had a frame taken for `timeout` (the client does not make room: a socket that does not
+/// read, HTTP/2 windows that stay closed). A stalled stream next to streams that move does not count, and bodies
+/// that wait for the application never do. Pending forever without a timeout, with one too long to add to an
+/// `Instant`, and on upgraded connections.
+async fn watchdog(state: &ConnState, timeout: Option<Duration>) {
+    let Some(timeout) = timeout.filter(|t| Instant::now().checked_add(*t).is_some()) else { return std::future::pending().await };
+    loop {
+        let notified = state.clocks_changed.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let now = Instant::now();
+        let (mut any, mut earliest) = (false, None::<Instant>);
+        for clock in state.clocks.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            any = true;
+            if let Some(t) = clock.since(&state.epoch) {
+                earliest = Some(earliest.map_or(t, |e| e.min(t)));
+            }
+        }
+        if state.upgraded.load(Ordering::SeqCst) {
+            return std::future::pending().await;
+        }
+        // The stall counts from the later of the oldest wait and the last frame any body gave: a body that starts
+        // waiting after a long quiet period (idle SSE) gets a full period of its own.
+        let stalled_since = earliest.map(|t| state.last_progress().map_or(t, |p| p.max(t)));
+        if let Some(t) = stalled_since
+            && t + timeout <= now
+        {
+            state.no_linger.store(true, Ordering::SeqCst);
+            return;
+        }
+        if any {
+            // Progress and new waits only move the deadline later, so waking at the current one is never late.
+            let wake = stalled_since.unwrap_or(now) + timeout;
+            tokio::select! {
+                _ = tokio::time::sleep_until(wake) => {}
+                _ = notified.as_mut() => {}
+            }
+        } else {
+            notified.await;
+        }
+    }
+}
+
 /// Runs a connection to its end, then closes the socket: gracefully (see [`linger_close`]) unless the
 /// server is closing it to punish the peer (an idle timeout of this server, hyper's header read
 /// timeout, refused h2c), the connection was upgraded, or an upgrade listener destroyed the socket.
@@ -742,6 +1003,7 @@ async fn finish_connection<C>(
     conn: C,
     mut stop: tokio::sync::watch::Receiver<()>,
     graceful_shutdown: fn(Pin<&mut C>),
+    send_timeout: Option<Duration>,
 ) where
     C: Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>,
 {
@@ -749,9 +1011,12 @@ async fn finish_connection<C>(
     let mut stopping = false;
     let mut flood = false;
     let mut flood_deadline: Option<Pin<Box<tokio::time::Sleep>>> = None;
+    let mut watch = Box::pin(watchdog(&state, send_timeout));
     let result = loop {
         tokio::select! {
             r = conn.as_mut() => break r,
+            // A response the client does not let move: drop the connection without a drain.
+            _ = watch.as_mut() => break Ok(()),
             // The server is shutting down: finish the streams in flight and stop.
             _ = stop.changed(), if !stopping => {
                 stopping = true;
@@ -772,6 +1037,7 @@ async fn finish_connection<C>(
     };
     // Dropping the connection hands its socket to `state.closing` (see `TimedIo::drop`); the receiver goes with it
     // so the server's shutdown does not wait for the drain below.
+    drop(watch);
     drop(conn);
     drop(stop);
     let punish = state.no_linger.load(Ordering::SeqCst)
@@ -798,7 +1064,14 @@ impl TimedIo {
             phase: Phase::Head(Instant::now()),
             seen_generation: 0,
             sleep: None,
-            preface: if options.h2c { None } else { Some(0) },
+            preface: Some(0),
+            h2: None,
+            h2_out: None,
+            h2c: options.h2c,
+            send_timeout: options.send_timeout,
+            write_stalled_since: None,
+            write_sleep: None,
+            write_blocked: false,
             framing: (!options.insecure_http_parser).then(|| Box::new(h1_framing::Framing::new(options.max_header_size.max(8 * 1024)))),
             queue: Vec::new(),
             queue_pos: 0,
@@ -823,21 +1096,84 @@ impl TimedIo {
 
     fn on_read(&mut self, data: &[u8]) -> io::Result<()> {
         self.sync();
-        if let Phase::KeepAlive(_) = self.phase {
-            self.phase = Phase::Head(Instant::now());
-        }
+        // An HTTP/2 connection leaves the keep-alive phase only when a request starts; other frames after the last
+        // response (WINDOW_UPDATE, PING, SETTINGS) must not swap `keep_alive_timeout` for `headers_timeout`.
+        let mut request = self.h2.is_none();
         if let Some(matched) = self.preface {
             let n = data.len().min(H2_PREFACE.len() - matched);
             if data[..n] != H2_PREFACE[matched..matched + n] {
                 self.preface = None;
             } else if matched + n == H2_PREFACE.len() {
-                self.state.no_linger.store(true, Ordering::SeqCst);
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 (h2c) is disabled"));
+                if !self.h2c {
+                    self.state.no_linger.store(true, Ordering::SeqCst);
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 (h2c) is disabled"));
+                }
+                self.preface = None;
+                self.h2_out = Some(H2Frames::default());
+                let mut frames = H2Frames::default();
+                request = frames.scan(&data[n..]) & H2_HEADERS != 0;
+                self.h2 = Some(frames);
             } else {
                 self.preface = Some(matched + n);
             }
+        } else if let Some(frames) = self.h2.as_mut() {
+            request = frames.scan(data) & H2_HEADERS != 0;
+        }
+        if request && let Phase::KeepAlive(_) = self.phase {
+            self.phase = Phase::Head(Instant::now());
         }
         Ok(())
+    }
+
+    /// A write or flush is pending: fails with `TimedOut` once the socket has accepted nothing for `send_timeout`
+    /// (the client does not read), after which the connection is closed without the drain. Pending otherwise, with
+    /// the task woken at the deadline.
+    fn poll_write_deadline(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let Some(timeout) = self.send_timeout else { return Poll::Pending };
+        if self.state.upgraded.load(Ordering::SeqCst) {
+            return Poll::Pending;
+        }
+        let since = *self.write_stalled_since.get_or_insert_with(Instant::now);
+        let Some(deadline) = since.checked_add(timeout) else { return Poll::Pending };
+        let sleep = self.write_sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
+        if sleep.deadline() != deadline {
+            sleep.as_mut().reset(deadline);
+        }
+        match sleep.as_mut().poll(cx) {
+            Poll::Ready(()) => {
+                self.state.no_linger.store(true, Ordering::SeqCst);
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "send timeout")))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    /// The socket accepted bytes: the client reads.
+    fn write_progress(&mut self, written: &[io::IoSlice<'_>], n: usize) {
+        self.write_stalled_since = None;
+        self.write_blocked = false;
+        self.sync();
+        // A response still being flushed is progress, not idleness. Over HTTP/2 only the frames of a response count:
+        // PONGs, SETTINGS acknowledgements and the like would keep an idle connection open for ever.
+        let response = match self.h2_out.as_mut() {
+            None => true,
+            Some(frames) => {
+                let mut left = n;
+                let mut kinds = 0;
+                for part in written {
+                    if left == 0 {
+                        break;
+                    }
+                    let take = left.min(part.len());
+                    kinds |= frames.scan(&part[..take]);
+                    left -= take;
+                }
+                kinds & (H2_DATA | H2_HEADERS | H2_CONTINUATION) != 0
+            }
+        };
+        if response && let Phase::KeepAlive(_) = self.phase {
+            self.phase = Phase::KeepAlive(Instant::now());
+        }
     }
 
     fn poll_idle(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -857,8 +1193,8 @@ impl TimedIo {
             Phase::Head(t) => (t, self.headers_timeout),
             Phase::KeepAlive(t) => (t, self.keep_alive_timeout),
         };
-        let Some(timeout) = timeout else { return Poll::Pending };
-        let deadline = since + timeout;
+        // A timeout too long to add to an `Instant` never fires.
+        let Some(deadline) = timeout.and_then(|t| since.checked_add(t)) else { return Poll::Pending };
         let sleep = self.sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
         if sleep.deadline() != deadline {
             sleep.as_mut().reset(deadline);
@@ -997,40 +1333,85 @@ impl AsyncRead for TimedIo {
 impl AsyncWrite for TimedIo {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let this = &mut *self;
-        let r = this.sock().poll_write(cx, buf);
-        if let Poll::Ready(Ok(n)) = r
-            && n > 0
-        {
-            this.sync();
-            // A response still being flushed is progress, not idleness.
-            if let Phase::KeepAlive(_) = this.phase {
-                this.phase = Phase::KeepAlive(Instant::now());
+        match this.sock().poll_write(cx, buf) {
+            Poll::Ready(Ok(n)) => {
+                if n > 0 {
+                    this.write_progress(&[io::IoSlice::new(buf)], n);
+                }
+                Poll::Ready(Ok(n))
             }
+            Poll::Pending => {
+                this.write_blocked = true;
+                this.poll_write_deadline(cx).map(|r| r.map(|()| 0))
+            }
+            other => other,
         }
-        r
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.sock().poll_flush(cx)
+        let this = &mut *self;
+        match this.sock().poll_flush(cx) {
+            Poll::Ready(Ok(())) => {
+                if !this.write_blocked {
+                    this.write_stalled_since = None;
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => this.poll_write_deadline(cx),
+            other => other,
+        }
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.sock().poll_shutdown(cx)
     }
     fn poll_write_vectored(mut self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[io::IoSlice<'_>]) -> Poll<io::Result<usize>> {
         let this = &mut *self;
-        let r = this.sock().poll_write_vectored(cx, bufs);
-        if let Poll::Ready(Ok(n)) = r
-            && n > 0
-        {
-            this.sync();
-            if let Phase::KeepAlive(_) = this.phase {
-                this.phase = Phase::KeepAlive(Instant::now());
+        match this.sock().poll_write_vectored(cx, bufs) {
+            Poll::Ready(Ok(n)) => {
+                if n > 0 {
+                    this.write_progress(bufs, n);
+                }
+                Poll::Ready(Ok(n))
             }
+            Poll::Pending => {
+                this.write_blocked = true;
+                this.poll_write_deadline(cx).map(|r| r.map(|()| 0))
+            }
+            other => other,
         }
-        r
     }
     fn is_write_vectored(&self) -> bool {
         self.io.as_ref().is_some_and(|io| io.is_write_vectored())
     }
+}
+
+/// Unsent bytes a connection may hold in the kernel before its socket stops being reported writable
+/// (`TCP_NOTSENT_LOWAT`), when `send_timeout` is on.
+///
+/// Linux reports a TCP socket writable only when the free part of the send buffer reaches half of what is queued, and
+/// autotuning grows that buffer to several MiB: a client that reads slowly but steadily frees space the server cannot
+/// see for many seconds, and the send timeout would cut it. With a low-water mark the socket is writable as soon as
+/// the unsent part falls under half of it (`tcp_poll` asks `tcp_stream_memory_free` with a wake-up margin of one
+/// shift), whatever the size of the buffer, so progress shows in steps of about half the mark.
+/// HTTP/2 uses the same socket: its flow control bounds what h2 writes, but a client with large windows can still
+/// fill the kernel buffers, so it gets the same limit. Where the socket option is not available (see
+/// [`limit_unsent_bytes`]) the granularity is whatever the platform's buffers give.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const NOTSENT_LOWAT: u32 = 64 * 1024;
+
+/// Sets `TCP_NOTSENT_LOWAT` on an accepted socket (Linux and Android). Failures are ignored: the option only makes
+/// the send timeout notice progress sooner. Not available through `socket2` on macOS and the BSDs, nor on Windows,
+/// where the platform's own buffers decide how soon progress is seen.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn limit_unsent_bytes(stream: &TcpStream) {
+    let _ = socket2::SockRef::from(stream).set_tcp_notsent_lowat(NOTSENT_LOWAT);
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn limit_unsent_bytes(_stream: &TcpStream) {}
+
+/// Whether hyper can add `t` to an `Instant` (it panics otherwise): a longer timeout is the same as none.
+fn representable(t: Duration) -> bool {
+    std::time::Instant::now().checked_add(t).is_some()
 }
 
 /// The connection builder of every listener: HTTP/1 and HTTP/2 settings from the options. Any listener that
@@ -1044,15 +1425,19 @@ pub(crate) fn connection_builder(options: &ServerOptions) -> auto::Builder<Tokio
         .http1()
         .ignore_invalid_headers(IGNORE_INVALID_HEADERS)
         .timer(TokioTimer::new())
-        .header_read_timeout(options.headers_timeout)
+        .header_read_timeout(options.headers_timeout.filter(|t| representable(*t)))
         .max_buf_size(options.max_header_size.max(8 * 1024));
     builder
         .http2()
         .timer(TokioTimer::new())
         .max_header_list_size(u32::try_from(options.max_header_size.max(8 * 1024)).unwrap_or(u32::MAX))
         .max_concurrent_streams(options.http2_max_concurrent_streams.max(1))
-        .keep_alive_interval(options.http2_keep_alive_interval)
-        .keep_alive_timeout(options.http2_keep_alive_timeout);
+        .keep_alive_interval(options.http2_keep_alive_interval.filter(|t| representable(*t)))
+        .keep_alive_timeout(if representable(options.http2_keep_alive_timeout) {
+            options.http2_keep_alive_timeout
+        } else {
+            Duration::from_secs(100 * 365 * 24 * 3600)
+        });
     builder
 }
 
@@ -1084,6 +1469,9 @@ pub(crate) async fn serve(
                     Err(_) => continue,
                 };
                 let _ = stream.set_nodelay(true);
+                if options.send_timeout.is_some() {
+                    limit_unsent_bytes(&stream);
+                }
                 let state = Arc::new(ConnState { cancel_ceiling: options.http2_max_cancelled_streams, ..ConnState::default() });
                 let conn_state = state.clone();
                 let io = TimedIo::new(stream, permit, state.clone(), &options);
@@ -1100,6 +1488,7 @@ pub(crate) async fn serve(
                         req.extensions_mut().insert(slots.clone());
                         req
                     };
+                    let http2 = req.version() == http::Version::HTTP_2;
                     let guard = InflightGuard::new(state.clone());
                     let watch = CancelWatch { state: state.clone(), outcome: Outcome::Pending };
                     let handlers = handlers.clone();
@@ -1134,13 +1523,13 @@ pub(crate) async fn serve(
                             guard.0.upgraded.store(true, Ordering::SeqCst);
                         }
                         Ok::<_, crate::http_adapter::SocketDestroyed>(
-                            resp.map(|inner| GuardedBody { inner, _guard: guard }.boxed_unsync()),
+                            resp.map(|inner| GuardedBody::new(inner, guard, http2).boxed_unsync()),
                         )
                     }
                 });
                 let conn = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
                 let conn = conn.into_owned();
-                tokio::spawn(finish_connection(conn_state, conn, stop_tx.subscribe(), |c| c.graceful_shutdown()));
+                tokio::spawn(finish_connection(conn_state, conn, stop_tx.subscribe(), |c| c.graceful_shutdown(), options.send_timeout));
             }
             _ = &mut shutdown => break,
         }
@@ -1216,6 +1605,169 @@ mod tests {
         let mut events: Vec<(f64, bool)> = (0..400).map(|i| (i as f64 * 0.001, true)).collect();
         events.extend((0..400).map(|i| (25.0 + i as f64 * 0.001, true)));
         assert_eq!(first_close(events), None);
+    }
+
+    #[test]
+    fn send_timeout_defaults_to_sixty_seconds_and_can_be_turned_off() {
+        assert_eq!(ServerOptions::default().send_timeout, Some(Duration::from_secs(60)));
+        assert_eq!(ServerOptions::new().send_timeout(None).send_timeout, None);
+        assert_eq!(ServerOptions::new().send_timeout(Duration::from_secs(5)).send_timeout, Some(Duration::from_secs(5)));
+    }
+
+    struct Script {
+        parts: std::collections::VecDeque<Option<Result<Frame<Bytes>, io::Error>>>,
+        pending_first: bool,
+    }
+
+    impl hyper::body::Body for Script {
+        type Data = Bytes;
+        type Error = io::Error;
+        fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
+            if std::mem::take(&mut self.pending_first) {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Poll::Ready(self.parts.pop_front().flatten())
+        }
+    }
+
+    fn body_of(parts: Vec<Option<Result<Frame<Bytes>, io::Error>>>, pending_first: bool, http2: bool) -> (GuardedBody, Arc<ConnState>) {
+        let state = Arc::new(ConnState::default());
+        let inner = Script { parts: parts.into(), pending_first }.boxed_unsync();
+        (GuardedBody::new(inner, InflightGuard::new(state.clone()), http2), state)
+    }
+
+    fn poll_once(body: &mut GuardedBody) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        hyper::body::Body::poll_frame(Pin::new(body), &mut cx)
+    }
+
+    fn waiting(state: &ConnState) -> Vec<bool> {
+        state.clocks.lock().unwrap().iter().map(|c| c.since(&state.epoch).is_some()).collect()
+    }
+
+    #[test]
+    fn a_body_waits_for_hyper_until_it_waits_for_the_application() {
+        let (mut body, state) = body_of(vec![Some(Ok(Frame::data(Bytes::from_static(b"a"))))], true, false);
+        // Created, never polled: hyper has to take its first frame.
+        assert_eq!(waiting(&state), vec![true]);
+        assert!(poll_once(&mut body).is_pending());
+        assert_eq!(waiting(&state), vec![false], "pending: it waits for the application");
+        assert!(matches!(poll_once(&mut body), Poll::Ready(Some(Ok(_)))));
+        assert_eq!(waiting(&state), vec![true], "a frame was produced: hyper has to take it");
+        assert!(matches!(poll_once(&mut body), Poll::Ready(None)));
+        assert_eq!(waiting(&state), vec![false], "ended");
+        drop(body);
+        assert!(state.clocks.lock().unwrap().is_empty(), "the clock goes with the body");
+        assert_eq!(state.inflight.load(Ordering::SeqCst), 0);
+    }
+
+    fn many_frames(n: usize) -> Vec<Option<Result<Frame<Bytes>, io::Error>>> {
+        (0..n).map(|_| Some(Ok(Frame::data(Bytes::from_static(b"x"))))).collect()
+    }
+
+    /// One stalled body next to one that keeps moving is not a stalled connection; when neither moves it is.
+    #[tokio::test(start_paused = true)]
+    async fn the_watchdog_closes_the_connection_only_when_no_body_moves() {
+        let state = Arc::new(ConnState::default());
+        let make = |parts| {
+            GuardedBody::new(
+                Script { parts: std::collections::VecDeque::from(parts), pending_first: false }.boxed_unsync(),
+                InflightGuard::new(state.clone()),
+                false,
+            )
+        };
+        let (mut stalled, mut moving) = (make(many_frames(3)), make(many_frames(50)));
+        let mut watch = Box::pin(watchdog(&state, Some(Duration::from_secs(1))));
+        // Both took their first frame; hyper takes nothing more from `stalled`.
+        assert!(matches!(poll_once(&mut stalled), Poll::Ready(Some(_))));
+        assert!(matches!(poll_once(&mut moving), Poll::Ready(Some(_))));
+        for _ in 0..8 {
+            tokio::time::advance(Duration::from_millis(400)).await;
+            assert!(matches!(poll_once(&mut moving), Poll::Ready(Some(_))));
+            assert!(futures::poll!(watch.as_mut()).is_pending(), "a body moved: the connection is not stalled");
+        }
+        tokio::time::advance(Duration::from_millis(1100)).await;
+        assert!(futures::poll!(watch.as_mut()).is_ready(), "nothing moved for a send timeout");
+        assert!(state.no_linger.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_watchdog_ignores_bodies_that_wait_for_the_application_and_huge_timeouts() {
+        let state = Arc::new(ConnState::default());
+        let (mut idle, _) = body_of(vec![Some(Ok(Frame::data(Bytes::from_static(b"a"))))], true, false);
+        let _ = &state;
+        assert!(poll_once(&mut idle).is_pending());
+        let idle_state = idle.guard.0.clone();
+        let mut watch = Box::pin(watchdog(&idle_state, Some(Duration::from_secs(1))));
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert!(futures::poll!(watch.as_mut()).is_pending(), "waiting for the application is not a stall");
+        let mut forever = Box::pin(watchdog(&state, Some(Duration::MAX)));
+        assert!(futures::poll!(forever.as_mut()).is_pending());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn accepted_sockets_get_a_low_water_mark_for_unsent_data() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (accepted, _) = listener.accept().await.unwrap();
+        limit_unsent_bytes(&accepted);
+        assert_eq!(socket2::SockRef::from(&accepted).tcp_notsent_lowat().unwrap(), NOTSENT_LOWAT);
+        drop(client);
+    }
+
+    #[test]
+    fn a_timeout_too_long_for_an_instant_is_off() {
+        assert!(Instant::now().checked_add(Duration::MAX).is_none());
+        let options = ServerOptions::new().send_timeout(Duration::MAX).headers_timeout(Duration::MAX).keep_alive_timeout(Duration::MAX);
+        assert_eq!(options.send_timeout, Some(Duration::MAX));
+    }
+
+    #[test]
+    fn http2_data_is_handed_over_in_slices_of_sixteen_kib() {
+        let big = Bytes::from(vec![7u8; 40 * 1024]);
+        let (mut body, _state) = body_of(vec![Some(Ok(Frame::data(big)))], false, true);
+        let mut sizes = Vec::new();
+        while let Poll::Ready(Some(Ok(frame))) = poll_once(&mut body) {
+            sizes.push(frame.into_data().unwrap().len());
+            if sizes.len() < 3 {
+                assert!(!hyper::body::Body::is_end_stream(&body), "a body with data left must not report its end");
+            }
+        }
+        assert_eq!(sizes, vec![16 * 1024, 16 * 1024, 8 * 1024]);
+    }
+
+    #[test]
+    fn http1_data_is_not_sliced() {
+        let big = Bytes::from(vec![7u8; 40 * 1024]);
+        let (mut body, _state) = body_of(vec![Some(Ok(Frame::data(big)))], false, false);
+        let Poll::Ready(Some(Ok(frame))) = poll_once(&mut body) else { panic!("a frame") };
+        assert_eq!(frame.into_data().unwrap().len(), 40 * 1024);
+    }
+
+    #[test]
+    fn the_frame_scanner_tells_the_kinds_of_frame_that_pass() {
+        fn frame(kind: u8, payload: &[u8]) -> Vec<u8> {
+            let mut v = vec![0, (payload.len() >> 8) as u8, payload.len() as u8, kind, 0, 0, 0, 0, 1];
+            v.extend_from_slice(payload);
+            v
+        }
+        let mut f = H2Frames::default();
+        assert_eq!(f.scan(&frame(0x8, &[0, 0, 0, 1])), 1 << 8, "WINDOW_UPDATE");
+        assert_eq!(f.scan(&frame(0x6, &[0; 8])), 1 << 6, "PING");
+        assert_eq!(f.scan(&frame(0x4, &[])), 1 << 4, "SETTINGS");
+        assert_eq!(f.scan(&frame(0x0, &[1; 300])), H2_DATA, "DATA");
+        assert_eq!(f.scan(&frame(0x1, &[0x82])), H2_HEADERS, "HEADERS");
+        // A frame cut at every byte boundary: every byte of its payload still belongs to it.
+        let mut stream = frame(0x8, &[0, 0, 0, 1]);
+        stream.extend(frame(0x1, &[0x82, 0x86]));
+        stream.extend(frame(0x4, &[]));
+        let mut f = H2Frames::default();
+        let kinds: Vec<u16> = stream.chunks(1).map(|c| f.scan(c)).collect();
+        assert_eq!(kinds.iter().filter(|k| **k & H2_HEADERS != 0).count(), 3, "the byte that completes the header and the payload");
+        assert_eq!(kinds.iter().filter(|k| **k & (H2_DATA | H2_HEADERS | H2_CONTINUATION) != 0).count(), 3);
+        assert!(kinds[..13].iter().all(|k| *k & H2_HEADERS == 0), "bytes of the WINDOW_UPDATE are not a response");
     }
 
     fn headers(pairs: &[(&str, &str)]) -> http::HeaderMap {

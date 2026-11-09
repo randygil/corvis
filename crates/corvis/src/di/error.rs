@@ -35,8 +35,27 @@ pub enum DiError {
     #[error("Error while instantiating {token}: {cause}")]
     Factory { token: String, cause: Arc<anyhow::Error> },
 
+    /// A request-scoped provider (or the current `Request`) was resolved while no HTTP request was being dispatched
+    /// for that resolution. `chain` is the resolution path that led to it (empty when it was asked for directly).
+    #[error(
+        "{token} is request-scoped but was resolved outside an HTTP request{via}. Request-scoped providers only exist while a request is being handled (a controller, guard, interceptor, pipe, filter or middleware of that request). Gateway messages, lifecycle hooks, scheduled jobs, event listeners and tasks that outlive the response have no request: resolve it with ModuleRef::resolve_for(&request) inside the request, or make the provider a singleton or transient.",
+        via = chain_suffix(chain)
+    )]
+    OutsideRequest { token: String, chain: String },
+
+    /// A singleton provider, a controller or a gateway depends on a request-scoped provider (or on the current
+    /// `Request`). It is created once, so it would keep the instance of the first request.
+    #[error(
+        "{consumer} depends on {dependency}, which is request-scoped ({chain}). A singleton, a controller or a gateway is created once and would keep the instance of the first request. Resolve {dependency} per request: take a Scoped<{dependency}> handler parameter (or Scoped::<{dependency}>::from_context(ctx) in a guard, interceptor or filter), or inject a ModuleRef and call ModuleRef::resolve_for(&request). You can also make the consumers in the chain request-scoped too."
+    )]
+    RequestScopedDependency { consumer: String, dependency: String, chain: String },
+
     #[error("{0}")]
     Other(String),
+}
+
+fn chain_suffix(chain: &str) -> String {
+    if chain.is_empty() { String::new() } else { format!(" (while resolving {chain})") }
 }
 
 #[cfg(test)]
@@ -49,5 +68,29 @@ mod tests {
         assert!(text.contains("AModule -> BModule -> AModule"));
         assert!(text.contains("dynamic import"));
         assert!(!text.contains("forwardRef"));
+    }
+
+    #[test]
+    fn outside_request_names_the_provider_and_the_chain() {
+        let text = DiError::OutsideRequest { token: "RequestContext".into(), chain: "Report -> RequestContext".into() }.to_string();
+        assert!(text.contains("RequestContext is request-scoped"), "{text}");
+        assert!(text.contains("Report -> RequestContext"), "{text}");
+        assert!(text.contains("resolve_for"), "{text}");
+        let direct = DiError::OutsideRequest { token: "RequestContext".into(), chain: String::new() }.to_string();
+        assert!(!direct.contains("while resolving"), "{direct}");
+    }
+
+    #[test]
+    fn request_scoped_dependency_names_consumer_dependency_and_chain() {
+        let text = DiError::RequestScopedDependency {
+            consumer: "CatsController".into(),
+            dependency: "RequestContext".into(),
+            chain: "CatsController -> AuditLog -> RequestContext".into(),
+        }
+        .to_string();
+        assert!(text.starts_with("CatsController depends on RequestContext, which is request-scoped"), "{text}");
+        assert!(text.contains("(CatsController -> AuditLog -> RequestContext)"), "{text}");
+        assert!(text.contains("Scoped<RequestContext>"), "{text}");
+        assert!(text.find("Scoped<RequestContext>") < text.find("resolve_for"), "Scoped comes first: {text}");
     }
 }

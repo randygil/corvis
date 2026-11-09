@@ -68,12 +68,12 @@ Cuando se supera el límite, la petición recibe:
 Una clave que supera su límite se bloquea durante la **duración del bloqueo**, contada desde el momento
 del bloqueo: toda petición en ese tiempo recibe `429` con `Retry-After` igual al tiempo que falta. La
 primera petición después del bloqueo vuelve a contar desde uno. La duración del bloqueo es el `ttl` del
-throttler (después de `THROTTLE_TTL`) salvo que la configures:
+throttler (después de su override de `ttl`) salvo que la configures:
 
 - Para un throttler, en el storage, por nombre: `ThrottlerStorage::new(...).with_block_duration("default", 300_000)`
   (milisegundos). Un nombre que no coincide con ningún throttler provoca un panic al construir el storage.
-- Para una ruta o un controlador, con la metadata `THROTTLE_BLOCK_DURATION` (milisegundos, para todos los
-  throttlers); tiene prioridad sobre el valor del storage.
+- Para una ruta o un controlador, con `throttle("nombre").block_duration(ms)` (milisegundos, para ese throttler;
+  ver [Sobrescribir un throttler](#sobrescribir-un-throttler)); tiene prioridad sobre el valor del storage.
 - `0` desactiva el bloqueo: una petición se rechaza mientras la clave ya tenga `limit` accesos en los
   últimos `ttl` y no se cuenta; `Retry-After` es el tiempo hasta que vence el más antiguo de esos accesos.
 
@@ -87,22 +87,29 @@ una ventana deslizante.
 
 ## Cambiar el límite por ruta
 
-El guard lee cuatro claves de metadata, en el método o en el controlador:
+Las rutas y los controladores sobrescriben las opciones de un throttler, como lo hace
+`@Throttle({ short: { limit, ttl, blockDuration } })` en la librería original. El guard lee estas claves de
+metadata, en el método o en el controlador:
 
-| Constante | Efecto |
+| Constante o helper | Efecto |
 |---|---|
 | `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` omite el throttler llamado `default`, como un `@SkipThrottle()` sin argumentos |
 | `skip_throttle([..])`, `skip_throttle_key(nombre)` | Omiten throttlers por nombre (ver [Omitir throttlers](#omitir-throttlers)) |
-| `THROTTLE_LIMIT` | Cambia el número máximo de peticiones |
-| `THROTTLE_TTL` | Cambia la ventana, en milisegundos |
-| `THROTTLE_BLOCK_DURATION` | Cambia la duración del bloqueo, en milisegundos (`0`: sin bloqueo) |
+| `throttle(nombre)` | Sobrescribe un throttler: `.limit(n)`, `.ttl(ms)`, `.block_duration(ms)` (`0`: sin bloqueo), `.tracker(id)`, `.key_generator(id)` |
+| `throttle_key(OPCION, nombre)` | La clave de metadata de una opción de un throttler, para `#[set_metadata]` (`THROTTLER:LIMIT` seguido del nombre) |
+| `THROTTLE_LIMIT`, `THROTTLE_TTL`, `THROTTLE_BLOCK_DURATION` | Las claves sin nombre: la entrada del throttler llamado `default` solamente |
+| `THROTTLE_TRACKER`, `THROTTLE_KEY_GENERATOR` | Prefijos de las claves del tracker y del generador de claves; no tienen forma sin nombre |
+
+### Sobrescribir un throttler
+
+`throttle(nombre)` devuelve un builder que se convierte en un `CustomDecorator`, así que va en
+`#[apply_decorators]` sobre un controlador o una ruta (`@Throttle({ short: { limit: 1 }, long: { limit: 100 } })`):
 
 ```rust
 #[routes]
 impl AuthController {
     #[post("login")]
-    #[set_metadata(THROTTLE_LIMIT, 5)]
-    #[set_metadata(THROTTLE_TTL, 60_000)]
+    #[apply_decorators(throttle("short").limit(1), throttle("long").limit(5).ttl(120_000))]
     async fn sign_in(&self, #[body] dto: SignInDto) -> HttpResult<Value> {
         // ...
     }
@@ -115,7 +122,93 @@ impl AuthController {
 }
 ```
 
-`THROTTLE_LIMIT`, `THROTTLE_TTL` y `THROTTLE_BLOCK_DURATION` se aplican a todos los límites configurados, no a uno por nombre.
+- Un override cambia el throttler nombrado y ningún otro: con `short` (3 cada 30 s) y `long` (5 cada 60 s),
+  `throttle("short").limit(1)` deja `long` en 5.
+- Cada opción se resuelve por separado, primero el handler y después el controlador, y gana el primer valor presente.
+  Un handler que solo define `limit` conserva el `ttl` del controlador para ese throttler. Una opción que nadie define
+  vuelve a la configuración del throttler (y la duración del bloqueo a `with_block_duration` y luego al `ttl` efectivo).
+- Un `null` JSON cuenta como ausente: en un handler pasa al valor del controlador, que puede ser más permisivo que el
+  del propio throttler, así que no lo uses para endurecer una ruta.
+- Los handlers de gateways no tienen `#[apply_decorators]`; usa `#[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), 1)]`.
+- Las claves sin nombre `THROTTLE_LIMIT`, `THROTTLE_TTL` y `THROTTLE_BLOCK_DURATION` son la entrada del throttler
+  `default`, igual que el `SKIP_THROTTLE` sin nombre: `#[set_metadata(THROTTLE_LIMIT, 5)]` es
+  `throttle("default").limit(5)`. Si un destino tiene ambas, gana la entrada con nombre.
+- Los valores se validan. `limit` debe ser un entero de 0 a 4.294.967.295, `ttl` y la duración del bloqueo enteros no
+  negativos (milisegundos), y un tracker o generador de claves el nombre de una función registrada. Cualquier otra cosa
+  (un texto como `"5"`, un número negativo, una fracción) responde `500` con el cuerpo estándar y registra
+  `Invalid "limit" for the "short" throttler: ...`; el guard no vuelve a un valor más permisivo. El builder solo recibe
+  enteros, así que esto solo puede ocurrir con un `#[set_metadata]` escrito a mano.
+- Un nombre que ningún throttler tiene (`throttle("shrot")`), o una clave sin nombre cuando ningún throttler se llama
+  `default`, responde `500` en cada petición de esa ruta y registra un error por ruta con el nombre de la ruta, los
+  nombres desconocidos y los configurados. La librería original ignora esos overrides; Corvis falla cerrado porque un
+  nombre mal escrito dejaría la ruta con el límite global, más permisivo, sin ninguna señal.
+
+::: warning Cambio de comportamiento
+Antes, `THROTTLE_LIMIT`, `THROTTLE_TTL` y `THROTTLE_BLOCK_DURATION` se aplicaban a todos los throttlers: un
+`THROTTLE_LIMIT` de 5 sin nombre subía también un throttler `short` de 3 a 5, y un `THROTTLE_TTL` sin nombre daba a todos
+los throttlers la misma ventana. Ahora se aplican solo al throttler llamado `default`. En una app cuyos throttlers
+tienen todos otros nombres, un override sin nombre hace que esa ruta responda `500` (el guard registra un error por cada ruta
+así); reemplázalo por `throttle("nombre")` para cada throttler al que iba dirigido.
+:::
+
+### Trackers y generadores de claves
+
+Por defecto el tracker es la IP normalizada del cliente y la clave del contador combina el controlador, el handler y el
+tracker. La librería original permite reemplazar ambos (`getTracker` y `generateKey`), y Corvis también:
+
+```rust
+use corvis::modules::throttler::normalize_ip;
+use corvis::prelude::*;
+
+ThrottlerModule::for_root_storage(
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)])
+        // el getTracker del original: async, recibe el ExecutionContext; un Err se devuelve tal cual
+        .with_tracker(|ctx| async move {
+            let request = ctx.request();
+            Ok(match request.header("x-api-key") {
+                Some(key) => format!("key:{key}"),
+                None => normalize_ip(&request.ip(), 64),
+            })
+        })
+        // el generateKey(context, tracker, throttlerName) del original: síncrono
+        .with_key_generator(|_ctx, tracker, name| format!("{name}:shared:{tracker}")),
+)
+```
+
+- `with_tracker` y `with_key_generator` definen los hooks de nivel de módulo. Se ejecutan por cada throttler que no
+  se omite, una vez por petición, así que mantenlos baratos y sin efectos secundarios.
+- Una ruta elige otra función para un throttler por nombre, porque la metadata guarda JSON y no closures: regístrala
+  con `with_named_tracker("by-email", f)` o `with_named_key_generator("shared", f)` y selecciónala con
+  `throttle("login").tracker("by-email")` o `.key_generator("shared")`. Un id que no está registrado responde `500` (la
+  ruta no queda sin límite). Registrar un id dos veces provoca un panic.
+- Para cada throttler el guard usa la función de la ruta, después el hook del módulo y después el predeterminado.
+- Un tracker propio reemplaza por completo al predeterminado, incluida la agrupación IPv6: llama tú a `normalize_ip`,
+  como en el ejemplo.
+- El nombre del throttler siempre forma parte de la clave guardada. Un generador que ignora el nombre (`|_, tracker, _|
+  tracker.to_string()`) comparte un contador entre las rutas que lo usan, que es para lo que sirve, pero nunca entre throttlers. La clave
+  guardada también registra su origen (el predeterminado, el generador del módulo o un generador registrado por id), así
+  que las claves de orígenes distintos nunca se encuentran: un cliente no puede fabricar un tracker que caiga en el
+  contador predeterminado de otra ruta. La
+  librería original comparte la ventana de reporte y el bloqueo entre dos throttlers que obtienen la misma clave, así que
+  su `X-RateLimit-Reset-long` muestra la ventana del otro throttler y un bloqueo de `long` hace que `short` responda
+  `Retry-After-short`; Corvis mantiene los valores de cada throttler. La prueba diferencial registra este caso y
+  comprueba que Corvis difiere de él.
+- Un generador no debería devolver un texto que el cliente controla por completo (el valor de una cabecera): antepón un
+  prefijo constante, como en `format!("shared:{tracker}")`. Las rutas que usan el mismo generador comparten contadores,
+  así que un cliente que elige el tracker elige cuál de esos contadores golpea.
+
+::: warning Trackers elegidos por el cliente
+Un tracker que lee una cabecera o un campo del cuerpo deja que el cliente elija su contador, así que un cliente que rota
+el valor obtiene un límite nuevo cada vez. Cada valor rotado además crea un contador, así que un cliente que envía
+muchos valores llena `max_entries` y expulsa los contadores de otros clientes (lo que los reinicia). Mantén un throttler
+basado en la IP junto al de cuenta (el throttler `default` cuenta por IP, uno con nombre cuenta por cuenta en la ruta de
+login con `.tracker(..)`), pero ten en cuenta que solo frena esto si se comprueba primero: los throttlers se comprueban
+en orden ascendente de `ttl` y el primero que rechaza detiene la revisión, así que el throttler por IP necesita el `ttl`
+más corto; si no, el throttler de cuenta cuenta el acceso antes de que el de IP lo rechace. Normaliza el identificador de
+cuenta (por ejemplo, un email en minúsculas) para que las variantes de escritura no tengan contadores separados, y
+recuerda que un límite por cuenta puede usarse para bloquear a una víctima a propósito: cualquiera puede enviar su
+identificador. Un tracker que devuelve un solo valor para todas las peticiones anónimas las pone todas en un contador, y un cliente puede agotarlo para todos.
+:::
 
 ### Omitir throttlers
 
@@ -274,6 +367,9 @@ las peticiones vendrían de la IP del proxy y compartirían contador. Configura 
 app.set_trust_proxy(1); // un proxy delante
 ```
 
+El ajuste también aplica a los mensajes de los gateways: un `ThrottlerGuard` en un gateway usa el `ip()` de la
+petición del handshake, que resuelve `X-Forwarded-For` igual (ver [Gateways](/es/websockets/gateways)).
+
 Usa `true` (confiar en todos los saltos) solo si todas las peticiones pasan por un proxy que
 reescribe `X-Forwarded-For`: si no, un cliente puede elegir su IP y saltarse el límite. Ver
 [Adaptadores HTTP](/es/http/performance).
@@ -288,11 +384,11 @@ Igual que la librería original, `ThrottlerGuard` le dice al cliente cómo va. P
 
 | Cabecera | Valor |
 |---|---|
-| `X-RateLimit-Limit` | El límite efectivo (después de `THROTTLE_LIMIT`) |
+| `X-RateLimit-Limit` | El límite efectivo (después del override de la ruta) |
 | `X-RateLimit-Remaining` | El límite menos los accesos contados en los últimos `ttl`, nunca menos de 0 |
 | `X-RateLimit-Reset` | Segundos hasta que termina la ventana de reporte de la clave, redondeados hacia arriba |
 
-Cuando un throttler bloquea la petición, el `429` lleva `Retry-After` (segundos hasta que termina el bloqueo, al menos 1) y ninguna cabecera `X-RateLimit-*` de ese throttler. Las cabeceras de los throttlers revisados antes se mantienen en el `429`. Las rutas con `SKIP_THROTTLE` no reciben ninguna.
+Cuando un throttler bloquea la petición, el `429` lleva `Retry-After` (segundos hasta que termina el bloqueo, al menos 1) y ninguna cabecera `X-RateLimit-*` de ese throttler. Las cabeceras de los throttlers revisados antes se mantienen en el `429`. Los throttlers omitidos no envían ninguna.
 
 Para un throttler que no se llama `default`, los nombres de las cabeceras terminan en `-<nombre>`: con los throttlers `short` y `long` de arriba, una respuesta lleva `X-RateLimit-Limit-short`, `X-RateLimit-Remaining-long`, `Retry-After-long`, etc. El nombre del throttler pasa a ser parte del nombre de una cabecera, así que usa un token simple (letras, dígitos y `-`) que no revele nada interno; un nombre que no sea un nombre de cabecera válido hace que sus cabeceras se descarten.
 

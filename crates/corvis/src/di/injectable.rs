@@ -10,6 +10,7 @@ use super::container::{Container, ModuleId};
 use super::error::DiError;
 use super::module_ref::ModuleRef;
 use super::provider::{Instance, Scope, downcast};
+use super::request_scope::RequestCtx;
 use super::token::Token;
 
 type LifecycleHook<T> = fn(Arc<T>) -> BoxFuture<'static, crate::Result<()>>;
@@ -101,11 +102,31 @@ pub struct ResolveCtx {
     pub(crate) requester: Arc<str>,
     pub(crate) deps: &'static [&'static str],
     pub(crate) path: Arc<Vec<(ModuleId, Token)>>,
+    /// The request this resolution runs for: `Some` only while a request-scoped (or transient, for a request-scoped
+    /// consumer) provider is built during a request. Singletons are always built with `None`.
+    pub(crate) request: Option<RequestCtx>,
 }
 
 impl ResolveCtx {
     pub(crate) fn for_module(container: Arc<Container>, module: ModuleId) -> Self {
-        ResolveCtx { container, module, requester: Arc::from(""), deps: &[], path: Arc::new(Vec::new()) }
+        ResolveCtx { container, module, requester: Arc::from(""), deps: &[], path: Arc::new(Vec::new()), request: None }
+    }
+
+    /// The request being handled, for the factory of a request-scoped provider (`Provider::scope(Scope::Request)`).
+    ///
+    /// Fails with `DiError::OutsideRequest` when the provider is being built outside a request, which is always the
+    /// case for singletons. Route parameters are set only once routing has matched, so a provider first resolved from
+    /// a middleware sees a request without them; the extensions are shared and always current.
+    pub fn request(&self) -> Result<crate::http::Request, DiError> {
+        match &self.request {
+            Some(r) => Ok(r.request.clone()),
+            None => Err(self.outside_request("Request")),
+        }
+    }
+
+    /// The `OutsideRequest` error for `token`, naming the resolution chain that led here.
+    pub(crate) fn outside_request(&self, token: &str) -> DiError {
+        DiError::OutsideRequest { token: token.to_string(), chain: super::container::chain_names(&self.path, None) }
     }
 
     /// Declares the dependency list of the class under construction (used for error messages).
@@ -138,7 +159,7 @@ impl ResolveCtx {
     }
 
     pub(crate) async fn resolve_instance(&self, token: Token) -> Result<Instance, DiError> {
-        self.container.clone().resolve(self.module, token, self.path.clone()).await
+        self.container.clone().resolve(self.module, token, self.path.clone(), self.request.clone()).await
     }
 
     /// Used by generated constructors: resolves the dependency at `index`, producing
@@ -210,6 +231,18 @@ impl<T: ?Sized + Send + Sync + 'static> InjectField for Option<Arc<T>> {
 
     fn dependency(token: Option<Token>, index: usize) -> Option<Dependency> {
         Some(Dependency { token: token.unwrap_or_else(Token::of::<T>), index, optional: true })
+    }
+}
+
+/// The current request, for request-scoped providers (`req: Request`). The startup scope check rejects it in
+/// singletons, controllers and gateways.
+impl InjectField for crate::http::Request {
+    fn inject(ctx: ResolveCtx, _token: Option<Token>, _index: usize) -> BoxFuture<'static, Result<Self, DiError>> {
+        async move { ctx.request() }.boxed()
+    }
+
+    fn dependency(_token: Option<Token>, index: usize) -> Option<Dependency> {
+        Some(Dependency { token: Token::of::<crate::http::Request>(), index, optional: false })
     }
 }
 
