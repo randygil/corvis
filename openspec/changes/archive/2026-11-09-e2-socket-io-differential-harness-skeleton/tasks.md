@@ -76,7 +76,7 @@ No Rust runtime code changes. Node 22 and git are needed locally for groups 1-4.
 
 - [x] 7.1 `cargo build --workspace --all-targets` with no warnings
 - [x] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 7.3 `cargo test --workspace` passes (the new test skips without `CORVIS_NODE_DIFF`), and
+- [x] 7.3 `cargo test --workspace` passes (the new test skips without `CORVIS_NODE_DIFF`), and
   `CORVIS_NODE_DIFF=1 cargo test -p corvis --test socket_io_diff` passes with the harness installed
 - [x] 7.4 Regression tests: the `node:test` self-tests of group 3 and the Rust entry point's skip and failure paths
 - [x] 7.5 Docs: no page of `docs/` or `docs/es/` changes (contributor tooling, documented in `CONTRIBUTING.md`; the
@@ -87,3 +87,12 @@ No Rust runtime code changes. Node 22 and git are needed locally for groups 1-4.
 
 - Archive the change with `/opsx:archive` (its `ws/socket-io-parity` delta is applied; #37 extends it).
 - Close issue #131, tick it in epic #30 and move its card to Done (see the `corvis-task` skill).
+
+## Verification (2026-11-09)
+
+- Merged into `dev` at 49a26c8; CI run 42722204166 green on all 10 jobs (the new test skips without
+  `CORVIS_NODE_DIFF`, as designed).
+- Locally: `CORVIS_NODE_DIFF=1 cargo test -p corvis --test socket_io_diff` passes (Node vs Node, 0 differences);
+  `node --test "test/*.test.mjs"` 20/20; the four failure paths (broken normalizer, ack changed, missing capability,
+  missing `node_modules`) and the three `fetch-suites.mjs` failure paths checked by hand.
+- No framework runtime code changed: the corvis-parity check is not needed.
