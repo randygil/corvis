@@ -168,3 +168,8 @@ None. The technical choices, including the public builder names, are recorded ab
   `ThrottlerValueFn<T>`; typed async functions instead of a runtime number check (Decision 3); ttl-function throttlers
   checked last like the original (Decision 4); a `t:` source marker for per-throttler generators (Decision 5);
   function values in route overrides left out of scope.
+
+## Review notes, maintainer (2026-11-09)
+
+- Approved as drafted. The panic on an unknown throttler name happens while the module is configured, before the
+  server listens, so it cannot be triggered by a request. Function-valued route overrides stay out of scope.

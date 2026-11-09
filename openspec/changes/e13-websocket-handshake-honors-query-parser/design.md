@@ -135,3 +135,9 @@ None. The technical choices are recorded above and in the review notes.
   (Decision 1, including the accepted side effect on body checks); both gateways and upgrade listeners follow the
   setting (Decision 3); the divergence from Node is documented without a differential test (Decision 4); the
   `query_param` rustdoc is corrected but its repeated-key behavior is left for a possible new issue.
+
+## Review notes, maintainer (2026-11-09)
+
+- Approved. The handshake follows the application's query parser like HTTP routes; with `Disabled`,
+  `query_param` returns `None` and a token check fails closed. Corvis is not published yet, so the behavior change
+  needs only the docs note (read `uri().query()` for the raw string).

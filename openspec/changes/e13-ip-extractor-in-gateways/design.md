@@ -124,3 +124,8 @@ None. The technical choices are recorded above and in the review notes.
   1), the same conversion as controllers (Decision 2), no arguments and no pipes in gateways (Decision 3), compile
   errors only for `#[ip]` (other controller parameter attributes keep rustc's error, proposal Out of scope), and the
   divergence from the original's `null` documented without a differential test.
+
+## Review notes, maintainer (2026-11-09)
+
+- Approved as drafted: the trust-proxy-resolved handshake address, no arguments or pipes, and compile errors on
+  methods that have no client.
