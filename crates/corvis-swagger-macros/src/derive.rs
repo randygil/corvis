@@ -189,7 +189,8 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             });
 
         let mut prefix = Vec::new();
-        let mut inserts = Vec::new();
+        // Derived from the validation attributes: before the explicit options, so those replace them.
+        let mut inserts = crate::constraints::constraint_tokens(&f.attrs, &f.ty)?;
         let mut suffix = Vec::new();
         for a in &f.attrs {
             let p = a.path();
