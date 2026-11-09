@@ -2,7 +2,7 @@
 //! nesting, unique filters, in-lists, numbers out of range), atomic writes under concurrency,
 //! transaction expiry, connection errors and TLS.
 //!
-//! The Postgres tests use `CORVIS_ORM_PG` and `orm_test_sec_*` databases (skipped when the
+//! The Postgres tests use `CORVIS_ORM_PG` and `orm_test_sec_*_<run>` databases (skipped when the
 //! server is not reachable).
 
 #[path = "common/pg.rs"]
@@ -512,17 +512,17 @@ async fn connection_errors_do_not_show_credentials() {
 
 #[tokio::test]
 async fn postgres_supports_tls() {
-    if pg::fresh_db("sec_tls").await.is_none() {
+    let Some(base) = pg::fresh_db("sec_tls").await else {
         return;
-    }
+    };
     // Before: "TLS upgrade required by connect options but SQLx was built without TLS support".
-    let url = format!("{}/orm_test_sec_tls?sslmode=require", pg::base_url());
+    let url = format!("{base}?sslmode=require");
     let r = OrmClient::new(url).unwrap().connect().await;
     if let Err(e) = &r {
         assert!(!e.message().contains("without TLS support"), "{e}");
     }
     // `prefer` falls back to plain text when the server has no TLS.
-    let url = format!("{}/orm_test_sec_tls?sslmode=prefer", pg::base_url());
+    let url = format!("{base}?sslmode=prefer");
     OrmClient::new(url).unwrap().connect().await.unwrap();
 }
 

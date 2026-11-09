@@ -367,7 +367,7 @@ cargo test -p corvis-orm
 
 - Las pruebas de SQLite usan una base en memoria. Cada pool con `sqlite::memory:` usa exactamente una conexión permanente,
   porque cada conexión a `:memory:` sería una base de datos distinta.
-- Las pruebas de Postgres usan `CORVIS_ORM_PG` (por defecto `postgres://postgres:postgres@127.0.0.1:55432`) y crean bases `orm_test_*`.
+- Las pruebas de Postgres usan `CORVIS_ORM_PG` (por defecto `postgres://postgres:postgres@127.0.0.1:55432`) y crean bases `orm_test_<nombre>_<ejecución>` y roles `orm_<nombre>_<ejecución>`, únicos por ejecución.
   Si el servidor no responde, se omiten.
 - `tests/pg_oracle.rs` es el oráculo diferencial: ejecuta los casos de `tests/fixtures/oracle/results.json`, grabados con
   el cliente JavaScript de referencia (6.19) sobre `tests/fixtures/oracle/schema.prisma`, y exige el mismo resultado (texto y orden de claves),

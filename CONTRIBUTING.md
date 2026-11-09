@@ -29,7 +29,10 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 
 The Postgres tests of `corvis-orm` (`pg_features`, `pg_oracle`, `pg_json_paths`, `pg_houseplan` and the Postgres
 cases of `security`) connect to `CORVIS_ORM_PG` (default `postgres://postgres:postgres@127.0.0.1:55432`) and create
-databases named `orm_test_*`. When the server is not reachable they print `skipping: Postgres not reachable` and
+scratch databases named `orm_test_<name>_<run>` and roles named `orm_<name>_<run>`. `<run>` is
+`<unix seconds>_<process id>_<4 hex digits>`, so concurrent runs against one server never share a name; tests get
+names from `tests/common/pg.rs` and never hard-code them. A run drops what it created when it exits normally (a run
+that fails keeps its databases for inspection), and the next run drops leftovers older than 3 hours. When the server is not reachable they print `skipping: Postgres not reachable` and
 pass. Set `CORVIS_ORM_PG_REQUIRED=1` to make them fail instead, as CI does, so a green run means they really ran. The
 failure names the server's host and port, never the password. Start a matching server, bound to the loopback interface,
 with:

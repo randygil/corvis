@@ -1,6 +1,6 @@
 //! JSON `path` filters on Postgres: the path is a bound `text[]` parameter, never SQL text.
 //!
-//! The tests that run queries use `CORVIS_ORM_PG` and the `orm_test_json_paths_*` databases (skipped
+//! The tests that run queries use `CORVIS_ORM_PG` and the `orm_test_json_paths_*_<run>` databases (skipped
 //! when the server is not reachable). `PROPTEST_CASES` overrides the case count of the property
 //! (256 by default).
 
