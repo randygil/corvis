@@ -14,9 +14,19 @@
 //! #[get]
 //! #[apply_decorators(skip_throttle(["short", "long"]))]   // @SkipThrottle({ short: true, long: true })
 //! async fn status(&self) {}
+//!
+//! #[post("login")]
+//! #[apply_decorators(throttle("short").limit(1), throttle("long").limit(100).ttl(120_000))]
+//! async fn login(&self) {}   // @Throttle({ short: { limit: 1 }, long: { limit: 100, ttl: 120000 } })
 //! ```
+//!
+//! Overrides are resolved per throttler and per option, handler before controller, with the original's key spelling
+//! (`THROTTLER:LIMIT` followed by the throttler name). The bare [`THROTTLE_LIMIT`], [`THROTTLE_TTL`] and
+//! [`THROTTLE_BLOCK_DURATION`] keys are the `default` throttler's entry.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -52,13 +62,121 @@ where
 {
     names.into_iter().fold(CustomDecorator::new(), |d, n| d.set_metadata(skip_throttle_key(n.as_ref()), true))
 }
-/// `@Throttle({ default: { limit } })` – `#[set_metadata(THROTTLE_LIMIT, 3)]`.
+/// `@Throttle({ default: { limit } })` – `#[set_metadata(THROTTLE_LIMIT, 3)]`. The bare key is the entry of the throttler
+/// named `default` only; other throttlers are overridden with [`throttle`] or [`throttle_key`]. (A throttler whose
+/// name is the empty string has the same key and is overridden by it as well.)
 pub const THROTTLE_LIMIT: &str = "THROTTLER:LIMIT";
-/// TTL override in milliseconds – `#[set_metadata(THROTTLE_TTL, 60_000)]`.
+/// TTL override in milliseconds for the `default` throttler – `#[set_metadata(THROTTLE_TTL, 60_000)]`. Other
+/// throttlers: [`throttle`] or [`throttle_key`].
 pub const THROTTLE_TTL: &str = "THROTTLER:TTL";
-/// Block duration override in milliseconds, for every throttler – `#[set_metadata(THROTTLE_BLOCK_DURATION, 60_000)]`.
-/// `0` turns the block off.
+/// Block duration override in milliseconds for the `default` throttler – `#[set_metadata(THROTTLE_BLOCK_DURATION,
+/// 60_000)]`. `0` turns the block off. Other throttlers: [`throttle`] or [`throttle_key`].
 pub const THROTTLE_BLOCK_DURATION: &str = "THROTTLER:BLOCK_DURATION";
+/// Prefix of the metadata keys that choose the tracker function (by registered name) of one throttler, see
+/// [`ThrottleOverride::tracker`]. There is no bare form: use [`throttle_key`] or [`throttle`].
+pub const THROTTLE_TRACKER: &str = "THROTTLER:TRACKER";
+/// Prefix of the metadata keys that choose the key generator (by registered name) of one throttler, see
+/// [`ThrottleOverride::key_generator`]. There is no bare form.
+pub const THROTTLE_KEY_GENERATOR: &str = "THROTTLER:KEY_GENERATOR";
+
+/// The metadata key of one option of the throttler called `name`: `option` followed by `name`, as the original stores
+/// `@Throttle({ name: { limit } })` (`THROTTLER:LIMITshort`). `option` is one of [`THROTTLE_LIMIT`], [`THROTTLE_TTL`],
+/// [`THROTTLE_BLOCK_DURATION`], [`THROTTLE_TRACKER`] and [`THROTTLE_KEY_GENERATOR`]. For gateway handlers:
+/// `#[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), 1)]`.
+pub fn throttle_key(option: &str, name: &str) -> String {
+    format!("{option}{name}")
+}
+
+/// Overrides of one named throttler for a controller or a route, built by [`throttle`]. Only the options that are set
+/// are written, so a handler that sets `limit` keeps the controller's `ttl`.
+#[derive(Debug, Clone)]
+pub struct ThrottleOverride {
+    name: String,
+    limit: Option<u32>,
+    ttl: Option<u64>,
+    block_duration: Option<u64>,
+    tracker: Option<String>,
+    key_generator: Option<String>,
+}
+
+impl ThrottleOverride {
+    /// Maximum requests per window.
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Window in milliseconds.
+    pub fn ttl(mut self, ttl: u64) -> Self {
+        self.ttl = Some(ttl);
+        self
+    }
+
+    /// Block duration in milliseconds; `0` turns the block off.
+    pub fn block_duration(mut self, block_duration: u64) -> Self {
+        self.block_duration = Some(block_duration);
+        self
+    }
+
+    /// Uses the tracker registered with [`ThrottlerStorage::with_named_tracker`] under `id`. A name that is not
+    /// registered answers 500 (the route is not left unlimited).
+    pub fn tracker(mut self, id: impl Into<String>) -> Self {
+        self.tracker = Some(id.into());
+        self
+    }
+
+    /// Uses the key generator registered with [`ThrottlerStorage::with_named_key_generator`] under `id`.
+    pub fn key_generator(mut self, id: impl Into<String>) -> Self {
+        self.key_generator = Some(id.into());
+        self
+    }
+}
+
+impl From<ThrottleOverride> for CustomDecorator {
+    fn from(o: ThrottleOverride) -> Self {
+        let mut d = CustomDecorator::new();
+        if let Some(v) = o.limit {
+            d = d.set_metadata(throttle_key(THROTTLE_LIMIT, &o.name), v);
+        }
+        if let Some(v) = o.ttl {
+            d = d.set_metadata(throttle_key(THROTTLE_TTL, &o.name), v);
+        }
+        if let Some(v) = o.block_duration {
+            d = d.set_metadata(throttle_key(THROTTLE_BLOCK_DURATION, &o.name), v);
+        }
+        if let Some(v) = o.tracker {
+            d = d.set_metadata(throttle_key(THROTTLE_TRACKER, &o.name), v);
+        }
+        if let Some(v) = o.key_generator {
+            d = d.set_metadata(throttle_key(THROTTLE_KEY_GENERATOR, &o.name), v);
+        }
+        d
+    }
+}
+
+/// `@Throttle({ short: { limit, ttl, blockDuration, getTracker, generateKey } })` for the throttler called `name`:
+/// `#[apply_decorators(throttle("short").limit(1), throttle("long").limit(100))]` on a controller or a route. Each
+/// option is resolved on its own, handler before controller; options that are not set fall back to the throttler's
+/// configuration. A name no throttler has is reported in the log (once per route) and changes nothing.
+pub fn throttle(name: impl Into<String>) -> ThrottleOverride {
+    ThrottleOverride { name: name.into(), limit: None, ttl: None, block_duration: None, tracker: None, key_generator: None }
+}
+
+/// A tracker function: identifies the client of a request (the original's `getTracker`). Async; an `Err` is returned
+/// by the guard as is.
+pub type ThrottlerTrackerFn =
+    Arc<dyn Fn(ExecutionContext) -> Pin<Box<dyn Future<Output = Result<String, HttpException>> + Send>> + Send + Sync>;
+
+/// A key generator function: `(context, tracker, throttler name)` to the counter key (the original's `generateKey`).
+pub type ThrottlerKeyGeneratorFn = Arc<dyn Fn(&ExecutionContext, &str, &str) -> String + Send + Sync>;
+
+fn boxed_tracker<F, Fut>(f: F) -> ThrottlerTrackerFn
+where
+    F: Fn(ExecutionContext) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<String, HttpException>> + Send + 'static,
+{
+    Arc::new(move |ctx| Box::pin(f(ctx)))
+}
 
 #[derive(Debug, Clone)]
 pub struct ThrottlerOptions {
@@ -393,6 +511,10 @@ pub struct ThrottlerStorage {
     max_blocked: Option<usize>,
     headers: bool,
     ipv6_subnet_prefix: u8,
+    tracker: Option<ThrottlerTrackerFn>,
+    key_generator: Option<ThrottlerKeyGeneratorFn>,
+    named_trackers: HashMap<String, ThrottlerTrackerFn>,
+    named_key_generators: HashMap<String, ThrottlerKeyGeneratorFn>,
 }
 
 impl ThrottlerStorage {
@@ -415,6 +537,10 @@ impl ThrottlerStorage {
             max_blocked: None,
             headers: true,
             ipv6_subnet_prefix: DEFAULT_IPV6_SUBNET_PREFIX,
+            tracker: None,
+            key_generator: None,
+            named_trackers: HashMap::new(),
+            named_key_generators: HashMap::new(),
         }
     }
 
@@ -460,8 +586,8 @@ impl ThrottlerStorage {
     }
 
     /// How long the throttler called `name` blocks a key that goes over its limit, in milliseconds (default: the
-    /// throttler's `ttl`, as in the original). `0` turns the block off: requests are rejected while the key holds
-    /// `limit` unexpired hits. A route's `THROTTLE_BLOCK_DURATION` metadata takes precedence.
+    /// throttler's effective `ttl`, as in the original). `0` turns the block off: requests are rejected while the key
+    /// holds `limit` unexpired hits. A route's block duration override for this throttler takes precedence.
     ///
     /// # Panics
     ///
@@ -469,6 +595,66 @@ impl ThrottlerStorage {
     pub fn with_block_duration(mut self, name: &str, block_duration: u64) -> Self {
         assert!(self.throttlers.iter().any(|t| t.name == name), "ThrottlerStorage::with_block_duration: no throttler is named `{name}`");
         self.block_durations.insert(name.to_string(), block_duration);
+        self
+    }
+
+    /// The module-level `getTracker`: identifies the client of every request that no route override covers. It
+    /// replaces the built-in tracker, including [`normalize_ip`], so call `normalize_ip(&ctx.request().ip(), 64)`
+    /// inside it when it falls back to the IP. Calling it twice keeps the last function. It runs once per throttler
+    /// that is not skipped, so keep it cheap and free of side effects.
+    ///
+    /// A tracker that takes the client from a header or a body field lets clients choose their own counter: keep an
+    /// IP-based throttler next to it. A tracker that returns one value for many clients puts them in one counter.
+    pub fn with_tracker<F, Fut>(mut self, f: F) -> Self
+    where
+        F: Fn(ExecutionContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<String, HttpException>> + Send + 'static,
+    {
+        self.tracker = Some(boxed_tracker(f));
+        self
+    }
+
+    /// The module-level `generateKey(context, tracker, throttlerName)`: builds the counter key. The throttler name
+    /// is always part of the stored key as well, so a generator that ignores it shares a counter between routes
+    /// but never between throttlers. Calling it twice keeps the last function.
+    pub fn with_key_generator<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&ExecutionContext, &str, &str) -> String + Send + Sync + 'static,
+    {
+        self.key_generator = Some(Arc::new(f));
+        self
+    }
+
+    /// Registers a tracker that routes select with `throttle(name).tracker(id)`.
+    ///
+    /// # Panics
+    ///
+    /// When a tracker is already registered under `id`.
+    pub fn with_named_tracker<F, Fut>(mut self, id: &str, f: F) -> Self
+    where
+        F: Fn(ExecutionContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<String, HttpException>> + Send + 'static,
+    {
+        assert!(
+            self.named_trackers.insert(id.to_string(), boxed_tracker(f)).is_none(),
+            "ThrottlerStorage::with_named_tracker: a tracker named `{id}` is already registered"
+        );
+        self
+    }
+
+    /// Registers a key generator that routes select with `throttle(name).key_generator(id)`.
+    ///
+    /// # Panics
+    ///
+    /// When a key generator is already registered under `id`.
+    pub fn with_named_key_generator<F>(mut self, id: &str, f: F) -> Self
+    where
+        F: Fn(&ExecutionContext, &str, &str) -> String + Send + Sync + 'static,
+    {
+        assert!(
+            self.named_key_generators.insert(id.to_string(), Arc::new(f)).is_none(),
+            "ThrottlerStorage::with_named_key_generator: a key generator named `{id}` is already registered"
+        );
         self
     }
 
@@ -655,9 +841,121 @@ pub struct ThrottlerGuard {
     /// Routes already reported for a bare skip that skips nothing; bounded by the number of routes.
     #[default]
     warned: Mutex<HashSet<(String, String)>>,
+    /// Routes already reported for overrides that name an unknown throttler; bounded by the number of routes.
+    #[default]
+    warned_overrides: Mutex<HashSet<(String, String)>>,
+}
+
+/// The option keys that carry a throttler name as a suffix.
+const OVERRIDE_PREFIXES: [&str; 5] = [THROTTLE_LIMIT, THROTTLE_TTL, THROTTLE_BLOCK_DURATION, THROTTLE_TRACKER, THROTTLE_KEY_GENERATOR];
+
+/// What a bare key (no throttler name) of an option can be: only the three numeric options have one.
+fn has_bare_form(option: &str) -> bool {
+    matches!(option, THROTTLE_LIMIT | THROTTLE_TTL | THROTTLE_BLOCK_DURATION)
+}
+
+fn invalid_override(option: &str, name: &str, value: &serde_json::Value, expected: &str) -> HttpException {
+    HttpException::from_anyhow(anyhow::anyhow!("Invalid \"{option}\" for the \"{name}\" throttler: expected {expected}, got {value}."))
 }
 
 impl ThrottlerGuard {
+    /// The override of `option` for the throttler called `name`: the first of the targets (handler, then controller)
+    /// with a value that is not JSON `null` under `throttle_key(option, name)`; for `default` and the numeric options,
+    /// a target without such an entry may supply its bare key instead.
+    fn override_value<'a>(&self, option: &str, name: &str, targets: &[&'a Target]) -> Option<&'a serde_json::Value> {
+        let present = |t: &'a Target, key: &str| t.metadata.get(key).filter(|v| !v.is_null());
+        targets.iter().find_map(|t| {
+            present(t, &throttle_key(option, name))
+                .or_else(|| if name == "default" && has_bare_form(option) { present(t, option) } else { None })
+        })
+    }
+
+    fn number_override<T: serde::de::DeserializeOwned>(
+        &self,
+        option: &str,
+        label: &str,
+        name: &str,
+        targets: &[&Target],
+    ) -> Result<Option<T>, HttpException> {
+        match self.override_value(option, name, targets) {
+            None => Ok(None),
+            Some(v) => serde_json::from_value(v.clone())
+                .map(Some)
+                .map_err(|_| invalid_override(label, name, v, "a non-negative integer within range")),
+        }
+    }
+
+    fn function_override<'s, T>(
+        &self,
+        option: &str,
+        label: &str,
+        name: &str,
+        targets: &[&Target],
+        registry: &'s HashMap<String, T>,
+    ) -> Result<Option<&'s T>, HttpException> {
+        match self.override_value(option, name, targets) {
+            None => Ok(None),
+            Some(serde_json::Value::String(id)) => match registry.get(id) {
+                Some(f) => Ok(Some(f)),
+                None => Err(HttpException::from_anyhow(anyhow::anyhow!(
+                    "Invalid \"{label}\" for the \"{name}\" throttler: no {label} is registered as \"{id}\"."
+                ))),
+            },
+            Some(v) => Err(invalid_override(label, name, v, "the name of a registered function")),
+        }
+    }
+
+    /// Logs once per route the override keys that name no configured throttler, and bare keys when no throttler is
+    /// named `default`.
+    fn warn_unknown_overrides(&self, ctx: &ExecutionContext, targets: &[&Target]) {
+        let has_default = self.storage.throttlers.iter().any(|t| t.name == "default");
+        let mut unknown = BTreeSet::new();
+        let mut bare = BTreeSet::new();
+        for target in targets {
+            for key in target.metadata.keys() {
+                for option in OVERRIDE_PREFIXES {
+                    let Some(suffix) = key.strip_prefix(option) else { continue };
+                    if suffix.is_empty() {
+                        if !has_bare_form(option) || !has_default {
+                            bare.insert(option);
+                        }
+                    } else if !self.storage.throttlers.iter().any(|t| t.name == suffix) {
+                        unknown.insert(suffix.to_string());
+                    }
+                }
+            }
+        }
+        if unknown.is_empty() && bare.is_empty() {
+            return;
+        }
+        let route = (ctx.get_class().name.to_string(), ctx.get_handler().name.to_string());
+        if !self.warned_overrides.lock().unwrap_or_else(|e| e.into_inner()).insert(route.clone()) {
+            return;
+        }
+        let configured: Vec<String> = self.storage.throttlers.iter().map(|t| format!("`{}`", t.name)).collect();
+        let mut problems = Vec::new();
+        if !unknown.is_empty() {
+            problems.push(format!(
+                "overrides for throttlers that are not configured ({})",
+                unknown.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if !bare.is_empty() {
+            problems.push(format!(
+                "the bare key(s) {}, which override nothing (a bare limit, ttl or block duration applies to the throttler named \
+                 `default`, and the tracker and key generator have no bare form)",
+                bare.iter().copied().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        Logger::new("ThrottlerGuard").warn(format!(
+            "{}.{} has {}; configured throttlers: {}. Use throttle(\"name\") with a configured name",
+            route.0,
+            route.1,
+            problems.join(" and "),
+            configured.join(", ")
+        ));
+    }
+
     /// Whether the throttler called `name` is skipped for this request: the first of the handler and the controller
     /// that has a boolean under `skip_throttle_key(name)` decides (for `default`, a bare `SKIP_THROTTLE` on a target
     /// without its own entry counts), as `getAllAndOverride(THROTTLER:SKIP<name>)` does in the original.
@@ -718,20 +1016,37 @@ impl CanActivate for ThrottlerGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let targets = [ctx.get_handler(), ctx.get_class()];
         self.warn_bare_skip_without_default(ctx, &targets);
+        self.warn_unknown_overrides(ctx, &targets);
         let req = ctx.request();
         let client = normalize_ip(&req.ip(), self.storage.ipv6_subnet_prefix);
         for t in &self.storage.throttlers {
             if self.is_skipped(&t.name, &targets) {
                 continue;
             }
-            let limit = self.reflector.get_all_and_override::<u32>(THROTTLE_LIMIT, &targets).unwrap_or(t.limit);
-            let ttl = self.reflector.get_all_and_override::<u64>(THROTTLE_TTL, &targets).unwrap_or(t.ttl);
-            let key = format!("{}:{}:{}:{}", t.name, client, ctx.get_class().name, ctx.get_handler().name);
-            let block_duration = self
-                .reflector
-                .get_all_and_override::<u64>(THROTTLE_BLOCK_DURATION, &targets)
-                .or_else(|| self.storage.block_durations.get(&t.name).copied())
-                .unwrap_or(ttl);
+            let name = t.name.as_str();
+            let limit = self.number_override::<u32>(THROTTLE_LIMIT, "limit", name, &targets)?.unwrap_or(t.limit);
+            let ttl = self.number_override::<u64>(THROTTLE_TTL, "ttl", name, &targets)?.unwrap_or(t.ttl);
+            let block_duration = match self.number_override::<u64>(THROTTLE_BLOCK_DURATION, "blockDuration", name, &targets)? {
+                Some(ms) => ms,
+                None => self.storage.block_durations.get(name).copied().unwrap_or(ttl),
+            };
+            let tracker_fn = self
+                .function_override(THROTTLE_TRACKER, "tracker", name, &targets, &self.storage.named_trackers)?
+                .or(self.storage.tracker.as_ref());
+            let key_fn = self
+                .function_override(THROTTLE_KEY_GENERATOR, "keyGenerator", name, &targets, &self.storage.named_key_generators)?
+                .or(self.storage.key_generator.as_ref());
+            let tracker = match tracker_fn {
+                Some(f) => f(ctx.clone()).await?,
+                None => client.clone(),
+            };
+            let generated = match key_fn {
+                Some(f) => f(ctx, &tracker, name),
+                None => format!("{}:{}:{}", ctx.get_class().name, ctx.get_handler().name, tracker),
+            };
+            // The throttler name, length-prefixed, keeps throttlers (and a name from the generated key) apart
+            // whatever the key generator returns.
+            let key = format!("{}:{}:{}", name.len(), name, generated);
             let record = self.storage.record_hit(&key, Duration::from_millis(ttl), limit, Duration::from_millis(block_duration));
             self.set_headers(ctx, &t.name, limit, &record);
             if record.is_blocked {
@@ -756,6 +1071,7 @@ mod tests {
             storage: Arc::new(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 3)])),
             reflector: Arc::new(Reflector),
             warned: Default::default(),
+            warned_overrides: Default::default(),
         });
         assert!(!guard.controls_access());
         assert!(guard.guard_name().ends_with("ThrottlerGuard"));
@@ -770,6 +1086,7 @@ mod tests {
             storage: Arc::new(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])),
             reflector: Arc::new(Reflector),
             warned: Default::default(),
+            warned_overrides: Default::default(),
         };
         let request = Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap();
         let ctx = ExecutionContext::for_ws(
@@ -1214,7 +1531,12 @@ mod tests {
     }
 
     fn guard_with(storage: ThrottlerStorage) -> ThrottlerGuard {
-        ThrottlerGuard { storage: Arc::new(storage), reflector: Arc::new(Reflector), warned: Default::default() }
+        ThrottlerGuard {
+            storage: Arc::new(storage),
+            reflector: Arc::new(Reflector),
+            warned: Default::default(),
+            warned_overrides: Default::default(),
+        }
     }
 
     fn one_hit_storage() -> ThrottlerStorage {
@@ -1279,5 +1601,54 @@ mod tests {
     #[test]
     fn default_prefix_is_64() {
         assert_eq!(one_hit_storage().ipv6_subnet_prefix, 64);
+    }
+
+    #[test]
+    fn override_keys_use_the_original_spelling() {
+        assert_eq!(throttle_key(THROTTLE_LIMIT, "short"), "THROTTLER:LIMITshort");
+        assert_eq!(throttle_key(THROTTLE_KEY_GENERATOR, "short"), "THROTTLER:KEY_GENERATORshort");
+        assert_eq!(THROTTLE_TRACKER, "THROTTLER:TRACKER");
+    }
+
+    #[test]
+    fn the_builder_writes_only_the_options_that_were_set() {
+        let d: CustomDecorator = throttle("short").limit(1).into();
+        assert_eq!(d.entries(), [("THROTTLER:LIMITshort".to_string(), serde_json::json!(1))].as_slice());
+        let d: CustomDecorator = throttle("long").ttl(10_000).block_duration(0).tracker("t").key_generator("k").into();
+        let keys: Vec<&str> = d.entries().iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["THROTTLER:TTLlong", "THROTTLER:BLOCK_DURATIONlong", "THROTTLER:TRACKERlong", "THROTTLER:KEY_GENERATORlong"]);
+        assert!(CustomDecorator::from(throttle("none")).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "fixed")]
+    fn a_named_tracker_cannot_be_registered_twice() {
+        let _ = one_hit_storage()
+            .with_named_tracker("fixed", |_| async { Ok("a".to_string()) })
+            .with_named_tracker("fixed", |_| async { Ok("b".to_string()) });
+    }
+
+    #[test]
+    #[should_panic(expected = "own")]
+    fn a_named_key_generator_cannot_be_registered_twice() {
+        let _ = one_hit_storage()
+            .with_named_key_generator("own", |_, t, _| t.to_string())
+            .with_named_key_generator("own", |_, t, _| t.to_string());
+    }
+
+    #[test]
+    fn a_storage_returned_by_a_factory_keeps_its_hooks() {
+        let storage = one_hit_storage()
+            .with_tracker(|_| async { Ok("a".to_string()) })
+            .with_key_generator(|_, t, _| t.to_string())
+            .with_named_tracker("t", |_| async { Ok("a".to_string()) })
+            .with_named_key_generator("k", |_, t, _| t.to_string());
+        // `for_root_async` converts what its factory returns with `Into<ThrottlerStorage>`.
+        fn from_factory<S: Into<ThrottlerStorage>>(s: S) -> ThrottlerStorage {
+            s.into()
+        }
+        let storage = from_factory(storage);
+        assert!(storage.tracker.is_some() && storage.key_generator.is_some());
+        assert!(storage.named_trackers.contains_key("t") && storage.named_key_generators.contains_key("k"));
     }
 }

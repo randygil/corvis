@@ -5,7 +5,8 @@
 use corvis::prelude::*;
 use corvis::testing::{Test, TestResponse, request};
 use corvis::{
-    CorvisApplication, SKIP_THROTTLE, THROTTLE_LIMIT, THROTTLE_TTL, ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerStorage,
+    CorvisApplication, SKIP_THROTTLE, THROTTLE_KEY_GENERATOR, THROTTLE_LIMIT, THROTTLE_TRACKER, THROTTLE_TTL, ThrottlerGuard,
+    ThrottlerModule, ThrottlerOptions, ThrottlerStorage,
 };
 
 #[controller]
@@ -133,6 +134,128 @@ impl MixedController {
     }
 }
 
+/// Per-name overrides (#156): the routes of the fixture cases `overrides-named`, `overrides-default`, `module-tracker` and
+/// `module-key`, plus the ones that only Corvis has (negative and text values, an unregistered tracker).
+#[controller("ovr")]
+#[use_guards(ThrottlerGuard)]
+pub struct OvrController;
+
+#[routes]
+impl OvrController {
+    #[get("short1")]
+    #[apply_decorators(throttle("short").limit(1))]
+    fn short1(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("both")]
+    #[apply_decorators(throttle("short").limit(2).ttl(10_000), throttle("long").limit(1))]
+    fn both(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("block")]
+    #[apply_decorators(throttle("short").limit(1).block_duration(5_000))]
+    fn block(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("unknown")]
+    #[apply_decorators(throttle("shrot").limit(1))]
+    fn unknown(&self) -> &'static str {
+        "ok"
+    }
+
+    /// The bare key is the `default` throttler's entry.
+    #[get("default")]
+    #[set_metadata(THROTTLE_LIMIT, 1)]
+    fn default_limit(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("invalid")]
+    #[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), "abc")]
+    fn invalid(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("negative")]
+    #[set_metadata(THROTTLE_LIMIT, -1)]
+    fn negative(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("fraction")]
+    #[set_metadata(THROTTLE_TTL, 1.5)]
+    fn fraction(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("fixed")]
+    #[apply_decorators(throttle("default").tracker("fixed"))]
+    fn fixed(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("own-key")]
+    #[apply_decorators(throttle("default").key_generator("own"))]
+    fn own_key(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("missing-tracker")]
+    #[apply_decorators(throttle("default").tracker("missing"))]
+    fn missing_tracker(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("number-tracker")]
+    #[set_metadata(throttle_key(THROTTLE_TRACKER, "default"), 5)]
+    fn number_tracker(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("bad-key-generator")]
+    #[set_metadata(throttle_key(THROTTLE_KEY_GENERATOR, "default"), "nope")]
+    fn bad_key_generator(&self) -> &'static str {
+        "ok"
+    }
+
+    /// A per-name entry beats the bare key on the same target.
+    #[get("bare-and-named")]
+    #[set_metadata(THROTTLE_LIMIT, 1)]
+    #[set_metadata(throttle_key(THROTTLE_LIMIT, "default"), 2)]
+    fn bare_and_named(&self) -> &'static str {
+        "ok"
+    }
+}
+
+/// The class overrides `short`; `h` overrides only the limit; `sibling` has no override; `nulled` sets `null`.
+#[controller("ovr-class")]
+#[use_guards(ThrottlerGuard)]
+#[apply_decorators(throttle("short").limit(2).ttl(20_000))]
+pub struct OvrClassController;
+
+#[routes]
+impl OvrClassController {
+    #[get("h")]
+    #[apply_decorators(throttle("short").limit(1))]
+    fn h(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("sibling")]
+    fn sibling(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("nulled")]
+    #[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), Option::<u32>::None)]
+    fn nulled(&self) -> &'static str {
+        "ok"
+    }
+}
+
 fn throttler(name: &str, ttl: u64, limit: u32) -> ThrottlerOptions {
     ThrottlerOptions { name: name.into(), ttl, limit }
 }
@@ -143,6 +266,8 @@ async fn app_with(module: corvis::DynamicModule) -> CorvisApplication {
         .controller::<LimitedController>()
         .controller::<UndoController>()
         .controller::<MixedController>()
+        .controller::<OvrController>()
+        .controller::<OvrClassController>()
         .compile()
         .await
         .unwrap();
@@ -153,6 +278,23 @@ async fn app_with(module: corvis::DynamicModule) -> CorvisApplication {
 
 async fn app(throttlers: Vec<ThrottlerOptions>) -> CorvisApplication {
     app_with(ThrottlerModule::for_root(throttlers)).await
+}
+
+/// The named hooks every override test registers: only routes that select them use them.
+fn hooks(storage: ThrottlerStorage) -> ThrottlerStorage {
+    storage
+        .with_named_tracker("fixed", |_| async { Ok("fixed".to_string()) })
+        .with_named_key_generator("own", |_, tracker, _| format!("own:{tracker}"))
+}
+
+/// The tracker of the fixture case `module-tracker`: the `x-client` header, else the IP.
+async fn client_header(ctx: ExecutionContext) -> Result<String, HttpException> {
+    let request = ctx.request();
+    Ok(request.header("x-client").map(str::to_string).unwrap_or_else(|| request.ip()))
+}
+
+async fn app_hooks(throttlers: Vec<ThrottlerOptions>) -> CorvisApplication {
+    app_with(ThrottlerModule::for_root_storage(hooks(ThrottlerStorage::new(throttlers)))).await
 }
 
 fn names(r: &TestResponse) -> Vec<String> {
@@ -416,6 +558,210 @@ fn prelude_exports_the_block_duration_items() {
     let _ = std::any::type_name::<ThrottlerRecord>();
 }
 
+fn short_long() -> Vec<ThrottlerOptions> {
+    vec![throttler("short", 30_000, 3), throttler("long", 60_000, 5)]
+}
+
+#[corvis::test]
+async fn an_override_changes_one_throttler_only() {
+    let app = app_hooks(short_long()).await;
+    let c = request(&app);
+    let r = c.get("/ovr/short1").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit-short", "1").expect_header("x-ratelimit-limit-long", "5");
+    let r = c.get("/ovr/short1").send().await;
+    r.expect_status(429).expect_header("retry-after-short", "30");
+    assert!(r.header("retry-after-long").is_none());
+}
+
+#[corvis::test]
+async fn two_throttlers_overridden_on_one_route() {
+    let app = app_hooks(short_long()).await;
+    let c = request(&app);
+    let r = c.get("/ovr/both").send().await;
+    r.expect_status(200)
+        .expect_header("x-ratelimit-limit-short", "2")
+        .expect_header("x-ratelimit-reset-short", "10")
+        .expect_header("x-ratelimit-limit-long", "1");
+    c.get("/ovr/both").send().await.expect_status(429).expect_header("retry-after-long", "60");
+}
+
+#[corvis::test]
+async fn a_partial_handler_override_keeps_the_controllers_other_options() {
+    let app = app_hooks(short_long()).await;
+    let c = request(&app);
+    let r = c.get("/ovr-class/h").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit-short", "1").expect_header("x-ratelimit-reset-short", "20");
+    let r = c.get("/ovr-class/sibling").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit-short", "2").expect_header("x-ratelimit-reset-short", "20");
+    assert_eq!(r.header("x-ratelimit-limit-long"), Some("5"), "long is not overridden");
+}
+
+#[corvis::test]
+async fn null_counts_as_absent() {
+    let app = app_hooks(short_long()).await;
+    let r = request(&app).get("/ovr-class/nulled").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit-short", "2");
+}
+
+#[corvis::test]
+async fn a_block_duration_override_applies_to_one_throttler() {
+    let app = app_hooks(short_long()).await;
+    let c = request(&app);
+    c.get("/ovr/block").send().await.expect_status(200);
+    c.get("/ovr/block").send().await.expect_status(429).expect_header("retry-after-short", "5");
+}
+
+#[corvis::test]
+async fn a_bare_limit_next_to_a_named_throttler_only_changes_default() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 3), throttler("short", 30_000, 3)]).await;
+    let c = request(&app);
+    let r = c.get("/override").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit", "1").expect_header("x-ratelimit-limit-short", "3");
+    c.get("/override").send().await.expect_status(429).expect_header("retry-after", "60");
+}
+
+#[corvis::test]
+async fn a_bare_limit_with_named_throttlers_only_overrides_nothing() {
+    let app = app(short_long()).await;
+    let r = request(&app).get("/ovr/default").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit-short", "3").expect_header("x-ratelimit-limit-long", "5");
+}
+
+#[corvis::test]
+async fn a_per_name_entry_wins_over_the_bare_key_on_the_same_target() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 10)]).await;
+    request(&app).get("/ovr/bare-and-named").send().await.expect_status(200).expect_header("x-ratelimit-limit", "2");
+}
+
+#[corvis::test]
+async fn invalid_override_values_fail_closed() {
+    let paths = ["/ovr/invalid", "/ovr/negative", "/ovr/fraction", "/ovr/number-tracker", "/ovr/bad-key-generator", "/ovr/missing-tracker"];
+    for path in paths {
+        let app = app_hooks(vec![ThrottlerOptions::new(60_000, 10), throttler("short", 30_000, 3)]).await;
+        let r = request(&app).get(path).send().await;
+        r.expect_status(500).expect_json(json!({ "statusCode": 500, "message": "Internal server error" }));
+        assert!(r.header("x-ratelimit-limit").is_none(), "{path}: no counted hit is reported");
+    }
+}
+
+#[corvis::test]
+async fn a_tracker_from_a_header_separates_clients() {
+    let storage = hooks(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])).with_tracker(client_header);
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").header("x-client", "a").send().await.expect_status(200);
+    c.get("/plain").header("x-client", "a").send().await.expect_status(429);
+    c.get("/plain").header("x-client", "b").send().await.expect_status(200);
+}
+
+#[corvis::test]
+async fn a_key_generator_can_share_a_counter_between_routes() {
+    let storage =
+        ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]).with_key_generator(|_, tracker, name| format!("{name}:{tracker}"));
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/byname").send().await.expect_status(429);
+}
+
+#[corvis::test]
+async fn a_tracker_error_is_returned_unchanged_and_counts_no_hit() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]).with_tracker(|ctx| async move {
+        ctx.request().header("x-client").map(str::to_string).ok_or_else(|| HttpException::new("no client id", 400))
+    });
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    for _ in 0..3 {
+        c.get("/plain").send().await.expect_status(400);
+    }
+    c.get("/plain").header("x-client", "a").send().await.expect_status(200);
+}
+
+#[corvis::test]
+async fn a_route_tracker_beats_the_module_tracker() {
+    let storage = hooks(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])).with_tracker(client_header);
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/ovr/fixed").header("x-client", "a").send().await.expect_status(200);
+    c.get("/ovr/fixed").header("x-client", "b").send().await.expect_status(429);
+}
+
+#[corvis::test]
+async fn a_route_key_generator_beats_the_module_generator() {
+    let storage = hooks(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]))
+        .with_key_generator(|_, tracker, name| format!("{name}:{tracker}"));
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/byname").send().await.expect_status(429);
+    c.get("/ovr/own-key").send().await.expect_status(200);
+}
+
+/// The divergence of design.md, Decision 8: a key generator that returns one key for two throttlers does not make them
+/// share a window or a block.
+#[corvis::test]
+async fn counters_stay_separate_per_throttler() {
+    let storage = ThrottlerStorage::new(vec![throttler("short", 30_000, 100), throttler("long", 60_000, 2)])
+        .with_key_generator(|_, tracker, _| tracker.to_string());
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    for remaining in [99, 98] {
+        let r = c.get("/plain").send().await;
+        r.expect_status(200)
+            .expect_header("x-ratelimit-reset-short", "30")
+            .expect_header("x-ratelimit-remaining-short", &remaining.to_string());
+    }
+    for remaining in [97, 96] {
+        let r = c.get("/plain").send().await;
+        r.expect_status(429)
+            .expect_header("x-ratelimit-reset-short", "30")
+            .expect_header("x-ratelimit-remaining-short", &remaining.to_string());
+        assert!(r.header("retry-after-long").is_some(), "long blocks");
+        assert!(r.header("retry-after-short").is_none(), "short does not");
+    }
+}
+
+#[test]
+fn override_helpers_come_with_the_prelude() {
+    assert_eq!(throttle_key(THROTTLE_LIMIT, "short"), "THROTTLER:LIMITshort");
+    assert_eq!(throttle_key(THROTTLE_KEY_GENERATOR, "short"), "THROTTLER:KEY_GENERATORshort");
+    let d: corvis::common::decorator::CustomDecorator = throttle("short").limit(1).into();
+    assert_eq!(d.entries(), [("THROTTLER:LIMITshort".to_string(), json!(1))].as_slice());
+}
+
+/// The storage of a fixture case: the functions of its module options cannot be recorded, so each case name selects them.
+fn storage_for_case(case: &str, throttlers: Vec<ThrottlerOptions>) -> ThrottlerStorage {
+    let storage = hooks(ThrottlerStorage::new(throttlers));
+    match case {
+        "module-tracker" => storage.with_tracker(client_header),
+        "module-key" => storage.with_key_generator(|_, tracker, name| format!("{name}:{tracker}")),
+        "shared-key" => storage.with_key_generator(|_, tracker, _| tracker.to_string()),
+        _ => storage,
+    }
+}
+
+/// Recorded cases where Corvis differs on purpose: a key generator that returns one key for two throttlers makes the
+/// original share the reporting window and the block between them; Corvis keeps the counters separate (design.md,
+/// Decision 8). The replay asserts that these cases do differ from the recording; Corvis's own values are checked by
+/// `counters_stay_separate_per_throttler`.
+const KNOWN_DIVERGENCES: [&str; 1] = ["shared-key"];
+
+/// Whether a response has the status and the throttler headers of a recorded one (time values within one second).
+fn matches_recording(r: &TestResponse, expected: &Value) -> bool {
+    let mut want: Vec<String> = expected["headers"].as_object().unwrap().keys().cloned().collect();
+    want.sort();
+    r.status as u64 == expected["status"].as_u64().unwrap()
+        && names(r) == want
+        && expected["headers"].as_object().unwrap().iter().all(|(name, value)| {
+            let (got, value) = (r.header(name).unwrap(), value.as_str().unwrap());
+            if name.starts_with("retry-after") || name.starts_with("x-ratelimit-reset") {
+                (got.parse::<i64>().unwrap() - value.parse::<i64>().unwrap()).abs() <= 1
+            } else {
+                got == value
+            }
+        })
+}
+
 /// Header names and values of the original throttler library. `Reset` and `Retry-After` are compared within one
 /// second; entries with `at` are sent that many milliseconds after the first request of their sequence.
 #[corvis::test]
@@ -429,16 +775,25 @@ async fn replays_the_original_library_fixture() {
             .iter()
             .map(|t| throttler(t["name"].as_str().unwrap(), t["ttl"].as_u64().unwrap(), t["limit"].as_u64().unwrap() as u32))
             .collect();
-        let app = app(throttlers).await;
+        let app = app_with(ThrottlerModule::for_root_storage(storage_for_case(case_name, throttlers))).await;
         let c = request(&app);
         let start = std::time::Instant::now();
+        let mut differences = 0;
         for (i, expected) in case["responses"].as_array().unwrap().iter().enumerate() {
             let path = expected["path"].as_str().unwrap();
             if let Some(at) = expected["at"].as_u64() {
                 sleep((at as u128).saturating_sub(start.elapsed().as_millis()) as u64).await;
             }
-            let r = c.get(path).send().await;
+            let mut req = c.get(path);
+            for (name, value) in expected["send"].as_object().into_iter().flatten() {
+                req = req.header(name, value.as_str().unwrap());
+            }
+            let r = req.send().await;
             let at = format!("{case_name} #{i} {path}");
+            if KNOWN_DIVERGENCES.contains(&case_name) {
+                differences += usize::from(!matches_recording(&r, expected));
+                continue;
+            }
             assert_eq!(r.status as u64, expected["status"].as_u64().unwrap(), "{at}");
             let mut want: Vec<String> = expected["headers"].as_object().unwrap().keys().cloned().collect();
             want.sort();
@@ -453,6 +808,9 @@ async fn replays_the_original_library_fixture() {
                     assert_eq!(got, value, "{at}: {name}");
                 }
             }
+        }
+        if KNOWN_DIVERGENCES.contains(&case_name) {
+            assert!(differences > 0, "{case_name} is a known divergence but every response matched the recording");
         }
     }
 }

@@ -243,3 +243,28 @@ under `crates/corvis/` unless stated.
   `default`) and the documented divergences of Decisions 4 and 8.
 - Open question: per-throttler `getTracker`/`generateKey` in `ThrottlerOptions` and function-valued
   `limit`/`ttl`/`blockDuration` are filed as #162 (phase 0.8).
+
+## Implementation notes
+
+- Task 1.1: re-read in `@nestjs/throttler` 6.7.1 and `@nestjs/core` 12.4.0 (`npm ci` from the committed lockfile, run in a
+  scratch folder so no `node_modules` enters the repository). `throttler.decorator.js`, `throttler.guard.js` (per-option
+  `getAllAndOverride` over `[handler, class]`, `toNumber`, `routeX || throttler.X || common.X`) and
+  `reflector.service.js` (`getAllAndOverride` returns the first value that is not `undefined`) match the Context section.
+- Task 1.2: the regenerated `throttler.json` only adds cases (447 added lines, 0 removed): the existing cases are
+  byte-identical. `/ovr/invalid` recorded a 500 with no throttler headers. `shared-key` recorded
+  `x-ratelimit-reset-long: 30` (the short window) on its first response and `retry-after-short: 60` on the fourth, as
+  Decision 8 predicts. Recorded requests carry an optional `send` object (request headers) that the replay sends.
+- A per-name entry that is JSON `null` counts as absent even for `default`, so a bare key on the same target then
+  applies (the spec only fixes "no per-name entry"; null is absent everywhere, Decision 4).
+- The tracker and key generator keys have no bare form (Decision 3 only covers the three numeric options). A bare
+  `THROTTLER:TRACKER` or `THROTTLER:KEY_GENERATOR` key overrides nothing, and the unknown-name warning of Decision 5 also
+  reports it (the spec lists only bare numeric keys; reporting this one is stricter and harmless).
+- Error messages label the options as the original does (`limit`, `ttl`, `blockDuration`) and name the tracker and key
+  generator options `tracker` and `keyGenerator`; the text after the colon is Corvis's own (`expected a non-negative
+  integer within range, got "abc"`).
+- The replay lists `shared-key` in `KNOWN_DIVERGENCES`: each of its responses is compared with the recording, the test
+  requires at least one difference, and `counters_stay_separate_per_throttler` asserts Corvis's values (Decision 8).
+- The route tests that need the process-wide logger (unknown-name warnings, the invalid-value error log, the gateway
+  override) live in `tests/throttler_skip_log_ws.rs`; the other scenarios are in `tests/throttler_headers.rs`.
+- Task 7.5 (corvis-parity) is not run here: the brief leaves it to the maintainer's session. No port app uses the
+  throttler.
