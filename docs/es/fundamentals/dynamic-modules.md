@@ -143,16 +143,32 @@ pub struct AppModule;
 La fábrica se ejecuta en el contexto del módulo dinámico (`MailerModule`), no en el del módulo que lo importa. `ctx.get::<ConfigService>()` funciona porque `ConfigModule` es global. Si la dependencia viene de un módulo no global, añádelo a los imports del módulo dinámico con `.import(...)`; es lo que hace `ScheduleModule::for_root_async(imports, factory)` con su primer argumento.
 :::
 
+## Convención de las variantes asíncronas
+
+Toda variante asíncrona se llama como su método síncrono más `_async` (`for_root` pasa a `for_root_async`, `register` a `register_async`). Sus argumentos son `(is_global, fábrica)` cuando el módulo tiene una opción `is_global`, y `(fábrica)` cuando el módulo es siempre global o nunca lo es. Los imports extra para la fábrica van en el `DynamicModule` devuelto con `.import(...)`.
+
+`is_global` es un argumento, no un campo de las opciones que devuelve la fábrica: la globalidad se decide antes de que corra cualquier fábrica, así que un `is_global` dentro de las opciones devueltas se ignora y manda el argumento.
+
+```rust
+CacheModule::register_async(true, |ctx| async move {
+    let config = ctx.get::<ConfigService>().await?;
+    Ok(CacheOptions { ttl: config.try_get::<u64>("CACHE_TTL")?, ..Default::default() })
+})
+.import(SettingsModule::for_root()) // solo si la fábrica necesita un módulo no global
+```
+
+Si la fábrica devuelve un error, la aplicación no arranca y el mensaje es `Error while instantiating <token>: <causa>`. `ScheduleModule::for_root_async(imports, fábrica)` es anterior a la convención y es la única excepción: recibe sus imports como primer argumento.
+
 ## Los módulos dinámicos incluidos
 
 | Módulo | Métodos |
 |---|---|
-| `ConfigModule` | `for_root(ConfigModuleOptions)`, `for_feature(register_as(..))` |
+| `ConfigModule` | `for_root(ConfigModuleOptions)`, `for_root_async(is_global, fábrica)`, `for_feature(register_as(..))` |
 | `JwtModule` | `register(JwtModuleOptions)`, `register_async(global, fábrica)` |
 | `EventEmitterModule` | `for_root(EventEmitterOptions)` |
 | `ScheduleModule` | `for_root()`, `for_root_with(ScheduleModuleOptions)`, `for_root_async(imports, fábrica)` |
-| `CacheModule` | `register(CacheOptions)` |
-| `ThrottlerModule` | `for_root(vec![ThrottlerOptions])`, `for_root_storage(ThrottlerStorage)` |
+| `CacheModule` | `register(CacheOptions)`, `register_async(is_global, fábrica)` |
+| `ThrottlerModule` | `for_root(vec![ThrottlerOptions])`, `for_root_storage(ThrottlerStorage)`, `for_root_async(fábrica)` |
 | `ServeStaticModule` | `for_root(vec![ServeStaticOptions])` |
 | `MulterModule` | `register(MulterOptions)`, `register_async(fábrica)` |
 | `OrmModule` (`corvis-orm`) | `for_root(OrmModuleOptions)`, `for_root_async(global, fábrica)`, `for_root_from_config(global)` |

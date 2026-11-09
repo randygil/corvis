@@ -103,6 +103,20 @@ ThrottlerModule::for_root_storage(
 Being process memory, each instance of the application counts separately. There is no shared
 storage (Redis or other) included.
 
+## Limits from another provider
+
+`ThrottlerModule::for_root_async(factory)` builds the limits from a factory that can resolve other providers, such as `ConfigService`. The factory returns a `Vec<ThrottlerOptions>` or a configured `ThrottlerStorage`; the module is global, like `for_root`:
+
+```rust
+ThrottlerModule::for_root_async(|ctx| async move {
+    let config = ctx.get::<ConfigService>().await?;
+    let limit = config.get_or("THROTTLE_LIMIT", 10u32);
+    Ok(vec![ThrottlerOptions::new(60_000, limit)])
+})
+```
+
+If the factory fails, the application does not start (`Error while instantiating ThrottlerStorage: ...`).
+
 ## Behind a proxy
 
 The key uses `req.ip()`, which by default is the socket address. Behind a reverse proxy all
