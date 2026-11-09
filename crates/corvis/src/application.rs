@@ -368,6 +368,15 @@ impl CorvisApplication {
         self
     }
 
+    /// `app.use(compression(options))`: compresses responses of compressible types with `br`, `gzip`
+    /// or `deflate` as the client's `Accept-Encoding` allows. Off until this is called; see
+    /// [`crate::http::compression`] for the rules and the differences from the original middleware.
+    #[cfg(feature = "compression")]
+    pub fn enable_compression(&mut self, options: crate::http::compression::CompressionOptions) -> &mut Self {
+        self.config.http_settings.compression = Some(std::sync::Arc::new(options));
+        self
+    }
+
     /// `app.useBodyParser('json' | 'urlencoded', { limit })`: changes the limit (in bytes) of
     /// one of the body parsers (default 100kb). Other names are ignored.
     pub fn use_body_parser(&mut self, parser: &str, limit: usize) -> &mut Self {

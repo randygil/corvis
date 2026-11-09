@@ -380,10 +380,11 @@ impl TestRequest {
         let head = self.method == Method::HEAD;
         let uri: Uri = self.path.parse().unwrap_or_else(|_| Uri::from_static("/"));
         let info = crate::http::express::RequestInfo::new(&self.method, &self.headers);
+        #[cfg(feature = "compression")]
+        let info = info.with_compression(uri.path(), &self.headers, &self.shared.http_settings);
         let req = crate::http::Request::with_parser(self.method, uri, self.headers, self.body, &self.shared.http_settings.body_parser);
-        let mut resp = dispatch(self.shared.clone(), req).await;
-        crate::http::express::finalize(&mut resp, &info, &self.shared.http_settings);
-        let hyper_resp = crate::server::into_hyper(resp, head);
+        let resp = dispatch(self.shared.clone(), req).await;
+        let hyper_resp = crate::server::finish_response(resp, &info, &self.shared.http_settings, head);
         let (parts, body) = hyper_resp.into_parts();
         let body = body.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
         TestResponse { status: parts.status.as_u16(), headers: parts.headers, body }

@@ -261,6 +261,8 @@ pub use posture::{
     RoutePostureMode, RoutePostureOptions, RoutePostureReport, UncheckedSurface,
 };
 
+#[cfg(feature = "compression")]
+pub use http::compression::{CompressionContext, CompressionOptions, should_compress};
 pub use http_adapter::{HttpAdapter, HttpAdapterHost, HttpServer, UpgradeRequest};
 #[cfg(feature = "jwt")]
 pub use jwt::{JwtModule, JwtModuleOptions, JwtService, JwtSignOptions, extract_bearer_token};
@@ -299,6 +301,8 @@ pub mod prelude {
         ThrottlerModule, ThrottlerOptions, Token, UnauthorizedException, UnprocessableEntityException, VERSION_NEUTRAL, Validate,
         ValidationPipe, VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json, module, public, routes,
     };
+    #[cfg(feature = "compression")]
+    pub use crate::{CompressionOptions, should_compress};
     pub use crate::{HttpAdapterHost, StreamableFileOptions};
     pub use async_trait::async_trait;
     pub use serde_json::Value;

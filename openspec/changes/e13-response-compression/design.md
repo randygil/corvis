@@ -206,3 +206,46 @@ compressible 2.0.18 and mime-db 1.54.0)**
 - Q2: confirmed: responses with `Content-Range` and `text/event-stream` responses are not compressed. Both divergences
   from the reference are documented.
 - Q3: confirmed: per-response brotli window.
+
+## Implementation notes
+
+- **Reference versions recorded** (task 1.1): `compression` 1.8.2, negotiator 0.6.4, compressible 2.0.18, mime-db 1.54.0,
+  `@nestjs/*` 12.4.0 (express 5.3.0), Node v24.13.0. The generated table has 822 entries. The fixture records 220
+  requests, 63 negotiation inputs and 46 types.
+- **Layout.** `src/http/compression/{mod,negotiate,body,compressible,tests}.rs`. `compressible()` and `should_compress()`
+  are public (`corvis::http::compression`, with `CompressionOptions`, `CompressionContext`, `should_compress` re-exported at
+  the crate root and in the prelude).
+- **`Vary`: its own function.** `router::cors::vary_append` re-joins the values trimmed, while the `vary` package keeps the
+  original header text and appends `, field` (`Origin,Cookie` becomes `Origin,Cookie, Accept-Encoding`). Compression uses
+  `compression::vary_append`, a faithful port of the package, so the header is the same byte for byte; `cors` and
+  `Res::vary` are untouched. Several `Vary` header lines are joined with `, ` and replaced by one, like Node's array handling.
+- **Header values.** Several `Accept-Encoding` lines are joined with `, ` (Node's `req.headers`); several
+  `Cache-Control` lines are all checked for `no-transform`. `Content-Length` is read with a port of JavaScript's
+  `Number()` (so `0x10` is 16 and `abc` is `NaN`, which is not below the threshold); `q` values with a port of `parseFloat`.
+- **Differential replay goes through a listening server, not the test client.** The test client does not add the
+  `Content-Length` of raw bodies (hyper does on the wire), so comparing `Content-Length` presence with the original needs
+  the real server. The test client is covered by the scenario tests and by `test_client_and_server_agree`.
+- **Fixture details.** The recorded `ETag` of static files is compared for presence only (it contains the mtime); the
+  `encoded` route (a gzip body with its own `Content-Encoding`) is compared on the gunzipped body and without the exact
+  `ETag` or `Content-Length` (Node's zlib and `miniz_oxide` produce different bytes). The `Range` cases are recorded
+  against the original (which compresses the `206`) and asserted against the documented Corvis behavior.
+- **Task 4.3, measured peak heap above the idle server** (`tests/compression_memory.rs`, a counting allocator; the
+  figures include the output that the test client collects):
+
+  | Body | gzip | deflate | brotli |
+  |---|---|---|---|
+  | 1 KiB | 347 KiB | 347 KiB | 559 KiB (window 2^16) |
+  | 5 MiB stream, no length | 413 KiB | 413 KiB | 7.6 MiB (window 2^20) |
+  | 5 MiB static file | 2.4 MiB | 2.4 MiB | 11.1 MiB (window 2^22) |
+
+  A small brotli response is far below Node's 4 MiB window. A large brotli body of known length does need about 11 MiB
+  (4 MiB window plus quality-4 tables); this is the per-response bound the docs state, and a reason for the open question
+  about a concurrency cap.
+- **Throughput** (one core, release, 8 MiB of JSON rows, encoders only): gzip 1 / 6 / 9 at 640 / 84 / 46 MiB/s, brotli
+  quality 0 / 4 / 6 / 11 at 694 / 131 / 65 / 0.9 MiB/s. Used in the docs.
+- **CI.** `compression` is in the per-feature clippy loop, and the Linux test job runs
+  `cargo test -p corvis --features compression`. `actionlint` is not installed here, so the workflow was not linted.
+- **Not done: 7.5.** The parity check is run by the maintainer's session, as the implementation brief says.
+- **`cargo deny check`** passes (advisories, bans, licenses, sources); the added crates are `flate2`, `miniz_oxide`,
+  `crc32fast`, `adler2`, `simd-adler32`, `brotli`, `brotli-decompressor`, `alloc-no-stdlib`, `alloc-stdlib`. Cargo.lock also
+  lists `zlib-rs` (an optional backend of `flate2`, not compiled). No new license was needed.

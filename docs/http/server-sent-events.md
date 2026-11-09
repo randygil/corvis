@@ -63,6 +63,9 @@ breaks are removed from `event` and `id`. User text cannot inject fields or even
 The response carries `Content-Type: text/event-stream`, `Cache-Control: no-cache`,
 `Connection: keep-alive` and `X-Accel-Buffering: no` (so nginx does not accumulate events).
 
+Corvis never compresses SSE responses, even when [compression](/http/compression) is enabled, so each event reaches
+the client as soon as it is produced. If a proxy compresses responses, exclude `text/event-stream` there as well.
+
 An ongoing SSE response does not count as inactivity for `keep_alive_timeout`: the connection
 stays open as long as the stream produces events.
 

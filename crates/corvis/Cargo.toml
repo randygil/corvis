@@ -46,15 +46,20 @@ memchr = "2"
 memory-stats = "1"
 tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring", "tls12"] }
 webpki-roots = { version = "0.26", optional = true }
+flate2 = { version = "1", optional = true }
+brotli = { version = "9", optional = true }
 
 [features]
 default = ["jwt", "websockets"]
 jwt = ["dep:jsonwebtoken"]
 websockets = ["dep:tokio-tungstenite"]
 health-tls = ["dep:tokio-rustls", "dep:webpki-roots"]
+compression = ["dep:flate2", "dep:brotli"]
 
 [dev-dependencies]
 proptest = "1"
 tokio = { workspace = true, features = ["test-util"] }
 serde = { workspace = true }
 tokio-tungstenite = "0.24"
+flate2 = "1"
+brotli = "9"

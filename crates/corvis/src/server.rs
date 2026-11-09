@@ -181,6 +181,23 @@ pub(crate) fn into_hyper(resp: Response, head: bool) -> hyper::Response<ResBody>
     builder.body(body).unwrap_or_else(|_| hyper::Response::new(full(Bytes::new())))
 }
 
+/// Finishes a handler's response: the Express defaults, the conversion to the wire response and,
+/// when the application enabled it, compression. The server and the test client both end here.
+pub(crate) fn finish_response(
+    mut resp: Response,
+    info: &crate::http::express::RequestInfo,
+    settings: &crate::http::HttpSettings,
+    head: bool,
+) -> hyper::Response<ResBody> {
+    crate::http::express::finalize(&mut resp, info, settings);
+    let wire = into_hyper(resp, head);
+    #[cfg(feature = "compression")]
+    if let Some(options) = &settings.compression {
+        return crate::http::compression::apply(wire, info, options);
+    }
+    wire
+}
+
 // ---------------------------------------------------------------------------
 // Request bodies
 // ---------------------------------------------------------------------------
@@ -364,8 +381,9 @@ async fn handle(
     }
     let head = req.method() == http::Method::HEAD;
     let info = crate::http::express::RequestInfo::new(req.method(), req.headers());
-    let mut resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await
-    {
+    #[cfg(feature = "compression")]
+    let info = info.with_compression(req.uri().path(), req.headers(), &shared.http_settings);
+    let resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await {
         Ok(r) => {
             let pending = r.get::<PendingBodySlot>();
             let resp = dispatch(shared.clone(), r).await;
@@ -381,8 +399,7 @@ async fn handle(
         }
         Err(resp) => resp,
     };
-    crate::http::express::finalize(&mut resp, &info, &shared.http_settings);
-    Ok(into_hyper(resp, head))
+    Ok(finish_response(resp, &info, &shared.http_settings, head))
 }
 
 // ---------------------------------------------------------------------------
