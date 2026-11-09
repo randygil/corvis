@@ -60,6 +60,13 @@ jobs:
         with:
           save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Each feature of corvis on its own
+        shell: bash
+        run: |
+          cargo clippy -p corvis --no-default-features -- -D warnings
+          for f in jwt websockets health-tls; do
+            cargo clippy -p corvis --no-default-features --features "$f" -- -D warnings
+          done
 
   # Linux and Windows are separate jobs because service containers only run on Linux runners.
   test-linux:

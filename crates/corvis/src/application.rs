@@ -291,7 +291,7 @@ impl CorvisApplication {
         #[cfg(feature = "websockets")]
         let gateways = crate::websockets::posture_gateways(shared.gateways.values().map(|g| g.as_ref()));
         #[cfg(not(feature = "websockets"))]
-        let gateways = Vec::new();
+        let gateways: Vec<crate::posture::GatewayPosture> = Vec::new();
         let mut unchecked: Vec<crate::posture::UncheckedSurface> =
             shared.static_dirs.iter().map(|d| crate::posture::UncheckedSurface::StaticFiles { serve_root: d.serve_root.clone() }).collect();
         unchecked.extend(gateways.iter().map(|g| crate::posture::UncheckedSurface::WsHandshake {

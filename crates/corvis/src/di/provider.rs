@@ -63,6 +63,8 @@ pub(crate) struct ErasedHooks {
     pub before_application_shutdown: Option<ErasedSignalHook>,
     pub on_application_shutdown: Option<ErasedSignalHook>,
     pub handlers: Option<ErasedExplorer>,
+    // Only read by the WebSocket runtime; set by every provider so the hook table stays the same.
+    #[cfg_attr(not(feature = "websockets"), allow(dead_code))]
     pub gateway: Option<ErasedGateway>,
 }
 
