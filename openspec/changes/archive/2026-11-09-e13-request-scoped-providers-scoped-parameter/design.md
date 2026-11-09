@@ -100,3 +100,12 @@ Current code this change builds on (verified):
   `RequestIdInterceptor` on `CatsController`, and a public `GET /api/v1/cats/request-id` route that takes
   `Scoped<RequestContext>`. The OpenAPI test asserts that the parameter adds nothing to the document.
 - Not done here: task 5.6 (the parity check), which the maintainer's session runs.
+
+## Verification (2026-11-09)
+
+Verified together in batch-o (#157, #158, #115, #156): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone are clean; `cargo test
+--workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed 1252 tests and `cargo test -p corvis --features
+compression` passed 912, 0 failures; naming, crate files, the examples (32/32 smoke checks) and `npm run docs:check`
+pass. CI run 42663786027 is green on Linux and Windows. corvis-parity (batch-o before #156): consi 832/832, facten
+727/727, houseplan 636/636 equal. Security review closed without open findings. The benchmark of the base change covers this one.

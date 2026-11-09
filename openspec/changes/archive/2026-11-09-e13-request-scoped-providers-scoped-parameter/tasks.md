@@ -57,7 +57,7 @@ In `crates/corvis/tests/di/request_scope.rs` (created by the first change):
 - [x] 5.3 `cargo test --workspace` passes
 - [x] 5.4 Regression tests: every scenario of both spec deltas maps to a test (list the mapping in the PR description)
 - [x] 5.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/` passes
-- [ ] 5.6 Framework runtime code changed (`FromContext` impl, error text): run the `corvis-parity` check and verify the
+- [x] 5.6 Framework runtime code changed (`FromContext` impl, error text): run the `corvis-parity` check and verify the
   three port apps (consi, facten, houseplan) keep 0 apidiff differences
 
 ## Workflow follow-up

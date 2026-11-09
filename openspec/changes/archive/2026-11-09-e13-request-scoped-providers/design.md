@@ -233,3 +233,18 @@ request scope with a startup error instead of the original framework's scope bub
   and `migration-guide.md` (EN and ES) were updated; the follow-up change expands the migration guide.
 - Not done here: the benchmark (task 7.1) and the parity check (task 9.6), which the maintainer runs. A nested
   `app.handle(req.clone())` from a handler shares the outer instances (end-to-end test `nested`).
+
+## Verification (2026-11-09)
+
+Verified together in batch-o (#157, #158, #115, #156): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone are clean; `cargo test
+--workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed 1252 tests and `cargo test -p corvis --features
+compression` passed 912, 0 failures; naming, crate files, the examples (32/32 smoke checks) and `npm run docs:check`
+pass. CI run 42663786027 is green on Linux and Windows. corvis-parity (batch-o before #156): consi 832/832, facten
+727/727, houseplan 636/636 equal. Security review closed without open findings.
+
+Benchmark (task 7.1): `bench/run.sh` with `FRAMEWORKS=corvis` on 4c0577d (before) and da5f508 (the #115 merge), two
+alternating rounds on the same machine. Best req/s before / after: `GET /` 67,978 / 66,281; `GET /json` 66,751 /
+68,932; `GET /users/:id` 67,521 / 68,307; `POST /users` 69,357 / 63,646. The same binary varied between about 46k and
+69k req/s across rounds, so the difference is within the benchmark's noise; no regression attributable to the change
+for an app without request-scoped providers.

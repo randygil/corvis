@@ -79,7 +79,7 @@ requests through the testing client or `listen_in_background` on `127.0.0.1:0`. 
 
 ## 7. Performance
 
-- [ ] 7.1 Run the synthetic benchmark (`bash bench/run.sh`, see `openspec/specs/bench/synthetic/spec.md`) on the commit before and
+- [x] 7.1 Run the synthetic benchmark (`bash bench/run.sh`, see `openspec/specs/bench/synthetic/spec.md`) on the commit before and
   after this change for an app without request-scoped providers; verify the throughput difference is within the
   benchmark's noise and record both numbers in the PR description
 
@@ -104,7 +104,7 @@ requests through the testing client or `listen_in_background` on `127.0.0.1:0`. 
 - [x] 9.4 Regression tests: every scenario of both spec deltas maps to a test in
   `crates/corvis/tests/di/request_scope.rs` (list the mapping in the PR description)
 - [x] 9.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/` passes
-- [ ] 9.6 Framework runtime code changed (DI container, router dispatch, macros): run the `corvis-parity` check and
+- [x] 9.6 Framework runtime code changed (DI container, router dispatch, macros): run the `corvis-parity` check and
   verify the three port apps (consi, facten, houseplan) keep 0 apidiff differences
 
 ## Workflow follow-up
