@@ -138,6 +138,16 @@ Reglas de convivencia con los gateways:
 
 Un `panic` dentro de un listener o del callback de `handle_upgrade` se registra y cierra el socket con `1011`; el socket sale de `wss.clients()` y `on_close` se emite siempre.
 
+### Pares que dejan de leer
+
+El [`send_timeout`](/es/http/performance#clientes-que-dejan-de-leer-send-timeout) del servidor también cubre las conexiones actualizadas: cuando el
+socket de un `WebSocket` no acepta nada durante ese tiempo mientras hay tramas en cola para él, la conexión se destruye
+sin trama de cierre. El socket pasa a `CLOSED` de inmediato, `on_close` y `closed()` informan `1006` con motivo vacío y
+las llamadas pendientes a `send_and_wait` fallan. Los bytes que el par acepta de cualquier trama reinician el plazo, las
+tramas recibidas (incluidos los pings) no, y una conexión sin nada que enviar nunca se cierra por esto, así que usa un
+heartbeat para pares inactivos muertos. `ServerOptions::send_timeout(None)` lo desactiva. El paquete `ws` no tiene este
+límite. Ver [gateways](/es/websockets/gateways#pares-que-dejan-de-leer).
+
 ## Seguridad
 
 Los guards globales y los de los gateways no protegen los listeners `upgrade`: valida el acceso dentro del listener, como hace el ejemplo con el token de moderador. Lo mismo vale para los archivos estáticos y las rutas de Swagger/Scalar; ver [Guards](/es/websockets/guards).
