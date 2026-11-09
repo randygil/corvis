@@ -48,10 +48,13 @@
 
 ## 4. Publishable run
 
-- [ ] 4.1 With no other heavy process running (no builds, no parity suites), run the full benchmark with
+- [x] 4.1 With no other heavy process running (no builds, no parity suites), run the full benchmark with
   `--pool equal` and then `--pool default`; verify both summaries have 0 errors and 0 unexpected statuses, or
   document any in the page
-- [ ] 4.2 Commit-ready results: keep the two `results/<date>-<label>/` folders (summary.json and results.md); verify
+  (2026-11-08, quiet machine, TIME_WAIT 0 and 178 before the runs: equal pool 18:24 to 18:54, default pool 18:54 to
+  19:24; 0 errors and 0 unexpected statuses in both; the page notes the original's saturation in the health-check
+  latency)
+- [x] 4.2 Commit-ready results: keep the two `results/<date>-<label>/` folders (summary.json and results.md); verify
   `report.mjs` regenerates the same `results.md` from each summary
 
 ## 5. Documentation
@@ -66,8 +69,8 @@
 - [x] 5.3 Link the new page from the "Performance" section of `docs/http/performance.md` and from "Measured
   performance" in `docs/faq/corvis-vs-fastify-express-hono.md`, and the same in their Spanish translations; verify
   `npm run docs:check` in `docs/` passes
-  (links added in the four pages; left unticked until `npm run docs:check` runs, see 6.5; 5.2 is also waiting for
-  `npm run docs:dev`)
+  (links added in the four pages; `npm run docs:check` passed on 2026-11-08, 176 pages per language; `docs:dev` was
+  not run, the sidebar parity is covered by docs:check)
 
 ## 6. Definition of done
 
@@ -84,8 +87,8 @@
   Abort path: a wrong expected product count stopped the run before measuring (exit 1) and left no process and no
   benchmark database; a missing app made it print the build commands and exit 2.
 - [x] 6.5 Docs updated in English and Spanish (`docs/` and `docs/es/`); `npm run docs:check` in `docs/` passes
-  (pages, links and sidebar entry written in both languages; `docs/node_modules` does not exist in this worktree, so
-  `npm run docs:check` and `docs:dev` were skipped for the maintainer's session; `scripts/check-naming.mjs` passes)
+  (`npm run docs:check` passed with docs/node_modules linked from the main checkout and then unlinked;
+  `scripts/check-naming.mjs` passes)
 - [x] 6.6 corvis-parity: no framework runtime code changes in this change, so the parity check is not required;
   confirm with `git diff --stat` that only `bench/`, `docs/` and `.gitignore` changed
   (also changed: `scripts/check-naming.mjs`, to scan `bench/port-vs-original/**`, and this change's design.md and
