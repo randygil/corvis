@@ -12,6 +12,7 @@ use super::error::DiError;
 use super::injectable::{Injectable, ResolveCtx, unknown_dependency};
 use super::module::{ConfigureFn, ExportItem, ModuleDefinition, ModuleImport};
 use super::provider::{Built, DeclaredDeps, ErasedHooks, Instance, Provider, Scope, downcast, erase};
+use super::request_scope::RequestCtx;
 use super::token::Token;
 use crate::common::lifecycle::HookKind;
 use crate::router::controller::ControllerDef;
@@ -70,6 +71,8 @@ pub struct Container {
     /// Concrete instances behind `use_class_as` providers; hooks, handlers and gateways run on these.
     hook_targets: Mutex<HashMap<(ModuleId, Token), Instance>>,
     order: Mutex<Vec<(ModuleId, Token)>>,
+    /// Some registered provider has the request scope: only then does `dispatch` install a per-request store.
+    has_request_scoped: bool,
 }
 
 /// Overrides applied while scanning (used by the testing module).
@@ -291,34 +294,137 @@ impl Container {
         }
 
         let globals = modules.iter().filter(|m| m.global).map(|m| m.id).collect();
-        let container = Container {
+        let mut container = Container {
             modules,
             globals,
             root,
             instances: Mutex::new(HashMap::new()),
             hook_targets: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
+            has_request_scoped: false,
         };
-        container.validate_transients()?;
+        let has_request_scoped = container.all_providers().any(|(m, p)| container.effective_scope(m, p) == Scope::Request);
+        container.has_request_scoped = has_request_scoped;
+        container.reject_request_scoped_enhancers()?;
+        container.validate_lazy_providers()?;
+        container.check_request_scope_consumers()?;
         Ok(Arc::new(container))
     }
 
-    /// Checks the declared dependencies of every transient provider without creating anything, so a missing
-    /// dependency stops startup instead of the first resolution. Singletons are validated by being instantiated;
-    /// factory providers declare nothing and are not checked.
-    fn validate_transients(&self) -> Result<(), DiError> {
+    /// Whether any registered provider is request-scoped.
+    pub(crate) fn has_request_scoped(&self) -> bool {
+        self.has_request_scoped
+    }
+
+    /// Global enhancers (`Provider::app_*`) are created once at startup, so they cannot be request-scoped.
+    fn reject_request_scoped_enhancers(&self) -> Result<(), DiError> {
+        for (module, provider) in self.all_providers() {
+            let Some(enhancer) = &provider.enhancer else { continue };
+            if self.effective_scope(module, provider) == Scope::Request {
+                return Err(DiError::Other(format!(
+                    "global {} {} cannot be request-scoped: global guards, interceptors, pipes and filters are created once. Resolve the request-scoped provider inside it with ModuleRef::resolve_for(&request) instead",
+                    enhancer.kind(),
+                    provider.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Singletons, controllers and gateways are created once, so none of them may depend on a request-scoped provider
+    /// or on the current `Request`, directly, through an alias or through transient providers (which are created
+    /// along with their consumer). Without this check they would keep the instance of the first request.
+    fn check_request_scope_consumers(&self) -> Result<(), DiError> {
+        for node in &self.modules {
+            for provider in &node.providers {
+                if self.effective_scope(node.id, provider) == Scope::Default {
+                    self.check_consumer(node.id, provider)?;
+                }
+            }
+            for controller in &node.controllers {
+                let provider = &controller.provider;
+                if self.effective_scope(node.id, provider) == Scope::Request {
+                    return Err(DiError::Other(format!(
+                        "controller {} cannot be request-scoped: controllers are created once and bound to their routes at startup",
+                        provider.name
+                    )));
+                }
+                self.check_consumer(node.id, provider)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_consumer(&self, owner: ModuleId, provider: &Provider) -> Result<(), DiError> {
+        let consumer = provider.token.display_name();
+        let mut chain = vec![consumer.clone()];
+        self.scan_for_request_scope(&consumer, owner, provider, &mut chain, &mut HashSet::new())
+    }
+
+    fn scan_for_request_scope(
+        &self,
+        consumer: &str,
+        owner: ModuleId,
+        provider: &Provider,
+        chain: &mut Vec<String>,
+        seen: &mut HashSet<(ModuleId, Token)>,
+    ) -> Result<(), DiError> {
+        if !seen.insert((owner, provider.token.clone())) {
+            return Ok(());
+        }
+        let deps: Vec<Token> = match (&provider.alias_of, &provider.deps) {
+            (Some(target), _) => vec![target.clone()],
+            (None, DeclaredDeps::Fields(declared)) => declared.items.iter().map(|d| d.token.clone()).collect(),
+            (None, DeclaredDeps::Unknown) => Vec::new(),
+        };
+        for dep in deps {
+            let dependency_error = |chain: &[String], name: String| DiError::RequestScopedDependency {
+                consumer: consumer.to_string(),
+                dependency: name,
+                chain: chain.join(" -> "),
+            };
+            if is_request_token(&dep) {
+                chain.push(dep.display_name());
+                return Err(dependency_error(chain, dep.display_name()));
+            }
+            let Some((o, p)) = self.lookup(owner, &dep) else { continue };
+            match self.effective_scope(o, p) {
+                Scope::Request => {
+                    chain.push(dep.display_name());
+                    return Err(dependency_error(chain, dep.display_name()));
+                }
+                Scope::Transient => {
+                    chain.push(dep.display_name());
+                    self.scan_for_request_scope(consumer, o, p, chain, seen)?;
+                    chain.pop();
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks the declared dependencies of every transient and request-scoped provider without creating anything, so a
+    /// missing dependency or a cycle stops startup instead of the first resolution. Singletons are validated by being
+    /// instantiated; factory providers declare nothing and are not checked.
+    fn validate_lazy_providers(&self) -> Result<(), DiError> {
         let mut done = HashSet::new();
         for node in &self.modules {
             for provider in &node.providers {
-                if self.is_transient(node.id, provider) {
-                    self.validate_transient(node.id, provider, &mut Vec::new(), &mut done)?;
+                if self.is_lazy(node.id, provider) {
+                    self.validate_lazy_provider(node.id, provider, &mut Vec::new(), &mut done)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn validate_transient(
+    /// Transient and request-scoped providers are built on demand instead of at startup.
+    fn is_lazy(&self, owner: ModuleId, provider: &Provider) -> bool {
+        self.effective_scope(owner, provider) != Scope::Default
+    }
+
+    fn validate_lazy_provider(
         &self,
         owner: ModuleId,
         provider: &Provider,
@@ -337,15 +443,18 @@ impl Container {
         path.push(key.clone());
         if let Some(target) = &provider.alias_of {
             let (o, p) = self.lookup(owner, target).ok_or_else(|| DiError::NotFound { token: target.display_name() })?;
-            if self.is_transient(o, p) {
-                self.validate_transient(o, p, path, done)?;
+            if self.is_lazy(o, p) {
+                self.validate_lazy_provider(o, p, path, done)?;
             }
         } else if let DeclaredDeps::Fields(declared) = &provider.deps {
             for dep in &declared.items {
+                if is_request_token(&dep.token) {
+                    continue;
+                }
                 match self.lookup(owner, &dep.token) {
                     Some((o, p)) => {
-                        if self.is_transient(o, p) {
-                            self.validate_transient(o, p, path, done)?;
+                        if self.is_lazy(o, p) {
+                            self.validate_lazy_provider(o, p, path, done)?;
                         }
                     }
                     None if dep.optional => {}
@@ -420,21 +529,22 @@ impl Container {
         None
     }
 
-    /// A provider is transient when its scope says so or when it is an alias (`use_existing`) of a transient one.
-    fn is_transient(&self, owner: ModuleId, provider: &Provider) -> bool {
+    /// The scope a provider resolves with: its own when it is not the default, otherwise the one of the provider it is
+    /// an alias (`use_existing`) of.
+    pub(crate) fn effective_scope(&self, owner: ModuleId, provider: &Provider) -> Scope {
         let (mut owner, mut provider) = (owner, provider);
         let mut seen = HashSet::new();
         loop {
-            if provider.scope == Scope::Transient {
-                return true;
+            if provider.scope != Scope::Default {
+                return provider.scope;
             }
-            let Some(target) = &provider.alias_of else { return false };
+            let Some(target) = &provider.alias_of else { return Scope::Default };
             if !seen.insert((owner, provider.token.clone())) {
-                return false;
+                return Scope::Default;
             }
             match self.lookup(owner, target) {
                 Some((o, p)) => (owner, provider) = (o, p),
-                None => return false,
+                None => return Scope::Default,
             }
         }
     }
@@ -444,27 +554,34 @@ impl Container {
         module: ModuleId,
         token: Token,
         path: Arc<Vec<(ModuleId, Token)>>,
+        request: Option<RequestCtx>,
     ) -> BoxFuture<'static, Result<Instance, DiError>> {
         async move {
             let (owner, provider) = match self.lookup(module, &token) {
                 Some((o, p)) => (o, p.clone()),
                 None => return Err(DiError::NotFound { token: token.display_name() }),
             };
-            self.resolve_provider(owner, provider, path).await
+            self.resolve_provider(owner, provider, path, request).await
         }
         .boxed()
     }
 
+    /// Resolves a provider by its scope: singletons come from (or go to) the container and are built without a
+    /// request, transient providers are built for each call with the caller's request, and request-scoped providers
+    /// come from the store of `request` (an error without one).
     pub(crate) fn resolve_provider(
         self: Arc<Self>,
         owner: ModuleId,
         provider: Provider,
         path: Arc<Vec<(ModuleId, Token)>>,
+        request: Option<RequestCtx>,
     ) -> BoxFuture<'static, Result<Instance, DiError>> {
         async move {
             let key = (owner, provider.token.clone());
-            let transient = self.is_transient(owner, &provider);
-            if !transient && let Some(i) = self.instances.lock().unwrap().get(&key) {
+            let scope = self.effective_scope(owner, &provider);
+            if scope == Scope::Default
+                && let Some(i) = self.instances.lock().unwrap().get(&key)
+            {
                 return Ok(i.clone());
             }
             if path.iter().any(|k| k == &key) {
@@ -475,6 +592,10 @@ impl Container {
             if path.len() >= MAX_RESOLUTION_DEPTH {
                 return Err(depth_error(&path, &provider.token));
             }
+            if scope == Scope::Request && request.is_none() {
+                let chain = if path.is_empty() { String::new() } else { chain_names(&path, Some(&provider.token)) };
+                return Err(DiError::OutsideRequest { token: provider.token.display_name(), chain });
+            }
             let mut new_path = (*path).clone();
             new_path.push(key.clone());
             let ctx = ResolveCtx {
@@ -483,22 +604,31 @@ impl Container {
                 requester: Arc::from(provider.name.as_str()),
                 deps: &[],
                 path: Arc::new(new_path),
+                // A singleton must never capture a request.
+                request: if scope == Scope::Default { None } else { request.clone() },
             };
             let scoped_path = ctx.path.clone();
-            let Built { instance, hook_target } = RESOLUTION_PATH.scope(scoped_path, (provider.factory)(ctx)).await?;
-            if transient {
-                return Ok(instance);
+            let build = RESOLUTION_PATH.scope(scoped_path, (provider.factory)(ctx));
+            match scope {
+                Scope::Request => {
+                    let store = request.expect("checked above").scope;
+                    store.get_or_try_init(key, || async move { build.await.map(|built| built.instance) }).await
+                }
+                Scope::Transient => Ok(build.await?.instance),
+                _ => {
+                    let Built { instance, hook_target } = build.await?;
+                    let mut map = self.instances.lock().unwrap();
+                    if let Some(existing) = map.get(&key) {
+                        return Ok(existing.clone());
+                    }
+                    map.insert(key.clone(), instance.clone());
+                    if let Some(target) = hook_target {
+                        self.hook_targets.lock().unwrap().insert(key.clone(), target);
+                    }
+                    self.order.lock().unwrap().push(key);
+                    Ok(instance)
+                }
             }
-            let mut map = self.instances.lock().unwrap();
-            if let Some(existing) = map.get(&key) {
-                return Ok(existing.clone());
-            }
-            map.insert(key.clone(), instance.clone());
-            if let Some(target) = hook_target {
-                self.hook_targets.lock().unwrap().insert(key.clone(), target);
-            }
-            self.order.lock().unwrap().push(key);
-            Ok(instance)
         }
         .boxed()
     }
@@ -507,6 +637,12 @@ impl Container {
     /// (guards, pipes, interceptors... referenced by type) and caches it per module.
     pub(crate) fn construct_injectable<T: Injectable>(self: Arc<Self>, module: ModuleId) -> BoxFuture<'static, Result<Arc<T>, DiError>> {
         async move {
+            if T::scope() == Scope::Request {
+                return Err(DiError::Other(format!(
+                    "{} cannot be request-scoped: guards, interceptors, pipes, filters and middleware referenced by type are created once. Resolve the request-scoped provider inside it with ModuleRef::resolve_for(&request) instead",
+                    crate::di::token::short_type_name(std::any::type_name::<T>())
+                )));
+            }
             let key = (module, Token::of::<T>());
             if let Some(i) = self.instances.lock().unwrap().get(&key)
                 && let Some(t) = downcast::<T>(i)
@@ -531,6 +667,7 @@ impl Container {
                 requester: Arc::from(crate::di::token::short_type_name(std::any::type_name::<T>())),
                 deps: &[],
                 path: path.clone(),
+                request: None,
             };
             let value = Arc::new(RESOLUTION_PATH.scope(path, T::construct(ctx)).await?);
             if T::scope() != Scope::Transient {
@@ -547,13 +684,13 @@ impl Container {
         for m in 0..self.modules.len() {
             let node = &self.modules[m];
             for p in node.providers.clone() {
-                if self.is_transient(m, &p) {
+                if self.is_lazy(m, &p) {
                     continue;
                 }
-                self.clone().resolve_provider(m, p, Arc::new(Vec::new())).await?;
+                self.clone().resolve_provider(m, p, Arc::new(Vec::new()), None).await?;
             }
             for c in &node.controllers {
-                self.clone().resolve_provider(m, c.provider.clone(), Arc::new(Vec::new())).await?;
+                self.clone().resolve_provider(m, c.provider.clone(), Arc::new(Vec::new()), None).await?;
             }
             if log && !node.internal {
                 logger.log(format!("{} dependencies initialized", node.name));
@@ -679,4 +816,16 @@ fn depth_error(path: &[(ModuleId, Token)], next: &Token) -> DiError {
     let mut chain: Vec<String> = path[tail..].iter().map(|(_, t)| t.display_name()).collect();
     chain.push(next.display_name());
     DiError::Circular { chain: format!("... -> {}", chain.join(" -> ")) }
+}
+
+/// `Token::of::<Request>()`, the dependency a `Request` field declares: the current request, not a provider.
+fn is_request_token(token: &Token) -> bool {
+    *token == Token::of::<crate::http::Request>()
+}
+
+/// The names of a resolution path joined with ` -> `, followed by `next` when given.
+pub(crate) fn chain_names(path: &[(ModuleId, Token)], next: Option<&Token>) -> String {
+    let mut names: Vec<String> = path.iter().map(|(_, t)| t.display_name()).collect();
+    names.extend(next.map(Token::display_name));
+    names.join(" -> ")
 }

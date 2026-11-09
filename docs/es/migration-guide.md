@@ -21,6 +21,8 @@ Mientras tanto, esta guía sirve a quien llega desde un framework de Node.js con
 | Inyección por token | `#[inject("TOKEN")]` sobre el campo |
 | Providers de valor, clase, factory y alias | `Provider::use_value`, `use_class`, `use_factory`, `use_existing` |
 | Scope transitorio | `#[injectable(scope = "transient")]` |
+| `Scope.REQUEST` | `#[injectable(scope = "request")]`, consumido con `Scoped<T>` o `ModuleRef::resolve_for` |
+| `@Inject(REQUEST)` | un campo `Request` en un provider con scope por petición (`ResolveCtx::request()` en una factory) |
 | Guard, pipe, interceptor o filtro global registrado como provider | `Provider::app_guard::<G>()`, `app_pipe`, `app_interceptor`, `app_filter` |
 
 Ver [Módulos](/es/modules), [Providers](/es/providers) y [Providers personalizados](/es/fundamentals/custom-providers).
@@ -55,7 +57,7 @@ Los atributos de clase (`#[use_guards]`, `#[set_metadata]`...) van **debajo** de
 
 ## Diferencias que vale la pena conocer
 
-- **Sin scope por petición.** Solo hay providers singleton y transient. Para datos por petición usa las extensiones de la request (`req.insert`, `req.get`) o `FromContext`. Ver [Scopes de inyección](/es/fundamentals/injection-scopes).
+- **Scope por petición sin propagación.** `#[injectable(scope = "request")]` da una instancia por petición, pero un singleton, controller o gateway que depende de ella es un error de arranque en lugar de volverse él mismo por petición: recibe un parámetro `Scoped<T>` en el handler (o usa `ModuleRef::resolve_for`) en cada petición. Para datos simples por petición también puedes usar las extensiones de la request (`req.insert`, `req.get`) o `FromContext`. Ver [Scopes de inyección](/es/fundamentals/injection-scopes).
 - **Sin `forwardRef`.** Una dependencia circular entre providers es un error al arrancar. Ver [Dependencias circulares](/es/fundamentals/circular-dependency).
 - **Interceptors sin observables.** `CallHandler::handle()` devuelve un `Future`: puedes transformar, medir y cachear la respuesta, pero no componer operadores de flujos.
 - **Pipes sobre JSON.** Los pipes reciben y devuelven `serde_json::Value`; el resultado se deserializa en el tipo del parámetro.

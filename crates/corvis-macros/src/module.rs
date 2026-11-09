@@ -71,7 +71,7 @@ pub fn expand(args: TokenStream, mut item: ItemStruct) -> syn::Result<TokenStrea
         }
     });
 
-    let injectable = injectable_impl(&mut item, &InjectableOptions { transient: false })?;
+    let injectable = injectable_impl(&mut item, &InjectableOptions::default())?;
     let name = &item.ident;
     let name_str = name.to_string();
     let exportable = export_impl(&item, true);
