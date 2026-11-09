@@ -88,7 +88,8 @@ The guard reads four metadata keys, on the method or on the controller:
 
 | Constant | Effect |
 |---|---|
-| `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` skips the limit |
+| `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` skips the throttler named `default`, like a bare `@SkipThrottle()` |
+| `skip_throttle([..])`, `skip_throttle_key(name)` | Skip throttlers by name (see [Skipping throttlers](#skipping-throttlers)) |
 | `THROTTLE_LIMIT` | Changes the maximum number of requests |
 | `THROTTLE_TTL` | Changes the window, in milliseconds |
 | `THROTTLE_BLOCK_DURATION` | Changes the block duration, in milliseconds (`0`: no block) |
@@ -112,6 +113,41 @@ impl AuthController {
 ```
 
 `THROTTLE_LIMIT`, `THROTTLE_TTL` and `THROTTLE_BLOCK_DURATION` apply to all configured limits, not to one by name.
+
+### Skipping throttlers
+
+Skips are decided per throttler, as in the original library. `SKIP_THROTTLE` only skips the throttler named `default`; other throttlers keep counting the request and sending their headers. Skip them by name with `skip_throttle`, which returns a `CustomDecorator` (`@SkipThrottle({ short: true, long: true })`):
+
+```rust
+#[get("status")]
+#[apply_decorators(skip_throttle(["short", "long"]))]
+fn status(&self) -> &'static str {
+    "ok"
+}
+```
+
+The names must match `ThrottlerOptions::name`; a name no throttler has skips nothing. A skipped throttler does not count the request and sets no `X-RateLimit-*` or `Retry-After` header.
+
+For each throttler the guard looks at the method first and then at the controller, and the first value found wins. A method can undo a controller's skip for one throttler with `false`, using `skip_throttle_key(name)` (`"THROTTLER:SKIP"` followed by the name, as the original stores it); for `default`, `SKIP_THROTTLE` set to `false` works too:
+
+```rust
+#[controller("accounts")]
+#[apply_decorators(skip_throttle(["short"]))]
+pub struct AccountsController;
+
+#[routes]
+impl AccountsController {
+    #[post("login")]
+    #[set_metadata(skip_throttle_key("short"), false)]
+    fn login(&self) { /* ... */ }
+}
+```
+
+Gateway handlers use the same keys with `#[set_metadata(skip_throttle_key("short"), true)]`, since they have no `#[apply_decorators]`.
+
+::: warning Behavior change
+Before, `SKIP_THROTTLE` skipped every throttler. An app whose throttlers all have other names (`short`, `long`) and a route with `SKIP_THROTTLE` now throttles that route. The guard logs one warning per such route on its first request, naming the route; replace the skip with `skip_throttle(["short", "long"])` to keep the old behavior.
+:::
 
 ## Storage
 
@@ -212,5 +248,4 @@ Browsers only let a page read these headers if the CORS configuration exposes th
 
 ## Limitations
 
-- `SKIP_THROTTLE` skips every throttler, while the original's `@SkipThrottle()` skips only the throttler named `default` unless the others are listed.
 - A global `ThrottlerGuard` also counts WebSocket gateway messages, per handshake IP and handler, so a long-lived connection can exhaust its limit. `app.apply_global_enhancers_to_gateways(false)` leaves gateways out. Plain `corvis::ws` listeners are never counted.

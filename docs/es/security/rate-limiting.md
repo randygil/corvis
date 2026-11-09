@@ -88,7 +88,8 @@ El guard lee cuatro claves de metadata, en el método o en el controlador:
 
 | Constante | Efecto |
 |---|---|
-| `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` omite el límite |
+| `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` omite el throttler llamado `default`, como un `@SkipThrottle()` sin argumentos |
+| `skip_throttle([..])`, `skip_throttle_key(nombre)` | Omiten throttlers por nombre (ver [Omitir throttlers](#omitir-throttlers)) |
 | `THROTTLE_LIMIT` | Cambia el número máximo de peticiones |
 | `THROTTLE_TTL` | Cambia la ventana, en milisegundos |
 | `THROTTLE_BLOCK_DURATION` | Cambia la duración del bloqueo, en milisegundos (`0`: sin bloqueo) |
@@ -112,6 +113,41 @@ impl AuthController {
 ```
 
 `THROTTLE_LIMIT`, `THROTTLE_TTL` y `THROTTLE_BLOCK_DURATION` se aplican a todos los límites configurados, no a uno por nombre.
+
+### Omitir throttlers
+
+Las omisiones se deciden por throttler, como en la librería original. `SKIP_THROTTLE` solo omite el throttler llamado `default`; los demás throttlers siguen contando la petición y enviando sus cabeceras. Se omiten por nombre con `skip_throttle`, que devuelve un `CustomDecorator` (`@SkipThrottle({ short: true, long: true })`):
+
+```rust
+#[get("status")]
+#[apply_decorators(skip_throttle(["short", "long"]))]
+fn status(&self) -> &'static str {
+    "ok"
+}
+```
+
+Los nombres deben coincidir con `ThrottlerOptions::name`; un nombre que ningún throttler tiene no omite nada. Un throttler omitido no cuenta la petición ni pone cabeceras `X-RateLimit-*` ni `Retry-After`.
+
+Para cada throttler el guard mira primero el método y después el controlador, y gana el primer valor que encuentra. Un método puede deshacer la omisión de un controlador para un throttler con `false`, usando `skip_throttle_key(nombre)` (`"THROTTLER:SKIP"` seguido del nombre, como lo guarda el original); para `default` también sirve `SKIP_THROTTLE` con `false`:
+
+```rust
+#[controller("accounts")]
+#[apply_decorators(skip_throttle(["short"]))]
+pub struct AccountsController;
+
+#[routes]
+impl AccountsController {
+    #[post("login")]
+    #[set_metadata(skip_throttle_key("short"), false)]
+    fn login(&self) { /* ... */ }
+}
+```
+
+Los handlers de gateway usan las mismas claves con `#[set_metadata(skip_throttle_key("short"), true)]`, porque no tienen `#[apply_decorators]`.
+
+::: warning Cambio de comportamiento
+Antes, `SKIP_THROTTLE` omitía todos los throttlers. Una app cuyos throttlers tienen todos otros nombres (`short`, `long`) y una ruta con `SKIP_THROTTLE` ahora limita esa ruta. El guard registra una advertencia por cada ruta así en su primera petición, con el nombre de la ruta; reemplaza la omisión por `skip_throttle(["short", "long"])` para conservar el comportamiento anterior.
+:::
 
 ## Almacenamiento
 
@@ -214,5 +250,4 @@ Los navegadores solo dejan que una página lea estas cabeceras si la configuraci
 
 ## Limitaciones
 
-- `SKIP_THROTTLE` omite todos los throttlers, mientras que el `@SkipThrottle()` original solo omite el throttler llamado `default` salvo que se listen los demás.
 - Un `ThrottlerGuard` global también cuenta los mensajes de los gateways de WebSocket, por IP del handshake y por handler, así que una conexión duradera puede agotar su límite. `app.apply_global_enhancers_to_gateways(false)` deja fuera a los gateways. Los listeners `corvis::ws` planos nunca se cuentan.

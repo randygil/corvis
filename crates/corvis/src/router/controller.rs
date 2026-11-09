@@ -229,8 +229,8 @@ impl<C> RouteDef<C> {
         self.meta.redirect = Some((url.to_string(), status));
         self
     }
-    pub fn set_metadata(mut self, key: &str, value: impl Serialize) -> Self {
-        self.meta.metadata.push((key.to_string(), serde_json::to_value(value).unwrap_or(Value::Null)));
+    pub fn set_metadata(mut self, key: impl Into<String>, value: impl Serialize) -> Self {
+        self.meta.metadata.push((key.into(), serde_json::to_value(value).unwrap_or(Value::Null)));
         self
     }
     /// Applies a [`CustomDecorator`] (`#[apply_decorators(...)]`, `#[api_*(...)]` attributes).
