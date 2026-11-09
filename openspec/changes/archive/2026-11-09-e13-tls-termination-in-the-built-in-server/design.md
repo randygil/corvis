@@ -255,3 +255,16 @@ pause). These differ from the design above.
   4096) costs far more per handshake than ECDSA P-256 and signing runs on the runtime threads; a partial ClientHello
   costs about 75 KiB until the handshake timeout. Written in `docs/faq/multiple-servers.md`, `docs/deployment.md` and
   their Spanish pages; `docs/security/http-parsing.md` now says what is enforced for `h2` connections.
+
+## Verification (2026-11-09)
+
+Verified together in batch-q (#162, #159, #160, #117): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression, tls) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1344 tests, `cargo test -p corvis --features compression` passed 1004 and `--features tls,websockets` passed 1010, 0
+failures; naming, crate files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run 42701896050 is
+green on Linux and Windows. corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases
+equivalent. Security review: two rounds, closed. Fixed: with ALPN `h2` a client could speak HTTP/1.1 and skip the framing
+check; h2 connections now require the HTTP/2 preface from the first byte and are served on the HTTP/2-only path.
+Measured over TLS: KeyUpdate and PING floods without reading stay bounded (about 6–15 MiB), 3000 stalled handshakes are
+freed at the 10 s handshake timeout, rapid reset is closed with GOAWAY.

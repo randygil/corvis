@@ -127,7 +127,8 @@ features enabled alone, on Linux and Windows.
 
 #### Scenario: One feature alone
 
-- **WHEN** CI runs the same check with `--features jwt`, `--features websockets` or `--features health-tls`
+- **WHEN** CI runs the same check with `--features jwt`, `--features websockets`, `--features health-tls` or
+  `--features tls`
 - **THEN** each passes
 
 ### Requirement: Postgres test databases and roles are unique per run and cleaned up
@@ -151,3 +152,13 @@ once they are older than 3 hours, judged by the timestamp in the name, never tou
 - **WHEN** a Postgres test starts and the server holds an `orm_test_*` database or `orm_*` role whose run id is older
   than 3 hours
 - **THEN** it is dropped, while objects with a recent run id or without a run id are left alone
+
+### Requirement: TLS tests run in CI
+
+The Linux and Windows test jobs SHALL run the TLS integration tests with the `tls` feature enabled
+(`cargo test -p corvis --features tls --test tls`), in addition to `cargo test --workspace`.
+
+#### Scenario: A TLS regression
+
+- **WHEN** a pull request breaks HTTPS serving
+- **THEN** the TLS test step fails on both Linux and Windows

@@ -48,7 +48,7 @@ numbers in design.md refer to that commit.
 - [x] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 5.3 `cargo test --workspace` passes, including the regression tests of sections 1 to 3 and the doctests of 3.2
 - [x] 5.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences
 
 ## 6. Security round

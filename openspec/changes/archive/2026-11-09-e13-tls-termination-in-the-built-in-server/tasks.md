@@ -99,7 +99,7 @@ All in `crates/corvis/tests/tls.rs` (`#![cfg(feature = "tls")]`), against `liste
 - [x] 8.4 Regression tests: every scenario of `specs/http/tls/spec.md` maps to a test in `crates/corvis/tests/tls.rs`
   (list the mapping in the PR description); `cargo deny check` passes
 - [x] 8.5 Docs updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/` passes
-- [ ] 8.6 Framework runtime code changed (the shared accept loop and `TimedIo`): run the `corvis-parity` check and
+- [x] 8.6 Framework runtime code changed (the shared accept loop and `TimedIo`): run the `corvis-parity` check and
   verify the three port apps (consi, facten, houseplan) keep 0 apidiff differences
 
 ## Workflow follow-up

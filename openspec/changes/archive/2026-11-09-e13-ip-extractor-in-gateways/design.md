@@ -171,3 +171,16 @@ None. The technical choices are recorded above and in the review notes.
   tracker of every message equals `client.ip()`.
 - The rustdoc of `WsClient::handshake()` and `WsClient::ip()` had been swapped; each has its own sentence again.
 
+
+## Verification (2026-11-09)
+
+Verified together in batch-q (#162, #159, #160, #117): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression, tls) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1344 tests, `cargo test -p corvis --features compression` passed 1004 and `--features tls,websockets` passed 1010, 0
+failures; naming, crate files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run 42701896050 is
+green on Linux and Windows. corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases
+equivalent. Security review: two rounds, closed. Fixed: `#[ip]` resolved trust proxy over the whole X-Forwarded-For on
+every message (1.47 ms per frame with a 29 KB header); the address is resolved once per connection, the throttler uses
+it for WebSocket messages, and `Request::ip()` walks the header lazily (`proxy_addr::client_addr`, checked against
+the previous implementation with a differential fuzzer: 21 million comparisons, no difference).

@@ -202,3 +202,14 @@ None. The technical choices, including the public builder names, are recorded ab
   original do). The guard logs a warning once per throttler name (`warned_zero_ttl`); the docs say it.
 - Docs keep: an `Err` from a function stops the check before later throttlers count (keep the IP throttler static
   with the shortest ttl), and a tracker must never return a string the client controls.
+
+## Verification (2026-11-09)
+
+Verified together in batch-q (#162, #159, #160, #117): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression, tls) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1344 tests, `cargo test -p corvis --features compression` passed 1004 and `--features tls,websockets` passed 1010, 0
+failures; naming, crate files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run 42701896050 is
+green on Linux and Windows. corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases
+equivalent. Security review: two rounds, closed. Fixed: an active block skipped when a function returned 0 for the same
+key (the block table is now always consulted); a ttl function returning 0 is logged once per throttler.

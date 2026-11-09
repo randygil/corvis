@@ -62,7 +62,7 @@ numbers in design.md refer to that commit.
 - [x] 6.3 `cargo test --workspace` passes, including the regression tests of 1.3, 2.1 and 2.2 and the differential
   replay of 4.1
 - [x] 6.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 6.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 6.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences (none uses the throttler)
 
 ## Workflow follow-up

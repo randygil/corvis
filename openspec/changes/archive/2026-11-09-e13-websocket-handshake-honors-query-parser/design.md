@@ -166,3 +166,14 @@ None. The technical choices are recorded above and in the review notes.
 - Measured with the reviewer's PoC (release, 29 KB query, 1434 params, Extended): 21.2 us/message after the fix,
   against 2360 us before; the baseline is 20.3 us.
 
+
+## Verification (2026-11-09)
+
+Verified together in batch-q (#162, #159, #160, #117): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression, tls) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1344 tests, `cargo test -p corvis --features compression` passed 1004 and `--features tls,websockets` passed 1010, 0
+failures; naming, crate files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run 42701896050 is
+green on Linux and Windows. corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases
+equivalent. Security review: two rounds, closed. Fixed: every message deep-copied the handshake and its nested query
+(2.36 ms per frame with a 29 KB Extended query); the handshake is now shared as `Arc<Request>` (about 20 µs per frame).
