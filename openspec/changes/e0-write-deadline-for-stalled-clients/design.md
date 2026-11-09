@@ -195,7 +195,7 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
   has the same default; `send_timeout(None)` or a larger value restores the old behavior. Docs say so.
 - [An HTTP/2 client that pauses one stream for 60 s while reading others loses all its streams] → Decision 5; rare
   outside media, documented, and configurable. Open question 3.
-- [Trickling clients defeat any progress timeout] → one byte (or one WINDOW_UPDATE) per `send_timeout` keeps the
+- [Trickling clients defeat any progress timeout] → about 16 KiB per stream (HTTP/2) or tens of KiB (HTTP/1) per `send_timeout` keeps the
   connection; the memory a client can pin is bounded by `max_connections × http2_max_concurrent_streams` responses,
   as for a slow legitimate client. A minimum rate is out of scope.
 - [Slicing relies on h2 not granting capacity while more than the window is buffered] → if a future h2 version granted
@@ -222,6 +222,27 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
 - Q3: one stalled stream closes the whole connection, as the issue asks.
 - Q4: established WebSocket connections stay exempt here; their own write deadline is filed as a separate issue.
 - Implement after #150 is merged, reusing its raw-frame client.
+
+## Review notes (2026-11-10)
+
+- Supersedes Q3 of the 2026-11-09 notes. The connection is closed only when no response body of it has made progress
+  for `send_timeout` (some body waits for hyper, and no body of the connection has had a frame taken for that long),
+  not when one stream stalls. The security review measured that the per-stream rule cuts legitimate HTTP/2 clients on
+  slow links with many streams (100 streams at 20 KB/s were cut at 65 s), and that it does not bound memory better: an
+  RST cycle and a 16 KiB WINDOW_UPDATE trickle hold memory under either rule. Memory is tracked in #163 (a cap on
+  pending response bytes). Decision 3 (per-stream clocks) and Decision 5 (close the connection, not the stream) stand;
+  only the rule over the clocks changed. Progress is a poll of a body after its first one, and the stall counts from
+  the later of the oldest wait and the last progress.
+- Idle HTTP/2 connections: only DATA, HEADERS and CONTINUATION written by the server refresh the keep-alive phase (an
+  outgoing frame scanner advanced by the bytes the socket accepted), so PONGs, SETTINGS acknowledgements and the
+  server's own PING keep-alive do not keep an idle connection open. Without this a client PING every half second kept
+  a connection open past 12 s where the base closed it at 2 s.
+- The docs and rustdoc say what `send_timeout` does not bound: about 16 KiB per stream per period over HTTP/2, about
+  64 KiB per period over HTTP/1 on a Windows loopback connection, nothing for an RST cycle; they point to #163 and
+  recommend `max_connections`.
+- Timeouts that cannot be added to an `Instant` (`Duration::MAX`) are off: `checked_add` in the write deadline, the
+  watchdog, `poll_idle` and the request deadline, and the options handed to hyper (`header_read_timeout`, the HTTP/2
+  keep-alive interval and timeout) are filtered the same way, because hyper panics on the overflow itself.
 
 ## Implementation notes
 
@@ -255,3 +276,13 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
 - Not done here: task 6.5 (parity) and 6.6 (security review proofs of concept re-run) belong to the maintainer's
   session; the regression tests reproduce both scenarios of the review (zero window, never-read PING flood, and the
   HTTP/1 pipelined variant).
+
+### Implementation notes, review of 0c659e1
+
+- The new rule is implemented with `ConnState::progress` (set when hyper polls a body that is waiting for it, after the
+  body's first poll) and a watchdog that computes `max(oldest wait, last progress) + send_timeout`. Unit tests with
+  paused time cover one body moving next to a stalled one, all stalled, bodies waiting for the application, and
+  `Duration::MAX`; integration tests cover the h2c scenarios.
+- The outgoing scanner reuses `H2Frames`, which now returns the kinds of frame that own the bytes that pass (a frame
+  header counts once complete, then its payload bytes). Mutation check: counting every write as response progress
+  makes the three idle-connection tests fail.

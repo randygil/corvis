@@ -555,6 +555,117 @@ async fn stray_http2_frames_do_not_end_the_keep_alive_phase() {
     assert!(started.elapsed() < Duration::from_secs(6), "{:?}", started.elapsed());
 }
 
+/// Frames that are not a response, in either direction, must not keep an idle HTTP/2 connection out of `keep_alive_timeout`:
+/// the client's own (PING, SETTINGS, WINDOW_UPDATE) and the server's answers to them and its own keep-alive PINGs.
+/// Returns once the server closed the connection after a request; `stray` is sent every `every`.
+async fn idle_h2_connection_is_closed(options: ServerOptions, stray: Option<(Vec<u8>, Duration)>) {
+    let addr = serve(options).await;
+    let c = H2Raw::connect(addr, &[], true).await;
+    c.get(1, "/t/ok").await;
+    let answered = Instant::now();
+    while !c.seen.lock().unwrap().iter().any(|f| f.2 == 1 && f.1 & 1 != 0 && (f.0 == 0 || f.0 == 1)) {
+        assert!(answered.elapsed() < Duration::from_secs(5), "no response");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let started = Instant::now();
+    while !c.closed.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(8) {
+        match &stray {
+            Some((bytes, every)) => {
+                let _ = c.send(bytes).await;
+                tokio::time::sleep(*every).await;
+            }
+            None => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(c.closed.load(Ordering::SeqCst), "the idle connection was still open after {:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_secs(6), "{:?}", started.elapsed());
+}
+
+fn idle_options() -> ServerOptions {
+    ServerOptions::new().h2c(true).keep_alive_timeout(Duration::from_secs(1)).headers_timeout(Duration::from_secs(10))
+}
+
+#[corvis::test]
+async fn client_pings_do_not_keep_an_idle_http2_connection_open() {
+    // A PING every half keep_alive_timeout; the server answers each one with a PONG.
+    let ping = frame_bytes(6, 0, 0, &[0; 8]);
+    idle_h2_connection_is_closed(idle_options(), Some((ping, Duration::from_millis(500)))).await;
+}
+
+#[corvis::test]
+async fn client_settings_do_not_keep_an_idle_http2_connection_open() {
+    // The server answers each SETTINGS frame with an acknowledgement.
+    let settings = frame_bytes(4, 0, 0, &[]);
+    idle_h2_connection_is_closed(idle_options(), Some((settings, Duration::from_millis(500)))).await;
+}
+
+#[corvis::test]
+async fn the_servers_own_keep_alive_pings_do_not_keep_an_idle_http2_connection_open() {
+    let options = idle_options().http2_keep_alive_interval(Duration::from_millis(500)).http2_keep_alive_timeout(Duration::from_secs(1));
+    idle_h2_connection_is_closed(options, None).await;
+}
+
+// ---- Connection-level progress ----
+
+async fn h2_client_with_room(addr: SocketAddr) -> hyper::client::conn::http2::SendRequest<B> {
+    let io = TokioIo::new(TcpStream::connect(addr).await.unwrap());
+    // A big connection window, so the response nobody reads does not starve the other one.
+    let (sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .initial_connection_window_size(8 * 1024 * 1024)
+        .handshake(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    sender
+}
+
+/// One stream that is never read does not cost the connection while another one keeps moving; once neither moves for a
+/// send timeout the connection is closed.
+#[corvis::test]
+async fn a_stalled_stream_next_to_a_moving_one_is_not_cut_but_all_stalled_is() {
+    let addr = serve(live(SEND_TIMEOUT)).await;
+    let mut sender = h2_client_with_room(addr).await;
+    let stalled = sender.send_request(h2_get(addr, "/t/huge")).await.unwrap();
+    assert_eq!(stalled.status(), 200);
+    let moving = sender.send_request(h2_get(addr, "/t/forever")).await.unwrap();
+    let mut body = moving.into_body();
+    let started = Instant::now();
+    let mut got = 0usize;
+    while started.elapsed() < Duration::from_secs(4) {
+        let frame = tokio::time::timeout(Duration::from_secs(5), body.frame()).await.expect("data in time");
+        let frame = frame.unwrap_or_else(|| panic!("the connection was cut after {got} bytes, while one stream moved")).unwrap();
+        got += frame.into_data().map_or(0, |d| d.len());
+    }
+    // Now nobody reads: both streams stall, and the connection is closed within a few send timeouts.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let ended = tokio::time::timeout(Duration::from_secs(10), async { while let Some(Ok(_)) = body.frame().await {} }).await;
+    assert!(ended.is_ok(), "the connection with every stream stalled was never closed");
+    drop(stalled);
+}
+
+/// A timeout too long to add to an `Instant` is the same as none, not a panic in the connection task.
+#[corvis::test]
+async fn timeouts_of_duration_max_do_not_panic() {
+    let options = ServerOptions::new()
+        .h2c(true)
+        .send_timeout(Duration::MAX)
+        .headers_timeout(Duration::MAX)
+        .keep_alive_timeout(Duration::MAX)
+        .request_timeout(Duration::MAX);
+    let addr = serve(options).await;
+    let (head, body) = fetch(addr, "/t/ok", "").await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert!(String::from_utf8_lossy(&body).contains("\"ok\":true"));
+    let mut sender = h2_client(addr).await;
+    let response = sender.send_request(h2_get(addr, "/t/big")).await.unwrap();
+    assert_eq!(response.into_body().collect().await.unwrap().to_bytes().len(), 1024 * 1024);
+    let (head, _) = fetch(addr, "/t/ok", "").await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+}
+
 // ---- Compression ----
 
 /// A compression slot is held until the response body is dropped, so a stalled client holds one until its connection

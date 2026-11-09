@@ -81,8 +81,10 @@ de otra forma: deja que el proxy normalice las peticiones (la mayoría lo hace y
 Los clientes lentos a propósito se cubren con un timer por dirección. Los que leen despacio la petición (slowloris: una
 cabecera o un cuerpo que no termina) los cubren `headers_timeout`, `request_timeout` y `keep_alive_timeout`. Los que
 leen despacio la respuesta, un cliente que deja de leer y conserva su conexión, su lugar de `max_connections` y la
-memoria de sus respuestas, los cubre `send_timeout` (60 s por defecto, en HTTP/1 y HTTP/2, incluido un stream HTTP/2
-cuya ventana de control de flujo el cliente nunca abre). Ver
+memoria de sus respuestas, los cubre `send_timeout` (60 s por defecto, en HTTP/1 y HTTP/2, incluidos streams HTTP/2
+cuyas ventanas de control de flujo el cliente nunca abre). Acota cuánto puede pasar una conexión sin leer nada, no lo
+poco que debe leer ni la memoria que se retiene para ella (un tope se sigue en
+[#163](https://github.com/randygil/corvis/issues/163); define `max_connections`). Ver
 [Clientes que dejan de leer](/es/http/performance#clientes-que-dejan-de-leer-send-timeout). El `server.timeout` de Node
 está desactivado por defecto, así que allí un cliente que deja de leer nunca se desconecta.
 

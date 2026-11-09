@@ -104,14 +104,23 @@ impl ServerOptions {
     /// Longest the server waits for a client to accept response bytes (default 60 s, like nginx's `send_timeout`).
     /// A connection whose client accepts no byte of a response for that long is closed, over HTTP/1 and HTTP/2:
     /// either the socket stays blocked (the client does not read), or an HTTP/2 stream waits for flow-control
-    /// window the client never grants, even while PING, SETTINGS or WINDOW_UPDATE frames keep flowing. One stalled
-    /// HTTP/2 stream closes the whole connection. The connection is dropped without the closing drain and without
-    /// a GOAWAY. `None` disables it.
+    /// window the client never grants, even while PING, SETTINGS or WINDOW_UPDATE frames keep flowing. The
+    /// connection is closed when no response body of it has made progress for `send_timeout`: a stalled stream
+    /// next to streams that keep moving does not cost the connection its other streams. The connection is dropped
+    /// without the closing drain and without a GOAWAY. `None` disables it, and so does a value too long to add to
+    /// an `Instant` (`Duration::MAX`).
     ///
-    /// It measures lack of progress, not total time: every byte the client accepts restarts it, so slow but live
-    /// downloads are not cut; it never runs while the server has nothing to send (slow handlers, idle
-    /// Server-Sent Events streams, idle keep-alive connections), and it does not apply to upgraded connections
-    /// (WebSockets). A client that accepts one byte per `send_timeout` keeps its connection.
+    /// It measures lack of progress, not total time: progress restarts it, so slow but live downloads are not cut;
+    /// it never runs while the server has nothing to send (slow handlers, idle Server-Sent Events streams, idle
+    /// keep-alive connections), and it does not apply to upgraded connections (WebSockets).
+    ///
+    /// What it does not bound: how little a client may read to keep a connection. A client needs to take about
+    /// 16 KiB (one HTTP/2 frame) from some stream each period over HTTP/2, and about 64 KiB each period over HTTP/1
+    /// on a connection with large kernel buffers (the server notices progress when the operating system reports
+    /// the socket writable); a client that resets and reopens HTTP/2 streams needs to read nothing at all. Nor does
+    /// it bound the response bytes held for such clients: see
+    /// [#163](https://github.com/randygil/corvis/issues/163), and use
+    /// [`max_connections`](Self::max_connections) meanwhile.
     ///
     /// Node's `server.timeout` (default 0, off) measures inactivity in both directions and also cuts slow
     /// handlers, which is why it is off there; with Node's defaults a client that stops reading is never
@@ -381,7 +390,7 @@ pub(crate) async fn from_hyper(
     request_timeout: Option<Duration>,
 ) -> Result<Request, Response> {
     let (parts, body) = req.into_parts();
-    let deadline = request_timeout.map(|t| Instant::now() + t);
+    let deadline = request_timeout.and_then(|t| Instant::now().checked_add(t));
     if crate::multer::is_multipart_content_type(&parts.headers) {
         let mut r = Request::with_parser(parts.method, parts.uri, parts.headers, Bytes::new(), parser);
         r.version = parts.version;
@@ -549,6 +558,9 @@ struct ConnState {
     epoch: Epoch,
     /// Clocks of the response bodies of the connection that are alive (send timeout watchdog).
     clocks: Mutex<Vec<Arc<BodyClock>>>,
+    /// When hyper last took a frame from any response body of the connection (milliseconds since `epoch` plus
+    /// one; `0` = never): the connection's progress.
+    progress: AtomicU64,
     /// Signalled when a clock is registered, so a watchdog that had nothing to watch looks again.
     clocks_changed: tokio::sync::Notify,
 }
@@ -567,6 +579,19 @@ impl Default for Epoch {
 #[derive(Default)]
 struct BodyClock {
     waiting_since: AtomicU64,
+}
+
+impl ConnState {
+    fn note_progress(&self) {
+        let ms = Instant::now().saturating_duration_since(self.epoch.0).as_millis() as u64;
+        self.progress.store(ms + 1, Ordering::Relaxed);
+    }
+    fn last_progress(&self) -> Option<Instant> {
+        match self.progress.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(self.epoch.0 + Duration::from_millis(v - 1)),
+        }
+    }
 }
 
 impl BodyClock {
@@ -699,6 +724,8 @@ struct GuardedBody {
     slice: bool,
     /// What is left of a data frame that was cut.
     rest: Bytes,
+    /// Hyper has polled the body at least once.
+    polled: bool,
     guard: InflightGuard,
 }
 
@@ -708,7 +735,7 @@ impl GuardedBody {
         clock.wait_for_hyper(&guard.0.epoch);
         guard.0.clocks.lock().unwrap_or_else(|e| e.into_inner()).push(clock.clone());
         guard.0.clocks_changed.notify_one();
-        GuardedBody { inner, clock, slice: http2, rest: Bytes::new(), guard }
+        GuardedBody { inner, clock, slice: http2, rest: Bytes::new(), polled: false, guard }
     }
 }
 
@@ -725,6 +752,11 @@ impl hyper::body::Body for GuardedBody {
 
     fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
         let this = &mut *self;
+        // Hyper asks for the next frame only once it took the previous one: the connection moves. The first poll is
+        // not that: it takes nothing.
+        if std::mem::replace(&mut this.polled, true) && this.clock.since(&this.guard.0.epoch).is_some() {
+            this.guard.0.note_progress();
+        }
         if !this.rest.is_empty() {
             let n = this.rest.len().min(H2_SLICE);
             let part = this.rest.split_to(n);
@@ -787,23 +819,30 @@ const IGNORE_INVALID_HEADERS: bool = false;
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
-/// Frame boundaries of the client's HTTP/2 bytes, to tell the frames that start a request (HEADERS) from the rest.
+/// Frame boundaries of one direction of an HTTP/2 connection: which kinds of frame the bytes that pass belong to.
 #[derive(Default)]
 struct H2Frames {
     head: [u8; 9],
     head_len: usize,
     payload_left: usize,
+    kind: u8,
 }
 
+const H2_DATA: u16 = 1 << 0x0;
+const H2_HEADERS: u16 = 1 << 0x1;
+const H2_CONTINUATION: u16 = 1 << 0x9;
+
 impl H2Frames {
-    /// Walks `data`; true when a HEADERS frame starts in it.
-    fn scan(&mut self, mut data: &[u8]) -> bool {
-        let mut request = false;
+    /// Walks `data`; the bit of every frame kind (`1 << type`) that has a byte in it. A frame header counts for its
+    /// frame once complete.
+    fn scan(&mut self, mut data: &[u8]) -> u16 {
+        let mut kinds = 0u16;
         while !data.is_empty() {
             if self.payload_left > 0 {
                 let n = data.len().min(self.payload_left);
                 self.payload_left -= n;
                 data = &data[n..];
+                kinds |= 1 << self.kind.min(15);
                 continue;
             }
             let n = data.len().min(9 - self.head_len);
@@ -813,10 +852,11 @@ impl H2Frames {
             if self.head_len == 9 {
                 self.head_len = 0;
                 self.payload_left = u32::from_be_bytes([0, self.head[0], self.head[1], self.head[2]]) as usize;
-                request |= self.head[3] == 0x1;
+                self.kind = self.head[3];
+                kinds |= 1 << self.kind.min(15);
             }
         }
-        request
+        kinds
     }
 }
 
@@ -842,6 +882,9 @@ struct TimedIo {
     /// h2c enabled: the preface was seen and the frames that follow are tracked, so only a HEADERS frame (a request)
     /// ends the idle keep-alive phase.
     h2: Option<H2Frames>,
+    /// The frames the server writes, tracked once the connection is HTTP/2: only DATA, HEADERS and CONTINUATION
+    /// refresh the keep-alive phase (a PONG or a SETTINGS acknowledgement does not make a connection busy).
+    h2_out: Option<H2Frames>,
     h2c: bool,
     send_timeout: Option<Duration>,
     /// Since when `poll_write` or `poll_flush` have been pending without the socket accepting a byte.
@@ -904,11 +947,13 @@ fn is_hyper_timeout(err: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
-/// Resolves when a response body of the connection has waited for hyper to take its next frame for `timeout`: the
-/// client does not make room for it (a socket that does not read, an HTTP/2 window that stays closed). Bodies that
-/// wait for the application never count. Pending forever without a timeout and on upgraded connections.
+/// Resolves when the connection has stalled: some response body waits for hyper to take its next frame and no body
+/// of the connection has had a frame taken for `timeout` (the client does not make room: a socket that does not
+/// read, HTTP/2 windows that stay closed). A stalled stream next to streams that move does not count, and bodies
+/// that wait for the application never do. Pending forever without a timeout, with one too long to add to an
+/// `Instant`, and on upgraded connections.
 async fn watchdog(state: &ConnState, timeout: Option<Duration>) {
-    let Some(timeout) = timeout else { return std::future::pending().await };
+    let Some(timeout) = timeout.filter(|t| Instant::now().checked_add(*t).is_some()) else { return std::future::pending().await };
     loop {
         let notified = state.clocks_changed.notified();
         tokio::pin!(notified);
@@ -921,19 +966,21 @@ async fn watchdog(state: &ConnState, timeout: Option<Duration>) {
                 earliest = Some(earliest.map_or(t, |e| e.min(t)));
             }
         }
-        if let Some(t) = earliest
+        if state.upgraded.load(Ordering::SeqCst) {
+            return std::future::pending().await;
+        }
+        // The stall counts from the later of the oldest wait and the last frame any body gave: a body that starts
+        // waiting after a long quiet period (idle SSE) gets a full period of its own.
+        let stalled_since = earliest.map(|t| state.last_progress().map_or(t, |p| p.max(t)));
+        if let Some(t) = stalled_since
             && t + timeout <= now
-            && !state.upgraded.load(Ordering::SeqCst)
         {
             state.no_linger.store(true, Ordering::SeqCst);
             return;
         }
-        if state.upgraded.load(Ordering::SeqCst) {
-            return std::future::pending().await;
-        }
         if any {
-            // A body that starts waiting later has a later deadline than this wake, so detection is never late.
-            let wake = earliest.unwrap_or(now) + timeout;
+            // Progress and new waits only move the deadline later, so waking at the current one is never late.
+            let wake = stalled_since.unwrap_or(now) + timeout;
             tokio::select! {
                 _ = tokio::time::sleep_until(wake) => {}
                 _ = notified.as_mut() => {}
@@ -1015,6 +1062,7 @@ impl TimedIo {
             sleep: None,
             preface: Some(0),
             h2: None,
+            h2_out: None,
             h2c: options.h2c,
             send_timeout: options.send_timeout,
             write_stalled_since: None,
@@ -1057,14 +1105,15 @@ impl TimedIo {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 (h2c) is disabled"));
                 }
                 self.preface = None;
+                self.h2_out = Some(H2Frames::default());
                 let mut frames = H2Frames::default();
-                request = frames.scan(&data[n..]);
+                request = frames.scan(&data[n..]) & H2_HEADERS != 0;
                 self.h2 = Some(frames);
             } else {
                 self.preface = Some(matched + n);
             }
         } else if let Some(frames) = self.h2.as_mut() {
-            request = frames.scan(data);
+            request = frames.scan(data) & H2_HEADERS != 0;
         }
         if request && let Phase::KeepAlive(_) = self.phase {
             self.phase = Phase::Head(Instant::now());
@@ -1081,7 +1130,7 @@ impl TimedIo {
             return Poll::Pending;
         }
         let since = *self.write_stalled_since.get_or_insert_with(Instant::now);
-        let deadline = since + timeout;
+        let Some(deadline) = since.checked_add(timeout) else { return Poll::Pending };
         let sleep = self.write_sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
         if sleep.deadline() != deadline {
             sleep.as_mut().reset(deadline);
@@ -1096,12 +1145,29 @@ impl TimedIo {
     }
 
     /// The socket accepted bytes: the client reads.
-    fn write_progress(&mut self) {
+    fn write_progress(&mut self, written: &[io::IoSlice<'_>], n: usize) {
         self.write_stalled_since = None;
         self.write_blocked = false;
         self.sync();
-        // A response still being flushed is progress, not idleness.
-        if let Phase::KeepAlive(_) = self.phase {
+        // A response still being flushed is progress, not idleness. Over HTTP/2 only the frames of a response count:
+        // PONGs, SETTINGS acknowledgements and the like would keep an idle connection open for ever.
+        let response = match self.h2_out.as_mut() {
+            None => true,
+            Some(frames) => {
+                let mut left = n;
+                let mut kinds = 0;
+                for part in written {
+                    if left == 0 {
+                        break;
+                    }
+                    let take = left.min(part.len());
+                    kinds |= frames.scan(&part[..take]);
+                    left -= take;
+                }
+                kinds & (H2_DATA | H2_HEADERS | H2_CONTINUATION) != 0
+            }
+        };
+        if response && let Phase::KeepAlive(_) = self.phase {
             self.phase = Phase::KeepAlive(Instant::now());
         }
     }
@@ -1123,8 +1189,8 @@ impl TimedIo {
             Phase::Head(t) => (t, self.headers_timeout),
             Phase::KeepAlive(t) => (t, self.keep_alive_timeout),
         };
-        let Some(timeout) = timeout else { return Poll::Pending };
-        let deadline = since + timeout;
+        // A timeout too long to add to an `Instant` never fires.
+        let Some(deadline) = timeout.and_then(|t| since.checked_add(t)) else { return Poll::Pending };
         let sleep = self.sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
         if sleep.deadline() != deadline {
             sleep.as_mut().reset(deadline);
@@ -1266,7 +1332,7 @@ impl AsyncWrite for TimedIo {
         match this.sock().poll_write(cx, buf) {
             Poll::Ready(Ok(n)) => {
                 if n > 0 {
-                    this.write_progress();
+                    this.write_progress(&[io::IoSlice::new(buf)], n);
                 }
                 Poll::Ready(Ok(n))
             }
@@ -1298,7 +1364,7 @@ impl AsyncWrite for TimedIo {
         match this.sock().poll_write_vectored(cx, bufs) {
             Poll::Ready(Ok(n)) => {
                 if n > 0 {
-                    this.write_progress();
+                    this.write_progress(bufs, n);
                 }
                 Poll::Ready(Ok(n))
             }
@@ -1314,6 +1380,11 @@ impl AsyncWrite for TimedIo {
     }
 }
 
+/// Whether hyper can add `t` to an `Instant` (it panics otherwise): a longer timeout is the same as none.
+fn representable(t: Duration) -> bool {
+    std::time::Instant::now().checked_add(t).is_some()
+}
+
 /// The connection builder of every listener: HTTP/1 and HTTP/2 settings from the options. Any listener that
 /// can speak HTTP/2 (h2c, and TLS with ALPN `h2`) must be built with it so the limits apply to all of them.
 pub(crate) fn connection_builder(options: &ServerOptions) -> auto::Builder<TokioExecutor> {
@@ -1325,15 +1396,19 @@ pub(crate) fn connection_builder(options: &ServerOptions) -> auto::Builder<Tokio
         .http1()
         .ignore_invalid_headers(IGNORE_INVALID_HEADERS)
         .timer(TokioTimer::new())
-        .header_read_timeout(options.headers_timeout)
+        .header_read_timeout(options.headers_timeout.filter(|t| representable(*t)))
         .max_buf_size(options.max_header_size.max(8 * 1024));
     builder
         .http2()
         .timer(TokioTimer::new())
         .max_header_list_size(u32::try_from(options.max_header_size.max(8 * 1024)).unwrap_or(u32::MAX))
         .max_concurrent_streams(options.http2_max_concurrent_streams.max(1))
-        .keep_alive_interval(options.http2_keep_alive_interval)
-        .keep_alive_timeout(options.http2_keep_alive_timeout);
+        .keep_alive_interval(options.http2_keep_alive_interval.filter(|t| representable(*t)))
+        .keep_alive_timeout(if representable(options.http2_keep_alive_timeout) {
+            options.http2_keep_alive_timeout
+        } else {
+            Duration::from_secs(100 * 365 * 24 * 3600)
+        });
     builder
 }
 
@@ -1555,6 +1630,57 @@ mod tests {
         assert_eq!(state.inflight.load(Ordering::SeqCst), 0);
     }
 
+    fn many_frames(n: usize) -> Vec<Option<Result<Frame<Bytes>, io::Error>>> {
+        (0..n).map(|_| Some(Ok(Frame::data(Bytes::from_static(b"x"))))).collect()
+    }
+
+    /// One stalled body next to one that keeps moving is not a stalled connection; when neither moves it is.
+    #[tokio::test(start_paused = true)]
+    async fn the_watchdog_closes_the_connection_only_when_no_body_moves() {
+        let state = Arc::new(ConnState::default());
+        let make = |parts| {
+            GuardedBody::new(
+                Script { parts: std::collections::VecDeque::from(parts), pending_first: false }.boxed_unsync(),
+                InflightGuard::new(state.clone()),
+                false,
+            )
+        };
+        let (mut stalled, mut moving) = (make(many_frames(3)), make(many_frames(50)));
+        let mut watch = Box::pin(watchdog(&state, Some(Duration::from_secs(1))));
+        // Both took their first frame; hyper takes nothing more from `stalled`.
+        assert!(matches!(poll_once(&mut stalled), Poll::Ready(Some(_))));
+        assert!(matches!(poll_once(&mut moving), Poll::Ready(Some(_))));
+        for _ in 0..8 {
+            tokio::time::advance(Duration::from_millis(400)).await;
+            assert!(matches!(poll_once(&mut moving), Poll::Ready(Some(_))));
+            assert!(futures::poll!(watch.as_mut()).is_pending(), "a body moved: the connection is not stalled");
+        }
+        tokio::time::advance(Duration::from_millis(1100)).await;
+        assert!(futures::poll!(watch.as_mut()).is_ready(), "nothing moved for a send timeout");
+        assert!(state.no_linger.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_watchdog_ignores_bodies_that_wait_for_the_application_and_huge_timeouts() {
+        let state = Arc::new(ConnState::default());
+        let (mut idle, _) = body_of(vec![Some(Ok(Frame::data(Bytes::from_static(b"a"))))], true, false);
+        let _ = &state;
+        assert!(poll_once(&mut idle).is_pending());
+        let idle_state = idle.guard.0.clone();
+        let mut watch = Box::pin(watchdog(&idle_state, Some(Duration::from_secs(1))));
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert!(futures::poll!(watch.as_mut()).is_pending(), "waiting for the application is not a stall");
+        let mut forever = Box::pin(watchdog(&state, Some(Duration::MAX)));
+        assert!(futures::poll!(forever.as_mut()).is_pending());
+    }
+
+    #[test]
+    fn a_timeout_too_long_for_an_instant_is_off() {
+        assert!(Instant::now().checked_add(Duration::MAX).is_none());
+        let options = ServerOptions::new().send_timeout(Duration::MAX).headers_timeout(Duration::MAX).keep_alive_timeout(Duration::MAX);
+        assert_eq!(options.send_timeout, Some(Duration::MAX));
+    }
+
     #[test]
     fn http2_data_is_handed_over_in_slices_of_sixteen_kib() {
         let big = Bytes::from(vec![7u8; 40 * 1024]);
@@ -1578,24 +1704,27 @@ mod tests {
     }
 
     #[test]
-    fn only_a_headers_frame_starts_a_request() {
+    fn the_frame_scanner_tells_the_kinds_of_frame_that_pass() {
         fn frame(kind: u8, payload: &[u8]) -> Vec<u8> {
             let mut v = vec![0, (payload.len() >> 8) as u8, payload.len() as u8, kind, 0, 0, 0, 0, 1];
             v.extend_from_slice(payload);
             v
         }
         let mut f = H2Frames::default();
-        assert!(!f.scan(&frame(0x8, &[0, 0, 0, 1])), "WINDOW_UPDATE");
-        assert!(!f.scan(&frame(0x6, &[0; 8])), "PING");
-        assert!(!f.scan(&frame(0x0, &[1; 300])), "DATA");
-        assert!(f.scan(&frame(0x1, &[0x82])), "HEADERS");
-        // A frame split at every byte boundary gives the same verdicts.
+        assert_eq!(f.scan(&frame(0x8, &[0, 0, 0, 1])), 1 << 8, "WINDOW_UPDATE");
+        assert_eq!(f.scan(&frame(0x6, &[0; 8])), 1 << 6, "PING");
+        assert_eq!(f.scan(&frame(0x4, &[])), 1 << 4, "SETTINGS");
+        assert_eq!(f.scan(&frame(0x0, &[1; 300])), H2_DATA, "DATA");
+        assert_eq!(f.scan(&frame(0x1, &[0x82])), H2_HEADERS, "HEADERS");
+        // A frame cut at every byte boundary: every byte of its payload still belongs to it.
         let mut stream = frame(0x8, &[0, 0, 0, 1]);
         stream.extend(frame(0x1, &[0x82, 0x86]));
         stream.extend(frame(0x4, &[]));
         let mut f = H2Frames::default();
-        let hits = stream.chunks(1).filter(|c| f.scan(c)).count();
-        assert_eq!(hits, 1);
+        let kinds: Vec<u16> = stream.chunks(1).map(|c| f.scan(c)).collect();
+        assert_eq!(kinds.iter().filter(|k| **k & H2_HEADERS != 0).count(), 3, "the byte that completes the header and the payload");
+        assert_eq!(kinds.iter().filter(|k| **k & (H2_DATA | H2_HEADERS | H2_CONTINUATION) != 0).count(), 3);
+        assert!(kinds[..13].iter().all(|k| *k & H2_HEADERS == 0), "bytes of the WINDOW_UPDATE are not a response");
     }
 
     fn headers(pairs: &[(&str, &str)]) -> http::HeaderMap {

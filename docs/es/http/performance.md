@@ -65,19 +65,32 @@ Funciona igual en HTTP/1 y en HTTP/2, de dos maneras:
 - **Socket bloqueado.** Si la escritura al socket de la conexión sigue bloqueada durante `send_timeout` sin que el
   socket acepte un solo byte, la conexión se cierra. Así se detecta también a un cliente HTTP/2 que inunda de PING y
   nunca lee las respuestas, y a uno HTTP/1 que encadena peticiones y nunca lee las respuestas.
-- **Ventana de control de flujo cerrada.** Un stream HTTP/2 cuya respuesta lleva `send_timeout` esperando a que el
-  cliente abra su ventana está detenido, y la conexión se cierra aunque el cliente siga contestando PING o enviando
-  WINDOW_UPDATE de otros streams. Un solo stream detenido cierra toda la conexión.
+- **Ventanas de control de flujo cerradas.** Cuando las respuestas de una conexión HTTP/2 esperan a que el cliente
+  abra sus ventanas y ninguna se ha movido durante `send_timeout`, la conexión se cierra, aunque el cliente siga
+  contestando PING o enviando SETTINGS y WINDOW_UPDATE. Un stream detenido junto a otros que avanzan no cierra la
+  conexión: en un enlace lento con muchos streams, siempre hay algunos esperando ventana.
 
 La conexión se descarta de inmediato: sin GOAWAY, sin el resto de la respuesta y sin el drenaje de cierre.
 
-Mide la falta de progreso, no la duración de la respuesta: cada byte que el cliente acepta lo reinicia, así que una
-descarga lenta no se corta. El servidor nota el progreso cuando el sistema operativo avisa que el socket admite
-escritura, lo que en un lector muy lento ocurre por tramos (unas decenas de KiB en una conexión con buffers grandes
-del kernel); el valor por defecto es mucho mayor que lo que ese lector tarda en cada tramo. Nunca corre mientras el
-servidor no tiene nada que enviar: un handler lento, un stream de Server-Sent Events inactivo y una conexión
-keep-alive ociosa no se ven afectados, ni tampoco una conexión WebSocket ya establecida (su cola de envío está acotada
-por `max_buffered_amount`). Un cliente que acepta un byte cada `send_timeout` conserva su conexión.
+Mide la falta de progreso, no la duración de la respuesta: el progreso lo reinicia, así que una descarga lenta no se
+corta. Nunca corre mientras el servidor no tiene nada que enviar: un handler lento, un stream de Server-Sent Events
+inactivo y una conexión keep-alive ociosa no se ven afectados, ni tampoco una conexión WebSocket ya establecida (su
+cola de envío está acotada por `max_buffered_amount`). Un valor demasiado largo para sumarlo a una lectura del reloj
+(`Duration::MAX`) significa sin límite.
+
+**Lo que no acota.** No limita lo poco que un cliente tiene que leer para conservar su conexión, ni la memoria que se
+retiene para él:
+
+- En HTTP/2 el cliente tiene que tomar unos 16 KiB (un frame) de algún stream cada `send_timeout`.
+- En HTTP/1 tiene que tomar unos 64 KiB cada `send_timeout` en una conexión con buffers grandes del kernel: el
+  servidor nota el progreso cuando el sistema operativo avisa que el socket admite escritura, lo que en un lector muy
+  lento ocurre por tramos.
+- Un cliente que reinicia streams y abre otros nuevos no necesita leer nada: cada respuesta nueva cuenta como
+  movimiento. Los límites de rapid reset acotan cuánto puede durar eso, no lo que retiene mientras tanto.
+
+Las respuestas retenidas para clientes lentos están acotadas por `max_connections` x `http2_max_concurrent_streams` x
+el tamaño de una respuesta. Un tope a los bytes de respuesta pendientes se sigue en
+[#163](https://github.com/randygil/corvis/issues/163); mientras tanto define `max_connections`.
 
 La opción más cercana de Node es `server.timeout`: está desactivada por defecto (0) y mide la inactividad en ambas
 direcciones, por lo que también corta handlers lentos, y por eso Node la desactivó. Con los valores por defecto de

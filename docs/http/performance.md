@@ -64,19 +64,31 @@ HTTP/2, in two ways:
 - **Blocked socket.** When writing to the connection's socket stays blocked for `send_timeout` without the socket
   accepting a byte, the connection is closed. This also catches an HTTP/2 client that floods PINGs and never reads
   the answers, and an HTTP/1 client that pipelines requests and never reads the responses.
-- **Closed flow-control window.** An HTTP/2 stream whose response has waited for `send_timeout` for the client to open
-  its window is stalled, and the connection is closed even if the client keeps answering PINGs or sending
-  WINDOW_UPDATE for other streams. One stalled stream closes the whole connection.
+- **Closed flow-control windows.** When the responses of an HTTP/2 connection wait for the client to open their
+  windows and none of them has moved for `send_timeout`, the connection is closed, even if the client keeps answering
+  PINGs or sending SETTINGS and WINDOW_UPDATE frames. A stalled stream next to streams that keep moving does not
+  close the connection: on a slow link with many streams, some of them are always waiting for window.
 
 The connection is dropped at once: no GOAWAY, no rest of the response, no closing drain.
 
-It measures lack of progress, not the length of the response: every byte the client accepts restarts it, so a slow
-download is not cut. The server notices progress when the operating system reports the socket writable, which for a
-very slow reader happens in steps (a few tens of KiB on a connection with large kernel buffers); the default is far
-longer than the time such a reader needs for a step. It never runs while the server has nothing to send: a slow
-handler, an idle Server-Sent Events stream and an idle keep-alive connection are not affected, and neither is an
-established WebSocket connection (its send queue is bounded by `max_buffered_amount`). A client that accepts one
-byte per `send_timeout` keeps its connection.
+It measures lack of progress, not the length of the response: progress restarts it, so a slow download is not cut.
+It never runs while the server has nothing to send: a slow handler, an idle Server-Sent Events stream and an idle
+keep-alive connection are not affected, and neither is an established WebSocket connection (its send queue is bounded
+by `max_buffered_amount`). A value too long to add to a clock reading (`Duration::MAX`) means no limit.
+
+**What it does not bound.** It does not limit how little a client has to read to keep its connection, nor the
+memory held for such a client:
+
+- Over HTTP/2 a client has to take about 16 KiB (one frame) from some stream every `send_timeout`.
+- Over HTTP/1 it has to take about 64 KiB every `send_timeout` on a connection with large kernel buffers: the server
+  notices progress when the operating system reports the socket writable, which for a very slow reader happens in
+  steps.
+- A client that resets streams and opens new ones needs to read nothing at all: every new response counts as
+  movement. The rapid-reset limits bound how long that can go on, not what it holds meanwhile.
+
+The responses held for slow clients are bounded by `max_connections` x `http2_max_concurrent_streams` x the size of
+a response. A cap on pending response bytes is tracked in
+[#163](https://github.com/randygil/corvis/issues/163); until then set `max_connections`.
 
 Node's `server.timeout` is the nearest option: it is off by default (0) and measures inactivity in both directions,
 so it also cuts slow handlers, which is why Node turned it off. With Node's defaults a client that stops reading is

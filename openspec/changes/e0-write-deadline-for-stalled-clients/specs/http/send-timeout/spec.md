@@ -43,10 +43,12 @@ server is shutting down gracefully, and MUST NOT depend on the connection readin
   first bytes and then stops reading
 - **THEN** the connection is closed within a few seconds
 
-### Requirement: Stalled response streams close the connection
+### Requirement: Stalled connections are closed
 A response is stalled while its body waits for the connection to take its next part because the client has not made
-room for it. When a response has been stalled for the send timeout, the server SHALL close its connection without the
-closing drain, even if other frames (PING, SETTINGS, WINDOW_UPDATE) are still exchanged on it.
+room for it. A connection is stalled when at least one of its response bodies is stalled and no response body of the
+connection has had a part taken for the send timeout. A stalled connection SHALL be closed without the closing drain,
+even if other frames (PING, SETTINGS, WINDOW_UPDATE) are still exchanged on it. A stalled response next to responses
+that keep moving MUST NOT close the connection.
 
 #### Scenario: HTTP/2 stream with a zero window
 - **WHEN** a server has `ServerOptions::new().h2c(true).max_connections(1).send_timeout(Duration::from_secs(1))`
@@ -59,6 +61,42 @@ closing drain, even if other frames (PING, SETTINGS, WINDOW_UPDATE) are still ex
   `SETTINGS_INITIAL_WINDOW_SIZE=1`, a request for a 1 MiB route and the client never sends `WINDOW_UPDATE`
 - **THEN** the connection is closed within a few seconds
 
+#### Scenario: One stalled stream next to a stream that moves
+- **WHEN** a server with `h2c(true)` and `send_timeout(Duration::from_secs(1))` has one response that the client does
+  not read and another that the client keeps reading for four seconds
+- **THEN** the connection stays open and the second response keeps arriving
+
+#### Scenario: Every stream stalled
+- **WHEN** the client of the previous scenario then stops reading the second response too
+- **THEN** the connection is closed within a few send timeouts
+
+### Requirement: Frames that are not responses do not keep an idle connection open
+On an idle HTTP/2 connection (no request in flight), only a request frame from the client (HEADERS) and a response
+frame from the server (DATA, HEADERS, CONTINUATION) SHALL move the connection out of, or restart, the keep-alive
+phase. PING, SETTINGS and WINDOW_UPDATE frames, their acknowledgements and the server's keep-alive PINGs MUST NOT.
+
+#### Scenario: Client PINGs on an idle connection
+- **WHEN** a server with `h2c(true)` and `keep_alive_timeout(Duration::from_secs(1))` has an idle connection whose client
+  sends a PING every half second
+- **THEN** the connection is closed after about the keep-alive timeout
+
+#### Scenario: Client SETTINGS on an idle connection
+- **WHEN** the client of that connection sends SETTINGS frames (answered with acknowledgements) instead of PINGs
+- **THEN** the connection is closed after about the keep-alive timeout
+
+#### Scenario: Server PING keep-alive on an idle connection
+- **WHEN** the same server has `http2_keep_alive_interval` shorter than the keep-alive timeout and the client answers
+  every PING
+- **THEN** the idle connection is closed after about the keep-alive timeout
+
+### Requirement: Timeouts too long for a clock are off
+A `send_timeout`, `headers_timeout`, `keep_alive_timeout` or `request_timeout` of `Duration::MAX` (or any value that
+cannot be added to the current time) SHALL behave as no limit and MUST NOT make a connection task panic.
+
+#### Scenario: Maximum durations
+- **WHEN** a server is configured with `Duration::MAX` for those timeouts
+- **THEN** requests over HTTP/1 and HTTP/2 are answered normally
+
 ### Requirement: Responses waiting for the application are not stalled
 A response whose body is waiting for the application to produce data (an idle Server-Sent Events stream, a slow
 stream source) MUST NOT be considered stalled, however long it waits.
@@ -69,7 +107,7 @@ stream source) MUST NOT be considered stalled, however long it waits.
 - **THEN** the connection stays open and the next event is delivered
 
 ### Requirement: Slow but live clients are not cut off
-A client that keeps accepting response bytes SHALL keep its connection however long the whole response takes, and a
+A client that keeps making progress SHALL keep its connection however long the whole response takes, and a
 request whose handler takes longer than the send timeout before answering MUST NOT be affected by it.
 
 #### Scenario: Slow download
