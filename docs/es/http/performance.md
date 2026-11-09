@@ -75,10 +75,14 @@ Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1
 - Un cliente que reinicia streams y abre otros nuevos más rápido de lo que sus handlers se detienen nunca consigue más
   handlers a la vez que `http2_max_concurrent_streams` (rapid reset). Una conexión también se cierra cuando las
   peticiones que canceló antes de su respuesta (un stream reiniciado, también mientras se leía su cuerpo) superan 500 y
-  superan las que completó, en los últimos 10 s. Un proxy que multiplexa muchos usuarios (Envoy, Cloud Run) y ve un
-  pequeño porcentaje de cancelaciones completa muchas más de las que cancela y nunca se corta. El servidor envía antes
-  un GOAWAY ordenado, para que el proxy pueda reintentar en otra conexión las peticiones sin respuesta, y cierra la
-  conexión tras 1 s. Un cliente que cancela una petición no se registra como error.
+  superan la cuarta parte de las que completó, en los últimos 10 s, o superan `http2_max_cancelled_streams` (2000 por
+  defecto, unas 200 por segundo sostenidas) sin importar cuántas completó. Un proxy que multiplexa muchos usuarios
+  (Envoy, Cloud Run) y ve un pequeño porcentaje de cancelaciones nunca se corta: tolera cerca de un 20% de
+  cancelaciones, y 5.000 peticiones/s con 2% canceladas queda muy por debajo del tope. Un atacante paga cuatro
+  peticiones completadas por cada reinicio y queda limitado por el tope. El servidor envía antes un GOAWAY ordenado,
+  para que el proxy pueda reintentar en otra conexión las peticiones sin respuesta; desde entonces los streams nuevos
+  se reinician sin llegar a un handler, y la conexión se cierra tras 1 s. Sube `http2_max_cancelled_streams` si algún
+  proxy tuyo cancela más que eso. Una petición que el cliente cancela no se registra.
 - Limitación conocida ([#157](https://github.com/randygil/corvis/issues/157)): un cliente vivo que deja de leer retiene
   su conexión. Mientras la escritura hacia el cliente está bloqueada, ni el timeout del PING ni los de inactividad se
   activan; el keep-alive con PING detecta clientes que dejaron de responder, no que dejaron de leer.

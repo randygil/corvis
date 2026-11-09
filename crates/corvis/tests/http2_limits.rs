@@ -40,6 +40,11 @@ impl Hold {
 
 static CANCEL_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static CANCEL_PEAK: AtomicUsize = AtomicUsize::new(0);
+/// Handlers started by the rapid-reset test and by the interleaved one (separate routes, so the tests that run
+/// in parallel do not see each other).
+static ENTERED_RESET: AtomicUsize = AtomicUsize::new(0);
+static ENTERED_INTERLEAVED: AtomicUsize = AtomicUsize::new(0);
+static ENTERED_NONE: AtomicUsize = AtomicUsize::new(0);
 
 /// Counts a running handler until its future is dropped.
 struct Running;
@@ -90,7 +95,15 @@ impl TController {
 
     #[get("hold-cancel")]
     async fn hold_cancel(&self) -> Value {
+        ENTERED_RESET.fetch_add(1, Ordering::SeqCst);
         let _running = Running::new();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        json!({ "ok": true })
+    }
+
+    #[get("hold-interleaved")]
+    async fn hold_interleaved(&self) -> Value {
+        ENTERED_INTERLEAVED.fetch_add(1, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_secs(30)).await;
         json!({ "ok": true })
     }
@@ -219,6 +232,8 @@ struct Flood {
     sent: u32,
     closed: bool,
     goaway: Option<u32>,
+    /// Handlers started when the client read the first GOAWAY (the server had detected the flood by then).
+    entered_at_goaway: Option<usize>,
     elapsed: Duration,
 }
 
@@ -226,7 +241,13 @@ struct Flood {
 /// `block` (`end_stream` tells whether its HEADERS end the request); the streams of the previous batch that must
 /// be cancelled get a RST_STREAM, so they were accepted by the server first. Runs until `total` cancelled streams
 /// were sent, the server closed the connection, or 8 s passed. Returns what happened.
-async fn flood(addr: std::net::SocketAddr, block: &[u8], end_stream: bool, cancels: u32, fast: u32, total: u32) -> Flood {
+async fn flood(
+    addr: std::net::SocketAddr,
+    block: &[u8],
+    end_stream: bool,
+    (cancels, fast, total): (u32, u32, u32),
+    entered: &'static AtomicUsize,
+) -> Flood {
     let mut c = RawClient::connect(addr).await;
     let first = c.frame(Duration::from_secs(5)).await.unwrap().unwrap();
     assert_eq!(first.kind, FRAME_SETTINGS);
@@ -236,6 +257,7 @@ async fn flood(addr: std::net::SocketAddr, block: &[u8], end_stream: bool, cance
     let flag = closed.clone();
     let reader = tokio::spawn(async move {
         let mut goaway = None;
+        let mut entered_at_goaway = None;
         loop {
             let mut head = [0u8; 9];
             if rd.read_exact(&mut head).await.is_err() {
@@ -247,11 +269,12 @@ async fn flood(addr: std::net::SocketAddr, block: &[u8], end_stream: bool, cance
                 break;
             }
             if head[3] == 7 {
+                entered_at_goaway.get_or_insert(entered.load(Ordering::SeqCst));
                 goaway = Some(u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]));
             }
         }
         flag.store(true, Ordering::SeqCst);
-        goaway
+        (goaway, entered_at_goaway)
     });
     let ok_block = request_block("/t/ok");
     let flags = if end_stream { 0x5 } else { 0x4 };
@@ -286,8 +309,12 @@ async fn flood(addr: std::net::SocketAddr, block: &[u8], end_stream: bool, cance
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     let was_closed = closed.load(Ordering::SeqCst);
-    let goaway = if was_closed { tokio::time::timeout(Duration::from_secs(5), reader).await.ok().and_then(|r| r.unwrap()) } else { None };
-    Flood { sent, closed: was_closed, goaway, elapsed }
+    let (goaway, entered_at_goaway) = if was_closed {
+        tokio::time::timeout(Duration::from_secs(5), reader).await.ok().map(|r| r.unwrap()).unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
+    Flood { sent, closed: was_closed, goaway, entered_at_goaway, elapsed }
 }
 
 /// Rapid reset with accepted streams: each new stream is preceded by the RST_STREAM of the one opened earlier.
@@ -296,7 +323,7 @@ async fn flood(addr: std::net::SocketAddr, block: &[u8], end_stream: bool, cance
 async fn rapid_reset_never_exceeds_the_stream_cap_and_closes_the_connection() {
     const CAP: u32 = 5;
     let addr = serve(ServerOptions::new().h2c(true).http2_max_concurrent_streams(CAP)).await;
-    let f = flood(addr, &request_block("/t/hold-cancel"), true, 5, 0, 5000).await;
+    let f = flood(addr, &request_block("/t/hold-cancel"), true, (5, 0, 5000), &ENTERED_RESET).await;
     let peak = CANCEL_PEAK.load(Ordering::SeqCst);
     eprintln!(
         "rapid reset: {} streams sent in {:.2?}, closed {}, peak handlers {peak}, GOAWAY {:?}",
@@ -307,6 +334,39 @@ async fn rapid_reset_never_exceeds_the_stream_cap_and_closes_the_connection() {
     assert!(f.sent < 1000, "closed soon after the threshold ({} streams)", f.sent);
     assert_eq!(f.goaway, Some(0), "a GOAWAY before the close");
     assert!(peak <= CAP as usize, "at most {CAP} handlers at once, saw {peak}");
+    // Nothing reaches a handler between the verdict and the close (a few that passed the check just before it).
+    let at_goaway = f.entered_at_goaway.expect("a GOAWAY was read");
+    let at_close = ENTERED_RESET.load(Ordering::SeqCst);
+    eprintln!("rapid reset: handlers started {at_goaway} at the GOAWAY, {at_close} at the close");
+    assert!(at_close - at_goaway <= CAP as usize, "handlers kept starting during the grace period: {at_goaway} -> {at_close}");
+}
+
+/// One cheap completed request per reset stream (the amplification of CVE-2023-44487): completed requests only
+/// count for a quarter, so the connection is closed anyway, and nothing runs once the verdict is in.
+#[corvis::test]
+async fn interleaved_completed_requests_do_not_hide_a_flood() {
+    let addr = serve(ServerOptions::new().h2c(true)).await;
+    let f = flood(addr, &request_block("/t/hold-interleaved"), true, (5, 5, 5000), &ENTERED_INTERLEAVED).await;
+    let at_close = ENTERED_INTERLEAVED.load(Ordering::SeqCst);
+    eprintln!(
+        "interleaved 1:1: {} resets sent in {:.2?}, closed {}, handlers started {:?} at the GOAWAY, {at_close} at the close",
+        f.sent, f.elapsed, f.closed, f.entered_at_goaway
+    );
+    assert!(f.closed, "the server closed the connection");
+    assert!(f.sent < 1200, "closed soon after the floor ({} resets)", f.sent);
+    let at_goaway = f.entered_at_goaway.expect("a GOAWAY was read");
+    assert!(at_close - at_goaway <= 100, "handlers kept starting during the grace period: {at_goaway} -> {at_close}");
+}
+
+/// The ceiling closes a connection that completes plenty of requests: 1 cancelled stream in 5 is within the
+/// proportional rule, but not within `http2_max_cancelled_streams`.
+#[corvis::test]
+async fn the_cancelled_streams_ceiling_applies_whatever_is_completed() {
+    let addr = serve(ServerOptions::new().h2c(true).http2_max_cancelled_streams(600)).await;
+    let f = flood(addr, &request_block("/t/hold-proxy"), true, (4, 20, 5000), &ENTERED_NONE).await;
+    eprintln!("ceiling 600: {} resets sent in {:.2?}, closed {}", f.sent, f.elapsed, f.closed);
+    assert!(f.closed, "the server closed the connection");
+    assert!(f.sent > 600 && f.sent < 1200, "closed after the ceiling ({} resets)", f.sent);
 }
 
 /// A POST whose body the client never sends and whose stream it resets once accepted: the body read fails, but
@@ -314,21 +374,21 @@ async fn rapid_reset_never_exceeds_the_stream_cap_and_closes_the_connection() {
 #[corvis::test]
 async fn reset_post_bodies_count_as_cancelled() {
     let addr = serve(ServerOptions::new().h2c(true)).await;
-    let f = flood(addr, &post_block("/t/json"), false, 5, 0, 5000).await;
+    let f = flood(addr, &post_block("/t/json"), false, (5, 0, 5000), &ENTERED_NONE).await;
     eprintln!("post reset: {} streams sent in {:.2?}, closed {}, GOAWAY {:?}", f.sent, f.elapsed, f.closed, f.goaway);
     assert!(f.closed, "the server closed the connection");
     assert!(f.sent > 500 && f.sent < 1000, "closed after the threshold ({} streams)", f.sent);
 }
 
-/// A client that completes more requests than it cancels (a proxy with a few percent of aborts) is not cut, even
-/// though it cancels far more than 500 streams in total.
+/// A client that completes five requests per cancelled one (a proxy with aborts) is not cut, even though it
+/// cancels far more than 500 streams in total.
 #[corvis::test]
 async fn a_client_completing_more_than_it_cancels_is_not_cut() {
     let addr = serve(ServerOptions::new().h2c(true)).await;
-    let f = flood(addr, &request_block("/t/hold-proxy"), true, 4, 10, 800).await;
+    let f = flood(addr, &request_block("/t/hold-proxy"), true, (4, 20, 800), &ENTERED_NONE).await;
     eprintln!("proxy-like: {} cancelled streams sent in {:.2?}, closed {}", f.sent, f.elapsed, f.closed);
     assert!(f.sent >= 800, "the whole pattern ran ({} cancelled streams)", f.sent);
-    assert!(!f.closed, "a connection that completes more than it cancels stays open");
+    assert!(!f.closed, "a connection that completes far more than it cancels stays open");
 }
 
 #[corvis::test]

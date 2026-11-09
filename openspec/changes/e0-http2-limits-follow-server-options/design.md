@@ -191,6 +191,18 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
   keep-alive phase to the headers phase on any byte, and an HTTP/2 client sends frames (WINDOW_UPDATE) after its last
   response, so the 60 s `headers_timeout` applied. Existing behavior (see Context), not changed here; the test sets both
   timeouts and the spec scenario says so. A follow-up could keep the keep-alive phase for frames that start no request.
+- Rapid reset, third round. (1) Interleaving one cheap completed request per reset stream kept `cancelled <
+  completed` and avoided the verdict (15,880 resets in 12 s in the review). Completed requests now get partial credit:
+  close when cancelled > max(500, completed / 4) over the weighted window (`COMPLETED_CREDIT`), plus an absolute ceiling,
+  `ServerOptions::http2_max_cancelled_streams` (default 2000 per window, about 200 per second sustained, twice the
+  5,000 req/s at 2% proxy case; minimum 1), that closes whatever was completed. (2) During the 1 s grace period
+  hyper's graceful GOAWAY keeps announcing the highest stream id until its PING is acknowledged, so a flooding client kept
+  opening streams: a per-connection `flooded` flag, set with the verdict, makes the service return an error before the
+  handler (and again after the permit wait), which makes hyper reset the stream; these refused streams are neither
+  cancelled nor completed in the tally. (3) The `client_aborted` debug line is removed: counting is enough. Measured by
+  the tests: interleaved 1:1 closed after 830 resets with 505 handlers started both at the GOAWAY and at the close; the
+  rapid-reset test the same (505 and 505); a ceiling of 600 closed after 940 resets; a client with 4 cancels per 20
+  completed (800 cancels) was not cut.
 - Zero durations (finding 4): a zero `http2_keep_alive_interval` is stored as `None`; `http2_keep_alive_timeout` is
   clamped to at least 1 s.
 - Known limitations moved to #157 and documented, not fixed here: a peer that never reads holds the connection (no

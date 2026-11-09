@@ -72,11 +72,14 @@ These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 o
   other long streams over HTTP/2, where a peer that stopped answering would otherwise never be noticed.
 - A client that resets streams and opens new ones faster than their handlers stop never gets more handlers running at
   once than `http2_max_concurrent_streams` (rapid reset). A connection is also closed when the requests it cancelled
-  before their response (a reset stream, also while its body was being read) exceed 500 and exceed the requests it
-  completed, over the last 10 s. A proxy that multiplexes many users (Envoy, Cloud Run) and sees a few percent of
-  aborts completes far more than it cancels and is never cut. The server sends a graceful GOAWAY first, so the proxy
-  can retry unanswered requests on another connection, and drops the connection after 1 s. A client that aborts a
-  request is not logged as an error.
+  before their response (a reset stream, also while its body was being read) exceed 500 and exceed a quarter of the
+  requests it completed, over the last 10 s, or exceed `http2_max_cancelled_streams` (default 2000, about 200 per
+  second sustained) whatever it completed. A proxy that multiplexes many users (Envoy, Cloud Run) and sees a few
+  percent of aborts is never cut: it tolerates about 20% of aborts, and 5,000 requests/s with 2% aborted stays well
+  under the ceiling. An attacker pays four completed requests per reset and is capped by the ceiling. The server sends
+  a graceful GOAWAY first, so the proxy can retry unanswered requests on another connection; from then on new streams
+  are reset without reaching a handler, and the connection is dropped after 1 s. Raise `http2_max_cancelled_streams`
+  if a proxy of yours aborts more than that. A request the client aborts is not logged.
 - Known limitation ([#157](https://github.com/randygil/corvis/issues/157)): a live peer that stops reading holds its
   connection. While writing to the client is blocked, the PING timeout and the idle timeouts do not fire; the PING
   keep-alive detects peers that stopped answering, not peers that stopped reading.
