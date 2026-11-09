@@ -74,6 +74,16 @@ Use it only for legacy clients that cannot be fixed (devices that send bare LF, 
 is a line ending again, which is a risk when a proxy in front of Corvis reads the same bytes differently: let the
 proxy normalize requests (most do, and reject bare LF themselves).
 
+## Slow clients
+
+Clients that are slow on purpose are covered by one timer per direction. Slow readers of the request (slowloris: a
+head or a body that never ends) are covered by `headers_timeout`, `request_timeout` and `keep_alive_timeout`. Slow
+readers of the response, a client that stops reading and keeps its connection, its `max_connections` slot and the
+memory of its responses, are covered by `send_timeout` (60 s by default, over HTTP/1 and HTTP/2, including an HTTP/2
+stream whose flow-control window the client never opens). See
+[Clients that stop reading](/http/performance#clients-that-stop-reading-send-timeout). Node's `server.timeout` is off
+by default, so there a client that stops reading is never disconnected.
+
 ## Multipart limits
 
 `limits.field_nesting_depth(n)` rejects a text field name that has more than `n` opening brackets. The request is

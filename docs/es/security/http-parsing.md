@@ -76,6 +76,16 @@ app.set_server_options(ServerOptions::new().insecure_http_parser(true));
 activa, un LF solo vuelve a ser un fin de línea, lo que es un riesgo si un proxy delante de Corvis lee los mismos bytes
 de otra forma: deja que el proxy normalice las peticiones (la mayoría lo hace y rechaza el LF solo por su cuenta).
 
+## Clientes lentos
+
+Los clientes lentos a propósito se cubren con un timer por dirección. Los que leen despacio la petición (slowloris: una
+cabecera o un cuerpo que no termina) los cubren `headers_timeout`, `request_timeout` y `keep_alive_timeout`. Los que
+leen despacio la respuesta, un cliente que deja de leer y conserva su conexión, su lugar de `max_connections` y la
+memoria de sus respuestas, los cubre `send_timeout` (60 s por defecto, en HTTP/1 y HTTP/2, incluido un stream HTTP/2
+cuya ventana de control de flujo el cliente nunca abre). Ver
+[Clientes que dejan de leer](/es/http/performance#clientes-que-dejan-de-leer-send-timeout). El `server.timeout` de Node
+está desactivado por defecto, así que allí un cliente que deja de leer nunca se desconecta.
+
 ## Límites de multipart
 
 `limits.field_nesting_depth(n)` rechaza el nombre de un campo de texto con más de `n` corchetes de apertura. La petición

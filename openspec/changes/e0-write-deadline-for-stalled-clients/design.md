@@ -222,3 +222,36 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
 - Q3: one stalled stream closes the whole connection, as the issue asks.
 - Q4: established WebSocket connections stay exempt here; their own write deadline is filed as a separate issue.
 - Implement after #150 is merged, reusing its raw-frame client.
+
+## Implementation notes
+
+- Implemented as designed: `send_timeout` (60 s, `None` off), the write deadline in `TimedIo` (`poll_write_deadline`, a
+  second `Sleep`), the per-body `BodyClock` with the connection watchdog in `finish_connection`, and 16 KiB slicing of
+  HTTP/2 data frames in `GuardedBody`. `finish_connection` takes the `send_timeout` as a new parameter.
+- `poll_flush` clears the stall only when the last write was not pending (`write_blocked`): a TCP flush completes
+  trivially and must not restart the clock of a blocked write.
+- Keep-alive phase fix (comment on #157): done, because `on_read` was reworked anyway. `TimedIo` now matches the HTTP/2
+  preface on every connection (rejecting it when h2c is off, as before) and, with h2c on, walks the client's frame
+  boundaries (`H2Frames`); only a HEADERS frame moves an idle connection from the keep-alive phase to the headers
+  phase, so WINDOW_UPDATE, PING, SETTINGS and the like keep `keep_alive_timeout`. HTTP/1 is unchanged (any byte starts
+  the next head). Test: `stray_http2_frames_do_not_end_the_keep_alive_phase`.
+- Tests are in `tests/send_timeout.rs` and, for the WebSocket case (feature `websockets`), `tests/send_timeout_ws.rs`.
+  The raw HTTP/2 client was copied and extended (SETTINGS parameters, PING answers) instead of moved to a shared module,
+  to leave `tests/http2_limits.rs` untouched.
+- Stalled HTTP/1 clients use `/t/forever` (an endless stream), not the 8 MiB route of the spec: on a Windows loopback
+  connection the kernel buffers swallowed a whole 8 MiB response while the client did not read, so the server never
+  blocked and the test proved nothing. HTTP/2 stalls are application-level (flow control) and keep `/t/huge` and
+  `/t/big`. Each stall test has a twin with `send_timeout(None)` that shows the slot is not released, and the
+  WebSocket test was checked to fail when the upgraded exemption is removed.
+- Slow live reader: the server sees progress when the OS reports the socket writable. With a tiny receive buffer a
+  reader that takes 4 KiB every 400 ms was cut by a 1 s timeout (the socket became writable only after tens of KiB were
+  read), while 128 KiB per 400 ms was not; HTTP/2 readers (flow control) are exact. The HTTP/1 test therefore reads what
+  its socket holds every 400 ms, and the docs say that progress is observed in steps for very slow readers (the 60 s
+  default is far above the time such a reader needs for a step).
+- Compression: the test uses `max_concurrent(1)`; while a stalled client holds the slot a second client gets an
+  uncompressed response, and after `send_timeout` it is compressed again.
+- Mutation checks done: without slicing the one-byte-window test fails; without the write deadline the HTTP/1
+  pipelined and PING flood tests fail; without the watchdog the zero-window test fails.
+- Not done here: task 6.5 (parity) and 6.6 (security review proofs of concept re-run) belong to the maintainer's
+  session; the regression tests reproduce both scenarios of the review (zero window, never-read PING flood, and the
+  HTTP/1 pipelined variant).

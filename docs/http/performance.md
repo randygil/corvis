@@ -40,6 +40,7 @@ app.set_server_options(
         .headers_timeout(Duration::from_secs(30))    // 60 s by default
         .request_timeout(Duration::from_secs(120))   // 300 s by default; responds 408
         .keep_alive_timeout(Duration::from_secs(10)) // 5 s by default
+        .send_timeout(Duration::from_secs(30))       // 60 s by default; closes the connection
         .max_connections(10_000)                     // no cap by default
         .max_header_size(16 * 1024)                  // 32 KiB by default; responds 431 (HTTP/1 and HTTP/2)
         .http2_max_concurrent_streams(50)            // 100 by default, per HTTP/2 connection
@@ -53,6 +54,36 @@ Each timeout accepts `None` to disable it, for example `.request_timeout(None)`.
 they close, and so does a socket for up to 2 s after an early error response (`413`, `431`, ...) while the server
 lets the client read it before closing. With a cap, give your gateways a heartbeat so dead clients do not hold slots.
 
+### Clients that stop reading (`send_timeout`)
+
+`send_timeout` (60 s by default, `None` disables it) is the longest the server waits for a client to accept response
+bytes. A client that stops reading would otherwise keep its connection, its `max_connections` slot and the memory of
+its responses forever, because no other timer runs while a response is in flight. It works the same over HTTP/1 and
+HTTP/2, in two ways:
+
+- **Blocked socket.** When writing to the connection's socket stays blocked for `send_timeout` without the socket
+  accepting a byte, the connection is closed. This also catches an HTTP/2 client that floods PINGs and never reads
+  the answers, and an HTTP/1 client that pipelines requests and never reads the responses.
+- **Closed flow-control window.** An HTTP/2 stream whose response has waited for `send_timeout` for the client to open
+  its window is stalled, and the connection is closed even if the client keeps answering PINGs or sending
+  WINDOW_UPDATE for other streams. One stalled stream closes the whole connection.
+
+The connection is dropped at once: no GOAWAY, no rest of the response, no closing drain.
+
+It measures lack of progress, not the length of the response: every byte the client accepts restarts it, so a slow
+download is not cut. The server notices progress when the operating system reports the socket writable, which for a
+very slow reader happens in steps (a few tens of KiB on a connection with large kernel buffers); the default is far
+longer than the time such a reader needs for a step. It never runs while the server has nothing to send: a slow
+handler, an idle Server-Sent Events stream and an idle keep-alive connection are not affected, and neither is an
+established WebSocket connection (its send queue is bounded by `max_buffered_amount`). A client that accepts one
+byte per `send_timeout` keeps its connection.
+
+Node's `server.timeout` is the nearest option: it is off by default (0) and measures inactivity in both directions,
+so it also cuts slow handlers, which is why Node turned it off. With Node's defaults a client that stops reading is
+never disconnected; Corvis closes it after 60 s (nginx's `send_timeout` has the same default and semantics). A
+player that pauses a progressive download for over a minute reconnects (browsers resume with `Range`); raise the value
+or pass `None` if you need the old behavior.
+
 ### HTTP/2 connections
 
 These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 ones.
@@ -65,7 +96,8 @@ These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 o
 - `max_connections` counts connections, not streams, like Node's `server.maxConnections`. The requests in flight from
   HTTP/2 clients are bounded by `max_connections` x `http2_max_concurrent_streams`.
 - `headers_timeout` and `keep_alive_timeout` apply to the connection while none of its streams is in flight, so one
-  long stream keeps the connection alive. `request_timeout` applies to the body of each stream on its own: a stalled
+  long stream keeps the connection alive. An idle connection stays in the keep-alive phase when the client sends a
+  frame that starts no request (WINDOW_UPDATE, PING, SETTINGS): only a new request moves it to the headers phase. `request_timeout` applies to the body of each stream on its own: a stalled
   `POST` is answered `408` without affecting the other streams.
 - `http2_keep_alive_interval` (off by default) sends a PING every interval, and `http2_keep_alive_timeout` closes the
   connection when a PING is not acknowledged in time (minimum 1 s; a zero interval means no PINGs). Set it with SSE or
@@ -80,9 +112,8 @@ These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 o
   a graceful GOAWAY first, so the proxy can retry unanswered requests on another connection; from then on new streams
   are reset without reaching a handler, and the connection is dropped after 1 s. Raise `http2_max_cancelled_streams`
   if a proxy of yours aborts more than that. A request the client aborts is not logged.
-- Known limitation ([#157](https://github.com/randygil/corvis/issues/157)): a live peer that stops reading holds its
-  connection. While writing to the client is blocked, the PING timeout and the idle timeouts do not fire; the PING
-  keep-alive detects peers that stopped answering, not peers that stopped reading.
+- The PING keep-alive detects peers that stopped answering, not peers that stopped reading; `send_timeout` covers
+  those (see above).
 
 ## Request bodies
 
