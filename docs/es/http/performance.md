@@ -73,8 +73,12 @@ Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1
   Actívalo con SSE u otros streams largos sobre HTTP/2, donde un cliente que dejó de responder de otro modo nunca se
   detectaría.
 - Un cliente que reinicia streams y abre otros nuevos más rápido de lo que sus handlers se detienen nunca consigue más
-  handlers a la vez que `http2_max_concurrent_streams`, y una conexión que cancela más de 500 peticiones antes de su
-  respuesta en 10 s se cierra (rapid reset).
+  handlers a la vez que `http2_max_concurrent_streams` (rapid reset). Una conexión también se cierra cuando las
+  peticiones que canceló antes de su respuesta (un stream reiniciado, también mientras se leía su cuerpo) superan 500 y
+  superan las que completó, en los últimos 10 s. Un proxy que multiplexa muchos usuarios (Envoy, Cloud Run) y ve un
+  pequeño porcentaje de cancelaciones completa muchas más de las que cancela y nunca se corta. El servidor envía antes
+  un GOAWAY ordenado, para que el proxy pueda reintentar en otra conexión las peticiones sin respuesta, y cierra la
+  conexión tras 1 s. Un cliente que cancela una petición no se registra como error.
 - Limitación conocida ([#157](https://github.com/randygil/corvis/issues/157)): un cliente vivo que deja de leer retiene
   su conexión. Mientras la escritura hacia el cliente está bloqueada, ni el timeout del PING ni los de inactividad se
   activan; el keep-alive con PING detecta clientes que dejaron de responder, no que dejaron de leer.

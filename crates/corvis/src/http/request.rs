@@ -23,6 +23,8 @@ pub struct Request {
     pub(crate) body: Value,
     /// Error of the body parser, answered by the router (`next(err)` in Express).
     pub(crate) body_error: Option<HttpException>,
+    /// The body could not be read because the peer reset the stream or broke the connection.
+    pub(crate) client_aborted: bool,
     pub(crate) params: HashMap<String, String>,
     pub(crate) query: Map<String, Value>,
     pub(crate) remote_addr: Option<SocketAddr>,
@@ -76,6 +78,7 @@ impl Request {
             raw_body: body,
             body: parsed,
             body_error,
+            client_aborted: false,
             params: HashMap::new(),
             query,
             remote_addr: None,

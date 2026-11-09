@@ -172,6 +172,25 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
   drain (`CANCEL_LIMIT`, `CANCEL_WINDOW`). The threshold is far above ordinary client aborts on one connection (a
   gateway aborting a few requests per second) and far below an attack (the PoC reached about 2,900 per second).
   Measured by the regression test: the connection was closed at stream 505 with at most 2 handlers at once (cap 2).
+- Rapid reset, second round. (1) A POST whose body fails to read because the client reset the stream used to end in
+  the `400 request aborted` path without being counted and logged one ERROR line per stream. `from_hyper` now marks
+  such a request `client_aborted`; for HTTP/2 `handle` skips the dispatch, logs at debug and the service counts it as
+  cancelled. HTTP/1 keeps answering `400` through the filters (a malformed chunked body still expects its answer, and a
+  closed HTTP/1 connection cannot repeat the pattern). The original (an Express `body-parser` error, `request aborted`,
+  passed to the filters, which for a non-HTTP error logs it) logs this at error level; we diverge for HTTP/2 because
+  nobody reads the answer and the log line is attacker-controlled. (2) The threshold is proportional: close when
+  cancelled > max(500, completed) over a two-window estimate (current window plus previous weighted by the part still
+  inside the last 10 s), so 500 + 500 across a window edge still trips it and a proxy with 1 to 2 percent aborts never does
+  (unit tests with a synthetic clock, and an integration test with 800 cancels against 2,000 completions). (3) Before
+  closing, the connection task calls hyper's `graceful_shutdown`, which sends GOAWAY with NO_ERROR (hyper cannot send
+  ENHANCE_YOUR_CALM), and drops the connection after 1 s if streams are still open. This replaced `GracefulShutdown`
+  with a `watch` channel in `serve`, because `GracefulConnection` is sealed and the connection must be reachable.
+  Measured: rapid reset closed after 830 streams with GOAWAY code 0 and peak 5 handlers (cap 5); POST plus RST closed
+  after 835 streams; the proxy-like client sent 800 cancelled streams in 3.1 s without being cut.
+- `idle_http2_connection_is_closed` failed about one run in ten: `TimedIo::on_read` moves an idle connection from the
+  keep-alive phase to the headers phase on any byte, and an HTTP/2 client sends frames (WINDOW_UPDATE) after its last
+  response, so the 60 s `headers_timeout` applied. Existing behavior (see Context), not changed here; the test sets both
+  timeouts and the spec scenario says so. A follow-up could keep the keep-alive phase for frames that start no request.
 - Zero durations (finding 4): a zero `http2_keep_alive_interval` is stored as `None`; `http2_keep_alive_timeout` is
   clamped to at least 1 s.
 - Known limitations moved to #157 and documented, not fixed here: a peer that never reads holds the connection (no

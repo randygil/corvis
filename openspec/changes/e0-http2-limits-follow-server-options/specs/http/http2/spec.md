@@ -38,8 +38,11 @@ working. The default is the documented 32 KiB.
 `ServerOptions::http2_max_concurrent_streams(n)` SHALL set the number of streams a client may have open at once on
 one HTTP/2 connection (`SETTINGS_MAX_CONCURRENT_STREAMS`), with a default of 100 and a minimum of 1. The server MUST
 never run more handlers at once for one connection than this number, even when the client resets streams and opens
-new ones faster than their handlers stop (rapid reset), and MUST close a connection that cancels more than 500
-requests before their response within 10 seconds.
+new ones faster than their handlers stop (rapid reset). It MUST close a connection whose requests cancelled before
+their response (a stream reset by the client, including while its body was being read) exceed 500 and exceed the
+requests it completed, over the last 10 seconds (current window plus the previous one weighted), after a graceful
+GOAWAY and a grace period of 1 second. A connection that completes more requests than it cancels MUST NOT be closed
+for it. A request aborted by the client SHALL NOT be logged at error level.
 
 #### Scenario: Cap of two
 - **WHEN** a server has `ServerOptions::new().h2c(true).http2_max_concurrent_streams(2)` and an HTTP/2 client starts
@@ -100,4 +103,5 @@ the connection.
 #### Scenario: Idle HTTP/2 connection
 - **WHEN** a server has `ServerOptions::new().h2c(true).keep_alive_timeout(Duration::from_secs(1))` and an HTTP/2
   client completes one request and then sends nothing
-- **THEN** the server closes the connection after about one second
+- **THEN** the server closes the connection after about one second (a client that sends frames while idle, such as
+  WINDOW_UPDATE, moves the connection to the headers phase and is timed by `headers_timeout` instead)
