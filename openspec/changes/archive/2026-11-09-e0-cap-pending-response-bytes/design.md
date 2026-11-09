@@ -406,3 +406,16 @@ Reviewer's modes re-run against this round (release build, `capreview`, server o
 | `burst` (30 requests to a 512 KiB route, 300 ms handler, full-speed reader) | 14 of 30 reset | 16 ok, 14 reset with `ENHANCE_YOUR_CALM` (kept; documented) |
 | `herd` (98 waiters, 256 MiB) | 1.1 to 1.7 times the CPU per MiB | 2.87 ms of CPU per MiB, 319 MiB/s |
 | `h1slack` | slack let extra pipelined handlers run | 2 huge handlers ran while the client did not read: a Windows loopback socket absorbs the 8 MiB, so this mode cannot hold a response; the slack itself is covered by the unit test |
+
+## Verification (2026-11-09)
+
+Verified together in batch-p (#163, #161): `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets, health-tls,
+compression) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed 1302 tests and
+`cargo test -p corvis --features compression` passed 962, 0 failures; naming, crate files, the examples (32/32 smoke
+checks) and `npm run docs:check` pass. CI run 42684409965 is green on Linux and Windows (run 42680389608 had failed on
+the RST-cycle test, which depended on machine speed; it was split into count-based tests). corvis-parity: consi
+832/832, facten 727/727, houseplan 636/636 equal, databases equivalent. Security review: two rounds, closed. Measured with the proof of concept at default options: about 9 MiB held
+per connection with 100 stalled streams (103–114 MiB before); a wedged HTTP/1 connection, unbounded head-of-line
+blocking on HTTP/2 and small responses counted as completed after a reset were fixed; `max_pending_response_wait`
+applies to HTTP/2 only.

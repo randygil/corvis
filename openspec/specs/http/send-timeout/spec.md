@@ -119,10 +119,18 @@ request whose handler takes longer than the send timeout before answering MUST N
   answers
 - **THEN** the client receives the response
 
-### Requirement: Upgraded connections are not affected
-The send timeout MUST NOT apply to a connection after it has been upgraded (WebSocket gateways, `upgrade` listeners).
+### Requirement: Upgraded connections keep only the write deadline
+After a connection has been upgraded (WebSocket gateways, `WebSocketServer`, `upgrade` listeners), the blocked-write
+deadline of the send timeout SHALL keep applying to it, as specified in `ws/write-deadline`. The stalled-response
+watchdog and the idle timers MUST NOT apply to it: an upgraded connection has no HTTP response bodies, and pausing
+reading or having nothing to send is legitimate there.
 
 #### Scenario: WebSocket client that stops reading
 - **WHEN** a server with `send_timeout(Duration::from_secs(1))` accepts a WebSocket connection and the client stops
-  reading for three seconds while the gateway sends less than `max_buffered_amount`
-- **THEN** the connection stays open and the client then receives the messages
+  reading while the gateway sends more than the kernel buffers hold but less than `max_buffered_amount`
+- **THEN** the connection is closed within a few seconds
+
+#### Scenario: Quiet WebSocket connection
+- **WHEN** an upgraded connection on a server with `send_timeout(Duration::from_secs(1))` carries no frames for five
+  seconds
+- **THEN** the connection stays open
