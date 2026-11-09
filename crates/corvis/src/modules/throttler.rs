@@ -152,6 +152,30 @@ impl ThrottlerModule {
             .export(Token::of::<ThrottlerStorage>())
             .global(true)
     }
+
+    /// `ThrottlerModule.forRootAsync({ useFactory })` – global. The factory can resolve other providers and
+    /// returns a `Vec<ThrottlerOptions>` or a configured [`ThrottlerStorage`].
+    pub fn for_root_async<F, Fut, S>(factory: F) -> DynamicModule
+    where
+        F: Fn(crate::di::ResolveCtx) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = crate::Result<S>> + Send + 'static,
+        S: Into<ThrottlerStorage> + 'static,
+    {
+        let factory = Arc::new(factory);
+        DynamicModule::new::<ThrottlerModule>()
+            .provider(Provider::use_factory(Token::of::<ThrottlerStorage>(), move |ctx| {
+                let factory = factory.clone();
+                async move { Ok(factory(ctx).await?.into()) }
+            }))
+            .export(Token::of::<ThrottlerStorage>())
+            .global(true)
+    }
+}
+
+impl From<Vec<ThrottlerOptions>> for ThrottlerStorage {
+    fn from(throttlers: Vec<ThrottlerOptions>) -> Self {
+        ThrottlerStorage::new(throttlers)
+    }
 }
 
 /// Rate limiting guard (keyed by client IP + handler).

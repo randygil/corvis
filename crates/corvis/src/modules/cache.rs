@@ -161,6 +161,27 @@ impl CacheModule {
             .export(CACHE_MANAGER)
             .global(global)
     }
+
+    /// `CacheModule.registerAsync({ useFactory })`: the options come from `factory`, which can resolve other
+    /// providers. The manager is built once and is the same instance behind `Arc<CacheManager>` and
+    /// `CACHE_MANAGER`. The module is global when `is_global` is `true`; the `is_global` field of the returned
+    /// options is ignored because globality is fixed before any factory runs.
+    pub fn register_async<F, Fut>(is_global: bool, factory: F) -> DynamicModule
+    where
+        F: Fn(crate::di::ResolveCtx) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = crate::Result<CacheOptions>> + Send + 'static,
+    {
+        let factory = Arc::new(factory);
+        DynamicModule::new::<CacheModule>()
+            .provider(Provider::use_factory(Token::of::<CacheManager>(), move |ctx| {
+                let factory = factory.clone();
+                async move { Ok(CacheManager::new(factory(ctx).await?)) }
+            }))
+            .provider(Provider::use_existing(CACHE_MANAGER, Token::of::<CacheManager>()))
+            .export(Token::of::<CacheManager>())
+            .export(CACHE_MANAGER)
+            .global(is_global)
+    }
 }
 
 /// Caches `GET` responses (keyed by URL, or by `CACHE_KEY_METADATA`).

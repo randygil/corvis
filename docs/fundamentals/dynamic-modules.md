@@ -143,16 +143,32 @@ pub struct AppModule;
 The factory runs in the context of the dynamic module (`MailerModule`), not that of the module that imports it. `ctx.get::<ConfigService>()` works because `ConfigModule` is global. If the dependency comes from a non-global module, add it to the dynamic module's imports with `.import(...)`; this is what `ScheduleModule::for_root_async(imports, factory)` does with its first argument.
 :::
 
+## Convention for async variants
+
+Every async variant is named after its synchronous method plus `_async` (`for_root` becomes `for_root_async`, `register` becomes `register_async`). Its arguments are `(is_global, factory)` when the module has an `is_global` option, and `(factory)` when the module is always global or never global. Extra imports for the factory go on the returned `DynamicModule` with `.import(...)`.
+
+`is_global` is an argument, not a field of the options the factory returns: globality is decided before any factory runs, so an `is_global` inside the returned options is ignored and the argument wins.
+
+```rust
+CacheModule::register_async(true, |ctx| async move {
+    let config = ctx.get::<ConfigService>().await?;
+    Ok(CacheOptions { ttl: config.try_get::<u64>("CACHE_TTL")?, ..Default::default() })
+})
+.import(SettingsModule::for_root()) // only if the factory needs a non-global module
+```
+
+If the factory returns an error, the application does not start and the message is `Error while instantiating <token>: <cause>`. `ScheduleModule::for_root_async(imports, factory)` predates the convention and is the one exception: it takes its imports as the first argument.
+
 ## The built-in dynamic modules
 
 | Module | Methods |
 |---|---|
-| `ConfigModule` | `for_root(ConfigModuleOptions)`, `for_feature(register_as(..))` |
+| `ConfigModule` | `for_root(ConfigModuleOptions)`, `for_root_async(is_global, factory)`, `for_feature(register_as(..))` |
 | `JwtModule` | `register(JwtModuleOptions)`, `register_async(global, factory)` |
 | `EventEmitterModule` | `for_root(EventEmitterOptions)` |
 | `ScheduleModule` | `for_root()`, `for_root_with(ScheduleModuleOptions)`, `for_root_async(imports, factory)` |
-| `CacheModule` | `register(CacheOptions)` |
-| `ThrottlerModule` | `for_root(vec![ThrottlerOptions])`, `for_root_storage(ThrottlerStorage)` |
+| `CacheModule` | `register(CacheOptions)`, `register_async(is_global, factory)` |
+| `ThrottlerModule` | `for_root(vec![ThrottlerOptions])`, `for_root_storage(ThrottlerStorage)`, `for_root_async(factory)` |
 | `ServeStaticModule` | `for_root(vec![ServeStaticOptions])` |
 | `MulterModule` | `register(MulterOptions)`, `register_async(factory)` |
 | `OrmModule` (`corvis-orm`) | `for_root(OrmModuleOptions)`, `for_root_async(global, factory)`, `for_root_from_config(global)` |

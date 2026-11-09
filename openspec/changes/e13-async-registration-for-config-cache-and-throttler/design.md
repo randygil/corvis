@@ -116,3 +116,14 @@ needed because the variants have no observable output beyond the options they bu
 
 4. No warning when the factory's `is_global` differs from the argument; document that the argument wins.
 5. `ScheduleModule::for_root_async(imports, f)` stays as a documented exception to the convention.
+
+## Implementation notes
+
+- Implemented as designed. The three factories wrap `Provider::use_factory`; `CacheModule::register_async` registers
+  the `CacheManager` factory plus `Provider::use_existing(CACHE_MANAGER, ..)`, so a failing factory is reported
+  against `CacheManager`.
+- The tests live in a nested `async_registration` module of `crates/corvis/tests/modules.rs`. Beyond the spec
+  scenarios they also cover that the `is_global` of the returned `ConfigModuleOptions` is ignored and the factory
+  errors of Config and Throttler. The non-global `.import(...)` scenario is tested with Cache and a short TTL read
+  from the imported provider.
+- Task 4.5 (`corvis-parity`) is left to the maintainer's session.

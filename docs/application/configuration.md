@@ -98,6 +98,19 @@ ConfigModule::for_root(ConfigModuleOptions {
 
 The message you will see at startup begins with `Config validation error:`.
 
+## Async registration
+
+When the options themselves depend on another provider, for example the path of the `.env` file, use `ConfigModule::for_root_async(is_global, factory)`. The factory returns `ConfigModuleOptions`, and `ConfigService` is built from them exactly as `for_root` does. `is_global` is the argument; the `is_global` field of the returned options is ignored.
+
+```rust
+ConfigModule::for_root_async(true, |ctx| async move {
+    let paths = ctx.get::<EnvPaths>().await?; // from a global module
+    Ok(ConfigModuleOptions { env_file_path: paths.files.clone(), ..Default::default() })
+})
+```
+
+The factory cannot resolve `ConfigService`, since it is the provider being built: that fails at startup with a circular dependency error. See [Dynamic modules](/fundamentals/dynamic-modules#convention-for-async-variants) for the convention shared by all async variants.
+
 ## Format of `.env` files
 
 Files are read with the grammar of Node.js's `dotenv` (`corvis::config::parse_dotenv` exposes it in case you need it):
