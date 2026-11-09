@@ -43,7 +43,10 @@ Cuando se supera el límite, la petición recibe:
 ## Cómo se cuenta
 
 - La clave de cada contador combina el nombre del límite, la IP del cliente (`req.ip()`), el
-  controlador y el handler. Cada ruta tiene su propio contador por cliente.
+  controlador y el handler. Cada ruta tiene su propio contador por cliente. La IP se normaliza como en la
+  librería original: una dirección IPv4 se usa tal cual, una IPv6 mapeada a IPv4 (`::ffff:1.2.3.4`) cuenta como su
+  forma IPv4, `::1` queda sola y cualquier otra dirección IPv6 cuenta como su prefijo /64 (ver
+  [Clientes IPv6](#clientes-ipv6)).
 - La ventana es deslizante: cada petición cuenta durante `ttl` milisegundos desde el momento en que se
   hizo, y el conteo de una petición es el número de accesos de esa clave en los últimos `ttl`. Un cliente
   no puede enviar el doble del límite en el borde de una ventana fija.
@@ -210,6 +213,57 @@ ThrottlerModule::for_root_async(|ctx| async move {
 
 Si la fábrica falla, la aplicación no arranca (`Error while instantiating ThrottlerStorage: ...`).
 
+## Clientes IPv6
+
+Una conexión de hosting o doméstica suele recibir un /64 completo (2^64 direcciones). Si cada dirección contara como
+un cliente distinto, un cliente podría obtener un límite nuevo con cada dirección que rote. Por eso `ThrottlerGuard`
+agrupa a los clientes IPv6 por prefijo, de 64 bits por defecto, como hace la librería original desde 6.7.0
+(`ipv6SubnetPrefix`). Los clientes de un mismo /64 comparten sus contadores, como los clientes IPv4 detrás de un NAT.
+
+Cambia la longitud con `ThrottlerStorage::with_ipv6_subnet_prefix`. Vale para todos los throttlers y funciona con
+`for_root_storage` y con fábricas de `for_root_async` que devuelven un storage:
+
+```rust
+use corvis::modules::throttler::ThrottlerStorage;
+
+// Asignaciones mayores: muchos proveedores entregan un /56 o un /48 a cada cliente.
+ThrottlerModule::for_root_storage(
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 10)]).with_ipv6_subnet_prefix(56),
+)
+```
+
+- `128` mantiene separada cada dirección IPv6 (la forma de desactivar la agrupación). Las direcciones mapeadas a IPv4
+  siguen contando como IPv4 y `::1` queda sola. Los valores por encima de 128 cuentan como 128.
+- `56` o `48` dificultan la rotación en endpoints como el login, pero los clientes que comparten ese prefijo también
+  comparten el límite.
+- Un prefijo menor de 32 bits se acepta, pero deja una parte grande del espacio de direcciones en un solo contador,
+  así que se registra una advertencia una vez al configurarlo.
+
+El hosting compartido es el caso donde agrupar perjudica: si un proveedor da a cada VM una porción de un mismo /64
+(a menudo un /128 por VM), todas las VM, y con ellas todos tus clientes que viven allí, comparten un contador. Si tus
+clientes pueden estar en esas direcciones, usa `with_ipv6_subnet_prefix(128)` o calcula tú la clave con un guard que
+llame a `record_hit`.
+
+Donde Corvis se aparta de la librería original (seguridad sobre paridad), `normalize_ip` devuelve la dirección IPv4 del
+cliente para las direcciones que la contienen, sea cual sea el prefijo:
+
+- NAT64 `64:ff9b::/96`. Un traductor sin estado (NAT46, SIIT-DC) muestra a cada cliente IPv4 como
+  `64:ff9b::a.b.c.d`; el /64 los pondría a todos en un solo contador. Un despliegue con su propio prefijo de
+  traducción no se reconoce: allí usa `with_ipv6_subnet_prefix(128)` o un tracker propio.
+- 6to4 `2002::/16` (la IPv4 son los bits 16 a 47; una sola IPv4 es dueña de un /48 entero de estas) y Teredo
+  `2001::/32` (la IPv4 del cliente son los últimos 32 bits, invertidos).
+- La forma obsoleta IPv4-compatible `::a.b.c.d`, salvo `::` y `::1`.
+
+Una dirección con puerto (`203.0.113.5:54321`, `[2001:db8:1:2::1]:443`) o una IPv6 entre corchetes
+(`[2001:db8:1:2::1]`) cuenta como la dirección sola; algunos proxies escriben el puerto en `X-Forwarded-For` y cada
+conexión tendría su propio contador. El resto de la salida del original no cambia y se comprueba contra él.
+
+`req.ip()`, `req.ips()` y `#[ip]` siguen devolviendo la dirección completa; solo cambia la clave del throttler. Un
+guard propio que llame a `ThrottlerStorage::record_hit` puede construir la misma clave de cliente con
+`corvis::modules::throttler::normalize_ip(&req.ip(), prefijo)`, un port del `normalizeIp` original. Lo que no sea una
+dirección IP, con o sin puerto (ver [Detrás de un proxy](#detras-de-un-proxy)) se devuelve sin cambios, y el identificador de zona
+(`%eth0`) se descarta en las direcciones válidas.
+
 ## Detrás de un proxy
 
 La clave usa `req.ip()`, que por defecto es la dirección del socket. Detrás de un proxy inverso todas
@@ -223,6 +277,10 @@ app.set_trust_proxy(1); // un proxy delante
 Usa `true` (confiar en todos los saltos) solo si todas las peticiones pasan por un proxy que
 reescribe `X-Forwarded-For`: si no, un cliente puede elegir su IP y saltarse el límite. Ver
 [Adaptadores HTTP](/es/http/performance).
+
+El contador usa la forma normalizada de la entrada de cliente que resuelve `trust proxy`. Lo que no sea una dirección
+IP, ni una dirección con puerto, se conserva tal cual, así que un cliente que puede elegir su entrada de `X-Forwarded-For` sigue eligiendo su
+contador.
 
 ## Cabeceras de respuesta
 

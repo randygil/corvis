@@ -75,6 +75,103 @@ impl ThrottlerOptions {
     }
 }
 
+/// Default length of the IPv6 prefix that identifies a client, like the original's `DEFAULT_IPV6_SUBNET_PREFIX`.
+pub const DEFAULT_IPV6_SUBNET_PREFIX: u8 = 64;
+
+/// The client part of a throttler key, a port of the original's `normalizeIp(ip, ipv6SubnetPrefix)` with the same
+/// output strings:
+///
+/// - an empty string, and anything that is not an IP address (a forged `X-Forwarded-For` entry), is returned as is;
+/// - the zone identifier (everything from the first `%`) is dropped from valid addresses;
+/// - an IPv4 address is returned as is;
+/// - `::1` is returned as `::1`;
+/// - an IPv4-mapped address (`::ffff:a.b.c.d`) is returned as the dotted IPv4 address;
+/// - any other IPv6 address is cut to its first `ipv6_subnet_prefix` bits and returned in compressed lowercase form
+///   followed by `/` and the length, e.g. `2001:db8:1:2::/64`. Lengths above 128 count as 128.
+///
+/// Clients in one IPv6 prefix therefore share a counter; `128` keeps each address apart.
+///
+/// Where it differs from the original (the maintainer chose security over parity):
+///
+/// - addresses that embed the client's IPv4 address return that IPv4 address, whatever the prefix: NAT64 `64:ff9b::/96`
+///   (a stateless translator makes every IPv4 client look like one /64), 6to4 `2002::/16` (bits 16 to 47), Teredo
+///   `2001::/32` (bits 96 to 127 inverted) and the deprecated IPv4-compatible `::a.b.c.d` (except `::` and `::1`);
+/// - `IP:port`, `[v6]:port` and `[v6]` are reduced to the IP and then normalized, because some proxies write the
+///   client's port in `X-Forwarded-For` and each connection would otherwise get its own counter.
+pub fn normalize_ip(ip: &str, ipv6_subnet_prefix: u8) -> String {
+    if ip.is_empty() {
+        return String::new();
+    }
+    let bare = ip.split('%').next().unwrap_or(ip);
+    if bare.parse::<std::net::Ipv4Addr>().is_ok() {
+        return bare.to_string();
+    }
+    let Ok(addr) = bare.parse::<std::net::Ipv6Addr>() else {
+        if let Ok(socket) = ip.parse::<std::net::SocketAddr>() {
+            return normalize_ip(&socket.ip().to_string(), ipv6_subnet_prefix);
+        }
+        if let Some(inner) = ip.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
+            && inner.parse::<std::net::Ipv6Addr>().is_ok()
+        {
+            return normalize_ip(inner, ipv6_subnet_prefix);
+        }
+        return ip.to_string();
+    };
+    let segments = addr.segments();
+    if segments[..7].iter().all(|&g| g == 0) && segments[7] == 1 {
+        return "::1".to_string();
+    }
+    let zero = |gs: &[u16]| gs.iter().all(|&g| g == 0);
+    let mapped = zero(&segments[..5]) && segments[5] == 0xffff;
+    let nat64 = segments[0] == 0x64 && segments[1] == 0xff9b && zero(&segments[2..6]);
+    let embedded = if mapped || nat64 {
+        Some([segments[6], segments[7]])
+    } else if segments[0] == 0x2002 {
+        Some([segments[1], segments[2]])
+    } else if segments[0] == 0x2001 && segments[1] == 0 {
+        Some([!segments[6], !segments[7]])
+    } else if zero(&segments[..6]) && !(segments[6] == 0 && segments[7] == 0) {
+        Some([segments[6], segments[7]])
+    } else {
+        None
+    };
+    if let Some([high, low]) = embedded {
+        let [a, b] = high.to_be_bytes();
+        let [c, d] = low.to_be_bytes();
+        return format!("{a}.{b}.{c}.{d}");
+    }
+    let prefix = u32::from(ipv6_subnet_prefix.min(128));
+    let mask = if prefix == 0 { 0 } else { u128::MAX << (128 - prefix) };
+    let masked = std::net::Ipv6Addr::from(u128::from(addr) & mask).segments();
+    format!("{}/{prefix}", format_ipv6(&masked))
+}
+
+/// Lowercase hex groups without leading zeros, the first longest run of at least two zero groups written as `::`
+/// (the original's `formatIpv6`; `Ipv6Addr`'s `Display` prints special forms differently).
+fn format_ipv6(groups: &[u16; 8]) -> String {
+    let (mut best_start, mut best_len) = (0, 0);
+    let (mut run_start, mut run_len) = (0, 0);
+    for (i, &g) in groups.iter().enumerate() {
+        if g != 0 {
+            run_len = 0;
+            continue;
+        }
+        if run_len == 0 {
+            run_start = i;
+        }
+        run_len += 1;
+        if run_len > best_len {
+            best_start = run_start;
+            best_len = run_len;
+        }
+    }
+    let hex = |gs: &[u16]| gs.iter().map(|g| format!("{g:x}")).collect::<Vec<_>>().join(":");
+    if best_len < 2 {
+        return hex(groups);
+    }
+    format!("{}::{}", hex(&groups[..best_start]), hex(&groups[best_start + best_len..]))
+}
+
 /// Default maximum number of keys kept by [`ThrottlerStorage`].
 pub const DEFAULT_THROTTLER_MAX_ENTRIES: usize = 100_000;
 
@@ -295,6 +392,7 @@ pub struct ThrottlerStorage {
     max_entries: usize,
     max_blocked: Option<usize>,
     headers: bool,
+    ipv6_subnet_prefix: u8,
 }
 
 impl ThrottlerStorage {
@@ -316,6 +414,7 @@ impl ThrottlerStorage {
             max_entries: DEFAULT_THROTTLER_MAX_ENTRIES,
             max_blocked: None,
             headers: true,
+            ipv6_subnet_prefix: DEFAULT_IPV6_SUBNET_PREFIX,
         }
     }
 
@@ -334,6 +433,22 @@ impl ThrottlerStorage {
     /// to hide them. Counting and blocking are not affected.
     pub fn with_headers(mut self, headers: bool) -> Self {
         self.headers = headers;
+        self
+    }
+
+    /// Length of the IPv6 prefix that identifies a client (default [`DEFAULT_IPV6_SUBNET_PREFIX`], 64), like the
+    /// original's `ipv6SubnetPrefix`. IPv6 clients in one prefix share their counters, so a client cannot get a
+    /// fresh limit by rotating through the addresses of its own network. `128` keeps each address apart; `56` or `48`
+    /// group larger allocations, but clients that share such a prefix also share a limit. Values above 128 count
+    /// as 128. It applies to every throttler. A value below 32 puts a large part of the address space in one
+    /// counter, so a warning is logged. See [`normalize_ip`] for the full rules.
+    pub fn with_ipv6_subnet_prefix(mut self, prefix: u8) -> Self {
+        if prefix < 32 {
+            Logger::new("ThrottlerModule").warn(format!(
+                "ipv6 subnet prefix {prefix} is shorter than 32 bits: IPv6 clients that share that prefix share one counter"
+            ));
+        }
+        self.ipv6_subnet_prefix = prefix.min(128);
         self
     }
 
@@ -531,7 +646,8 @@ impl From<Vec<ThrottlerOptions>> for ThrottlerStorage {
     }
 }
 
-/// Rate limiting guard (keyed by client IP + handler).
+/// Rate limiting guard (keyed by client IP + handler). The IP is normalized with [`normalize_ip`]: IPv6 clients are
+/// grouped by prefix (64 bits by default, see [`ThrottlerStorage::with_ipv6_subnet_prefix`]).
 #[crate::injectable]
 pub struct ThrottlerGuard {
     storage: Arc<ThrottlerStorage>,
@@ -603,13 +719,14 @@ impl CanActivate for ThrottlerGuard {
         let targets = [ctx.get_handler(), ctx.get_class()];
         self.warn_bare_skip_without_default(ctx, &targets);
         let req = ctx.request();
+        let client = normalize_ip(&req.ip(), self.storage.ipv6_subnet_prefix);
         for t in &self.storage.throttlers {
             if self.is_skipped(&t.name, &targets) {
                 continue;
             }
             let limit = self.reflector.get_all_and_override::<u32>(THROTTLE_LIMIT, &targets).unwrap_or(t.limit);
             let ttl = self.reflector.get_all_and_override::<u64>(THROTTLE_TTL, &targets).unwrap_or(t.ttl);
-            let key = format!("{}:{}:{}:{}", t.name, req.ip(), ctx.get_class().name, ctx.get_handler().name);
+            let key = format!("{}:{}:{}:{}", t.name, client, ctx.get_class().name, ctx.get_handler().name);
             let block_duration = self
                 .reflector
                 .get_all_and_override::<u64>(THROTTLE_BLOCK_DURATION, &targets)
@@ -1011,5 +1128,156 @@ mod tests {
         assert_eq!(names, ["b", "a", "long"]);
         let from: ThrottlerStorage = vec![t("long", 60_000), t("short", 1_000)].into();
         assert_eq!(from.throttlers[0].name, "short");
+    }
+
+    /// Replays `normalizeIp` of the original (`tests/fixtures/throttler/normalize-ip.mjs`) and compares every string.
+    #[test]
+    fn replays_the_original_normalize_ip_fixture() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../tests/fixtures/throttler/normalize-ip.json")).unwrap();
+        assert!(fixture.len() > 800);
+        // Inputs where Corvis deliberately differs from the original (security over parity), with Corvis's output for
+        // every prefix. Each one must differ from the recorded output, so the table cannot go stale.
+        let divergences =
+            [("1.2.3.4:80", "1.2.3.4"), ("[::1]", "::1"), ("::1.2.3.4", "1.2.3.4"), ("64:ff9b::1.2.3.4", "1.2.3.4"), ("::2", "0.0.0.2")];
+        let mut diverged = std::collections::HashSet::new();
+        for e in &fixture {
+            let (ip, prefix, out) = (e["ip"].as_str().unwrap(), e["prefix"].as_u64().unwrap() as u8, e["out"].as_str().unwrap());
+            let expected = match divergences.iter().find(|(i, _)| *i == ip) {
+                Some((_, ours)) => {
+                    assert_ne!(*ours, out, "{ip:?} is listed as a divergence but matches the original");
+                    diverged.insert(ip);
+                    *ours
+                }
+                None => out,
+            };
+            assert_eq!(normalize_ip(ip, prefix), expected, "ip {ip:?} prefix {prefix}");
+            if prefix == 128 {
+                assert_eq!(normalize_ip(ip, 129), expected, "ip {ip:?} prefix 129");
+                assert_eq!(normalize_ip(ip, 255), expected, "ip {ip:?} prefix 255");
+            }
+        }
+        assert_eq!(diverged.len(), divergences.len(), "every listed divergence is in the fixture");
+    }
+
+    /// Divergences from the original: embedded IPv4 addresses and ports.
+    #[test]
+    fn normalize_ip_maps_embedded_ipv4_and_strips_ports() {
+        for p in [0, 64, 128] {
+            assert_eq!(normalize_ip("64:ff9b::1.2.3.4", p), "1.2.3.4");
+            assert_eq!(normalize_ip("64:ff9b::c633:6407", p), "198.51.100.7");
+            assert_eq!(normalize_ip("2001:0:4136:e378:8000:63bf:3fff:fdd2", p), "192.0.2.45");
+            assert_eq!(normalize_ip("2002:102:304:1::", p), "1.2.3.4");
+            assert_eq!(normalize_ip("::8.8.8.8", p), "8.8.8.8");
+        }
+        // `::` and `::1` are not IPv4-compatible addresses.
+        assert_eq!(normalize_ip("::", 64), "::/64");
+        assert_eq!(normalize_ip("::1", 64), "::1");
+        // Only the well-known NAT64 prefix is translated; another /96 is a normal IPv6 prefix.
+        assert_eq!(normalize_ip("64:ff9b:1::1.2.3.4", 64), "64:ff9b:1::/64");
+        assert_eq!(normalize_ip("203.0.113.5:54321", 64), "203.0.113.5");
+        assert_eq!(normalize_ip("203.0.113.5:54322", 64), "203.0.113.5");
+        assert_eq!(normalize_ip("[2001:db8:1:2::1]:443", 64), "2001:db8:1:2::/64");
+        assert_eq!(normalize_ip("[2001:db8:1:2::1]", 64), "2001:db8:1:2::/64");
+        assert_eq!(normalize_ip("[::ffff:1.2.3.4]:80", 64), "1.2.3.4");
+        for kept in ["unknown", "1.2.3.4:", "1.2.3.4:99999", "[unknown]", "[1.2.3.4]", "[::1", "1.2.3.4:80:80"] {
+            assert_eq!(normalize_ip(kept, 64), kept);
+        }
+    }
+
+    #[test]
+    fn normalize_ip_examples() {
+        assert_eq!(normalize_ip("203.0.113.9", 64), "203.0.113.9");
+        assert_eq!(normalize_ip("::1", 0), "::1");
+        assert_eq!(normalize_ip("::ffff:1.2.3.4", 64), "1.2.3.4");
+        assert_eq!(normalize_ip("2001:db8:1:2:ffff:ffff:ffff:ffff", DEFAULT_IPV6_SUBNET_PREFIX), "2001:db8:1:2::/64");
+        assert_eq!(normalize_ip("fe80::1%eth0", 64), "fe80::/64");
+        assert_eq!(normalize_ip("unknown", 64), "unknown");
+        assert_eq!(normalize_ip("", 64), "");
+    }
+
+    /// Runs one request from `ip` through the guard.
+    async fn hit_from(guard: &ThrottlerGuard, ip: &str) -> Result<bool, HttpException> {
+        use crate::common::context::Target;
+        use crate::http::Request;
+        let mut request = Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap();
+        request.remote_addr = Some(std::net::SocketAddr::new(ip.parse().unwrap(), 4000));
+        let ctx = ExecutionContext::for_ws(
+            request,
+            Arc::new(Target::new("Gw")),
+            Arc::new(Target::new("on_message")),
+            None,
+            Arc::new(()),
+            serde_json::json!({}),
+        );
+        guard.can_activate(&ctx).await
+    }
+
+    fn guard_with(storage: ThrottlerStorage) -> ThrottlerGuard {
+        ThrottlerGuard { storage: Arc::new(storage), reflector: Arc::new(Reflector), warned: Default::default() }
+    }
+
+    fn one_hit_storage() -> ThrottlerStorage {
+        ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])
+    }
+
+    #[tokio::test]
+    async fn ipv4_clients_stay_apart() {
+        let guard = guard_with(one_hit_storage());
+        assert!(hit_from(&guard, "192.0.2.1").await.unwrap());
+        assert!(hit_from(&guard, "192.0.2.2").await.unwrap());
+        assert_eq!(hit_from(&guard, "192.0.2.1").await.unwrap_err().status(), 429);
+    }
+
+    #[tokio::test]
+    async fn ipv6_clients_share_a_counter_per_prefix() {
+        let guard = guard_with(one_hit_storage());
+        assert!(hit_from(&guard, "2001:db8:1:2::1").await.unwrap());
+        assert_eq!(hit_from(&guard, "2001:db8:1:2:aaaa:bbbb:cccc:dddd").await.unwrap_err().status(), 429, "same /64");
+        assert!(hit_from(&guard, "2001:db8:1:3::1").await.unwrap(), "another /64");
+    }
+
+    #[tokio::test]
+    async fn ipv4_mapped_address_shares_the_ipv4_counter() {
+        let guard = guard_with(one_hit_storage());
+        assert!(hit_from(&guard, "::ffff:192.0.2.1").await.unwrap());
+        assert_eq!(hit_from(&guard, "192.0.2.1").await.unwrap_err().status(), 429);
+    }
+
+    #[tokio::test]
+    async fn loopback_ipv6_is_its_own_client() {
+        let guard = guard_with(one_hit_storage());
+        assert!(hit_from(&guard, "::1").await.unwrap());
+        assert!(hit_from(&guard, "::2").await.unwrap(), "::2 is in ::/64 but not the loopback client");
+        assert_eq!(hit_from(&guard, "::1").await.unwrap_err().status(), 429);
+    }
+
+    #[tokio::test]
+    async fn prefix_128_keeps_ipv6_addresses_apart() {
+        let guard = guard_with(one_hit_storage().with_ipv6_subnet_prefix(128));
+        assert!(hit_from(&guard, "2001:db8:1:2::1").await.unwrap());
+        assert!(hit_from(&guard, "2001:db8:1:2::2").await.unwrap());
+        assert_eq!(hit_from(&guard, "2001:db8:1:2::1").await.unwrap_err().status(), 429);
+    }
+
+    #[tokio::test]
+    async fn prefix_48_groups_sixteen_bits_more_than_64() {
+        let guard = guard_with(one_hit_storage().with_ipv6_subnet_prefix(48));
+        assert!(hit_from(&guard, "2001:db8:1:2::1").await.unwrap());
+        assert_eq!(hit_from(&guard, "2001:db8:1:ffff::1").await.unwrap_err().status(), 429, "same /48");
+        assert!(hit_from(&guard, "2001:db8:2:2::1").await.unwrap(), "another /48");
+    }
+
+    #[tokio::test]
+    async fn prefix_above_128_counts_as_128() {
+        assert_eq!(one_hit_storage().with_ipv6_subnet_prefix(200).ipv6_subnet_prefix, 128);
+        let guard = guard_with(one_hit_storage().with_ipv6_subnet_prefix(200));
+        assert!(hit_from(&guard, "2001:db8:1:2::1").await.unwrap());
+        assert!(hit_from(&guard, "2001:db8:1:2::2").await.unwrap());
+    }
+
+    #[test]
+    fn default_prefix_is_64() {
+        assert_eq!(one_hit_storage().ipv6_subnet_prefix, 64);
     }
 }
