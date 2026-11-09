@@ -208,7 +208,7 @@ Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1
 | Desactivar el parseo | Activo | `app.disable_body_parser()` |
 | Límite de transporte de otros tipos | 1 MiB | `app.set_body_limit(bytes)` |
 | Profundidad máxima de un JSON | 256 niveles (`400`) | `app.set_body_parser_max_depth(n)` |
-| Parser de `req.query` | `simple` (como Express 5) | `app.set_query_parser(QueryParser::Extended)` |
+| Parser de `req.query` (también la query de los handshakes WebSocket y de las peticiones `upgrade`) | `simple` (como Express 5) | `app.set_query_parser(QueryParser::Extended)` |
 
 Solo se parsean `application/json` y `application/x-www-form-urlencoded`; el resto deja el cuerpo
 sin parsear y disponible en `req.raw_body()` (ver [Cuerpo sin procesar](/es/faq/raw-body)). Los cuerpos

@@ -187,7 +187,9 @@ impl UpgradeRequest {
     pub fn query_string(&self) -> Option<&str> {
         self.inner.request.uri().query()
     }
-    /// A query string parameter (`url.searchParams.get(name)`).
+    /// A string parameter of the parsed query ([`Request::query`], with the application's query
+    /// parser); `None` when absent, repeated (with the `simple` parser), nested or when the parser
+    /// is disabled. [`query_string`](Self::query_string) has the raw string.
     pub fn query_param(&self, name: &str) -> Option<&str> {
         self.inner.request.query_param(name)
     }
@@ -266,11 +268,11 @@ pub(crate) async fn dispatch_upgrade(
     server: &HttpServer,
     mut req: hyper::Request<hyper::body::Incoming>,
     remote: SocketAddr,
-    trust: &crate::http::proxy_addr::TrustProxy,
+    parser: &crate::http::body_parser::BodyParserOptions,
 ) -> Result<hyper::Response<crate::server::ResBody>, SocketDestroyed> {
     let on_upgrade = hyper::upgrade::on(&mut req);
     let (parts, _) = req.into_parts();
-    let Ok(request) = Request::for_upgrade(parts, remote, trust) else {
+    let Ok(request) = Request::for_upgrade(parts, remote, parser) else {
         return Err(SocketDestroyed);
     };
     let (tx, rx) = oneshot::channel();

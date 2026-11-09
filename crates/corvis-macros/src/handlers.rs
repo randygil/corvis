@@ -156,6 +156,7 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
         // Typed parameters (excluding self), with their attributes stripped.
         // `#[message_body("prop", Pipe, ...)]`: the property of the payload and the pipes.
         let mut params: Vec<(Type, String, Option<String>, Vec<Expr>)> = Vec::new();
+        let mut ip_attr: Option<syn::Attribute> = None;
         for input in method.sig.inputs.iter_mut() {
             if let FnArg::Typed(pt) = input {
                 let mut role = String::from("body");
@@ -166,6 +167,17 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                     let n = attr_name(&a);
                     if n == "connected_socket" {
                         role = "socket".into();
+                    } else if n == "ip" {
+                        if !matches!(&a.meta, syn::Meta::Path(_)) {
+                            return Err(syn::Error::new_spanned(
+                                &a,
+                                format!(
+                                    "`{fname_str}`: #[ip] takes no arguments in gateway handlers; gateway pipes only run on #[message_body]"
+                                ),
+                            ));
+                        }
+                        role = "ip".into();
+                        ip_attr.get_or_insert(a);
                     } else if n == "message_body" || n == "payload" {
                         role = "body".into();
                         let mut it = attr_args(&a)?.into_iter().peekable();
@@ -181,6 +193,22 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 pt.attrs = keep;
                 params.push(((*pt.ty).clone(), role, data, pipes));
             }
+        }
+
+        if let Some(attr) = ip_attr
+            && kind != "subscribe_message"
+        {
+            let error = syn::Error::new_spanned(
+                &attr,
+                format!(
+                    "`{fname_str}` has an #[ip] parameter, but #[ip] is only available on #[subscribe_message] handlers (and on routes in #[routes]); #[{kind}] handlers have no client"
+                ),
+            );
+            match &mut discarded {
+                Some(all) => all.combine(error),
+                None => discarded = Some(error),
+            }
+            continue;
         }
 
         let task_conv = if result { quote!(__ret.map_err(|__e| ::corvis::anyhow::anyhow!("{}", __e))?;) } else { quote!(let _ = __ret;) };
@@ -269,6 +297,8 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                     let id = format_ident!("__a{}", i);
                     if role == "socket" {
                         lets.push(quote!(let #id: #ty = ::corvis::websockets::client_from_any(&__client)?;));
+                    } else if role == "ip" {
+                        lets.push(quote!(let #id: #ty = ::corvis::__private::ws_ip_arg::<#ty>(&__client)?;));
                     } else {
                         let data_tokens = match data {
                             Some(d) => quote!(::std::option::Option::Some(#d)),

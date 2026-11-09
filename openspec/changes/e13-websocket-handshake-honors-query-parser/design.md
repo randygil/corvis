@@ -141,3 +141,28 @@ None. The technical choices are recorded above and in the review notes.
 - Approved. The handshake follows the application's query parser like HTTP routes; with `Disabled`,
   `query_param` returns `None` and a token check fails closed. Corvis is not published yet, so the behavior change
   needs only the docs note (read `uri().query()` for the raw string).
+
+## Implementation notes
+
+- Code and tests were written together and then run; the tests-first "verify they fail" step of tasks 1.x was not run
+  separately.
+- The unit test of `for_upgrade` gained a second test (`for_upgrade_parses_the_query_with_the_given_parser`) covering
+  the three parsers.
+- The docs note on the difference with a Node gateway is a second `warning` container after the trust-proxy one in
+  `docs/websockets/gateways.md`, and also covers `Extended` with `token[]=a`.
+- Task 4.5 (corvis-parity) is left for the maintainer's session, as the implementation brief states.
+
+## Review notes, security round (2026-11-09)
+
+- Finding (MEDIUM): with `QueryParser::Extended`, `dispatch` cloned the handshake `Request` for every message, so a
+  client that sent a large nested query once paid a deep copy of the parsed query on each tiny frame (2.36 ms per
+  30-byte frame with a ~29 KB query, against 21.7 us without it).
+- Fix: the handshake is held as `Arc<Request>` in the client and `ExecutionContext::for_ws` takes
+  `impl Into<Arc<Request>>` (the HTTP constructor wraps its request once). A message costs a reference count whatever
+  the size of the handshake. `WsClient::handshake()` still returns `&Request`. The "Cheap to clone" comment on
+  `Request` was false and is corrected.
+- Test: `messages_share_the_handshake_and_its_resolved_address` checks that the `Request` seen by guards in every
+  message is the one `client.handshake()` returns (same address).
+- Measured with the reviewer's PoC (release, 29 KB query, 1434 params, Extended): 21.2 us/message after the fix,
+  against 2360 us before; the baseline is 20.3 us.
+

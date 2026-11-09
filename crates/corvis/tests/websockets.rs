@@ -596,3 +596,258 @@ mod duplicates {
         }
     }
 }
+
+// ---- the handshake query follows `set_query_parser` ----
+
+use corvis::http::body_parser::QueryParser;
+
+#[websocket_gateway(path = "/q")]
+pub struct QueryGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl QueryGateway {
+    #[subscribe_message("query")]
+    fn query(&self, #[connected_socket] client: WsClient) -> Value {
+        let h = client.handshake();
+        json!({
+            "query": h.query(),
+            "raw": h.uri().query(),
+            "token": h.query_param("token"),
+            "ip": h.ip(),
+        })
+    }
+}
+
+/// Accepts only the handshakes whose query has an object `auth` with a string `token`.
+#[websocket_gateway(path = "/qauth")]
+pub struct QueryAuthGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl QueryAuthGateway {}
+
+#[async_trait]
+impl corvis::OnGatewayInit for QueryAuthGateway {
+    async fn after_init(&self, server: WsServer) {
+        server.set_options(
+            corvis::GatewayOptions::default()
+                .verify_client(|req| req.query().get("auth").and_then(|a| a.get("token")).is_some_and(Value::is_string)),
+        );
+    }
+}
+
+#[module(providers = [QueryGateway, QueryAuthGateway])]
+pub struct QueryModule;
+
+async fn query_app(parser: Option<QueryParser>, trust: Option<usize>) -> (CorvisApplication, std::net::SocketAddr) {
+    let mut app = CorvisFactory::create::<QueryModule>().await.unwrap();
+    if let Some(p) = parser {
+        app.set_query_parser(p);
+    }
+    if let Some(n) = trust {
+        app.set_trust_proxy(n);
+    }
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    (app, addr)
+}
+
+async fn handshake_query(addr: std::net::SocketAddr, query: &str) -> Value {
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/q{query}")).await.unwrap();
+    let out = ask(&mut ws, json!({ "event": "query", "data": null })).await;
+    out["data"].clone()
+}
+
+#[corvis::test]
+async fn handshake_query_with_the_extended_parser() {
+    let (mut app, addr) = query_app(Some(QueryParser::Extended), None).await;
+    let data = handshake_query(addr, "?room[id]=7&tags[]=a&tags[]=b").await;
+    assert_eq!(data["query"], json!({ "room": { "id": "7" }, "tags": ["a", "b"] }));
+    assert_eq!(data["raw"], "room[id]=7&tags[]=a&tags[]=b");
+    app.close().await.unwrap();
+}
+
+#[corvis::test]
+async fn handshake_query_with_the_default_parser() {
+    let (mut app, addr) = query_app(None, None).await;
+    let data = handshake_query(addr, "?room[id]=7&a=1&a=2").await;
+    assert_eq!(data["query"], json!({ "room[id]": "7", "a": ["1", "2"] }));
+    app.close().await.unwrap();
+}
+
+#[corvis::test]
+async fn handshake_query_with_the_parser_disabled() {
+    let (mut app, addr) = query_app(Some(QueryParser::Disabled), None).await;
+    let data = handshake_query(addr, "?token=abc").await;
+    assert_eq!(data["query"], json!({}));
+    assert_eq!(data["token"], Value::Null);
+    assert_eq!(data["raw"], "token=abc");
+    app.close().await.unwrap();
+}
+
+#[corvis::test]
+async fn verify_client_sees_the_parsed_query() {
+    let (mut app, addr) = query_app(Some(QueryParser::Extended), None).await;
+    let ok = tokio_tungstenite::connect_async(format!("ws://{addr}/qauth?auth[token]=abc")).await;
+    assert!(ok.is_ok());
+    match tokio_tungstenite::connect_async(format!("ws://{addr}/qauth?auth=abc")).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => assert_eq!(resp.status().as_u16(), 401),
+        other => panic!("expected a 401 handshake, got {:?}", other.map(|_| ())),
+    }
+    app.close().await.unwrap();
+}
+
+#[corvis::test]
+async fn handshake_keeps_the_trust_setting_with_a_query_parser() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let (mut app, addr) = query_app(Some(QueryParser::Extended), Some(1)).await;
+    let mut req = format!("ws://{addr}/q?a[b]=1").into_client_request().unwrap();
+    req.headers_mut().insert("x-forwarded-for", "203.0.113.7".parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let out = ask(&mut ws, json!({ "event": "query", "data": null })).await;
+    assert_eq!(out["data"]["ip"], "203.0.113.7");
+    assert_eq!(out["data"]["query"], json!({ "a": { "b": "1" } }));
+    app.close().await.unwrap();
+}
+
+// ---- `#[ip]` in gateway handlers ----
+
+#[injectable]
+pub struct CountingPipe {
+    #[default]
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl PipeTransform for CountingPipe {
+    async fn transform(&self, value: Value, _meta: &corvis::ArgumentMetadata) -> Result<Value, HttpException> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(value)
+    }
+}
+
+#[websocket_gateway(path = "/ipg")]
+#[use_pipes(CountingPipe)]
+pub struct IpGateway {
+    #[websocket_server]
+    server: WsServer,
+    pipe: Arc<CountingPipe>,
+}
+
+#[handlers]
+impl IpGateway {
+    #[subscribe_message("echo")]
+    fn echo(&self, #[ip] ip: String, #[message_body("text")] text: String, #[connected_socket] client: WsClient) -> Value {
+        json!({ "ip": ip, "text": text, "same": client.handshake().ip() == ip })
+    }
+
+    #[subscribe_message("only_ip")]
+    fn only_ip(&self, #[ip] ip: String) -> String {
+        ip
+    }
+
+    #[subscribe_message("pipe_calls")]
+    fn pipe_calls(&self) -> usize {
+        self.pipe.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[subscribe_message("bad_ip")]
+    fn bad_ip(&self, #[ip] ip: u32) -> u32 {
+        ip
+    }
+}
+
+#[module(providers = [CountingPipe, IpGateway])]
+pub struct IpModule;
+
+async fn ip_ws(
+    app: &mut CorvisApplication,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    tokio_tungstenite::connect_async(format!("ws://{addr}/ipg")).await.unwrap().0
+}
+
+#[corvis::test]
+async fn ip_parameter_mixes_with_body_and_socket() {
+    let mut app = CorvisFactory::create::<IpModule>().await.unwrap();
+    let mut ws = ip_ws(&mut app).await;
+    let out = ask(&mut ws, json!({ "event": "echo", "data": { "text": "hi" } })).await;
+    assert_eq!(out["data"], json!({ "ip": "127.0.0.1", "text": "hi", "same": true }));
+    app.close().await.unwrap();
+}
+
+#[corvis::test]
+async fn pipes_do_not_run_on_the_ip_parameter() {
+    let mut app = CorvisFactory::create::<IpModule>().await.unwrap();
+    let mut ws = ip_ws(&mut app).await;
+    let out = ask(&mut ws, json!({ "event": "only_ip" })).await;
+    assert_eq!(out["data"], "127.0.0.1");
+    let calls = ask(&mut ws, json!({ "event": "pipe_calls" })).await;
+    assert_eq!(calls["data"], 0);
+    app.close().await.unwrap();
+}
+
+#[corvis::test]
+async fn ip_conversion_error_is_an_exception_frame() {
+    let mut app = CorvisFactory::create::<IpModule>().await.unwrap();
+    let mut ws = ip_ws(&mut app).await;
+    let out = ask(&mut ws, json!({ "event": "bad_ip" })).await;
+    assert_eq!(out["event"], "exception", "{out}");
+    app.close().await.unwrap();
+}
+
+// ---- per-message cost does not depend on the handshake ----
+
+static GUARD_SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// Records the address of the `Request` each message's context gives to guards.
+#[injectable]
+pub struct RequestAddrGuard;
+
+#[async_trait]
+impl CanActivate for RequestAddrGuard {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        GUARD_SEEN.lock().unwrap().push(ctx.request() as *const _ as usize);
+        Ok(true)
+    }
+}
+
+#[websocket_gateway(path = "/shared")]
+#[use_guards(RequestAddrGuard)]
+pub struct SharedHandshakeGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl SharedHandshakeGateway {
+    #[subscribe_message("addrs")]
+    fn addrs(&self, #[connected_socket] client: WsClient) -> Value {
+        json!({ "handshake": client.handshake() as *const _ as usize, "ip": client.ip().as_ptr() as usize })
+    }
+}
+
+#[module(providers = [SharedHandshakeGateway])]
+pub struct SharedModule;
+
+#[corvis::test]
+async fn messages_share_the_handshake_and_its_resolved_address() {
+    let mut app = CorvisFactory::create::<SharedModule>().await.unwrap();
+    app.set_query_parser(QueryParser::Extended);
+    app.set_trust_proxy(true);
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/shared?a[b][c]=1&x=2")).await.unwrap();
+    let first = ask(&mut ws, json!({ "event": "addrs" })).await["data"].clone();
+    let second = ask(&mut ws, json!({ "event": "addrs" })).await["data"].clone();
+    // Same `Request` and same resolved address for every message of the connection.
+    assert_eq!(first, second);
+    let seen = GUARD_SEEN.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0], seen[1]);
+    assert_eq!(seen[0] as u64, first["handshake"].as_u64().unwrap());
+    app.close().await.unwrap();
+}

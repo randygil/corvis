@@ -196,6 +196,11 @@ impl WhoGateway {
         let h = client.handshake();
         json!({ "ip": h.ip(), "ips": h.ips(), "hostname": h.hostname(), "remote": h.remote_addr().map(|a| a.ip().to_string()) })
     }
+
+    #[subscribe_message("who_ip")]
+    fn who_ip(&self, #[ip] ip: String) -> String {
+        ip
+    }
 }
 
 /// Accepts only the handshakes whose resolved address is `203.0.113.7`.
@@ -368,4 +373,30 @@ async fn throttler_without_trust_shares_the_socket_counter() {
     let (first, second) = throttle_two_clients(addr).await;
     assert_eq!(first[2]["event"], "exception");
     assert_eq!(second["event"], "exception");
+}
+
+async fn ws_ip(addr: SocketAddr, headers: &[(&str, &str)]) -> Value {
+    let mut ws = ws_connect(addr, "/who", headers).await.unwrap();
+    let reply = ws_call(&mut ws, "who_ip").await;
+    assert_eq!(reply["event"], "who_ip");
+    reply["data"].clone()
+}
+
+#[corvis::test]
+async fn gateway_ip_parameter_behind_one_trusted_proxy() {
+    let (_app, addr) = start_ws::<WsProxyModule>(hops(1)).await;
+    assert_eq!(ws_ip(addr, &[("X-Forwarded-For", "203.0.113.7")]).await, "203.0.113.7");
+}
+
+#[corvis::test]
+async fn gateway_ip_parameter_default_setting() {
+    let (_app, addr) = start_ws::<WsProxyModule>(None).await;
+    assert_eq!(ws_ip(addr, &[("X-Forwarded-For", "203.0.113.7")]).await, "127.0.0.1");
+}
+
+#[corvis::test]
+async fn gateway_ip_parameter_keeps_the_full_ipv6_address() {
+    let (_app, addr) = start_ws::<WsProxyModule>(hops(1)).await;
+    let v = ws_ip(addr, &[("X-Forwarded-For", "2001:db8:1:2:aaaa:bbbb:cccc:dddd")]).await;
+    assert_eq!(v, "2001:db8:1:2:aaaa:bbbb:cccc:dddd");
 }

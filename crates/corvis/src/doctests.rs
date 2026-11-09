@@ -108,3 +108,65 @@ pub struct RoutesHelperWithGuard;
 /// }
 /// ```
 pub struct HandlersHelperWithGuard;
+
+/// `#[ip]` on an `#[on_event]` method of `#[handlers]` does not compile: there is no client.
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+///
+/// #[injectable]
+/// pub struct Orders;
+///
+/// #[handlers]
+/// impl Orders {
+///     #[on_event("order.created")]
+///     fn on_order(&self, #[ip] ip: String) {}
+/// }
+/// ```
+///
+/// The same parameter on a `#[subscribe_message]` method compiles.
+///
+/// ```
+/// use corvis::prelude::*;
+///
+/// #[injectable]
+/// pub struct Orders;
+///
+/// #[handlers]
+/// impl Orders {
+///     #[subscribe_message("order")]
+///     fn on_order(&self, #[ip] ip: String) {}
+/// }
+/// ```
+pub struct HandlersIpOnEvent;
+
+/// `#[ip]` takes no arguments in gateway handlers.
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+///
+/// #[injectable]
+/// pub struct Gateway;
+///
+/// #[handlers]
+/// impl Gateway {
+///     #[subscribe_message("who")]
+///     fn who(&self, #[ip(ParseIntPipe)] ip: String) {}
+/// }
+/// ```
+///
+/// Without the pipe it compiles.
+///
+/// ```
+/// use corvis::prelude::*;
+///
+/// #[injectable]
+/// pub struct Gateway;
+///
+/// #[handlers]
+/// impl Gateway {
+///     #[subscribe_message("who")]
+///     fn who(&self, #[ip] ip: String) {}
+/// }
+/// ```
+pub struct HandlersIpWithArguments;

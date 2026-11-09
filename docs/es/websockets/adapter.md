@@ -90,7 +90,7 @@ Los listeners se registran en `on_application_bootstrap` porque en ese momento e
 
 | Método de `UpgradeRequest` | Descripción |
 |---|---|
-| `req.pathname()`, `req.url()`, `req.query_string()`, `req.query_param("x")` | La URL pedida |
+| `req.pathname()`, `req.url()`, `req.query_string()`, `req.query_param("x")` | La URL pedida; `query_param` lee la query parseada con el `set_query_parser` de la aplicación (`None` si está desactivado), `query_string` es el texto crudo |
 | `req.method()`, `req.headers()`, `req.header("origin")`, `req.remote_addr()` | El resto de la petición |
 | `req.request()` | La `Request` completa (`ip()`, `ips()` y `hostname()` siguen `set_trust_proxy`, como las peticiones HTTP) |
 | `req.destroy()` | Cierra el socket sin responder |

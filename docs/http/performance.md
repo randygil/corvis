@@ -198,7 +198,7 @@ These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 o
 | Disable parsing | Enabled | `app.disable_body_parser()` |
 | Transport limit for other types | 1 MiB | `app.set_body_limit(bytes)` |
 | Maximum JSON depth | 256 levels (`400`) | `app.set_body_parser_max_depth(n)` |
-| `req.query` parser | `simple` (as in Express 5) | `app.set_query_parser(QueryParser::Extended)` |
+| `req.query` parser (also the query of WebSocket handshakes and `upgrade` requests) | `simple` (as in Express 5) | `app.set_query_parser(QueryParser::Extended)` |
 
 Only `application/json` and `application/x-www-form-urlencoded` are parsed; everything else leaves the body
 unparsed and available in `req.raw_body()` (see [Raw body](/faq/raw-body)). `multipart/*`
