@@ -52,6 +52,19 @@ pub mod __private {
         serde_json::to_value(v).unwrap_or(Value::Null)
     }
 
+    /// Escapes the characters that are special in a regular expression (ECMA-262 and Rust syntax alike), so a
+    /// substring can be used as a `pattern`.
+    pub fn escape_pattern(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            if "\\^$.*+?()[]{}|".contains(c) {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
+    }
+
     /// Autoref specialization used by `type = T` arguments and `#[derive(ApiSchema)]` fields:
     /// an [`ApiSchema`](corvis::openapi::ApiSchema) type, then a zod DTO, then a
     /// [`SwaggerType`](crate::SwaggerType), then any other type (an empty object schema).

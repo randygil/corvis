@@ -1,0 +1,14 @@
+{
+  "name": "throttler-fixture",
+  "private": true,
+  "type": "module",
+  "description": "Records the rate limit headers of the original throttler for the differential test.",
+  "dependencies": {
+    "@nestjs/common": "12.4.0",
+    "@nestjs/core": "12.4.0",
+    "@nestjs/platform-express": "12.4.0",
+    "@nestjs/throttler": "6.7.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  }
+}

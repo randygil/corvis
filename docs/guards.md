@@ -225,6 +225,16 @@ The check covers controller routes and gateway message handlers. These HTTP surf
 - any middleware from `use_fn` or `configure` that answers without calling `next`;
 - raw `upgrade` listeners and WebSocket handshakes (the message handlers of gateways are covered, see [WebSocket guards](/websockets/guards#route-posture-for-gateways)).
 
+## Setting response headers
+
+A guard has no response to write to, but it can record headers with `ctx.switch_to_http().set_response_header(name, value)`. It returns `false` and records nothing when the name or value is not a valid header (values allow tab, visible ASCII and U+0080..U+00FF; CR and LF are refused), for the framing headers the framework owns (`Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Upgrade`), once 128 distinct names are recorded for the request, and in a WebSocket context. A `Content-Type` set this way only applies to a response without a body: JSON, text, bytes and streams keep their own type.
+
+```rust
+ctx.switch_to_http().set_response_header("X-Trace-Id", "abc123");
+```
+
+The recorded headers are added to the final response, on success, on errors (including the `403` the guard itself returns) and on the response of an exception filter, but never replace a header the response already has: `#[header]`, headers of a returned `Response`, of a filter, or set on `Res` by the handler win. Calling it again with the same name replaces the recorded value. `ThrottlerGuard` uses this to send its [rate limit headers](/security/rate-limiting#response-headers).
+
 ## Guards in tests
 
 `Test::create_testing_module().override_guard::<RolesGuard>(AllowAll)` replaces a guard with a test double. See [Testing](/fundamentals/testing).

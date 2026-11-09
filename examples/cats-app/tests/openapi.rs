@@ -38,6 +38,14 @@ async fn document_describes_the_cats_api() {
     }
     assert_eq!(create["properties"]["name"]["description"], "Name of the cat");
     assert_eq!(create["properties"]["age"]["example"], 3);
+    // Constraints declared for `Validate` reach the document.
+    assert_eq!(create["properties"]["name"]["maxLength"], 50);
+    assert_eq!(create["properties"]["age"]["minimum"], 0);
+    assert_eq!(create["properties"]["age"]["maximum"], 40);
+    assert_eq!(create["properties"]["breed"]["enum"], json!(["persian", "siamese", "maine coon", "mixed"]));
+    let update = &v["components"]["schemas"]["UpdateCatDto"];
+    assert_eq!(update["properties"]["name"]["maxLength"], 50);
+    assert!(update["required"].as_array().is_none_or(|r| !r.iter().any(|x| x == "name")), "{update}");
     assert!(v["components"]["schemas"]["Cat"]["properties"]["ownerId"].is_object(), "{}", v["components"]["schemas"]["Cat"]);
     assert!(v["components"]["schemas"]["Cat"]["properties"]["owner_id"].is_null());
     assert_eq!(

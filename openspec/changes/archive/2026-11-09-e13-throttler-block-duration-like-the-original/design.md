@@ -190,3 +190,100 @@ a block ends, and master blocks it again.
 4. With `limit` 0 every request is rejected (the divergence from 6.7.1 is confirmed and documented).
 5. `with_block_duration` with an unknown throttler name panics at registration.
 6. The size is M. Implement after #120.
+
+## Implementation notes
+
+- Reference version: `crates/corvis/tests/fixtures/throttler/package.json` pins `@nestjs/throttler` 6.7.1, the version
+  design.md was written against; no re-read was needed.
+- The recorded storage fixture shows two behaviors worth knowing: while a key is blocked, `totalHits` is the number of
+  hits still unexpired (hits expire during a block, so it can drop below the limit while `isBlocked` stays true), and
+  `timeToBlockExpire` is negative when the key is not blocked (the replay compares `max(0, .)`). `record_hit`
+  reproduces both; `total_hits` of a blocked key is the live hit count.
+- `ThrottlerStorage::hits_len()` was added (public, read-only) so tests and operators can see the stored timestamps.
+- Hits are stored as `Instant` (not milliseconds since creation); the budget is counted in timestamps.
+- Clock arithmetic never panics: every `Instant + Duration` goes through `after`, which clamps the span to ten years and
+  falls back to `now` if the addition would still overflow. Values of `u64::MAX` ms for the ttl and the block duration
+  are covered by a test.
+- When one key alone fills `max_hits` (for example through `increment`, which has no limit), its oldest hits are dropped,
+  so its count is capped at the budget; other keys are evicted by idle time first.
+- A key used with different `ttl` values keeps its hits in expiry order (`partition_point`), as Decision 2 allows.
+- The HTTP fixture gained a `block` app (2 s throttler, limit 2) and `generate.mjs` accepts requests of the form
+  `{ path, at }` (milliseconds after the first request). The replay compares `Retry-After` and `X-RateLimit-Reset`
+  within one second.
+- Task 5.5 (corvis-parity) is left to the maintainer's session, as agreed in the brief.
+
+## Security review follow-up (2026-11-09)
+
+The security review found that the global hit budget (`with_max_hits`, Decision 3) let an attacker evict their own
+round-robin keys before they reached the limit (about 2,000 keys got 98% of requests through at 1,000 per hour, and a
+blocked key could be unblocked by flooding other keys), that a limit at or above the budget made a key prune its own hits
+and never block, and that `VecDeque` capacity is kept after pruning, so real memory was far above what the budget
+suggested. The maintainer chose to replace exact per-hit storage with fixed buckets. This section supersedes Decision 3,
+review note 3 and the hit-budget notes of "Implementation notes".
+
+- **Buckets.** A key keeps at most 64 buckets `(expiry, count)`. A hit joins the previous bucket when its expiry falls in
+  the same `ttl / 64` slice (counted from the key's first hit); the bucket then expires with its newest hit, so a merged
+  hit never expires earlier than exactly (fail closed). When 64 buckets are live, a new hit merges into the nearest
+  later bucket. Memory per key is at most 64 x 24 bytes plus a fixed overhead, whatever the limit, so memory is bounded
+  by `max_entries` alone (about 1.8 KB per key, 180 MB at the default 100,000 keys in the worst case).
+- **Removed:** `with_max_hits`, `DEFAULT_THROTTLER_MAX_HITS`, `hits_len`, and the global hit budget.
+- **Accuracy.** Exact while a key's hits are more than `ttl / 64` apart (the storage replay compares exactly for those
+  fixture cases); otherwise `X-RateLimit-Remaining` and `Reset` can differ from the original by up to `ttl / 64`. Block
+  semantics are unchanged. Documented as a known difference. The fixture was re-recorded with spaced hits and gained a
+  `dense_hits` scenario compared within `ttl / 64`.
+- **Eviction.** Blocked keys sit in a separate idle-time index and are evicted only when no unblocked key is left.
+- **Clock saturation.** `after()` saturates to a far instant (ten years, then shorter spans if the platform cannot
+  represent it) and falls back to `now` only if even one hour overflows, so an unrepresentable block still lasts.
+- **Duplicate names.** `ThrottlerStorage::new` logs a warning when two throttlers share a name (they share counters and
+  block durations).
+- **Regression tests** reproduce the PoC modes: `round_robin_keys_get_at_most_the_limit_each` (churn),
+  `a_blocked_key_stays_blocked_while_others_flood` (unblock, with a full table), `a_large_limit_still_blocks`, and
+  `a_key_uses_bounded_memory_whatever_its_hits` (cap).
+
+### Finding 4: blocked keys pinned the counters table (re-review, 2026-11-09)
+
+Evicting blocked keys last (above) let an attacker fill the table with blocked keys (200,000 requests to
+`default:<IPv6>:Auth:login` with limit 1 pinned 100,000 entries in 56 ms): `evict_one` then emptied the unblocked
+keys, so every new counter evicted the previous idle one and no counter reached its limit. Fix, as suggested by the
+reviewer: blocked keys live in a separate compact table (`key hash -> { until, window_end }`, no buckets; the hits are
+cleared when the key is blocked, because they are not used during the block and are discarded when it ends) with its own
+cap, `with_max_blocked` (default the value of `max_entries`, about 120 bytes per key). The counters table keeps its
+full `max_entries`, so blocked keys cannot displace it. When the blocked table is full the block that ends soonest is
+dropped (that frees only keys the attacker pinned). A key is looked up in the blocked table first; when its block has
+ended it resumes as a fresh counter that keeps the reporting window (`window_end`), so `Retry-After` and `Reset` are
+unchanged. The "blocked keys are evicted last" rule above is replaced by this one.
+
+- `total_hits` of a response for a blocked key is now `limit + 1` instead of the live hit count (the guard ignores it);
+  the storage replay no longer compares `total_hits` for blocked responses.
+- Worst case at the defaults: counters about 180 MB plus blocked keys about 12 MB.
+- Regression tests: `pinning_the_blocked_table_does_not_disable_other_counters` (PoC mode `pin`),
+  `a_short_block_keeps_the_reporting_window`, `the_blocked_table_has_its_own_cap_and_drops_the_soonest_block`.
+- IPv6 /64 normalization stays out of scope (tracked separately).
+
+### Finding 5: eviction by end time let short blocks evict each other (re-review, 2026-11-09)
+
+The blocked table evicted the block that ends soonest. An attacker who filled it with long blocks (a route with a 1 h
+block duration) made short blocks on normal routes evict each other, and an evicted key restarts from zero (91% of
+requests passed with two keys alternating bursts of `limit + 1`; the control with equal block lengths let 0.2% through).
+Now the table evicts in FIFO order by when the block started (a strict sequence number kept in a separate index,
+`blocked_fifo`); `blocked_idle` is used only to purge expired entries. Evicting the block that ends latest was rejected
+because a brute-force attacker could then free their own long block with one short block. With FIFO, freeing another
+client's block takes `max_blocked` new blocks after it, the same cost as rotating keys. A block that is refreshed while
+it lasts keeps its sequence number. The measured heap is about 178 bytes per blocked key; the FIFO index adds about 50,
+so the docs and the `with_max_blocked` rustdoc first said about 230 bytes. A later measurement gave 266 bytes at 100,000
+keys and 290 at 20,000 (hash table capacity rounds to a power of two, B-tree nodes are heavier than their entries), so
+they now say about 300 bytes, about 30 MB at 100,000 keys, about 200 MB with the counters, and `memory_usage()` adds a
+fixed 110 bytes per blocked key to match. FIFO trade-off, documented: the oldest block leaves first even with a long
+time left, so `max_blocked` should be at least the number of blocks started during the longest block duration.
+Tests: `short_blocks_cannot_evict_each_other_after_long_blocks_pin_the_table` and
+`the_oldest_block_is_evicted_first_whatever_its_length`.
+
+
+## Verification (2026-11-09)
+
+Verified together in batch-m (#120, #135, #128, #151): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and per-feature clippy of corvis are clean; `cargo test --workspace --no-fail-fast` with
+`CORVIS_ORM_PG_REQUIRED=1` passed 1064 tests with 0 failures (and `cargo test -p corvis` passed 689 again after the
+last #135 fixes); naming, crate-files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run
+42599828082 was green except `audit`/`deny`, which failed on RUSTSEC-2026-0459 (unrelated; ignored on main with #155).
+corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases equivalent. Security review: findings 1-5 fixed; the last re-check (commit 8c53eea, then 7ddc2d5) measured 20 of 10,000 requests passing in the pinned-table scenario (was 9,091) and found no new issue.

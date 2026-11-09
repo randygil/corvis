@@ -15,6 +15,7 @@ What the plugin does in those frameworks, macros do in Corvis:
 | Detect arrays | `Vec<T>`, `HashSet<T>`, `[T; N]`... come out as arrays of `T` |
 | Respect JSON names | `#[serde(rename)]`, `#[serde(rename_all)]` and `#[serde(skip)]` are applied |
 | Document the body, the parameters and their type | `#[routes]` registers the types of `#[body]`, `#[param]`, `#[query]` and `#[headers]` |
+| Reflect class-validator constraints | `#[derive(ApiSchema)]` reads the `#[derive(Validate)]` attributes of each field ([Validation constraints](/openapi/types-and-parameters#validation-constraints)) |
 | Reuse validation rules | With `zod_dto!`, the same schema validates and documents (lengths, ranges, formats) |
 
 ```rust

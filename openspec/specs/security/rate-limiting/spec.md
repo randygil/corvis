@@ -1,13 +1,11 @@
-# Spec Delta
+# security/rate-limiting Specification
 
 ## Purpose
+How `ThrottlerGuard` limits requests, compatible with the original throttler package: the informational headers
+(names, values, suffixes for named throttlers, the 429 case, turning them off), block duration, and the bounded
+storage of counters and blocked keys.
 
-How `ThrottlerGuard` counts and blocks, compatible with `@nestjs/throttler`: hits counted in a sliding window, a
-block that lasts a configurable duration from the moment the limit is exceeded, the order of the throttlers, the
-storage memory bound, and the header values that follow from them. Requires the requirements added by
-`e13-rate-limit-headers-in-the-throttler` (#120).
-
-## MODIFIED Requirements
+## Requirements
 
 ### Requirement: ThrottlerGuard sends rate limit headers on counted requests
 For each throttler that counts an HTTP request and does not block it, `ThrottlerGuard` SHALL set, through the
@@ -28,6 +26,22 @@ the window starts with the key's first counted request and restarts with the fir
 - **WHEN** the only throttler is `ThrottlerOptions::new(10_000, 3)` and a client sends requests at 0 s, 9 s and 11 s
 - **THEN** the third response carries `X-RateLimit-Remaining: 1` (the hits of 9 s and 11 s) and
   `X-RateLimit-Reset: 10` (the window restarted at 11 s)
+
+### Requirement: Header names carry the throttler name except for the default throttler
+The `<suffix>` of every throttler header SHALL be empty for a throttler named `default` and `-<name>` otherwise.
+
+#### Scenario: Named throttlers
+- **WHEN** the throttlers are `short` (`ttl: 1_000`, `limit: 3`) and `long` (`ttl: 60_000`, `limit: 100`) and a
+  client sends one request
+- **THEN** the response carries `X-RateLimit-Limit-short: 3`, `X-RateLimit-Remaining-short: 2`,
+  `X-RateLimit-Limit-long: 100` and `X-RateLimit-Remaining-long: 99`, each with its `X-RateLimit-Reset-<name>`
+
+### Requirement: Skipped requests carry no throttler headers
+Requests skipped with `SKIP_THROTTLE` metadata SHALL get no `X-RateLimit-*` or `Retry-After` header.
+
+#### Scenario: Skipped route
+- **WHEN** a route declares `#[set_metadata(SKIP_THROTTLE, true)]`
+- **THEN** the response carries no `X-RateLimit-*` or `Retry-After` header
 
 ### Requirement: A throttled request carries Retry-After
 When a throttler rejects a request, `ThrottlerGuard` SHALL set `Retry-After<suffix>` to the seconds until that
@@ -50,6 +64,23 @@ request MUST stay on the 429 response.
 - **WHEN** throttler `short` still allows the request and throttler `long` blocks it
 - **THEN** the 429 response carries the `X-RateLimit-*-short` headers and `Retry-After-long`
 
+### Requirement: Rate limit headers can be turned off
+`ThrottlerStorage` SHALL provide `with_headers(bool)`, `true` by default. When `false`, `ThrottlerGuard` MUST set no
+`X-RateLimit-*` or `Retry-After` header and MUST keep counting and blocking as before.
+
+#### Scenario: Headers disabled
+- **WHEN** the module is `ThrottlerModule::for_root_storage(ThrottlerStorage::new(vec![..]).with_headers(false))` and
+  a client exceeds the limit
+- **THEN** responses carry no throttler headers and the request over the limit still answers 429
+
+### Requirement: No rate limit headers in a WebSocket context
+When `ThrottlerGuard` runs for a gateway message (`ctx.get_type()` is `ContextType::Ws`), it SHALL count and block as
+for HTTP and MUST NOT set any header.
+
+#### Scenario: Gateway message
+- **WHEN** a global `ThrottlerGuard` runs on a gateway message
+- **THEN** the message is counted, no header is recorded, and a message over the limit receives an `exception` frame
+
 ### Requirement: Header values match @nestjs/throttler
 The header names, the requests that carry them, which requests are rejected, and the values of
 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` and `Retry-After` SHALL match those
@@ -63,12 +94,11 @@ recorded fixture (time-based values compared within one second).
 - **THEN** every response has the same status, the same throttler header names, the same `Limit` and `Remaining`
   values, and `Reset` and `Retry-After` within one second of the recorded values
 
-## ADDED Requirements
-
 ### Requirement: Hits are counted in a sliding window per key
 `ThrottlerStorage` SHALL keep, per key (throttler name, client IP, controller and handler), the expiry of each counted
-hit, `ttl` after the hit was counted, and the count for a request MUST be the number of hits not yet expired. A
-request rejected while its key is blocked MUST NOT be counted.
+hit, `ttl` after the hit was counted, in at most 64 buckets (hits whose expiries are less than `ttl / 64` apart share a
+bucket that expires with its newest hit, never earlier), and the count for a request MUST be the number of hits not yet
+expired. A request rejected while its key is blocked MUST NOT be counted.
 
 #### Scenario: No double burst around a window boundary
 - **WHEN** the only throttler is `ThrottlerOptions::new(10_000, 3)` and a client sends requests at 0 s, 9.5 s, 9.6 s,
@@ -149,14 +179,31 @@ not count it.
   response carries `X-RateLimit-Remaining-long: 98`
 
 ### Requirement: Storage memory stays bounded
-`ThrottlerStorage` SHALL keep at most `max_entries` keys (`with_max_entries`, default 100,000) and at most `max_hits`
-hit timestamps in total (`with_max_hits`, default 1,000,000), evicting the keys that would become idle soonest when
-either cap is reached, and MUST remove a key once its hits have expired, its reporting window has ended and it is not
-blocked.
+`ThrottlerStorage` SHALL keep at most `max_entries` keys (`with_max_entries`, default 100,000), and each key MUST use
+memory that does not depend on its limit or on the number of requests it receives (at most 64 hit buckets). A key that
+goes over its limit MUST move to a separate compact table of blocked keys (its hits are dropped; only the end of the
+block and of the reporting window are kept) with its own cap (`with_max_blocked`, default the value of `max_entries`),
+so blocked keys never displace counters. When the counters table is full the counters that would become idle soonest
+MUST be evicted; when the blocked table is full the block that started first MUST be dropped (first in, first out, whatever the block lengths). A key whose hits have
+expired, whose reporting window has ended and that is not blocked, and a block that has ended with its window, MUST be
+removed. A block duration or `ttl` too large to represent MUST saturate to a far instant, never to the present.
 
-#### Scenario: Hit budget
-- **WHEN** the storage is built with `with_max_hits(100)` and 1,000 distinct keys each record 5 hits
-- **THEN** the storage never holds more than 100 hit timestamps
+#### Scenario: Round-robin keys cannot exceed the limit
+- **WHEN** 2,000 distinct keys each send requests in turn with a limit of 100 per hour
+- **THEN** every key gets exactly 100 requests through and the rest are rejected
+
+#### Scenario: Blocked key survives a flood
+- **WHEN** a key is blocked and 5,000 other keys then record hits on a storage built with `with_max_entries(100)`
+- **THEN** the storage holds at most 100 keys and the first key is still blocked
+
+#### Scenario: Pinning the blocked table does not disable other counters
+- **WHEN** 1,000 keys are blocked on a storage built with `with_max_entries(100)`, and then two other keys alternate
+  requests with a limit of 10 and a victim key has a limit of 3
+- **THEN** each of the two keys gets exactly 10 requests through in the window and the victim gets exactly 3
+
+#### Scenario: Memory per key does not grow with hits
+- **WHEN** one key records 20,000 hits
+- **THEN** the storage uses less than 8 KiB and the next request reports 20,001 hits
 
 #### Scenario: Idle keys are removed
 - **WHEN** a key's hits have expired, its window has ended, it is not blocked, and another key records a hit
@@ -165,11 +212,19 @@ blocked.
 ### Requirement: Storage counting matches @nestjs/throttler
 For any sequence of hits with given times, keys, `ttl`, `limit` and block duration (with `limit` of at least 1),
 `ThrottlerStorage::record_hit` SHALL return the same hit count, blocked state, seconds to the window end and seconds to
-the block end (rounded up; 0 when not blocked) as `ThrottlerStorageService.increment` of `@nestjs/throttler` 6.7.1,
-verified by a differential test that replays recorded calls with a controlled clock and compares exactly.
+the block end (rounded up; 0 when not blocked) as `ThrottlerStorageService.increment` of `@nestjs/throttler` 6.7.1
+while the key's hits are more than `ttl / 64` apart, verified by a differential test that replays recorded calls with
+a controlled clock and compares exactly. Hits closer together than `ttl / 64` share a bucket and expire together, so
+`X-RateLimit-Remaining` and the times MAY differ from the original by up to `ttl / 64`; the blocked state and the
+requests that are rejected as the limit is exceeded stay the same.
 
 #### Scenario: Replay of recorded storage calls
 - **WHEN** the unit test replays the calls recorded from `ThrottlerStorageService.increment` (a block with retries and
   the request after it, hits expiring across a window boundary, block durations longer and shorter than the ttl, a
-  block duration of 0, interleaved keys)
+  block duration of 0, interleaved keys), all with hits more than `ttl / 64` apart
 - **THEN** every returned record equals the recorded one
+
+#### Scenario: Replay of closely spaced hits
+- **WHEN** the unit test replays recorded calls whose hits are closer together than `ttl / 64`
+- **THEN** the blocked state equals the recorded one and the times are within `ttl / 64` (rounded up to seconds, plus
+  one second)

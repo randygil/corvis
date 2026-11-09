@@ -317,9 +317,9 @@ async fn hostile_schema_name_is_only_ever_an_identifier() {
 #[tokio::test]
 async fn role_without_database_create_can_deploy_into_an_existing_schema() {
     let Some(base) = pg::fresh_db("schema_role").await else { return };
-    let db_name = base.rsplit_once('/').unwrap().1.to_string();
+    let db_name = pg::db_of(&base).to_string();
     let admin = OrmClient::new(&base).unwrap();
-    let role = "orm_test_schema_role";
+    let role = &pg::scratch_role("schema_role");
     for sql in [format!("DROP OWNED BY {role}"), format!("DROP ROLE IF EXISTS {role}")] {
         // `DROP OWNED` fails when the role does not exist yet.
         let _ = admin.execute_raw(&sql, vec![]).await;

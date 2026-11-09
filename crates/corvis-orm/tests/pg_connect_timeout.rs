@@ -1,7 +1,7 @@
 //! `connect_timeout` in the database URL against a real Postgres (skipped without a server, see
 //! `common/pg.rs`). The cases that need no server (a silent listener, a refused port) are unit tests of
-//! the crate. Scratch objects: the roles `orm_ct_role_a` and `orm_ct_role_b` and the database `orm_test_ct_latin1`, dropped
-//! before and after each test that uses them.
+//! the crate. Scratch objects: the roles `orm_ct_role_*_<run>` and the database `orm_test_ct_latin1_<run>` (per-run names,
+//! see `common/pg.rs`), dropped before and after each test that uses them and again when the process exits.
 //!
 //! Timing rule: a holder is in place (handshake) before the query under test starts; a duration has a tight lower
 //! bound and an upper bound below the nearest wrong value, named in the assertion (see `common/gate.rs`).
@@ -90,12 +90,12 @@ async fn pool_timeout_still_bounds_the_wait_for_a_slot() {
 #[tokio::test]
 async fn role_at_its_connection_limit_fails_after_the_connect_timeout() {
     let Some(url) = pg::fresh_db("ct_role").await else { return };
-    let db_name = "orm_test_ct_role";
+    let db_name = pg::db_of(&url).to_string();
+    let role = pg::scratch_role("ct_role_a");
     let admin = admin().await;
-    reset_role(&admin, "orm_ct_role_a").await;
-    admin.db_execute("CREATE ROLE orm_ct_role_a LOGIN PASSWORD 'ctpw' CONNECTION LIMIT 0").await.unwrap();
-    let _ = url;
-    let db = OrmClient::new(role_url("orm_ct_role_a", db_name, "connect_timeout=1&pool_timeout=0")).unwrap();
+    reset_role(&admin, &role).await;
+    admin.db_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD 'ctpw' CONNECTION LIMIT 0")).await.unwrap();
+    let db = OrmClient::new(role_url(&role, &db_name, "connect_timeout=1&pool_timeout=0")).unwrap();
     let t = Instant::now();
     let e = db.connect().await.unwrap_err();
     assert!(t.elapsed() >= Duration::from_millis(950), "{:?}", t.elapsed());
@@ -103,22 +103,23 @@ async fn role_at_its_connection_limit_fails_after_the_connect_timeout() {
     assert_eq!(e.code(), Some("P1001"), "{e}");
     assert!(e.message().starts_with("Can't reach database server at `"), "{e}");
     assert!(!e.message().contains("ctpw"), "{e}");
-    reset_role(&admin, "orm_ct_role_a").await;
+    reset_role(&admin, &role).await;
 }
 
 #[tokio::test]
 async fn server_lost_after_start_fails_the_next_query_after_the_connect_timeout() {
-    let Some(_) = pg::fresh_db("ct_lost").await else { return };
-    let db_name = "orm_test_ct_lost";
+    let Some(url) = pg::fresh_db("ct_lost").await else { return };
+    let db_name = pg::db_of(&url).to_string();
+    let role = pg::scratch_role("ct_role_b");
     let admin = admin().await;
-    reset_role(&admin, "orm_ct_role_b").await;
-    admin.db_execute("CREATE ROLE orm_ct_role_b LOGIN PASSWORD 'ctpw'").await.unwrap();
-    let db = OrmClient::new(role_url("orm_ct_role_b", db_name, "connection_limit=2&pool_timeout=0&connect_timeout=1")).unwrap();
+    reset_role(&admin, &role).await;
+    admin.db_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD 'ctpw'")).await.unwrap();
+    let db = OrmClient::new(role_url(&role, &db_name, "connection_limit=2&pool_timeout=0&connect_timeout=1")).unwrap();
     db.connect().await.unwrap();
     db.query_raw("SELECT 1", vec![]).await.unwrap();
     // New connections of the role now get 53300, and the open ones are gone.
-    admin.db_execute("ALTER ROLE orm_ct_role_b CONNECTION LIMIT 0").await.unwrap();
-    admin.db_execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'orm_ct_role_b'").await.unwrap();
+    admin.db_execute(&format!("ALTER ROLE {role} CONNECTION LIMIT 0")).await.unwrap();
+    admin.db_execute(&format!("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = '{role}'")).await.unwrap();
     let t = Instant::now();
     // The wrong behavior is waiting forever (`pool_timeout=0`); the guard turns a hang into a failure.
     let e = tokio::time::timeout(Duration::from_secs(10), db.query_raw("SELECT 1", vec![]))
@@ -128,24 +129,25 @@ async fn server_lost_after_start_fails_the_next_query_after_the_connect_timeout(
     assert!(t.elapsed() < Duration::from_secs(4), "{:?}: 3 s above connect_timeout=1", t.elapsed());
     assert_eq!(e.code(), Some("P1001"), "{e}");
     // Lifting the limit lets the same client recover: the slot of the failed request was released.
-    admin.db_execute("ALTER ROLE orm_ct_role_b CONNECTION LIMIT -1").await.unwrap();
+    admin.db_execute(&format!("ALTER ROLE {role} CONNECTION LIMIT -1")).await.unwrap();
     db.query_raw("SELECT 1", vec![]).await.unwrap();
     db.disconnect().await.unwrap();
-    reset_role(&admin, "orm_ct_role_b").await;
+    reset_role(&admin, &role).await;
 }
 
 #[tokio::test]
 async fn a_schema_the_database_cannot_encode_is_reported_at_once() {
     let admin = admin().await;
     // Skip without a server.
+    let latin1 = pg::scratch_db("ct_latin1");
     if pg::fresh_db("ct_probe").await.is_none() {
         return;
     }
-    admin.db_execute("DROP DATABASE IF EXISTS orm_test_ct_latin1 WITH (FORCE)").await.unwrap();
-    admin.db_execute("CREATE DATABASE orm_test_ct_latin1 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0").await.unwrap();
+    admin.db_execute(&format!("DROP DATABASE IF EXISTS {latin1} WITH (FORCE)")).await.unwrap();
+    admin.db_execute(&format!("CREATE DATABASE {latin1} ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0")).await.unwrap();
     // `connect_timeout=30`: retrying until the connect timeout would take 30 s, far above the 10 s bound, so the
     // bound tells "reported at once" from "retried" however slow the machine is.
-    let url = format!("{}/orm_test_ct_latin1?schema=%E2%82%AC&pool_timeout=0&connect_timeout=30", pg::base_url());
+    let url = format!("{}/{latin1}?schema=%E2%82%AC&pool_timeout=0&connect_timeout=30", pg::base_url());
 
     let t = Instant::now();
     let e = OrmClient::new(&url).unwrap().connect().await.unwrap_err();
@@ -160,7 +162,7 @@ async fn a_schema_the_database_cannot_encode_is_reported_at_once() {
     assert_eq!(e.code(), Some("P1001"), "{e}");
     assert!(e.message().contains("has no equivalent in encoding"), "{e}");
 
-    admin.db_execute("DROP DATABASE IF EXISTS orm_test_ct_latin1 WITH (FORCE)").await.unwrap();
+    admin.db_execute(&format!("DROP DATABASE IF EXISTS {latin1} WITH (FORCE)")).await.unwrap();
 }
 
 #[tokio::test]
@@ -354,12 +356,13 @@ async fn fixture_database_side_failures() {
     assert!(case["error"]["message"].as_str().unwrap().contains("too many connections for role"));
     assert!(case["elapsed_ms"].as_f64().unwrap() < 1000.0);
 
-    let Some(_) = pg::fresh_db("ct_fixture_role").await else { return };
+    let Some(url) = pg::fresh_db("ct_fixture_role").await else { return };
+    let role = pg::scratch_role("ct_role_c");
     let admin = admin().await;
-    reset_role(&admin, "orm_ct_role_c").await;
-    admin.db_execute("CREATE ROLE orm_ct_role_c LOGIN PASSWORD 'ctpw' CONNECTION LIMIT 0").await.unwrap();
-    let (r, took) = run(role_url("orm_ct_role_c", "orm_test_ct_fixture_role", "connect_timeout=1&pool_timeout=0")).await;
-    reset_role(&admin, "orm_ct_role_c").await;
+    reset_role(&admin, &role).await;
+    admin.db_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD 'ctpw' CONNECTION LIMIT 0")).await.unwrap();
+    let (r, took) = run(role_url(&role, pg::db_of(&url), "connect_timeout=1&pool_timeout=0")).await;
+    reset_role(&admin, &role).await;
     let e = r.unwrap_err();
     assert_eq!(e.code(), Some("P1001"), "{e}");
     assert!(took >= Duration::from_millis(950), "{took:?}");

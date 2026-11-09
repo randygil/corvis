@@ -273,7 +273,8 @@ pub use modules::schedule;
 pub use modules::schedule::{CronExpression, CronJob, CronOptions, CronTime, ScheduleModule, ScheduleModuleOptions, SchedulerRegistry};
 pub use modules::serve_static::{ServeStaticModule, ServeStaticOptions};
 pub use modules::throttler::{
-    SKIP_THROTTLE, THROTTLE_LIMIT, THROTTLE_TTL, ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerStorage,
+    SKIP_THROTTLE, THROTTLE_BLOCK_DURATION, THROTTLE_LIMIT, THROTTLE_TTL, ThrottlerGuard, ThrottlerModule, ThrottlerOptions,
+    ThrottlerRecord, ThrottlerStorage,
 };
 #[cfg(feature = "websockets")]
 pub use websockets::{
@@ -295,9 +296,10 @@ pub mod prelude {
         NotFoundException, OnApplicationBootstrap, OnApplicationShutdown, OnModuleDestroy, OnModuleInit, PUBLIC_METADATA, ParseArrayPipe,
         ParseBoolPipe, ParseEnumPipe, ParseFloatPipe, ParseIntPipe, ParseUUIDPipe, PipeTransform, Provider, Redirect, Reflector, Request,
         RequestMethod, Response, ResultHttpExt, RouteInfo, RouteSpec, SKIP_THROTTLE, ScheduleModule, SchedulerRegistry, Scope,
-        ServeStaticModule, ServeStaticOptions, Sse, StreamableFile, THROTTLE_LIMIT, THROTTLE_TTL, TerminusModule, ThrottlerGuard,
-        ThrottlerModule, ThrottlerOptions, Token, UnauthorizedException, UnprocessableEntityException, VERSION_NEUTRAL, Validate,
-        ValidationPipe, VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json, module, public, routes,
+        ServeStaticModule, ServeStaticOptions, Sse, StreamableFile, THROTTLE_BLOCK_DURATION, THROTTLE_LIMIT, THROTTLE_TTL, TerminusModule,
+        ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerRecord, Token, UnauthorizedException, UnprocessableEntityException,
+        VERSION_NEUTRAL, Validate, ValidationPipe, VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json,
+        module, public, routes,
     };
     pub use crate::{HttpAdapterHost, StreamableFileOptions};
     pub use async_trait::async_trait;

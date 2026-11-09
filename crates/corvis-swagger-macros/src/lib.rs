@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod args;
+mod constraints;
 mod derive;
 
 use proc_macro::TokenStream;
@@ -375,6 +376,11 @@ status_macros! {
 /// `#[serde(rename)]`, `#[serde(rename_all)]` and `#[serde(skip)]`. Field attributes:
 /// `#[api_property(...)]`, `#[api_property_optional(...)]`, `#[api_response_property(...)]`,
 /// `#[api_hide_property]`. Container attribute: `#[api_schema(name = "...", description = "...")]`.
+///
+/// The constraints declared for `#[derive(Validate)]` on the same field also become OpenAPI keywords
+/// (`#[max_length(50)]` gives `maxLength: 50`, `#[is_email]` gives `format: "email"`, `#[is_in(...)]` gives `enum`...),
+/// as the OpenAPI compiler plugin does for class-validator decorators. Options written in `#[api_property(...)]`
+/// replace the derived ones.
 #[proc_macro_derive(ApiSchema, attributes(api_property, api_property_optional, api_response_property, api_hide_property, api_schema))]
 pub fn derive_api_schema(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
