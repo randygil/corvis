@@ -699,10 +699,12 @@ pub(crate) async fn execute_route(route: Arc<CompiledRoute>, mut req: Request, p
     };
     let res = route.response_mode.and_then(|_| ctx.request().get::<Res>());
     let Some(res) = res else {
-        return match result {
+        let mut resp = match result {
             Ok(resp) => finalize(resp, &route),
             Err(e) => handle_exception(e, &ctx, &route.filters).await,
         };
+        apply_enhancer_headers(&ctx, &mut resp);
+        return resp;
     };
     // `@Res()`: a response ended by the handler is what the client gets (a later
     // exception can no longer be written, as in Express).
@@ -719,12 +721,31 @@ pub(crate) async fn execute_route(route: Arc<CompiledRoute>, mut req: Request, p
             // Passthrough: the status and headers on `res` already include `#[http_code]`
             // and `#[header]`, set before the handler ran.
             res.merge_into(&mut resp, true);
-            finalize(resp, &route)
+            let mut resp = finalize(resp, &route);
+            apply_enhancer_headers(&ctx, &mut resp);
+            resp
         }
         Err(e) => {
             let mut resp = handle_exception(e, &ctx, &route.filters).await;
             res.merge_into(&mut resp, true);
+            apply_enhancer_headers(&ctx, &mut resp);
             resp
+        }
+    }
+}
+
+/// Adds the headers enhancers recorded with `set_response_header` to the response of the route, never replacing a
+/// header it already has.
+fn apply_enhancer_headers(ctx: &ExecutionContext, resp: &mut Response) {
+    let Some(headers) = crate::common::context::EnhancerHeaders::of(ctx.request()) else { return };
+    // A body brings its own type (JSON, text, bytes with an explicit type, a stream): an enhancer must not retype it.
+    let has_body = !matches!(resp.body, crate::http::response::Body::Empty);
+    for (name, value) in headers.iter() {
+        if *name == http::header::CONTENT_TYPE && has_body {
+            continue;
+        }
+        if !resp.headers().contains_key(name) {
+            resp.headers_mut().append(name.clone(), value.clone());
         }
     }
 }
@@ -742,6 +763,13 @@ async fn run_pipeline(route: Arc<CompiledRoute>, ctx: ExecutionContext) -> Handl
         let res = Res::new(req.method().clone(), req.header("accept").map(str::to_string), route.default_status, mode);
         for (k, v) in &route.headers {
             res.set(k, v);
+        }
+        if let Some(recorded) = crate::common::context::EnhancerHeaders::of(req) {
+            for (name, value) in recorded.iter() {
+                if name != http::header::CONTENT_TYPE && !res.has_header(name.as_str()) {
+                    res.set_header_value(name.clone(), value.clone());
+                }
+            }
         }
         req.insert(res);
     }

@@ -165,3 +165,15 @@ The "before" code runs in that order and the "after" code in reverse order. Inte
 ## Reading the route's status
 
 Inside an interceptor, `ctx.switch_to_http().status_code()` returns the status the response will have if the handler doesn't change it: the one from `#[http_code]`, `201` on `POST`, or `200`. It is useful, for example, to store `{ status, body }` in a cache.
+
+## Setting response headers
+
+An interceptor can add a header to the response, also after the handler ran, with `ctx.switch_to_http().set_response_header(name, value)`:
+
+```rust
+let result = next.handle().await;
+ctx.switch_to_http().set_response_header("X-Elapsed-Ms", &started.elapsed().as_millis().to_string());
+result
+```
+
+The header is merged into the final response on success, on errors and on the response of an exception filter, and never replaces a header the response already has. It returns `false` and records nothing for an invalid name or value. See [Guards](/guards#setting-response-headers).

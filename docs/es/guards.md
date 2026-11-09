@@ -225,6 +225,16 @@ La verificación cubre las rutas de controladores y los handlers de mensajes de 
 - cualquier middleware de `use_fn` o `configure` que responda sin llamar a `next`;
 - los listeners `upgrade` directos y los handshakes de WebSocket (los handlers de mensajes de los gateways sí se cubren, ver [guards en WebSockets](/es/websockets/guards#route-posture-en-gateways)).
 
+## Poner cabeceras de respuesta
+
+Un guard no tiene una respuesta donde escribir, pero puede registrar cabeceras con `ctx.switch_to_http().set_response_header(nombre, valor)`. Devuelve `false` y no registra nada cuando el nombre o el valor no son una cabecera válida (los valores admiten tabulador, ASCII visible y U+0080..U+00FF; CR y LF se rechazan), para las cabeceras de framing que gestiona el framework (`Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Upgrade`), cuando ya hay 128 nombres distintos registrados para la petición y en un contexto de WebSocket. Un `Content-Type` puesto así solo se aplica a una respuesta sin cuerpo: JSON, texto, bytes y streams conservan su propio tipo.
+
+```rust
+ctx.switch_to_http().set_response_header("X-Trace-Id", "abc123");
+```
+
+Las cabeceras registradas se añaden a la respuesta final, en éxito, en errores (incluido el `403` que devuelve el propio guard) y en la respuesta de un filtro de excepciones, pero nunca reemplazan una cabecera que la respuesta ya tiene: ganan `#[header]`, las cabeceras de un `Response` devuelto, las de un filtro y las que el handler pone en `Res`. Llamarla otra vez con el mismo nombre reemplaza el valor registrado. `ThrottlerGuard` lo usa para enviar sus [cabeceras de límite de peticiones](/es/security/rate-limiting#cabeceras-de-respuesta).
+
 ## Guards en los tests
 
 `Test::create_testing_module().override_guard::<RolesGuard>(AllowAll)` reemplaza un guard por un doble de prueba. Ver [Testing](/es/fundamentals/testing).

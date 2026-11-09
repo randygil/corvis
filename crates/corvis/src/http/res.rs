@@ -593,6 +593,10 @@ impl Res {
         self.inner.state.lock().unwrap().headers.insert(n, v);
         self
     }
+    /// Sets an already validated header without the panics of [`set_header`](Self::set_header).
+    pub(crate) fn set_header_value(&self, name: HeaderName, value: HeaderValue) {
+        self.inner.state.lock().unwrap().headers.insert(name, value);
+    }
     /// `res.setHeader(name, [values])`.
     pub fn set_header_values<I, S>(&self, name: &str, values: I) -> &Self
     where
