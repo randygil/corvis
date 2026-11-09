@@ -154,3 +154,14 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
 - Q1: PING keep-alive off by default; opt in with `http2_keep_alive_interval`.
 - Q2: 100 concurrent streams per connection.
 - Q3: flat `http2_*` methods on `ServerOptions`.
+
+## Implementation notes
+
+- The tests are in the new `crates/corvis/tests/http2_limits.rs`. The `h2` dev-dependency of task 1.1 was not
+  needed: the advertised stream cap is read from the server's SETTINGS frame with the raw-frame client the PING tests
+  already use, so `Cargo.toml` and `Cargo.lock` are unchanged.
+- Tests that open streams concurrently first complete one request, so the client has the server's SETTINGS: a stream
+  opened before them is refused with `REFUSED_STREAM` (correct HTTP/2 behavior, not a server fault).
+- The tests were written together with the implementation, not run red first.
+- `connection_builder` is `pub(crate)` in `server.rs`; the HTTP/2 settings are applied whether or not h2c is on.
+- Task 4.5 (parity check) and 4.6 (note on #117) are left to the maintainer's session, per the implementation brief.

@@ -17,8 +17,8 @@ Esta página reúne lo que se puede configurar de ese servidor.
 - El servidor acepta solo HTTP/1.1, como el módulo `http` de Node. `ServerOptions::new().h2c(true)` acepta también
   HTTP/2 sin TLS por conocimiento previo (h2c), para un proxy o plataforma configurado para enviarlo (Caddy `h2c://`,
   Traefik `scheme=h2c`, nginx `grpc_pass`, Cloud Run con un puerto `h2c`). Con h2c activo, una conexión lleva hasta
-  200 peticiones concurrentes, `max_connections` limita conexiones y no peticiones, el límite de cabeceras de HTTP/2
-  es 16 KiB y `max_header_size` solo aplica a HTTP/1. Con h2c desactivado, una conexión con conocimiento previo se
+  100 peticiones concurrentes (`http2_max_concurrent_streams`), `max_header_size` limita también la lista de cabeceras
+  de HTTP/2 (`431`) y `max_connections` limita conexiones y no peticiones. Con h2c desactivado, una conexión con conocimiento previo se
   cierra sin respuesta. Consulta [Análisis de HTTP y compatibilidad](/es/security/http-parsing).
 - Las peticiones HTTP/1 con encuadre ambiguo (LF sin CR como fin de línea, espacios después de un tamaño de chunk,
   `Content-Length` con `Transfer-Encoding`) se responden con `400` y se cierra la conexión.
@@ -41,7 +41,10 @@ app.set_server_options(
         .request_timeout(Duration::from_secs(120))   // 300 s por defecto; responde 408
         .keep_alive_timeout(Duration::from_secs(10)) // 5 s por defecto
         .max_connections(10_000)                     // sin tope por defecto
-        .max_header_size(16 * 1024),                 // 32 KiB por defecto; responde 431
+        .max_header_size(16 * 1024)                  // 32 KiB por defecto; responde 431 (HTTP/1 y HTTP/2)
+        .http2_max_concurrent_streams(50)            // 100 por defecto, por conexión HTTP/2
+        .http2_keep_alive_interval(Duration::from_secs(30)) // sin PING de HTTP/2 por defecto
+        .http2_keep_alive_timeout(Duration::from_secs(10)), // 20 s por defecto
 );
 ```
 
@@ -50,6 +53,24 @@ Cada timeout acepta `None` para desactivarlo, por ejemplo `.request_timeout(None
 hasta que se cierran, y también un socket durante hasta 2 s después de una respuesta de error temprana (`413`, `431`,
 ...), mientras el servidor deja que el cliente la lea antes de cerrar. Con un tope, agrega un heartbeat a tus gateways
 para que los clientes caídos no ocupen lugares.
+
+### Conexiones HTTP/2
+
+Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1.
+
+- `max_header_size` limita la lista de cabeceras de HTTP/2, contada como en el RFC 9113 (longitud del nombre y del
+  valor más 32 bytes por campo), de modo que el mismo número es comparable con HTTP/1, no idéntico byte a byte. Una
+  petición que lo supera se responde `431` en su stream y los demás streams siguen funcionando.
+- `http2_max_concurrent_streams` (100 por defecto, mínimo 1) es el número de streams que un cliente puede tener
+  abiertos a la vez en una conexión.
+- `max_connections` cuenta conexiones, no streams, como `server.maxConnections` de Node. Las peticiones en curso de
+  clientes HTTP/2 quedan acotadas por `max_connections` x `http2_max_concurrent_streams`.
+- `headers_timeout` y `keep_alive_timeout` aplican a la conexión mientras ninguno de sus streams está en curso, así que
+  un stream largo mantiene viva la conexión. `request_timeout` aplica al cuerpo de cada stream por separado: un `POST`
+  detenido se responde `408` sin afectar a los demás streams.
+- `http2_keep_alive_interval` (desactivado por defecto) envía un PING cada intervalo, y `http2_keep_alive_timeout`
+  cierra la conexión cuando un PING no se confirma a tiempo. Actívalo con SSE u otros streams largos sobre HTTP/2,
+  donde un cliente caído de otro modo nunca se detectaría.
 
 ## Cuerpos de las peticiones
 

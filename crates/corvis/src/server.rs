@@ -50,6 +50,9 @@ pub struct ServerOptions {
     pub(crate) max_header_size: usize,
     pub(crate) h2c: bool,
     pub(crate) insecure_http_parser: bool,
+    pub(crate) http2_max_concurrent_streams: u32,
+    pub(crate) http2_keep_alive_interval: Option<Duration>,
+    pub(crate) http2_keep_alive_timeout: Duration,
 }
 
 impl Default for ServerOptions {
@@ -62,6 +65,9 @@ impl Default for ServerOptions {
             max_header_size: 32 * 1024,
             h2c: false,
             insecure_http_parser: false,
+            http2_max_concurrent_streams: 100,
+            http2_keep_alive_interval: None,
+            http2_keep_alive_timeout: Duration::from_secs(20),
         }
     }
 }
@@ -90,7 +96,10 @@ impl ServerOptions {
         self
     }
     /// Maximum number of open connections (`server.maxConnections`); when reached, new
-    /// connections wait in the accept queue. Default: unlimited. Upgraded (WebSocket)
+    /// connections wait in the accept queue. Default: unlimited. It counts sockets, not requests:
+    /// an HTTP/2 connection is one connection however many streams it carries, so the requests in
+    /// flight from HTTP/2 clients are bounded by `max_connections` x
+    /// [`http2_max_concurrent_streams`](Self::http2_max_concurrent_streams). Upgraded (WebSocket)
     /// connections count until they close, and so do sockets in their short closing drain
     /// (up to 2 s after an early error response); with a cap, give gateways a heartbeat so
     /// dead WebSocket clients do not hold slots.
@@ -98,8 +107,10 @@ impl ServerOptions {
         self.max_connections = n.into();
         self
     }
-    /// Maximum size of the request head in bytes (HTTP/1, default 32 KiB, minimum 8 KiB).
-    /// Bigger heads are answered with `431`.
+    /// Maximum size of the request head in bytes (default 32 KiB, minimum 8 KiB), for HTTP/1 and
+    /// HTTP/2. Bigger heads are answered with `431`. HTTP/1 counts the raw head; HTTP/2 counts the
+    /// decoded header list as RFC 9113 does (name and value lengths plus 32 bytes per field), so the
+    /// same number is comparable, not byte-identical.
     pub fn max_header_size(mut self, bytes: usize) -> Self {
         self.max_header_size = bytes.max(8 * 1024);
         self
@@ -107,10 +118,34 @@ impl ServerOptions {
     /// HTTP/2 over cleartext with prior knowledge (h2c), for a proxy or platform configured to
     /// send it. Disabled by default, like Node's `http` module, which accepts only HTTP/1.x; a
     /// prior-knowledge connection is closed without a response. With it on, one connection carries
-    /// up to 200 concurrent requests, so `max_connections` limits connections rather than
-    /// requests, and the HTTP/2 header list limit is 16 KiB (`max_header_size` is HTTP/1 only).
+    /// several concurrent requests (see
+    /// [`http2_max_concurrent_streams`](Self::http2_max_concurrent_streams), default 100),
+    /// `max_header_size` bounds the header list, and
+    /// [`http2_keep_alive_interval`](Self::http2_keep_alive_interval) can detect dead peers.
     pub fn h2c(mut self, enabled: bool) -> Self {
         self.h2c = enabled;
+        self
+    }
+    /// Streams a client may have open at once on one HTTP/2 connection
+    /// (`SETTINGS_MAX_CONCURRENT_STREAMS`, default 100, minimum 1). The server never runs more
+    /// handlers at once for one connection than this. Together with
+    /// [`max_connections`](Self::max_connections) it bounds the in-flight requests of HTTP/2 clients.
+    pub fn http2_max_concurrent_streams(mut self, n: u32) -> Self {
+        self.http2_max_concurrent_streams = n.max(1);
+        self
+    }
+    /// Interval between HTTP/2 PING frames on each connection, whether or not streams are open.
+    /// Default `None`: no PINGs. Set it with SSE or other long-lived HTTP/2 streams, where a dead
+    /// peer would otherwise never be noticed; see
+    /// [`http2_keep_alive_timeout`](Self::http2_keep_alive_timeout).
+    pub fn http2_keep_alive_interval(mut self, t: impl Into<Option<Duration>>) -> Self {
+        self.http2_keep_alive_interval = t.into();
+        self
+    }
+    /// Time an HTTP/2 peer has to acknowledge a PING before the connection is closed (default
+    /// 20 s). Only used when [`http2_keep_alive_interval`](Self::http2_keep_alive_interval) is set.
+    pub fn http2_keep_alive_timeout(mut self, t: Duration) -> Self {
+        self.http2_keep_alive_timeout = t;
         self
     }
     /// Accept ambiguous HTTP/1 framing that Corvis rejects by default: bare LF line endings in the
@@ -807,15 +842,9 @@ impl AsyncWrite for TimedIo {
     }
 }
 
-/// Accepts connections until `shutdown` resolves, then drains them gracefully.
-pub(crate) async fn serve(
-    listener: TcpListener,
-    shared: Arc<AppShared>,
-    options: ServerOptions,
-    shutdown: impl std::future::Future<Output = ()> + Send,
-) -> std::io::Result<()> {
-    let options = Arc::new(options);
-    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
+/// The connection builder of every listener: HTTP/1 and HTTP/2 settings from the options. Any listener that
+/// can speak HTTP/2 (h2c, and TLS with ALPN `h2`) must be built with it so the limits apply to all of them.
+pub(crate) fn connection_builder(options: &ServerOptions) -> auto::Builder<TokioExecutor> {
     let mut builder = auto::Builder::new(TokioExecutor::new());
     // The framing check reads header lines the way httparse does by default: `ignore_invalid_headers` would let
     // httparse skip lines the check has read (design.md, decision 4, of `e0-reject-ambiguous-http1-framing`).
@@ -826,7 +855,26 @@ pub(crate) async fn serve(
         .timer(TokioTimer::new())
         .header_read_timeout(options.headers_timeout)
         .max_buf_size(options.max_header_size.max(8 * 1024));
-    builder.http2().timer(TokioTimer::new());
+    builder
+        .http2()
+        .timer(TokioTimer::new())
+        .max_header_list_size(u32::try_from(options.max_header_size.max(8 * 1024)).unwrap_or(u32::MAX))
+        .max_concurrent_streams(options.http2_max_concurrent_streams.max(1))
+        .keep_alive_interval(options.http2_keep_alive_interval)
+        .keep_alive_timeout(options.http2_keep_alive_timeout);
+    builder
+}
+
+/// Accepts connections until `shutdown` resolves, then drains them gracefully.
+pub(crate) async fn serve(
+    listener: TcpListener,
+    shared: Arc<AppShared>,
+    options: ServerOptions,
+    shutdown: impl std::future::Future<Output = ()> + Send,
+) -> std::io::Result<()> {
+    let options = Arc::new(options);
+    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
+    let builder = connection_builder(&options);
     let permits = options.max_connections.map(|n| Arc::new(tokio::sync::Semaphore::new(n.max(1))));
     tokio::pin!(shutdown);
     loop {
