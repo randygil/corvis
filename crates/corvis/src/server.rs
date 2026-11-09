@@ -463,8 +463,7 @@ async fn handle(
         info.conn_slots = req.extensions().get::<crate::http::compression::ConnectionSlots>().cloned();
         info
     };
-    let mut resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await
-    {
+    let resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await {
         // An HTTP/2 body that fails to read means the client reset the stream or the connection broke: nobody waits
         // for the answer, so it is not dispatched (and not logged as an error) and counts as a cancelled request.
         Ok(r) if r.client_aborted && r.version == http::Version::HTTP_2 => {
