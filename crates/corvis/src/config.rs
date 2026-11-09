@@ -397,3 +397,6 @@ mod tests {
         assert_eq!(get("MISSING").as_deref(), Some("[]"));
     }
 }
+
+#[allow(dead_code)]
+fn  throwaway_misformatted( ) {}
