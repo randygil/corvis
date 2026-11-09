@@ -11,7 +11,11 @@ unmaintained = "all"
 unsound = "all"
 # RUSTSEC-2023-0071 (`rsa`, ataque Marvin) no se ignora aquí: cargo-deny solo evalúa el grafo
 # que realmente se compila y `rsa` no está en él (ver `.cargo/audit.toml`).
-ignore = []
+ignore = [
+    # SQLite < 3.54.0 incluido por `sqlx-sqlite` 0.8; sin versión de `sqlx` con el arreglo.
+    # Justificación completa en `.cargo/audit.toml`. Quitar con #155.
+    { id = "RUSTSEC-2026-0459", reason = "no sqlx release accepts libsqlite3-sys >= 0.39; tracked in #155" },
+]
 
 [licenses]
 # Licencias compatibles con un framework MIT que los usuarios incluyen en aplicaciones propias.

@@ -8,7 +8,13 @@
 # corvis-orm activa solo Postgres y SQLite, así que `sqlx-mysql` y `rsa` nunca se compilan:
 # `cargo tree -i rsa --target all --all-features` no devuelve nada. Si algún día se activa MySQL,
 # hay que quitar esta excepción y reevaluar el aviso.
-ignore = ["RUSTSEC-2023-0071"]
+# RUSTSEC-2026-0459 — `libsqlite3-sys` 0.30 (SQLite < 3.54.0 que incluye `sqlx-sqlite` 0.8): abrir una
+# base de datos junto con un `-wal` manipulado puede devolver memoria sin inicializar.
+# Justificación: no hay versión de `sqlx` que acepte `libsqlite3-sys` >= 0.39 (la 0.9.0 exige < 0.38).
+# corvis-orm solo abre los archivos que configura la aplicación, y el ataque necesita un par
+# base de datos + `-wal` escrito por alguien menos confiable; está documentado en la sección de
+# seguridad de corvis-orm. Quitar esta excepción con #155.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 
 [output]

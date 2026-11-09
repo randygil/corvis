@@ -392,6 +392,7 @@ From code: `db.migrate_deploy(dir).await` and `db.migrate_status(dir).await`. Th
 - Out-of-range numbers are errors, never truncated values: a `BigInt` beyond 64 bits, a `Bytes` byte outside `0..=255`, a `Decimal` that does not fit a Postgres `NUMERIC`, or a negative `limit` in `update_many`/`delete_many` (`P2019`).
 - `update`, `delete` and the `*_many` operations repeat their `where` in the `UPDATE`/`DELETE`, so optimistic concurrency (`where: { id, version }`) has a single winner.
 - `log_queries` writes the parameter values to the logs.
+- The SQLite that `sqlx` 0.8 bundles is older than 3.54.0 and has a known flaw (RUSTSEC-2026-0459): opening a database file together with a crafted `-wal` file can return stale bytes from the process's memory in query results. Only open SQLite files your application created; never a database or `-wal` file that a less trusted party could have written. The upgrade is tracked in [#155](https://github.com/randygil/corvis/issues/155).
 
 ## What is not supported
 
