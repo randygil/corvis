@@ -717,7 +717,7 @@ pub(crate) fn upgrade(
     gateway: Arc<GatewayRuntime>,
     mut req: hyper::Request<Incoming>,
     remote: SocketAddr,
-    trust: &crate::http::proxy_addr::TrustProxy,
+    parser: &crate::http::body_parser::BodyParserOptions,
 ) -> hyper::Response<ResBody> {
     let options = gateway.server.options();
     let key = match validate_handshake(req.headers(), req.method(), &options) {
@@ -727,7 +727,7 @@ pub(crate) fn upgrade(
     let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(&key);
     let on_upgrade = hyper::upgrade::on(&mut req);
     let (parts, _) = req.into_parts();
-    let Ok(handshake) = Request::for_upgrade(parts, remote, trust) else {
+    let Ok(handshake) = Request::for_upgrade(parts, remote, parser) else {
         return reject_handshake(400, "Bad Request", &[]);
     };
     if let Some(verify) = &options.verify_client {

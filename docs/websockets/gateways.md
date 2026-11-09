@@ -190,7 +190,7 @@ The field marked with `#[websocket_server]` receives the gateway's server. Each 
 | `client.send_text(text)` | Sends a raw text frame |
 | `client.join(room)`, `client.leave(room)` | Joins or leaves a room |
 | `client.rooms()`, `client.in_room(room)` | The client's rooms |
-| `client.handshake()` | The upgrade's HTTP `Request`: headers, query string, IP (`ip()`, `ips()` and `hostname()` follow `set_trust_proxy`, like HTTP requests; `remote_addr()` keeps the socket address) |
+| `client.handshake()` | The upgrade's HTTP `Request`: headers, query string (parsed with `set_query_parser`, like HTTP requests; `uri().query()` keeps the raw string), IP (`ip()`, `ips()` and `hostname()` follow `set_trust_proxy`, like HTTP requests; `remote_addr()` keeps the socket address) |
 | `client.insert(value)`, `client.get::<T>()` | Data associated with the connection (for example, the authenticated user) |
 | `client.disconnect()` | Closes the connection |
 | `client.disconnect_with(4401, "Unauthorized")` | Closes with a code and a reason |
@@ -325,6 +325,10 @@ Things to keep in mind:
 
 ::: warning Difference with a Node gateway behind Express
 In Node, a WebSocket upgrade never goes through Express, so `trust proxy` does not apply to it: a gateway guard sees the proxy's socket address (or nothing, with the stock throttler). Corvis applies the `set_trust_proxy` setting to the handshake, as it does for HTTP requests, so with a trust setting `client.handshake().ip()` is the forwarded client address. As with HTTP, a setting that trusts too many hops lets a client choose its IP with `X-Forwarded-For`.
+:::
+
+::: warning Difference with a Node gateway behind Express
+The same goes for the query string. A Node gateway gets the raw `request.url` and parses it itself, because Express' `query parser` setting never sees an upgrade. Corvis parses the handshake query with `set_query_parser`, so `client.handshake().query()` is the object an HTTP route of the same application gets for that URL. With `QueryParser::Disabled` it is empty and `query_param("token")` is `None`, so a token check like the one above fails closed: read the raw string with `handshake.uri().query()` (for example with `form_urlencoded::parse`) or keep a parser enabled. With `QueryParser::Extended`, a key sent as `token[]=a` is an array, and `query_param("token")` is `None` on gateways and on HTTP routes alike.
 :::
 
 Applications that adopt gateways gradually can keep global enhancers HTTP-only with one call before `init()` (or `listen`):
