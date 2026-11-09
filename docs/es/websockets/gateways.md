@@ -284,6 +284,31 @@ El reporte de route posture lista el handshake de cada gateway como no revisado,
 
 El handshake se valida igual que en el paquete `ws`: `405` si el método no es `GET` y `400` si faltan o son inválidas `Sec-WebSocket-Key` o `Sec-WebSocket-Version`.
 
+## Pares que dejan de leer
+
+Un cliente cuyo socket no acepta nada durante [`send_timeout`](/es/http/performance#clientes-que-dejan-de-leer-send-timeout) (60 s por defecto,
+opción del servidor) mientras el gateway tiene tramas para él pierde su conexión. La conexión se destruye sin trama de
+cierre, porque nada se le puede entregar a ese par: se ejecuta `handle_disconnect`, el cliente sale de
+`server.clients()` y se libera su plaza de `max_connections`. Se registra una advertencia con el cliente.
+
+- El progreso se mide en el socket: cada byte que el cliente acepta, de cualquier trama (datos, pings, pongs, cierre),
+  reinicia el plazo. Las tramas recibidas del cliente nunca lo reinician, así que un cliente que envía pings pero no
+  lee también se descarta.
+- Solo corre mientras el servidor tiene algo que escribir. Una conexión inactiva nunca se cierra por esto; para detectar
+  pares muertos en conexiones inactivas, envía tu propio heartbeat.
+- Lo mismo vale cuando un handshake de cierre espera a un par que no lee: la conexión termina tras `send_timeout`, no
+  tras `close_timeout`.
+- Mientras una escritura está bloqueada el servidor lee de ese cliente solo tantos bytes como el socket haya aceptado,
+  más un margen de 64 KiB, así que una avalancha de pings no puede hacerlo encolar pongs sin límite, y un cliente
+  que escribe un mensaje moderadamente grande antes de leer sigue siendo atendido. Cada byte leído descuenta de ese
+  crédito, aunque no haya una escritura bloqueada, así que un cliente que envió mucho más de lo que recibió puede ser
+  cortado por `send_timeout` si después deja de leer.
+- `ServerOptions::send_timeout(None)` lo desactiva; entonces la cola solo está acotada por `max_buffered_amount`.
+
+El paquete `ws` no tiene este límite: conserva un par que nunca lee. Corvis se aparta a propósito (la memoria y la plaza
+de conexión de ese par quedarían retenidas para siempre); nginx aplica su `send_timeout` a las conexiones WebSocket de
+la misma manera.
+
 ## Concurrencia y orden
 
 Los handlers de una misma conexión **empiezan** en el orden en que llegaron sus frames y después corren en paralelo, hasta `max_inflight`. Un `join` síncrono seguido de un `message` siempre ve la sala ya unida; pero si un handler hace `await` antes de `client.join`, el siguiente frame puede empezar a procesarse antes de que termine.
