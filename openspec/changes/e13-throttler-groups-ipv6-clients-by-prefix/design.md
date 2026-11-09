@@ -212,3 +212,20 @@ from the tarball fetched with `npm pack @nestjs/throttler@6.7.1`)**
   (once per configured storage); the value is still accepted.
 - The docs avoid the original's package name (naming check); they say "the original throttler library".
 - Task 5.5 (parity check) is left for the maintainer's session.
+
+## Divergences from the original (security review of f3c1dbf)
+
+The maintainer chose security over parity for these. The differential fixture still covers every other input; the
+replay test lists the diverging inputs and checks that each differs from the recorded output.
+
+- NAT64 `64:ff9b::/96` maps to the embedded IPv4. Behind a stateless translator every IPv4 client otherwise shares
+  `64:ff9b::/64`. A deployment with its own translation prefix is not recognized (use prefix 128 or a custom tracker).
+- 6to4 `2002::/16` maps to the IPv4 in bits 16..47 (one IPv4 otherwise owns a /48); Teredo `2001:0::/32` maps to
+  bits 96..127 inverted (otherwise all clients of a Teredo server share a counter); the deprecated IPv4-compatible
+  `::a.b.c.d` maps to the IPv4, except `::` and `::1`. All are independent of the prefix setting.
+- `IP:port`, `[v6]:port` and `[v6]` are reduced to the IP and normalized (proxies such as Azure App Service write
+  `IP:port`, which gave a counter per connection). Only the throttler key changes; `req.ip()` keeps the raw entry, as
+  proxy-addr does. Strings that are still not addresses are kept unchanged.
+- Docs (EN and ES) describe these and add the shared-hosting example (a /64 sliced between VMs: use prefix 128 or a
+  custom tracker).
+- Fixture inputs affected: `1.2.3.4:80`, `[::1]`, `::1.2.3.4`, `64:ff9b::1.2.3.4`, `::2`.

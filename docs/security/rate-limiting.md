@@ -237,10 +237,28 @@ ThrottlerModule::for_root_storage(
 - A prefix shorter than 32 bits is accepted, but it puts a large part of the address space in one counter, so a
   warning is logged once when it is configured.
 
+Shared hosting is the case where grouping hurts: if a provider gives each VM a slice of one /64 (often a /128 per VM),
+all the VMs, and so all of your clients that live on them, share one counter. If your clients can sit on such
+addresses, use `with_ipv6_subnet_prefix(128)`, or key the counters yourself with a guard that calls `record_hit`.
+
+Where Corvis differs from the original library (security over parity), `normalize_ip` returns the client's IPv4
+address for addresses that embed it, whatever the prefix:
+
+- NAT64 `64:ff9b::/96`. A stateless translator (NAT46, SIIT-DC) shows every IPv4 client as `64:ff9b::a.b.c.d`; the
+  /64 would put all of them in one counter. A deployment with its own translation prefix is not recognized: use
+  `with_ipv6_subnet_prefix(128)` or a custom tracker there.
+- 6to4 `2002::/16` (the IPv4 address is bits 16 to 47; one IPv4 address owns a whole /48 of them) and Teredo
+  `2001::/32` (the client's IPv4 address is the last 32 bits, inverted).
+- The deprecated IPv4-compatible form `::a.b.c.d`, except `::` and `::1`.
+
+An address with a port (`203.0.113.5:54321`, `[2001:db8:1:2::1]:443`) or a bracketed IPv6 address
+(`[2001:db8:1:2::1]`) counts as the address alone; some proxies write the port in `X-Forwarded-For`, and every
+connection would otherwise get its own counter. The rest of the original's output is unchanged and checked against it.
+
 `req.ip()`, `req.ips()` and `#[ip]` still return the full address; only the throttler key changes. A guard of your
 own that calls `ThrottlerStorage::record_hit` can build the same client key with
 `corvis::modules::throttler::normalize_ip(&req.ip(), prefix)`, a port of the original's `normalizeIp`. Anything that is
-not an IP address (see [Behind a proxy](#behind-a-proxy)) is returned unchanged, and a zone identifier (`%eth0`) is
+not an IP address, with or without a port (see [Behind a proxy](#behind-a-proxy)) is returned unchanged, and a zone identifier (`%eth0`) is
 dropped from valid addresses.
 
 ## Behind a proxy
@@ -257,8 +275,8 @@ Use `true` (trust all hops) only if every request goes through a proxy that
 rewrites `X-Forwarded-For`: otherwise, a client can choose its IP and bypass the limit. See
 [HTTP adapters](/http/performance).
 
-The counter uses the normalized form of the client entry that `trust proxy` resolves. Entries that are not IP
-addresses are kept as they are, so a client that can choose its `X-Forwarded-For` entry still chooses its counter.
+The counter uses the normalized form of the client entry that `trust proxy` resolves. Entries that are neither IP
+addresses nor an address with a port are kept as they are, so a client that can choose its `X-Forwarded-For` entry still chooses its counter.
 
 ## Response headers
 

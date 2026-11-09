@@ -146,6 +146,25 @@ async fn forwarded_non_ip_entries_are_kept_as_they_are() {
 }
 
 #[corvis::test]
+async fn forwarded_ports_and_brackets_are_normalized() {
+    let (_app, addr) = start(true).await;
+    let got = limited_statuses(addr, &["203.0.113.5:54321", "203.0.113.5:54322", "203.0.113.5"]).await;
+    assert_eq!(got, [200, 200, 429], "the port does not make a new client");
+    let got = limited_statuses(addr, &["[2001:db8:1:2::1]:443", "[2001:db8:1:2::9]", "2001:db8:1:2::5"]).await;
+    assert_eq!(got, [200, 200, 429], "brackets and ports are dropped, then the /64 applies");
+    let v = who(addr, &["X-Forwarded-For: 203.0.113.5:54321"]).await;
+    assert_eq!(v["ip"], "203.0.113.5:54321", "req.ip() keeps the raw entry");
+}
+
+#[corvis::test]
+async fn forwarded_nat64_clients_keep_their_ipv4_counters() {
+    let (_app, addr) = start(true).await;
+    let got =
+        limited_statuses(addr, &["64:ff9b::198.51.100.1", "64:ff9b::198.51.100.1", "64:ff9b::198.51.100.1", "64:ff9b::198.51.100.2"]).await;
+    assert_eq!(got, [200, 200, 429, 200]);
+}
+
+#[corvis::test]
 async fn the_ip_parameter_keeps_the_full_address() {
     let (_app, addr) = start(true).await;
     let v = who(addr, &["X-Forwarded-For: 2001:db8:1:2:aaaa:bbbb:cccc:dddd"]).await;

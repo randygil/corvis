@@ -90,6 +90,14 @@ pub const DEFAULT_IPV6_SUBNET_PREFIX: u8 = 64;
 ///   followed by `/` and the length, e.g. `2001:db8:1:2::/64`. Lengths above 128 count as 128.
 ///
 /// Clients in one IPv6 prefix therefore share a counter; `128` keeps each address apart.
+///
+/// Where it differs from the original (the maintainer chose security over parity):
+///
+/// - addresses that embed the client's IPv4 address return that IPv4 address, whatever the prefix: NAT64 `64:ff9b::/96`
+///   (a stateless translator makes every IPv4 client look like one /64), 6to4 `2002::/16` (bits 16 to 47), Teredo
+///   `2001::/32` (bits 96 to 127 inverted) and the deprecated IPv4-compatible `::a.b.c.d` (except `::` and `::1`);
+/// - `IP:port`, `[v6]:port` and `[v6]` are reduced to the IP and then normalized, because some proxies write the
+///   client's port in `X-Forwarded-For` and each connection would otherwise get its own counter.
 pub fn normalize_ip(ip: &str, ipv6_subnet_prefix: u8) -> String {
     if ip.is_empty() {
         return String::new();
@@ -99,15 +107,37 @@ pub fn normalize_ip(ip: &str, ipv6_subnet_prefix: u8) -> String {
         return bare.to_string();
     }
     let Ok(addr) = bare.parse::<std::net::Ipv6Addr>() else {
+        if let Ok(socket) = ip.parse::<std::net::SocketAddr>() {
+            return normalize_ip(&socket.ip().to_string(), ipv6_subnet_prefix);
+        }
+        if let Some(inner) = ip.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
+            && inner.parse::<std::net::Ipv6Addr>().is_ok()
+        {
+            return normalize_ip(inner, ipv6_subnet_prefix);
+        }
         return ip.to_string();
     };
     let segments = addr.segments();
     if segments[..7].iter().all(|&g| g == 0) && segments[7] == 1 {
         return "::1".to_string();
     }
-    if segments[..5].iter().all(|&g| g == 0) && segments[5] == 0xffff {
-        let [a, b] = segments[6].to_be_bytes();
-        let [c, d] = segments[7].to_be_bytes();
+    let zero = |gs: &[u16]| gs.iter().all(|&g| g == 0);
+    let mapped = zero(&segments[..5]) && segments[5] == 0xffff;
+    let nat64 = segments[0] == 0x64 && segments[1] == 0xff9b && zero(&segments[2..6]);
+    let embedded = if mapped || nat64 {
+        Some([segments[6], segments[7]])
+    } else if segments[0] == 0x2002 {
+        Some([segments[1], segments[2]])
+    } else if segments[0] == 0x2001 && segments[1] == 0 {
+        Some([!segments[6], !segments[7]])
+    } else if zero(&segments[..6]) && !(segments[6] == 0 && segments[7] == 0) {
+        Some([segments[6], segments[7]])
+    } else {
+        None
+    };
+    if let Some([high, low]) = embedded {
+        let [a, b] = high.to_be_bytes();
+        let [c, d] = low.to_be_bytes();
         return format!("{a}.{b}.{c}.{d}");
     }
     let prefix = u32::from(ipv6_subnet_prefix.min(128));
@@ -1106,13 +1136,52 @@ mod tests {
         let fixture: Vec<serde_json::Value> =
             serde_json::from_str(include_str!("../../tests/fixtures/throttler/normalize-ip.json")).unwrap();
         assert!(fixture.len() > 800);
+        // Inputs where Corvis deliberately differs from the original (security over parity), with Corvis's output for
+        // every prefix. Each one must differ from the recorded output, so the table cannot go stale.
+        let divergences =
+            [("1.2.3.4:80", "1.2.3.4"), ("[::1]", "::1"), ("::1.2.3.4", "1.2.3.4"), ("64:ff9b::1.2.3.4", "1.2.3.4"), ("::2", "0.0.0.2")];
+        let mut diverged = std::collections::HashSet::new();
         for e in &fixture {
             let (ip, prefix, out) = (e["ip"].as_str().unwrap(), e["prefix"].as_u64().unwrap() as u8, e["out"].as_str().unwrap());
-            assert_eq!(normalize_ip(ip, prefix), out, "ip {ip:?} prefix {prefix}");
+            let expected = match divergences.iter().find(|(i, _)| *i == ip) {
+                Some((_, ours)) => {
+                    assert_ne!(*ours, out, "{ip:?} is listed as a divergence but matches the original");
+                    diverged.insert(ip);
+                    *ours
+                }
+                None => out,
+            };
+            assert_eq!(normalize_ip(ip, prefix), expected, "ip {ip:?} prefix {prefix}");
             if prefix == 128 {
-                assert_eq!(normalize_ip(ip, 129), out, "ip {ip:?} prefix 129");
-                assert_eq!(normalize_ip(ip, 255), out, "ip {ip:?} prefix 255");
+                assert_eq!(normalize_ip(ip, 129), expected, "ip {ip:?} prefix 129");
+                assert_eq!(normalize_ip(ip, 255), expected, "ip {ip:?} prefix 255");
             }
+        }
+        assert_eq!(diverged.len(), divergences.len(), "every listed divergence is in the fixture");
+    }
+
+    /// Divergences from the original: embedded IPv4 addresses and ports.
+    #[test]
+    fn normalize_ip_maps_embedded_ipv4_and_strips_ports() {
+        for p in [0, 64, 128] {
+            assert_eq!(normalize_ip("64:ff9b::1.2.3.4", p), "1.2.3.4");
+            assert_eq!(normalize_ip("64:ff9b::c633:6407", p), "198.51.100.7");
+            assert_eq!(normalize_ip("2001:0:4136:e378:8000:63bf:3fff:fdd2", p), "192.0.2.45");
+            assert_eq!(normalize_ip("2002:102:304:1::", p), "1.2.3.4");
+            assert_eq!(normalize_ip("::8.8.8.8", p), "8.8.8.8");
+        }
+        // `::` and `::1` are not IPv4-compatible addresses.
+        assert_eq!(normalize_ip("::", 64), "::/64");
+        assert_eq!(normalize_ip("::1", 64), "::1");
+        // Only the well-known NAT64 prefix is translated; another /96 is a normal IPv6 prefix.
+        assert_eq!(normalize_ip("64:ff9b:1::1.2.3.4", 64), "64:ff9b:1::/64");
+        assert_eq!(normalize_ip("203.0.113.5:54321", 64), "203.0.113.5");
+        assert_eq!(normalize_ip("203.0.113.5:54322", 64), "203.0.113.5");
+        assert_eq!(normalize_ip("[2001:db8:1:2::1]:443", 64), "2001:db8:1:2::/64");
+        assert_eq!(normalize_ip("[2001:db8:1:2::1]", 64), "2001:db8:1:2::/64");
+        assert_eq!(normalize_ip("[::ffff:1.2.3.4]:80", 64), "1.2.3.4");
+        for kept in ["unknown", "1.2.3.4:", "1.2.3.4:99999", "[unknown]", "[1.2.3.4]", "[::1", "1.2.3.4:80:80"] {
+            assert_eq!(normalize_ip(kept, 64), kept);
         }
     }
 
