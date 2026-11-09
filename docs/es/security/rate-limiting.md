@@ -274,6 +274,9 @@ las peticiones vendrían de la IP del proxy y compartirían contador. Configura 
 app.set_trust_proxy(1); // un proxy delante
 ```
 
+El ajuste también aplica a los mensajes de los gateways: un `ThrottlerGuard` en un gateway usa el `ip()` de la
+petición del handshake, que resuelve `X-Forwarded-For` igual (ver [Gateways](/es/websockets/gateways)).
+
 Usa `true` (confiar en todos los saltos) solo si todas las peticiones pasan por un proxy que
 reescribe `X-Forwarded-For`: si no, un cliente puede elegir su IP y saltarse el límite. Ver
 [Adaptadores HTTP](/es/http/performance).

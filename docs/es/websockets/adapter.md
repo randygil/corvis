@@ -92,7 +92,7 @@ Los listeners se registran en `on_application_bootstrap` porque en ese momento e
 |---|---|
 | `req.pathname()`, `req.url()`, `req.query_string()`, `req.query_param("x")` | La URL pedida |
 | `req.method()`, `req.headers()`, `req.header("origin")`, `req.remote_addr()` | El resto de la petición |
-| `req.request()` | La `Request` completa |
+| `req.request()` | La `Request` completa (`ip()`, `ips()` y `hostname()` siguen `set_trust_proxy`, como las peticiones HTTP) |
 | `req.destroy()` | Cierra el socket sin responder |
 | `req.respond(response)` | Responde con una respuesta HTTP normal (agrega `Connection: close`) |
 | `req.switch_protocols(headers)` | Responde `101` y entrega el stream crudo, para protocolos que no son WebSocket |
@@ -121,7 +121,7 @@ Reglas de convivencia con los gateways:
 | `ws.close(Some(1000), "bye")`, `ws.terminate()`, `ws.ping(data)` | Cerrar, cortar o enviar ping |
 | `ws.closed().await` | Espera el cierre y devuelve `(código, motivo)` |
 | `ws.ready_state()`, `ws.is_open()` | `ReadyState::{Connecting, Open, Closing, Closed}` |
-| `ws.protocol()`, `ws.upgrade_request()`, `ws.remote_addr()`, `ws.buffered_amount()` | Datos de la conexión |
+| `ws.protocol()`, `ws.upgrade_request()`, `ws.remote_addr()`, `ws.buffered_amount()` | Datos de la conexión (`upgrade_request()` resuelve la IP con `set_trust_proxy`; `remote_addr()` es la dirección del socket) |
 
 `WebSocket` se puede clonar y guardar en un `HashSet`, como hace `FirehoseState`. `wss.clients()` devuelve los sockets abiertos y `wss.close()` los cierra.
 

@@ -713,7 +713,12 @@ fn validate_handshake(
 }
 
 /// Performs the upgrade handshake and spawns the connection loop.
-pub(crate) fn upgrade(gateway: Arc<GatewayRuntime>, mut req: hyper::Request<Incoming>, remote: SocketAddr) -> hyper::Response<ResBody> {
+pub(crate) fn upgrade(
+    gateway: Arc<GatewayRuntime>,
+    mut req: hyper::Request<Incoming>,
+    remote: SocketAddr,
+    trust: &crate::http::proxy_addr::TrustProxy,
+) -> hyper::Response<ResBody> {
     let options = gateway.server.options();
     let key = match validate_handshake(req.headers(), req.method(), &options) {
         Ok(key) => key,
@@ -722,11 +727,9 @@ pub(crate) fn upgrade(gateway: Arc<GatewayRuntime>, mut req: hyper::Request<Inco
     let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(&key);
     let on_upgrade = hyper::upgrade::on(&mut req);
     let (parts, _) = req.into_parts();
-    let Ok(mut handshake) = Request::new(parts.method, parts.uri, parts.headers, bytes::Bytes::new()) else {
+    let Ok(handshake) = Request::for_upgrade(parts, remote, trust) else {
         return reject_handshake(400, "Bad Request", &[]);
     };
-    handshake.version = parts.version;
-    handshake.remote_addr = Some(remote);
     if let Some(verify) = &options.verify_client {
         let mut accepted = false;
         if !guarded("verify_client", || accepted = verify(&handshake)) || !accepted {
