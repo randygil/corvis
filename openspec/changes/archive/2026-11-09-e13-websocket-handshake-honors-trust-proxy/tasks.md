@@ -43,7 +43,7 @@
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 4.3 `cargo test --workspace` passes, including the regression tests of section 1
 - [x] 4.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 4.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 4.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences
 
 ## Workflow follow-up

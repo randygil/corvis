@@ -87,7 +87,7 @@ are archived on `main` (they are, at `bcc778d`). Line numbers in design.md refer
 - [x] 7.3 `cargo test --workspace` passes, including the regression tests of 1.3, 3.3, 3.4, 4.1 and 6.2 and the
   differential replay of 5.1
 - [x] 7.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 7.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 7.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences (none uses the throttler)
 
 ## Workflow follow-up
