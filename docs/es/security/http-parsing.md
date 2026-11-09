@@ -101,6 +101,9 @@ postura de las rutas.
   con `credentials(true)` refleja cualquier origen. Consulta [CORS](/es/security/cors).
 - HTTP/2 sin TLS (h2c) está desactivado por defecto, como en el módulo `http` de Node, que no lo habla.
   `ServerOptions::new().h2c(true)` lo activa para un proxy o plataforma configurado para enviarlo; los límites de
-  HTTP/2 son entonces distintos de los de HTTP/1. Consulta [Rendimiento](/es/http/performance).
+  HTTP/2 siguen a `ServerOptions`: como máximo 100 streams concurrentes por conexión (`http2_max_concurrent_streams`),
+  keep-alive con PING mediante `http2_keep_alive_interval` (desactivado por defecto) y `max_connections` cuenta
+  conexiones, no streams. Consulta [Rendimiento](/es/http/performance).
 - La cabecera de la petición está limitada a 32 KiB por defecto (Node: 16 KiB); `ServerOptions` tiene
-  `max_header_size`.
+  `max_header_size`, que limita también la lista de cabeceras de HTTP/2. Una lista de cabeceras HTTP/2 demasiado
+  grande se responde `431` en su stream.

@@ -87,13 +87,13 @@ app.set_server_options(
         .request_timeout(Duration::from_secs(120))   // por defecto 300 s (responde 408)
         .keep_alive_timeout(Duration::from_secs(10)) // por defecto 5 s
         .max_connections(10_000)                     // por defecto sin tope
-        .max_header_size(16 * 1024),                 // por defecto 32 KiB (responde 431)
+        .max_header_size(16 * 1024),                 // por defecto 32 KiB (responde 431; HTTP/1 y HTTP/2)
 );
 ```
 
 Cada timeout acepta `None` para desactivarlo (`.request_timeout(None)`). Las conexiones que superan `max_connections` esperan en la cola de `accept`. La cabecera de una petición HTTP/1 está limitada a 32 KiB (Node usa 16 KiB). Una conexión que no envía nada o que gotea las cabeceras se cierra, mientras que las peticiones en curso (un handler lento, una respuesta SSE) no cuentan como inactividad.
 
-`ServerOptions::h2c(true)` activa HTTP/2 sin TLS si tu proxy está configurado para enviarlo (desactivado por defecto). Llama a `set_server_options` antes de `listen`. Ver [Conexiones keep-alive](/es/faq/keep-alive-connections).
+`ServerOptions::h2c(true)` activa HTTP/2 sin TLS si tu proxy está configurado para enviarlo (desactivado por defecto). Las conexiones HTTP/2 llevan hasta 100 streams concurrentes (`http2_max_concurrent_streams`), `max_connections` cuenta conexiones y no streams, y `http2_keep_alive_interval` activa el keep-alive con PING para streams largos; ver [Rendimiento](/es/http/performance). Llama a `set_server_options` antes de `listen`. Ver [Conexiones keep-alive](/es/faq/keep-alive-connections).
 
 ## Apagado ordenado
 

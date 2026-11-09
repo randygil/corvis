@@ -87,13 +87,13 @@ app.set_server_options(
         .request_timeout(Duration::from_secs(120))   // default 300 s (responds 408)
         .keep_alive_timeout(Duration::from_secs(10)) // default 5 s
         .max_connections(10_000)                     // default: no cap
-        .max_header_size(16 * 1024),                 // default 32 KiB (responds 431)
+        .max_header_size(16 * 1024),                 // default 32 KiB (responds 431; HTTP/1 and HTTP/2)
 );
 ```
 
 Each timeout accepts `None` to disable it (`.request_timeout(None)`). Connections beyond `max_connections` wait in the `accept` queue. An HTTP/1 request head is limited to 32 KiB (Node uses 16 KiB). A connection that sends nothing or drips its headers is closed, while requests in progress (a slow handler, an SSE response) do not count as idle.
 
-`ServerOptions::h2c(true)` enables HTTP/2 without TLS if your proxy is configured to send it (off by default). Call `set_server_options` before `listen`. See [Keep-alive connections](/faq/keep-alive-connections).
+`ServerOptions::h2c(true)` enables HTTP/2 without TLS if your proxy is configured to send it (off by default). HTTP/2 connections carry up to 100 concurrent streams (`http2_max_concurrent_streams`), `max_connections` counts connections rather than streams, and `http2_keep_alive_interval` turns on PING keep-alive for long streams; see [Performance](/http/performance). Call `set_server_options` before `listen`. See [Keep-alive connections](/faq/keep-alive-connections).
 
 ## Graceful shutdown
 

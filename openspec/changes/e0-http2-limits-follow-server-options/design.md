@@ -154,3 +154,58 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
 - Q1: PING keep-alive off by default; opt in with `http2_keep_alive_interval`.
 - Q2: 100 concurrent streams per connection.
 - Q3: flat `http2_*` methods on `ServerOptions`.
+
+## Implementation notes
+
+- The tests are in the new `crates/corvis/tests/http2_limits.rs`. The `h2` dev-dependency of task 1.1 was not
+  needed: the advertised stream cap is read from the server's SETTINGS frame with the raw-frame client the PING tests
+  already use, so `Cargo.toml` and `Cargo.lock` are unchanged.
+- Tests that open streams concurrently first complete one request, so the client has the server's SETTINGS: a stream
+  opened before them is refused with `REFUSED_STREAM` (correct HTTP/2 behavior, not a server fault).
+- The tests were written together with the implementation, not run red first.
+- `connection_builder` is `pub(crate)` in `server.rs`; the HTTP/2 settings are applied whether or not h2c is on.
+- Rapid reset (security review, finding 3): hyper starts a handler for every accepted stream, so a client that
+  resets stream N-cap before opening stream N keeps the peer's own count under the cap while handlers pile up. Fix, as
+  Go does: a per-connection semaphore with `http2_max_concurrent_streams` permits, acquired in the service before the
+  handler runs and held until the service future is dropped; and a per-connection count of service futures dropped
+  before producing a response. More than 500 such cancellations within a 10 s window close the connection without a
+  drain (`CANCEL_LIMIT`, `CANCEL_WINDOW`). The threshold is far above ordinary client aborts on one connection (a
+  gateway aborting a few requests per second) and far below an attack (the PoC reached about 2,900 per second).
+  Measured by the regression test: the connection was closed at stream 505 with at most 2 handlers at once (cap 2).
+- Rapid reset, second round. (1) A POST whose body fails to read because the client reset the stream used to end in
+  the `400 request aborted` path without being counted and logged one ERROR line per stream. `from_hyper` now marks
+  such a request `client_aborted`; for HTTP/2 `handle` skips the dispatch, logs at debug and the service counts it as
+  cancelled. HTTP/1 keeps answering `400` through the filters (a malformed chunked body still expects its answer, and a
+  closed HTTP/1 connection cannot repeat the pattern). The original (an Express `body-parser` error, `request aborted`,
+  passed to the filters, which for a non-HTTP error logs it) logs this at error level; we diverge for HTTP/2 because
+  nobody reads the answer and the log line is attacker-controlled. (2) The threshold is proportional: close when
+  cancelled > max(500, completed) over a two-window estimate (current window plus previous weighted by the part still
+  inside the last 10 s), so 500 + 500 across a window edge still trips it and a proxy with 1 to 2 percent aborts never does
+  (unit tests with a synthetic clock, and an integration test with 800 cancels against 2,000 completions). (3) Before
+  closing, the connection task calls hyper's `graceful_shutdown`, which sends GOAWAY with NO_ERROR (hyper cannot send
+  ENHANCE_YOUR_CALM), and drops the connection after 1 s if streams are still open. This replaced `GracefulShutdown`
+  with a `watch` channel in `serve`, because `GracefulConnection` is sealed and the connection must be reachable.
+  Measured: rapid reset closed after 830 streams with GOAWAY code 0 and peak 5 handlers (cap 5); POST plus RST closed
+  after 835 streams; the proxy-like client sent 800 cancelled streams in 3.1 s without being cut.
+- `idle_http2_connection_is_closed` failed about one run in ten: `TimedIo::on_read` moves an idle connection from the
+  keep-alive phase to the headers phase on any byte, and an HTTP/2 client sends frames (WINDOW_UPDATE) after its last
+  response, so the 60 s `headers_timeout` applied. Existing behavior (see Context), not changed here; the test sets both
+  timeouts and the spec scenario says so. A follow-up could keep the keep-alive phase for frames that start no request.
+- Rapid reset, third round. (1) Interleaving one cheap completed request per reset stream kept `cancelled <
+  completed` and avoided the verdict (15,880 resets in 12 s in the review). Completed requests now get partial credit:
+  close when cancelled > max(500, completed / 4) over the weighted window (`COMPLETED_CREDIT`), plus an absolute ceiling,
+  `ServerOptions::http2_max_cancelled_streams` (default 2000 per window, about 200 per second sustained, twice the
+  5,000 req/s at 2% proxy case; minimum 1), that closes whatever was completed. (2) During the 1 s grace period
+  hyper's graceful GOAWAY keeps announcing the highest stream id until its PING is acknowledged, so a flooding client kept
+  opening streams: a per-connection `flooded` flag, set with the verdict, makes the service return an error before the
+  handler (and again after the permit wait), which makes hyper reset the stream; these refused streams are neither
+  cancelled nor completed in the tally. (3) The `client_aborted` debug line is removed: counting is enough. Measured by
+  the tests: interleaved 1:1 closed after 830 resets with 505 handlers started both at the GOAWAY and at the close; the
+  rapid-reset test the same (505 and 505); a ceiling of 600 closed after 940 resets; a client with 4 cancels per 20
+  completed (800 cancels) was not cut.
+- Zero durations (finding 4): a zero `http2_keep_alive_interval` is stored as `None`; `http2_keep_alive_timeout` is
+  clamped to at least 1 s.
+- Known limitations moved to #157 and documented, not fixed here: a peer that never reads holds the connection (no
+  write deadline, and `inflight > 0` disables the timers), and an unread PING flood blocks writing so neither the idle
+  timeouts nor the PING timeout fire.
+- Task 4.5 (parity check) is left to the maintainer's session; the note on #117 (task 4.6) is posted.
