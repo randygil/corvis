@@ -104,6 +104,8 @@ struct Blocked {
     until: Instant,
     /// End of the reporting window, kept so `X-RateLimit-Reset` is the same as without the separate table.
     window_end: Instant,
+    /// Order in which blocks started (a counter, so it is strict): the eviction order when the table is full.
+    seq: u64,
 }
 
 impl Blocked {
@@ -166,8 +168,12 @@ struct Counters {
     idle: BTreeSet<(Instant, KeyHash)>,
     /// Blocked keys. A separate, compact table with its own cap, so a flood of blocked keys cannot displace counters.
     blocked: HashMap<KeyHash, Blocked>,
-    /// Blocked keys ordered by when they become idle.
+    /// Blocked keys ordered by when they become idle; used only to purge expired blocks.
     blocked_idle: BTreeSet<(Instant, KeyHash)>,
+    /// Blocked keys ordered by when their block started (FIFO); used only to evict when the table is full.
+    blocked_fifo: BTreeSet<(u64, KeyHash)>,
+    /// Sequence number of the next block.
+    next_seq: u64,
 }
 
 impl Counters {
@@ -198,7 +204,9 @@ impl Counters {
                 break;
             }
             self.blocked_idle.pop_first();
-            self.blocked.remove(&hash);
+            if let Some(b) = self.blocked.remove(&hash) {
+                self.blocked_fifo.remove(&(b.seq, hash));
+            }
         }
     }
 
@@ -210,18 +218,29 @@ impl Counters {
     fn remove_blocked(&mut self, hash: &KeyHash) -> Option<Blocked> {
         let b = self.blocked.remove(hash)?;
         self.blocked_idle.remove(&(b.idle_at(), *hash));
+        self.blocked_fifo.remove(&(b.seq, *hash));
         Some(b)
     }
 
-    /// Stores a block, first dropping the blocks that end soonest while the table is full (those are keys the
-    /// attacker pinned, not counters of other clients).
+    /// Stores a block, first dropping the oldest blocks (by when they started) while the table is full. Evicting by
+    /// start order, not by end time, means short blocks of other keys cannot push out a long block, and freeing
+    /// someone else's block costs as many new blocks as the table holds.
     fn insert_blocked(&mut self, hash: KeyHash, b: Blocked, max: usize) {
         while self.blocked.len() >= max {
-            let Some((_, h)) = self.blocked_idle.pop_first() else { break };
-            self.blocked.remove(&h);
+            let Some((_, h)) = self.blocked_fifo.pop_first() else { break };
+            if let Some(old) = self.blocked.remove(&h) {
+                self.blocked_idle.remove(&(old.idle_at(), h));
+            }
         }
         self.blocked_idle.insert((b.idle_at(), hash));
+        self.blocked_fifo.insert((b.seq, hash));
         self.blocked.insert(hash, b);
+    }
+
+    /// The sequence number for a block that starts now.
+    fn new_seq(&mut self) -> u64 {
+        self.next_seq += 1;
+        self.next_seq
     }
 }
 
@@ -277,7 +296,7 @@ impl ThrottlerStorage {
     }
 
     /// Maximum number of blocked keys kept in memory (default: the value of [`with_max_entries`](Self::with_max_entries)).
-    /// A blocked key takes about 120 bytes. When the table is full the block that ends soonest is dropped, which lets
+    /// A blocked key takes about 230 bytes. When the table is full the block that started first is dropped, which lets
     /// that key start counting again; counters are not affected.
     pub fn with_max_blocked(mut self, max_blocked: usize) -> Self {
         self.max_blocked = Some(max_blocked.max(1));
@@ -325,7 +344,10 @@ impl ThrottlerStorage {
     /// Approximate memory used by the keys, their buckets and the blocked keys, in bytes.
     pub fn memory_usage(&self) -> usize {
         let per_entry = std::mem::size_of::<(KeyHash, Record)>() + std::mem::size_of::<(Instant, KeyHash)>() + 16;
-        let per_blocked = std::mem::size_of::<(KeyHash, Blocked)>() + std::mem::size_of::<(Instant, KeyHash)>() + 16;
+        let per_blocked = std::mem::size_of::<(KeyHash, Blocked)>()
+            + std::mem::size_of::<(Instant, KeyHash)>()
+            + std::mem::size_of::<(u64, KeyHash)>()
+            + 16;
         let c = self.counters.lock().unwrap_or_else(|e| e.into_inner());
         c.records.len() * per_entry
             + c.records.values().map(|r| r.buckets.capacity() * std::mem::size_of::<Bucket>()).sum::<usize>()
@@ -406,7 +428,8 @@ impl ThrottlerStorage {
                 // The hits are not used during the block and are discarded when it ends: only the block is kept.
                 let until = after(now, block_duration);
                 let total_hits = u32::try_from(rec.hits).unwrap_or(u32::MAX);
-                c.insert_blocked(hash, Blocked { until, window_end: rec.window_end }, max_blocked);
+                let seq = c.new_seq();
+                c.insert_blocked(hash, Blocked { until, window_end: rec.window_end, seq }, max_blocked);
                 return ThrottlerRecord {
                     total_hits,
                     time_to_expire,
@@ -796,16 +819,39 @@ mod tests {
     }
 
     #[test]
-    fn the_blocked_table_has_its_own_cap_and_drops_the_soonest_block() {
+    fn the_oldest_block_is_evicted_first_whatever_its_length() {
         let storage = ThrottlerStorage::new(vec![]).with_max_blocked(2);
         let base = Instant::now();
-        for (i, key) in ["a", "b", "c"].iter().enumerate() {
-            let block = 10_000 * (i as u64 + 1);
+        // "a" starts first and lasts longest, "c" starts last and ends soonest.
+        for (key, block) in [("a", 30_000), ("b", 20_000), ("c", 10_000)] {
             hit(&storage, base, 0, key, 1_000, 0, block);
         }
         assert_eq!(storage.len(), 2);
-        assert!(!hit(&storage, base, 1, "a", 1_000, 5, 10_000).is_blocked, "a was the soonest block and was dropped");
-        assert!(hit(&storage, base, 1, "c", 1_000, 5, 30_000).is_blocked);
+        assert!(!hit(&storage, base, 1, "a", 1_000, 5, 30_000).is_blocked, "a started first and was dropped");
+        assert!(hit(&storage, base, 1, "c", 1_000, 5, 10_000).is_blocked, "c, the soonest to end, was kept");
+    }
+
+    /// Security review, finding 5: long blocks pin the table, then short blocks of other keys must not evict each other.
+    #[test]
+    fn short_blocks_cannot_evict_each_other_after_long_blocks_pin_the_table() {
+        let storage = ThrottlerStorage::new(vec![]).with_max_blocked(100);
+        let base = Instant::now();
+        for k in 0..100 {
+            hit(&storage, base, 0, &format!("login{k}"), 3_600_000, 0, 3_600_000);
+        }
+        // Two keys alternate bursts of limit + 1 with short blocks. Each new block evicts the oldest long block, not
+        // the other key's short block.
+        let (limit, mut allowed) = (5u32, 0u32);
+        for round in 0..20 {
+            for key in ["a", "b"] {
+                for _ in 0..=limit {
+                    if !storage.record_hit_at(key, base + ms(1 + round), ms(60_000), limit, ms(60_000)).is_blocked {
+                        allowed += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(allowed, 2 * limit, "each key gets `limit` requests, then stays blocked");
     }
 
     /// A limit as large as the old global budget still blocks: the count does not depend on stored timestamps.
