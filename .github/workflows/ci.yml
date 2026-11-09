@@ -19,8 +19,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # A newer push to a pull request cancels its run; every commit on main and dev keeps its own result.
+  # A newer push to a pull request cancels its run. Pushes to main and dev get a group per commit: a shared group
+  # would still cancel a queued run when a third one arrives, and every commit there keeps its own result.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
