@@ -93,8 +93,9 @@ CatsController depends on RequestContext, which is request-scoped (CatsControlle
 
 A singleton provider, a controller or a gateway has a field (directly, through an alias or through a transient
 provider) that is a request-scoped provider, or a `Request`. Corvis does not turn the consumer into a request-scoped
-one: it stops at startup. Take a `ModuleRef` and resolve the provider per request with
-`module_ref.resolve_for::<Y>(&req).await?`, or make the consumers in the chain request-scoped too. See
+one: it stops at startup. Take a `Scoped<Y>` handler parameter (or `Scoped::<Y>::from_context(ctx)` in a guard,
+interceptor or filter), or inject a `ModuleRef` and call `module_ref.resolve_for::<Y>(&req).await?`, or make the
+consumers in the chain request-scoped too. See
 [Request scope](/fundamentals/injection-scopes#request-scope).
 
 ## "X is request-scoped but was resolved outside an HTTP request"
@@ -104,6 +105,16 @@ factory, a gateway message handler, a lifecycle hook, a scheduled job, an event 
 context, or a task that kept a `Request` after the response was sent. The message names the provider and the chain
 that led to it. Resolve it inside the request with `ModuleRef::resolve_for(&req)`, or make it a singleton or transient
 provider.
+
+## A `500` from a `Scoped<T>` parameter
+
+The client only sees the default `Internal Server Error`; the cause is in the log, under the `Scoped` context:
+
+```text
+[Scoped] Scoped<Secret> could not be resolved: Corvis could not find Secret element (this provider does not exist in the current context)
+```
+
+The message is the `DiError` of the failed resolution: a provider that the controller's module cannot see, a missing dependency, or a factory error that is not an `HttpException`. In a WebSocket handler the log says request scope is HTTP only.
 
 ## "global guard X cannot be request-scoped"
 

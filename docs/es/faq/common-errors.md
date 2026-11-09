@@ -93,8 +93,9 @@ CatsController depends on RequestContext, which is request-scoped (CatsControlle
 
 Un provider singleton, un controller o un gateway tiene un campo (directamente, a través de un alias o de un provider
 transient) que es un provider con scope por petición, o un `Request`. Corvis no convierte al consumidor en uno con
-scope por petición: se detiene al arrancar. Toma un `ModuleRef` y resuelve el provider en cada petición con
-`module_ref.resolve_for::<Y>(&req).await?`, o haz que también los consumidores de la cadena tengan scope por petición.
+scope por petición: se detiene al arrancar. Recibe un parámetro `Scoped<Y>` en el handler (o `Scoped::<Y>::from_context(ctx)`
+en un guard, interceptor o filtro), o inyecta un `ModuleRef` y llama a `module_ref.resolve_for::<Y>(&req).await?`, o haz
+que también los consumidores de la cadena tengan scope por petición.
 Ver [Scope por petición](/es/fundamentals/injection-scopes#scope-por-peticion).
 
 ## "X is request-scoped but was resolved outside an HTTP request"
@@ -104,6 +105,16 @@ HTTP: una factory singleton, un handler de mensajes de un gateway, un hook del c
 listener de eventos, un contexto de aplicación independiente, o una tarea que conservó un `Request` después de enviar
 la respuesta. El mensaje nombra el provider y la cadena que llevó a él. Resuélvelo dentro de la petición con
 `ModuleRef::resolve_for(&req)`, o conviértelo en un provider singleton o transient.
+
+## Un `500` de un parámetro `Scoped<T>`
+
+El cliente solo ve el `Internal Server Error` por defecto; la causa está en el log, con el contexto `Scoped`:
+
+```text
+[Scoped] Scoped<Secret> could not be resolved: Corvis could not find Secret element (this provider does not exist in the current context)
+```
+
+El mensaje es el `DiError` de la resolución fallida: un provider que el módulo del controller no ve, una dependencia que falta, o un error de factory que no es una `HttpException`. En un handler de WebSockets el log dice que el scope por petición es solo HTTP.
 
 ## "global guard X cannot be request-scoped"
 

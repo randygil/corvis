@@ -63,8 +63,57 @@ request (from a middleware, a guard, the handler, or another request-scoped prov
 requests never share an instance, even when they run at the same time. When the request ends (response sent, error,
 panic, or the client disconnecting) the instances are released.
 
-You consume a request-scoped provider per request, with `ModuleRef::resolve_for`. Inject a `ModuleRef` and take the
-`Request` as a handler parameter:
+### `Scoped<T>`
+
+You consume a request-scoped provider per request. In a handler, declare a `Scoped<T>` parameter, with no attribute:
+
+```rust
+#[controller("cats")]
+pub struct CatsController;
+
+#[routes]
+impl CatsController {
+    #[get("request-id")]
+    #[public]
+    fn request_id(&self, ctx: Scoped<RequestContext>) -> Value {
+        json!({ "requestId": ctx.request_id() })
+    }
+}
+```
+
+`Scoped<T>` dereferences to `T` (`into_inner()` gives the `Arc<T>`) and resolves the provider registered under
+`Token::of::<T>()` from the module of the route's controller, with the usual visibility rules. It works for a provider
+of **any** scope: a request-scoped one is the instance of this request, a transient one is a new instance, a singleton
+is the shared one. Changing a provider's scope does not change its consumers, but the name says "resolved for this
+request", not "T is request-scoped".
+
+Guards, interceptors and route-level exception filters take it from their context, and get the same instance as the
+handler:
+
+```rust
+#[async_trait]
+impl CorvisInterceptor for RequestIdInterceptor {
+    async fn intercept(&self, ctx: &ExecutionContext, next: CallHandler) -> HandlerResult {
+        let request_context = Scoped::<RequestContext>::from_context(ctx).await?;
+        let mut response = next.handle().await?;
+        response.set_header("X-Request-Id", request_context.request_id());
+        Ok(response)
+    }
+}
+```
+
+The `cats-app` example does exactly this: a request-scoped `RequestContext` (id from `X-Request-Id` or generated), a
+handler with `Scoped<RequestContext>` and an interceptor that echoes the id.
+
+Errors do not reach the client with internals: if a factory provider fails with an `HttpException` (for example a `400`
+for a missing tenant header), that exception is returned unchanged; any other failure is a generic `500`, and the
+`DiError` message, which names the provider, is logged under `Scoped`. In a WebSocket handler `Scoped<T>` always fails
+(request scope is HTTP only). Pipes cannot use it, because they receive no execution context, and `Scoped` resolves by
+type: for a provider registered under a string token use `ModuleRef::resolve_token_for`.
+
+### `ModuleRef::resolve_for`
+
+When you need the instance outside a handler parameter, inject a `ModuleRef` and pass it the `Request`:
 
 ```rust
 #[controller("cats")]
@@ -101,7 +150,7 @@ What may depend on what:
 - A **singleton, a controller or a gateway cannot depend on a request-scoped provider** or on a `Request` (directly,
   through an alias, or through transient providers). Corvis does not turn the consumer into a request-scoped one,
   which would rebuild a whole controller graph per request; it fails at startup with `DiError::RequestScopedDependency`,
-  naming the consumer, the dependency and the chain, and pointing at `resolve_for`.
+  naming the consumer, the dependency and the chain, and pointing at `Scoped<T>` and `resolve_for`.
 - Global enhancers (`Provider::app_guard` and its siblings) and enhancers referenced by type (`#[use_guards(T)]`)
   cannot be request-scoped, because they are created once. Resolve the request-scoped provider inside them with
   `ModuleRef::resolve_for`.

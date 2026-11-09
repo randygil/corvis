@@ -810,6 +810,197 @@ async fn a_standalone_context_cannot_resolve_a_request_scoped_provider() {
     app.close().await.unwrap();
 }
 
+// ------------------------------------------------------------------ Scoped<T>
+
+mod scoped {
+    use corvis::Scoped;
+
+    use super::*;
+
+    pub static CONSTRUCTED: AtomicUsize = AtomicUsize::new(0);
+
+    #[injectable(scope = "request")]
+    pub struct ScopedCtx {
+        #[init(next_id())]
+        pub _id: usize,
+    }
+
+    #[injectable(scope = "transient")]
+    pub struct Timer;
+
+    #[injectable]
+    pub struct CatsSvc;
+
+    pub struct Tenant;
+
+    #[injectable(scope = "request")]
+    pub struct Counted {
+        #[init(bump(&CONSTRUCTED))]
+        _n: usize,
+    }
+
+    /// A request-scoped provider the controller's module cannot see.
+    #[injectable(scope = "request")]
+    pub struct Secret;
+
+    #[derive(Clone)]
+    pub struct GuardSaw(pub usize);
+
+    #[injectable]
+    pub struct SawGuard;
+
+    #[async_trait]
+    impl CanActivate for SawGuard {
+        async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+            let scoped = Scoped::<ScopedCtx>::from_context(ctx).await?;
+            ctx.request().insert(GuardSaw(Arc::as_ptr(&scoped.into_inner()) as usize));
+            Ok(true)
+        }
+    }
+
+    #[controller("scoped")]
+    #[use_guards(SawGuard)]
+    pub struct ScopedController;
+
+    #[routes]
+    impl ScopedController {
+        #[get("same")]
+        async fn same(&self, ctx: Scoped<ScopedCtx>, #[req] req: Request) -> String {
+            let guard = req.get::<GuardSaw>().expect("the guard ran").0;
+            ((&*ctx as *const ScopedCtx as usize) == guard).to_string()
+        }
+
+        #[get("addr")]
+        async fn addr(&self, ctx: Scoped<ScopedCtx>) -> String {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            (&*ctx as *const ScopedCtx as usize).to_string()
+        }
+
+        #[get("transient")]
+        async fn transient(&self, a: Scoped<Timer>, b: Scoped<Timer>) -> String {
+            std::ptr::eq(&*a, &*b).to_string()
+        }
+
+        #[get("singleton")]
+        async fn singleton(&self, cats: Scoped<CatsSvc>) -> String {
+            (&*cats as *const CatsSvc as usize).to_string()
+        }
+
+        #[get("tenant")]
+        async fn tenant(&self, _tenant: Scoped<Tenant>) -> &'static str {
+            "ok"
+        }
+
+        #[get("secret")]
+        async fn secret(&self, _secret: Scoped<Secret>) -> &'static str {
+            "never"
+        }
+
+        #[get("counted")]
+        async fn counted(&self, _c: Scoped<Counted>) -> &'static str {
+            "ok"
+        }
+    }
+
+    #[module(
+        controllers = [ScopedController],
+        providers = [
+            ScopedCtx, Timer, CatsSvc, Counted,
+            Provider::use_factory(Token::of::<Tenant>(), |ctx| async move {
+                match ctx.request()?.header("x-tenant") {
+                    Some(_) => Ok(Tenant),
+                    None => Err(BadRequestException::new("missing tenant").into_anyhow()),
+                }
+            })
+            .scope(Scope::Request),
+        ]
+    )]
+    pub struct ScopedModule;
+}
+
+async fn scoped_app() -> corvis::CorvisApplication {
+    let module = compile_ok(Test::create_testing_module().import::<scoped::ScopedModule>().provider::<scoped::Secret>()).await;
+    let mut app = module.create_corvis_application();
+    app.init().await.unwrap();
+    app
+}
+
+#[corvis::test]
+async fn a_scoped_parameter_and_a_guard_share_the_instance() {
+    let app = scoped_app().await;
+    request(&app).get("/scoped/same").send().await.expect_status(200).expect_text("true");
+}
+
+#[corvis::test]
+async fn scoped_gives_requests_in_flight_different_instances() {
+    let app = scoped_app().await;
+    let client = request(&app);
+    let (a, b) = tokio::join!(client.get("/scoped/addr").send(), client.get("/scoped/addr").send());
+    assert_ne!(a.text(), b.text());
+}
+
+#[corvis::test]
+async fn scoped_resolves_transient_providers_anew_for_each_parameter() {
+    let app = scoped_app().await;
+    request(&app).get("/scoped/transient").send().await.expect_status(200).expect_text("false");
+}
+
+#[corvis::test]
+async fn scoped_resolves_singletons() {
+    let app = scoped_app().await;
+    let body = request(&app).get("/scoped/singleton").send().await.text();
+    assert_eq!(body, (Arc::as_ptr(&app.get::<scoped::CatsSvc>().unwrap()) as usize).to_string());
+}
+
+#[corvis::test]
+async fn a_factory_http_exception_is_returned_unchanged() {
+    let app = scoped_app().await;
+    let response = request(&app).get("/scoped/tenant").send().await;
+    response.expect_status(400);
+    assert_eq!(response.json_value()["message"], "missing tenant");
+    request(&app).get("/scoped/tenant").set("x-tenant", "acme").send().await.expect_status(200);
+}
+
+#[corvis::test]
+async fn a_provider_that_is_not_visible_gives_a_500_that_does_not_name_it() {
+    let app = scoped_app().await;
+    let response = request(&app).get("/scoped/secret").send().await;
+    response.expect_status(500);
+    assert!(!response.text().contains("Secret"), "{}", response.text());
+    assert_eq!(response.json_value()["message"], "Internal Server Error");
+}
+
+#[corvis::test]
+async fn the_scope_error_recommends_scoped() {
+    let err = compile_err(Test::create_testing_module().provider::<startup::RequestContext>().controller::<startup::BadController>()).await;
+    let text = err.to_string();
+    assert!(text.contains("Scoped<RequestContext>") && text.contains("resolve_for"), "{text}");
+    assert!(text.find("Scoped<RequestContext>") < text.find("resolve_for"), "{text}");
+}
+
+#[cfg(feature = "websockets")]
+#[corvis::test]
+async fn scoped_fails_in_a_websocket_context_and_creates_nothing() {
+    use corvis::{ContextType, Scoped, Target};
+
+    let mut module = compile_ok(Test::create_testing_module().import::<scoped::ScopedModule>().provider::<scoped::Secret>()).await;
+    module.init().await.unwrap();
+    let app = module.create_corvis_application();
+    let before = scoped::CONSTRUCTED.load(Ordering::SeqCst);
+    let ctx = ExecutionContext::for_ws(
+        Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap(),
+        Arc::new(Target::new("Gateway")),
+        Arc::new(Target::new("handler")),
+        Some(app.module_ref()),
+        Arc::new(()),
+        json!(null),
+    );
+    assert_eq!(ctx.get_type(), ContextType::Ws);
+    let err = Scoped::<scoped::Counted>::from_context(&ctx).await.map(|_| ()).unwrap_err();
+    assert_eq!(err.status().as_u16(), 500);
+    assert_eq!(scoped::CONSTRUCTED.load(Ordering::SeqCst), before);
+}
+
 // ------------------------------------------------------------------ nested dispatch
 
 mod nested {

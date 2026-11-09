@@ -21,6 +21,8 @@ In the meantime, this guide is for those coming from a decorator-based Node.js f
 | Injection by token | `#[inject("TOKEN")]` on the field |
 | Value, class, factory, and alias providers | `Provider::use_value`, `use_class`, `use_factory`, `use_existing` |
 | Transient scope | `#[injectable(scope = "transient")]` |
+| `Scope.REQUEST` | `#[injectable(scope = "request")]`, consumed with `Scoped<T>` or `ModuleRef::resolve_for` |
+| `@Inject(REQUEST)` | a `Request` field in a request-scoped provider (`ResolveCtx::request()` in a factory) |
 | Global guard, pipe, interceptor, or filter registered as a provider | `Provider::app_guard::<G>()`, `app_pipe`, `app_interceptor`, `app_filter` |
 
 See [Modules](/modules), [Providers](/providers), and [Custom providers](/fundamentals/custom-providers).
@@ -55,7 +57,7 @@ Class attributes (`#[use_guards]`, `#[set_metadata]`...) go **below** `#[control
 
 ## Differences worth knowing
 
-- **Request scope is explicit.** `#[injectable(scope = "request")]` gives one instance per request, but a singleton, controller or gateway that depends on it is a startup error instead of becoming request-scoped itself: resolve it per request with `ModuleRef::resolve_for`. For plain per-request data you can also use the request extensions (`req.insert`, `req.get`) or `FromContext`. See [Injection scopes](/fundamentals/injection-scopes).
+- **Request scope without bubbling.** `#[injectable(scope = "request")]` gives one instance per request, but a singleton, controller or gateway that depends on it is a startup error instead of becoming request-scoped itself: take a `Scoped<T>` handler parameter (or use `ModuleRef::resolve_for`) per request. For plain per-request data you can also use the request extensions (`req.insert`, `req.get`) or `FromContext`. See [Injection scopes](/fundamentals/injection-scopes).
 - **No `forwardRef`.** A circular dependency between providers is a startup error. See [Circular dependencies](/fundamentals/circular-dependency).
 - **Interceptors without observables.** `CallHandler::handle()` returns a `Future`: you can transform, time, and cache the response, but not compose stream operators.
 - **Pipes over JSON.** Pipes receive and return `serde_json::Value`; the result is deserialized into the parameter's type.

@@ -64,8 +64,59 @@ petición (desde un middleware, un guard, el handler u otro provider con scope p
 peticiones nunca comparten instancia, ni siquiera cuando se ejecutan a la vez. Cuando la petición termina (respuesta
 enviada, error, pánico o el cliente se desconecta) las instancias se liberan.
 
-Un provider con scope por petición se consume en cada petición, con `ModuleRef::resolve_for`. Inyecta un `ModuleRef`
-y recibe el `Request` como parámetro del handler:
+### `Scoped<T>`
+
+Un provider con scope por petición se consume en cada petición. En un handler, declara un parámetro `Scoped<T>`, sin
+atributo:
+
+```rust
+#[controller("cats")]
+pub struct CatsController;
+
+#[routes]
+impl CatsController {
+    #[get("request-id")]
+    #[public]
+    fn request_id(&self, ctx: Scoped<RequestContext>) -> Value {
+        json!({ "requestId": ctx.request_id() })
+    }
+}
+```
+
+`Scoped<T>` se dereferencia a `T` (`into_inner()` devuelve el `Arc<T>`) y resuelve el provider registrado bajo
+`Token::of::<T>()` desde el módulo del controller de la ruta, con las reglas de visibilidad habituales. Funciona con un
+provider de **cualquier** scope: uno con scope por petición es la instancia de esta petición, uno transient es una
+instancia nueva, un singleton es el compartido. Cambiar el scope de un provider no cambia a sus consumidores, pero el
+nombre dice "resuelto para esta petición", no "T tiene scope por petición".
+
+Los guards, interceptors y filtros de excepciones de una ruta lo toman de su contexto y reciben la misma instancia que
+el handler:
+
+```rust
+#[async_trait]
+impl CorvisInterceptor for RequestIdInterceptor {
+    async fn intercept(&self, ctx: &ExecutionContext, next: CallHandler) -> HandlerResult {
+        let request_context = Scoped::<RequestContext>::from_context(ctx).await?;
+        let mut response = next.handle().await?;
+        response.set_header("X-Request-Id", request_context.request_id());
+        Ok(response)
+    }
+}
+```
+
+El ejemplo `cats-app` hace exactamente esto: un `RequestContext` con scope por petición (id de `X-Request-Id` o
+generado), un handler con `Scoped<RequestContext>` y un interceptor que devuelve el id.
+
+Los errores no llegan al cliente con detalles internos: si un provider de factory falla con una `HttpException` (por
+ejemplo un `400` por falta de la cabecera del tenant), esa excepción se devuelve sin cambios; cualquier otro fallo es un
+`500` genérico, y el mensaje del `DiError`, que nombra al provider, se registra en el log bajo `Scoped`. En un handler
+de WebSockets `Scoped<T>` siempre falla (el scope por petición es solo HTTP). Los pipes no pueden usarlo, porque no
+reciben contexto de ejecución, y `Scoped` resuelve por tipo: para un provider registrado con un token de texto usa
+`ModuleRef::resolve_token_for`.
+
+### `ModuleRef::resolve_for`
+
+Cuando necesites la instancia fuera de un parámetro de handler, inyecta un `ModuleRef` y pásale el `Request`:
 
 ```rust
 #[controller("cats")]
@@ -103,7 +154,7 @@ Qué puede depender de qué:
 - Un **singleton, un controller o un gateway no pueden depender de un provider con scope por petición** ni de un
   `Request` (directamente, a través de un alias o de providers transient). Corvis no convierte al consumidor en uno con
   scope por petición, lo que reconstruiría todo un grafo de controllers en cada petición; falla al arrancar con
-  `DiError::RequestScopedDependency`, que nombra al consumidor, la dependencia y la cadena, y apunta a `resolve_for`.
+  `DiError::RequestScopedDependency`, que nombra al consumidor, la dependencia y la cadena, y apunta a `Scoped<T>` y `resolve_for`.
 - Los enhancers globales (`Provider::app_guard` y similares) y los enhancers referenciados por tipo
   (`#[use_guards(T)]`) no pueden tener scope por petición, porque se crean una sola vez. Resuelve el provider con
   scope por petición dentro de ellos con `ModuleRef::resolve_for`.

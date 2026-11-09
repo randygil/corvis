@@ -46,7 +46,7 @@ pub enum DiError {
     /// A singleton provider, a controller or a gateway depends on a request-scoped provider (or on the current
     /// `Request`). It is created once, so it would keep the instance of the first request.
     #[error(
-        "{consumer} depends on {dependency}, which is request-scoped ({chain}). A singleton, a controller or a gateway is created once and would keep the instance of the first request. Resolve {dependency} per request with ModuleRef::resolve_for(&request) (inject a ModuleRef and take the Request as a handler parameter), or make the consumers in the chain request-scoped too."
+        "{consumer} depends on {dependency}, which is request-scoped ({chain}). A singleton, a controller or a gateway is created once and would keep the instance of the first request. Resolve {dependency} per request: take a Scoped<{dependency}> handler parameter (or Scoped::<{dependency}>::from_context(ctx) in a guard, interceptor or filter), or inject a ModuleRef and call ModuleRef::resolve_for(&request). You can also make the consumers in the chain request-scoped too."
     )]
     RequestScopedDependency { consumer: String, dependency: String, chain: String },
 
@@ -90,6 +90,7 @@ mod tests {
         .to_string();
         assert!(text.starts_with("CatsController depends on RequestContext, which is request-scoped"), "{text}");
         assert!(text.contains("(CatsController -> AuditLog -> RequestContext)"), "{text}");
-        assert!(text.contains("resolve_for"), "{text}");
+        assert!(text.contains("Scoped<RequestContext>"), "{text}");
+        assert!(text.find("Scoped<RequestContext>") < text.find("resolve_for"), "Scoped comes first: {text}");
     }
 }
