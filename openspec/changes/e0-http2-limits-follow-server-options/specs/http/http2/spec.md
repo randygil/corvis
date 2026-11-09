@@ -37,7 +37,9 @@ working. The default is the documented 32 KiB.
 ### Requirement: Concurrent streams per connection are capped
 `ServerOptions::http2_max_concurrent_streams(n)` SHALL set the number of streams a client may have open at once on
 one HTTP/2 connection (`SETTINGS_MAX_CONCURRENT_STREAMS`), with a default of 100 and a minimum of 1. The server MUST
-never run more handlers at once for one connection than this number.
+never run more handlers at once for one connection than this number, even when the client resets streams and opens
+new ones faster than their handlers stop (rapid reset), and MUST close a connection that cancels more than 500
+requests before their response within 10 seconds.
 
 #### Scenario: Cap of two
 - **WHEN** a server has `ServerOptions::new().h2c(true).http2_max_concurrent_streams(2)` and an HTTP/2 client starts
@@ -62,8 +64,11 @@ streams. The documentation SHALL state that the in-flight requests of HTTP/2 cli
 
 ### Requirement: HTTP/2 PING keep-alive
 `ServerOptions::http2_keep_alive_interval(interval)` SHALL make the server send a PING frame on each HTTP/2 connection
-every `interval` (default `None`: no PINGs), and `ServerOptions::http2_keep_alive_timeout(timeout)` (default 20 s)
-SHALL close the connection when a PING is not acknowledged within `timeout`, whether or not streams are in flight.
+every `interval` (default `None`: no PINGs; a zero interval means none), and
+`ServerOptions::http2_keep_alive_timeout(timeout)` (default 20 s, minimum 1 s) SHALL close the connection when a PING
+is not acknowledged within `timeout`, whether or not streams are in flight, except while writing to the client is
+blocked (known limitation, randygil/corvis#157): the keep-alive detects peers that stopped answering, not a live peer
+that stops reading.
 
 #### Scenario: Peer that does not answer PINGs
 - **WHEN** a server has `ServerOptions::new().h2c(true).http2_keep_alive_interval(Duration::from_millis(200))
@@ -82,7 +87,8 @@ SHALL close the connection when a PING is not acknowledged within `timeout`, whe
 
 ### Requirement: Timeouts on HTTP/2 connections
 For an HTTP/2 connection, `headers_timeout` and `keep_alive_timeout` SHALL apply to the connection while none of its
-streams is in flight, as for an idle HTTP/1 connection, and `request_timeout` SHALL apply to the body of each stream
+streams is in flight, as for an idle HTTP/1 connection (except while writing to the client is blocked, known
+limitation randygil/corvis#157), and `request_timeout` SHALL apply to the body of each stream
 on its own: a stream whose body does not arrive in time MUST be answered `408` without affecting the other streams of
 the connection.
 

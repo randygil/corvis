@@ -69,8 +69,15 @@ Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1
   un stream largo mantiene viva la conexión. `request_timeout` aplica al cuerpo de cada stream por separado: un `POST`
   detenido se responde `408` sin afectar a los demás streams.
 - `http2_keep_alive_interval` (desactivado por defecto) envía un PING cada intervalo, y `http2_keep_alive_timeout`
-  cierra la conexión cuando un PING no se confirma a tiempo. Actívalo con SSE u otros streams largos sobre HTTP/2,
-  donde un cliente caído de otro modo nunca se detectaría.
+  cierra la conexión cuando un PING no se confirma a tiempo (mínimo 1 s; un intervalo cero significa sin PING).
+  Actívalo con SSE u otros streams largos sobre HTTP/2, donde un cliente que dejó de responder de otro modo nunca se
+  detectaría.
+- Un cliente que reinicia streams y abre otros nuevos más rápido de lo que sus handlers se detienen nunca consigue más
+  handlers a la vez que `http2_max_concurrent_streams`, y una conexión que cancela más de 500 peticiones antes de su
+  respuesta en 10 s se cierra (rapid reset).
+- Limitación conocida ([#157](https://github.com/randygil/corvis/issues/157)): un cliente vivo que deja de leer retiene
+  su conexión. Mientras la escritura hacia el cliente está bloqueada, ni el timeout del PING ni los de inactividad se
+  activan; el keep-alive con PING detecta clientes que dejaron de responder, no que dejaron de leer.
 
 ## Cuerpos de las peticiones
 

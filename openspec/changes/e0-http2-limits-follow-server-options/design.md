@@ -164,4 +164,17 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
   opened before them is refused with `REFUSED_STREAM` (correct HTTP/2 behavior, not a server fault).
 - The tests were written together with the implementation, not run red first.
 - `connection_builder` is `pub(crate)` in `server.rs`; the HTTP/2 settings are applied whether or not h2c is on.
-- Task 4.5 (parity check) and 4.6 (note on #117) are left to the maintainer's session, per the implementation brief.
+- Rapid reset (security review, finding 3): hyper starts a handler for every accepted stream, so a client that
+  resets stream N-cap before opening stream N keeps the peer's own count under the cap while handlers pile up. Fix, as
+  Go does: a per-connection semaphore with `http2_max_concurrent_streams` permits, acquired in the service before the
+  handler runs and held until the service future is dropped; and a per-connection count of service futures dropped
+  before producing a response. More than 500 such cancellations within a 10 s window close the connection without a
+  drain (`CANCEL_LIMIT`, `CANCEL_WINDOW`). The threshold is far above ordinary client aborts on one connection (a
+  gateway aborting a few requests per second) and far below an attack (the PoC reached about 2,900 per second).
+  Measured by the regression test: the connection was closed at stream 505 with at most 2 handlers at once (cap 2).
+- Zero durations (finding 4): a zero `http2_keep_alive_interval` is stored as `None`; `http2_keep_alive_timeout` is
+  clamped to at least 1 s.
+- Known limitations moved to #157 and documented, not fixed here: a peer that never reads holds the connection (no
+  write deadline, and `inflight > 0` disables the timers), and an unread PING flood blocks writing so neither the idle
+  timeouts nor the PING timeout fire.
+- Task 4.5 (parity check) is left to the maintainer's session; the note on #117 (task 4.6) is posted.

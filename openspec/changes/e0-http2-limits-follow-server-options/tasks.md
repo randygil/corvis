@@ -46,7 +46,7 @@
 - [x] 4.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
 - [ ] 4.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences (they speak HTTP/1 only)
-- [ ] 4.6 Leave a note on #117 (or its change, if drafted) that its TLS accept path must use `connection_builder` so
+- [x] 4.6 Leave a note on #117 (or its change, if drafted) that its TLS accept path must use `connection_builder` so
   ALPN `h2` connections get these limits
 
 ## Workflow follow-up

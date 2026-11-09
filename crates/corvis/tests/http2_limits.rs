@@ -38,6 +38,26 @@ impl Hold {
     }
 }
 
+static CANCEL_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static CANCEL_PEAK: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts a running handler until its future is dropped.
+struct Running;
+
+impl Running {
+    fn new() -> Self {
+        let n = CANCEL_ACTIVE.fetch_add(1, Ordering::SeqCst) + 1;
+        CANCEL_PEAK.fetch_max(n, Ordering::SeqCst);
+        Running
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        CANCEL_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 static HOLD_STREAMS: Hold = Hold::new();
 static HOLD_CONNS: Hold = Hold::new();
 
@@ -65,6 +85,13 @@ impl TController {
     #[get("hold-streams")]
     async fn hold_streams(&self) -> Value {
         HOLD_STREAMS.run().await;
+        json!({ "ok": true })
+    }
+
+    #[get("hold-cancel")]
+    async fn hold_cancel(&self) -> Value {
+        let _running = Running::new();
+        tokio::time::sleep(Duration::from_secs(30)).await;
         json!({ "ok": true })
     }
 
@@ -152,6 +179,103 @@ async fn status_of(sender: &mut Sender, req: hyper::Request<B>) -> u16 {
     let status = res.status().as_u16();
     let _ = res.into_body().collect().await;
     status
+}
+
+fn frame_bytes(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
+    let len = payload.len() as u32;
+    let mut v = vec![(len >> 16) as u8, (len >> 8) as u8, len as u8, kind, flags];
+    v.extend_from_slice(&stream.to_be_bytes());
+    v.extend_from_slice(payload);
+    v
+}
+
+/// HPACK block of `GET <path>` over http, authority "x" (static table indexes, no Huffman).
+fn request_block(path: &str) -> Vec<u8> {
+    let mut b = vec![0x82, 0x86, 0x04, path.len() as u8];
+    b.extend_from_slice(path.as_bytes());
+    b.extend_from_slice(&[0x01, 0x01, 0x78]);
+    b
+}
+
+/// Rapid reset with accepted streams: each new stream is preceded by the RST_STREAM of the one opened a few
+/// streams earlier, so the peer's own stream count never exceeds the cap while handlers still run.
+#[corvis::test]
+async fn rapid_reset_never_exceeds_the_stream_cap_and_closes_the_connection() {
+    const CAP: u32 = 2;
+    let addr = serve(ServerOptions::new().h2c(true).http2_max_concurrent_streams(CAP)).await;
+    let mut c = RawClient::connect(addr).await;
+    // Wait for the server's SETTINGS and acknowledge them.
+    let first = c.frame(Duration::from_secs(5)).await.unwrap().unwrap();
+    assert_eq!(first.kind, FRAME_SETTINGS);
+    let (mut rd, mut wr) = c.0.into_split();
+    wr.write_all(&frame_bytes(FRAME_SETTINGS, 1, 0, &[])).await.unwrap();
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = closed.clone();
+    let reader = tokio::spawn(async move {
+        let mut goaway = None;
+        loop {
+            let mut head = [0u8; 9];
+            if rd.read_exact(&mut head).await.is_err() {
+                break;
+            }
+            let len = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+            let mut payload = vec![0u8; len];
+            if rd.read_exact(&mut payload).await.is_err() {
+                break;
+            }
+            if head[3] == 7 {
+                goaway = Some(u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]));
+            }
+        }
+        flag.store(true, Ordering::SeqCst);
+        goaway
+    });
+    let block = request_block("/t/hold-cancel");
+    let mut id: u32 = 1;
+    let started = Instant::now();
+    let mut sent = 0u32;
+    while started.elapsed() < Duration::from_secs(5) && !closed.load(Ordering::SeqCst) {
+        let mut batch = Vec::new();
+        for _ in 0..5 {
+            if id > 2 * CAP {
+                batch.extend(frame_bytes(3, 0, id - 2 * CAP, &8u32.to_be_bytes()));
+            }
+            batch.extend(frame_bytes(1, 0x5, id, &block));
+            id += 2;
+            sent += 1;
+        }
+        if wr.write_all(&batch).await.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let goaway = tokio::time::timeout(Duration::from_secs(5), reader).await.expect("the server closed the connection").unwrap();
+    assert!(sent > 500, "the flood went past the threshold ({sent} streams); GOAWAY code {goaway:?}");
+    let peak = CANCEL_PEAK.load(Ordering::SeqCst);
+    eprintln!("rapid reset: {sent} streams sent in {:.2?}, peak handlers {peak}, GOAWAY {goaway:?}", started.elapsed());
+    assert!(peak <= CAP as usize, "at most {CAP} handlers at once, saw {peak}");
+}
+
+#[corvis::test]
+async fn zero_keep_alive_interval_means_no_pings() {
+    let addr = serve(ServerOptions::new().h2c(true).http2_keep_alive_interval(Duration::ZERO)).await;
+    let mut c = RawClient::connect(addr).await;
+    let end = Instant::now() + Duration::from_millis(1200);
+    while let Ok(Some(f)) = c.frame(end.saturating_duration_since(Instant::now())).await {
+        assert_ne!(f.kind, FRAME_PING, "a zero interval sends no PING");
+    }
+}
+
+#[corvis::test]
+async fn zero_keep_alive_timeout_is_clamped_to_one_second() {
+    let options =
+        ServerOptions::new().h2c(true).http2_keep_alive_interval(Duration::from_millis(200)).http2_keep_alive_timeout(Duration::ZERO);
+    let addr = serve(options).await;
+    let (mut sender, conn) = connect(addr).await;
+    assert_eq!(status_of(&mut sender, get(addr, "/t/ok")).await, 200);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!conn.is_finished(), "an acknowledged PING keeps the connection open");
+    assert_eq!(status_of(&mut sender, get(addr, "/t/ok")).await, 200);
 }
 
 #[corvis::test]

@@ -121,31 +121,37 @@ impl ServerOptions {
     /// several concurrent requests (see
     /// [`http2_max_concurrent_streams`](Self::http2_max_concurrent_streams), default 100),
     /// `max_header_size` bounds the header list, and
-    /// [`http2_keep_alive_interval`](Self::http2_keep_alive_interval) can detect dead peers.
+    /// [`http2_keep_alive_interval`](Self::http2_keep_alive_interval) can detect peers that stopped answering.
     pub fn h2c(mut self, enabled: bool) -> Self {
         self.h2c = enabled;
         self
     }
     /// Streams a client may have open at once on one HTTP/2 connection
     /// (`SETTINGS_MAX_CONCURRENT_STREAMS`, default 100, minimum 1). The server never runs more
-    /// handlers at once for one connection than this. Together with
+    /// handlers at once for one connection than this, even when a client resets streams and opens new ones
+    /// faster than the handlers stop; a connection that cancels more than 500 requests within 10 s before
+    /// their response (rapid reset) is closed. Together with
     /// [`max_connections`](Self::max_connections) it bounds the in-flight requests of HTTP/2 clients.
     pub fn http2_max_concurrent_streams(mut self, n: u32) -> Self {
         self.http2_max_concurrent_streams = n.max(1);
         self
     }
     /// Interval between HTTP/2 PING frames on each connection, whether or not streams are open.
-    /// Default `None`: no PINGs. Set it with SSE or other long-lived HTTP/2 streams, where a dead
-    /// peer would otherwise never be noticed; see
-    /// [`http2_keep_alive_timeout`](Self::http2_keep_alive_timeout).
+    /// Default `None`: no PINGs; a zero interval also means none. Set it with SSE or other long-lived
+    /// HTTP/2 streams, where a peer that stopped answering (a vanished client or middlebox) would
+    /// otherwise never be noticed; see [`http2_keep_alive_timeout`](Self::http2_keep_alive_timeout).
+    ///
+    /// Known limitation (#157): it does not detect a live peer that stops reading. While writing to
+    /// the client is blocked, neither the PING timeout nor the idle timeouts fire.
     pub fn http2_keep_alive_interval(mut self, t: impl Into<Option<Duration>>) -> Self {
-        self.http2_keep_alive_interval = t.into();
+        self.http2_keep_alive_interval = t.into().filter(|d| !d.is_zero());
         self
     }
     /// Time an HTTP/2 peer has to acknowledge a PING before the connection is closed (default
-    /// 20 s). Only used when [`http2_keep_alive_interval`](Self::http2_keep_alive_interval) is set.
+    /// 20 s, minimum 1 s). Only used when [`http2_keep_alive_interval`](Self::http2_keep_alive_interval)
+    /// is set. It does not fire while writing to the client is blocked (#157).
     pub fn http2_keep_alive_timeout(mut self, t: Duration) -> Self {
-        self.http2_keep_alive_timeout = t;
+        self.http2_keep_alive_timeout = t.max(Duration::from_secs(1));
         self
     }
     /// Accept ambiguous HTTP/1 framing that Corvis rejects by default: bare LF line endings in the
@@ -445,6 +451,46 @@ struct ConnState {
     closing: Mutex<Option<(TcpStream, Option<OwnedSemaphorePermit>)>>,
     /// Task waiting on the IO, woken when the last in-flight request ends.
     waker: Mutex<Option<Waker>>,
+    /// Start of the current window of cancelled requests and how many were cancelled in it.
+    cancelled: Mutex<Option<(Instant, u32)>>,
+    /// Signalled when too many requests were cancelled before their response (rapid reset): the
+    /// connection task closes the connection.
+    reset_flood: tokio::sync::Notify,
+}
+
+/// A connection that cancels more than this many requests before their response within
+/// [`CANCEL_WINDOW`] is closed (HTTP/2 rapid reset, CVE-2023-44487).
+const CANCEL_LIMIT: u32 = 500;
+const CANCEL_WINDOW: Duration = Duration::from_secs(10);
+
+impl ConnState {
+    fn record_cancelled(&self) {
+        let now = Instant::now();
+        let mut w = self.cancelled.lock().unwrap_or_else(|e| e.into_inner());
+        let (start, n) = match *w {
+            Some((start, n)) if now.duration_since(start) < CANCEL_WINDOW => (start, n + 1),
+            _ => (now, 1),
+        };
+        *w = Some((start, n));
+        if n > CANCEL_LIMIT {
+            self.no_linger.store(true, Ordering::SeqCst);
+            self.reset_flood.notify_one();
+        }
+    }
+}
+
+/// Counts a request as cancelled when its handler future is dropped before producing a response.
+struct CancelWatch {
+    state: Arc<ConnState>,
+    done: bool,
+}
+
+impl Drop for CancelWatch {
+    fn drop(&mut self) {
+        if !self.done {
+            self.state.record_cancelled();
+        }
+    }
 }
 
 /// Keeps a request in flight until its response body is dropped (fully written or aborted).
@@ -582,7 +628,14 @@ fn is_hyper_timeout(err: &(dyn std::error::Error + 'static)) -> bool {
 /// server is closing it to punish the peer (an idle timeout of this server, hyper's header read
 /// timeout, refused h2c), the connection was upgraded, or an upgrade listener destroyed the socket.
 async fn finish_connection(state: Arc<ConnState>, conn: impl Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>) {
-    let result = conn.await;
+    let mut conn = Box::pin(conn);
+    let result = tokio::select! {
+        r = &mut conn => r,
+        // Rapid reset: dropping the connection closes the socket without a drain.
+        _ = state.reset_flood.notified() => Ok(()),
+    };
+    // Dropping the connection hands its socket to `state.closing` (see `TimedIo::drop`).
+    drop(conn);
     let punish = state.no_linger.load(Ordering::SeqCst)
         || state.destroyed.load(Ordering::SeqCst)
         || state.upgraded.load(Ordering::SeqCst)
@@ -875,6 +928,7 @@ pub(crate) async fn serve(
     let options = Arc::new(options);
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
     let builder = connection_builder(&options);
+    let stream_cap = options.http2_max_concurrent_streams.max(1) as usize;
     let permits = options.max_connections.map(|n| Arc::new(tokio::sync::Semaphore::new(n.max(1))));
     tokio::pin!(shutdown);
     loop {
@@ -897,12 +951,21 @@ pub(crate) async fn serve(
                 let io = TimedIo::new(stream, permit, state.clone(), &options);
                 let shared = shared.clone();
                 let opts = options.clone();
+                let handlers = Arc::new(tokio::sync::Semaphore::new(stream_cap));
                 let service = hyper::service::service_fn(move |req| {
                     let guard = InflightGuard::new(state.clone());
+                    let watch = CancelWatch { state: state.clone(), done: false };
+                    let handlers = handlers.clone();
                     let shared = shared.clone();
                     let opts = opts.clone();
                     async move {
-                        let resp = match handle(shared, req, remote, &opts).await {
+                        // Streams reset and replaced faster than their handlers stop would otherwise run more
+                        // handlers than the stream cap; the permit lives until this future is dropped.
+                        let _permit = handlers.acquire_owned().await;
+                        let mut watch = watch;
+                        let resp = handle(shared, req, remote, &opts).await;
+                        watch.done = true;
+                        let resp = match resp {
                             Ok(r) => r,
                             Err(e) => {
                                 guard.0.destroyed.store(true, Ordering::SeqCst);

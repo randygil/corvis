@@ -68,8 +68,14 @@ These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 o
   long stream keeps the connection alive. `request_timeout` applies to the body of each stream on its own: a stalled
   `POST` is answered `408` without affecting the other streams.
 - `http2_keep_alive_interval` (off by default) sends a PING every interval, and `http2_keep_alive_timeout` closes the
-  connection when a PING is not acknowledged in time. Set it with SSE or other long streams over HTTP/2, where a dead
-  peer would otherwise never be noticed.
+  connection when a PING is not acknowledged in time (minimum 1 s; a zero interval means no PINGs). Set it with SSE or
+  other long streams over HTTP/2, where a peer that stopped answering would otherwise never be noticed.
+- A client that resets streams and opens new ones faster than their handlers stop never gets more handlers running at
+  once than `http2_max_concurrent_streams`, and a connection that cancels more than 500 requests before their response
+  within 10 s is closed (rapid reset).
+- Known limitation ([#157](https://github.com/randygil/corvis/issues/157)): a live peer that stops reading holds its
+  connection. While writing to the client is blocked, the PING timeout and the idle timeouts do not fire; the PING
+  keep-alive detects peers that stopped answering, not peers that stopped reading.
 
 ## Request bodies
 
