@@ -168,3 +168,21 @@ See proposal.md for motivation; the behavior is in the two spec deltas. Current 
   and a test covers it.
 - Task 5.5 (corvis-parity) is left to the maintainer's session as instructed. `corvis-orm` tests were not run (asked
   to exclude them).
+
+## Security review follow-up (2026-11-09)
+
+- Framing headers (low): `set_response_header` returns false for `content-length`, `transfer-encoding`, `connection`,
+  `keep-alive`, `proxy-connection`, `te`, `trailer` and `upgrade`. Defense in depth in `server::into_hyper`: when the
+  body size is known (not HEAD) and a `Content-Length` header is missing, unparsable or different, the real length
+  replaces it, so a handler header cannot split a keep-alive connection either. Tests: a unit test in `server.rs` and
+  `framing_headers_are_refused` in `response_headers.rs`.
+- Content type (low): an enhancer `Content-Type` is skipped whenever the response has a body (JSON, text, HTML, bytes,
+  stream), so an explicit type such as `image/png` is never retyped; it is also never copied into a `Res`. It applies
+  only to responses without a body. Test: `an_enhancer_content_type_does_not_retype_a_body`.
+- Panic (low): values are validated up front with the rule of `Res` (`0x09 | 0x20..=0x7e | 0x80..=0xff`) and stored as
+  bytes; `Res` gets them through a new non-panicking `Res::set_header_value`; `run_pipeline` copies the `HeaderValue`
+  instead of `to_str()`, so Latin-1 values are kept. Tests: a non-Latin-1 value returns false (also with a `Res`
+  present, from an interceptor, `GET /h/res-elapsed/%E2%82%AC`) and a Latin-1 value reaches `#[res]` routes.
+- Cap (info): at most 128 distinct names per request; beyond it `set_response_header` returns false (replacing a
+  recorded name still works). Documented in `docs/guards.md` and `docs/es/guards.md`. Test:
+  `at_most_128_distinct_names_are_recorded`.

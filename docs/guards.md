@@ -227,7 +227,7 @@ The check covers controller routes and gateway message handlers. These HTTP surf
 
 ## Setting response headers
 
-A guard has no response to write to, but it can record headers with `ctx.switch_to_http().set_response_header(name, value)`. It returns `false` and records nothing when the name or value is not a valid header (a value with CR or LF included) and in a WebSocket context.
+A guard has no response to write to, but it can record headers with `ctx.switch_to_http().set_response_header(name, value)`. It returns `false` and records nothing when the name or value is not a valid header (values allow tab, visible ASCII and U+0080..U+00FF; CR and LF are refused), for the framing headers the framework owns (`Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Upgrade`), once 128 distinct names are recorded for the request, and in a WebSocket context. A `Content-Type` set this way only applies to a response without a body: JSON, text, bytes and streams keep their own type.
 
 ```rust
 ctx.switch_to_http().set_response_header("X-Trace-Id", "abc123");

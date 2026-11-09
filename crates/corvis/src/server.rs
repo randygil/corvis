@@ -174,6 +174,15 @@ pub(crate) fn into_hyper(resp: Response, head: bool) -> hyper::Response<ResBody>
             headers.insert(http::header::CONTENT_LENGTH, http::HeaderValue::from(len));
         }
     }
+    // A `Content-Length` that disagrees with a body of known size would make the peer read the extra bytes as a
+    // second response: the real length wins. (HEAD keeps the length it was given, as Node does.)
+    if !head
+        && let Some(declared) = headers.get(http::header::CONTENT_LENGTH)
+        && let Some(len) = hyper::body::Body::size_hint(&body).exact()
+        && declared.to_str().ok().and_then(|d| d.trim().parse::<u64>().ok()) != Some(len)
+    {
+        headers.insert(http::header::CONTENT_LENGTH, http::HeaderValue::from(len));
+    }
     if let Some(h) = builder.headers_mut() {
         *h = headers;
     }
@@ -894,6 +903,18 @@ mod tests {
             h.insert(http::header::HeaderName::from_bytes(k.as_bytes()).unwrap(), v.parse().unwrap());
         }
         h
+    }
+
+    /// A wrong `Content-Length` set by a handler must not frame a second response on a keep-alive connection.
+    #[test]
+    fn content_length_always_matches_a_body_of_known_size() {
+        let resp = Response::bytes(vec![b'x'; 20], "image/png").with_header("Content-Length", "5");
+        let out = into_hyper(resp, false);
+        assert_eq!(out.headers().get("content-length").unwrap(), "20");
+        let resp = Response::bytes(vec![b'x'; 20], "image/png").with_header("Content-Length", "20");
+        assert_eq!(into_hyper(resp, false).headers().get("content-length").unwrap(), "20");
+        let resp = Response::bytes(vec![b'x'; 20], "image/png").with_header("Content-Length", "junk");
+        assert_eq!(into_hyper(resp, false).headers().get("content-length").unwrap(), "20");
     }
 
     #[test]
