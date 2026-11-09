@@ -115,10 +115,13 @@ impl ServerOptions {
     /// keep-alive connections), and it does not apply to upgraded connections (WebSockets).
     ///
     /// What it does not bound: how little a client may read to keep a connection. A client needs to take about
-    /// 16 KiB (one HTTP/2 frame) from some stream each period over HTTP/2, and about 64 KiB each period over HTTP/1
-    /// on a connection with large kernel buffers (the server notices progress when the operating system reports
-    /// the socket writable); a client that resets and reopens HTTP/2 streams needs to read nothing at all. Nor does
-    /// it bound the response bytes held for such clients: see
+    /// 16 KiB (one HTTP/2 frame) from some stream each period over HTTP/2. Over HTTP/1 the server notices progress
+    /// when the operating system reports the socket writable: on Linux the server sets `TCP_NOTSENT_LOWAT` to
+    /// 64 KiB on its sockets while this timeout is on, so a client that reads steadily is seen when it takes about
+    /// 32 KiB per period (the kernel reports the socket writable at half the mark); on Windows about 64 KiB per period were needed on a loopback connection; on other platforms (macOS,
+    /// the BSDs) it depends on the autotuned send buffer, which can be several MiB. A client that resets and
+    /// reopens HTTP/2 streams needs to read nothing at all. Nor does it bound the response bytes held for such
+    /// clients: see
     /// [#163](https://github.com/randygil/corvis/issues/163), and use
     /// [`max_connections`](Self::max_connections) meanwhile.
     ///
@@ -1381,6 +1384,31 @@ impl AsyncWrite for TimedIo {
     }
 }
 
+/// Unsent bytes a connection may hold in the kernel before its socket stops being reported writable
+/// (`TCP_NOTSENT_LOWAT`), when `send_timeout` is on.
+///
+/// Linux reports a TCP socket writable only when the free part of the send buffer reaches half of what is queued, and
+/// autotuning grows that buffer to several MiB: a client that reads slowly but steadily frees space the server cannot
+/// see for many seconds, and the send timeout would cut it. With a low-water mark the socket is writable as soon as
+/// the unsent part falls under half of it (`tcp_poll` asks `tcp_stream_memory_free` with a wake-up margin of one
+/// shift), whatever the size of the buffer, so progress shows in steps of about half the mark.
+/// HTTP/2 uses the same socket: its flow control bounds what h2 writes, but a client with large windows can still
+/// fill the kernel buffers, so it gets the same limit. Where the socket option is not available (see
+/// [`limit_unsent_bytes`]) the granularity is whatever the platform's buffers give.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const NOTSENT_LOWAT: u32 = 64 * 1024;
+
+/// Sets `TCP_NOTSENT_LOWAT` on an accepted socket (Linux and Android). Failures are ignored: the option only makes
+/// the send timeout notice progress sooner. Not available through `socket2` on macOS and the BSDs, nor on Windows,
+/// where the platform's own buffers decide how soon progress is seen.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn limit_unsent_bytes(stream: &TcpStream) {
+    let _ = socket2::SockRef::from(stream).set_tcp_notsent_lowat(NOTSENT_LOWAT);
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn limit_unsent_bytes(_stream: &TcpStream) {}
+
 /// Whether hyper can add `t` to an `Instant` (it panics otherwise): a longer timeout is the same as none.
 fn representable(t: Duration) -> bool {
     std::time::Instant::now().checked_add(t).is_some()
@@ -1441,6 +1469,9 @@ pub(crate) async fn serve(
                     Err(_) => continue,
                 };
                 let _ = stream.set_nodelay(true);
+                if options.send_timeout.is_some() {
+                    limit_unsent_bytes(&stream);
+                }
                 let state = Arc::new(ConnState { cancel_ceiling: options.http2_max_cancelled_streams, ..ConnState::default() });
                 let conn_state = state.clone();
                 let io = TimedIo::new(stream, permit, state.clone(), &options);
@@ -1673,6 +1704,17 @@ mod tests {
         assert!(futures::poll!(watch.as_mut()).is_pending(), "waiting for the application is not a stall");
         let mut forever = Box::pin(watchdog(&state, Some(Duration::MAX)));
         assert!(futures::poll!(forever.as_mut()).is_pending());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn accepted_sockets_get_a_low_water_mark_for_unsent_data() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (accepted, _) = listener.accept().await.unwrap();
+        limit_unsent_bytes(&accepted);
+        assert_eq!(socket2::SockRef::from(&accepted).tcp_notsent_lowat().unwrap(), NOTSENT_LOWAT);
+        drop(client);
     }
 
     #[test]

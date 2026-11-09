@@ -80,9 +80,12 @@ by `max_buffered_amount`). A value too long to add to a clock reading (`Duration
 memory held for such a client:
 
 - Over HTTP/2 a client has to take about 16 KiB (one frame) from some stream every `send_timeout`.
-- Over HTTP/1 it has to take about 64 KiB every `send_timeout` on a connection with large kernel buffers: the server
-  notices progress when the operating system reports the socket writable, which for a very slow reader happens in
-  steps.
+- Over HTTP/1 the server notices progress when the operating system reports the socket writable. On Linux it sets
+  `TCP_NOTSENT_LOWAT` to 64 KiB on its sockets while `send_timeout` is on, so a client that reads steadily is seen
+  when it takes about 32 KiB per period (without it, Linux reports the socket writable only when about half of a send buffer
+  that autotuning grows to several MiB is free, and a slow reader would be cut while reading). On Windows about 64 KiB
+  per period were needed on a loopback connection. On macOS and the BSDs the option is not set and the granularity is
+  that of the autotuned buffer, which can be several MiB: set a larger `send_timeout` if you serve slow clients there.
 - A client that resets streams and opens new ones needs to read nothing at all: every new response counts as
   movement. The rapid-reset limits bound how long that can go on, not what it holds meanwhile.
 

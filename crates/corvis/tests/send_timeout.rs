@@ -407,24 +407,42 @@ async fn the_zero_window_keeps_its_slot_without_a_send_timeout() {
 
 // ---- Live clients ----
 
-/// A client that reads what its socket holds (up to 128 KiB) every 400 ms for five send timeouts keeps its (endless)
-/// response, and can then read at full speed. The server sees progress when the operating system reports its socket
-/// writable, which for a slower reader (4 KiB every 400 ms) takes longer than one second on a loopback connection;
-/// the default of 60 s is meant for such readers, not this test's 1 s.
+/// Bytes the HTTP/1 live reader takes every [`SLOW_PERIOD`], the rate each platform guarantees with a 1 s send timeout.
+/// The server sees progress when the operating system reports its socket writable:
+/// - Linux and Android: the server sets `TCP_NOTSENT_LOWAT` (64 KiB), so the socket is writable as soon as the unsent
+///   data falls under half of it, whatever the autotuned buffer: a reader that takes about 32 KiB per period is seen;
+///   256 KiB leaves a margin of eight. Without the option Linux waits until about half of a send buffer of several MiB is free (the CI failure
+///   that introduced the option).
+/// - Windows loopback: measured, the socket became writable after tens of KiB were read; 64 KiB per period held, 4 KiB
+///   per period did not. 256 KiB leaves a margin.
+/// - Other platforms (macOS, the BSDs): the option is not set and the autotuned buffer decides, so the test only
+///   claims a rate that empties a buffer of several MiB within a period.
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+const SLOW_READ: usize = 256 * 1024;
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+const SLOW_READ: usize = 8 * 1024 * 1024;
+const SLOW_PERIOD: Duration = Duration::from_millis(400);
+
+/// A client that takes exactly [`SLOW_READ`] bytes every [`SLOW_PERIOD`] for five send timeouts keeps its (endless)
+/// response, and can then read at full speed. `read_exact` makes the rate independent of how much the client's own
+/// socket buffers hold per `read`.
 #[corvis::test]
 async fn http1_slow_but_live_reader_is_not_cut() {
+    eprintln!("slow reader: {} KiB every {SLOW_PERIOD:?}", SLOW_READ / 1024);
     let addr = serve(live(SEND_TIMEOUT)).await;
     let mut s = tiny_client(addr).await;
     s.write_all(b"GET /t/forever HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
     let (_head, first) = read_head(&mut s).await;
     let mut got = first.len();
     let started = Instant::now();
-    let mut buf = vec![0u8; 128 * 1024];
+    let mut buf = vec![0u8; SLOW_READ];
     while started.elapsed() < Duration::from_secs(5) {
-        let n = s.read(&mut buf).await.unwrap();
-        assert!(n > 0, "the server ended the response after {got} bytes");
-        got += n;
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        let read = tokio::time::timeout(Duration::from_secs(10), s.read_exact(&mut buf)).await.expect("the next piece in time");
+        if let Err(e) = read {
+            panic!("the server ended the response after {got} bytes ({e}), {:?} in", started.elapsed());
+        }
+        got += buf.len();
+        tokio::time::sleep(SLOW_PERIOD).await;
     }
     let fast = got + 64 * 1024 * 1024;
     let mut chunk = vec![0u8; 256 * 1024];

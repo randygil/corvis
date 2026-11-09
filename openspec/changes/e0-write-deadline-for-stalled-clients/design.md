@@ -286,3 +286,30 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
 - The outgoing scanner reuses `H2Frames`, which now returns the kinds of frame that own the bytes that pass (a frame
   header counts once complete, then its payload bytes). Mutation check: counting every write as response progress
   makes the three idle-connection tests fail.
+
+### Implementation notes, Linux CI (`http1_slow_but_live_reader_is_not_cut`)
+
+- Failure: on ubuntu-latest a reader taking 128 KiB per 400 ms was cut by a 1 s timeout after 1.79 MB. Cause: for a TCP
+  socket `tcp_poll` reports `EPOLLOUT` through `__sk_stream_is_writeable(sk, 1)`, which needs
+  `sk_stream_wspace >= sk_stream_min_wspace` (free space of at least half of what is queued) and
+  `tcp_stream_memory_free`. Autotuning had grown the send buffer to MiB and the server had filled it, so the socket was
+  writable again only after about half of it drained: no visible progress for many seconds although the client read
+  steadily. With the 60 s default a 30 KB/s client draining a 2 MB buffer would have been cut while reading.
+- Decision: while `send_timeout` is on, the server sets `TCP_NOTSENT_LOWAT` to 64 KiB on accepted sockets (Linux and
+  Android, through `socket2` with the `all` feature, because the crate forbids `unsafe`). `tcp_sendmsg` then stops
+  copying once the unsent bytes reach the mark, so the queue holds at most the receiver's window plus the mark and the
+  half-of-queue rule is satisfied at once; `tcp_stream_memory_free` with the wake-up shift (`tcp_poll` passes `wake = 1`)
+  reports writable when the unsent bytes fall under half the mark (32 KiB). Progress therefore shows in steps of about
+  32 KiB, independent of buffer autotuning. 64 KiB rather than 128 KiB because of that halving.
+- HTTP/2 shares the socket and gets the option too. Its flow control bounds what h2 writes (and the watchdog measures
+  window progress, not the socket), but a client with large windows (hyper's client accepts 8 MiB) can still fill the
+  kernel buffers and trip the write deadline in the same way.
+- SIOCOUTQ (unsent plus unacked bytes) in the watchdog was not needed and was not added: the low-water mark restores
+  writability as the progress signal, which keeps one mechanism for all platforms and avoids a Linux-only ioctl.
+- macOS: `socket2` 0.6 exposes the option on Linux and Android only, so macOS and the BSDs keep the platform's autotuned
+  buffers (granularity possibly MiB; documented). Windows keeps the measured behavior, about 64 KiB per period.
+- The test now uses `read_exact` of a per-platform piece every 400 ms, so its rate does not depend on how much the
+  client socket holds per `read`: 256 KiB per period on Linux, Android and Windows (guaranteed there: about 32 KiB on
+  Linux, 64 KiB measured on Windows loopback), 8 MiB per period elsewhere. It prints the rate it exercises. A unit test
+  checks that accepted sockets carry the mark (Linux and Android). Nothing was run on Linux from this branch: the
+  reasoning above is from the kernel semantics, so the Linux CI run is the check.
