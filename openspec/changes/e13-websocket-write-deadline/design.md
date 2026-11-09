@@ -151,6 +151,33 @@ None that needs a maintainer: reuse of `send_timeout`, destroying the connection
   frame (local `1006`), and count only bytes the socket accepts as progress.
 - Archive after `e0-write-deadline-for-stalled-clients` (#157), since it modifies `http/send-timeout`.
 
+## Review notes, security round (2026-11-09)
+
+1. **Panic in `ws.rs::run` (high).** The writer arm consumed the `JoinHandle` on `WriteEnd::Closed`, and the
+   protocol-error branch awaited it again. Fixed with the same `if !writer_done` guard the gateway loop has. Regression
+   test `an_invalid_frame_during_the_closing_handshake_closes_the_plain_socket_once`.
+2. **Pongs bypass `max_buffered_amount` (high).** Decision: read backpressure, not a cap on `max_write_buffer_size`
+   (which would fail large data messages). `TimedIo::read_paused`: on an upgraded connection, while the last write is
+   blocked, `poll_read` returns `Pending` instead of reading. It probes `poll_write_ready` of the socket, because the
+   blocked write may have been issued by the read task itself (a pong flushed on the read path), in which case nobody
+   else would retry it; when the socket is writable again it clears the flag and wakes the writer task. A write that
+   makes progress wakes the parked reader (`write_progress`). The send timeout is still polled from the parked read,
+   so a stall ends the connection. Pending pongs are bounded by one read chunk plus what the kernel buffers hold.
+   Tests: `a_ping_flood_without_reading_is_bounded_on_a_gateway` and `..._on_a_plain_websocket` (a raw client sends
+   masked pings until its socket stops accepting bytes; with the pause the server takes far less than 24 MiB; with the
+   pause disabled the same tests failed with 37-47 MiB accepted). The false comment about "one pending pong at most"
+   in `websockets.rs` was replaced.
+3. **`Failed(Other)` ended the plain connection (low).** `write_loop` now reports `WriteEnd::Refused` for errors that
+   are not socket errors (for example a send after the closing handshake began). `ws.rs::run` ends at once only on
+   socket errors (`Failed`); on `Refused` it behaves as on `Closed` (keeps reading until the peer closes or
+   `close_timeout`), so a pending close reply is flushed. The gateway loop only breaks on `Failed`, as before.
+
+Reviewer PoCs, run from the review folder against this branch (release build):
+- `panic`: no panic; the server logs `on_close(1006)` once and `on_close called: true`.
+- `e13poc 15 0 60` (ping flood, no reading, send_timeout 60 s): no ping batch completed, server heap delta 0 MiB
+  throughout (was +254 MiB in 15 s).
+- `e13poc 13 1 10` (trickle reader, send_timeout 10 s): 2 MiB sent in 13 s, heap delta 0 MiB (was +508 MiB).
+
 ## Implementation notes
 
 - `write_loop` returns `WriteEnd::{Closed, Failed(io::ErrorKind)}`; the kind is taken from `tungstenite::Error::Io`, any

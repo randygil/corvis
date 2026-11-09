@@ -902,6 +902,10 @@ struct TimedIo {
     write_sleep: Option<Pin<Box<Sleep>>>,
     /// The last write was pending (a flush that completes does not mean the socket accepts bytes).
     write_blocked: bool,
+    /// Upgraded connections stop reading while a write is blocked (see `read_paused`): the task parked in
+    /// `poll_read`, and the task whose write is pending.
+    read_waker: Option<Waker>,
+    write_waker: Option<Waker>,
     /// The HTTP/1 framing check; `None` with `insecure_http_parser(true)`.
     framing: Option<Box<h1_framing::Framing>>,
     /// Bytes the check released that did not fit in hyper's buffer yet, served before the socket.
@@ -1078,6 +1082,8 @@ impl TimedIo {
             write_stalled_since: None,
             write_sleep: None,
             write_blocked: false,
+            read_waker: None,
+            write_waker: None,
             framing: (!options.insecure_http_parser).then(|| Box::new(h1_framing::Framing::new(options.max_header_size.max(8 * 1024)))),
             queue: Vec::new(),
             queue_pos: 0,
@@ -1155,6 +1161,9 @@ impl TimedIo {
     fn write_progress(&mut self, written: &[io::IoSlice<'_>], n: usize) {
         self.write_stalled_since = None;
         self.write_blocked = false;
+        if let Some(w) = self.read_waker.take() {
+            w.wake();
+        }
         self.sync();
         // A response still being flushed is progress, not idleness. Over HTTP/2 only the frames of a response count:
         // PONGs, SETTINGS acknowledgements and the like would keep an idle connection open for ever.
@@ -1313,9 +1322,44 @@ impl TimedIo {
     }
 }
 
+impl TimedIo {
+    /// Read backpressure of upgraded connections: while a write is blocked the peer is not read, so frames that
+    /// need a reply (WebSocket pings answered with pongs) cannot pile up in the protocol's write buffer behind a
+    /// peer that does not read; at most one read chunk is pending. `Some` is the result of the read poll while
+    /// paused, `None` means read normally.
+    fn read_paused(&mut self, cx: &mut Context<'_>) -> Option<Poll<io::Result<()>>> {
+        if !self.write_blocked || !self.state.upgraded.load(Ordering::SeqCst) {
+            return None;
+        }
+        // The blocked write may have been issued from this very task (a pong flushed by the read path), in which
+        // case nobody else will retry it: look at the socket, and hand the retry to the writer if it is another
+        // task.
+        match self.io.as_ref().expect("socket is present until drop").poll_write_ready(cx) {
+            Poll::Ready(Ok(())) => {
+                self.write_blocked = false;
+                if let Some(w) = self.write_waker.take() {
+                    w.wake();
+                }
+                None
+            }
+            Poll::Ready(Err(e)) => Some(Poll::Ready(Err(e))),
+            Poll::Pending => {
+                self.read_waker = Some(cx.waker().clone());
+                match self.poll_write_deadline(cx) {
+                    Poll::Ready(Err(e)) => Some(Poll::Ready(Err(e))),
+                    _ => Some(Poll::Pending),
+                }
+            }
+        }
+    }
+}
+
 impl AsyncRead for TimedIo {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let this = &mut *self;
+        if let Some(r) = this.read_paused(cx) {
+            return r;
+        }
         if this.framing.is_some() {
             return this.poll_read_checked(cx, buf);
         }
@@ -1345,6 +1389,7 @@ impl AsyncWrite for TimedIo {
             }
             Poll::Pending => {
                 this.write_blocked = true;
+                this.write_waker = Some(cx.waker().clone());
                 this.poll_write_deadline(cx).map(|r| r.map(|()| 0))
             }
             other => other,
@@ -1377,6 +1422,7 @@ impl AsyncWrite for TimedIo {
             }
             Poll::Pending => {
                 this.write_blocked = true;
+                this.write_waker = Some(cx.waker().clone());
                 this.poll_write_deadline(cx).map(|r| r.map(|()| 0))
             }
             other => other,

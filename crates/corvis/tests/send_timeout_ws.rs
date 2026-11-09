@@ -21,6 +21,7 @@ const PAYLOAD: usize = 128 * 1024;
 
 static DISCONNECTS: AtomicUsize = AtomicUsize::new(0);
 static CLIENTS_AT_DISCONNECT: AtomicUsize = AtomicUsize::new(usize::MAX);
+static RAW_CLOSES: AtomicUsize = AtomicUsize::new(0);
 static RAW_CLOSE: Mutex<Option<u16>> = Mutex::new(None);
 static RAW_ACK: Mutex<Option<bool>> = Mutex::new(None);
 /// The tests share the counters above: they run one at a time.
@@ -94,6 +95,15 @@ impl OnApplicationBootstrap for RawService {
         let server = self.adapter_host.http_adapter().get_http_server();
         let wss = WebSocketServer::new(WebSocketServerOptions::default());
         server.on_upgrade(move |req| {
+            if req.pathname() == "/rawclose" {
+                wss.handle_upgrade(&req, |ws| {
+                    ws.on_close(|_, _| {
+                        RAW_CLOSES.fetch_add(1, Ordering::SeqCst);
+                    });
+                    ws.close(Some(1000), "").unwrap();
+                });
+                return;
+            }
             if req.pathname() != "/raw" {
                 return;
             }
@@ -293,4 +303,81 @@ async fn a_plain_websocket_that_never_reads_is_closed_with_1006() {
     assert_eq!(*RAW_CLOSE.lock().unwrap(), Some(1006));
     wait_for("send_and_wait", Duration::from_secs(2), || RAW_ACK.lock().unwrap().is_some()).await;
     assert_eq!(*RAW_ACK.lock().unwrap(), Some(false));
+}
+
+/// A client on a raw socket (4 KiB receive buffer) that completed the handshake and reads nothing else.
+async fn raw_client(addr: SocketAddr, path: &str) -> TcpStream {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let socket = TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut stream = socket.connect(addr).await.unwrap();
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 101"), "{}", String::from_utf8_lossy(&head));
+    stream
+}
+
+/// Sends masked empty pings until the socket stops accepting bytes for half a second. Returns the bytes accepted.
+async fn ping_until_blocked(stream: &TcpStream, cap: usize) -> usize {
+    const PING: [u8; 6] = [0x89, 0x80, 0, 0, 0, 0];
+    let batch: Vec<u8> = PING.iter().copied().cycle().take(PING.len() * 10_000).collect();
+    let mut sent = 0usize;
+    while sent < cap {
+        match tokio::time::timeout(Duration::from_millis(500), stream.writable()).await {
+            Err(_) => break,
+            Ok(r) => r.unwrap(),
+        }
+        match stream.try_write(&batch) {
+            Ok(n) => sent += n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(_) => break,
+        }
+    }
+    sent
+}
+
+/// Bytes of pings a peer that never reads gets the server to take before the server stops reading.
+const PING_BUDGET: usize = 24 * 1024 * 1024;
+
+#[corvis::test]
+async fn a_ping_flood_without_reading_is_bounded_on_a_gateway() {
+    let _g = SERIAL.lock().await;
+    let (_app, addr) = start(ServerOptions::new().send_timeout(Duration::from_secs(30))).await;
+    let stream = raw_client(addr, "/feed").await;
+    let sent = ping_until_blocked(&stream, 4 * PING_BUDGET).await;
+    assert!(sent < PING_BUDGET, "the server kept reading pings: {sent} bytes accepted");
+}
+
+#[corvis::test]
+async fn a_ping_flood_without_reading_is_bounded_on_a_plain_websocket() {
+    let _g = SERIAL.lock().await;
+    let (_app, addr) = start(ServerOptions::new().send_timeout(Duration::from_secs(30))).await;
+    let stream = raw_client(addr, "/raw").await;
+    let sent = ping_until_blocked(&stream, 4 * PING_BUDGET).await;
+    assert!(sent < PING_BUDGET, "the server kept reading pings: {sent} bytes accepted");
+}
+
+/// The server starts the closing handshake; the peer answers with an invalid frame instead of a close reply. The
+/// close event must run exactly once (the writer has already finished: it must not be polled again).
+#[corvis::test]
+async fn an_invalid_frame_during_the_closing_handshake_closes_the_plain_socket_once() {
+    use tokio::io::AsyncWriteExt;
+    let _g = SERIAL.lock().await;
+    RAW_CLOSES.store(0, Ordering::SeqCst);
+    let (_app, addr) = start(timeout_1s()).await;
+    let mut stream = raw_client(addr, "/rawclose").await;
+    // Let the close frame go out and the writer finish before the invalid frame arrives.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    stream.write_all(&[0x81, 0x82, 0, 0, 0, 0, 0xff, 0xfe]).await.unwrap();
+    wait_for("on_close", Duration::from_secs(5), || RAW_CLOSES.load(Ordering::SeqCst) >= 1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(RAW_CLOSES.load(Ordering::SeqCst), 1);
 }

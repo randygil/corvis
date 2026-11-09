@@ -1034,7 +1034,8 @@ where
             }
         };
         let Some(msg) = msg else { break };
-        // Pings are answered by tungstenite itself (one pending pong at most).
+        // Pings are answered by tungstenite itself. While a write is blocked the upgraded socket is not read (see
+        // `TimedIo::read_paused`), so pongs cannot pile up behind a peer that does not read.
         let text = match msg {
             Ok(Message::Text(t)) => t.to_string(),
             Ok(Message::Binary(b)) => String::from_utf8_lossy(&b).into_owned(),

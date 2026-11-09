@@ -298,6 +298,8 @@ because nothing can be delivered to that peer: `handle_disconnect` runs, the cli
   on idle connections, send your own heartbeat.
 - The same applies when a closing handshake is waiting for a peer that does not read: the connection ends after
   `send_timeout`, not after `close_timeout`.
+- While a write is blocked the server stops reading from that client, so a flood of pings cannot make it queue
+  unbounded pongs.
 - `ServerOptions::send_timeout(None)` turns it off; the queue is then bounded only by `max_buffered_amount`.
 
 The `ws` package has no such limit: it keeps a peer that never reads. Corvis diverges on purpose (the memory and the

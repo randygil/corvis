@@ -182,8 +182,10 @@ impl OutQueue {
 pub(crate) enum WriteEnd {
     /// A close frame was written or the queue was shut down.
     Closed,
-    /// A write failed (a peer that accepts nothing hits the server's `send_timeout` as `TimedOut`).
+    /// A write failed at the socket (a peer that accepts nothing hits the server's `send_timeout` as `TimedOut`).
     Failed(std::io::ErrorKind),
+    /// The protocol refused a frame (for instance a send after the closing handshake began); the socket is fine.
+    Refused,
 }
 
 /// Writes the frames of `queue` to `sink` until a close frame is written, a write fails or
@@ -199,13 +201,17 @@ where
         let kind = match &result {
             Ok(()) => None,
             Err(tokio_tungstenite::tungstenite::Error::Io(e)) => Some(e.kind()),
-            Err(_) => Some(std::io::ErrorKind::Other),
+            Err(_) => None,
         };
+        let refused = result.is_err() && kind.is_none();
         if let Some(a) = ack {
             let _ = a.send(result.map_err(|e| WsError::new(e.to_string(), None)));
         }
         if let Some(kind) = kind {
             return WriteEnd::Failed(kind);
+        }
+        if refused {
+            return WriteEnd::Refused;
         }
         if close {
             break;
@@ -1001,7 +1007,9 @@ async fn run(ws: WebSocket, stream: WebSocketStream<UpgradedIo>, mut control: mp
                     ws.emit_error(&err);
                     let frame = CloseFrame { code: CloseCode::from(code), reason: Cow::Borrowed("") };
                     ws.inner.queue.close(Some(frame), true);
-                    writer_done = tokio::time::timeout(Duration::from_secs(1), &mut writer).await.is_ok();
+                    if !writer_done {
+                        writer_done = tokio::time::timeout(Duration::from_secs(1), &mut writer).await.is_ok();
+                    }
                     break;
                 }
             },
@@ -1026,8 +1034,10 @@ async fn run(ws: WebSocket, stream: WebSocketStream<UpgradedIo>, mut control: mp
                         }
                         break;
                     }
-                    Ok(WriteEnd::Closed) if received.is_some() => break,
-                    Ok(WriteEnd::Closed) => {}
+                    // The socket is fine: a pending close reply still goes out through the read half, so keep
+                    // reading until the peer closes or `close_timeout` passes.
+                    Ok(WriteEnd::Closed | WriteEnd::Refused) if received.is_some() => break,
+                    Ok(WriteEnd::Closed | WriteEnd::Refused) => {}
                     Err(_) => break,
                 }
             }

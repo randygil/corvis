@@ -55,6 +55,16 @@ Start after #157 (`e0-write-deadline-for-stalled-clients`) is merged into `main`
 - [ ] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences
 
+## 5b. Security review round (2026-11-09)
+
+- [x] 5b.1 `ws.rs::run`: do not poll the writer `JoinHandle` again after the writer arm consumed it (guard with
+  `writer_done`); regression test for a protocol error during the closing handshake (on_close once, no panic)
+- [x] 5b.2 Read backpressure on upgraded connections: `TimedIo` stops reading while a write is blocked, so pongs cannot
+  pile up in tungstenite's write buffer; tests for a ping flood without reading, gateway and plain `WebSocketServer`
+- [x] 5b.3 `ws.rs::run`: a refused frame (not a socket failure) no longer ends the connection; only socket errors do
+  (`WriteEnd::Refused`)
+- [x] 5b.4 Run the reviewer's PoCs against the branch and record the results in design.md
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review (after #157's change is archived).
