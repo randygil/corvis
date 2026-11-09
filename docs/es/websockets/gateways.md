@@ -114,6 +114,13 @@ Cada evento puede tener un solo handler por gateway. Si dos métodos `#[subscrib
 | `#[message_body("id", ParseIntPipe)] id: i64` | Una propiedad pasada por pipes propios del parámetro |
 | `#[payload]` | Sinónimo de `#[message_body]` |
 | `#[connected_socket] client: WsClient` | El cliente que envió el frame |
+| `#[ip] ip: String` | La dirección del cliente del handshake de la conexión, `client.handshake().ip()`: sigue `set_trust_proxy` y es la dirección completa (sin agrupar por prefijo IPv6). No recibe argumentos, no consume el `data` del frame y no se le aplica ningún pipe |
+
+`#[ip]` se puede combinar con los demás parámetros en cualquier orden y se convierte como el `#[ip]` de un controller (`ip: u32` responde con un frame `exception`). Solo está disponible en métodos `#[subscribe_message]`: en métodos `#[on_event]`, `#[cron]`, `#[interval]` y `#[timeout]` es un error de compilación, y en `handle_connection` se lee `client.handshake().ip()`.
+
+::: warning Diferencia con un gateway de Node
+En Node, `@Ip()` en un handler de gateway se resuelve a `null`, porque la fábrica de parámetros de WebSocket solo conoce el socket, el payload y el acuse. Corvis entrega la dirección del handshake, el mismo valor que `client.handshake().ip()`. A diferencia de un controller, `#[ip(Pipe)]` es un error de compilación en un gateway, y los pipes del gateway no se ejecutan sobre él.
+:::
 
 Un parámetro sin atributo se trata como `#[message_body]`. Si el handler no necesita los datos ni el cliente, puede no recibir nada, como `ping` en el ejemplo.
 

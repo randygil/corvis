@@ -713,3 +713,89 @@ async fn handshake_keeps_the_trust_setting_with_a_query_parser() {
     assert_eq!(out["data"]["query"], json!({ "a": { "b": "1" } }));
     app.close().await.unwrap();
 }
+
+// ---- `#[ip]` in gateway handlers ----
+
+#[injectable]
+pub struct CountingPipe {
+    #[default]
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl PipeTransform for CountingPipe {
+    async fn transform(&self, value: Value, _meta: &corvis::ArgumentMetadata) -> Result<Value, HttpException> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(value)
+    }
+}
+
+#[websocket_gateway(path = "/ipg")]
+#[use_pipes(CountingPipe)]
+pub struct IpGateway {
+    #[websocket_server]
+    server: WsServer,
+    pipe: Arc<CountingPipe>,
+}
+
+#[handlers]
+impl IpGateway {
+    #[subscribe_message("echo")]
+    fn echo(&self, #[ip] ip: String, #[message_body("text")] text: String, #[connected_socket] client: WsClient) -> Value {
+        json!({ "ip": ip, "text": text, "same": client.handshake().ip() == ip })
+    }
+
+    #[subscribe_message("only_ip")]
+    fn only_ip(&self, #[ip] ip: String) -> String {
+        ip
+    }
+
+    #[subscribe_message("pipe_calls")]
+    fn pipe_calls(&self) -> usize {
+        self.pipe.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[subscribe_message("bad_ip")]
+    fn bad_ip(&self, #[ip] ip: u32) -> u32 {
+        ip
+    }
+}
+
+#[module(providers = [CountingPipe, IpGateway])]
+pub struct IpModule;
+
+async fn ip_ws(
+    app: &mut CorvisApplication,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    tokio_tungstenite::connect_async(format!("ws://{addr}/ipg")).await.unwrap().0
+}
+
+#[corvis::test]
+async fn ip_parameter_mixes_with_body_and_socket() {
+    let mut app = CorvisFactory::create::<IpModule>().await.unwrap();
+    let mut ws = ip_ws(&mut app).await;
+    let out = ask(&mut ws, json!({ "event": "echo", "data": { "text": "hi" } })).await;
+    assert_eq!(out["data"], json!({ "ip": "127.0.0.1", "text": "hi", "same": true }));
+    app.close().await.unwrap();
+}
+
+#[corvis::test]
+async fn pipes_do_not_run_on_the_ip_parameter() {
+    let mut app = CorvisFactory::create::<IpModule>().await.unwrap();
+    let mut ws = ip_ws(&mut app).await;
+    let out = ask(&mut ws, json!({ "event": "only_ip" })).await;
+    assert_eq!(out["data"], "127.0.0.1");
+    let calls = ask(&mut ws, json!({ "event": "pipe_calls" })).await;
+    assert_eq!(calls["data"], 0);
+    app.close().await.unwrap();
+}
+
+#[corvis::test]
+async fn ip_conversion_error_is_an_exception_frame() {
+    let mut app = CorvisFactory::create::<IpModule>().await.unwrap();
+    let mut ws = ip_ws(&mut app).await;
+    let out = ask(&mut ws, json!({ "event": "bad_ip" })).await;
+    assert_eq!(out["event"], "exception", "{out}");
+    app.close().await.unwrap();
+}

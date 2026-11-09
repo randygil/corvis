@@ -129,3 +129,16 @@ None. The technical choices are recorded above and in the review notes.
 
 - Approved as drafted: the trust-proxy-resolved handshake address, no arguments or pipes, and compile errors on
   methods that have no client.
+
+## Implementation notes
+
+- Task 2.1 asked for a unit test of `ws_ip_arg` (String and `u32` conversions). A `WsClient` cannot be built outside a
+  live connection, so no unit test was written; the integration tests cover both conversions through real sockets
+  (`ip_parameter_mixes_with_body_and_socket`, `ip_conversion_error_is_an_exception_frame`).
+- Code and tests were written together; the "fails to compile" check of tasks 1.x was not run on its own.
+- `#[ip(...)]` with arguments returns its error immediately (like other malformed attributes in the loop) instead of
+  being combined with the block's discarded-attribute errors; `#[ip]` on non-message handlers is combined, as
+  Decision 4 says.
+- Both `compile_fail` doctests were also compiled as plain code to confirm they fail with the intended messages
+  ("`who`: #[ip] takes no arguments in gateway handlers..." and "`on_order` has an #[ip] parameter, but ...").
+- Task 5.5 (corvis-parity) is left for the maintainer's session.
