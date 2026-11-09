@@ -406,7 +406,13 @@
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "Folder of the Corvis repository (the one that contains `crates/corvis-cli`). Used to run the CLI with `cargo run` when it is not installed. Leave empty to detect it from the workspace or from the `corvis = { path = ... }` dependency in `Cargo.toml`."
+          "markdownDescription": "Folder of the Corvis repository (the one that contains `crates/corvis-cli`). Used to run the CLI with `cargo run` when it is not installed. Leave empty to detect it from the workspace or from the `corvis = { path = ... }` dependency in `Cargo.toml`. To make **Corvis: New Project** depend on a local checkout, see `#corvis.new.corvisPath#`."
+        },
+        "corvis.new.corvisPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Optional. Passed as `CORVIS_PATH` to `corvis new` (**Corvis: New Project**), so the generated project depends on a local checkout with `corvis = { path = ... }` instead of a crates.io version. Takes the `crates/corvis` folder of a Corvis checkout, or the repository root (the folder `#corvis.frameworkPath#` holds). Must be absolute; `~` is expanded. Leave empty to use the CLI default (an inherited `CORVIS_PATH` still applies)."
         },
         "corvis.generate.flat": {
           "type": "boolean",

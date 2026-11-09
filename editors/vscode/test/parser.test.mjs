@@ -166,3 +166,37 @@ test('CLI --path and output parsing', () => {
   assert.deepEqual(ch.map((c) => c.kind), ['CREATE', 'UPDATE', 'SKIP']);
   assert.ok(ch[0].file.replace(/\\/g, '/').endsWith('src/users/users_controller.rs'));
 });
+
+test('resolveCorvisPath', () => {
+  const win = process.platform === 'win32';
+  const root = win ? 'C:/src/corvis' : '/src/corvis';
+  const home = win ? 'C:/Users/me' : '/home/me';
+  const norm = (s) => s.replace(/\\/g, '/');
+  const files = new Set([
+    `${root}/crates/corvis/Cargo.toml`,
+    `${root}/crates/corvis-cli/Cargo.toml`,
+    `${home}/src/corvis/crates/corvis/Cargo.toml`,
+    `${home}/src/corvis/crates/corvis-cli/Cargo.toml`,
+    `${root}/empty/placeholder`,
+  ]);
+  const exists = (f) => files.has(norm(f));
+  const resolve = (v) => {
+    const r = paths.resolveCorvisPath(v, home, exists);
+    return r.path === undefined ? r : { ...r, path: norm(r.path) };
+  };
+  assert.deepEqual(resolve(undefined), {});
+  assert.deepEqual(resolve(''), {});
+  assert.deepEqual(resolve('   '), {});
+  assert.deepEqual(resolve(`${root}/crates/corvis`), { path: `${root}/crates/corvis` });
+  assert.deepEqual(resolve(`  ${root}/crates/corvis  `), { path: `${root}/crates/corvis` });
+  assert.deepEqual(resolve(root), { path: `${root}/crates/corvis` });
+  assert.deepEqual(resolve('~/src/corvis'), { path: `${home}/src/corvis/crates/corvis` });
+  const rel = resolve('../corvis/crates/corvis');
+  assert.match(rel.error, /corvis\.new\.corvisPath must be an absolute path/);
+  assert.equal(rel.path, undefined);
+  const none = resolve(`${root}/empty`);
+  assert.match(none.error, /corvis\.new\.corvisPath points at .*empty, which has no Cargo\.toml/);
+  if (win) {
+    assert.deepEqual(resolve('C:\\src\\corvis\\crates\\corvis'), { path: 'C:/src/corvis/crates/corvis' });
+  }
+});

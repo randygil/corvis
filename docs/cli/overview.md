@@ -92,3 +92,5 @@ Corvis is not on crates.io yet, so a project generated with the defaults cannot 
 ## VS Code extension
 
 In `editors/vscode` there is an extension with snippets, the CLI commands in the palette and a route explorer. Its README explains how to install it.
+
+**Corvis: New Project** runs `corvis new`, so the "Until the first release" warning above applies to it. Set the extension setting `corvis.new.corvisPath` to the `crates/corvis` folder of your clone (the repository root is also accepted) and the command runs with `CORVIS_PATH` set to it, so the generated project gets `corvis = { path = "..." }`. The value must be absolute (`~` is expanded) and contain a `Cargo.toml`; otherwise the extension shows an error and does not run the CLI. Only **New Project** gets the variable. With the setting empty the extension changes nothing, and a `CORVIS_PATH` exported in the shell that started VS Code still applies.

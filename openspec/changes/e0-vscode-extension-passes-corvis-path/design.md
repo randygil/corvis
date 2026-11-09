@@ -127,3 +127,10 @@ What the extension does today (`editors/vscode/`):
 2. The path is not derived automatically from a CLI run with `cargo run`.
 3. A "Set Corvis path…" button on the success message is not part of this change.
 4. Public repository text is in English: the new README and CHANGELOG entries are written in English, and the extension README and CHANGELOG are translated to English in this change.
+
+## Implementation notes
+
+- `resolveCorvisPath` keeps its own `~` expansion and root check (`crates/corvis-cli/Cargo.toml`) instead of importing `expandHome` and `isFrameworkRoot`, because `project.ts` imports `vscode`; `paths.ts` stays testable.
+- Manual checks of tasks 2.1 and 2.3 in an Extension Development Host were not run (unattended); the helper is covered by unit tests and the TypeScript build is clean.
+- `cargo test --workspace` (task 4.3) was not run: the change has no Rust code. `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` pass.
+- The README and CHANGELOG were translated to English per review note 4.

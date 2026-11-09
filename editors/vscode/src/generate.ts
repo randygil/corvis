@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { outputChannel, requireCli, runCli, runCliTask } from './cli';
-import { featureDirFor, parseChanges } from './paths';
+import { featureDirFor, parseChanges, resolveCorvisPath } from './paths';
 import { CargoProject, findCargoProject, pickProject } from './project';
 
 export interface Schematic {
@@ -136,6 +136,14 @@ function reportGeneration(code: number | null, output: string, schematic: Schema
 }
 
 export async function newProject(): Promise<void> {
+  const configuredPath = vscode.workspace.getConfiguration('corvis').get<string>('new.corvisPath');
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const corvisPath = resolveCorvisPath(configuredPath, home, fs.existsSync);
+  if (corvisPath.error) {
+    const choice = await vscode.window.showErrorMessage(`Corvis: ${corvisPath.error}`, 'Open Settings');
+    if (choice === 'Open Settings') await vscode.commands.executeCommand('workbench.action.openSettings', 'corvis.new.corvisPath');
+    return;
+  }
   const defaultParent = vscode.workspace.workspaceFolders?.[0]?.uri;
   const parent = await vscode.window.showOpenDialog({
     canSelectFolders: true,
@@ -156,7 +164,7 @@ export async function newProject(): Promise<void> {
   const cwd = parent[0].fsPath;
   const result = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: `corvis new ${name.trim()}`, cancellable: true },
-    (_p, token) => runCli(cli, ['new', name.trim()], cwd, token),
+    (_p, token) => runCli(cli, ['new', name.trim()], cwd, token, corvisPath.path ? { CORVIS_PATH: corvisPath.path } : undefined),
   );
   if (result.code !== 0) {
     const err = /Error:\s*(.*)/.exec(result.output)?.[1] ?? 'see the Corvis output for details';
