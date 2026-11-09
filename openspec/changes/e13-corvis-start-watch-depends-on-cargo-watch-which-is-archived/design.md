@@ -157,3 +157,40 @@ Upstream facts used below (from the projects' own documentation, checked 2026-11
 1. watchexec replaces cargo-watch, run without a shell and with an explicit `--ignore /target/**`.
 2. Keep watchexec's default `--stop-timeout`.
 3. Add a migration note for cargo-watch users in `docs/cli/usages.md` and its Spanish copy only.
+
+## Implementation notes
+
+- Task 1.1, verified on Windows 11 with watchexec 2.8.0 (`cargo install --locked watchexec-cli`), in a project made
+  with `corvis new demo --skip-git --corvis-path <worktree>/crates/corvis` whose `main` appends its arguments to a log:
+  (a) `corvis start --watch -- --name "my app" "a;b" '$HOME' '%PATH%' "a&b"` delivered exactly
+  `["--name", "my app", "a;b", "$HOME", "%PATH%", "a&b"]`, so an argument with a space arrives as one argument with
+  `--shell=none` and no character is interpreted. Not run on Linux or macOS (not available here).
+  (b) One save of `src/main.rs` gave exactly one restart, with no loop from `target/` in a project without `.git`.
+  (c) Started from `<root>/src`, saving `<root>/Cargo.toml` restarted the program. (d) Stopping `corvis` with
+  CTRL_BREAK ended watchexec and the program (no process left). A plain Ctrl+C from an interactive console was not
+  exercised. Decisions 2 and 4 needed no change.
+- A program that writes files inside the workspace root (a log, a database file) restarts itself in a loop, as with
+  any watcher; the first manual run showed it with a `run.log` in the root. Not specific to this change.
+- `posture::cargo_program()` was made `pub(crate)` and is used by `workspace_root()` so `CORVIS_CARGO` is honored.
+- `cargo_invocation` no longer returns `Result` (no error case is left); `split_program_args` is shared with
+  `cmd_cargo`.
+- The root `README.md` line about `corvis start --watch` does not name cargo-watch, so it was not changed.
+- The unit test `finds_watchexec_in_cargo_home` also sets `PATH` to the temporary folder, because a watchexec
+  installed in `~/.cargo/bin` on the developer machine would otherwise be found first.
+
+## Security review follow-up (2026-11-08)
+
+1. **Relative and empty search directories.** `find_executable` accepted empty and relative `PATH` entries, so
+   `PATH=.;...` or `PATH=src;...` ran a `watchexec` planted in the project, and an empty entry returned a relative
+   path that `Command` resolves differently and that shadowed a real watchexec later in `PATH`. The search now lives
+   in `find_in(file_stem, path, cargo_home)` and keeps only absolute directories (for `PATH` and for
+   `$CARGO_HOME/bin`), so the returned path is always absolute. Unit tests: `.`, a relative folder, an empty entry,
+   a trailing separator and a relative `CARGO_HOME` find nothing; an absolute entry after them is still found.
+   The missing-tool message is unchanged (a `watchexec` found only through a relative entry counts as missing).
+2. **Forced kill of corvis left watchexec and the server running.** On Windows the watchexec child is now adopted
+   into the Job Object of `posture::tree` (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, reused from #27, no new
+   dependency), so it and its descendants die with corvis even under `taskkill /F`. Verified with the `orphan.py`
+   proof of concept: after killing only corvis, watchexec was gone. Small window: a process watchexec started
+   before the job adoption would not be in the job; watchexec starts cargo only after its own startup, so this is
+   not expected in practice. On Unix the behavior is unchanged: corvis shares the terminal's process group, Ctrl+C
+   reaches the whole tree, and `kill -9` of corvis alone leaves watchexec running (documented here, not changed).

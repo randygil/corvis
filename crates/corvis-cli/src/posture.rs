@@ -10,7 +10,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-mod tree;
+pub(crate) mod tree;
 
 /// Opens the report when there is no nonce. Equal to `corvis::posture::REPORT_BEGIN`; the CLI does not depend
 /// on the framework.
@@ -251,7 +251,7 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-fn cargo_program() -> String {
+pub(crate) fn cargo_program() -> String {
     std::env::var("CORVIS_CARGO").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "cargo".to_string())
 }
 
