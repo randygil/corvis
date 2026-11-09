@@ -296,8 +296,10 @@ impl ThrottlerStorage {
     }
 
     /// Maximum number of blocked keys kept in memory (default: the value of [`with_max_entries`](Self::with_max_entries)).
-    /// A blocked key takes about 230 bytes. When the table is full the block that started first is dropped, which lets
-    /// that key start counting again; counters are not affected.
+    /// A blocked key takes about 300 bytes (about 30 MB at 100,000 keys). When the table is full the block that
+    /// started first is dropped, even if it has a long time left, which lets that key start counting again; counters
+    /// are not affected. Set it to at least the number of blocks the application starts during its longest block
+    /// duration: with 24 hour login blocks, count the blocks started in 24 hours.
     pub fn with_max_blocked(mut self, max_blocked: usize) -> Self {
         self.max_blocked = Some(max_blocked.max(1));
         self
@@ -347,7 +349,9 @@ impl ThrottlerStorage {
         let per_blocked = std::mem::size_of::<(KeyHash, Blocked)>()
             + std::mem::size_of::<(Instant, KeyHash)>()
             + std::mem::size_of::<(u64, KeyHash)>()
-            + 16;
+            // Hash table capacity rounded to a power of two and B-tree nodes heavier than their entries: measured
+            // 266 to 290 bytes per blocked key in total.
+            + 110;
         let c = self.counters.lock().unwrap_or_else(|e| e.into_inner());
         c.records.len() * per_entry
             + c.records.values().map(|r| r.buckets.capacity() * std::mem::size_of::<Bucket>()).sum::<usize>()

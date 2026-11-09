@@ -129,11 +129,13 @@ the counters of other clients:
   counters that become idle soonest are discarded, which resets them. Under an attack with more distinct keys
   than the cap, counters of clients that are not blocked can be reset, so size the cap for your traffic.
 - Blocked keys: at most as many as `with_max_entries` unless you set `with_max_blocked`. A blocked key takes
-  about 230 bytes (about 178 measured, plus the index that orders blocks by start), roughly 23 MB at the
-  default. When that table is full the block that started first is dropped, whatever its length, which lets
-  that key count again; freeing someone else's block therefore takes as many new blocks as the table holds.
+  about 300 bytes, about 30 MB at 100,000 keys. When that table is full the block that started first is
+  dropped, whatever its length and even if it has a long time left, which lets that key count again; freeing
+  someone else's block therefore takes as many new blocks as the table holds. Set `with_max_blocked` to at
+  least the number of blocks your application starts during its longest block duration: with 24-hour login
+  blocks, count the blocks started in 24 hours.
 
-Together the worst case at the defaults is about 200 MB. To change the caps:
+Together the worst case at the defaults is about 200 MB (about 170 MB of counters plus about 30 MB of blocks). To change the caps:
 
 ```rust
 use corvis::ThrottlerStorage;
