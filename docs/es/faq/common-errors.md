@@ -85,13 +85,40 @@ Una fábrica (`Provider::use_factory`, `register_async`, `for_root_async`) devol
 mensaje incluye la causa. Un caso típico es una variable de entorno obligatoria que falta, como
 `JWT_SECRET` en `examples/tertulia`.
 
+## "X depends on Y, which is request-scoped"
+
+```text
+CatsController depends on RequestContext, which is request-scoped (CatsController -> AuditLog -> RequestContext). A singleton, a controller or a gateway is created once and would keep the instance of the first request. ...
+```
+
+Un provider singleton, un controller o un gateway tiene un campo (directamente, a través de un alias o de un provider
+transient) que es un provider con scope por petición, o un `Request`. Corvis no convierte al consumidor en uno con
+scope por petición: se detiene al arrancar. Toma un `ModuleRef` y resuelve el provider en cada petición con
+`module_ref.resolve_for::<Y>(&req).await?`, o haz que también los consumidores de la cadena tengan scope por petición.
+Ver [Scope por petición](/es/fundamentals/injection-scopes#scope-por-peticion).
+
+## "X is request-scoped but was resolved outside an HTTP request"
+
+Se resolvió un provider con scope por petición (o un campo `Request`) donde no se está atendiendo ninguna petición
+HTTP: una factory singleton, un handler de mensajes de un gateway, un hook del ciclo de vida, una tarea programada, un
+listener de eventos, un contexto de aplicación independiente, o una tarea que conservó un `Request` después de enviar
+la respuesta. El mensaje nombra el provider y la cadena que llevó a él. Resuélvelo dentro de la petición con
+`ModuleRef::resolve_for(&req)`, o conviértelo en un provider singleton o transient.
+
+## "global guard X cannot be request-scoped"
+
+Los enhancers globales (`Provider::app_guard`, `app_interceptor`, `app_pipe`, `app_filter`) y los guards,
+interceptors, pipes, filters y middleware referenciados por tipo se crean una sola vez al arrancar, así que no pueden
+tener scope por petición. Resuelve el provider con scope por petición dentro del enhancer con
+`ModuleRef::resolve_for(&req)`.
+
 ## Errores de compilación de los atributos
 
 | Mensaje | Causa |
 |---|---|
 | `#[get] must be used on a method inside a #[routes] impl block` | El `impl` del controlador no lleva `#[routes]` |
 | `#[use_guards] must be placed below #[controller] or on a method inside #[routes]` | Los atributos de clase van **debajo** de `#[controller]` (Rust procesa los atributos en orden) |
-| `request-scoped providers are not supported; use transient or default scope` | `#[injectable(scope = "request")]` no existe. Ver [Scopes de inyección](/es/fundamentals/injection-scopes) |
+| `unknown scope "requested"; expected scope = "default", scope = "transient" or scope = "request"` | `#[injectable(...)]` solo acepta `scope = "default"`, `"transient"` o `"request"`, escritos exactamente así. Ver [Scopes de inyección](/es/fundamentals/injection-scopes) |
 | `unknown #[module] key; expected imports, controllers, providers, exports or global` | Una clave mal escrita en `#[module(...)]` |
 | `#[corvis::main] requires an async fn` | Falta `async` en `main` |
 | `#[optional] has no effect: declare the field as Option<Arc<T>> to make the dependency optional` | `#[optional]` en un campo. Escribe `cats: Option<Arc<CatsService>>` en su lugar |

@@ -55,7 +55,7 @@ Class attributes (`#[use_guards]`, `#[set_metadata]`...) go **below** `#[control
 
 ## Differences worth knowing
 
-- **No request scope.** There are only singleton and transient providers. For per-request data use the request extensions (`req.insert`, `req.get`) or `FromContext`. See [Injection scopes](/fundamentals/injection-scopes).
+- **Request scope is explicit.** `#[injectable(scope = "request")]` gives one instance per request, but a singleton, controller or gateway that depends on it is a startup error instead of becoming request-scoped itself: resolve it per request with `ModuleRef::resolve_for`. For plain per-request data you can also use the request extensions (`req.insert`, `req.get`) or `FromContext`. See [Injection scopes](/fundamentals/injection-scopes).
 - **No `forwardRef`.** A circular dependency between providers is a startup error. See [Circular dependencies](/fundamentals/circular-dependency).
 - **Interceptors without observables.** `CallHandler::handle()` returns a `Future`: you can transform, time, and cache the response, but not compose stream operators.
 - **Pipes over JSON.** Pipes receive and return `serde_json::Value`; the result is deserialized into the parameter's type.

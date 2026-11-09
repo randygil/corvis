@@ -85,13 +85,39 @@ A factory (`Provider::use_factory`, `register_async`, `for_root_async`) returned
 message includes the cause. A typical case is a required environment variable that is missing, such as
 `JWT_SECRET` in `examples/tertulia`.
 
+## "X depends on Y, which is request-scoped"
+
+```text
+CatsController depends on RequestContext, which is request-scoped (CatsController -> AuditLog -> RequestContext). A singleton, a controller or a gateway is created once and would keep the instance of the first request. ...
+```
+
+A singleton provider, a controller or a gateway has a field (directly, through an alias or through a transient
+provider) that is a request-scoped provider, or a `Request`. Corvis does not turn the consumer into a request-scoped
+one: it stops at startup. Take a `ModuleRef` and resolve the provider per request with
+`module_ref.resolve_for::<Y>(&req).await?`, or make the consumers in the chain request-scoped too. See
+[Request scope](/fundamentals/injection-scopes#request-scope).
+
+## "X is request-scoped but was resolved outside an HTTP request"
+
+A request-scoped provider (or a `Request` field) was resolved where no HTTP request is being handled: a singleton
+factory, a gateway message handler, a lifecycle hook, a scheduled job, an event listener, a standalone application
+context, or a task that kept a `Request` after the response was sent. The message names the provider and the chain
+that led to it. Resolve it inside the request with `ModuleRef::resolve_for(&req)`, or make it a singleton or transient
+provider.
+
+## "global guard X cannot be request-scoped"
+
+Global enhancers (`Provider::app_guard`, `app_interceptor`, `app_pipe`, `app_filter`) and guards, interceptors, pipes,
+filters and middleware referenced by type are created once at startup, so they cannot be request-scoped. Resolve the
+request-scoped provider inside the enhancer with `ModuleRef::resolve_for(&req)`.
+
 ## Attribute compile errors
 
 | Message | Cause |
 |---|---|
 | `#[get] must be used on a method inside a #[routes] impl block` | The controller's `impl` does not carry `#[routes]` |
 | `#[use_guards] must be placed below #[controller] or on a method inside #[routes]` | Class attributes go **below** `#[controller]` (Rust processes attributes in order) |
-| `request-scoped providers are not supported; use transient or default scope` | `#[injectable(scope = "request")]` does not exist. See [Injection scopes](/fundamentals/injection-scopes) |
+| `unknown scope "requested"; expected scope = "default", scope = "transient" or scope = "request"` | `#[injectable(...)]` takes only `scope = "default"`, `"transient"` or `"request"`, spelled exactly. See [Injection scopes](/fundamentals/injection-scopes) |
 | `unknown #[module] key; expected imports, controllers, providers, exports or global` | A misspelled key in `#[module(...)]` |
 | `#[corvis::main] requires an async fn` | `async` is missing on `main` |
 | `#[optional] has no effect: declare the field as Option<Arc<T>> to make the dependency optional` | `#[optional]` on a field. Write `cats: Option<Arc<CatsService>>` instead |

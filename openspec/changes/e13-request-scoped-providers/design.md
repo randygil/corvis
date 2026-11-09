@@ -208,3 +208,27 @@ request scope with a startup error instead of the original framework's scope bub
 - Q3: confirmed: `dispatch` installs a store only if none is present, so a nested dispatch shares the outer request's
   instances.
 - This change and `e13-request-scoped-providers-scoped-parameter` together close #115.
+
+## Implementation notes
+
+- `RequestScope`, `RequestScopeSlot`, `RequestCtx` and a `RequestScopeGuard` live in
+  `crates/corvis/src/di/request_scope.rs`. `RequestCtx::of(&Request)` is the hook the follow-up change (`Scoped<T>`)
+  uses to find the store of a request being dispatched.
+- `dispatch` installs the store through `RequestScopeGuard::install`, which does nothing when the request already has a
+  slot (a nested dispatch shares the outer store; only the installer removes it). Unit tests cover removal on drop,
+  on panic and on task abort (cancellation).
+- `ModuleRef::resolve_for` always requires a slot, whatever the provider's scope, as the spec says. Because `dispatch`
+  only installs one when some provider is request-scoped (design decision 2), `resolve_for` in an application with no
+  request-scoped provider fails with `OutsideRequest`, also for singletons. Documented in its rustdoc. Follow-up
+  option: install the slot always if that turns out to surprise users.
+- `#[injectable]` arguments: `InjectableOptions` now has `scope: ScopeArg` and derives `Default`, so the callers
+  (`controller`, `gateway`, `module`, and the tests) use `InjectableOptions::default()`. A bare `transient` identifier,
+  which the substring matching used to accept by accident, is now rejected.
+- The `DiError::OutsideRequest` message for `ResolveCtx::request()` and for a `Request` field names the token
+  `Request` and the resolution chain of the requester.
+- A request-scoped controller (hand-written `Injectable`) and a request-scoped enhancer by type are rejected with
+  `DiError::Other`.
+- Docs: besides `injection-scopes` and `common-errors`, the one-line "no request scope" statements of `providers.md`
+  and `migration-guide.md` (EN and ES) were updated; the follow-up change expands the migration guide.
+- Not done here: the benchmark (task 7.1) and the parity check (task 9.6), which the maintainer runs. There is no test
+  of a nested `app.handle` dispatch; the guard's nesting rule is unit-tested instead.

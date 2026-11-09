@@ -55,7 +55,7 @@ Los atributos de clase (`#[use_guards]`, `#[set_metadata]`...) van **debajo** de
 
 ## Diferencias que vale la pena conocer
 
-- **Sin scope por petición.** Solo hay providers singleton y transient. Para datos por petición usa las extensiones de la request (`req.insert`, `req.get`) o `FromContext`. Ver [Scopes de inyección](/es/fundamentals/injection-scopes).
+- **El scope por petición es explícito.** `#[injectable(scope = "request")]` da una instancia por petición, pero un singleton, controller o gateway que depende de ella es un error de arranque en lugar de volverse él mismo por petición: resuélvela en cada petición con `ModuleRef::resolve_for`. Para datos simples por petición también puedes usar las extensiones de la request (`req.insert`, `req.get`) o `FromContext`. Ver [Scopes de inyección](/es/fundamentals/injection-scopes).
 - **Sin `forwardRef`.** Una dependencia circular entre providers es un error al arrancar. Ver [Dependencias circulares](/es/fundamentals/circular-dependency).
 - **Interceptors sin observables.** `CallHandler::handle()` devuelve un `Future`: puedes transformar, medir y cachear la respuesta, pero no componer operadores de flujos.
 - **Pipes sobre JSON.** Los pipes reciben y devuelven `serde_json::Value`; el resultado se deserializa en el tipo del parámetro.
