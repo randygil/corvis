@@ -199,7 +199,7 @@ async fn gate_holds_queries_until_opened() {
 async fn migrate_deploy_creates_the_database_with_a_pool_parameter() {
     let Some(base) = pg::fresh_db("pool_ensure").await else { return };
     // `?connection_limit=2` must not reach the driver when `ensure_database` parses the URL.
-    let name = "orm_test_pool_ensure";
+    let name = pg::db_of(&base);
     let admin_url = format!("{}/postgres", base.rsplit_once('/').unwrap().0);
     let admin = OrmClient::new(admin_url).unwrap();
     admin.execute_raw(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"), vec![]).await.unwrap();

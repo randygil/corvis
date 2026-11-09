@@ -2,7 +2,7 @@
 //!
 //! PostgreSQL cannot hold NUL in `text` or `jsonb` and used to fail these queries with a raw
 //! database error (`22021` / `22P05`); SQLite cut JSON paths short at the NUL (`bad JSON path`).
-//! The Postgres test uses `CORVIS_ORM_PG` and the `orm_test_nul_characters` database (skipped when
+//! The Postgres test uses `CORVIS_ORM_PG` and the `orm_test_nul_characters_<run>` database (skipped when
 //! the server is not reachable).
 
 #[path = "common/pg.rs"]
