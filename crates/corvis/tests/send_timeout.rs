@@ -476,11 +476,12 @@ async fn http2_slow_but_live_reader_is_not_cut() {
 #[corvis::test]
 async fn an_idle_sse_stream_over_http1_is_not_cut() {
     let addr = serve(live(SEND_TIMEOUT)).await;
+    // The clock starts before the request is sent, so the server's pause cannot start earlier.
+    let started = Instant::now();
     let mut s = TcpStream::connect(addr).await.unwrap();
     s.write_all(b"GET /t/sse HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
     let mut seen = String::new();
     let mut buf = [0u8; 1024];
-    let started = Instant::now();
     while !seen.contains("event 1") {
         let n = tokio::time::timeout(Duration::from_secs(8), s.read(&mut buf)).await.expect("the next event in time").unwrap();
         assert!(n > 0, "the stream ended after {:?}: {seen}", started.elapsed());
@@ -494,11 +495,13 @@ async fn an_idle_sse_stream_over_http1_is_not_cut() {
 async fn an_idle_sse_stream_over_h2c_is_not_cut() {
     let addr = serve(live(SEND_TIMEOUT)).await;
     let mut sender = h2_client(addr).await;
+    // The clock starts before the request is sent: the server may poll the stream into its pause before the response
+    // head reaches the client.
+    let started = Instant::now();
     let response = sender.send_request(h2_get(addr, "/t/sse")).await.unwrap();
     assert_eq!(response.status(), 200);
     let mut body = response.into_body();
     let mut seen = String::new();
-    let started = Instant::now();
     while !seen.contains("event 1") {
         let frame = tokio::time::timeout(Duration::from_secs(8), body.frame()).await.expect("the next event in time");
         let frame = frame.unwrap_or_else(|| panic!("the stream ended after {:?}: {seen}", started.elapsed())).unwrap();
