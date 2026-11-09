@@ -193,6 +193,70 @@ explicitly approved step; never run `cargo publish` without `--dry-run`. The ord
 crate, then the crate that uses it. `rust-version` in `[workspace.package]` is the lowest toolchain on which
 `cargo check --workspace` passes with the committed `Cargo.lock`; it is informative, and CI runs one toolchain only.
 
+## Socket.IO differential harness
+
+`parity/socket-io/` runs the same scenarios against a Node `socket.io` server (the reference) and, once Corvis
+implements Engine.IO and Socket.IO, against Corvis, records what each client observes and fails on any difference. It
+is Node tooling outside every crate and is not published. Until there is a Corvis target, the runner compares two
+independent Node reference servers, which checks the scenarios and the normalizer on real transcripts.
+
+Prerequisites: Node 22 or later and git. Packages are installed only by an explicit `npm ci` (install scripts are
+disabled by the harness's `.npmrc`; `cargo test` never installs anything):
+
+```sh
+cd parity/socket-io
+npm ci
+```
+
+Run it, from the repository root (the test skips with a notice unless `CORVIS_NODE_DIFF=1`, and with it set it fails
+when Node 22+ or the install is missing):
+
+```sh
+CORVIS_NODE_DIFF=1 cargo test -p corvis --test socket_io_diff     # Bash
+$env:CORVIS_NODE_DIFF = "1"; cargo test -p corvis --test socket_io_diff     # PowerShell
+```
+
+or directly, in `parity/socket-io/`:
+
+```sh
+node --test "test/*.test.mjs"    # self-tests of the normalizer, comparer and gating
+node run.mjs                     # one line per scenario and target, then the differences
+node run.mjs --scenario handshake    # only the scenarios whose name contains the text
+```
+
+Servers bind to `127.0.0.1` on a port chosen by the operating system, so two runs can overlap. The raw transcripts of a
+run are in `parity/socket-io/out/<target>/<scenario>.json` (ignored by git). Scenarios that need Redis run only when
+`CORVIS_REDIS_URL` is set (`export CORVIS_REDIS_URL=redis://127.0.0.1:6379`, or `$env:CORVIS_REDIS_URL = "..."` in
+PowerShell) and are reported as skipped otherwise.
+
+**Reading a diff.** For each scenario that differs the runner prints `DIFFERENCE in <scenario> at <path>` and the value
+each target produced; the path points into the normalized transcript (`$.entries[1].data.args[1]` is the second
+argument of the acknowledgement, entries being ordered by client name and then by arrival). Session and socket ids are
+replaced by `<id:1>`, `<id:2>`, ... by order of first appearance, so only a different id *structure* is a difference. The
+exit status is non-zero when there is an unlisted difference, a stale expected difference, or a scenario that failed or
+timed out. Nothing is retried and no step sleeps: each step waits for the event it needs, with a 10 second limit.
+
+**Adding a scenario.** Create `scenarios/<area>/<name>.mjs` exporting `{ name, requires, run }`. `requires` lists the
+capabilities the scenario needs (`engine-io`, `socket-io`, `redis`). `run({ url, record, step })` drives the target at
+`url` with `fetch`, `ws` or `socket.io-client`, wraps each wait in `step("label", promise)` and calls
+`record(client, kind, data)` for everything a client observes (events and arguments, acknowledgements, connect errors,
+disconnect reasons, HTTP status, `content-type` and `cache-control`, decoded packets). Never record timings; record a
+bucket such as `"closed-after-ping-timeout"` instead. The Corvis target declares its capabilities with
+`--corvis <url> --corvis-capabilities engine-io,socket-io`; a scenario it lacks runs on Node only and is reported as
+skipped on Corvis. Put the id of a session or socket in a field named `sid` so the normalizer recognizes it.
+
+**Adding an expected difference.** Only for a divergence that is intentional (for example a hardening the spec
+documents). Add `{ "scenario", "path", "reason", "spec" }` to `expected-differences.json`, where `spec` names the
+requirement of a `ws/*` capability that justifies it. An entry without a reason is rejected; an entry whose difference no
+longer occurs fails the run as stale, so the list cannot rot.
+
+**Protocol suites.** `node scripts/fetch-suites.mjs` downloads the official `engine.io-protocol` and
+`socket.io-protocol` test suites at the commits pinned in `suites.json` into `suites/` (ignored by git) and points them
+at `SUITE_URL` instead of `http://localhost:3000`. List them without a server with
+`SUITE_URL=http://127.0.0.1:1 npx mocha --dry-run suites/engine.io-protocol` (PowerShell: set `$env:SUITE_URL` first). To
+refresh a suite, put the new 40-hex commit in `suites.json`, run the script and the dry run, and keep the lockfile in
+step if the suite imports a new package.
+
 ## Naming check
 
 Published surfaces (crate sources and metadata, examples, the root README, the benchmark report and scripts, the
