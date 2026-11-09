@@ -181,7 +181,14 @@ ThrottlerModule::for_root_storage(
   con `with_named_tracker("by-email", f)` o `with_named_key_generator("shared", f)` y selecciónala con
   `throttle("login").tracker("by-email")` o `.key_generator("shared")`. Un id que no está registrado responde `500` (la
   ruta no queda sin límite). Registrar un id dos veces provoca un panic.
-- Para cada throttler el guard usa la función de la ruta, después el hook del módulo y después el predeterminado.
+- Un throttler puede tener sus propios hooks, como una entrada de la lista de throttlers de la original con `getTracker`
+  o `generateKey`: `with_tracker_for("login", f)` y `with_key_generator_for("login", f)` reciben las mismas funciones
+  que los de nivel de módulo y se aplican solo a ese throttler. Provocan un panic si ningún throttler configurado tiene
+  ese nombre; llamar a uno dos veces para un nombre conserva la última función.
+- Para cada throttler el guard usa la función de la ruta (handler y luego controlador), después el hook del throttler,
+  después el hook del módulo y después el predeterminado.
+- Las claves del generador de un throttler se guardan con su propio marcador de origen, así que nunca se encuentran con
+  las del generador predeterminado, el del módulo ni los registrados.
 - Un tracker propio reemplaza por completo al predeterminado, incluida la agrupación IPv6: llama tú a `normalize_ip`,
   como en el ejemplo.
 - El nombre del throttler siempre forma parte de la clave guardada. Un generador que ignora el nombre (`|_, tracker, _|
@@ -209,6 +216,46 @@ cuenta (por ejemplo, un email en minúsculas) para que las variantes de escritur
 recuerda que un límite por cuenta puede usarse para bloquear a una víctima a propósito: cualquiera puede enviar su
 identificador. Un tracker que devuelve un solo valor para todas las peticiones anónimas las pone todas en un contador, y un cliente puede agotarlo para todos.
 :::
+
+### Límites que dependen de la petición
+
+La librería original acepta funciones para `limit`, `ttl` y `blockDuration`. En Corvis son builders de
+`ThrottlerStorage` que llevan el nombre del throttler y reciben una función async del `ExecutionContext`:
+
+```rust
+use corvis::prelude::*;
+
+ThrottlerModule::for_root_storage(
+    ThrottlerStorage::new(vec![ThrottlerOptions { name: "api".into(), ttl: 60_000, limit: 100 }])
+        // Result<u32, HttpException>: el límite de esta petición
+        .with_limit_fn("api", |ctx| async move {
+            let plan = plan_of(&ctx).await?; // consulta del lado del servidor, p. ej. el usuario autenticado
+            Ok(if plan == "pro" { 1000 } else { 100 })
+        })
+        // Result<u64, HttpException> en milisegundos
+        .with_block_duration_fn("api", |_ctx| async { Ok(20_000) }),
+)
+```
+
+- `with_limit_fn(name, f)` devuelve un `u32`; `with_ttl_fn(name, f)` y `with_block_duration_fn(name, f)` devuelven
+  milisegundos como `u64`. El tipo del valor es `ThrottlerValueFn<T>`. Los resultados están tipados, así que ningún valor
+  no numérico o negativo puede llegar a los contadores.
+- Para cada throttler y opción el guard usa la sobrescritura de la ruta (`throttle("api").limit(5)`), si no la función y
+  si no el valor estático, sin importar el orden de las llamadas a los builders. La función no se llama cuando se
+  aplica una sobrescritura de ruta, ni para un throttler omitido. La duración del bloqueo recurre entonces a
+  `with_block_duration` y luego al ttl efectivo, como antes.
+- Un `Err` lo devuelve el guard sin cambios (un 500 para un error interno, el estado propio de la excepción en otro
+  caso) y no se cuenta ningún acceso para ese throttler ni para los siguientes.
+- Los builders provocan un panic si ningún throttler configurado tiene ese nombre, mientras se configura el módulo.
+- Los throttlers con función de ttl se comprueban después de los de ttl estático, en el orden configurado, como en la
+  original; su `ttl` estático no se usa. Mantén el throttler por IP estático y con el `ttl` más corto para que se
+  compruebe primero.
+- Las sobrescrituras con función en una ruta (`@Throttle({ short: { limit: (ctx) => .. } })`) no están soportadas: la
+  metadata de las rutas guarda JSON.
+- Deriva los valores del estado del servidor, nunca de una cabecera que envía el cliente (`x-plan: pro`): el cliente
+  elegiría su propio límite. Las funciones se ejecutan en cada petición por cada throttler que no se omite, así que
+  mantenlas baratas y cachea las consultas. Usa un ttl que dependa de propiedades estables del cliente: cada acceso
+  expira según el ttl con el que se contó.
 
 ### Omitir throttlers
 

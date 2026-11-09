@@ -173,3 +173,19 @@ None. The technical choices, including the public builder names, are recorded ab
 
 - Approved as drafted. The panic on an unknown throttler name happens while the module is configured, before the
   server listens, so it cannot be triggered by a request. Function-valued route overrides stay out of scope.
+
+## Implementation notes
+
+- Task 1.1: `@nestjs/throttler` 6.7.1 was installed with `npm ci` from the fixture's lockfile in a scratch folder
+  (`node_modules/@nestjs/throttler/package.json` reports `"version": "6.7.1"`). The sort, hook chain, `resolveValue` and
+  `toNumber` in `dist/throttler.guard.js` match Context, Original.
+- Recorded values: the existing cases of `throttler.json` are byte-identical (the diff only adds lines);
+  `dynamic-ttl-order` records `retry-after-b: 10` on the second response and `retry-after-a: 60` on the third;
+  `function-error` records 500, 403 and 200.
+- `ThrottlerStorage` keeps a copy of the throttlers in configured order (`configured`) and `with_ttl_fn` re-sorts from
+  it with a stable sort: static ttl ascending first, then the ttl-function throttlers in configured order.
+- The replay reads a missing `ttl` / `limit` of a case (a function in the original, dropped by `JSON.stringify`) as
+  1000 / 0, so a ttl function that were ignored would sort `b` first and fail the case.
+- The ordering test (2.2) is a unit test in `throttler.rs` because `throttlers` is private; the `for_root_async` test
+  of 2.1 is in `tests/throttler_headers.rs`.
+- Task 6.5 (`corvis-parity`) is left to the maintainer's session, as instructed for this run.

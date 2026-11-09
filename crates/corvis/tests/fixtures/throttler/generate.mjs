@@ -14,12 +14,17 @@
 //   module-key         default (1 per 60 s) with a module-level `generateKey` that drops the route
 //   shared-key         short (100 per 30 s) and long (2 per 60 s) whose `generateKey` ignores the throttler name: the
 //                      original shares the reporting window and the block between them, Corvis keeps them apart
+//   throttler-tracker  short (1 per 30 s) with its own `getTracker` and long (3 per 60 s), under a module `getTracker` (#162)
+//   throttler-key      default (1 per 60 s) with its own `generateKey`, under a module `generateKey`
+//   dynamic-limit      default (60 s) with `limit` and `blockDuration` functions
+//   dynamic-ttl-order  a (60 s, 2) and b (`ttl` function, 1): the function throttler is checked last
+//   function-error     default whose `limit` function throws an Error, a ForbiddenException, or returns 1
 //
 // The functions of the module options (`getTracker`, `generateKey`) cannot be stored in the JSON; the Rust replay
 // rebuilds each one from the case name (see `tests/throttler_headers.rs`).
 import 'reflect-metadata';
 import { writeFileSync } from 'node:fs';
-import { Module, Controller, Get } from '@nestjs/common';
+import { Module, Controller, Get, ForbiddenException } from '@nestjs/common';
 import { NestFactory, APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard, SkipThrottle, Throttle } from '@nestjs/throttler';
 
@@ -140,11 +145,37 @@ Get('sibling')(OvrClass.prototype, 'sibling', Object.getOwnPropertyDescriptor(Ov
 Throttle({ short: { limit: 2, ttl: 20000 } })(OvrClass);
 Controller('ovr-class')(OvrClass);
 
+// Per-throttler hooks and function-valued options (#162). A new controller, so the recorded values above do not move.
+class Ptr {
+  fixed() {
+    return 'ok';
+  }
+  ownKey() {
+    return 'ok';
+  }
+  limit5() {
+    return 'ok';
+  }
+  pro() {
+    return 'ok';
+  }
+}
+const ptr = (name, path, options) => {
+  const d = Object.getOwnPropertyDescriptor(Ptr.prototype, name);
+  Get(path)(Ptr.prototype, name, d);
+  if (options) Throttle(options)(Ptr.prototype, name, d);
+};
+ptr('fixed', 'fixed', { short: { getTracker: () => 'fixed' } });
+ptr('ownKey', 'own-key', { default: { generateKey: (ctx, t) => 'own:' + t } });
+ptr('limit5', 'limit5', { default: { limit: 5 } });
+ptr('pro', 'pro');
+Controller('ptr')(Ptr);
+
 async function record(throttlers, requests, moduleOptions) {
   class AppModule {}
   Module({
     imports: [ThrottlerModule.forRoot(moduleOptions ? { throttlers, ...moduleOptions } : throttlers)],
-    controllers: [Routes, Undo, Mixed, Ovr, OvrClass],
+    controllers: [Routes, Undo, Mixed, Ovr, OvrClass, Ptr],
     providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
   })(AppModule);
   const app = await NestFactory.create(AppModule, { logger: false });
@@ -312,6 +343,72 @@ const apps = [
     ],
     moduleOptions: { generateKey: (ctx, tracker) => tracker },
     requests: ['/plain', '/plain', '/plain', '/plain'],
+  },
+  {
+    name: 'throttler-tracker',
+    throttlers: [
+      { name: 'short', ttl: 30000, limit: 1, getTracker: (req) => 't:' + (req.headers['x-account'] ?? 'none') },
+      { name: 'long', ttl: 60000, limit: 3 },
+    ],
+    moduleOptions: { getTracker: (req) => 'm:' + (req.headers['x-client'] ?? 'none') },
+    requests: [
+      { path: '/plain', send: { 'x-client': 'a', 'x-account': '1' } },
+      { path: '/plain', send: { 'x-client': 'b', 'x-account': '1' } },
+      { path: '/plain', send: { 'x-client': 'a', 'x-account': '2' } },
+      { path: '/ptr/fixed', send: { 'x-account': '3' } },
+      { path: '/ptr/fixed', send: { 'x-account': '4' } },
+    ],
+  },
+  {
+    name: 'throttler-key',
+    throttlers: [{ name: 'default', ttl: 60000, limit: 1, generateKey: (ctx, t) => 'shared:' + t }],
+    moduleOptions: { generateKey: (ctx, t) => ctx.getHandler().name + ':' + t },
+    requests: ['/plain', '/byname', '/ptr/own-key'],
+  },
+  {
+    name: 'dynamic-limit',
+    throttlers: [
+      {
+        name: 'default',
+        ttl: 60000,
+        limit: (ctx) => (ctx.switchToHttp().getRequest().headers['x-plan'] === 'pro' ? 3 : 1),
+        blockDuration: async () => 20000,
+      },
+    ],
+    requests: [
+      '/plain',
+      '/plain',
+      ...Array.from({ length: 4 }, () => ({ path: '/ptr/pro', send: { 'x-plan': 'pro' } })),
+      '/ptr/limit5',
+    ],
+  },
+  {
+    name: 'dynamic-ttl-order',
+    throttlers: [
+      { name: 'a', ttl: 60000, limit: 2 },
+      { name: 'b', ttl: () => 10000, limit: 1 },
+    ],
+    requests: ['/plain', '/plain', '/plain'],
+  },
+  {
+    name: 'function-error',
+    throttlers: [
+      {
+        name: 'default',
+        ttl: 60000,
+        limit: (ctx) => {
+          const h = ctx.switchToHttp().getRequest().headers;
+          if (h['x-boom']) throw new Error('boom');
+          if (h['x-forbid']) throw new ForbiddenException();
+          return 1;
+        },
+      },
+    ],
+    requests: [
+      { path: '/plain', send: { 'x-boom': '1' } },
+      { path: '/plain', send: { 'x-forbid': '1' } },
+      '/plain',
+    ],
   },
 ];
 for (const a of apps) {

@@ -6,7 +6,7 @@ use corvis::prelude::*;
 use corvis::testing::{Test, TestResponse, request};
 use corvis::{
     CorvisApplication, SKIP_THROTTLE, THROTTLE_KEY_GENERATOR, THROTTLE_LIMIT, THROTTLE_TRACKER, THROTTLE_TTL, ThrottlerGuard,
-    ThrottlerModule, ThrottlerOptions, ThrottlerStorage,
+    ThrottlerModule, ThrottlerOptions, ThrottlerStorage, ThrottlerValueFn,
 };
 
 #[controller]
@@ -267,6 +267,43 @@ impl OvrClassController {
     }
 }
 
+/// Per-throttler hooks and function-valued options (#162): the `Ptr` routes of the fixture.
+#[controller("ptr")]
+#[use_guards(ThrottlerGuard)]
+pub struct PtrController;
+
+#[routes]
+impl PtrController {
+    #[get("fixed")]
+    #[apply_decorators(throttle("short").tracker("fixed"))]
+    fn fixed(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("own-key")]
+    #[apply_decorators(throttle("default").key_generator("own"))]
+    fn own_key(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("limit5")]
+    #[apply_decorators(throttle("default").limit(5))]
+    fn limit5(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("pro")]
+    fn pro(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("same-key")]
+    #[apply_decorators(throttle("default").key_generator("same"))]
+    fn same_key(&self) -> &'static str {
+        "ok"
+    }
+}
+
 fn throttler(name: &str, ttl: u64, limit: u32) -> ThrottlerOptions {
     ThrottlerOptions { name: name.into(), ttl, limit }
 }
@@ -279,6 +316,7 @@ async fn app_with(module: corvis::DynamicModule) -> CorvisApplication {
         .controller::<MixedController>()
         .controller::<OvrController>()
         .controller::<OvrClassController>()
+        .controller::<PtrController>()
         .compile()
         .await
         .unwrap();
@@ -767,6 +805,16 @@ fn override_helpers_come_with_the_prelude() {
     assert_eq!(d.entries(), [("THROTTLER:LIMITshort".to_string(), json!(1))].as_slice());
 }
 
+/// The `getTracker` of the throttler `short` in the fixture case `throttler-tracker`: the `x-account` header.
+async fn account_tracker(ctx: ExecutionContext) -> Result<String, HttpException> {
+    Ok(format!("t:{}", ctx.request().header("x-account").unwrap_or("none")))
+}
+
+/// The limit function of the fixture case `dynamic-limit`: 3 for `x-plan: pro`, else 1.
+async fn plan_limit(ctx: ExecutionContext) -> Result<u32, HttpException> {
+    Ok(if ctx.request().header("x-plan") == Some("pro") { 3 } else { 1 })
+}
+
 /// The storage of a fixture case: the functions of its module options cannot be recorded, so each case name selects them.
 fn storage_for_case(case: &str, throttlers: Vec<ThrottlerOptions>) -> ThrottlerStorage {
     let storage = hooks(ThrottlerStorage::new(throttlers));
@@ -774,6 +822,24 @@ fn storage_for_case(case: &str, throttlers: Vec<ThrottlerOptions>) -> ThrottlerS
         "module-tracker" => storage.with_tracker(client_header),
         "module-key" => storage.with_key_generator(|_, tracker, name| format!("{name}:{tracker}")),
         "shared-key" => storage.with_key_generator(|_, tracker, _| tracker.to_string()),
+        "throttler-tracker" => storage
+            .with_tracker(|ctx| async move { Ok(format!("m:{}", ctx.request().header("x-client").unwrap_or("none"))) })
+            .with_tracker_for("short", account_tracker),
+        "throttler-key" => storage
+            .with_key_generator(|ctx, tracker, _| format!("{}:{tracker}", ctx.get_handler().name))
+            .with_key_generator_for("default", |_, tracker, _| format!("shared:{tracker}")),
+        "dynamic-limit" => storage.with_limit_fn("default", plan_limit).with_block_duration_fn("default", |_| async { Ok(20_000) }),
+        "dynamic-ttl-order" => storage.with_ttl_fn("b", |_| async { Ok(10_000) }),
+        "function-error" => storage.with_limit_fn("default", |ctx| async move {
+            let request = ctx.request();
+            if request.header("x-boom").is_some() {
+                return Err(HttpException::from_anyhow(anyhow::anyhow!("boom")));
+            }
+            if request.header("x-forbid").is_some() {
+                return Err(ForbiddenException::new("no plan"));
+            }
+            Ok(1)
+        }),
         _ => storage,
     }
 }
@@ -816,7 +882,9 @@ async fn replays_the_original_library_fixture() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|t| throttler(t["name"].as_str().unwrap(), t["ttl"].as_u64().unwrap(), t["limit"].as_u64().unwrap() as u32))
+            // A function-valued `limit` or `ttl` is not in the JSON; the case table sets the function and the static
+            // value is unused (for `ttl`, a value that would sort the throttler first if the function were ignored).
+            .map(|t| throttler(t["name"].as_str().unwrap(), t["ttl"].as_u64().unwrap_or(1_000), t["limit"].as_u64().unwrap_or(0) as u32))
             .collect();
         let app = app_with(ThrottlerModule::for_root_storage(storage_for_case(case_name, throttlers))).await;
         let c = request(&app);
@@ -862,4 +930,190 @@ async fn replays_the_original_library_fixture() {
             assert!(differences > 0, "{case_name} is a known divergence but every response matched the recording");
         }
     }
+}
+
+// Per-throttler hooks and function-valued options (#162).
+
+fn short_long_accounts() -> ThrottlerStorage {
+    ThrottlerStorage::new(vec![throttler("short", 30_000, 1), throttler("long", 60_000, 3)]).with_tracker_for("short", account_tracker)
+}
+
+#[corvis::test]
+async fn one_throttler_counts_per_account() {
+    let app = app_with(ThrottlerModule::for_root_storage(short_long_accounts())).await;
+    let c = request(&app);
+    c.get("/plain").header("x-account", "1").send().await.expect_status(200).expect_header("x-ratelimit-remaining-long", "2");
+    let r = c.get("/plain").header("x-account", "1").send().await;
+    r.expect_status(429);
+    assert!(r.header("retry-after-short").is_some());
+}
+
+#[corvis::test]
+async fn other_throttlers_keep_the_builtin_tracker() {
+    let app = app_with(ThrottlerModule::for_root_storage(short_long_accounts())).await;
+    let c = request(&app);
+    c.get("/plain").header("x-account", "2").send().await.expect_status(200);
+    c.get("/plain").header("x-account", "3").send().await.expect_status(200).expect_header("x-ratelimit-remaining-long", "1");
+}
+
+#[corvis::test]
+async fn a_throttler_tracker_beats_the_module_tracker() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])
+        .with_tracker(client_header)
+        .with_tracker_for("default", |_| async { Ok("all".to_string()) });
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").header("x-client", "a").send().await.expect_status(200);
+    c.get("/plain").header("x-client", "b").send().await.expect_status(429);
+}
+
+#[corvis::test]
+async fn a_route_tracker_beats_the_throttler_tracker() {
+    let storage = hooks(ThrottlerStorage::new(vec![throttler("short", 30_000, 1)])).with_tracker_for("short", account_tracker);
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/ptr/fixed").header("x-account", "3").send().await.expect_status(200);
+    c.get("/ptr/fixed").header("x-account", "4").send().await.expect_status(429).expect_header("retry-after-short", "30");
+}
+
+#[corvis::test]
+async fn a_throttler_key_generator_beats_the_module_generator_and_a_route_generator_beats_it() {
+    let storage = hooks(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]))
+        .with_key_generator(|ctx, tracker, _| format!("{}:{tracker}", ctx.get_handler().name))
+        .with_key_generator_for("default", |_, tracker, _| format!("shared:{tracker}"));
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/byname").send().await.expect_status(429);
+    c.get("/ptr/own-key").send().await.expect_status(200);
+}
+
+#[corvis::test]
+async fn the_throttlers_generator_and_a_registered_generator_do_not_meet() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])
+        .with_named_key_generator("same", |_, tracker, _| tracker.to_string())
+        .with_key_generator_for("default", |_, tracker, _| tracker.to_string());
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/ptr/same-key").send().await.expect_status(200);
+    c.get("/ptr/same-key").send().await.expect_status(429);
+    c.get("/plain").send().await.expect_status(200);
+}
+
+#[corvis::test]
+async fn a_limit_function_reads_the_request() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 0)]).with_limit_fn("default", plan_limit);
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    for remaining in ["2", "1", "0"] {
+        c.get("/ptr/pro")
+            .header("x-plan", "pro")
+            .send()
+            .await
+            .expect_status(200)
+            .expect_header("x-ratelimit-limit", "3")
+            .expect_header("x-ratelimit-remaining", remaining);
+    }
+    c.get("/ptr/pro").header("x-plan", "pro").send().await.expect_status(429);
+}
+
+#[corvis::test]
+async fn a_route_override_beats_the_function_and_the_function_is_not_called() {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 0)]).with_limit_fn("default", |_| async {
+        CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(1)
+    });
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/ptr/limit5").send().await.expect_status(200).expect_header("x-ratelimit-limit", "5");
+    assert_eq!(CALLS.load(std::sync::atomic::Ordering::SeqCst), 0);
+    c.get("/plain").send().await.expect_status(200);
+    assert_eq!(CALLS.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[corvis::test]
+async fn a_function_wins_over_the_static_value_whatever_the_call_order() {
+    for static_first in [true, false] {
+        let base = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]);
+        let storage = if static_first {
+            base.with_block_duration("default", 300_000).with_block_duration_fn("default", |_| async { Ok(20_000) })
+        } else {
+            base.with_block_duration_fn("default", |_| async { Ok(20_000) }).with_block_duration("default", 300_000)
+        };
+        let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+        let c = request(&app);
+        c.get("/plain").send().await.expect_status(200);
+        c.get("/plain").send().await.expect_status(429).expect_header("retry-after", "20");
+    }
+}
+
+#[corvis::test]
+async fn the_block_duration_follows_the_ttl_function() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]).with_ttl_fn("default", |_| async { Ok(10_000) });
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200).expect_header("x-ratelimit-reset", "10");
+    c.get("/plain").send().await.expect_status(429).expect_header("retry-after", "10");
+}
+
+#[corvis::test]
+async fn a_value_function_error_is_returned_unchanged_and_counts_no_hit() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]).with_limit_fn("default", |ctx| async move {
+        match ctx.request().header("x-mode") {
+            Some("internal") => Err(HttpException::from_anyhow(anyhow::anyhow!("plan lookup failed"))),
+            Some("forbidden") => Err(ForbiddenException::new("no plan")),
+            _ => Ok(1),
+        }
+    });
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    let r = c.get("/plain").header("x-mode", "internal").send().await;
+    r.expect_status(500).expect_json(json!({ "statusCode": 500, "message": "Internal server error" }));
+    c.get("/plain").header("x-mode", "forbidden").send().await.expect_status(403);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/plain").send().await.expect_status(429);
+}
+
+#[corvis::test]
+async fn a_ttl_function_is_checked_after_the_static_throttlers() {
+    let storage =
+        ThrottlerStorage::new(vec![throttler("a", 60_000, 2), throttler("b", 1_000, 1)]).with_ttl_fn("b", |_| async { Ok(10_000) });
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/plain").send().await.expect_status(429).expect_header("retry-after-b", "10");
+    let r = c.get("/plain").send().await;
+    r.expect_status(429).expect_header("retry-after-a", "60");
+    assert!(r.header("retry-after-b").is_none());
+}
+
+#[test]
+fn the_builders_panic_on_an_unknown_name() {
+    fn panics(f: impl FnOnce() + std::panic::UnwindSafe) -> String {
+        let e = std::panic::catch_unwind(f).unwrap_err();
+        e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap()
+    }
+    let base = || ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 2)]);
+    assert!(panics(move || drop(base().with_tracker_for("login", |_| async { Ok("x".to_string()) }))).contains("login"));
+    assert!(panics(move || drop(base().with_key_generator_for("login", |_, t, _| t.to_string()))).contains("login"));
+    assert!(panics(move || drop(base().with_limit_fn("login", |_| async { Ok(1) }))).contains("login"));
+    assert!(panics(move || drop(base().with_ttl_fn("login", |_| async { Ok(1) }))).contains("login"));
+    assert!(panics(move || drop(base().with_block_duration_fn("login", |_| async { Ok(1) }))).contains("login"));
+    assert!(panics(move || drop(base().with_block_duration("login", 1))).contains("login"));
+}
+
+#[test]
+fn the_value_function_alias_is_exported() {
+    let f: ThrottlerValueFn<u32> = std::sync::Arc::new(|_| Box::pin(async { Ok(1) }));
+    drop(f);
+}
+
+#[corvis::test]
+async fn a_for_root_async_factory_keeps_the_per_throttler_functions() {
+    let module = ThrottlerModule::for_root_async(|_| async {
+        Ok(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 0)]).with_limit_fn("default", plan_limit))
+    });
+    let app = app_with(module).await;
+    request(&app).get("/ptr/pro").header("x-plan", "pro").send().await.expect_status(200).expect_header("x-ratelimit-limit", "3");
 }
