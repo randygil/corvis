@@ -57,6 +57,7 @@ socket2 = { version = "0.6", features = ["all"] }
 default = ["jwt", "websockets"]
 jwt = ["dep:jsonwebtoken"]
 websockets = ["dep:tokio-tungstenite"]
+socket-io = ["websockets"]
 tls = ["dep:tokio-rustls"]
 health-tls = ["dep:tokio-rustls", "dep:webpki-roots"]
 compression = ["dep:flate2", "dep:brotli"]

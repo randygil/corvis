@@ -7,17 +7,17 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
 
 ## 1. Feature, options and codec
 
-- [ ] 1.1 Add the `socket-io` feature (`["websockets"]`, not default) to `crates/corvis/Cargo.toml`, the module skeleton
+- [x] 1.1 Add the `socket-io` feature (`["websockets"]`, not default) to `crates/corvis/Cargo.toml`, the module skeleton
   of design.md Decision 1 and `EngineOptions` with the defaults of Decision 8 and validation (spec "Options are
   validated"); unit tests for every default and every rejected zero value; verify
   `cargo test -p corvis --features socket-io --lib socket_io` and `cargo build -p corvis` (feature off) with no warnings
-- [ ] 1.2 `packet.rs`: packet types 0-6, text and `b` + base64 binary, payload split on `\x1e` without allocating every
+- [x] 1.2 `packet.rs`: packet types 0-6, text and `b` + base64 binary, payload split on `\x1e` without allocating every
   packet first, packet counting with the `max_payload_packets` bound, lossy UTF-8 input; unit tests with byte strings
   taken from the Node reference (`engine.io-parser` output recorded by a harness script); verify the unit tests
-- [ ] 1.3 `fuzz.rs`: properties (no panic on any input, encode/decode round trip, decoded size proportional to input,
+- [x] 1.3 `fuzz.rs`: properties (no panic on any input, encode/decode round trip, decoded size proportional to input,
   count bound never exceeded); verify `cargo test -p corvis --features socket-io --lib fuzz` and with
   `PROPTEST_CASES=20000`
-- [ ] 1.4 `sid.rs` (design.md Decision 4): `OsRng` 15 bytes, base64url, shape check; unit tests for spec "Ids differ"
+- [x] 1.4 `sid.rs` (design.md Decision 4): `OsRng` 15 bytes, base64url, shape check; unit tests for spec "Ids differ"
   and the shape check; verify the unit tests
 
 ## 2. Reuse refactors (no behavior change)

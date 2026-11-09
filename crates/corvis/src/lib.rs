@@ -64,6 +64,9 @@ pub mod websockets;
 /// Plain WebSockets (`ws` package) on top of `HttpAdapterHost` upgrade listeners.
 #[cfg(feature = "websockets")]
 pub mod ws;
+/// Engine.IO v4 (the transport layer of Socket.IO) on the application's HTTP server. Preview, opt-in.
+#[cfg(feature = "socket-io")]
+pub mod socket_io;
 
 mod server;
 pub use server::ServerOptions;
