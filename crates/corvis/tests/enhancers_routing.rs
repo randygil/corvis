@@ -704,3 +704,152 @@ async fn more_than_four_optional_segments_fail_at_startup() {
     let err = app.init().await.unwrap_err().to_string();
     assert!(err.contains("TooManyOptionalController") && err.contains("5 optional segments"), "{err}");
 }
+
+// ------------------------------------------------------------------ filter order inside one use_filters
+
+/// A filter that answers `{ "by": <name> }` for the listed statuses (every exception when empty), like a
+/// `@Catch(...)` set.
+macro_rules! scoped_filter {
+    ($name:ident, $label:literal, [$($status:literal),*]) => {
+        #[injectable]
+        pub struct $name;
+
+        #[async_trait]
+        impl ExceptionFilter for $name {
+            fn catches(&self, exception: &HttpException) -> bool {
+                let statuses: &[u16] = &[$($status),*];
+                statuses.is_empty() || statuses.contains(&exception.get_status())
+            }
+            async fn catch(&self, _exception: HttpException, _host: &ArgumentsHost) -> Response {
+                Response::json(json!({ "by": $label })).with_status(200)
+            }
+        }
+    };
+}
+
+scoped_filter!(FltFirst, "First", []);
+scoped_filter!(FltSecond, "Second", []);
+scoped_filter!(FltA, "A", [403, 409]);
+scoped_filter!(FltB, "B", [403]);
+scoped_filter!(FltC, "C", []);
+scoped_filter!(FltC1, "C1", [409, 404]);
+scoped_filter!(FltC2, "C2", [403, 404]);
+scoped_filter!(FltM1, "M1", [403]);
+scoped_filter!(FltM2, "M2", [409]);
+scoped_filter!(FltK, "K", [409]);
+scoped_filter!(FltM, "M", [403]);
+scoped_filter!(FltG, "G", []);
+
+/// A controller with the four failing routes of the fixture; `$cattr` and `$mattr` are the attributes of
+/// the class and of every method.
+macro_rules! order_controller {
+    ($name:ident, $path:literal, [$($cattr:meta),*], [$($mattr:meta),*]) => {
+        #[controller($path)]
+        $(#[$cattr])*
+        pub struct $name;
+
+        #[routes]
+        impl $name {
+            #[get("forbidden")]
+            $(#[$mattr])*
+            fn forbidden(&self) -> HttpResult<()> {
+                Err(ForbiddenException::default().into())
+            }
+            #[get("conflict")]
+            $(#[$mattr])*
+            fn conflict(&self) -> HttpResult<()> {
+                Err(ConflictException::default().into())
+            }
+            #[get("notfound")]
+            $(#[$mattr])*
+            fn notfound(&self) -> HttpResult<()> {
+                Err(NotFoundException.into())
+            }
+            #[get("bad")]
+            $(#[$mattr])*
+            fn bad(&self) -> HttpResult<()> {
+                Err(BadRequestException::default().into())
+            }
+        }
+    };
+}
+
+order_controller!(MethodOne, "method_one_attribute", [], [use_filters(FltFirst, FltSecond)]);
+order_controller!(ClassOne, "class_one_attribute", [use_filters(FltFirst, FltSecond)], []);
+order_controller!(MethodStacked, "method_stacked_attributes", [], [use_filters(FltA, FltB), use_filters(FltC)]);
+order_controller!(ClassStacked, "class_stacked_attributes", [use_filters(FltA, FltB), use_filters(FltC)], []);
+order_controller!(MethodBeforeClass, "method_before_class", [use_filters(FltC1, FltC2)], [use_filters(FltM1, FltM2)]);
+order_controller!(ArrayForm, "array_form", [], [use_filters([FltFirst, FltSecond])]);
+order_controller!(GlobalLast, "global_last", [use_filters(FltK)], [use_filters(FltM)]);
+
+#[module(controllers = [MethodOne, ClassOne, MethodStacked, ClassStacked, MethodBeforeClass, ArrayForm])]
+pub struct FilterOrderModule;
+
+#[module(controllers = [GlobalLast])]
+pub struct GlobalLastModule;
+
+async fn order_app<M: Module>(bootstrap: impl FnOnce(&mut CorvisApplication)) -> CorvisApplication {
+    let mut app = CorvisFactory::create::<M>().await.unwrap();
+    app.silence_route_logs();
+    bootstrap(&mut app);
+    app.init().await.unwrap();
+    app
+}
+
+#[corvis::test]
+async fn two_filters_in_one_method_attribute_try_the_last_first() {
+    let app = order_app::<FilterOrderModule>(|_| {}).await;
+    request(&app).get("/method_one_attribute/forbidden").send().await.expect_json(json!({ "by": "Second" }));
+}
+
+#[corvis::test]
+async fn two_filters_in_one_controller_attribute_try_the_last_first() {
+    let app = order_app::<FilterOrderModule>(|_| {}).await;
+    request(&app).get("/class_one_attribute/forbidden").send().await.expect_json(json!({ "by": "Second" }));
+}
+
+#[corvis::test]
+async fn stacked_attributes_try_the_upper_one_first_and_each_one_last_first() {
+    let app = order_app::<FilterOrderModule>(|_| {}).await;
+    let c = request(&app);
+    c.get("/method_stacked_attributes/forbidden").send().await.expect_json(json!({ "by": "B" }));
+    c.get("/method_stacked_attributes/conflict").send().await.expect_json(json!({ "by": "A" }));
+    c.get("/method_stacked_attributes/notfound").send().await.expect_json(json!({ "by": "C" }));
+}
+
+#[corvis::test]
+async fn method_filters_come_before_controller_filters() {
+    let app = order_app::<FilterOrderModule>(|_| {}).await;
+    let c = request(&app);
+    c.get("/method_before_class/forbidden").send().await.expect_json(json!({ "by": "M1" }));
+    c.get("/method_before_class/notfound").send().await.expect_json(json!({ "by": "C2" }));
+}
+
+#[corvis::test]
+async fn the_array_form_counts_as_one_attribute() {
+    let app = order_app::<FilterOrderModule>(|_| {}).await;
+    request(&app).get("/array_form/forbidden").send().await.expect_json(json!({ "by": "Second" }));
+}
+
+#[corvis::test]
+async fn replays_the_filter_order_fixture_of_the_original_framework() {
+    let raw =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/http_filter_order/http_filter_order.json")).unwrap();
+    let fixture: Value = serde_json::from_str(&raw).unwrap();
+    let scenarios = fixture["scenarios"].as_object().unwrap();
+    assert_eq!(scenarios.len(), 6);
+    let plain = order_app::<FilterOrderModule>(|_| {}).await;
+    let global = order_app::<GlobalLastModule>(|app| {
+        app.use_global_filters(FltG);
+    })
+    .await;
+    for (name, requests) in scenarios {
+        let app = if name == "global_last" { &global } else { &plain };
+        for r in requests.as_array().unwrap() {
+            let path = format!("/{name}/{}", r["kind"].as_str().unwrap());
+            let got = request(app).get(&path).send().await;
+            assert_eq!(got.status(), r["status"].as_u64().unwrap() as u16, "{name} {path}");
+            assert_eq!(got.json_value(), r["body"], "{name} {path}");
+        }
+    }
+}

@@ -29,7 +29,8 @@ const guard = (name, fn) => {
   Injectable()(G);
   return G;
 };
-const filter = (name, catchAll = true) => {
+// `types` lists the exception classes the filter catches (all of them when empty).
+const filter = (name, types = []) => {
   class F {
     catch(exception, host) {
       record(name);
@@ -38,7 +39,7 @@ const filter = (name, catchAll = true) => {
     }
   }
   Object.defineProperty(F, 'name', { value: name });
-  Catch()(F);
+  Catch(...types)(F);
   return F;
 };
 const noCause = (frame) => {
@@ -59,7 +60,14 @@ class WrapInterceptor {
   }
 }
 
-function makeGateway({ gatewayGuards = [], gatewayFilters = [], methodFilters = [], methodGuards = [] }) {
+// `methodFilterGroups` lists stacked `UseFilters` decorators top to bottom; they are applied bottom to top.
+function makeGateway({
+  gatewayGuards = [],
+  gatewayFilters = [],
+  methodFilters = [],
+  methodFilterGroups = [],
+  methodGuards = [],
+}) {
   class Gw {
     join(text) {
       record('handler');
@@ -86,6 +94,7 @@ function makeGateway({ gatewayGuards = [], gatewayFilters = [], methodFilters = 
   method('fail', 'fail', [MessageBody()]);
   method('failFiltered', 'failFiltered', [MessageBody()]);
   if (methodFilters.length) UseFilters(...methodFilters)(proto, 'failFiltered', Object.getOwnPropertyDescriptor(proto, 'failFiltered'));
+  for (const g of [...methodFilterGroups].reverse()) UseFilters(...g)(proto, 'failFiltered', Object.getOwnPropertyDescriptor(proto, 'failFiltered'));
   if (methodGuards.length) UseGuards(...methodGuards)(proto, 'join', Object.getOwnPropertyDescriptor(proto, 'join'));
   if (gatewayGuards.length) UseGuards(...gatewayGuards)(Gw);
   if (gatewayFilters.length) UseFilters(...gatewayFilters)(Gw);
@@ -178,6 +187,20 @@ const scenarios = Object.fromEntries(
     out.push(
       await run('filters_in_one_use_filters', {
         gateway: { methodFilters: [filter('First'), filter('Second')] },
+        messages: [{ event: 'failFiltered', data: 'x' }],
+      }),
+    );
+    out.push(
+      await run('filters_in_one_gateway_use_filters', {
+        gateway: { gatewayFilters: [filter('First'), filter('Second')] },
+        messages: [{ event: 'failFiltered', data: 'x' }],
+      }),
+    );
+    out.push(
+      await run('stacked_handler_use_filters', {
+        gateway: {
+          methodFilterGroups: [[filter('A'), filter('B', [RangeError])], [filter('C')]],
+        },
         messages: [{ event: 'failFiltered', data: 'x' }],
       }),
     );

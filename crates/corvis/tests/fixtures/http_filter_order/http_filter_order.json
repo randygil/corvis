@@ -1,0 +1,214 @@
+{
+  "versions": {
+    "core": "11.2.1",
+    "common": "11.2.1",
+    "node": "v24.13.0"
+  },
+  "scenarios": {
+    "method_one_attribute": [
+      {
+        "path": "/c/forbidden",
+        "kind": "forbidden",
+        "status": 200,
+        "body": {
+          "by": "Second"
+        }
+      },
+      {
+        "path": "/c/conflict",
+        "kind": "conflict",
+        "status": 200,
+        "body": {
+          "by": "Second"
+        }
+      },
+      {
+        "path": "/c/notfound",
+        "kind": "notfound",
+        "status": 200,
+        "body": {
+          "by": "Second"
+        }
+      },
+      {
+        "path": "/c/bad",
+        "kind": "bad",
+        "status": 200,
+        "body": {
+          "by": "Second"
+        }
+      }
+    ],
+    "class_one_attribute": [
+      {
+        "path": "/c/forbidden",
+        "kind": "forbidden",
+        "status": 200,
+        "body": {
+          "by": "Second"
+        }
+      },
+      {
+        "path": "/c/conflict",
+        "kind": "conflict",
+        "status": 200,
+        "body": {
+          "by": "Second"
+        }
+      },
+      {
+        "path": "/c/notfound",
+        "kind": "notfound",
+        "status": 200,
+        "body": {
+          "by": "Second"
+        }
+      },
+      {
+        "path": "/c/bad",
+        "kind": "bad",
+        "status": 200,
+        "body": {
+          "by": "Second"
+        }
+      }
+    ],
+    "method_stacked_attributes": [
+      {
+        "path": "/c/forbidden",
+        "kind": "forbidden",
+        "status": 200,
+        "body": {
+          "by": "B"
+        }
+      },
+      {
+        "path": "/c/conflict",
+        "kind": "conflict",
+        "status": 200,
+        "body": {
+          "by": "A"
+        }
+      },
+      {
+        "path": "/c/notfound",
+        "kind": "notfound",
+        "status": 200,
+        "body": {
+          "by": "C"
+        }
+      },
+      {
+        "path": "/c/bad",
+        "kind": "bad",
+        "status": 200,
+        "body": {
+          "by": "C"
+        }
+      }
+    ],
+    "class_stacked_attributes": [
+      {
+        "path": "/c/forbidden",
+        "kind": "forbidden",
+        "status": 200,
+        "body": {
+          "by": "B"
+        }
+      },
+      {
+        "path": "/c/conflict",
+        "kind": "conflict",
+        "status": 200,
+        "body": {
+          "by": "A"
+        }
+      },
+      {
+        "path": "/c/notfound",
+        "kind": "notfound",
+        "status": 200,
+        "body": {
+          "by": "C"
+        }
+      },
+      {
+        "path": "/c/bad",
+        "kind": "bad",
+        "status": 200,
+        "body": {
+          "by": "C"
+        }
+      }
+    ],
+    "method_before_class": [
+      {
+        "path": "/c/forbidden",
+        "kind": "forbidden",
+        "status": 200,
+        "body": {
+          "by": "M1"
+        }
+      },
+      {
+        "path": "/c/conflict",
+        "kind": "conflict",
+        "status": 200,
+        "body": {
+          "by": "M2"
+        }
+      },
+      {
+        "path": "/c/notfound",
+        "kind": "notfound",
+        "status": 200,
+        "body": {
+          "by": "C2"
+        }
+      },
+      {
+        "path": "/c/bad",
+        "kind": "bad",
+        "status": 400,
+        "body": {
+          "message": "Bad Request",
+          "statusCode": 400
+        }
+      }
+    ],
+    "global_last": [
+      {
+        "path": "/c/forbidden",
+        "kind": "forbidden",
+        "status": 200,
+        "body": {
+          "by": "M"
+        }
+      },
+      {
+        "path": "/c/conflict",
+        "kind": "conflict",
+        "status": 200,
+        "body": {
+          "by": "K"
+        }
+      },
+      {
+        "path": "/c/notfound",
+        "kind": "notfound",
+        "status": 200,
+        "body": {
+          "by": "G"
+        }
+      },
+      {
+        "path": "/c/bad",
+        "kind": "bad",
+        "status": 200,
+        "body": {
+          "by": "G"
+        }
+      }
+    ]
+  }
+}

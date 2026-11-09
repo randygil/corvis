@@ -135,6 +135,22 @@ named_filter!(GatewayFilter, "GatewayFilter");
 named_filter!(MethodFilter, "MethodFilter");
 named_filter!(First, "First");
 named_filter!(Second, "Second");
+named_filter!(FltA, "A");
+named_filter!(FltC, "C");
+
+/// Catches nothing and records nothing, like the fixture's `B` that only catches a `RangeError`.
+#[injectable]
+pub struct FltB;
+
+#[async_trait]
+impl ExceptionFilter for FltB {
+    fn catches(&self, _exception: &HttpException) -> bool {
+        false
+    }
+    async fn catch(&self, _exception: HttpException, _host: &ArgumentsHost) -> Response {
+        unreachable!("catches returns false")
+    }
+}
 named_filter!(GlobalFilter, "GlobalFilter");
 named_filter!(ProviderFilter, "ProviderFilter");
 
@@ -691,12 +707,30 @@ async fn handler_filter_wins_over_gateway_filter() {
 }
 
 #[corvis::test]
-async fn filters_of_one_attribute_are_tried_in_declaration_order_like_http() {
+async fn filters_of_one_attribute_are_tried_last_listed_first() {
     let _s = SERIAL.lock().await;
     let (_app, addr) = start::<AppModule>(|_| {}).await;
     let reply = ask(addr, "/filtered", json!({ "event": "order" })).await;
-    assert_eq!(reply["data"], json!({ "by": "First" }));
-    assert_eq!(calls(), ["handler", "First"]);
+    assert_eq!(reply["data"], json!({ "by": "Second" }));
+    assert_eq!(calls(), ["handler", "Second"]);
+}
+
+#[corvis::test]
+async fn filters_of_one_gateway_attribute_are_tried_last_listed_first() {
+    let _s = SERIAL.lock().await;
+    let (_app, addr) = start::<FxModule>(|_| {}).await;
+    let reply = ask(addr, "/fx_gateway_order", json!({ "event": "failFiltered" })).await;
+    assert_eq!(reply["data"], json!({ "by": "Second" }));
+    assert_eq!(calls(), ["handler", "Second"]);
+}
+
+#[corvis::test]
+async fn stacked_handler_attributes_keep_the_upper_one_first() {
+    let _s = SERIAL.lock().await;
+    let (_app, addr) = start::<FxModule>(|_| {}).await;
+    let reply = ask(addr, "/fx_stacked", json!({ "event": "failFiltered" })).await;
+    assert_eq!(reply["data"], json!({ "by": "A" }));
+    assert_eq!(calls(), ["handler", "A"]);
 }
 
 #[corvis::test]
@@ -891,7 +925,40 @@ impl FxOrder {
     }
 }
 
-#[module(providers = [FxPlain, FxGatewayGuard, FxFilters, FxOrder])]
+#[websocket_gateway(path = "/fx_gateway_order")]
+#[use_filters(First, Second)]
+pub struct FxGatewayOrder {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl FxGatewayOrder {
+    #[subscribe_message("failFiltered")]
+    fn fail_filtered(&self) -> HttpResult<()> {
+        record("handler");
+        Err(WsException::new("boom"))
+    }
+}
+
+#[websocket_gateway(path = "/fx_stacked")]
+pub struct FxStacked {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl FxStacked {
+    #[subscribe_message("failFiltered")]
+    #[use_filters(FltA, FltB)]
+    #[use_filters(FltC)]
+    fn fail_filtered(&self) -> HttpResult<()> {
+        record("handler");
+        Err(WsException::new("boom"))
+    }
+}
+
+#[module(providers = [FxPlain, FxGatewayGuard, FxFilters, FxOrder, FxGatewayOrder, FxStacked])]
 pub struct FxModule;
 
 #[module(imports = [FxModule], providers = [Provider::app_guard::<Deny>()])]
@@ -909,13 +976,15 @@ async fn replays_the_original_framework_fixture() {
     let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ws_gateways/ws_gateways.json")).unwrap();
     let fixture: Value = serde_json::from_str(&raw).unwrap();
     let scenarios = fixture.as_object().unwrap();
-    assert_eq!(scenarios.len(), 12);
+    assert_eq!(scenarios.len(), 14);
 
     for (name, runs) in scenarios {
         let path = match name.as_str() {
             "global_guard_before_gateway_guard" => "/fx_gg",
             "method_filter_wins" | "gateway_filter_catches_guard_refusal" => "/fx_filters",
             "filters_in_one_use_filters" => "/fx_order",
+            "filters_in_one_gateway_use_filters" => "/fx_gateway_order",
+            "stacked_handler_use_filters" => "/fx_stacked",
             _ => "/fx",
         };
         let (_app, addr) = match name.as_str() {
@@ -965,14 +1034,6 @@ async fn replays_the_original_framework_fixture() {
             let frames: Vec<Value> = got.into_iter().collect();
             let expected_frames = run["frames"].as_array().unwrap().clone();
             let expected_calls: Vec<String> = run["calls"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
-            if name == "filters_in_one_use_filters" {
-                // The original tries the filters of one attribute last first; HTTP routes here (and so
-                // gateways) try them in declaration order. Everything else about the scenario matches.
-                assert_eq!(frames, [json!({ "event": "exception", "data": { "by": "First" } })], "{name}");
-                assert_eq!(calls(), ["handler", "First"], "{name}");
-                assert_eq!(expected_calls, ["handler", "Second"]);
-                continue;
-            }
             assert_eq!(frames, expected_frames, "{name}: frames for {message}");
             assert_eq!(calls(), expected_calls, "{name}: calls for {message}");
         }
