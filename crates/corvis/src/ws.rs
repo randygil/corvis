@@ -177,24 +177,47 @@ impl OutQueue {
     }
 }
 
+/// Why [`write_loop`] stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteEnd {
+    /// A close frame was written or the queue was shut down.
+    Closed,
+    /// A write failed at the socket (a peer that accepts nothing hits the server's `send_timeout` as `TimedOut`).
+    Failed(std::io::ErrorKind),
+    /// The protocol refused a frame (for instance a send after the closing handshake began); the socket is fine.
+    Refused,
+}
+
 /// Writes the frames of `queue` to `sink` until a close frame is written, a write fails or
 /// the queue is shut down.
-pub(crate) async fn write_loop<S>(mut sink: S, queue: Arc<OutQueue>)
+pub(crate) async fn write_loop<S>(mut sink: S, queue: Arc<OutQueue>) -> WriteEnd
 where
     S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
     while let Some((m, size, ack)) = queue.next().await {
         let close = matches!(m, Message::Close(_));
-        let r = sink.send(m).await.map_err(|e| WsError::new(e.to_string(), None));
+        let result = sink.send(m).await;
         queue.written(size);
-        let failed = r.is_err();
+        let kind = match &result {
+            Ok(()) => None,
+            Err(tokio_tungstenite::tungstenite::Error::Io(e)) => Some(e.kind()),
+            Err(_) => None,
+        };
+        let refused = result.is_err() && kind.is_none();
         if let Some(a) = ack {
-            let _ = a.send(r);
+            let _ = a.send(result.map_err(|e| WsError::new(e.to_string(), None)));
         }
-        if failed || close {
+        if let Some(kind) = kind {
+            return WriteEnd::Failed(kind);
+        }
+        if refused {
+            return WriteEnd::Refused;
+        }
+        if close {
             break;
         }
     }
+    WriteEnd::Closed
 }
 
 /// Runs a listener or hook, turning a panic into an error log. Returns `false` if it panicked.
@@ -984,7 +1007,9 @@ async fn run(ws: WebSocket, stream: WebSocketStream<UpgradedIo>, mut control: mp
                     ws.emit_error(&err);
                     let frame = CloseFrame { code: CloseCode::from(code), reason: Cow::Borrowed("") };
                     ws.inner.queue.close(Some(frame), true);
-                    writer_done = tokio::time::timeout(Duration::from_secs(1), &mut writer).await.is_ok();
+                    if !writer_done {
+                        writer_done = tokio::time::timeout(Duration::from_secs(1), &mut writer).await.is_ok();
+                    }
                     break;
                 }
             },
@@ -996,6 +1021,26 @@ async fn run(ws: WebSocket, stream: WebSocketStream<UpgradedIo>, mut control: mp
                 Some(Control::Terminate) | None => break,
             },
             _ = timeout => break,
+            // The writer stops after a write error (the peer accepts nothing: `send_timeout`) or after a close frame.
+            end = &mut writer, if !writer_done => {
+                writer_done = true;
+                match end {
+                    Ok(WriteEnd::Failed(kind)) => {
+                        if kind == std::io::ErrorKind::TimedOut {
+                            Logger::new("WebSocket").warn(format!(
+                                "socket {}: accepted no data for the server's send_timeout, connection dropped",
+                                ws.inner.id
+                            ));
+                        }
+                        break;
+                    }
+                    // The socket is fine: a pending close reply still goes out through the read half, so keep
+                    // reading until the peer closes or `close_timeout` passes.
+                    Ok(WriteEnd::Closed | WriteEnd::Refused) if received.is_some() => break,
+                    Ok(WriteEnd::Closed | WriteEnd::Refused) => {}
+                    Err(_) => break,
+                }
+            }
         }
     }
     // Dropping both halves closes the TCP connection, even if the writer is blocked on a

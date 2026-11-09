@@ -295,3 +295,13 @@ The review found nothing critical, high or medium. The maintainer decided:
   listed in `REJECTED_ROUTES` in the replay (the recording answers 200, Corvis must answer 500). The earlier note in
   "Risks" about warning once per route no longer applies.
 - **`null` wording (informational).** Corrected in Decision 4 above and in the docs.
+
+## Verification (2026-11-09)
+
+Verified together in batch-o (#157, #158, #115, #156): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1252 tests and `cargo test -p corvis --features compression` passed 912, 0 failures; naming, crate files, the examples
+(32/32 smoke checks) and `npm run docs:check` pass. CI run 42663786027 is green on Linux and Windows. Parity: not needed, the ports do not use the throttler. Security review: stored keys now separate the
+generator source (`b:`, `m:`, `n{len}:{id}:`) so a custom generator cannot collide with the built-in key, and
+override names that no throttler defines fail closed with a 500.

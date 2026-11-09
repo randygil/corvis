@@ -59,13 +59,13 @@ Start after #150 (`e0-http2-limits-follow-server-options`) is merged: this chang
 
 ## 6. Definition of done
 
-- [ ] 6.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 6.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 6.3 `cargo test --workspace` passes, including the regression tests of 1.2
-- [ ] 6.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 6.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 6.1 `cargo build --workspace --all-targets` with no warnings
+- [x] 6.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [x] 6.3 `cargo test --workspace` passes, including the regression tests of 1.2
+- [x] 6.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
+- [x] 6.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences
-- [ ] 6.6 Re-run the proofs of concept of the security review (`window`, `ping`, `h1pipe`, `pinglong`, `mem`) against
+- [x] 6.6 Re-run the proofs of concept of the security review (`window`, `ping`, `h1pipe`, `pinglong`, `mem`) against
   the branch and record in design.md that the second client is served and the memory is released after
   `send_timeout`
 

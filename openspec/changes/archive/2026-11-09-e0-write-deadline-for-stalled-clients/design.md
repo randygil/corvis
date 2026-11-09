@@ -223,7 +223,7 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
 - Q4: established WebSocket connections stay exempt here; their own write deadline is filed as a separate issue.
 - Implement after #150 is merged, reusing its raw-frame client.
 
-## Review notes (2026-11-10)
+## Review notes, second round (2026-11-09)
 
 - Supersedes Q3 of the 2026-11-09 notes. The connection is closed only when no response body of it has made progress
   for `send_timeout` (some body waits for hyper, and no body of the connection has had a frame taken for that long),
@@ -313,3 +313,14 @@ problem 1), `ping_stall` / `ping_stall_long` (`:143-171`, `:480-496`, problem 2 
   Linux, 64 KiB measured on Windows loopback), 8 MiB per period elsewhere. It prints the rate it exercises. A unit test
   checks that accepted sockets carry the mark (Linux and Android). Nothing was run on Linux from this branch: the
   reasoning above is from the kernel semantics, so the Linux CI run is the check.
+
+## Verification (2026-11-09)
+
+Verified together in batch-o (#157, #158, #115, #156): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1252 tests and `cargo test -p corvis --features compression` passed 912, 0 failures; naming, crate files, the examples
+(32/32 smoke checks) and `npm run docs:check` pass. CI run 42663786027 is green on Linux and Windows. CI run 42662113023 confirmed the Linux path (`TCP_NOTSENT_LOWAT` through `socket2`), which is not compiled on
+Windows. corvis-parity (batch before #156): consi 832/832, facten 727/727, houseplan 636/636 equal. Security review: the second round replaced the per-stream rule with the per-connection progress rule;
+its proofs of concept (zero window, never-read PING flood, HTTP/1 pipelining) are now regression tests. Memory held by
+an RST cycle or a WINDOW_UPDATE trickle is #163; the WebSocket write deadline is #161.

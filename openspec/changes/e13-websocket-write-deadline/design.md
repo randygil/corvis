@@ -150,3 +150,85 @@ None that needs a maintainer: reuse of `send_timeout`, destroying the connection
 - Approved as drafted: reuse `send_timeout` for upgraded connections, destroy the connection without a close
   frame (local `1006`), and count only bytes the socket accepts as progress.
 - Archive after `e0-write-deadline-for-stalled-clients` (#157), since it modifies `http/send-timeout`.
+
+## Review notes, security round (2026-11-09)
+
+1. **Panic in `ws.rs::run` (high).** The writer arm consumed the `JoinHandle` on `WriteEnd::Closed`, and the
+   protocol-error branch awaited it again. Fixed with the same `if !writer_done` guard the gateway loop has. Regression
+   test `an_invalid_frame_during_the_closing_handshake_closes_the_plain_socket_once`.
+2. **Pongs bypass `max_buffered_amount` (high).** Decision: read backpressure, not a cap on `max_write_buffer_size`
+   (which would fail large data messages). `TimedIo::read_paused`: on an upgraded connection, while the last write is
+   blocked, `poll_read` returns `Pending` instead of reading. It probes `poll_write_ready` of the socket, because the
+   blocked write may have been issued by the read task itself (a pong flushed on the read path), in which case nobody
+   else would retry it; when the socket is writable again it clears the flag and wakes the writer task. A write that
+   makes progress wakes the parked reader (`write_progress`). The send timeout is still polled from the parked read,
+   so a stall ends the connection. Pending pongs are bounded by one read chunk plus what the kernel buffers hold.
+   Tests: `a_ping_flood_without_reading_is_bounded_on_a_gateway` and `..._on_a_plain_websocket` (a raw client sends
+   masked pings until its socket stops accepting bytes; with the pause the server takes far less than 24 MiB; with the
+   pause disabled the same tests failed with 37-47 MiB accepted). The false comment about "one pending pong at most"
+   in `websockets.rs` was replaced.
+3. **`Failed(Other)` ended the plain connection (low).** `write_loop` now reports `WriteEnd::Refused` for errors that
+   are not socket errors (for example a send after the closing handshake began). `ws.rs::run` ends at once only on
+   socket errors (`Failed`); on `Refused` it behaves as on `Closed` (keeps reading until the peer closes or
+   `close_timeout`), so a pending close reply is flushed. The gateway loop only breaks on `Failed`, as before.
+
+Reviewer PoCs, run from the review folder against this branch (release build):
+- `panic`: no panic; the server logs `on_close(1006)` once and `on_close called: true`.
+- `e13poc 15 0 60` (ping flood, no reading, send_timeout 60 s): no ping batch completed, server heap delta 0 MiB
+  throughout (was +254 MiB in 15 s).
+- `e13poc 13 1 10` (trickle reader, send_timeout 10 s): 2 MiB sent in 13 s, heap delta 0 MiB (was +508 MiB).
+
+## Review notes, security round 2 (2026-11-09)
+
+1. **`read_paused` stole the writer's waker (medium).** A reader on another task registered its waker in two
+   single-slot places (the socket's write readiness and the write deadline `Sleep`), so the writer was never woken when
+   the deadline fired. Deviation from the suggested `will_wake` check: tokio-tungstenite uses a different waker proxy
+   for its read and write contexts, so `will_wake` would be false even for one task and the probe would never run.
+   Instead the reader no longer registers anything the writer uses. The socket is probed with a zero-byte
+   `try_write` (it reports the readiness the driver already knows and registers no waker); the parked reader has its
+   own `read_sleep` timer. When the timeout fires on either side, `send_timed_out` wakes both stored wakers and sets
+   `send_failed`, after which reads of the upgraded connection fail with `TimedOut` too (a reader that was not paused
+   also stores its waker when it returns `Pending`, so it can be woken). Test
+   `a_split_writer_ends_at_the_deadline_while_the_peer_sends_bytes`. The reviewer's `split` PoC now ends both tasks at
+   2.006 s with and without the 1-byte pokes (before: the writer hung for 15 s).
+2. **Read budget (low, compatibility).** While a write is blocked an upgraded connection may read
+   `READ_BUDGET_WHILE_BLOCKED` = 64 KiB (reset when the socket accepts bytes); beyond that it pauses as before.
+   Pending pongs stay bounded by the budget plus one read chunk. Test
+   `a_message_written_before_reading_is_processed_while_the_server_streams` (a 32 KiB message from a client that does
+   not read; fails with a budget of 0); the ping-flood tests still pass. Documented in the gateways page (EN + ES).
+3. **Note for #117 (built-in TLS, not done yet).** `read_paused` probes write readiness on the raw `TcpStream`. If
+   `TimedIo` ends up wrapping a TLS stream, the check must also consider ciphertext rustls still has to write
+   (`wants_write`), and the pause must keep acting below TLS so that replies TLS generates itself (KeyUpdate) cannot
+   pile up behind a peer that does not read.
+
+## Review notes, security round 3 (2026-11-09)
+
+1. **Refilling the budget on every write progress let pongs pile up on Linux (high).** With `TCP_NOTSENT_LOWAT` the
+   socket accepts small slices per writable event, so a budget refilled to 64 KiB per event let the server read
+   more than it wrote each cycle. Replaced by a credit (`ReadCredit`): every byte the socket accepts earns a byte (up
+   to 64 KiB), every byte read spends one, and the writable probe in `read_paused` never refills it. While a write is
+   blocked the read buffer is limited to the credit left, so reads during blocked writes never exceed bytes written
+   plus 64 KiB whatever the slice size. Residual: when the probe finds the socket writable with no credit left the
+   next read is unrestricted (one chunk, about 4 KiB, per writable event), smaller than what the socket takes per
+   event in practice; reads while the write is not blocked are never limited, so a pure upload still flows. Tests: the
+   unit test `the_read_credit_follows_the_bytes_the_socket_accepts` (slices from 1 byte to 64 KiB) and
+   `a_ping_flood_with_a_trickle_reader_stays_proportional_to_what_is_read`; the half-duplex test still passes.
+   The Linux PoC (`pocl`, `20 1 10`, `IVL=0 CHUNK=4096`) was not run: it needs WSL and this session could not start
+   it. The Windows runs of all tests pass; the CI Linux job is the check for the Linux behavior.
+2. **A socket error was treated like `WouldBlock` (low).** `read_paused` unpauses unless `try_write(&[])` returns
+   `WouldBlock`, so the next read returns the real error. No test: it needs a peer reset while a custom writer has
+   abandoned a blocked write, which this suite cannot arrange reliably.
+3. **Addition to the #117 note.** The read credit must be measured in bytes accepted by TCP, not in plaintext accepted
+   by rustls (rustls buffers plaintext before TCP takes it).
+
+## Implementation notes
+
+- `write_loop` returns `WriteEnd::{Closed, Failed(io::ErrorKind)}`; the kind is taken from `tungstenite::Error::Io`, any
+  other (non-socket) write error is reported as `WriteEnd::Refused`.
+- `ws.rs::run`: on `Closed` the loop ends only if a close frame was already received; otherwise it keeps waiting for the
+  peer's reply until `close_timeout`.
+- Tests: one test per spec scenario in `tests/send_timeout_ws.rs`, serialised with a static mutex because they share
+  counters. The closing-handshake test probes the connection by reading after four seconds instead of timing the exact
+  moment of closure. The stall tests were not run against the unchanged code to see them fail first.
+- `cargo clippy -p corvis --no-default-features --all-targets` fails to compile several existing test files (they need
+  the default features); this predates the change, so `--lib --bins` was checked instead.

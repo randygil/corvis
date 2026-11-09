@@ -284,6 +284,30 @@ The route posture report lists each gateway handshake as not checked, with wheth
 
 The handshake is validated the same way as in the `ws` package: `405` if the method is not `GET` and `400` if `Sec-WebSocket-Key` or `Sec-WebSocket-Version` are missing or invalid.
 
+## Peers that stop reading
+
+A client whose socket accepts nothing for [`send_timeout`](/http/performance#clients-that-stop-reading-send-timeout) (60 s by default, a server
+option) while the gateway has frames for it loses its connection. The connection is destroyed without a close frame,
+because nothing can be delivered to that peer: `handle_disconnect` runs, the client leaves `server.clients()` and its
+`max_connections` slot is freed. One warning naming the client is logged.
+
+- Progress is measured at the socket: every byte the client accepts, of any frame (data, pings, pongs, close),
+  restarts the deadline. Frames received from the client never do, so a client that pings but does not read is still
+  dropped.
+- It only runs while the server has something to write. An idle connection is never closed by it; to detect dead peers
+  on idle connections, send your own heartbeat.
+- The same applies when a closing handshake is waiting for a peer that does not read: the connection ends after
+  `send_timeout`, not after `close_timeout`.
+- While a write is blocked the server reads from that client only as many bytes as the socket has accepted, plus a
+  64 KiB allowance, so a flood of pings cannot make it queue unbounded pongs, and a client that writes a moderately large
+  message before it reads is still served. Every byte read counts against that credit, even when no write is blocked,
+  so a client that has sent much more than it has received may be cut by `send_timeout` if it then stops reading.
+- `ServerOptions::send_timeout(None)` turns it off; the queue is then bounded only by `max_buffered_amount`.
+
+The `ws` package has no such limit: it keeps a peer that never reads. Corvis diverges on purpose (the memory and the
+connection slot of that peer would be held forever); nginx applies its `send_timeout` to WebSocket connections the same
+way.
+
 ## Concurrency and ordering
 
 Handlers of the same connection **start** in the order their frames arrived and then run in parallel, up to `max_inflight`. A synchronous `join` followed by a `message` always sees the room already joined; but if a handler does an `await` before `client.join`, the next frame may start being processed before it finishes.
