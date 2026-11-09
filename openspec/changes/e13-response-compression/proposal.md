@@ -29,6 +29,10 @@ decide what caches and clients store.
   `*`, `identity`, `br` then `gzip` preferred on ties, no compression without the header). Compressed responses get
   `Content-Encoding` and lose `Content-Length`; `ETag` and `Accept-Ranges` are kept, as in the reference.
 - Encodings: `br`, `gzip`, `deflate` (the zlib format, as Node's `createDeflate`).
+- A cap on compressions in progress (`max_concurrent`, default 8 times the available parallelism, `br` limited to half
+  of the slots, falling back from `br` to `gzip` and then to no compression, `Vary` always set) and a brotli window of
+  at most 2^19 (a divergence from Node's 2^22), added after the security review: a client that stops reading holds its
+  compressor until the connection closes.
 - Streamed bodies (static files, `StreamableFile`, `Response::stream`) are compressed as they are read, in slices of
   at most 64 KiB, and the encoder is flushed whenever the source has nothing ready, so a slow stream is never held
   back.
@@ -82,6 +86,7 @@ None.
 - `enforceEncoding`, `chunkSize`, `memLevel`, `windowBits`, `strategy` and custom brotli `params`: possible new issue
   if a migrated app needs one.
 - A `res.flush()` equivalent: the flush-when-idle rule makes it unnecessary for Corvis bodies.
-- A cap on concurrent compressions (open question in design.md).
+- A send timeout for clients that stop reading (#157): until then such a client keeps its compressor until the
+  connection closes, which the cap on concurrent compressions bounds.
 - Sending `Cache-Control: no-transform` from SSE like the original's SSE does: a separate parity item for the SSE
   headers; possible new issue.

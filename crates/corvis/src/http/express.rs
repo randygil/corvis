@@ -36,11 +36,20 @@ pub struct HttpSettings {
     pub etag: EtagMode,
     /// `express.json()` / `express.urlencoded()` options (`app.useBodyParser`).
     pub body_parser: super::body_parser::BodyParserOptions,
+    /// Response compression (`app.use(compression())`); `None` until `enable_compression`.
+    #[cfg(feature = "compression")]
+    pub compression: Option<std::sync::Arc<super::compression::CompressionOptions>>,
 }
 
 impl Default for HttpSettings {
     fn default() -> Self {
-        HttpSettings { x_powered_by: Some("corvis".into()), etag: EtagMode::Weak, body_parser: Default::default() }
+        HttpSettings {
+            x_powered_by: Some("corvis".into()),
+            etag: EtagMode::Weak,
+            body_parser: Default::default(),
+            #[cfg(feature = "compression")]
+            compression: None,
+        }
     }
 }
 
@@ -49,6 +58,15 @@ impl Default for HttpSettings {
 pub(crate) struct RequestInfo {
     pub method: Method,
     pub headers: HeaderMap,
+    /// Path of the request, kept for a custom compression filter.
+    #[cfg(feature = "compression")]
+    pub path: String,
+    /// Every request header, kept only when a custom compression filter is set.
+    #[cfg(feature = "compression")]
+    pub all_headers: Option<HeaderMap>,
+    /// The compressions in progress of the connection the request came over (none in the test client).
+    #[cfg(feature = "compression")]
+    pub conn_slots: Option<super::compression::ConnectionSlots>,
 }
 
 impl RequestInfo {
@@ -59,7 +77,45 @@ impl RequestInfo {
                 h.append(name.clone(), v.clone());
             }
         }
-        RequestInfo { method: method.clone(), headers: h }
+        RequestInfo {
+            method: method.clone(),
+            headers: h,
+            #[cfg(feature = "compression")]
+            path: String::new(),
+            #[cfg(feature = "compression")]
+            all_headers: None,
+            #[cfg(feature = "compression")]
+            conn_slots: None,
+        }
+    }
+
+    /// Keeps what response compression needs: `Accept-Encoding` always, the path and all the
+    /// headers only when the application set a custom filter.
+    #[cfg(feature = "compression")]
+    pub fn with_compression(mut self, path: &str, headers: &HeaderMap, settings: &HttpSettings) -> Self {
+        let Some(options) = &settings.compression else { return self };
+        for v in headers.get_all(header::ACCEPT_ENCODING) {
+            self.headers.append(header::ACCEPT_ENCODING, v.clone());
+        }
+        if options.has_custom_filter() {
+            self.path = path.to_string();
+            self.all_headers = Some(headers.clone());
+        }
+        self
+    }
+
+    /// The `Accept-Encoding` header values joined like Node's `req.headers`.
+    #[cfg(feature = "compression")]
+    pub fn accept_encoding(&self) -> Option<String> {
+        let values: Vec<String> =
+            self.headers.get_all(header::ACCEPT_ENCODING).iter().map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned()).collect();
+        (!values.is_empty()).then(|| values.join(", "))
+    }
+
+    /// The request headers a compression filter sees.
+    #[cfg(feature = "compression")]
+    pub fn filter_headers(&self) -> &HeaderMap {
+        self.all_headers.as_ref().unwrap_or(&self.headers)
     }
 }
 

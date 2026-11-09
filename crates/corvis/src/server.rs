@@ -251,6 +251,23 @@ pub(crate) fn into_hyper(resp: Response, head: bool) -> hyper::Response<ResBody>
     builder.body(body).unwrap_or_else(|_| hyper::Response::new(full(Bytes::new())))
 }
 
+/// Finishes a handler's response: the Express defaults, the conversion to the wire response and,
+/// when the application enabled it, compression. The server and the test client both end here.
+pub(crate) fn finish_response(
+    mut resp: Response,
+    info: &crate::http::express::RequestInfo,
+    settings: &crate::http::HttpSettings,
+    head: bool,
+) -> hyper::Response<ResBody> {
+    crate::http::express::finalize(&mut resp, info, settings);
+    let wire = into_hyper(resp, head);
+    #[cfg(feature = "compression")]
+    if let Some(options) = &settings.compression {
+        return crate::http::compression::apply(wire, info, options);
+    }
+    wire
+}
+
 // ---------------------------------------------------------------------------
 // Request bodies
 // ---------------------------------------------------------------------------
@@ -440,6 +457,12 @@ async fn handle(
     }
     let head = req.method() == http::Method::HEAD;
     let info = crate::http::express::RequestInfo::new(req.method(), req.headers());
+    #[cfg(feature = "compression")]
+    let info = {
+        let mut info = info.with_compression(req.uri().path(), req.headers(), &shared.http_settings);
+        info.conn_slots = req.extensions().get::<crate::http::compression::ConnectionSlots>().cloned();
+        info
+    };
     let mut resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await
     {
         // An HTTP/2 body that fails to read means the client reset the stream or the connection broke: nobody waits
@@ -463,8 +486,7 @@ async fn handle(
         }
         Err(resp) => resp,
     };
-    crate::http::express::finalize(&mut resp, &info, &shared.http_settings);
-    Ok(into_hyper(resp, head))
+    Ok(finish_response(resp, &info, &shared.http_settings, head))
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,7 +1091,16 @@ pub(crate) async fn serve(
                 let shared = shared.clone();
                 let opts = options.clone();
                 let handlers = Arc::new(tokio::sync::Semaphore::new(stream_cap));
-                let service = hyper::service::service_fn(move |req| {
+                // Compressions in progress of this connection (one set for all its HTTP/2 streams).
+                #[cfg(feature = "compression")]
+                let slots = crate::http::compression::ConnectionSlots::default();
+                let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
+                    #[cfg(feature = "compression")]
+                    let req = {
+                        let mut req = req;
+                        req.extensions_mut().insert(slots.clone());
+                        req
+                    };
                     let guard = InflightGuard::new(state.clone());
                     let watch = CancelWatch { state: state.clone(), outcome: Outcome::Pending };
                     let handlers = handlers.clone();

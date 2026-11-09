@@ -177,6 +177,36 @@ worker thread for the whole body.
 - **WHEN** compression is enabled with `level(20)` and `brotli_quality(50)`
 - **THEN** gzip uses level 9 and brotli quality 11
 
+### Requirement: Compressions in progress are capped
+The number of responses being compressed at the same time SHALL be limited by `CompressionOptions::max_concurrent`
+(at least 1, default 8 times the available parallelism), and `br` SHALL use at most half of those slots (at least one).
+A slot MUST be held until the compressed body ends, fails or is dropped. One connection SHALL hold at most
+`CompressionOptions::max_per_connection` slots (at least 1, default 4); a response over its connection's cap MUST be
+sent uncompressed, and requests without a connection (the in-process test client) are only subject to the global cap. When no slot is available for the negotiated
+encoding, a response that would use `br` SHALL use the best other encoding the client accepts (`gzip` or `deflate`) if
+a slot is free for it, and otherwise MUST be sent uncompressed. A response that was eligible (it passed the filter and
+`no-transform` checks) MUST carry `Vary: Accept-Encoding` whether or not a slot was available. The brotli window MUST
+NOT exceed 2^19 bytes, whatever the body length, which deliberately differs from the reference's fixed 2^22.
+
+#### Scenario: Cap reached
+- **WHEN** the cap is 2 and the first response with `Accept-Encoding: br, gzip` is still being sent
+- **THEN** the second response with the same header uses `gzip`, the third is sent uncompressed with
+  `Vary: Accept-Encoding`, and after the first body is dropped a new request gets `br` again
+
+#### Scenario: Per-connection cap
+- **WHEN** one HTTP/2 connection (h2c) has four compressed responses in progress, which default
+  `CompressionOptions::max_per_connection` allows, and opens a fifth stream with `Accept-Encoding: gzip`
+- **THEN** the fifth response is sent uncompressed with `Vary: Accept-Encoding`, other connections still get compressed
+  responses, and when a response of the first connection ends or is dropped the next one is compressed again
+
+#### Scenario: Slot released
+- **WHEN** a compressed body ends, or is dropped before it ends
+- **THEN** its slot is free for the next response
+
+#### Scenario: Large body brotli window
+- **WHEN** a 10 MiB body is compressed with `br`
+- **THEN** the encoder uses a window of 2^19 bytes and the decoded body equals the original
+
 ### Requirement: Behavior matches the compression middleware
 For the same routes and requests, the status, `Content-Encoding`, `Vary`, presence of `Content-Length`, `ETag` and
 decoded body of Corvis responses SHALL match those of the original stack with `app.use(compression())` (`compression`

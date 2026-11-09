@@ -63,6 +63,10 @@ e `id` se les quitan los saltos de línea. Un texto del usuario no puede inyecta
 La respuesta lleva `Content-Type: text/event-stream`, `Cache-Control: no-cache`,
 `Connection: keep-alive` y `X-Accel-Buffering: no` (para que nginx no acumule los eventos).
 
+Corvis nunca comprime las respuestas SSE, ni siquiera con la [compresión](/es/http/compression) activada, así que cada
+evento llega al cliente en cuanto se produce. Si un proxy comprime las respuestas, excluye allí también
+`text/event-stream`.
+
 Una respuesta SSE en curso no cuenta como inactividad para `keep_alive_timeout`: la conexión se
 mantiene abierta mientras el stream produzca eventos.
 
