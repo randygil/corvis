@@ -10,7 +10,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-mod tree;
+pub(crate) mod tree;
 
 /// Opens the report when there is no nonce. Equal to `corvis::posture::REPORT_BEGIN`; the CLI does not depend
 /// on the framework.

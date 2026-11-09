@@ -434,14 +434,21 @@ fn generate_resource(p: &Project, n: &Names, dir: &str) -> Res {
 /// Looks for the `file_stem` executable in the directories of `PATH` and in `$CARGO_HOME/bin`
 /// (default `~/.cargo/bin`), where `cargo install` puts binaries.
 fn find_executable(file_stem: &str) -> Option<PathBuf> {
-    let file = format!("{file_stem}{}", std::env::consts::EXE_SUFFIX);
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
         let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") };
         home.map(|h| PathBuf::from(h).join(".cargo"))
     });
+    find_in(file_stem, std::env::var_os("PATH"), cargo_home)
+}
+
+/// The search behind `find_executable`. Only absolute directories are searched: an empty or relative
+/// `PATH` entry (`.`, `src`, a trailing `;`) would otherwise run a program planted in the project, and
+/// would give back a relative path that `Command` resolves differently.
+fn find_in(file_stem: &str, path: Option<std::ffi::OsString>, cargo_home: Option<PathBuf>) -> Option<PathBuf> {
+    let file = format!("{file_stem}{}", std::env::consts::EXE_SUFFIX);
+    let mut dirs: Vec<PathBuf> = path.map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     dirs.extend(cargo_home.map(|c| c.join("bin")));
-    dirs.into_iter().map(|d| d.join(&file)).find(|f| f.is_file())
+    dirs.into_iter().filter(|d| d.is_absolute()).map(|d| d.join(&file)).find(|f| f.is_file())
 }
 
 /// Splits `corvis start`/`build` arguments at the first `--`: `--watch`, `--release` and `--prod`
@@ -514,8 +521,13 @@ fn cmd_cargo(args: &[String], sub: &str) -> Res {
                 .to_string());
         };
         let root = workspace_root()?;
-        let status =
-            Command::new(&watchexec).args(watch_invocation(args, &root)).status().map_err(|e| format!("failed to run watchexec: {e}"))?;
+        let mut child =
+            Command::new(&watchexec).args(watch_invocation(args, &root)).spawn().map_err(|e| format!("failed to run watchexec: {e}"))?;
+        // On Windows the whole tree (watchexec, cargo, the server) lives in a Job Object that kills its members
+        // when corvis ends, even when corvis is killed forcibly. Unix keeps the shared process group and terminal
+        // signals: killing corvis with SIGKILL leaves watchexec running.
+        let _tree = if cfg!(windows) { posture::tree::Tree::adopt(&child) } else { None };
+        let status = child.wait().map_err(|e| format!("failed to run watchexec: {e}"))?;
         return if status.success() { Ok(()) } else { Err("watchexec failed".to_string()) };
     }
     let invocation = cargo_invocation(args, sub);
@@ -599,21 +611,53 @@ mod tests {
         cleanup(&src);
     }
 
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("corvis-cli-unit-{}-{name}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn exe(stem: &str) -> String {
+        format!("{stem}{}", std::env::consts::EXE_SUFFIX)
+    }
+
     #[test]
     fn finds_watchexec_in_cargo_home() {
-        let home = std::env::temp_dir().join(format!("corvis-cli-unit-{}-home", std::process::id()));
-        let bin = home.join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        let file = bin.join(format!("watchexec{}", std::env::consts::EXE_SUFFIX));
+        let home = temp_dir("home");
+        fs::create_dir_all(home.join("bin")).unwrap();
+        let file = home.join("bin").join(exe("watchexec"));
         fs::write(&file, "").unwrap();
-        // SAFETY: no other test in this binary reads or writes CARGO_HOME or PATH.
-        unsafe {
-            std::env::set_var("CARGO_HOME", &home);
-            std::env::set_var("PATH", &home);
-        }
-        assert_eq!(find_executable("watchexec"), Some(file));
-        assert_eq!(find_executable("corvis-no-such-executable"), None);
+        assert_eq!(find_in("watchexec", None, Some(home.clone())), Some(file));
+        assert_eq!(find_in("corvis-no-such-executable", None, Some(home.clone())), None);
         let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn ignores_relative_and_empty_search_directories() {
+        // A `watchexec` planted in the current directory must be found by neither `.`, a relative folder,
+        // an empty entry, nor a relative CARGO_HOME.
+        let cwd = std::env::current_dir().unwrap();
+        let planted = temp_dir("planted");
+        let name = exe("corvis-planted-test");
+        fs::write(cwd.join(&name), "").unwrap();
+        fs::create_dir_all(cwd.join("corvis-planted-dir")).unwrap();
+        fs::write(cwd.join("corvis-planted-dir").join(&name), "").unwrap();
+        fs::create_dir_all(cwd.join("corvis-planted-home").join("bin")).unwrap();
+        fs::write(cwd.join("corvis-planted-home").join("bin").join(&name), "").unwrap();
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        for path in [".", "corvis-planted-dir", "", &format!("{sep}{}", planted.display()), &format!("corvis-planted-dir{sep}")] {
+            assert_eq!(find_in("corvis-planted-test", Some(path.into()), None), None, "PATH={path:?}");
+        }
+        assert_eq!(find_in("corvis-planted-test", None, Some(PathBuf::from("corvis-planted-home"))), None);
+        // An absolute entry later in PATH is still found, and the result is absolute.
+        fs::write(planted.join(&name), "").unwrap();
+        let path = format!("{sep}.{sep}{}", planted.display());
+        let found = find_in("corvis-planted-test", Some(path.into()), None).unwrap();
+        assert!(found.is_absolute() && found.starts_with(&planted), "{found:?}");
+        let _ = fs::remove_file(cwd.join(&name));
+        let _ = fs::remove_dir_all(cwd.join("corvis-planted-dir"));
+        let _ = fs::remove_dir_all(cwd.join("corvis-planted-home"));
+        let _ = fs::remove_dir_all(planted);
     }
 
     fn v(a: &[&str]) -> Vec<String> {

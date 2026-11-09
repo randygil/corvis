@@ -177,3 +177,20 @@ Upstream facts used below (from the projects' own documentation, checked 2026-11
 - The root `README.md` line about `corvis start --watch` does not name cargo-watch, so it was not changed.
 - The unit test `finds_watchexec_in_cargo_home` also sets `PATH` to the temporary folder, because a watchexec
   installed in `~/.cargo/bin` on the developer machine would otherwise be found first.
+
+## Security review follow-up (2026-11-08)
+
+1. **Relative and empty search directories.** `find_executable` accepted empty and relative `PATH` entries, so
+   `PATH=.;...` or `PATH=src;...` ran a `watchexec` planted in the project, and an empty entry returned a relative
+   path that `Command` resolves differently and that shadowed a real watchexec later in `PATH`. The search now lives
+   in `find_in(file_stem, path, cargo_home)` and keeps only absolute directories (for `PATH` and for
+   `$CARGO_HOME/bin`), so the returned path is always absolute. Unit tests: `.`, a relative folder, an empty entry,
+   a trailing separator and a relative `CARGO_HOME` find nothing; an absolute entry after them is still found.
+   The missing-tool message is unchanged (a `watchexec` found only through a relative entry counts as missing).
+2. **Forced kill of corvis left watchexec and the server running.** On Windows the watchexec child is now adopted
+   into the Job Object of `posture::tree` (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, reused from #27, no new
+   dependency), so it and its descendants die with corvis even under `taskkill /F`. Verified with the `orphan.py`
+   proof of concept: after killing only corvis, watchexec was gone. Small window: a process watchexec started
+   before the job adoption would not be in the job; watchexec starts cargo only after its own startup, so this is
+   not expected in practice. On Unix the behavior is unchanged: corvis shares the terminal's process group, Ctrl+C
+   reaches the whole tree, and `kill -9` of corvis alone leaves watchexec running (documented here, not changed).
