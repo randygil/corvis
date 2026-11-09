@@ -1022,5 +1022,379 @@
         }
       }
     ]
+  },
+  {
+    "name": "throttler-tracker",
+    "throttlers": [
+      {
+        "name": "short",
+        "ttl": 30000,
+        "limit": 1
+      },
+      {
+        "name": "long",
+        "ttl": 60000,
+        "limit": 3
+      }
+    ],
+    "requests": [
+      {
+        "path": "/plain",
+        "send": {
+          "x-client": "a",
+          "x-account": "1"
+        }
+      },
+      {
+        "path": "/plain",
+        "send": {
+          "x-client": "b",
+          "x-account": "1"
+        }
+      },
+      {
+        "path": "/plain",
+        "send": {
+          "x-client": "a",
+          "x-account": "2"
+        }
+      },
+      {
+        "path": "/ptr/fixed",
+        "send": {
+          "x-account": "3"
+        }
+      },
+      {
+        "path": "/ptr/fixed",
+        "send": {
+          "x-account": "4"
+        }
+      }
+    ],
+    "responses": [
+      {
+        "path": "/plain",
+        "send": {
+          "x-client": "a",
+          "x-account": "1"
+        },
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit-long": "3",
+          "x-ratelimit-limit-short": "1",
+          "x-ratelimit-remaining-long": "2",
+          "x-ratelimit-remaining-short": "0",
+          "x-ratelimit-reset-long": "60",
+          "x-ratelimit-reset-short": "30"
+        }
+      },
+      {
+        "path": "/plain",
+        "send": {
+          "x-client": "b",
+          "x-account": "1"
+        },
+        "status": 429,
+        "headers": {
+          "retry-after-short": "30"
+        }
+      },
+      {
+        "path": "/plain",
+        "send": {
+          "x-client": "a",
+          "x-account": "2"
+        },
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit-long": "3",
+          "x-ratelimit-limit-short": "1",
+          "x-ratelimit-remaining-long": "1",
+          "x-ratelimit-remaining-short": "0",
+          "x-ratelimit-reset-long": "60",
+          "x-ratelimit-reset-short": "30"
+        }
+      },
+      {
+        "path": "/ptr/fixed",
+        "send": {
+          "x-account": "3"
+        },
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit-long": "3",
+          "x-ratelimit-limit-short": "1",
+          "x-ratelimit-remaining-long": "2",
+          "x-ratelimit-remaining-short": "0",
+          "x-ratelimit-reset-long": "60",
+          "x-ratelimit-reset-short": "30"
+        }
+      },
+      {
+        "path": "/ptr/fixed",
+        "send": {
+          "x-account": "4"
+        },
+        "status": 429,
+        "headers": {
+          "retry-after-short": "30"
+        }
+      }
+    ]
+  },
+  {
+    "name": "throttler-key",
+    "throttlers": [
+      {
+        "name": "default",
+        "ttl": 60000,
+        "limit": 1
+      }
+    ],
+    "requests": [
+      "/plain",
+      "/byname",
+      "/ptr/own-key"
+    ],
+    "responses": [
+      {
+        "path": "/plain",
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "1",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "60"
+        }
+      },
+      {
+        "path": "/byname",
+        "status": 429,
+        "headers": {
+          "retry-after": "60"
+        }
+      },
+      {
+        "path": "/ptr/own-key",
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "1",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "60"
+        }
+      }
+    ]
+  },
+  {
+    "name": "dynamic-limit",
+    "throttlers": [
+      {
+        "name": "default",
+        "ttl": 60000
+      }
+    ],
+    "requests": [
+      "/plain",
+      "/plain",
+      {
+        "path": "/ptr/pro",
+        "send": {
+          "x-plan": "pro"
+        }
+      },
+      {
+        "path": "/ptr/pro",
+        "send": {
+          "x-plan": "pro"
+        }
+      },
+      {
+        "path": "/ptr/pro",
+        "send": {
+          "x-plan": "pro"
+        }
+      },
+      {
+        "path": "/ptr/pro",
+        "send": {
+          "x-plan": "pro"
+        }
+      },
+      "/ptr/limit5"
+    ],
+    "responses": [
+      {
+        "path": "/plain",
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "1",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "60"
+        }
+      },
+      {
+        "path": "/plain",
+        "status": 429,
+        "headers": {
+          "retry-after": "20"
+        }
+      },
+      {
+        "path": "/ptr/pro",
+        "send": {
+          "x-plan": "pro"
+        },
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "3",
+          "x-ratelimit-remaining": "2",
+          "x-ratelimit-reset": "60"
+        }
+      },
+      {
+        "path": "/ptr/pro",
+        "send": {
+          "x-plan": "pro"
+        },
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "3",
+          "x-ratelimit-remaining": "1",
+          "x-ratelimit-reset": "60"
+        }
+      },
+      {
+        "path": "/ptr/pro",
+        "send": {
+          "x-plan": "pro"
+        },
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "3",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "60"
+        }
+      },
+      {
+        "path": "/ptr/pro",
+        "send": {
+          "x-plan": "pro"
+        },
+        "status": 429,
+        "headers": {
+          "retry-after": "20"
+        }
+      },
+      {
+        "path": "/ptr/limit5",
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "4",
+          "x-ratelimit-reset": "60"
+        }
+      }
+    ]
+  },
+  {
+    "name": "dynamic-ttl-order",
+    "throttlers": [
+      {
+        "name": "a",
+        "ttl": 60000,
+        "limit": 2
+      },
+      {
+        "name": "b",
+        "limit": 1
+      }
+    ],
+    "requests": [
+      "/plain",
+      "/plain",
+      "/plain"
+    ],
+    "responses": [
+      {
+        "path": "/plain",
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit-a": "2",
+          "x-ratelimit-limit-b": "1",
+          "x-ratelimit-remaining-a": "1",
+          "x-ratelimit-remaining-b": "0",
+          "x-ratelimit-reset-a": "60",
+          "x-ratelimit-reset-b": "10"
+        }
+      },
+      {
+        "path": "/plain",
+        "status": 429,
+        "headers": {
+          "retry-after-b": "10",
+          "x-ratelimit-limit-a": "2",
+          "x-ratelimit-remaining-a": "0",
+          "x-ratelimit-reset-a": "60"
+        }
+      },
+      {
+        "path": "/plain",
+        "status": 429,
+        "headers": {
+          "retry-after-a": "60"
+        }
+      }
+    ]
+  },
+  {
+    "name": "function-error",
+    "throttlers": [
+      {
+        "name": "default",
+        "ttl": 60000
+      }
+    ],
+    "requests": [
+      {
+        "path": "/plain",
+        "send": {
+          "x-boom": "1"
+        }
+      },
+      {
+        "path": "/plain",
+        "send": {
+          "x-forbid": "1"
+        }
+      },
+      "/plain"
+    ],
+    "responses": [
+      {
+        "path": "/plain",
+        "send": {
+          "x-boom": "1"
+        },
+        "status": 500,
+        "headers": {}
+      },
+      {
+        "path": "/plain",
+        "send": {
+          "x-forbid": "1"
+        },
+        "status": 403,
+        "headers": {}
+      },
+      {
+        "path": "/plain",
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "1",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "60"
+        }
+      }
+    ]
   }
 ]

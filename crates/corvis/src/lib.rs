@@ -277,7 +277,7 @@ pub use modules::serve_static::{ServeStaticModule, ServeStaticOptions};
 pub use modules::throttler::{
     SKIP_THROTTLE, THROTTLE_BLOCK_DURATION, THROTTLE_KEY_GENERATOR, THROTTLE_LIMIT, THROTTLE_TRACKER, THROTTLE_TTL, ThrottleOverride,
     ThrottlerGuard, ThrottlerKeyGeneratorFn, ThrottlerModule, ThrottlerOptions, ThrottlerRecord, ThrottlerStorage, ThrottlerTrackerFn,
-    skip_throttle, skip_throttle_key, throttle, throttle_key,
+    ThrottlerValueFn, skip_throttle, skip_throttle_key, throttle, throttle_key,
 };
 #[cfg(feature = "websockets")]
 pub use websockets::{
