@@ -15,7 +15,9 @@ Board helper (moves the issue's card): `node .claude/skills/corvis-task/board-st
 
 1. `gh issue view <n> --repo randygil/corvis` and read its epic (`**Epic:** #m`) for context.
 2. `node .claude/skills/corvis-task/board-status.mjs <n> "In Progress"`.
-3. Create a branch named after the change: `git switch -c <change-name>` (from an up-to-date `main`).
+3. Create a branch named after the change: `git switch -c <change-name>` (from an up-to-date `dev`). Work lands on
+   `dev`, the integration branch; `main` is protected and receives `dev` only through a pull request whose required
+   checks passed.
 
 ## 2. Propose (planning only)
 
