@@ -43,7 +43,10 @@ When the limit is exceeded, the request receives:
 ## How counting works
 
 - The key of each counter combines the limit name, the client IP (`req.ip()`), the
-  controller and the handler. Each route has its own counter per client.
+  controller and the handler. Each route has its own counter per client. The IP is normalized like the original
+  library does: an IPv4 address is used as it is, an IPv4-mapped IPv6 address (`::ffff:1.2.3.4`) counts as its
+  IPv4 form, `::1` stays alone, and any other IPv6 address counts as its /64 prefix (see
+  [IPv6 clients](#ipv6-clients)).
 - The window slides: each request counts for `ttl` milliseconds from the moment it was made, and the
   count of a request is the number of hits of that key in the last `ttl`. A client cannot send twice the
   limit around the edge of a fixed window.
@@ -208,6 +211,38 @@ ThrottlerModule::for_root_async(|ctx| async move {
 
 If the factory fails, the application does not start (`Error while instantiating ThrottlerStorage: ...`).
 
+## IPv6 clients
+
+A host or home connection usually gets a whole /64 (2^64 addresses). If every address counted as a different
+client, one client could get a fresh limit with each address it rotates through. `ThrottlerGuard` therefore keys
+IPv6 clients by prefix, 64 bits by default, as the original throttler library does since 6.7.0 (`ipv6SubnetPrefix`). Clients in
+the same /64 share their counters, like IPv4 clients behind one NAT.
+
+Change the length with `ThrottlerStorage::with_ipv6_subnet_prefix`. It applies to every throttler and works with
+`for_root_storage` and with `for_root_async` factories that return a storage:
+
+```rust
+use corvis::modules::throttler::ThrottlerStorage;
+
+// Larger allocations: many providers delegate a /56 or /48 to one customer.
+ThrottlerModule::for_root_storage(
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 10)]).with_ipv6_subnet_prefix(56),
+)
+```
+
+- `128` keeps each IPv6 address apart (the way to opt out of grouping). IPv4-mapped addresses still count as IPv4 and
+  `::1` stays alone. Values above 128 count as 128.
+- `56` or `48` make rotation harder for endpoints such as login, but clients that share such a prefix also share the
+  limit.
+- A prefix shorter than 32 bits is accepted, but it puts a large part of the address space in one counter, so a
+  warning is logged once when it is configured.
+
+`req.ip()`, `req.ips()` and `#[ip]` still return the full address; only the throttler key changes. A guard of your
+own that calls `ThrottlerStorage::record_hit` can build the same client key with
+`corvis::modules::throttler::normalize_ip(&req.ip(), prefix)`, a port of the original's `normalizeIp`. Anything that is
+not an IP address (see [Behind a proxy](#behind-a-proxy)) is returned unchanged, and a zone identifier (`%eth0`) is
+dropped from valid addresses.
+
 ## Behind a proxy
 
 The key uses `req.ip()`, which by default is the socket address. Behind a reverse proxy all
@@ -221,6 +256,9 @@ app.set_trust_proxy(1); // one proxy in front
 Use `true` (trust all hops) only if every request goes through a proxy that
 rewrites `X-Forwarded-For`: otherwise, a client can choose its IP and bypass the limit. See
 [HTTP adapters](/http/performance).
+
+The counter uses the normalized form of the client entry that `trust proxy` resolves. Entries that are not IP
+addresses are kept as they are, so a client that can choose its `X-Forwarded-For` entry still chooses its counter.
 
 ## Response headers
 
