@@ -82,9 +82,13 @@ cola de envío está acotada por `max_buffered_amount`). Un valor demasiado larg
 retiene para él:
 
 - En HTTP/2 el cliente tiene que tomar unos 16 KiB (un frame) de algún stream cada `send_timeout`.
-- En HTTP/1 tiene que tomar unos 64 KiB cada `send_timeout` en una conexión con buffers grandes del kernel: el
-  servidor nota el progreso cuando el sistema operativo avisa que el socket admite escritura, lo que en un lector muy
-  lento ocurre por tramos.
+- En HTTP/1 el servidor nota el progreso cuando el sistema operativo avisa que el socket admite escritura. En Linux
+  configura `TCP_NOTSENT_LOWAT` a 64 KiB en sus sockets mientras `send_timeout` está activo, así que un cliente que lee
+  de forma constante se ve cuando toma unos 32 KiB por periodo (sin eso, Linux avisa solo cuando está libre cerca de la
+  mitad de un buffer de envío que el autoajuste hace crecer a varios MiB, y un lector lento se cortaría mientras lee).
+  En Windows hicieron falta unos 64 KiB por periodo en una conexión de loopback. En macOS y los BSD la opción no se
+  configura y la granularidad es la del buffer autoajustado, que puede ser de varios MiB: usa un `send_timeout` mayor
+  si sirves clientes lentos ahí.
 - Un cliente que reinicia streams y abre otros nuevos no necesita leer nada: cada respuesta nueva cuenta como
   movimiento. Los límites de rapid reset acotan cuánto puede durar eso, no lo que retiene mientras tanto.
 
