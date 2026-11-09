@@ -799,3 +799,55 @@ async fn ip_conversion_error_is_an_exception_frame() {
     assert_eq!(out["event"], "exception", "{out}");
     app.close().await.unwrap();
 }
+
+// ---- per-message cost does not depend on the handshake ----
+
+static GUARD_SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// Records the address of the `Request` each message's context gives to guards.
+#[injectable]
+pub struct RequestAddrGuard;
+
+#[async_trait]
+impl CanActivate for RequestAddrGuard {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        GUARD_SEEN.lock().unwrap().push(ctx.request() as *const _ as usize);
+        Ok(true)
+    }
+}
+
+#[websocket_gateway(path = "/shared")]
+#[use_guards(RequestAddrGuard)]
+pub struct SharedHandshakeGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl SharedHandshakeGateway {
+    #[subscribe_message("addrs")]
+    fn addrs(&self, #[connected_socket] client: WsClient) -> Value {
+        json!({ "handshake": client.handshake() as *const _ as usize, "ip": client.ip().as_ptr() as usize })
+    }
+}
+
+#[module(providers = [SharedHandshakeGateway])]
+pub struct SharedModule;
+
+#[corvis::test]
+async fn messages_share_the_handshake_and_its_resolved_address() {
+    let mut app = CorvisFactory::create::<SharedModule>().await.unwrap();
+    app.set_query_parser(QueryParser::Extended);
+    app.set_trust_proxy(true);
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/shared?a[b][c]=1&x=2")).await.unwrap();
+    let first = ask(&mut ws, json!({ "event": "addrs" })).await["data"].clone();
+    let second = ask(&mut ws, json!({ "event": "addrs" })).await["data"].clone();
+    // Same `Request` and same resolved address for every message of the connection.
+    assert_eq!(first, second);
+    let seen = GUARD_SEEN.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0], seen[1]);
+    assert_eq!(seen[0] as u64, first["handshake"].as_u64().unwrap());
+    app.close().await.unwrap();
+}

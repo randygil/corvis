@@ -51,6 +51,13 @@ numbers in design.md refer to that commit.
 - [ ] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences
 
+## 6. Security round
+
+- [x] 6.1 Resolve the client address once per connection (`WsClient::ip()`) and read it in `ws_ip_arg`
+- [x] 6.2 Make `Request::ip()` lazy (`proxy_addr::client_addr`) with a differential test against `all_addrs`, long
+  headers and the edge cases
+- [x] 6.3 Test that the address is the same value for every message of a connection
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

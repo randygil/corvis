@@ -54,6 +54,12 @@ numbers in design.md refer to that commit.
 - [ ] 4.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences
 
+## 5. Security round
+
+- [x] 5.1 Share the handshake through `Arc<Request>` in `WsClient` and `ExecutionContext::for_ws`, and correct the
+  `Request` clone comment
+- [x] 5.2 Test that every message sees the same handshake `Request` (`messages_share_the_handshake_and_its_resolved_address`)
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

@@ -11,8 +11,10 @@ use serde_json::{Map, Value};
 
 use super::exception::{BadRequestException, HttpException};
 
-/// An HTTP request. Cheap to clone; clones share the same `extensions`
-/// (so a guard can attach the authenticated user and the handler can read it).
+/// An HTTP request. Cloning copies the parsed query, the headers and the body (the cost grows with
+/// their size), but clones share the same `extensions` (so a guard can attach the authenticated user
+/// and the handler can read it). Code that needs the same request in many places should share it
+/// through an `Arc`, as WebSocket gateways do with the handshake.
 #[derive(Clone)]
 pub struct Request {
     pub(crate) method: Method,
@@ -170,7 +172,7 @@ impl Request {
     /// `trust proxy` setting ([`crate::CorvisApplication::set_trust_proxy`]) the closest
     /// `X-Forwarded-For` address that is not a trusted proxy, like `proxy-addr`.
     pub fn ip(&self) -> String {
-        self.proxy_addrs().pop().unwrap_or_default()
+        super::proxy_addr::client_addr(self.socket_ip(), &self.headers, &self.trust_proxy)
     }
     /// `req.ips`: the trusted `X-Forwarded-For` chain, from the client to the closest proxy
     /// (empty unless `trust proxy` is set).

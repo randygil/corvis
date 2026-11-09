@@ -387,8 +387,7 @@ pub fn extract_arg<T: DeserializeOwned>(args: &mut [Value], i: usize, kind: Para
 #[cfg(feature = "websockets")]
 pub fn ws_ip_arg<T: DeserializeOwned>(client: &Arc<dyn std::any::Any + Send + Sync>) -> Result<T, HttpException> {
     let client = crate::websockets::client_from_any(client)?;
-    crate::common::lenient::from_value::<T>(Value::String(client.handshake().ip()))
-        .map_err(|e| BadRequestException::new(format!("ip: {e}")))
+    crate::common::lenient::from_value::<T>(Value::String(client.ip().to_owned())).map_err(|e| BadRequestException::new(format!("ip: {e}")))
 }
 
 /// Serializes metadata values for `#[set_metadata]`.

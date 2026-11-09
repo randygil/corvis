@@ -197,6 +197,7 @@ El campo marcado con `#[websocket_server]` recibe el servidor del gateway. Cada 
 | `client.send_text(texto)` | Envía un frame de texto crudo |
 | `client.join(sala)`, `client.leave(sala)` | Entra o sale de una sala |
 | `client.rooms()`, `client.in_room(sala)` | Salas del cliente |
+| `client.ip()` | La dirección del cliente de la conexión (`handshake().ip()`), resuelta una sola vez al aceptar la conexión, así que leerla no cuesta nada por mensaje |
 | `client.handshake()` | La `Request` HTTP del upgrade: cabeceras, query string (parseada con `set_query_parser`, como las peticiones HTTP; `uri().query()` conserva el texto crudo), IP (`ip()`, `ips()` y `hostname()` siguen `set_trust_proxy`, como las peticiones HTTP; `remote_addr()` conserva la dirección del socket) |
 | `client.insert(valor)`, `client.get::<T>()` | Datos asociados a la conexión (por ejemplo, el usuario autenticado) |
 | `client.disconnect()` | Cierra la conexión |

@@ -142,3 +142,22 @@ None. The technical choices are recorded above and in the review notes.
 - Both `compile_fail` doctests were also compiled as plain code to confirm they fail with the intended messages
   ("`who`: #[ip] takes no arguments in gateway handlers..." and "`on_order` has an #[ip] parameter, but ...").
 - Task 5.5 (corvis-parity) is left for the maintainer's session.
+
+## Review notes, security round (2026-11-09)
+
+- Finding (MEDIUM): `ws_ip_arg` called `client.handshake().ip()` for every message, and `Request::ip()` built the whole
+  `X-Forwarded-For` chain (latin1 conversion and one `String` per entry): 1.47 ms per message with `trust proxy` set
+  and a 29 KB header (68 times the baseline).
+- Fix (a): the client address is resolved once per connection, when the client is created (`ClientInner::ip`), and
+  `ws_ip_arg` reads `WsClient::ip()`. `WsClient::ip()` is public.
+- Fix (b): `Request::ip()` no longer builds the chain. `proxy_addr::client_addr` walks the entries from the right on
+  raw bytes, converts only the entries it examines, and stops at the first untrusted address; with `All` it takes the
+  left-most non-empty entry. `all_addrs` stays for `ips()`. This also makes HTTP `req.ip` cheaper.
+- Tests: a differential test compares `client_addr` with the last element of `all_addrs` for every setting (None, All,
+  Hops 0/1/2/50, subnets), six socket addresses and sixteen header shapes (empty and space-only entries, repeated
+  headers, IPv6, bracketed with port, invalid entries, tabs); a test of `Hops(n)` beyond the header length; a test
+  with 4000-entry headers; and `messages_share_the_handshake_and_its_resolved_address` checks that `client.ip()` is
+  the same string (same pointer) for every message of a connection.
+- Measured with the reviewer's PoC (release, `#[ip]`, 29 KB `X-Forwarded-For`, trust proxy `true`): 20.5 us/message
+  after the fix, against about 1470 us before; the baseline is 20.3 us.
+
