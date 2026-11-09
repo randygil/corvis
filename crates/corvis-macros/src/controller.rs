@@ -100,7 +100,7 @@ pub fn expand_controller(args: TokenStream, mut item: ItemStruct) -> syn::Result
                 }
             }
             "use_filters" => {
-                for f in enhancer_tokens("filter", attr_args(&attr)?) {
+                for f in crate::utils::filter_tokens_in_try_order(attr_args(&attr)?) {
                     builder.push(quote!(.filter(#f)));
                 }
             }
@@ -267,7 +267,7 @@ pub fn expand_routes(mut item: ItemImpl) -> syn::Result<TokenStream> {
                     }
                 }
                 "use_filters" => {
-                    for f in enhancer_tokens("filter", attr_args(&attr)?) {
+                    for f in crate::utils::filter_tokens_in_try_order(attr_args(&attr)?) {
                         builder.push(quote!(.filter(#f)));
                     }
                 }
@@ -497,6 +497,42 @@ mod tests {
             Ok(_) => Vec::new(),
             Err(e) => e.into_iter().map(|e| e.to_string()).collect(),
         }
+    }
+
+    fn positions(code: &str, names: &[&str]) -> Vec<usize> {
+        names.iter().map(|n| code.find(&format!("filter_of :: < {n} >")).unwrap_or_else(|| panic!("{n} missing in {code}"))).collect()
+    }
+
+    #[test]
+    fn route_filters_are_emitted_last_listed_first_and_stacked_attributes_in_source_order() {
+        let code = expand_routes(syn::parse_quote! {
+            impl CatsController {
+                #[get]
+                #[use_filters(FilterA, FilterB)]
+                #[use_filters(FilterC)]
+                async fn list(&self) -> HttpResult<()> { Ok(()) }
+            }
+        })
+        .unwrap()
+        .to_string();
+        let p = positions(&code, &["FilterB", "FilterA", "FilterC"]);
+        assert!(p[0] < p[1] && p[1] < p[2], "{code}");
+    }
+
+    #[test]
+    fn controller_filters_are_emitted_last_listed_first() {
+        let code = super::expand_controller(
+            proc_macro2::TokenStream::new(),
+            syn::parse_quote! {
+                #[use_filters(FilterA, FilterB)]
+                #[use_filters(FilterC)]
+                struct CatsController;
+            },
+        )
+        .unwrap()
+        .to_string();
+        let p = positions(&code, &["FilterB", "FilterA", "FilterC"]);
+        assert!(p[0] < p[1] && p[1] < p[2], "{code}");
     }
 
     #[test]

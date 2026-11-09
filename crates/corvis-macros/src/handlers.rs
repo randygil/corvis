@@ -102,7 +102,12 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 kind = Some((n, attr_args(&attr)?));
             } else if let Some(b) = builder {
                 let m = format_ident!("{}", b);
-                for e in enhancer_tokens(b, attr_args(&attr)?) {
+                let tokens = if b == "filter" {
+                    crate::utils::filter_tokens_in_try_order(attr_args(&attr)?)
+                } else {
+                    enhancer_tokens(b, attr_args(&attr)?)
+                };
+                for e in tokens {
                     ws_enhancers.push(quote!(.#m(#e)));
                 }
                 enhancer_attr.get_or_insert(attr);
@@ -371,6 +376,22 @@ mod tests {
             Ok(_) => Vec::new(),
             Err(e) => e.into_iter().map(|e| e.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn handler_filters_are_emitted_last_listed_first_and_stacked_attributes_in_source_order() {
+        let code = expand(syn::parse_quote! {
+            impl Gw {
+                #[subscribe_message("x")]
+                #[use_filters(FilterA, FilterB)]
+                #[use_filters(FilterC)]
+                fn x(&self) {}
+            }
+        })
+        .unwrap()
+        .to_string();
+        let at = |n: &str| code.find(&format!("filter_of :: < {n} >")).unwrap_or_else(|| panic!("{n} missing in {code}"));
+        assert!(at("FilterB") < at("FilterA") && at("FilterA") < at("FilterC"), "{code}");
     }
 
     #[test]

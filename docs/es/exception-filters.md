@@ -275,6 +275,15 @@ Para cada excepción, Corvis recorre los filtros en este orden y usa **el primer
 
    Los guards, interceptors y pipes se ejecutan en orden de registro, pero los filtros de excepción se prueban al revés, así que un filtro registrado después tiene prioridad sobre uno anterior. El orden se verificó contra el framework original.
 
+Dentro de un mismo `#[use_filters(A, B)]` **se prueba primero el último de la lista**, como en el framework original: `B` va antes que `A`. Si hay varios atributos `#[use_filters]` apilados sobre el mismo método o controlador, los filtros del atributo de arriba se prueban antes que los de los de abajo, y la lista de cada atributo se sigue leyendo del último al primero:
+
+```rust
+#[get]
+#[use_filters(A, B)]
+#[use_filters(C)]
+async fn list(&self) -> HttpResult<Vec<Cat>> { /* se prueban en el orden B, A, C */ }
+```
+
 Si ninguno la atiende, responde el filtro por defecto.
 
 Las excepciones que se producen fuera de una ruta (en un middleware, el `404` de una ruta inexistente, un error del body parser) solo pasan por los filtros globales.

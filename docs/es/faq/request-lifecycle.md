@@ -83,6 +83,8 @@ filtro en este orden:
 3. Los globales, el último registrado primero: los de `app.use_global_filters(...)` (de la última
    llamada a la primera), luego los registrados con `Provider::app_filter` (del último al primero).
 
+Dentro de un mismo `#[use_filters(A, B)]` se prueba primero el último de la lista (`B`, luego `A`), como en el framework original; los atributos apilados mantienen primero el de arriba.
+
 Se usa el **primer** filtro cuyo `catches(&exception)` devuelve `true`. Si ninguno lo acepta,
 `BaseExceptionFilter` responde con el cuerpo estándar
 (`{"message":...,"error":...,"statusCode":...}` o `{"statusCode":500,"message":"Internal server error"}`).

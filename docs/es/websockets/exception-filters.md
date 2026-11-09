@@ -36,9 +36,7 @@ pub struct ChatGateway {
 
 ## Orden
 
-Cuando falla un guard, un interceptor, un pipe o el handler (incluido un guard que devuelve `false` y un handler que hace `panic`), Corvis prueba los filtros del handler, después los del gateway, y usa el primero cuyo `catches` devuelve `true`. Los filtros de un mismo `#[use_filters(A, B)]` se prueban en el orden en que están escritos, como en las rutas HTTP. Si ninguno atrapa la excepción, responde el mapeo integrado de abajo.
-
-El framework original prueba los filtros de un mismo `@UseFilters(A, B)` empezando por el último. Corvis mantiene una sola regla para ambos transportes, así que `A` va antes que `B` aquí y en las rutas.
+Cuando falla un guard, un interceptor, un pipe o el handler (incluido un guard que devuelve `false` y un handler que hace `panic`), Corvis prueba los filtros del handler, después los del gateway, y usa el primero cuyo `catches` devuelve `true`. Los filtros de un mismo `#[use_filters(A, B)]` se prueban empezando por el último de la lista (`B`, luego `A`), como en el framework original y en las rutas HTTP; si hay varios `#[use_filters]` apilados, va primero el de arriba. Si ninguno atrapa la excepción, responde el mapeo integrado de abajo.
 
 ## De la respuesta al frame
 
