@@ -22,11 +22,23 @@ first use). A provider that is not visible MUST return `DiError::NotFound`.
   request-scoped provider of another module
 - **THEN** it returns `Err(DiError::NotFound { .. })`
 
-### Requirement: resolve_for needs a request being dispatched
-`ModuleRef::resolve_for` and `ModuleRef::resolve_token_for` MUST return `DiError::OutsideRequest` when the request is
-not being dispatched by the application, whatever the scope of the provider.
+### Requirement: resolve_for needs a request being dispatched only for request-scoped providers
+`ModuleRef::resolve_for` and `ModuleRef::resolve_token_for` MUST resolve a provider that is not request-scoped
+(a singleton or a transient provider that does not reach a request-scoped one) exactly as `ModuleRef::resolve` does,
+whatever the request. They MUST return `DiError::OutsideRequest` when the provider is request-scoped, directly or
+through a chain of transient providers, and the request is not being dispatched by the application.
 
 #### Scenario: Request not being dispatched
 - **WHEN** `resolve_for::<RequestContext>(&req)` is called with a request built with `Request::new(..)` that never went
-  through the application
+  through the application, and `RequestContext` is request-scoped
 - **THEN** it returns `Err(DiError::OutsideRequest { .. })`
+
+#### Scenario: Request-scoped through a transient provider
+- **WHEN** the same call resolves a transient `TransientUser` that injects the request-scoped `RequestContext`
+- **THEN** it returns `Err(DiError::OutsideRequest { .. })`
+
+#### Scenario: Singleton or transient without a store
+- **WHEN** `resolve_for::<CatsService>(&req)` is called with a request that was never dispatched and `CatsService` is a
+  singleton, or an application has no request-scoped provider at all
+- **THEN** it returns the same instance as `ModuleRef::get::<CatsService>()`, and a transient provider is created anew
+  on each call

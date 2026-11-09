@@ -8,6 +8,15 @@
 //   default one throttler named `default` (3 per 60 s); `/override` has `@Throttle` limit 1
 //   skips-named    short (3 per 30 s) and long (5 per 60 s) with the skip routes of #152
 //   skips-default  default (3 per 60 s) and short (3 per 30 s) with the same skip routes
+//   overrides-named    short (3 per 30 s) and long (5 per 60 s) with per-name `@Throttle` overrides (#156)
+//   overrides-default  default (3 per 60 s) and short (3 per 30 s); `@Throttle({ default })` next to a named throttler
+//   module-tracker     default (1 per 60 s) with a module-level `getTracker` that reads the `x-client` header
+//   module-key         default (1 per 60 s) with a module-level `generateKey` that drops the route
+//   shared-key         short (100 per 30 s) and long (2 per 60 s) whose `generateKey` ignores the throttler name: the
+//                      original shares the reporting window and the block between them, Corvis keeps them apart
+//
+// The functions of the module options (`getTracker`, `generateKey`) cannot be stored in the JSON; the Rust replay
+// rebuilds each one from the case name (see `tests/throttler_headers.rs`).
 import 'reflect-metadata';
 import { writeFileSync } from 'node:fs';
 import { Module, Controller, Get } from '@nestjs/common';
@@ -74,11 +83,68 @@ SkipThrottle()(Mixed.prototype, 'h', Object.getOwnPropertyDescriptor(Mixed.proto
 SkipThrottle({ short: true })(Mixed);
 Controller('mixed')(Mixed);
 
-async function record(throttlers, requests) {
+// Per-name overrides (#156). New controllers, so the recorded values of the cases above do not move.
+class Ovr {
+  short1() {
+    return 'ok';
+  }
+  both() {
+    return 'ok';
+  }
+  block() {
+    return 'ok';
+  }
+  unknown() {
+    return 'ok';
+  }
+  default() {
+    return 'ok';
+  }
+  invalid() {
+    return 'ok';
+  }
+  fixed() {
+    return 'ok';
+  }
+  ownKey() {
+    return 'ok';
+  }
+}
+const ovr = (name, path, options) => {
+  const d = Object.getOwnPropertyDescriptor(Ovr.prototype, name);
+  Get(path)(Ovr.prototype, name, d);
+  if (options) Throttle(options)(Ovr.prototype, name, d);
+};
+ovr('short1', 'short1', { short: { limit: 1 } });
+ovr('both', 'both', { short: { limit: 2, ttl: 10000 }, long: { limit: 1 } });
+ovr('block', 'block', { short: { limit: 1, blockDuration: 5000 } });
+ovr('unknown', 'unknown', { shrot: { limit: 1 } });
+ovr('default', 'default', { default: { limit: 1 } });
+ovr('invalid', 'invalid', { short: { limit: 'abc' } });
+ovr('fixed', 'fixed', { default: { getTracker: () => 'fixed' } });
+ovr('ownKey', 'own-key', { default: { generateKey: (ctx, tracker) => 'own:' + tracker } });
+Controller('ovr')(Ovr);
+
+// The class overrides `short`; the handler `h` overrides only its limit and keeps the class ttl; `sibling` has none.
+class OvrClass {
+  h() {
+    return 'ok';
+  }
+  sibling() {
+    return 'ok';
+  }
+}
+Get('h')(OvrClass.prototype, 'h', Object.getOwnPropertyDescriptor(OvrClass.prototype, 'h'));
+Throttle({ short: { limit: 1 } })(OvrClass.prototype, 'h', Object.getOwnPropertyDescriptor(OvrClass.prototype, 'h'));
+Get('sibling')(OvrClass.prototype, 'sibling', Object.getOwnPropertyDescriptor(OvrClass.prototype, 'sibling'));
+Throttle({ short: { limit: 2, ttl: 20000 } })(OvrClass);
+Controller('ovr-class')(OvrClass);
+
+async function record(throttlers, requests, moduleOptions) {
   class AppModule {}
   Module({
-    imports: [ThrottlerModule.forRoot(throttlers)],
-    controllers: [Routes, Undo, Mixed],
+    imports: [ThrottlerModule.forRoot(moduleOptions ? { throttlers, ...moduleOptions } : throttlers)],
+    controllers: [Routes, Undo, Mixed, Ovr, OvrClass],
     providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
   })(AppModule);
   const app = await NestFactory.create(AppModule, { logger: false });
@@ -87,15 +153,19 @@ async function record(throttlers, requests) {
   const out = [];
   const start = Date.now();
   for (const request of requests) {
-    // A request is a path, or { path, at } to send it `at` milliseconds after the start of the sequence.
-    const { path, at } = typeof request === 'string' ? { path: request } : request;
+    // A request is a path, or { path, at, send } to send it `at` milliseconds after the start of the sequence with the
+    // request headers `send`.
+    const { path, at, send } = typeof request === 'string' ? { path: request } : request;
     if (at !== undefined) await new Promise((r) => setTimeout(r, Math.max(0, start + at - Date.now())));
-    const res = await fetch(base + path);
+    const res = await fetch(base + path, send ? { headers: send } : undefined);
     const headers = {};
     for (const [k, v] of res.headers) {
       if (k.startsWith('x-ratelimit') || k.startsWith('retry-after')) headers[k] = v;
     }
-    out.push(at === undefined ? { path, status: res.status, headers } : { path, at, status: res.status, headers });
+    const entry = { path };
+    if (at !== undefined) entry.at = at;
+    if (send !== undefined) entry.send = send;
+    out.push({ ...entry, status: res.status, headers });
   }
   await app.close();
   return out;
@@ -180,6 +250,72 @@ const apps = [
       { path: '/plain', at: 2700 },
     ],
   },
+  {
+    name: 'overrides-named',
+    throttlers: [
+      { name: 'short', ttl: 30000, limit: 3 },
+      { name: 'long', ttl: 60000, limit: 5 },
+    ],
+    requests: [
+      '/ovr/short1',
+      '/ovr/short1',
+      '/ovr/both',
+      '/ovr/both',
+      '/ovr-class/h',
+      '/ovr-class/h',
+      '/ovr-class/sibling',
+      '/ovr-class/sibling',
+      '/ovr-class/sibling',
+      '/ovr/block',
+      '/ovr/block',
+      '/ovr/unknown',
+      '/ovr/unknown',
+      '/ovr/default',
+      '/ovr/default',
+      '/ovr/invalid',
+    ],
+  },
+  // `@Throttle({ default })` limits `default` only; `short` keeps its own limit (the replay uses a bare THROTTLE_LIMIT).
+  {
+    name: 'overrides-default',
+    throttlers: [
+      { name: 'default', ttl: 60000, limit: 3 },
+      { name: 'short', ttl: 30000, limit: 3 },
+    ],
+    requests: ['/ovr/default', '/ovr/default'],
+  },
+  {
+    name: 'module-tracker',
+    throttlers: [{ name: 'default', ttl: 60000, limit: 1 }],
+    moduleOptions: { getTracker: (req) => req.headers['x-client'] ?? req.ip },
+    requests: [
+      { path: '/plain', send: { 'x-client': 'a' } },
+      { path: '/plain', send: { 'x-client': 'a' } },
+      { path: '/plain', send: { 'x-client': 'b' } },
+      { path: '/ovr/fixed', send: { 'x-client': 'a' } },
+      { path: '/ovr/fixed', send: { 'x-client': 'b' } },
+    ],
+  },
+  {
+    name: 'module-key',
+    throttlers: [{ name: 'default', ttl: 60000, limit: 1 }],
+    moduleOptions: { generateKey: (ctx, tracker, name) => name + ':' + tracker },
+    requests: ['/plain', '/byname', '/ovr/own-key'],
+  },
+  // Divergence: the key is the same for both throttlers. The original then reports one window and one block for
+  // both (`x-ratelimit-reset-long` is the short window, `retry-after-short` appears on the blocked requests).
+  {
+    name: 'shared-key',
+    throttlers: [
+      { name: 'short', ttl: 30000, limit: 100 },
+      { name: 'long', ttl: 60000, limit: 2 },
+    ],
+    moduleOptions: { generateKey: (ctx, tracker) => tracker },
+    requests: ['/plain', '/plain', '/plain', '/plain'],
+  },
 ];
-for (const a of apps) a.responses = await record(a.throttlers, a.requests);
+for (const a of apps) {
+  a.responses = await record(a.throttlers, a.requests, a.moduleOptions);
+  delete a.moduleOptions;
+}
 writeFileSync(new URL('./throttler.json', import.meta.url), JSON.stringify(apps, null, 2) + '\n');

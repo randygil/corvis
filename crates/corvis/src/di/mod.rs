@@ -6,6 +6,7 @@ pub mod injectable;
 pub mod module;
 pub mod module_ref;
 pub mod provider;
+pub(crate) mod request_scope;
 pub mod token;
 
 pub use container::{Container, ModuleId};

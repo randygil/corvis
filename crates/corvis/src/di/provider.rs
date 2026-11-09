@@ -27,15 +27,26 @@ pub(crate) fn downcast<T: ?Sized + Send + Sync + 'static>(instance: &Instance) -
     instance.downcast_ref::<Arc<T>>().cloned()
 }
 
-/// Injection scope: `Default` (singleton, the default) or `Transient`. There is no request scope: carry
-/// per-request data on the `Request` (see the injection scopes guide).
+/// Injection scope of a provider.
+///
+/// New scopes may be added, so match it with a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Scope {
     /// A single instance shared across the entire application (singleton).
     #[default]
     Default,
     /// A new, dedicated instance is created for each consumer.
     Transient,
+    /// At most one instance per HTTP request (and per module that registers the provider), built on first use and
+    /// released when the request ends.
+    ///
+    /// The instances live in a store that belongs to the request, never in the container: they are not created at
+    /// startup, `ModuleRef::get` cannot see them and lifecycle hooks are not called on them. A request-scoped provider
+    /// may depend on singletons, transient providers and other request-scoped providers, and may inject the current
+    /// [`Request`](crate::Request) as a field. Singletons, controllers and gateways cannot depend on it (startup
+    /// error); consume it per request with `ModuleRef::resolve_for`.
+    Request,
 }
 
 /// What a provider factory returns: the instance consumers receive and, when that instance is a view of a

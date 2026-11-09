@@ -7,11 +7,12 @@ use super::cats_service::CatsService;
 use super::dto::{CatV2Dto, CountDto, CreateCatDto, ListCatsQuery, UpdateCatDto};
 use super::entities::Cat;
 use crate::common::decorators::{CurrentUser, ROLES_KEY, Role};
-use crate::common::interceptors::{TimingInterceptor, TransformInterceptor};
+use crate::common::interceptors::{RequestIdInterceptor, TimingInterceptor, TransformInterceptor};
+use crate::common::request_context::RequestContext;
 
 #[controller("cats")]
 #[api_tags("cats")]
-#[use_interceptors(TimingInterceptor)]
+#[use_interceptors(TimingInterceptor, RequestIdInterceptor)]
 pub struct CatsController {
     cats_service: Arc<CatsService>,
 }
@@ -41,6 +42,13 @@ impl CatsController {
     #[set_metadata(CACHE_TTL_METADATA, 5_000)]
     fn count(&self) -> CountDto {
         CountDto { count: self.cats_service.count() }
+    }
+
+    /// The id of this request, from the request-scoped `RequestContext` (`X-Request-Id` or generated).
+    #[get("request-id")]
+    #[public]
+    fn request_id(&self, ctx: Scoped<RequestContext>) -> Value {
+        json!({ "requestId": ctx.request_id() })
     }
 
     /// Server-sent events: `curl -N localhost:3000/api/v1/cats/stream`.

@@ -190,7 +190,7 @@ El campo marcado con `#[websocket_server]` recibe el servidor del gateway. Cada 
 | `client.send_text(texto)` | Envía un frame de texto crudo |
 | `client.join(sala)`, `client.leave(sala)` | Entra o sale de una sala |
 | `client.rooms()`, `client.in_room(sala)` | Salas del cliente |
-| `client.handshake()` | La `Request` HTTP del upgrade: cabeceras, query string, IP |
+| `client.handshake()` | La `Request` HTTP del upgrade: cabeceras, query string, IP (`ip()`, `ips()` y `hostname()` siguen `set_trust_proxy`, como las peticiones HTTP; `remote_addr()` conserva la dirección del socket) |
 | `client.insert(valor)`, `client.get::<T>()` | Datos asociados a la conexión (por ejemplo, el usuario autenticado) |
 | `client.disconnect()` | Cierra la conexión |
 | `client.disconnect_with(4401, "Unauthorized")` | Cierra con un código y un motivo |
@@ -297,7 +297,11 @@ Cosas a tener en cuenta:
 - Un guard global que solo conoce HTTP (por ejemplo, lee un token bearer de `ctx.switch_to_http()`) rechaza o rompe todos los mensajes. Distingue los transportes con `ctx.get_type()` (`ContextType::Ws`), o marca el gateway con metadatos que el guard revise, como `#[set_metadata(IS_PUBLIC_KEY, true)]` debajo de `#[websocket_gateway]`.
 - Un interceptor global también ve contextos WebSocket, así que uno que lee la petición HTTP o escribe cabeceras debe comprobar antes `ctx.get_type()`.
 - Un pipe global como `ZodValidationPipe::auto()` corre en cada `#[message_body]`. Repetirlo en el gateway, como hace tertulia, hace que corra dos veces, lo cual es inofensivo para pipes de validación.
-- Un `ThrottlerGuard` global cuenta los mensajes por IP del handshake y por handler.
+- Un `ThrottlerGuard` global cuenta los mensajes por IP del handshake y por handler. Detrás de un proxy inverso, configura `app.set_trust_proxy(...)` para que la IP del handshake sea la del cliente y no la del proxy (ver [Rate limiting](/es/security/rate-limiting#detras-de-un-proxy)).
+
+::: warning Diferencia con un gateway de Node detrás de Express
+En Node, un upgrade de WebSocket nunca pasa por Express, así que `trust proxy` no le aplica: un guard de gateway ve la dirección del socket del proxy (o nada, con el throttler estándar). Corvis aplica al handshake el ajuste de `set_trust_proxy`, igual que a las peticiones HTTP, de modo que con un ajuste de confianza `client.handshake().ip()` es la dirección del cliente reenviada. Igual que en HTTP, un ajuste que confía en demasiados saltos permite que un cliente elija su IP con `X-Forwarded-For`.
+:::
 
 Las aplicaciones que adoptan los gateways de forma gradual pueden mantener los enhancers globales solo en HTTP con una llamada antes de `init()` (o `listen`):
 

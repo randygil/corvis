@@ -127,3 +127,19 @@ throttler packages), and `@nestjs/core` 11.2.1 from `corvis-tests/nest/facten-ap
 
 - Q1: the handshake following `set_query_parser` is filed as a separate issue (low priority), out of scope here.
 - Q2: `#[ip]` in gateway handlers is filed as a separate issue (low priority), out of scope here.
+
+## Implementation notes
+
+- `Request::for_upgrade` is as designed (`src/http/request.rs`), with a unit test (`upgrade_tests`). It is not feature-gated: `http_adapter` uses it with and without `websockets`.
+- Tests: the gateway, throttler and `verify_client` scenarios are in `tests/trust_proxy.rs`, plus an untrusted peer forging `X-Forwarded-For` / `X-Forwarded-Host` (ignored) and a one-hop chain where the client-supplied left-most entry is ignored. The upgrade listener tests are in `tests/http_adapter.rs`, on their own small module: the bridge module's listener destroys unknown paths before a second listener could answer.
+- The throttler test checks the `exception` event of the third message; without trust both clients share the `127.0.0.1` counter.
+- Docs: the line numbers of the rate-limiting page had moved since the design; edited its "Behind a proxy" section.
+- Task 4.5 (`corvis-parity`) is left to the maintainer's session, as instructed.
+
+## Verification (2026-11-09)
+
+Verified together in batch-o (#157, #158, #115, #156): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1252 tests and `cargo test -p corvis --features compression` passed 912, 0 failures; naming, crate files, the examples
+(32/32 smoke checks) and `npm run docs:check` pass. CI run 42663786027 is green on Linux and Windows. corvis-parity (batch before #156): consi 832/832, facten 727/727, houseplan 636/636 equal. Security review closed without open findings.

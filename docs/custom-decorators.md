@@ -65,7 +65,7 @@ Details:
 - If `from_context` returns `Err`, the request ends with that exception and the handler does not run.
 - Declaring the parameter as `Option<ChatUser>` makes it optional: an error becomes `None`.
 - A *newtype* gives the same data a different meaning: `pub struct CurrentUser(pub JwtPayload);` in `examples/cats-app/src/common/decorators.rs`.
-- Corvis already ships implementations for `Request`, `Res`, `ExecutionContext`, `ModuleRef`, and `Option<T>`.
+- Corvis already ships implementations for `Request`, `Res`, `ExecutionContext`, `ModuleRef`, `Option<T>`, and `Scoped<T>` (a provider resolved for the current request, see [Injection scopes](/fundamentals/injection-scopes#scoped-t)).
 - The `#[req]`, `#[request]`, and `#[ctx]` attributes also resolve through `FromContext`; you can use them to document intent.
 
 ::: warning No pipes

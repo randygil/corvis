@@ -131,15 +131,15 @@ counted as its first hit.
 - **THEN** the request at 63 s succeeds with `X-RateLimit-Remaining: 1` and `X-RateLimit-Reset: 60`
 
 ### Requirement: The block duration defaults to the ttl and can be configured
-The effective block duration of a throttler SHALL be the route's or controller's `THROTTLE_BLOCK_DURATION` metadata
-(milliseconds, applied to every throttler) when present, else the value set with
-`ThrottlerStorage::with_block_duration(name, ms)` for that throttler, else the effective `ttl` (after
-`THROTTLE_TTL`). `with_block_duration` with a name that matches no configured throttler MUST panic with a message
-naming it.
+The effective block duration of a throttler SHALL be its block duration override for the route (resolved as in
+"Overrides are resolved per throttler and per option") when present, else the value set with
+`ThrottlerStorage::with_block_duration(name, ms)` for that throttler, else the throttler's effective `ttl` (after its
+ttl override). `with_block_duration` with a name that matches no configured throttler MUST panic with a message naming
+it.
 
 #### Scenario: Default follows the ttl override
-- **WHEN** a route declares `#[set_metadata(THROTTLE_TTL, 5_000)]` and `#[set_metadata(THROTTLE_LIMIT, 1)]` and a
-  client sends two requests in a row
+- **WHEN** a route declares `#[set_metadata(THROTTLE_TTL, 5_000)]` and `#[set_metadata(THROTTLE_LIMIT, 1)]`, the only
+  throttler is `default`, and a client sends two requests in a row
 - **THEN** the second response is 429 with `Retry-After: 5`
 
 #### Scenario: Block longer than the ttl
@@ -151,6 +151,11 @@ naming it.
 - **WHEN** the storage sets a block duration of 300,000 ms for `default` and a route declares
   `#[set_metadata(THROTTLE_BLOCK_DURATION, 10_000)]`
 - **THEN** the first rejected request on that route carries `Retry-After: 10`
+
+#### Scenario: Block duration override for one throttler
+- **WHEN** the throttlers are `short` (`ttl: 30_000`, `limit: 3`) and `long` (`ttl: 60_000`, `limit: 5`), a route
+  declares `#[apply_decorators(throttle("short").limit(1).block_duration(5_000))]`, and a client sends two requests
+- **THEN** the second answers 429 with `Retry-After-short: 5`
 
 #### Scenario: Unknown throttler name
 - **WHEN** `ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 2)]).with_block_duration("login", 1_000)` runs
@@ -240,9 +245,10 @@ requests that are rejected as the limit is exceeded stay the same.
   one second)
 
 ### Requirement: The guard tracks clients by their normalized IP
-`ThrottlerGuard` SHALL build the client part of every counter key, for HTTP requests and gateway messages alike, as
-`normalize_ip(&req.ip(), prefix)`, where `prefix` is the storage's IPv6 subnet prefix. The rest of the key (throttler
-name, controller and handler) SHALL stay as it is.
+When no tracker hook applies to a throttler (see "Tracker and key generator hooks at module level" and "Tracker and
+key generator overrides by registered name"), `ThrottlerGuard` SHALL use `normalize_ip(&req.ip(), prefix)` as the
+tracker, for HTTP requests and gateway messages alike, where `prefix` is the storage's IPv6 subnet prefix. When no key
+generator hook applies, the counter key SHALL combine the throttler name, the controller, the handler and the tracker.
 
 #### Scenario: Two addresses of one /64
 - **WHEN** a route is limited to 1 request per minute and requests come from `2001:db8:1:2::a` and then from
@@ -437,3 +443,189 @@ value to `@SkipThrottle({ name: false })`. This is verified by the differential 
   skipping different names)
 - **THEN** every response has the same status and the same throttler header names and values as recorded (time-based
   values within one second)
+
+### Requirement: Overrides are resolved per throttler and per option
+For each configured throttler that is not skipped, `ThrottlerGuard` SHALL resolve each option (limit, ttl, block
+duration, tracker, key generator) on its own from the metadata stored under `throttle_key(OPTION, name)`, reading the
+handler and then the controller; the first target with a value that is not JSON `null` MUST win, and an option with no
+value on either target MUST fall back to the throttler's configuration. An override for one throttler MUST NOT change
+any other throttler.
+
+#### Scenario: Override one throttler
+- **WHEN** the throttlers are `short` (`ttl: 30_000`, `limit: 3`) and `long` (`ttl: 60_000`, `limit: 5`), a route
+  declares `#[apply_decorators(throttle("short").limit(1))]`, and a client sends two requests
+- **THEN** the first response carries `X-RateLimit-Limit-short: 1` and `X-RateLimit-Limit-long: 5`, and the second
+  answers 429 with `Retry-After-short: 30`
+
+#### Scenario: Two throttlers overridden on one route
+- **WHEN** the same throttlers apply and a route declares
+  `#[apply_decorators(throttle("short").limit(2).ttl(10_000), throttle("long").limit(1))]`
+- **THEN** the first response carries `X-RateLimit-Limit-short: 2`, `X-RateLimit-Reset-short: 10` and
+  `X-RateLimit-Limit-long: 1`, and the second answers 429 with `Retry-After-long: 60`
+
+#### Scenario: Partial override on the handler keeps the controller's other options
+- **WHEN** a controller declares `#[apply_decorators(throttle("short").limit(2).ttl(20_000))]` and one of its handlers
+  declares `#[apply_decorators(throttle("short").limit(1))]`
+- **THEN** that handler's first response carries `X-RateLimit-Limit-short: 1` and `X-RateLimit-Reset-short: 20`, and
+  the controller's other handlers carry `X-RateLimit-Limit-short: 2` and `X-RateLimit-Reset-short: 20`
+
+#### Scenario: Null counts as absent
+- **WHEN** a controller declares `#[apply_decorators(throttle("short").limit(2))]` and a handler declares
+  `#[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), Option::<u32>::None)]`
+- **THEN** that handler's responses carry `X-RateLimit-Limit-short: 2`
+
+### Requirement: Bare override keys are the default throttler's entry
+For the throttler named `default`, a target's `THROTTLE_LIMIT`, `THROTTLE_TTL` or `THROTTLE_BLOCK_DURATION` value
+SHALL count as that target's `throttle_key(OPTION, "default")` value when the target has no per-name entry for that
+option. Bare keys MUST NOT affect throttlers with other names.
+
+#### Scenario: Bare limit next to a named throttler
+- **WHEN** the throttlers are `default` (`ttl: 60_000`, `limit: 3`) and `short` (`ttl: 30_000`, `limit: 3`) and a
+  route declares `#[set_metadata(THROTTLE_LIMIT, 1)]`
+- **THEN** the first response carries `X-RateLimit-Limit: 1` and `X-RateLimit-Limit-short: 3`, and the second answers
+  429 with `Retry-After: 60`
+
+#### Scenario: Per-name entry wins over the bare key on the same target
+- **WHEN** the only throttler is `default` and a route declares `#[set_metadata(THROTTLE_LIMIT, 1)]` and
+  `#[set_metadata(throttle_key(THROTTLE_LIMIT, "default"), 2)]`
+- **THEN** the response carries `X-RateLimit-Limit: 2`
+
+#### Scenario: Bare key with named throttlers only
+- **WHEN** the throttlers are `short` and `long` and a route declares `#[set_metadata(THROTTLE_LIMIT, 1)]`
+- **THEN** the request answers 500 (see "Overrides for unknown throttlers fail closed")
+
+### Requirement: Override helpers
+The crate SHALL export, from `corvis::modules::throttler` and the prelude, the constants `THROTTLE_TRACKER` and
+`THROTTLE_KEY_GENERATOR`, `throttle_key(option, name)` returning `option` followed by `name`, and `throttle(name)`, a
+builder (`limit`, `ttl`, `block_duration`, `tracker`, `key_generator`) that converts into a `CustomDecorator` holding
+one `throttle_key(OPTION, name)` entry per option that was set.
+
+#### Scenario: Key spelling
+- **WHEN** `throttle_key(THROTTLE_LIMIT, "short")` and `throttle_key(THROTTLE_KEY_GENERATOR, "short")` are called
+- **THEN** they return `THROTTLER:LIMITshort` and `THROTTLER:KEY_GENERATORshort`
+
+#### Scenario: Only the options set are written
+- **WHEN** `throttle("short").limit(1)` is converted into a `CustomDecorator`
+- **THEN** its only entry is `("THROTTLER:LIMITshort", 1)`
+
+#### Scenario: Gateway handler override
+- **WHEN** a global `ThrottlerGuard` with throttlers `short` (`limit: 3`) and `long` runs on a gateway handler that
+  declares `#[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), 1)]`
+- **THEN** the second message from the same client gets an exception frame
+
+### Requirement: Invalid override values fail closed
+When the resolved override of an option is present but invalid (a limit outside `u32`, a ttl or block duration
+outside `u64`, a tracker or key generator that is not a string naming a registered function), `ThrottlerGuard` SHALL
+fail the request with the standard 500 body and log an error naming the option, the throttler and the value. It MUST
+NOT fall back to another value.
+
+#### Scenario: Text instead of a number
+- **WHEN** the throttlers are `short` and `long` and a route declares
+  `#[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), "abc")]`
+- **THEN** the request answers 500 and an error containing `limit`, `short` and `abc` is logged
+
+#### Scenario: Negative limit
+- **WHEN** a route declares `#[set_metadata(THROTTLE_LIMIT, -1)]` and the only throttler is `default`
+- **THEN** the request answers 500
+
+### Requirement: Overrides for unknown throttlers fail closed
+When a route's handler or controller has an override key whose throttler name matches no configured throttler, or a
+bare override key that overrides nothing (a bare limit, ttl or block duration while no throttler is named `default`, or
+a bare tracker or key generator key), `ThrottlerGuard` SHALL answer 500 with the standard body on every request of that
+route, and log one error for that route (identified by controller and handler) naming the route, the unknown names and
+the configured ones. It MUST NOT log it again for the same route. The original library ignores such overrides; this is a
+documented divergence (security over parity: a misspelled name would leave the route on the looser global limit).
+
+#### Scenario: Misspelled name
+- **WHEN** the throttlers are `short` and `long`, a route declares `#[apply_decorators(throttle("shrot").limit(1))]`,
+  and a client sends three requests
+- **THEN** the three responses are 500 with no throttler headers, and one error naming the route and `shrot` is logged
+
+#### Scenario: Bare key without a default throttler
+- **WHEN** the throttlers are `short` and `long` and a client sends two requests to a route with
+  `#[set_metadata(THROTTLE_LIMIT, 1)]`
+- **THEN** both are 500 and one error naming the route is logged
+
+### Requirement: Tracker and key generator hooks at module level
+`ThrottlerStorage` SHALL offer `with_tracker(f)` (an async function of the `ExecutionContext` returning
+`Result<String, HttpException>`) and `with_key_generator(f)` (a function of the context, the tracker and the throttler
+name returning the key). When set, they SHALL replace the built-in tracker, including IP normalization, and the
+built-in key wherever no route override applies. The guard MUST return a tracker's `Err` unchanged.
+
+#### Scenario: Tracker from a request header
+- **WHEN** the only throttler is `default` (`limit: 1`), the storage has a tracker returning the `x-client` request
+  header, and one IP sends requests with `x-client` `a`, `a` and `b`
+- **THEN** the responses are 200, 429 and 200
+
+#### Scenario: Key shared between routes
+- **WHEN** the only throttler is `default` (`limit: 1`) and the storage has a key generator returning the throttler
+  name and the tracker, and a client sends one request to each of two routes
+- **THEN** the second request answers 429
+
+#### Scenario: Tracker error
+- **WHEN** the tracker returns `Err(HttpException::new("no client id", 400))`
+- **THEN** the request answers 400 and no hit is counted
+
+### Requirement: Tracker and key generator overrides by registered name
+`ThrottlerStorage` SHALL offer `with_named_tracker(id, f)` and `with_named_key_generator(id, f)`, with the signatures
+of the module-level hooks, and `ThrottleOverride::tracker(id)` / `key_generator(id)` SHALL select them for one
+throttler on a route or controller. For each throttler the guard SHALL use the route's override, else the module hook,
+else the built-in. Registering the same id twice MUST panic with a message naming it.
+
+#### Scenario: Route tracker over the module tracker
+- **WHEN** the storage has a tracker returning the `x-client` header and a named tracker `fixed` returning `"all"`, a
+  route declares `#[apply_decorators(throttle("default").tracker("fixed"))]`, the limit is 1, and requests come with
+  `x-client` `a` and then `b`
+- **THEN** the second request answers 429
+
+#### Scenario: Route key generator
+- **WHEN** the storage has a key generator shared between routes, a named key generator `own` that prefixes the
+  tracker with `own:`, a client has used up its limit on one route, and then sends a request to a route with
+  `#[apply_decorators(throttle("default").key_generator("own"))]`
+- **THEN** that request answers 200
+
+#### Scenario: Unregistered name
+- **WHEN** a route declares `#[apply_decorators(throttle("default").tracker("missing"))]` and no tracker `missing`
+  is registered
+- **THEN** the request answers 500 and the logged error names `missing`
+
+#### Scenario: Duplicate registration
+- **WHEN** `with_named_tracker("fixed", ..)` is called twice on one storage
+- **THEN** it panics with a message containing `fixed`
+
+### Requirement: Counters stay separate per throttler
+Two throttlers MUST NOT share a counter or a block, whatever key the key generator returns for them. Within one
+throttler, the built-in key, the module key generator and each registered key generator MUST NOT share counters either,
+whatever string a generator returns; only routes that use the same generator share counters.
+
+#### Scenario: A crafted tracker does not reach another route's built-in counter
+- **WHEN** a tracker returns the `x-email` header (else a fixed value), a registered key generator returns the tracker
+  as is, a client sends four requests to a route that uses that generator with `x-email` set to the built-in key of
+  `/sensitive` for the fixed value, and another client then requests `/sensitive` without the header
+- **THEN** that request answers 200
+
+#### Scenario: Key generator that ignores the throttler name
+- **WHEN** the throttlers are `short` (`ttl: 30_000`, `limit: 100`) and `long` (`ttl: 60_000`, `limit: 2`), the key
+  generator returns the tracker alone, and a client sends four requests
+- **THEN** every response carries `X-RateLimit-Reset-short: 30`, the third and fourth answer 429 with
+  `Retry-After-long` and carry `X-RateLimit-Remaining-short` (96 on the fourth), and no response carries
+  `Retry-After-short`
+
+### Requirement: Overrides match @nestjs/throttler
+For the same throttlers, options, overrides and requests, each response's status and throttler headers SHALL be the
+same as with `@nestjs/throttler` 6.7.1, where `throttle("name")` corresponds to `@Throttle({ name: { ... } })` and the
+storage hooks to `getTracker` and `generateKey`, except for a key generator that returns the same key for two
+throttlers. This is verified by the differential fixture.
+
+#### Scenario: Replay of the recorded override cases
+- **WHEN** the Rust test replays the override cases recorded from `@nestjs/throttler` (one throttler overridden, two
+  overridden, a partial handler override under a controller override, a block duration override, an unknown name
+  (the original answers 200, Corvis 500: documented divergence), a `default` override with and without a `default`
+  throttler (without: the same divergence), an invalid value, module and route trackers, module and
+  route key generators)
+- **THEN** every response has the same status and the same throttler header names and values as recorded
+  (time-based values within one second)
+
+#### Scenario: The documented divergence differs as documented
+- **WHEN** the replay reaches the recorded case whose key generator ignores the throttler name
+- **THEN** the recorded values differ from Corvis's and Corvis's match "Counters stay separate per throttler"

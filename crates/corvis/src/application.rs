@@ -581,6 +581,7 @@ impl CorvisApplication {
             body_limit: self.config.body_limit,
             static_dirs: self.container.instances_of::<crate::modules::serve_static::ServeStaticOptions>(),
             container: self.container.clone(),
+            request_scope: self.container.has_request_scoped(),
             #[cfg(feature = "websockets")]
             gateways,
             http_server: self.get_http_server(),

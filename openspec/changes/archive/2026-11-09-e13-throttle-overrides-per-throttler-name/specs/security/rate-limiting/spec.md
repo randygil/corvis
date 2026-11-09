@@ -114,7 +114,7 @@ option. Bare keys MUST NOT affect throttlers with other names.
 
 #### Scenario: Bare key with named throttlers only
 - **WHEN** the throttlers are `short` and `long` and a route declares `#[set_metadata(THROTTLE_LIMIT, 1)]`
-- **THEN** the route is limited by the configured `short` and `long` limits
+- **THEN** the request answers 500 (see "Overrides for unknown throttlers fail closed")
 
 ### Requirement: Override helpers
 The crate SHALL export, from `corvis::modules::throttler` and the prelude, the constants `THROTTLE_TRACKER` and
@@ -150,22 +150,23 @@ NOT fall back to another value.
 - **WHEN** a route declares `#[set_metadata(THROTTLE_LIMIT, -1)]` and the only throttler is `default`
 - **THEN** the request answers 500
 
-### Requirement: Overrides for unknown throttlers are reported
+### Requirement: Overrides for unknown throttlers fail closed
 When a route's handler or controller has an override key whose throttler name matches no configured throttler, or a
-bare override key while no throttler is named `default`, `ThrottlerGuard` SHALL log one warning for that route
-(identified by controller and handler) naming the route and the unknown names. It MUST NOT log it again for the same
-route and MUST still apply the configured throttlers.
+bare override key that overrides nothing (a bare limit, ttl or block duration while no throttler is named `default`, or
+a bare tracker or key generator key), `ThrottlerGuard` SHALL answer 500 with the standard body on every request of that
+route, and log one error for that route (identified by controller and handler) naming the route, the unknown names and
+the configured ones. It MUST NOT log it again for the same route. The original library ignores such overrides; this is a
+documented divergence (security over parity: a misspelled name would leave the route on the looser global limit).
 
 #### Scenario: Misspelled name
 - **WHEN** the throttlers are `short` and `long`, a route declares `#[apply_decorators(throttle("shrot").limit(1))]`,
   and a client sends three requests
-- **THEN** one warning naming the route and `shrot` is logged, and the three responses carry
-  `X-RateLimit-Limit-short: 3`
+- **THEN** the three responses are 500 with no throttler headers, and one error naming the route and `shrot` is logged
 
 #### Scenario: Bare key without a default throttler
 - **WHEN** the throttlers are `short` and `long` and a client sends two requests to a route with
   `#[set_metadata(THROTTLE_LIMIT, 1)]`
-- **THEN** one warning naming the route is logged
+- **THEN** both are 500 and one error naming the route is logged
 
 ### Requirement: Tracker and key generator hooks at module level
 `ThrottlerStorage` SHALL offer `with_tracker(f)` (an async function of the `ExecutionContext` returning
@@ -215,7 +216,15 @@ else the built-in. Registering the same id twice MUST panic with a message namin
 - **THEN** it panics with a message containing `fixed`
 
 ### Requirement: Counters stay separate per throttler
-Two throttlers MUST NOT share a counter or a block, whatever key the key generator returns for them.
+Two throttlers MUST NOT share a counter or a block, whatever key the key generator returns for them. Within one
+throttler, the built-in key, the module key generator and each registered key generator MUST NOT share counters either,
+whatever string a generator returns; only routes that use the same generator share counters.
+
+#### Scenario: A crafted tracker does not reach another route's built-in counter
+- **WHEN** a tracker returns the `x-email` header (else a fixed value), a registered key generator returns the tracker
+  as is, a client sends four requests to a route that uses that generator with `x-email` set to the built-in key of
+  `/sensitive` for the fixed value, and another client then requests `/sensitive` without the header
+- **THEN** that request answers 200
 
 #### Scenario: Key generator that ignores the throttler name
 - **WHEN** the throttlers are `short` (`ttl: 30_000`, `limit: 100`) and `long` (`ttl: 60_000`, `limit: 2`), the key
@@ -232,8 +241,9 @@ throttlers. This is verified by the differential fixture.
 
 #### Scenario: Replay of the recorded override cases
 - **WHEN** the Rust test replays the override cases recorded from `@nestjs/throttler` (one throttler overridden, two
-  overridden, a partial handler override under a controller override, a block duration override, an unknown name, a
-  `default` override with and without a `default` throttler, an invalid value, module and route trackers, module and
+  overridden, a partial handler override under a controller override, a block duration override, an unknown name
+  (the original answers 200, Corvis 500: documented divergence), a `default` override with and without a `default`
+  throttler (without: the same divergence), an invalid value, module and route trackers, module and
   route key generators)
 - **THEN** every response has the same status and the same throttler header names and values as recorded
   (time-based values within one second)

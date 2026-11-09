@@ -131,7 +131,7 @@ pub fn expand_controller(args: TokenStream, mut item: ItemStruct) -> syn::Result
         quote!(::corvis::ControllerMetadata::new("").paths(::std::vec![#(#path_strs),*]))
     };
 
-    let injectable = injectable_impl(&mut item, &InjectableOptions { transient: false })?;
+    let injectable = injectable_impl(&mut item, &InjectableOptions::default())?;
     let exportable = export_impl(&item, false);
     let name = &item.ident;
     let (impl_g, ty_g, where_c) = item.generics.split_for_impl();

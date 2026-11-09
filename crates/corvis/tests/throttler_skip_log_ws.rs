@@ -1,5 +1,6 @@
-//! A bare `SKIP_THROTTLE` that skips nothing is logged once per route, and `skip_throttle_key` skips a throttler on a
-//! gateway handler. Its own test binary: the logger is process-wide, so the tests share one capturing sink and are
+//! A bare `SKIP_THROTTLE` that skips nothing is logged once per route, overrides for unknown throttlers answer 500 and are logged
+//! once per route, invalid override values are logged as errors, and `skip_throttle_key` and `throttle_key` work on a gateway
+//! handler. Its own test binary: the logger is process-wide, so the tests share one capturing sink and are
 //! serialized.
 
 use std::sync::Mutex;
@@ -7,7 +8,9 @@ use std::time::Duration;
 
 use corvis::prelude::*;
 use corvis::testing::request;
-use corvis::{LogLevel, LoggerService, ThrottlerGuard, ThrottlerModule, ThrottlerOptions, WsResponse, WsServer, websocket_gateway};
+use corvis::{
+    LogLevel, LoggerService, THROTTLE_LIMIT, ThrottlerGuard, ThrottlerModule, ThrottlerOptions, WsResponse, WsServer, websocket_gateway,
+};
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -29,6 +32,10 @@ fn guard_warnings() -> Vec<String> {
         .filter(|(level, _, ctx)| *level == LogLevel::Warn && ctx.as_deref() == Some("ThrottlerGuard"))
         .map(|(_, m, _)| m.clone())
         .collect()
+}
+
+fn errors() -> Vec<String> {
+    LOGS.lock().unwrap().iter().filter(|(level, ..)| *level == LogLevel::Error).map(|(_, m, _)| m.clone()).collect()
 }
 
 fn throttler(name: &str, ttl: u64, limit: u32) -> ThrottlerOptions {
@@ -57,6 +64,30 @@ impl RoutesController {
     fn plain(&self) -> &'static str {
         "ok"
     }
+
+    #[get("misspelled")]
+    #[apply_decorators(throttle("shrot").limit(1))]
+    fn misspelled(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("known")]
+    #[apply_decorators(throttle("short").limit(4), throttle("long").limit(4))]
+    fn known(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("bare-limit")]
+    #[set_metadata(THROTTLE_LIMIT, 1)]
+    fn bare_limit(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("invalid")]
+    #[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), "abc")]
+    fn invalid(&self) -> &'static str {
+        "ok"
+    }
 }
 
 #[websocket_gateway(path = "/skip")]
@@ -74,6 +105,21 @@ impl SkipGateway {
     }
 }
 
+#[websocket_gateway(path = "/ovr")]
+pub struct OverrideGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl OverrideGateway {
+    #[subscribe_message("tight")]
+    #[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), 1)]
+    fn tight(&self, #[message_body] text: String) -> WsResponse {
+        WsResponse::new("tight", text)
+    }
+}
+
 #[module(imports = [ThrottlerModule::for_root(vec![throttler("short", 60_000, 5), throttler("long", 60_000, 5)])], controllers = [RoutesController])]
 pub struct NamedModule;
 
@@ -85,6 +131,12 @@ pub struct DefaultModule;
     providers = [SkipGateway, Provider::app_guard::<ThrottlerGuard>()]
 )]
 pub struct GatewayModule;
+
+#[module(
+    imports = [ThrottlerModule::for_root(vec![throttler("short", 60_000, 3), throttler("long", 120_000, 5)])],
+    providers = [OverrideGateway, Provider::app_guard::<ThrottlerGuard>()]
+)]
+pub struct GatewayOverrideModule;
 
 async fn start<M: corvis::Module>() -> (CorvisApplication, std::net::SocketAddr) {
     LOGS.lock().unwrap().clear();
@@ -146,5 +198,77 @@ async fn gateway_handler_skips_a_throttler_by_name() {
     // `short` allows one message and is skipped; `long` allows two.
     assert_eq!(send(&mut ws, message.clone()).await["event"], "joined");
     assert_eq!(send(&mut ws, message.clone()).await["event"], "joined");
+    assert_eq!(send(&mut ws, message).await["event"], "exception");
+}
+
+fn guard_errors() -> Vec<String> {
+    LOGS.lock()
+        .unwrap()
+        .iter()
+        .filter(|(level, _, ctx)| *level == LogLevel::Error && ctx.as_deref() == Some("ThrottlerGuard"))
+        .map(|(_, m, _)| m.clone())
+        .collect()
+}
+
+/// Fail closed: the original ignores an override for a throttler that does not exist, Corvis rejects the route (a
+/// misspelled name would leave it on the looser global limit) and logs the error once per route.
+#[corvis::test]
+async fn an_override_for_an_unknown_throttler_answers_500_and_logs_once_per_route() {
+    let _s = SERIAL.lock().await;
+    let (app, _addr) = start::<NamedModule>().await;
+    let c = request(&app);
+    for _ in 0..3 {
+        let r = c.get("/r/misspelled").send().await;
+        r.expect_status(500).expect_json(json!({ "statusCode": 500, "message": "Internal server error" }));
+        assert!(r.header("x-ratelimit-limit-short").is_none());
+    }
+    let errors = guard_errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("RoutesController") && errors[0].contains("misspelled") && errors[0].contains("shrot"), "{}", errors[0]);
+    assert!(errors[0].contains("`short`") && errors[0].contains("`long`"), "lists the configured names: {}", errors[0]);
+    c.get("/r/plain").send().await.expect_status(200);
+}
+
+#[corvis::test]
+async fn a_bare_override_without_a_default_throttler_answers_500_and_logs_once() {
+    let _s = SERIAL.lock().await;
+    let (app, _addr) = start::<NamedModule>().await;
+    let c = request(&app);
+    for _ in 0..2 {
+        c.get("/r/bare-limit").send().await.expect_status(500);
+    }
+    let errors = guard_errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("bare_limit") && errors[0].contains("THROTTLER:LIMIT"), "{}", errors[0]);
+}
+
+#[corvis::test]
+async fn no_error_when_every_override_names_a_configured_throttler() {
+    let _s = SERIAL.lock().await;
+    let (app, _addr) = start::<NamedModule>().await;
+    request(&app).get("/r/known").send().await.expect_status(200).expect_header("x-ratelimit-limit-short", "4");
+    let (app, _addr) = start::<DefaultModule>().await;
+    request(&app).get("/r/bare-limit").send().await.expect_status(200).expect_header("x-ratelimit-limit", "1");
+    assert_eq!(guard_errors(), Vec::<String>::new());
+}
+
+#[corvis::test]
+async fn an_invalid_override_value_is_logged_with_the_option_the_throttler_and_the_value() {
+    let _s = SERIAL.lock().await;
+    let (app, _addr) = start::<NamedModule>().await;
+    request(&app).get("/r/invalid").send().await.expect_status(500);
+    let errors = errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("limit") && errors[0].contains("short") && errors[0].contains("abc"), "{}", errors[0]);
+}
+
+#[corvis::test]
+async fn gateway_handler_overrides_a_throttler_by_name() {
+    let _s = SERIAL.lock().await;
+    let (_app, addr) = start::<GatewayOverrideModule>().await;
+    let mut ws = tokio_tungstenite::connect_async(format!("ws://{addr}/ovr")).await.unwrap().0;
+    let message = json!({ "event": "tight", "data": "x" });
+    // `short` allows three messages but the handler tightens it to one; `long` is untouched.
+    assert_eq!(send(&mut ws, message.clone()).await["event"], "tight");
     assert_eq!(send(&mut ws, message).await["event"], "exception");
 }

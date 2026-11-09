@@ -6,6 +6,7 @@ use super::container::{Container, ModuleId};
 use super::error::DiError;
 use super::injectable::{Injectable, ResolveCtx};
 use super::provider::downcast;
+use super::request_scope::RequestCtx;
 use super::token::Token;
 
 #[derive(Clone)]
@@ -60,6 +61,42 @@ impl ModuleRef {
         self.ctx().get::<T>().await
     }
 
+    /// Resolves a provider of any scope for a request that is being handled: the stored instance of a singleton, a new
+    /// instance of a transient provider and, for a request-scoped provider, the instance of that request (created on
+    /// first use). The provider must be visible from this module, as for constructor injection.
+    ///
+    /// A provider that is not request-scoped resolves exactly as with [`ModuleRef::resolve`], whatever the request.
+    /// Resolving a request-scoped provider, directly or through transient providers, needs a request the application is
+    /// dispatching (the one a handler, guard, interceptor, pipe, filter or middleware receives, or a clone of it while
+    /// the request is in flight). Otherwise, for example with a request built by hand, after the response has been sent,
+    /// or in a WebSocket message handler, it fails with [`DiError::OutsideRequest`]. The application only keeps a
+    /// per-request store when at least one provider is request-scoped.
+    ///
+    /// ```ignore
+    /// #[get("/me")]
+    /// async fn me(&self, #[req] req: Request) -> String {
+    ///     let ctx = self.module_ref.resolve_for::<RequestContext>(&req).await.expect("request-scoped provider");
+    ///     ctx.user_id()
+    /// }
+    /// ```
+    pub async fn resolve_for<T: ?Sized + Send + Sync + 'static>(&self, request: &crate::http::Request) -> Result<Arc<T>, DiError> {
+        self.resolve_token_for::<T>(Token::of::<T>(), request).await
+    }
+
+    /// Like [`ModuleRef::resolve_for`], for a provider registered under a custom token.
+    pub async fn resolve_token_for<T: ?Sized + Send + Sync + 'static>(
+        &self,
+        token: impl Into<Token>,
+        request: &crate::http::Request,
+    ) -> Result<Arc<T>, DiError> {
+        let token = token.into();
+        // Without a store the resolution runs as `resolve` does: a request-scoped provider, directly or through a
+        // transient chain, then fails with `OutsideRequest`; any other provider resolves normally.
+        let mut ctx = self.ctx();
+        ctx.request = RequestCtx::of(request);
+        ctx.get_token::<T>(token).await
+    }
+
     /// Dynamically instantiates a class that was not registered as a provider
     /// (`moduleRef.create(CatsFactory)`).
     pub async fn create<T: Injectable>(&self) -> Result<T, DiError> {
@@ -74,6 +111,7 @@ impl ModuleRef {
             deps: &[],
             // Inside a constructor the resolution continues its path, so a cycle through `ModuleRef` is detected.
             path: super::container::current_resolution_path(),
+            request: None,
         }
     }
 
