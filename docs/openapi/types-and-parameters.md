@@ -114,9 +114,48 @@ pub struct CatResponse {
 
 Option keys are written in snake_case or camelCase; they are converted to camelCase (`read_only` → `readOnly`). Values are Rust expressions (`example = 42`, `enum = ["a", "b"]`) except `type`, which takes a type: `type = CatDto`, `type = [CatDto]` for an array or `type = "string"`.
 
-::: warning
-`#[derive(ApiSchema)]` does not read the constraints of `#[derive(Validate)]` (`#[max_length]`, `#[is_in]`...): add them with `#[api_property(...)]` if the document must show them. The `cats-app` example uses it with `Validate` DTOs and tests the generated document (`examples/cats-app/tests/openapi.rs`); check the document if you depend on uncommon options.
-:::
+### Validation constraints
+
+The constraints declared for `#[derive(Validate)]` on the same field also become OpenAPI keywords, with the values the original framework's OpenAPI compiler plugin gives to the equivalent class-validator decorators. Nothing else to write:
+
+```rust
+#[derive(Deserialize, Validate, ApiSchema)]
+pub struct CreateCatDto {
+    #[max_length(50)]
+    pub name: String,                 // { "type": "string", "maxLength": 50 }
+    #[min(0)]
+    #[max(40)]
+    pub age: u32,                     // { "type": "number", "minimum": 0, "maximum": 40 }
+    #[is_in("persian", "siamese")]
+    pub breed: String,                // { "type": "string", "enum": ["persian", "siamese"] }
+}
+```
+
+| Field attribute | Keywords |
+|---|---|
+| `#[min(n)]`, `#[max(n)]` | `minimum`, `maximum` |
+| `#[min_length(n)]`, `#[max_length(n)]` | `minLength`, `maxLength` |
+| `#[length(a)]`, `#[length(a, b)]` | `minLength: a`, and `maxLength: b` when given |
+| `#[matches(re)]` | `pattern: re` |
+| `#[contains(s)]` | `pattern`: `s` with the regular expression characters escaped |
+| `#[is_email]`, `#[is_url]`, `#[is_uuid]` | `format`: `email`, `uri`, `uuid` |
+| `#[is_hex_color]` | `pattern` of a hexadecimal color |
+| `#[is_positive]`, `#[is_negative]` | `minimum: 1`, `maximum: -1` (`exclusiveMinimum: 0`, `exclusiveMaximum: 0` on fields typed `f32` / `f64` directly or inside `Option` / `Vec`, not through a type alias) |
+| `#[array_not_empty]`, `#[array_min_size(n)]`, `#[array_max_size(n)]` | `minItems`, `maxItems` |
+| `#[array_unique]` | `uniqueItems: true` |
+| `#[is_in(a, b)]` | `enum: [a, b]`, plus `isArray: true` with `each` |
+| `#[is_enum]`, `#[is_enum(T)]` | `enum` with the variant names serde accepts for the enum |
+
+Values are the arguments serialized as JSON. Rules that are not in the table (`is_int`, `is_date_string`, `is_not_empty`, `is_optional`...) add nothing: `is_int` does not change `type`, and `is_optional` does not change `required` (an `Option<T>` field is the optional one).
+
+- **Precedence.** When two attributes of a field produce the same keyword, the keyword written later in this order wins: `is_enum`, `is_in`, `min`, `max`, `min_length`, `max_length`, `array_not_empty`, `is_positive`, `is_negative`, `array_unique`, `is_email`, `is_url`, `is_uuid`, `is_hex_color`, `array_min_size`, `array_max_size`, `contains`, `length`, `matches` (so `#[min(5)]` with `#[is_positive]` gives `minimum: 1`). For a rule written twice, the upper attribute counts.
+- **Explicit options win.** A key in `#[api_property(...)]` replaces the derived one: `#[max(40)]` with `#[api_property(maximum = 30)]` gives `maximum: 30`.
+- **Arrays.** For `Vec<T>` fields, value constraints (`maxLength`, `minimum`, `pattern`, `format`...) go to `items`, and `minItems`, `maxItems` and `uniqueItems` stay on the array. `each` only matters for `is_in` and `is_enum`, as in the original.
+- **`pattern`** carries the regular expression as written, in Rust syntax; a tool that reads it as ECMAScript may reject Rust-only constructs.
+
+Differences from the original plugin, on purpose: `#[is_positive]` and `#[is_negative]` on a float produce an exclusive bound instead of `minimum: 1` (which excluded the values between 0 and 1), `#[contains]` escapes the text instead of using it as a regular expression, and `#[is_enum]` adds `enum` (the original takes it from the TypeScript type). The fixture `crates/corvis-swagger/tests/fixtures/class_validator_shim` records the original's output and the test lists these differences.
+
+Clients generated from the document become stricter (a generator may turn `maxLength` into a check). Validation itself does not change. The `cats-app` example tests the generated document (`examples/cats-app/tests/openapi.rs`).
 
 ## Explicit parameters
 

@@ -6,6 +6,7 @@ use syn::{Data, DeriveInput, Expr, Fields, Type};
 
 use crate::utils::{attr_args, attr_name, generic_inner, last_ident, lit_str};
 
+/// The `ApiSchema` derive reads these attributes too (`corvis-swagger-macros/src/constraints.rs`): keep both lists in sync.
 pub const RULES: &[&str] = &[
     "is_string",
     "is_int",

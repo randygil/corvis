@@ -34,3 +34,5 @@ crates/corvis/tests/fixtures/http_filter_order/node_modules
 
 # Port-versus-original benchmark: raw oha output, logs and quick runs
 bench/port-vs-original/raw
+crates/corvis-swagger/tests/fixtures/class_validator_shim/node_modules
+crates/corvis-swagger/tests/fixtures/class_validator_shim/out

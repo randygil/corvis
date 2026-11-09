@@ -63,6 +63,7 @@ const ALLOW = [
   // Tests and fixtures that run against or record the output of an original Node library.
   { path: 'crates/corvis/tests/fixtures/**', reason: 'oracle scripts and recorded output of the original Node libraries' },
   { path: 'crates/corvis-orm/tests/fixtures/**', reason: 'oracle schema and recorded output of the original client' },
+  { path: 'crates/corvis-swagger/tests/fixtures/**', reason: 'oracle script and recorded output of the original OpenAPI plugin' },
   { path: 'crates/corvis-orm/tests/pg_oracle.rs', reason: 'maps errors to the original client error class names of the recorded oracle' },
   { path: 'crates/corvis-orm/tests/generated/*.rs', reason: 'generated from the reference apps\' schemas; header paths and copied schema comments' },
   { path: 'crates/corvis-orm/tests/pg_houseplan.rs', pattern: /houseplan\/api\/prisma\/migrations/, reason: 'migrations folder of the reference app the test runs' },

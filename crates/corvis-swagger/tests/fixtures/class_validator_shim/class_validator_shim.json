@@ -1,0 +1,286 @@
+{
+  "versions": {
+    "swagger": "11.4.6",
+    "classValidator": "0.14.4"
+  },
+  "schemas": {
+    "AllowedDto": {
+      "type": "object",
+      "properties": {
+        "breed": {
+          "type": "string",
+          "enum": [
+            "persian",
+            "siamese"
+          ]
+        },
+        "level": {
+          "type": "number",
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "required": [
+        "breed",
+        "level"
+      ]
+    },
+    "ArraysDto": {
+      "type": "object",
+      "properties": {
+        "tags": {
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 10
+          }
+        },
+        "names": {
+          "uniqueItems": true,
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "items": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "letters": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      },
+      "required": [
+        "tags",
+        "names",
+        "items",
+        "letters"
+      ]
+    },
+    "EnumDto": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "admin",
+            "user"
+          ]
+        }
+      },
+      "required": [
+        "role"
+      ]
+    },
+    "ExplicitDto": {
+      "type": "object",
+      "properties": {
+        "capped": {
+          "type": "number",
+          "maximum": 30
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 10,
+          "description": "Label"
+        }
+      },
+      "required": [
+        "capped",
+        "label"
+      ]
+    },
+    "FormatDto": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "site": {
+          "type": "string",
+          "format": "uri"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#?([0-9A-F]{3}|[0-9A-F]{4}|[0-9A-F]{6}|[0-9A-F]{8})$"
+        }
+      },
+      "required": [
+        "email",
+        "site",
+        "id",
+        "color"
+      ]
+    },
+    "LengthDto": {
+      "type": "object",
+      "properties": {
+        "onlyMin": {
+          "type": "string",
+          "minLength": 2
+        },
+        "both": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        }
+      },
+      "required": [
+        "onlyMin",
+        "both"
+      ]
+    },
+    "LengthRangeDto": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "age": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 40
+        },
+        "short": {
+          "type": "string",
+          "minLength": 2
+        }
+      },
+      "required": [
+        "name",
+        "age",
+        "short"
+      ]
+    },
+    "OptionalDto": {
+      "type": "object",
+      "properties": {
+        "nick": {
+          "type": "string",
+          "maxLength": 5
+        },
+        "level": {
+          "type": "number",
+          "minimum": 1
+        }
+      }
+    },
+    "PatternDto": {
+      "type": "object",
+      "properties": {
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z]+$"
+        },
+        "hasX": {
+          "type": "string",
+          "pattern": "x"
+        },
+        "hasDot": {
+          "type": "string",
+          "pattern": "a.b"
+        }
+      },
+      "required": [
+        "slug",
+        "hasX",
+        "hasDot"
+      ]
+    },
+    "PrecedenceDto": {
+      "type": "object",
+      "properties": {
+        "minThenPositive": {
+          "type": "number",
+          "minimum": 1
+        },
+        "containsThenMatches": {
+          "type": "string",
+          "pattern": "^[a-z]+$"
+        },
+        "minLengthThenLength": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 9
+        },
+        "repeated": {
+          "type": "number",
+          "maximum": 10
+        }
+      },
+      "required": [
+        "minThenPositive",
+        "containsThenMatches",
+        "minLengthThenLength",
+        "repeated"
+      ]
+    },
+    "SignDto": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "number",
+          "minimum": 1
+        },
+        "debt": {
+          "type": "number",
+          "maximum": -1
+        },
+        "ratio": {
+          "type": "number",
+          "minimum": 1
+        },
+        "drop": {
+          "type": "number",
+          "maximum": -1
+        }
+      },
+      "required": [
+        "count",
+        "debt",
+        "ratio",
+        "drop"
+      ]
+    },
+    "UnmappedDto": {
+      "type": "object",
+      "properties": {
+        "n": {
+          "type": "number"
+        },
+        "when": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "n",
+        "when",
+        "text"
+      ]
+    }
+  }
+}

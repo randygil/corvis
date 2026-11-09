@@ -114,9 +114,48 @@ Se respetan `#[serde(rename)]`, `#[serde(rename_all)]` y `#[serde(skip)]`.
 
 Las claves de las opciones se escriben en snake_case o camelCase; se convierten a camelCase (`read_only` → `readOnly`). Los valores son expresiones de Rust (`example = 42`, `enum = ["a", "b"]`) salvo `type`, que recibe un tipo: `type = CatDto`, `type = [CatDto]` para un array o `type = "string"`.
 
-::: warning
-`#[derive(ApiSchema)]` no lee las restricciones de `#[derive(Validate)]` (`#[max_length]`, `#[is_in]`...): añádelas con `#[api_property(...)]` si el documento debe mostrarlas. El ejemplo `cats-app` lo usa con DTOs `Validate` y prueba el documento generado (`examples/cats-app/tests/openapi.rs`); revisa el documento si dependes de opciones poco comunes.
-:::
+### Restricciones de validación
+
+Las restricciones declaradas para `#[derive(Validate)]` en el mismo campo también se convierten en palabras clave de OpenAPI, con los valores que el plugin de compilación de OpenAPI del framework original da a los decoradores equivalentes de class-validator. No hay nada más que escribir:
+
+```rust
+#[derive(Deserialize, Validate, ApiSchema)]
+pub struct CreateCatDto {
+    #[max_length(50)]
+    pub name: String,                 // { "type": "string", "maxLength": 50 }
+    #[min(0)]
+    #[max(40)]
+    pub age: u32,                     // { "type": "number", "minimum": 0, "maximum": 40 }
+    #[is_in("persian", "siamese")]
+    pub breed: String,                // { "type": "string", "enum": ["persian", "siamese"] }
+}
+```
+
+| Atributo del campo | Palabras clave |
+|---|---|
+| `#[min(n)]`, `#[max(n)]` | `minimum`, `maximum` |
+| `#[min_length(n)]`, `#[max_length(n)]` | `minLength`, `maxLength` |
+| `#[length(a)]`, `#[length(a, b)]` | `minLength: a`, y `maxLength: b` si se indica |
+| `#[matches(re)]` | `pattern: re` |
+| `#[contains(s)]` | `pattern`: `s` con los caracteres de expresión regular escapados |
+| `#[is_email]`, `#[is_url]`, `#[is_uuid]` | `format`: `email`, `uri`, `uuid` |
+| `#[is_hex_color]` | `pattern` de un color hexadecimal |
+| `#[is_positive]`, `#[is_negative]` | `minimum: 1`, `maximum: -1` (`exclusiveMinimum: 0`, `exclusiveMaximum: 0` en campos de tipo `f32` / `f64` directamente o dentro de `Option` / `Vec`, no a través de un alias de tipo) |
+| `#[array_not_empty]`, `#[array_min_size(n)]`, `#[array_max_size(n)]` | `minItems`, `maxItems` |
+| `#[array_unique]` | `uniqueItems: true` |
+| `#[is_in(a, b)]` | `enum: [a, b]`, más `isArray: true` con `each` |
+| `#[is_enum]`, `#[is_enum(T)]` | `enum` con los nombres de variante que serde acepta para el enum |
+
+Los valores son los argumentos serializados como JSON. Las reglas que no están en la tabla (`is_int`, `is_date_string`, `is_not_empty`, `is_optional`...) no añaden nada: `is_int` no cambia `type` e `is_optional` no cambia `required` (el campo opcional es el `Option<T>`).
+
+- **Precedencia.** Cuando dos atributos de un campo producen la misma clave, gana la que se escribe después en este orden: `is_enum`, `is_in`, `min`, `max`, `min_length`, `max_length`, `array_not_empty`, `is_positive`, `is_negative`, `array_unique`, `is_email`, `is_url`, `is_uuid`, `is_hex_color`, `array_min_size`, `array_max_size`, `contains`, `length`, `matches` (así, `#[min(5)]` con `#[is_positive]` da `minimum: 1`). Si una regla se escribe dos veces, cuenta el atributo de arriba.
+- **Las opciones explícitas ganan.** Una clave en `#[api_property(...)]` reemplaza la derivada: `#[max(40)]` con `#[api_property(maximum = 30)]` da `maximum: 30`.
+- **Arrays.** En campos `Vec<T>`, las restricciones de valor (`maxLength`, `minimum`, `pattern`, `format`...) pasan a `items`, y `minItems`, `maxItems` y `uniqueItems` se quedan en el array. `each` solo importa en `is_in` e `is_enum`, igual que en el original.
+- **`pattern`** lleva la expresión regular tal como se escribió, con sintaxis de Rust; una herramienta que la lea como ECMAScript puede rechazar construcciones exclusivas de Rust.
+
+Diferencias con el plugin original, a propósito: `#[is_positive]` y `#[is_negative]` en un flotante producen un límite exclusivo en lugar de `minimum: 1` (que excluía los valores entre 0 y 1), `#[contains]` escapa el texto en lugar de usarlo como expresión regular, y `#[is_enum]` añade `enum` (el original lo toma del tipo de TypeScript). El fixture `crates/corvis-swagger/tests/fixtures/class_validator_shim` registra la salida del original y la prueba lista estas diferencias.
+
+Los clientes generados a partir del documento se vuelven más estrictos (un generador puede convertir `maxLength` en una comprobación). La validación en sí no cambia. El ejemplo `cats-app` prueba el documento generado (`examples/cats-app/tests/openapi.rs`).
 
 ## Parámetros explícitos
 
