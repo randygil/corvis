@@ -138,6 +138,16 @@ Rules for coexisting with gateways:
 
 A `panic` inside a listener or the `handle_upgrade` callback is logged and closes the socket with `1011`; the socket leaves `wss.clients()` and `on_close` is always emitted.
 
+### Peers that stop reading
+
+The server's [`send_timeout`](/http/performance#clients-that-stop-reading-send-timeout) also covers upgraded connections: when the socket of a
+`WebSocket` accepts nothing for that long while frames are queued for it, the connection is destroyed without a close
+frame. The socket becomes `CLOSED` at once, `on_close` and `closed()` report `1006` with an empty reason, and pending
+`send_and_wait` calls fail. Bytes the peer accepts of any frame restart the deadline, received frames (including pings)
+do not, and a connection with nothing to send is never closed by it, so use a heartbeat for dead idle peers.
+`ServerOptions::send_timeout(None)` turns it off. The `ws` package has no such limit. See
+[gateways](/websockets/gateways#peers-that-stop-reading).
+
 ## Security
 
 Global guards and gateway guards do not protect `upgrade` listeners: validate access inside the listener, as the example does with the moderator token. The same goes for static files and the Swagger/Scalar routes; see [Guards](/websockets/guards).
