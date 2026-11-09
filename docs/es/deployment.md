@@ -60,7 +60,7 @@ Dentro de un contenedor necesitas escuchar en todas las interfaces (`0.0.0.0`), 
 
 ## Detrás de un proxy inverso
 
-Corvis tiene dos formas de servir HTTPS: terminar TLS en la aplicación con la feature `tls` (`app.listen_tls(addr, TlsOptions::from_pem_files(cert, key)?)`, ver [HTTPS y varios servidores](/es/faq/multiple-servers)), o ponerlo detrás de un proxy inverso o balanceador (nginx, Caddy, Traefik, el de tu proveedor) que atienda HTTPS. El servidor integrado habla HTTP/1.1 sin cifrar (HTTP/2 con `h2c(true)`) en los listeners planos. Usa un proxy cuando necesites certificados automáticos, recargar certificados sin reiniciar o HTTP/3.
+Corvis tiene dos formas de servir HTTPS: terminar TLS en la aplicación con la feature `tls` (`app.listen_tls(addr, TlsOptions::from_pem_files(cert, key)?)`, ver [HTTPS y varios servidores](/es/faq/multiple-servers)), o ponerlo detrás de un proxy inverso o balanceador (nginx, Caddy, Traefik, el de tu proveedor) que atienda HTTPS. El servidor integrado habla HTTP/1.1 sin cifrar (HTTP/2 con `h2c(true)`) en los listeners planos. Usa un proxy cuando necesites certificados automáticos, recargar certificados sin reiniciar o HTTP/3. Con TLS integrado, fija `max_connections` y prefiere certificados ECDSA: ver [Límites de conexión y costo del handshake](/es/faq/multiple-servers#limites-de-conexion-y-costo-del-handshake).
 
 Detrás de un proxy, la IP del socket es la del proxy. Para que `req.ip()`, `#[ip]` y el `ThrottlerGuard` vean la del cliente, indica en quién confiar:
 

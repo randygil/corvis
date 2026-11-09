@@ -57,6 +57,19 @@ and gateways are served. `ServerOptions` (`max_connections`, timeouts, `max_head
 - The cryptography provider is the process-wide rustls default when the application installed one (for example
   `aws-lc-rs`, for FIPS), and `ring` otherwise.
 
+### Connection limits and handshake cost
+
+- A connection that negotiated `h2` must start with the HTTP/2 preface; anything else (an HTTP/1 request, a WebSocket
+  upgrade) closes it without a response. HTTP/1 is only served on connections that negotiated `http/1.1` or no ALPN.
+- `headers_timeout` starts after the handshake. A client that completes the handshake and sends nothing holds a
+  `max_connections` slot for up to `handshake_timeout` plus `headers_timeout` (10 + 60 seconds by default), as in plain
+  HTTP. Size `max_connections` and `headers_timeout` accordingly.
+- There is no handshake rate limit, and `max_connections` has no default. Handshakes are cheaper with ECDSA P-256
+  certificates (about 5,500 handshakes per second were measured) than with RSA, especially RSA 4096, and the signing runs
+  on the runtime threads: prefer ECDSA certificates and set `max_connections`.
+- A client that stalls with a partial ClientHello costs about 75 KiB (rustls accepts up to 64 KiB) until the handshake
+  timeout, when it is freed.
+
 ### Certificates
 
 Files are read once, when the options are built: renewing a certificate needs a restart. A custom

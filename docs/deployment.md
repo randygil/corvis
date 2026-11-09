@@ -60,7 +60,7 @@ Inside a container you need to listen on all interfaces (`0.0.0.0`), not on `127
 
 ## Behind a reverse proxy
 
-Corvis has two ways to serve HTTPS: terminate TLS in the application with the `tls` feature (`app.listen_tls(addr, TlsOptions::from_pem_files(cert, key)?)`, see [HTTPS and multiple servers](/faq/multiple-servers)), or put it behind a reverse proxy or load balancer (nginx, Caddy, Traefik, your provider's) that handles HTTPS. The built-in server speaks unencrypted HTTP/1.1 (HTTP/2 with `h2c(true)`) on plain listeners. Use a proxy when you need automatic certificates, certificate reloads without a restart, or HTTP/3.
+Corvis has two ways to serve HTTPS: terminate TLS in the application with the `tls` feature (`app.listen_tls(addr, TlsOptions::from_pem_files(cert, key)?)`, see [HTTPS and multiple servers](/faq/multiple-servers)), or put it behind a reverse proxy or load balancer (nginx, Caddy, Traefik, your provider's) that handles HTTPS. The built-in server speaks unencrypted HTTP/1.1 (HTTP/2 with `h2c(true)`) on plain listeners. Use a proxy when you need automatic certificates, certificate reloads without a restart, or HTTP/3. With built-in TLS, set `max_connections` and prefer ECDSA certificates: see [Connection limits and handshake cost](/faq/multiple-servers#connection-limits-and-handshake-cost).
 
 Behind a proxy, the socket IP is the proxy's. For `req.ip()`, `#[ip]`, and the `ThrottlerGuard` to see the client's, say whom to trust:
 

@@ -1263,6 +1263,8 @@ struct TimedIo {
     /// refresh the keep-alive phase (a PONG or a SETTINGS acknowledgement does not make a connection busy).
     h2_out: Option<H2Frames>,
     h2c: bool,
+    /// TLS with ALPN `h2`: the connection must start with the HTTP/2 preface.
+    h2_only: bool,
     send_timeout: Option<Duration>,
     /// Since when `poll_write` or `poll_flush` have been pending without the socket accepting a byte.
     write_stalled_since: Option<Instant>,
@@ -1500,6 +1502,7 @@ impl TimedIo {
                 Proto::H1Only => false,
                 Proto::H2Only => true,
             },
+            h2_only: proto == Proto::H2Only,
             send_timeout: options.send_timeout,
             write_stalled_since: None,
             write_sleep: None,
@@ -1540,6 +1543,12 @@ impl TimedIo {
         if let Some(matched) = self.preface {
             let n = data.len().min(H2_PREFACE.len() - matched);
             if data[..n] != H2_PREFACE[matched..matched + n] {
+                if self.h2_only {
+                    // ALPN negotiated `h2`: anything but the HTTP/2 preface is a protocol violation, and must not be
+                    // parsed as HTTP/1 (the framing check is off on this path).
+                    self.state.no_linger.store(true, Ordering::SeqCst);
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 connection preface expected"));
+                }
                 self.preface = None;
             } else if matched + n == H2_PREFACE.len() {
                 if !self.h2c {
@@ -2222,6 +2231,13 @@ async fn run_connection(ctx: ConnCtx, stream: ServerIo, permit: Option<OwnedSema
             Ok::<_, ServiceError>(resp.map(|inner| GuardedBody::with_charge(inner, guard, http2, charge, record).boxed_unsync()))
         }
     });
+    if proto == Proto::H2Only {
+        // ALPN said `h2`: the HTTP/2-only path. `serve_connection_with_upgrades` sniffs the first bytes whatever the
+        // builder's version says, which would let a client speak HTTP/1 here without the framing check.
+        let conn = builder.serve_connection(TokioIo::new(io), service).into_owned();
+        finish_connection(conn_state, conn, stop, |c| c.graceful_shutdown(), send_timeout).await;
+        return;
+    }
     let conn = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
     let conn = conn.into_owned();
     finish_connection(conn_state, conn, stop, |c| c.graceful_shutdown(), send_timeout).await;

@@ -113,7 +113,9 @@ purpose; keep that in mind for error-rate alerts. This is revisited with the rou
   `credentials(true)` reflects any origin. See [CORS](/security/cors).
 - HTTP/2 over TLS is negotiated with ALPN (`h2`) on listeners started with `listen_tls`; the HTTP/1 framing check applies
   to HTTP/1.1 over TLS exactly as to plain connections, and a TLS connection that did not negotiate `h2` refuses the
-  HTTP/2 preface whatever `h2c` says.
+  HTTP/2 preface whatever `h2c` says. The reverse holds too: a connection that negotiated `h2` is served as HTTP/2 only
+  and must start with the HTTP/2 preface, so it cannot be used to send HTTP/1 requests (or an HTTP/1 WebSocket upgrade)
+  around the framing check; it is closed without a response instead.
 - HTTP/2 without TLS (h2c) is off by default, like Node's `http` module, which does not speak it.
   `ServerOptions::new().h2c(true)` turns it on for a proxy or platform configured to send it; the HTTP/2 limits follow
   `ServerOptions`: at most 100 concurrent streams per connection (`http2_max_concurrent_streams`), PING keep-alive

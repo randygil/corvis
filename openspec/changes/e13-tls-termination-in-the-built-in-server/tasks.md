@@ -106,3 +106,12 @@ All in `crates/corvis/tests/tls.rs` (`#![cfg(feature = "tls")]`), against `liste
 
 - Archive the change with `/opsx:archive` after review.
 - Close issue #117, tick it in epic #13 and move its card to Done (see the `corvis-task` skill).
+
+## 9. Review notes, security round (2026-11-09)
+
+- [x] 9.1 `Proto::H2Only` rejects anything but the HTTP/2 preface in `TimedIo`, and is served through the HTTP/2-only
+  `serve_connection` path (no HTTP/1 fallback); verify `cargo test -p corvis --features tls --test tls`
+- [x] 9.2 Regression tests: HTTP/1 request and upgrade over ALPN `h2` get no HTTP bytes; the preface over ALPN
+  `http/1.1` still closes; reviewer PoC `smuggle` re-run
+- [x] 9.3 Docs EN + ES: what is enforced for `h2` connections, `headers_timeout` after the handshake, handshake cost
+  and `max_connections`, partial ClientHello cost; `npm run docs:check`

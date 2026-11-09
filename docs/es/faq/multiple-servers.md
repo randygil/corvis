@@ -59,6 +59,20 @@ gateways de WebSocket responden en `wss://`.
 - El proveedor criptográfico es el predeterminado del proceso en rustls cuando la aplicación instaló uno (por ejemplo
   `aws-lc-rs`, para FIPS), y `ring` en otro caso.
 
+### Límites de conexión y costo del handshake
+
+- Una conexión que negoció `h2` debe empezar con el preface de HTTP/2; cualquier otra cosa (una petición HTTP/1, un
+  upgrade de WebSocket) la cierra sin respuesta. HTTP/1 solo se sirve en conexiones que negociaron `http/1.1` o ningún
+  ALPN.
+- `headers_timeout` empieza después del handshake. Un cliente que completa el handshake y no envía nada retiene una
+  plaza de `max_connections` hasta `handshake_timeout` más `headers_timeout` (10 + 60 segundos por defecto), igual que
+  en HTTP plano. Dimensiona `max_connections` y `headers_timeout` en consecuencia.
+- No hay límite de tasa de handshakes, y `max_connections` no tiene valor por defecto. Los handshakes son más baratos
+  con certificados ECDSA P-256 (se midieron unos 5.500 handshakes por segundo) que con RSA, sobre todo RSA 4096, y la
+  firma corre en los hilos del runtime: prefiere certificados ECDSA y fija `max_connections`.
+- Un cliente que se detiene con un ClientHello parcial cuesta unos 75 KiB (rustls acepta hasta 64 KiB) hasta el timeout
+  del handshake, cuando se libera.
+
 ### Certificados
 
 Los archivos se leen una vez, al construir las opciones: renovar un certificado requiere reiniciar. Un

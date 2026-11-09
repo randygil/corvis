@@ -580,3 +580,43 @@ async fn http1_responses_over_tls_are_complete_for_a_reading_client() {
     let r = https_get(addr, &pki, "/t/huge", true).await;
     assert_eq!(r.body.len(), 8 * MIB);
 }
+
+// ---- ALPN `h2` cannot be used to speak HTTP/1 (the framing check would be skipped) ----
+
+#[corvis::test]
+async fn an_http1_request_over_an_h2_connection_gets_no_http_bytes() {
+    let pki = pki();
+    let addr = serve_default(&pki).await;
+    for request in [&b"GET /t/ok HTTP/1.1\r\nHost: x\r\n\r\n"[..], b"GET /t/ok HTTP/1.1\nHost: x\n\n", AMBIGUOUS] {
+        let mut tls = connect(addr, &pki, H2).await;
+        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(&b"h2"[..]));
+        send(&mut tls, request).await;
+        let got = read_all(&mut tls, Duration::from_secs(5)).await;
+        assert!(!got.windows(5).any(|w| w == b"HTTP/"), "{:?}", String::from_utf8_lossy(&got));
+        assert!(ends_within(&mut tls, Duration::from_secs(2)).await, "the connection stayed open");
+    }
+}
+
+#[corvis::test]
+async fn a_websocket_upgrade_over_an_h2_connection_is_not_upgraded() {
+    let pki = pki();
+    let addr = serve_default(&pki).await;
+    let mut tls = connect(addr, &pki, H2).await;
+    let upgrade = b"GET /t/ok HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+    send(&mut tls, upgrade).await;
+    let got = read_all(&mut tls, Duration::from_secs(5)).await;
+    assert!(!got.windows(3).any(|w| w == b"101") && !got.windows(5).any(|w| w == b"HTTP/"), "{:?}", String::from_utf8_lossy(&got));
+}
+
+#[corvis::test]
+async fn the_http2_preface_over_an_http_1_1_connection_is_closed() {
+    let pki = pki();
+    let addr = serve(options(&pki), ServerOptions::new().h2c(true)).await;
+    let mut tls = connect(addr, &pki, H1).await;
+    assert_eq!(tls.get_ref().1.alpn_protocol(), Some(&b"http/1.1"[..]));
+    let mut bytes = PREFACE.to_vec();
+    bytes.extend(frame_bytes(4, 0, 0, &[]));
+    send(&mut tls, &bytes).await;
+    let got = read_all(&mut tls, Duration::from_secs(5)).await;
+    assert!(got.is_empty(), "{got:?}");
+}
