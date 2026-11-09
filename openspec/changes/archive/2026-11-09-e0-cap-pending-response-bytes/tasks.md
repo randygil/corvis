@@ -80,7 +80,7 @@ of `tests/send_timeout.rs`.
 - [x] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [x] 7.3 `cargo test --workspace` passes, including the regression tests of 1.2 and 1.3
 - [x] 7.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 7.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 7.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences
 - [x] 7.6 Re-run `mixed`, `rstcycle` and `trickle` of `st157b/src/main.rs` (and `h1trickle`) against the branch with
   default options and record the peak RSS in design.md (expected: about 8 MiB above the baseline per connection

@@ -288,6 +288,26 @@ Implemented on top of `batch/phase07-o` (`f09eb10`). Decisions and deviations:
   before it was answered. The stalled stream now uses `/t/big` (1 MiB); the assertion about progress is unchanged.
   The same head-of-line effect applies to a real client that downloads one very large in-memory response while
   opening other streams: they wait until it ends (documented under "Large payloads belong in streamed bodies").
+- **CI failure of `an_rst_cycle_keeps_eight_responses_per_round_and_is_closed` (batch run 42680389608, ubuntu and
+  windows): timing of the test, not a security gap.** The test cycled up to 25 rounds of 100 streams, waited for each
+  round up to 3 s and expected the rapid-reset rule to close the connection. On a fast machine all 100 handlers are
+  admitted at once (their shares fit), eight responses are kept, 92 are reset and a round takes under a second:
+  100 cancellations per round reach the floor of 500 per 10 s within about six rounds. On a slow machine the
+  streams reach admission spread over more than the 500 ms the handlers sleep, so the cap fills with the first eight
+  responses and the rest wait for room until the client resets them; the round then lasts the whole 3 s, which is 33
+  cancelled requests per second, under the floor of 500 per 10 s (50 per second) of #150, and the connection is
+  correctly left open. Reproduced locally by running the test next to 64 busy processes on 32 cores: 25 rounds, never
+  closed (also with a pace that followed the server instead of the clock, about 3.5 s per round). The counting is
+  right: the streams that wait for room count as cancelled when the client resets them (`Outcome::Pending` on the
+  dropped future; the unit and integration tests of the waiting request cover it), the dropped responses count as
+  cancelled (`Outcome::Dropped`), and nothing in a cycle completes. A cycle slower than 50 cancelled requests per
+  second is inside the rule's designed tolerance, and what it holds meanwhile is bounded by the cap (8 MiB per
+  connection) and its handler runs by the same rate (waiting streams run no handler), so an attacker on a slow server
+  cannot hold more memory or run more handlers than the floor allows. No change to the counting. The test is split in
+  two that depend on counts, not on speed: `an_rst_cycle_keeps_eight_responses_per_round` (three rounds paced by the
+  server, at most eight responses each) and `an_rst_cycle_is_closed_by_the_rapid_reset_rule`, which lowers
+  `http2_max_cancelled_streams` to 30 so that one round of 100 cancelled requests closes the connection whatever the
+  machine does. Both pass next to 64 busy processes.
 - The parity check (task 7.5) was not run: the implementation brief leaves it to the maintainer's session.
 
 ### Measurements
@@ -386,3 +406,16 @@ Reviewer's modes re-run against this round (release build, `capreview`, server o
 | `burst` (30 requests to a 512 KiB route, 300 ms handler, full-speed reader) | 14 of 30 reset | 16 ok, 14 reset with `ENHANCE_YOUR_CALM` (kept; documented) |
 | `herd` (98 waiters, 256 MiB) | 1.1 to 1.7 times the CPU per MiB | 2.87 ms of CPU per MiB, 319 MiB/s |
 | `h1slack` | slack let extra pipelined handlers run | 2 huge handlers ran while the client did not read: a Windows loopback socket absorbs the 8 MiB, so this mode cannot hold a response; the slack itself is covered by the unit test |
+
+## Verification (2026-11-09)
+
+Verified together in batch-p (#163, #161): `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets, health-tls,
+compression) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed 1302 tests and
+`cargo test -p corvis --features compression` passed 962, 0 failures; naming, crate files, the examples (32/32 smoke
+checks) and `npm run docs:check` pass. CI run 42684409965 is green on Linux and Windows (run 42680389608 had failed on
+the RST-cycle test, which depended on machine speed; it was split into count-based tests). corvis-parity: consi
+832/832, facten 727/727, houseplan 636/636 equal, databases equivalent. Security review: two rounds, closed. Measured with the proof of concept at default options: about 9 MiB held
+per connection with 100 stalled streams (103–114 MiB before); a wedged HTTP/1 connection, unbounded head-of-line
+blocking on HTTP/2 and small responses counted as completed after a reset were fixed; `max_pending_response_wait`
+applies to HTTP/2 only.

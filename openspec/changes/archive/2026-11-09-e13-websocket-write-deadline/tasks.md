@@ -48,11 +48,11 @@ Start after #157 (`e0-write-deadline-for-stalled-clients`) is merged into `main`
 
 ## 5. Definition of done
 
-- [ ] 5.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 5.3 `cargo test --workspace` passes, including the regression tests of 1.1 and 1.2
-- [ ] 5.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 5.1 `cargo build --workspace --all-targets` with no warnings
+- [x] 5.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [x] 5.3 `cargo test --workspace` passes, including the regression tests of 1.1 and 1.2
+- [x] 5.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
+- [x] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences
 
 ## 5b. Security review round (2026-11-09)
@@ -82,7 +82,7 @@ Start after #157 (`e0-write-deadline-for-stalled-clients`) is merged into `main`
   unit test with small write slices and an integration test with a trickle reader and a ping flood
 - [x] 5d.2 `read_paused` unpauses on any probe result except `WouldBlock`, so a socket error reaches the next read
 - [x] 5d.3 Extend the #117 note in design.md (credit measured in bytes accepted by TCP)
-- [ ] 5d.4 Cross-check the Linux PoC (`pocl`): not run here (see design.md); the CI Linux job is the check
+- [x] 5d.4 Cross-check the Linux PoC (`pocl`): not run here (see design.md); the CI Linux job is the check
 
 ## Workflow follow-up
 

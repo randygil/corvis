@@ -232,3 +232,16 @@ Reviewer PoCs, run from the review folder against this branch (release build):
   moment of closure. The stall tests were not run against the unchanged code to see them fail first.
 - `cargo clippy -p corvis --no-default-features --all-targets` fails to compile several existing test files (they need
   the default features); this predates the change, so `--lib --bins` was checked instead.
+
+## Verification (2026-11-09)
+
+Verified together in batch-p (#163, #161): `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets, health-tls,
+compression) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed 1302 tests and
+`cargo test -p corvis --features compression` passed 962, 0 failures; naming, crate files, the examples (32/32 smoke
+checks) and `npm run docs:check` pass. CI run 42684409965 is green on Linux and Windows (run 42680389608 had failed on
+the RST-cycle test, which depended on machine speed; it was split into count-based tests). corvis-parity: consi
+832/832, facten 727/727, houseplan 636/636 equal, databases equivalent. Security review: four rounds, closed. Fixed: a panic when an invalid frame followed the server's close, pongs
+queued without bound by a ping flood (read pause with a read credit tied to the bytes the socket accepts, verified on
+Linux under WSL by the reviewer: server heap stable at about 236 KiB where it grew to 130 MiB), a lost writer wakeup
+for split upgrade listeners, and socket errors while paused. Task 5d.4 was covered by the reviewer's Linux run.
