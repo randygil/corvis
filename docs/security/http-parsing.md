@@ -81,9 +81,12 @@ head or a body that never ends) are covered by `headers_timeout`, `request_timeo
 readers of the response, a client that stops reading and keeps its connection, its `max_connections` slot and the
 memory of its responses, are covered by `send_timeout` (60 s by default, over HTTP/1 and HTTP/2, including HTTP/2
 streams whose flow-control windows the client never opens). It bounds how long a connection can go without reading
-anything, not how little it must read, nor the memory held for it (a cap is tracked in
-[#163](https://github.com/randygil/corvis/issues/163); set `max_connections`). See
-[Clients that stop reading](/http/performance#clients-that-stop-reading-send-timeout). Node's `server.timeout` is off
+anything, not how little it must read. The memory held for such a client is bounded per connection by
+`max_pending_response_bytes` (8 MiB by default): handlers wait for room before they run, and responses above the limit
+are dropped and their HTTP/2 streams reset with `ENHANCE_YOUR_CALM`; streams a client resets after their response
+started count against the rapid-reset limit. Server-wide the bound is `max_connections` times that limit. See
+[Clients that stop reading](/http/performance#clients-that-stop-reading-send-timeout) and
+[Response memory per connection](/http/performance#response-memory-per-connection-max-pending-response-bytes). Node's `server.timeout` is off
 by default, so there a client that stops reading is never disconnected.
 
 ## Multipart limits
