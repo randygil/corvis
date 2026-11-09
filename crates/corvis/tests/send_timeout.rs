@@ -646,7 +646,7 @@ async fn h2_client_with_room(addr: SocketAddr) -> hyper::client::conn::http2::Se
 async fn a_stalled_stream_next_to_a_moving_one_is_not_cut_but_all_stalled_is() {
     let addr = serve(live(SEND_TIMEOUT)).await;
     let mut sender = h2_client_with_room(addr).await;
-    let stalled = sender.send_request(h2_get(addr, "/t/huge")).await.unwrap();
+    let stalled = sender.send_request(h2_get(addr, "/t/big")).await.unwrap();
     assert_eq!(stalled.status(), 200);
     let moving = sender.send_request(h2_get(addr, "/t/forever")).await.unwrap();
     let mut body = moving.into_body();

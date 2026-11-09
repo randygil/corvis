@@ -240,3 +240,77 @@ counter (the #150 one) and the global cap (out of scope) were settled above in f
   otherwise use 64 KiB and record the numbers here.
 - Implement on top of `batch/phase07-o` (it needs `send_timeout` and the #150 counter); do not change the
   watchdog rule of #157.
+
+## Implementation notes
+
+Implemented on top of `batch/phase07-o` (`f09eb10`). Decisions and deviations:
+
+- **HTTP/1 accounting differs from Decision 5.** hyper's HTTP/1 dispatcher takes a whole `Full` frame in one poll and
+  the body ends right then (`dispatch.rs`, `poll_write`: the frame is queued in the write buffer and the body is
+  cleared as soon as `is_end_stream()` is true). Charging "until the body ends" would release an 8 MiB response while
+  all of it still sits in hyper's write queue, and the next pipelined handler would start at once. Over HTTP/1 a
+  body's charge is therefore kept until the socket has accepted what was handed to hyper: `ConnState` gets `handed`
+  (data bytes of response bodies given to hyper), `written` (bytes the socket accepted, fed by
+  `TimedIo::write_progress`) and `deferred` (`(handed mark, charge)` in order); `GuardedBody::drop` defers the release
+  to the mark and `ConnState::wrote` releases what the socket has passed. `written` also counts response heads and
+  chunk framing, so a mark can be reached a few hundred bytes early per request, irrelevant against the sizes this
+  bounds. Streamed HTTP/1 bodies stay uncharged (hyper pulls frames as the socket drains; an application frame of
+  several MiB is queued whole, which is application memory and is listed in the docs). HTTP/2 is as designed.
+- **Waiting versus resetting.** Admission runs before the handler, so a burst of fast (synchronous) handlers on one
+  connection is serialized by the reservation: the responses that fill the cap are kept and the later requests wait
+  without a handler; they are not reset. Resets (`ENHANCE_YOUR_CALM`) happen when handlers run concurrently (slow
+  ones: each handler of the burst was admitted because its share fits) and return together, which is what the burst
+  scenarios of the spec describe. The memory bound is the same in both cases. The integration tests that expect
+  resets use routes that sleep 500 ms (`/t/slow-quarter`, `/t/slow-big`); the one that expects waiting uses a
+  synchronous route.
+- **Outcomes.** New `Outcome::Dropped` records the dropped response as cancelled; `Outcome::Body` hands the record to
+  `GuardedBody` (completed when the body ends or `is_end_stream()` is true at drop, cancelled when it is dropped
+  earlier). Requests the client aborted while their body was read (`ClientAborted`) keep the old recording and their
+  response body records nothing.
+- **Error type.** The service closure returns `ServiceError { Destroyed, OverCap(h2::Error) }`; the `source()` of
+  `OverCap` is the `h2::Error`, so hyper resets the stream with `ENHANCE_YOUR_CALM`. `Cargo.lock` only gains `"h2"` in
+  the dependencies of `corvis` (no new package). The warning goes through `Logger::warn_with(.., "HttpServer")`, once
+  per connection (`Budget::warned`).
+- **Tests.** `tests/response_memory.rs` (11 tests; the compression one needs the `compression` feature), two tests in
+  `tests/http2_limits.rs`, and unit tests in `server.rs` (budget, charges, tail copy, outcome recording). They were
+  written after the code, so "fails before" was not run; the scenarios that depend on the change (burst, waiting, RST
+  cycle closing the connection, reset after HEADERS closing it) cannot pass with the limit off or the old outcome rule.
+  Not covered by an integration test: "large window, blocked socket" and "window update trickle after the body ended"
+  (they need h2's internal queue; unit tests cover the slicing, the copies and the 32 KiB builder option), and an
+  HTTP/1 pipelined client that stalls the socket (a Windows loopback socket took more than 128 MiB without the client
+  reading), so the HTTP/1 test asserts that handlers never overlap and the wait for a response still being written
+  is covered by `an_http1_body_stays_charged_until_the_socket_accepted_its_bytes`.
+- A waiting request reset by the client is shown to count as cancelled through `http2_max_cancelled_streams(3)`: four
+  such resets close the connection and none of the waiting handlers ran.
+- **Existing test changed.** `send_timeout.rs::a_stalled_stream_next_to_a_moving_one_is_not_cut_but_all_stalled_is`
+  held an unread 8 MiB response (`/t/huge`) and then opened a second stream. With the default 8 MiB cap that unread
+  response holds the whole budget, so the second request waits (by design) and `send_timeout` cut the connection
+  before it was answered. The stalled stream now uses `/t/big` (1 MiB); the assertion about progress is unchanged.
+  The same head-of-line effect applies to a real client that downloads one very large in-memory response while
+  opening other streams: they wait until it ends (documented under "Large payloads belong in streamed bodies").
+- The parity check (task 7.5) was not run: the implementation brief leaves it to the maintainer's session.
+
+### Measurements
+
+Task 4.2: single-stream h2c download of 64 MiB on loopback (release build, h2 client with 16 MiB and 64 MiB windows),
+median of five runs, three series each:
+
+| | MiB/s |
+|---|---|
+| before (hyper's 400 KiB send buffer, no tail copy) | 327, 333, 315 |
+| after (32 KiB send buffer, tail copy) | 308, 306, 300 (298 and 307 in two earlier series) |
+
+The drop is about 6 %, below the 10 % threshold, so `H2_SEND_BUF` stays at 32 KiB.
+
+Task 7.6: the proof of concept (`st157b`, run against this branch with the default options, `send_timeout` 60 s,
+release build; RSS before the scenario 7 MiB):
+
+| Scenario | Before (issue #163) | After, peak RSS |
+|---|---|---|
+| `mixed` (100 streams of 1 MiB, window 0, 16 KiB per 1.5 s to stream 1, 10 s) | about 103 MiB | 18 MiB, connection alive, 8 responses kept |
+| `rstcycle` (100 streams per round, reset and reopened every 1.5 s, 10 s) | 114 MiB | 20 MiB; connection closed after 10.6 s by the rapid-reset rule |
+| `trickle` (16 KiB per stream per second, 100 streams, 10 s) | about 100 MiB | 18 MiB |
+| `h1trickle` (64 KiB per second, `/t/big` of 1 MiB) | one response kept | 8 MiB |
+
+That is 11 to 13 MiB above the idle baseline against 103 to 114 MiB: the 8 MiB the cap allows plus transient
+allocations of handlers whose responses were dropped.

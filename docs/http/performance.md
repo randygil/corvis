@@ -42,6 +42,7 @@ app.set_server_options(
         .keep_alive_timeout(Duration::from_secs(10)) // 5 s by default
         .send_timeout(Duration::from_secs(30))       // 60 s by default; closes the connection
         .max_connections(10_000)                     // no cap by default
+        .max_pending_response_bytes(4 * 1024 * 1024) // 8 MiB by default, per connection; see below
         .max_header_size(16 * 1024)                  // 32 KiB by default; responds 431 (HTTP/1 and HTTP/2)
         .http2_max_concurrent_streams(50)            // 100 by default, per HTTP/2 connection
         .http2_keep_alive_interval(Duration::from_secs(30)) // no HTTP/2 PINGs by default
@@ -76,8 +77,7 @@ It never runs while the server has nothing to send: a slow handler, an idle Serv
 keep-alive connection are not affected, and neither is an established WebSocket connection (its send queue is bounded
 by `max_buffered_amount`). A value too long to add to a clock reading (`Duration::MAX`) means no limit.
 
-**What it does not bound.** It does not limit how little a client has to read to keep its connection, nor the
-memory held for such a client:
+**What it does not bound.** It does not limit how little a client has to read to keep its connection:
 
 - Over HTTP/2 a client has to take about 16 KiB (one frame) from some stream every `send_timeout`.
 - Over HTTP/1 the server notices progress when the operating system reports the socket writable. On Linux it sets
@@ -87,17 +87,51 @@ memory held for such a client:
   per period were needed on a loopback connection. On macOS and the BSDs the option is not set and the granularity is
   that of the autotuned buffer, which can be several MiB: set a larger `send_timeout` if you serve slow clients there.
 - A client that resets streams and opens new ones needs to read nothing at all: every new response counts as
-  movement. The rapid-reset limits bound how long that can go on, not what it holds meanwhile.
+  movement. The rapid-reset limits bound how long that can go on.
 
-The responses held for slow clients are bounded by `max_connections` x `http2_max_concurrent_streams` x the size of
-a response. A cap on pending response bytes is tracked in
-[#163](https://github.com/randygil/corvis/issues/163); until then set `max_connections`.
+The memory a client holds while it does that is bounded by
+[`max_pending_response_bytes`](#response-memory-per-connection-max-pending-response-bytes).
 
 Node's `server.timeout` is the nearest option: it is off by default (0) and measures inactivity in both directions,
 so it also cuts slow handlers, which is why Node turned it off. With Node's defaults a client that stops reading is
 never disconnected; Corvis closes it after 60 s (nginx's `send_timeout` has the same default and semantics). A
 player that pauses a progressive download for over a minute reconnects (browsers resume with `Range`); raise the value
 or pass `None` if you need the old behavior.
+
+### Response memory per connection (`max_pending_response_bytes`)
+
+A client that does not read its responses holds them in memory. `max_pending_response_bytes` (8 MiB per connection
+by default, `None` turns it off) bounds that, whatever the client reads: a client that never grants HTTP/2 window,
+one that grants a trickle, one that resets and reopens streams.
+
+- **What counts.** The whole size of an in-memory response (JSON, text, bytes; also when compression wraps it, which
+  counts the uncompressed size) from the moment its handler returns until its body ends or is dropped, and, for
+  streamed bodies (files, Server-Sent Events), the part of the current data frame not yet handed to the protocol layer.
+  Over HTTP/1 a response counts until the socket has accepted its bytes.
+- **Admission before the handler.** Each request reserves a share of the limit (the limit divided by the requests the
+  connection may run at once: `http2_max_concurrent_streams` over HTTP/2, 1 over HTTP/1, so 83,886 bytes per handler
+  with the defaults). Its handler starts only when the pending bytes plus the reservations leave room, or when the
+  connection holds nothing. Until then the request waits without reaching a handler; it holds its slot of
+  `http2_max_concurrent_streams`, and a client that resets it meanwhile counts as having cancelled a request.
+- **Above the limit, HTTP/2 resets.** When handlers that ran together return responses that would take a connection
+  that already holds pending bytes above the limit, the server drops the extra responses and resets their streams with
+  `ENHANCE_YOUR_CALM`. The first reset of a connection is logged as a warning. A response that fits its share is never
+  reset, and one response is always sent whatever its size.
+- **HTTP/1.** Pipelined requests run one handler at a time: the next handler waits until the previous response is out.
+
+The bound for one connection is the larger of the limit and its biggest response, plus about 48 KiB per open HTTP/2
+stream that hyper still buffers after a body ended (the last slices of each response are copied, so they never keep
+the whole response alive; hyper's per-stream send buffer is 32 KiB), plus the compression encoders
+(`max_per_connection`). It does not include request heads and bodies, nor memory the application keeps outside the
+response: an unbounded channel feeding a stream, a cache sliced into responses. Server-wide the bound is
+`max_connections` x the limit (no default for `max_connections`: set one for a server exposed to the internet).
+
+Large payloads belong in streamed bodies (static files are): a streamed body counts only the frame it holds. A
+burst of in-memory responses larger than their share can lose streams to `ENHANCE_YOUR_CALM`; raise the limit if your
+API returns several megabytes per response to many concurrent streams.
+
+Node's `http2` module has the same idea in `maxSessionMemory` (10 MB): it counts queued outgoing data and rejects new
+streams while it is exceeded. Node's `http` module has no limit, and a pipelined HTTP/1 handler runs concurrently there.
 
 ### HTTP/2 connections
 
@@ -126,7 +160,9 @@ These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 o
   under the ceiling. An attacker pays four completed requests per reset and is capped by the ceiling. The server sends
   a graceful GOAWAY first, so the proxy can retry unanswered requests on another connection; from then on new streams
   are reset without reaching a handler, and the connection is dropped after 1 s. Raise `http2_max_cancelled_streams`
-  if a proxy of yours aborts more than that. A request the client aborts is not logged.
+  if a proxy of yours aborts more than that. A request counts as completed only when its response body ended: a
+  stream reset after its handler returned, while the body was still being sent, counts as cancelled, and so does a
+  response the server drops for exceeding `max_pending_response_bytes`. A request the client aborts is not logged.
 - The PING keep-alive detects peers that stopped answering, not peers that stopped reading; `send_timeout` covers
   those (see above).
 

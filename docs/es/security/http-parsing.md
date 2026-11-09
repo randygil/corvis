@@ -83,9 +83,12 @@ cabecera o un cuerpo que no termina) los cubren `headers_timeout`, `request_time
 leen despacio la respuesta, un cliente que deja de leer y conserva su conexión, su lugar de `max_connections` y la
 memoria de sus respuestas, los cubre `send_timeout` (60 s por defecto, en HTTP/1 y HTTP/2, incluidos streams HTTP/2
 cuyas ventanas de control de flujo el cliente nunca abre). Acota cuánto puede pasar una conexión sin leer nada, no lo
-poco que debe leer ni la memoria que se retiene para ella (un tope se sigue en
-[#163](https://github.com/randygil/corvis/issues/163); define `max_connections`). Ver
-[Clientes que dejan de leer](/es/http/performance#clientes-que-dejan-de-leer-send-timeout). El `server.timeout` de Node
+poco que debe leer. La memoria que se retiene para un cliente así está acotada por conexión por
+`max_pending_response_bytes` (8 MiB por defecto): los handlers esperan sitio antes de correr, y las respuestas por
+encima del límite se descartan y sus streams HTTP/2 se resetean con `ENHANCE_YOUR_CALM`; los streams que un cliente
+resetea cuando su respuesta ya empezó cuentan contra el límite de rapid reset. En todo el servidor la cota es
+`max_connections` por ese límite. Ver [Clientes que dejan de leer](/es/http/performance#clientes-que-dejan-de-leer-send-timeout)
+y [Memoria de respuestas por conexión](/es/http/performance#memoria-de-respuestas-por-conexion-max-pending-response-bytes). El `server.timeout` de Node
 está desactivado por defecto, así que allí un cliente que deja de leer nunca se desconecta.
 
 ## Límites de multipart

@@ -88,11 +88,12 @@ app.set_server_options(
         .keep_alive_timeout(Duration::from_secs(10)) // por defecto 5 s
         .send_timeout(Duration::from_secs(30))       // por defecto 60 s (cierra a un cliente que deja de leer)
         .max_connections(10_000)                     // por defecto sin tope
+        .max_pending_response_bytes(4 * 1024 * 1024) // por defecto 8 MiB de respuestas sin leer por conexión
         .max_header_size(16 * 1024),                 // por defecto 32 KiB (responde 431; HTTP/1 y HTTP/2)
 );
 ```
 
-Cada timeout acepta `None` para desactivarlo (`.request_timeout(None)`). Las conexiones que superan `max_connections` esperan en la cola de `accept`. La cabecera de una petición HTTP/1 está limitada a 32 KiB (Node usa 16 KiB). Una conexión que no envía nada o que gotea las cabeceras se cierra, mientras que las peticiones en curso (un handler lento, una respuesta SSE) no cuentan como inactividad. `send_timeout` cierra una conexión cuyo cliente no acepta ningún byte de la respuesta durante ese tiempo (nunca corre mientras el servidor no tiene nada que enviar); ver [Rendimiento](/es/http/performance#clientes-que-dejan-de-leer-send-timeout).
+Cada timeout acepta `None` para desactivarlo (`.request_timeout(None)`). Las conexiones que superan `max_connections` esperan en la cola de `accept`. La cabecera de una petición HTTP/1 está limitada a 32 KiB (Node usa 16 KiB). Una conexión que no envía nada o que gotea las cabeceras se cierra, mientras que las peticiones en curso (un handler lento, una respuesta SSE) no cuentan como inactividad. `send_timeout` cierra una conexión cuyo cliente no acepta ningún byte de la respuesta durante ese tiempo (nunca corre mientras el servidor no tiene nada que enviar); ver [Rendimiento](/es/http/performance#clientes-que-dejan-de-leer-send-timeout). `max_pending_response_bytes` acota la memoria de respuestas que una conexión retiene para un cliente que no lee; ver [Rendimiento](/es/http/performance#memoria-de-respuestas-por-conexion-max-pending-response-bytes). Detrás de un proxy, `max_connections` por ese valor acota el servidor.
 
 `ServerOptions::h2c(true)` activa HTTP/2 sin TLS si tu proxy está configurado para enviarlo (desactivado por defecto). Las conexiones HTTP/2 llevan hasta 100 streams concurrentes (`http2_max_concurrent_streams`), `max_connections` cuenta conexiones y no streams, y `http2_keep_alive_interval` activa el keep-alive con PING para streams largos; ver [Rendimiento](/es/http/performance). Llama a `set_server_options` antes de `listen`. Ver [Conexiones keep-alive](/es/faq/keep-alive-connections).
 

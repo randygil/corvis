@@ -88,11 +88,12 @@ app.set_server_options(
         .keep_alive_timeout(Duration::from_secs(10)) // default 5 s
         .send_timeout(Duration::from_secs(30))       // default 60 s (closes a client that stops reading)
         .max_connections(10_000)                     // default: no cap
+        .max_pending_response_bytes(4 * 1024 * 1024) // default 8 MiB of unread responses per connection
         .max_header_size(16 * 1024),                 // default 32 KiB (responds 431; HTTP/1 and HTTP/2)
 );
 ```
 
-Each timeout accepts `None` to disable it (`.request_timeout(None)`). Connections beyond `max_connections` wait in the `accept` queue. An HTTP/1 request head is limited to 32 KiB (Node uses 16 KiB). A connection that sends nothing or drips its headers is closed, while requests in progress (a slow handler, an SSE response) do not count as idle. `send_timeout` closes a connection whose client accepts no response byte for that long (it never runs while the server has nothing to send); see [Performance](/http/performance#clients-that-stop-reading-send-timeout).
+Each timeout accepts `None` to disable it (`.request_timeout(None)`). Connections beyond `max_connections` wait in the `accept` queue. An HTTP/1 request head is limited to 32 KiB (Node uses 16 KiB). A connection that sends nothing or drips its headers is closed, while requests in progress (a slow handler, an SSE response) do not count as idle. `send_timeout` closes a connection whose client accepts no response byte for that long (it never runs while the server has nothing to send); see [Performance](/http/performance#clients-that-stop-reading-send-timeout). `max_pending_response_bytes` bounds the response memory one connection holds for a client that does not read; see [Performance](/http/performance#response-memory-per-connection-max-pending-response-bytes). Behind a proxy, `max_connections` times that value bounds the server.
 
 `ServerOptions::h2c(true)` enables HTTP/2 without TLS if your proxy is configured to send it (off by default). HTTP/2 connections carry up to 100 concurrent streams (`http2_max_concurrent_streams`), `max_connections` counts connections rather than streams, and `http2_keep_alive_interval` turns on PING keep-alive for long streams; see [Performance](/http/performance). Call `set_server_options` before `listen`. See [Keep-alive connections](/faq/keep-alive-connections).
 

@@ -88,6 +88,12 @@ impl TController {
         body
     }
 
+    /// 100 KiB: more than the initial HTTP/2 window, so a client that does not grant more leaves the body unfinished.
+    #[get("mid")]
+    fn mid(&self) -> String {
+        "a".repeat(100 * 1024)
+    }
+
     #[get("hold-streams")]
     async fn hold_streams(&self) -> Value {
         HOLD_STREAMS.run().await;
@@ -629,4 +635,89 @@ async fn idle_http2_connection_is_closed() {
     let started = Instant::now();
     tokio::time::timeout(Duration::from_secs(5), conn).await.expect("closed by the server").unwrap();
     assert!(started.elapsed() >= Duration::from_millis(800));
+}
+
+/// Streams reset after their handler returned, while their response body was still being sent. Each batch opens
+/// `cancels` streams to a 100 KiB route (the client never grants window beyond the initial 64 KiB, so their bodies do
+/// not end) and `fast` quick requests, waits until every stream got its HEADERS, then resets the first kind. Returns
+/// whether the server closed the connection, and how many requests were answered when it stopped.
+async fn reset_after_headers(addr: std::net::SocketAddr, (cancels, fast): (u32, u32), total_cancels: u32) -> (bool, u32) {
+    let mut c = RawClient::connect(addr).await;
+    let first = c.frame(Duration::from_secs(5)).await.unwrap().unwrap();
+    assert_eq!(first.kind, FRAME_SETTINGS);
+    let (mut rd, mut wr) = c.0.into_split();
+    wr.write_all(&frame_bytes(FRAME_SETTINGS, 1, 0, &[])).await.unwrap();
+    // A large connection window, so the bodies of the reset streams do not starve the quick requests.
+    wr.write_all(&frame_bytes(8, 0, 0, &(1u32 << 30).to_be_bytes())).await.unwrap();
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let headers = std::sync::Arc::new(AtomicUsize::new(0));
+    let (flag, seen) = (closed.clone(), headers.clone());
+    tokio::spawn(async move {
+        loop {
+            let mut head = [0u8; 9];
+            if rd.read_exact(&mut head).await.is_err() {
+                break;
+            }
+            let len = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+            let mut payload = vec![0u8; len];
+            if rd.read_exact(&mut payload).await.is_err() {
+                break;
+            }
+            if head[3] == 1 {
+                seen.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        flag.store(true, Ordering::SeqCst);
+    });
+    let mid = request_block("/t/mid");
+    let ok = request_block("/t/ok");
+    let (mut id, mut expected, mut sent) = (1u32, 0usize, 0u32);
+    let started = Instant::now();
+    while sent < total_cancels && !closed.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(40) {
+        let mut batch = Vec::new();
+        let mut to_reset = Vec::new();
+        for _ in 0..cancels {
+            batch.extend(frame_bytes(1, 0x5, id, &mid));
+            to_reset.push(id);
+            id += 2;
+            expected += 1;
+        }
+        for _ in 0..fast {
+            batch.extend(frame_bytes(1, 0x5, id, &ok));
+            id += 2;
+            expected += 1;
+        }
+        if wr.write_all(&batch).await.is_err() {
+            break;
+        }
+        let wait = Instant::now() + Duration::from_secs(5);
+        while headers.load(Ordering::SeqCst) < expected && !closed.load(Ordering::SeqCst) && Instant::now() < wait {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let resets: Vec<u8> = to_reset.iter().flat_map(|sid| frame_bytes(3, 0, *sid, &8u32.to_be_bytes())).collect();
+        if wr.write_all(&resets).await.is_err() {
+            break;
+        }
+        sent += cancels;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    (closed.load(Ordering::SeqCst), headers.load(Ordering::SeqCst) as u32)
+}
+
+/// A stream reset after its response HEADERS counts as cancelled, not completed: 600 of them close the connection.
+#[corvis::test]
+async fn streams_reset_after_their_handler_finished_count_as_cancelled() {
+    let addr = serve(ServerOptions::new().h2c(true)).await;
+    let (closed, answered) = reset_after_headers(addr, (50, 0), 800).await;
+    assert!(closed, "the server closed the connection after {answered} answers");
+}
+
+/// Downloads that finish still earn credit: 3000 completed requests next to 600 streams reset after their HEADERS do
+/// not close the connection.
+#[corvis::test]
+async fn completed_requests_still_earn_credit_against_streams_reset_after_their_headers() {
+    let addr = serve(ServerOptions::new().h2c(true)).await;
+    let (closed, answered) = reset_after_headers(addr, (10, 50), 600).await;
+    assert!(answered >= 3600, "the whole pattern ran ({answered} answers)");
+    assert!(!closed, "3000 completed requests earn credit for 600 resets");
 }
