@@ -349,3 +349,9 @@ async fn typed_operations_data_and_counts_on_postgres() {
     assert_eq!(ana_row.model.balance.to_string(), "12.5");
     assert_eq!(serde_json::to_string(&rows).unwrap(), serde_json::to_string(&json).unwrap());
 }
+
+#[tokio::test]
+async fn throwaway_failing_postgres_assertion() {
+    let Some(_db) = setup("feat_throwaway", 1).await else { return };
+    assert_eq!(1 + 1, 3, "throwaway: deliberate failure");
+}
