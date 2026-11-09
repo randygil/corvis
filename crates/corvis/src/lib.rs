@@ -274,7 +274,7 @@ pub use modules::schedule::{CronExpression, CronJob, CronOptions, CronTime, Sche
 pub use modules::serve_static::{ServeStaticModule, ServeStaticOptions};
 pub use modules::throttler::{
     SKIP_THROTTLE, THROTTLE_BLOCK_DURATION, THROTTLE_LIMIT, THROTTLE_TTL, ThrottlerGuard, ThrottlerModule, ThrottlerOptions,
-    ThrottlerRecord, ThrottlerStorage,
+    ThrottlerRecord, ThrottlerStorage, skip_throttle, skip_throttle_key,
 };
 #[cfg(feature = "websockets")]
 pub use websockets::{
@@ -299,7 +299,7 @@ pub mod prelude {
         ServeStaticModule, ServeStaticOptions, Sse, StreamableFile, THROTTLE_BLOCK_DURATION, THROTTLE_LIMIT, THROTTLE_TTL, TerminusModule,
         ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerRecord, Token, UnauthorizedException, UnprocessableEntityException,
         VERSION_NEUTRAL, Validate, ValidationPipe, VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json,
-        module, public, routes,
+        module, public, routes, skip_throttle, skip_throttle_key,
     };
     pub use crate::{HttpAdapterHost, StreamableFileOptions};
     pub use async_trait::async_trait;

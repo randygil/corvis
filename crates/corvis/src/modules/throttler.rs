@@ -8,17 +8,22 @@
 //! pub struct AppModule;
 //!
 //! #[get]
-//! #[set_metadata(SKIP_THROTTLE, true)]   // @SkipThrottle()
+//! #[set_metadata(SKIP_THROTTLE, true)]   // @SkipThrottle(): skips the `default` throttler only
 //! async fn health(&self) {}
+//!
+//! #[get]
+//! #[apply_decorators(skip_throttle(["short", "long"]))]   // @SkipThrottle({ short: true, long: true })
+//! async fn status(&self) {}
 //! ```
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
-use crate::common::context::{ContextType, ExecutionContext};
+use crate::common::context::{ContextType, ExecutionContext, Target};
+use crate::common::decorator::CustomDecorator;
 use crate::common::guard::CanActivate;
 use crate::common::reflector::Reflector;
 use crate::di::{DynamicModule, Module, ModuleDefinition, Provider, Token};
@@ -26,8 +31,27 @@ use crate::http::HttpException;
 use crate::logger::Logger;
 use crate::prelude::Arc;
 
-/// `@SkipThrottle()` – `#[set_metadata(SKIP_THROTTLE, true)]`.
+/// `@SkipThrottle()` – `#[set_metadata(SKIP_THROTTLE, true)]`. Like the bare decorator it skips only the throttler
+/// named `default`; other throttlers are skipped by name with [`skip_throttle`] or [`skip_throttle_key`].
 pub const SKIP_THROTTLE: &str = "THROTTLER:SKIP";
+
+/// The metadata key that skips the throttler called `name`: `"THROTTLER:SKIP"` followed by the name, as the original
+/// stores `@SkipThrottle({ name: true })`. `#[set_metadata(skip_throttle_key("short"), false)]` on a handler undoes a
+/// controller's skip of `short` (`@SkipThrottle({ short: false })`).
+pub fn skip_throttle_key(name: &str) -> String {
+    format!("{SKIP_THROTTLE}{name}")
+}
+
+/// `@SkipThrottle({ short: true, long: true })` – a decorator that skips the throttlers called `names`, for
+/// `#[apply_decorators(skip_throttle(["short", "long"]))]` on a controller or a route. Names must match
+/// [`ThrottlerOptions::name`]; a name no throttler has skips nothing.
+pub fn skip_throttle<I>(names: I) -> CustomDecorator
+where
+    I: IntoIterator,
+    I::Item: AsRef<str>,
+{
+    names.into_iter().fold(CustomDecorator::new(), |d, n| d.set_metadata(skip_throttle_key(n.as_ref()), true))
+}
 /// `@Throttle({ default: { limit } })` – `#[set_metadata(THROTTLE_LIMIT, 3)]`.
 pub const THROTTLE_LIMIT: &str = "THROTTLER:LIMIT";
 /// TTL override in milliseconds – `#[set_metadata(THROTTLE_TTL, 60_000)]`.
@@ -512,9 +536,45 @@ impl From<Vec<ThrottlerOptions>> for ThrottlerStorage {
 pub struct ThrottlerGuard {
     storage: Arc<ThrottlerStorage>,
     reflector: Arc<Reflector>,
+    /// Routes already reported for a bare skip that skips nothing; bounded by the number of routes.
+    #[default]
+    warned: Mutex<HashSet<(String, String)>>,
 }
 
 impl ThrottlerGuard {
+    /// Whether the throttler called `name` is skipped for this request: the first of the handler and the controller
+    /// that has a boolean under `skip_throttle_key(name)` decides (for `default`, a bare `SKIP_THROTTLE` on a target
+    /// without its own entry counts), as `getAllAndOverride(THROTTLER:SKIP<name>)` does in the original.
+    fn is_skipped(&self, name: &str, targets: &[&Target]) -> bool {
+        let key = skip_throttle_key(name);
+        targets
+            .iter()
+            .find_map(|t| {
+                self.reflector
+                    .get::<bool>(&key, t)
+                    .or_else(|| if name == "default" { self.reflector.get::<bool>(SKIP_THROTTLE, t) } else { None })
+            })
+            .unwrap_or(false)
+    }
+
+    /// Logs once per route that a bare `SKIP_THROTTLE` skips nothing because no throttler is named `default`.
+    fn warn_bare_skip_without_default(&self, ctx: &ExecutionContext, targets: &[&Target]) {
+        if self.storage.throttlers.iter().any(|t| t.name == "default")
+            || !self.reflector.get_all_and_override::<bool>(SKIP_THROTTLE, targets).unwrap_or(false)
+        {
+            return;
+        }
+        let route = (ctx.get_class().name.to_string(), ctx.get_handler().name.to_string());
+        let first = self.warned.lock().unwrap_or_else(|e| e.into_inner()).insert(route.clone());
+        if first {
+            Logger::new("ThrottlerGuard").warn(format!(
+                "{}.{} sets SKIP_THROTTLE, which only skips the throttler named `default`, and no configured throttler has that \
+                 name, so the route is still throttled; use skip_throttle([\"name\", ...]) to skip named throttlers",
+                route.0, route.1
+            ));
+        }
+    }
+
     /// Sets the rate limit headers of one throttler, as the original throttler library does: `Retry-After` when it blocks the
     /// request (`time_to_block_expire`, or the time until its oldest hit expires with no block), otherwise `X-RateLimit-Limit`, `-Remaining` and `-Reset`; names carry a
     /// `-<name>` suffix unless the throttler is `default`. Values are seconds, rounded up. Nothing is set outside
@@ -541,11 +601,12 @@ impl ThrottlerGuard {
 impl CanActivate for ThrottlerGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let targets = [ctx.get_handler(), ctx.get_class()];
-        if self.reflector.get_all_and_override::<bool>(SKIP_THROTTLE, &targets).unwrap_or(false) {
-            return Ok(true);
-        }
+        self.warn_bare_skip_without_default(ctx, &targets);
         let req = ctx.request();
         for t in &self.storage.throttlers {
+            if self.is_skipped(&t.name, &targets) {
+                continue;
+            }
             let limit = self.reflector.get_all_and_override::<u32>(THROTTLE_LIMIT, &targets).unwrap_or(t.limit);
             let ttl = self.reflector.get_all_and_override::<u64>(THROTTLE_TTL, &targets).unwrap_or(t.ttl);
             let key = format!("{}:{}:{}:{}", t.name, req.ip(), ctx.get_class().name, ctx.get_handler().name);
@@ -577,6 +638,7 @@ mod tests {
         let guard: Arc<dyn CanActivate> = Arc::new(ThrottlerGuard {
             storage: Arc::new(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 3)])),
             reflector: Arc::new(Reflector),
+            warned: Default::default(),
         });
         assert!(!guard.controls_access());
         assert!(guard.guard_name().ends_with("ThrottlerGuard"));
@@ -590,6 +652,7 @@ mod tests {
         let guard = ThrottlerGuard {
             storage: Arc::new(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])),
             reflector: Arc::new(Reflector),
+            warned: Default::default(),
         };
         let request = Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap();
         let ctx = ExecutionContext::for_ws(

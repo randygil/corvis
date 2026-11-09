@@ -156,3 +156,26 @@ package's `dist/throttler.decorator.js`, `dist/throttler.constants.js` and `dist
 
 - Q1: keep the warn-once log for a bare skip that skips nothing.
 - Q2: per-name overrides are filed as a follow-up issue reusing the key scheme of Decision 2.
+
+## Implementation notes
+
+- Reference version re-checked (task 1.1): `@nestjs/throttler` 6.7.1 is installed from the fixture's lockfile; `SkipThrottle`
+  and the skip part of `canActivate` match the Context of this design.
+- The design was drafted at `af99b71`; the guard now (after #120 and #135) loops over the `ttl`-sorted throttlers and calls
+  `record_hit`, so the per-throttler skip is the first statement of that loop and the early return is gone, as Decision 5
+  says. Line numbers in the Context are stale; the code sketches still apply.
+- `ThrottlerGuard` gained a `#[default]` field `warned: Mutex<HashSet<(String, String)>>` (Decision 6); the unit tests that
+  build the guard by hand set it with `Default::default()`.
+- The warning is decided on the bare `SKIP_THROTTLE` resolved over `[handler, class]` (as before the change); it is logged
+  before the loop, so the other throttlers still run.
+- Decision 2 resolution: per target, `skip_throttle_key(name)` first and, for `default` only, `SKIP_THROTTLE` as its
+  fallback; the first target with a boolean wins. A handler `SKIP_THROTTLE: false` therefore undoes a controller's bare
+  skip, and `skip_throttle_key("default")` on a target takes precedence over its `SKIP_THROTTLE`. The key scheme
+  (`THROTTLER:SKIP<name>`) is the one #156 reuses for `THROTTLER:LIMIT<name>` and the other per-name keys.
+- Fixture: instead of changing the `named` and `second` apps, two apps were added (`skips-named`, `skips-default`) and the
+  `default` app got two `/bare` requests, so the recorded values of the existing cases are unchanged. The Rust replay
+  declares `/undo/*` and `/mixed/h` as controllers next to the existing routes; `/skip` now uses
+  `skip_throttle(["default", "short", "long"])`.
+- The warn-once and gateway tests live in `tests/throttler_skip_log_ws.rs` (own binary: process-wide logger).
+- Review note Q2 (per-name overrides as a follow-up) is #156; no code here.
+- Task 5.5 (corvis-parity) is left to the maintainer's session.
