@@ -1,0 +1,16 @@
+{
+  "engine.io-protocol": {
+    "repo": "https://github.com/socketio/engine.io-protocol.git",
+    "commit": "f21de7b00ed09b3bbad2807db718ea5d6bc36aba",
+    "dir": "test-suite",
+    "files": ["test-suite.js"],
+    "pinnedOn": "2026-11-09"
+  },
+  "socket.io-protocol": {
+    "repo": "https://github.com/socketio/socket.io-protocol.git",
+    "commit": "4f633dd6a4445492d57af3b27ddd2d336014f1f1",
+    "dir": "test-suite",
+    "files": ["test-suite.js"],
+    "pinnedOn": "2026-11-09"
+  }
+}

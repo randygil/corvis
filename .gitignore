@@ -37,3 +37,8 @@ bench/port-vs-original/raw
 crates/corvis-swagger/tests/fixtures/class_validator_shim/node_modules
 crates/corvis-swagger/tests/fixtures/class_validator_shim/out
 crates/corvis/tests/fixtures/compression/node_modules
+
+# Socket.IO differential harness
+parity/socket-io/node_modules
+parity/socket-io/out
+parity/socket-io/suites

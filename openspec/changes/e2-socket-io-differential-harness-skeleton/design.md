@@ -184,3 +184,34 @@ commit itself).
    @socket.io/redis-adapter 8.3.0) are the drafter's reading of the registry: check them with `npm view` when pinning,
    use the latest patch of those minor lines, and record the final versions in Implementation notes.
 4. The #32 change is named `e2-engine-io-handshake-polling-upgrade-and-heartbeat`, as in the issue and ROADMAP.md.
+
+## Implementation notes
+
+- Final versions (checked with `npm view` on 2026-11-09; latest patch of the pinned minor lines): `socket.io` 4.8.4,
+  `engine.io` 6.6.11, `socket.io-client` 4.8.4 (resolves `engine.io-client` 6.6.7), `@socket.io/redis-adapter` 8.3.0,
+  `redis` 6.3.1, `ws` 8.21.3, `mocha` 12.0.3, `chai` 4.5.0, `chai-string` 1.6.0, `node-fetch` 3.3.2.
+- `ws` is 8.21.3, not the latest 8.22.2: `engine.io` 6.6.11 depends on `ws ~8.21.0`, and `npm ls ws` shows a single
+  deduped copy. `chai` is 4.5.0, not 6.x: the upstream suites use `import chai from "chai"` (a default export that
+  chai 5+ no longer has) and `chai-string`, which target chai 4. The suites also import `node-fetch`, added as a pin.
+- Suite commits (heads of the default branches on 2026-11-09): `socketio/engine.io-protocol`
+  `f21de7b00ed09b3bbad2807db718ea5d6bc36aba`, `socketio/socket.io-protocol` `4f633dd6a4445492d57af3b27ddd2d336014f1f1`.
+  In both, `test-suite.js` holds `"http://localhost:3000"` once; the script replaces the quoted literal with
+  `process.env.SUITE_URL`. `mocha --dry-run` lists 24 (engine.io) and 32 (socket.io) tests.
+- Self-tests run as `node --test "test/*.test.mjs"`, not `node --test test/`: Node 24 treats the directory argument as a
+  module path and fails, while the quoted glob works on Node 22 and 24. The Rust entry point uses the same command.
+- The reference server prints `{"address":"127.0.0.1","port":N}` (the design said `{"port":N}`) so the spec scenario
+  "Loopback address" can be checked by the runner and by a self-test.
+- Normalized transcripts keep `entries` but ordered by client name (stable, so each client's order is kept); paths in
+  diffs and in `expected-differences.json` index that ordered array (in the first scenario, `client` entries come
+  before `raw` ones: the ack arguments are at `$.entries[1].data.args`).
+- Both targets run for the whole run on one server each (not one server per scenario); a scenario that needs a fresh
+  server can be given one later. Targets are named `node`, `corvis` and, without Corvis, `node-2`.
+- The runner sets `process.exitCode` instead of calling `process.exit`: on Windows `process.exit` while handles were
+  closing printed a libuv assertion.
+- Verified by hand, reverted afterwards: breaking the `sid` rule of the normalizer fails 8 self-tests and the runner;
+  a Node server answering the ack with `43` (started by hand, passed with `--corvis`) makes `node run.mjs` exit 1 with
+  `DIFFERENCE in socket-io/handshake-and-ack at $.entries[1].data.args[1]`; `--corvis-capabilities engine-io` prints
+  `skipped (lacks capability socket-io)`; the failure paths of `fetch-suites.mjs` (malformed commit, unknown commit,
+  listed file without the literal) exit 1 naming the suite or file; with `node_modules` renamed,
+  `CORVIS_NODE_DIFF=1 cargo test` fails with the `npm ci` message and creates no `node_modules`.
+- No runtime code changed: the `corvis-parity` check is not needed for this change.
