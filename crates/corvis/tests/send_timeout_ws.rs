@@ -407,6 +407,48 @@ async fn an_invalid_frame_during_the_closing_handshake_closes_the_plain_socket_o
     assert_eq!(RAW_CLOSES.load(Ordering::SeqCst), 1);
 }
 
+/// A peer that floods pings and reads continuously in small chunks: what the server accepts stays tied to what it
+/// writes back, so no stock of pongs builds up and the connection is not stalled either.
+#[corvis::test]
+async fn a_ping_flood_with_a_trickle_reader_stays_proportional_to_what_is_read() {
+    use tokio::io::AsyncReadExt;
+    let _g = SERIAL.lock().await;
+    let (_app, addr) = start(ServerOptions::new().send_timeout(Duration::from_secs(10))).await;
+    let stream = raw_client(addr, "/feed").await;
+    let (mut read_half, write_half) = stream.into_split();
+    let read = Arc::new(AtomicUsize::new(0));
+    let counter = read.clone();
+    let reader = tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = read_half.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            counter.fetch_add(n, Ordering::SeqCst);
+        }
+    });
+    // Masked pings with a 125-byte payload: each is answered with a 127-byte pong.
+    let mut ping = vec![0x89, 0x80 | 125, 0, 0, 0, 0];
+    ping.extend([b'p'; 125]);
+    let batch: Vec<u8> = ping.iter().copied().cycle().take(ping.len() * 100).collect();
+    let mut sent = 0usize;
+    let end = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < end {
+        match tokio::time::timeout(Duration::from_millis(200), write_half.writable()).await {
+            Ok(Ok(())) => {}
+            _ => continue,
+        }
+        if let Ok(n) = write_half.try_write(&batch) {
+            sent += n;
+        }
+    }
+    reader.abort();
+    let received = read.load(Ordering::SeqCst);
+    // The reader also drains the 3 MiB the gateway queued at connect.
+    let pongs_read = received.saturating_sub(3 * 1024 * 1024 + 64 * 1024);
+    assert!(sent < 2 * pongs_read + 16 * 1024 * 1024, "sent {sent} bytes of pings, the client read {received} bytes");
+}
+
 /// A custom protocol with separate reader and writer tasks: the client sends a byte now and then but never reads.
 /// The deadline fires on the reader's poll as well; the writer must be woken and fail too.
 #[corvis::test]

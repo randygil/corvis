@@ -906,8 +906,8 @@ struct TimedIo {
     /// `poll_read`, and the task whose write is pending.
     read_waker: Option<Waker>,
     write_waker: Option<Waker>,
-    /// Bytes an upgraded connection may still read during the current blocked-write period.
-    read_budget: usize,
+    /// How many bytes an upgraded connection may read while a write is blocked.
+    read_credit: ReadCredit,
     /// The deadline of the parked reader, separate from `write_sleep` (a `Sleep` keeps one waker: sharing it
     /// would take the wake-up away from the task whose write is pending).
     read_sleep: Option<Pin<Box<Sleep>>>,
@@ -922,10 +922,31 @@ struct TimedIo {
     sock_eof: bool,
 }
 
-/// Bytes an upgraded connection may still read while a write is blocked (per blocked period): enough for a client
-/// that writes a moderately large message before reading, small enough to bound what a ping flood can make the
-/// protocol layer queue as replies.
-const READ_BUDGET_WHILE_BLOCKED: usize = 64 * 1024;
+/// Most credit an upgraded connection keeps: enough for a client that writes a moderately large message before it
+/// reads, small enough to bound what a ping flood can make the protocol layer queue as replies.
+const READ_CREDIT_MAX: usize = 64 * 1024;
+
+/// The read credit of an upgraded connection: the bytes it may read while a write is blocked. Every byte the socket
+/// accepts earns a byte (up to [`READ_CREDIT_MAX`]) and every byte read spends one, so what a peer can make the
+/// server read during blocked writes never exceeds what the socket took plus the maximum, however small the slices
+/// the socket accepts are. That bounds the replies (pongs) queued behind a peer that does not read.
+#[derive(Debug, Clone, Copy)]
+struct ReadCredit(usize);
+
+impl ReadCredit {
+    fn new() -> Self {
+        ReadCredit(READ_CREDIT_MAX)
+    }
+    fn earn(&mut self, written: usize) {
+        self.0 = self.0.saturating_add(written).min(READ_CREDIT_MAX);
+    }
+    fn spend(&mut self, read: usize) {
+        self.0 = self.0.saturating_sub(read);
+    }
+    fn exhausted(&self) -> bool {
+        self.0 == 0
+    }
+}
 
 /// Most input the server reads and discards after an early error response before closing.
 const LINGER_MAX_BYTES: usize = 1024 * 1024;
@@ -1096,7 +1117,7 @@ impl TimedIo {
             write_blocked: false,
             read_waker: None,
             write_waker: None,
-            read_budget: READ_BUDGET_WHILE_BLOCKED,
+            read_credit: ReadCredit::new(),
             read_sleep: None,
             send_failed: false,
             framing: (!options.insecure_http_parser).then(|| Box::new(h1_framing::Framing::new(options.max_header_size.max(8 * 1024)))),
@@ -1184,7 +1205,7 @@ impl TimedIo {
     fn write_progress(&mut self, written: &[io::IoSlice<'_>], n: usize) {
         self.write_stalled_since = None;
         self.write_blocked = false;
-        self.read_budget = READ_BUDGET_WHILE_BLOCKED;
+        self.read_credit.earn(n);
         if let Some(w) = self.read_waker.take() {
             w.wake();
         }
@@ -1348,7 +1369,7 @@ impl TimedIo {
 
 impl TimedIo {
     /// Read backpressure of upgraded connections: while a write is blocked the peer is not read once
-    /// [`READ_BUDGET_WHILE_BLOCKED`] bytes were taken, so frames that need a reply (WebSocket pings answered with
+    /// the read credit ([`ReadCredit`]) is spent, so frames that need a reply (WebSocket pings answered with
     /// pongs) cannot pile up in the protocol's write buffer behind a peer that does not read. `Some` is the result
     /// of the read poll while paused, `None` means read normally.
     ///
@@ -1357,15 +1378,16 @@ impl TimedIo {
     /// its own timer. The reader is woken by `write_progress`, by the timer, or by the writer's own wake-up when the
     /// socket becomes writable (a protocol layer that wakes both halves, like tokio-tungstenite, wakes it too).
     fn read_paused(&mut self, cx: &mut Context<'_>) -> Option<Poll<io::Result<()>>> {
-        if !self.write_blocked || self.read_budget > 0 || !self.state.upgraded.load(Ordering::SeqCst) {
+        if !self.write_blocked || !self.read_credit.exhausted() || !self.state.upgraded.load(Ordering::SeqCst) {
             return None;
         }
         // The blocked write may have been issued by the read path itself (a pong flushed while reading), in which
-        // case nobody else retries it: if the socket is writable again, let the read go on (which retries it) and
-        // wake the task whose write is pending.
-        if self.io.as_ref().expect("socket is present until drop").try_write(&[]).is_ok() {
+        // case nobody else retries it: if the socket is writable again, or reports an error, let the read go on
+        // (which retries the write, or returns the error) and wake the task whose write is pending. The credit is
+        // not refilled: only bytes the socket accepts earn it.
+        let probe = self.io.as_ref().expect("socket is present until drop").try_write(&[]);
+        if !matches!(&probe, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
             self.write_blocked = false;
-            self.read_budget = READ_BUDGET_WHILE_BLOCKED;
             if let Some(w) = self.write_waker.take() {
                 w.wake();
             }
@@ -1395,14 +1417,30 @@ impl AsyncRead for TimedIo {
         if let Some(r) = this.read_paused(cx) {
             return r;
         }
-        let before = buf.filled().len();
-        let r = this.poll_read_unpaused(cx, buf);
-        if r.is_pending() && this.state.upgraded.load(Ordering::SeqCst) {
+        let upgraded = this.state.upgraded.load(Ordering::SeqCst);
+        if !upgraded {
+            return this.poll_read_unpaused(cx, buf);
+        }
+        // While a write is blocked, never read more than the credit left (it is not exhausted here, or the read
+        // would have been paused): small slices accepted by the socket must not let whole chunks through.
+        let limit = if this.write_blocked { this.read_credit.0.min(buf.remaining()) } else { buf.remaining() };
+        let (r, read) = if limit < buf.remaining() {
+            let mut limited = ReadBuf::new(buf.initialize_unfilled_to(limit));
+            let r = this.poll_read_unpaused(cx, &mut limited);
+            let n = limited.filled().len();
+            buf.advance(n);
+            (r, n)
+        } else {
+            let before = buf.filled().len();
+            let r = this.poll_read_unpaused(cx, buf);
+            (r, buf.filled().len() - before)
+        };
+        if matches!(r, Poll::Ready(Ok(()))) {
+            this.read_credit.spend(read);
+        }
+        if r.is_pending() {
             // So that a send timeout noticed by the writer wakes this reader too.
             this.read_waker = Some(cx.waker().clone());
-        }
-        if this.write_blocked && matches!(r, Poll::Ready(Ok(()))) {
-            this.read_budget = this.read_budget.saturating_sub(buf.filled().len() - before);
         }
         r
     }
@@ -1648,6 +1686,29 @@ pub(crate) async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A peer that floods pings and reads slowly: the socket takes `slice` bytes per writable event. Whatever the
+    /// slice, the bytes read while writes are blocked stay within what the socket took plus the maximum credit.
+    #[test]
+    fn the_read_credit_follows_the_bytes_the_socket_accepts() {
+        for slice in [1usize, 512, 4 * 1024, 16 * 1024, 32 * 1024, 64 * 1024] {
+            let mut credit = ReadCredit::new();
+            let (mut written, mut read) = (0usize, 0usize);
+            for _ in 0..10_000 {
+                // The socket accepts a slice (a writable event), then the reader takes chunks until the credit is
+                // spent (paused: a blocked write with no credit left).
+                credit.earn(slice);
+                written += slice;
+                while !credit.exhausted() {
+                    // A read never takes more than the credit left.
+                    let chunk = credit.0.min(8 * 1024);
+                    credit.spend(chunk);
+                    read += chunk;
+                }
+            }
+            assert!(read <= written + READ_CREDIT_MAX, "slice {slice}: read {read}, written {written}");
+        }
+    }
 
     /// Feeds `events` (seconds from a start, cancelled or not) and returns the time of the first close verdict.
     fn first_close(events: impl IntoIterator<Item = (f64, bool)>) -> Option<f64> {

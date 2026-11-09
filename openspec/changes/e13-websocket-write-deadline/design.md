@@ -201,6 +201,26 @@ Reviewer PoCs, run from the review folder against this branch (release build):
    (`wants_write`), and the pause must keep acting below TLS so that replies TLS generates itself (KeyUpdate) cannot
    pile up behind a peer that does not read.
 
+## Review notes, security round 3 (2026-11-09)
+
+1. **Refilling the budget on every write progress let pongs pile up on Linux (high).** With `TCP_NOTSENT_LOWAT` the
+   socket accepts small slices per writable event, so a budget refilled to 64 KiB per event let the server read
+   more than it wrote each cycle. Replaced by a credit (`ReadCredit`): every byte the socket accepts earns a byte (up
+   to 64 KiB), every byte read spends one, and the writable probe in `read_paused` never refills it. While a write is
+   blocked the read buffer is limited to the credit left, so reads during blocked writes never exceed bytes written
+   plus 64 KiB whatever the slice size. Residual: when the probe finds the socket writable with no credit left the
+   next read is unrestricted (one chunk, about 4 KiB, per writable event), smaller than what the socket takes per
+   event in practice; reads while the write is not blocked are never limited, so a pure upload still flows. Tests: the
+   unit test `the_read_credit_follows_the_bytes_the_socket_accepts` (slices from 1 byte to 64 KiB) and
+   `a_ping_flood_with_a_trickle_reader_stays_proportional_to_what_is_read`; the half-duplex test still passes.
+   The Linux PoC (`pocl`, `20 1 10`, `IVL=0 CHUNK=4096`) was not run: it needs WSL and this session could not start
+   it. The Windows runs of all tests pass; the CI Linux job is the check for the Linux behavior.
+2. **A socket error was treated like `WouldBlock` (low).** `read_paused` unpauses unless `try_write(&[])` returns
+   `WouldBlock`, so the next read returns the real error. No test: it needs a peer reset while a custom writer has
+   abandoned a blocked write, which this suite cannot arrange reliably.
+3. **Addition to the #117 note.** The read credit must be measured in bytes accepted by TCP, not in plaintext accepted
+   by rustls (rustls buffers plaintext before TCP takes it).
+
 ## Implementation notes
 
 - `write_loop` returns `WriteEnd::{Closed, Failed(io::ErrorKind)}`; the kind is taken from `tungstenite::Error::Io`, any

@@ -75,6 +75,15 @@ Start after #157 (`e0-write-deadline-for-stalled-clients`) is merged into `main`
 - [x] 5c.3 Correct the Implementation notes (`Other` became `WriteEnd::Refused`) and note the TLS constraint for #117
 - [x] 5c.4 Re-run the reviewer's `split` PoC
 
+## 5d. Security review round 3 (2026-11-09)
+
+- [x] 5d.1 The read allowance becomes a credit tied to bytes written (`ReadCredit`): earned by bytes the socket accepts,
+  spent by bytes read, reads while a write is blocked limited to the credit left, the writable probe never refills it;
+  unit test with small write slices and an integration test with a trickle reader and a ping flood
+- [x] 5d.2 `read_paused` unpauses on any probe result except `WouldBlock`, so a socket error reaches the next read
+- [x] 5d.3 Extend the #117 note in design.md (credit measured in bytes accepted by TCP)
+- [ ] 5d.4 Cross-check the Linux PoC (`pocl`): not run here (see design.md); the CI Linux job is the check
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review (after #157's change is archived).
