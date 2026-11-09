@@ -192,3 +192,13 @@ the code on 2026-11-08:
   the original's packages).
 - Port apps (task 6.1): no `derive(... ApiSchema` or `derive(... Validate` under
   `C:/Users/Usuario/Devel/corvis-tests/corvis/*/src` (grep on 2026-11-09 found none).- `cargo doc -p corvis-swagger --no-deps` prints two warnings that were already there and are not in code of this change: an unresolved link to `crate::model` and a public doc of `serialize_config_to_js` that links to the private item `escape_inline_json`.
+
+
+## Verification (2026-11-09)
+
+Verified together in batch-m (#120, #135, #128, #151): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and per-feature clippy of corvis are clean; `cargo test --workspace --no-fail-fast` with
+`CORVIS_ORM_PG_REQUIRED=1` passed 1064 tests with 0 failures (and `cargo test -p corvis` passed 689 again after the
+last #135 fixes); naming, crate-files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run
+42599828082 was green except `audit`/`deny`, which failed on RUSTSEC-2026-0459 (unrelated; ignored on main with #155).
+corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases equivalent.

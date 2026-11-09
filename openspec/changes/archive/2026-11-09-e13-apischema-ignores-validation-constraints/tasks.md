@@ -60,12 +60,12 @@
 
 ## 7. Definition of done
 
-- [ ] 7.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 7.3 `cargo test --workspace` passes, including the regression tests of 2.1 and 2.2, the unit tests of 3.1 and the
+- [x] 7.1 `cargo build --workspace --all-targets` with no warnings
+- [x] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [x] 7.3 `cargo test --workspace` passes, including the regression tests of 2.1 and 2.2, the unit tests of 3.1 and the
   fixture replay
-- [ ] 7.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 7.5 Generated framework code changed (`corvis-swagger-macros`): run the `corvis-parity` check and verify the three
+- [x] 7.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
+- [x] 7.5 Generated framework code changed (`corvis-swagger-macros`): run the `corvis-parity` check and verify the three
   port apps keep 0 apidiff differences
 
 ## Workflow follow-up

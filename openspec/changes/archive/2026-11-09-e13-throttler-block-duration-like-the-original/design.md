@@ -277,3 +277,13 @@ fixed 110 bytes per blocked key to match. FIFO trade-off, documented: the oldest
 time left, so `max_blocked` should be at least the number of blocks started during the longest block duration.
 Tests: `short_blocks_cannot_evict_each_other_after_long_blocks_pin_the_table` and
 `the_oldest_block_is_evicted_first_whatever_its_length`.
+
+
+## Verification (2026-11-09)
+
+Verified together in batch-m (#120, #135, #128, #151): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and per-feature clippy of corvis are clean; `cargo test --workspace --no-fail-fast` with
+`CORVIS_ORM_PG_REQUIRED=1` passed 1064 tests with 0 failures (and `cargo test -p corvis` passed 689 again after the
+last #135 fixes); naming, crate-files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run
+42599828082 was green except `audit`/`deny`, which failed on RUSTSEC-2026-0459 (unrelated; ignored on main with #155).
+corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases equivalent. Security review: findings 1-5 fixed; the last re-check (commit 8c53eea, then 7ddc2d5) measured 20 of 10,000 requests passing in the pinned-table scenario (was 9,091) and found no new issue.

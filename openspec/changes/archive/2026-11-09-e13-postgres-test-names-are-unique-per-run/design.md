@@ -73,3 +73,13 @@ None.
 - Concurrent run (3.1): all 18 corvis-orm test executables, built once, ran twice in parallel against the Docker `corvis-pg` server with `CORVIS_ORM_PG_REQUIRED=1`; both passed every test binary (same counts in A and B, for example `pg_pool_url` 9/9, `pg_connect_timeout` 13/13), and afterwards the server held no `orm_*` database or role.
 - Unsuffixed databases left by earlier runs (`orm_test_<name>`) are not matched by the sweep; they were dropped by hand once on the local server.
 - `openspec validate` warns that the requirement text is long (over 500 characters); kept as one requirement.
+
+
+## Verification (2026-11-09)
+
+Verified together in batch-m (#120, #135, #128, #151): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and per-feature clippy of corvis are clean; `cargo test --workspace --no-fail-fast` with
+`CORVIS_ORM_PG_REQUIRED=1` passed 1064 tests with 0 failures (and `cargo test -p corvis` passed 689 again after the
+last #135 fixes); naming, crate-files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run
+42599828082 was green except `audit`/`deny`, which failed on RUSTSEC-2026-0459 (unrelated; ignored on main with #155).
+corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases equivalent.

@@ -68,7 +68,7 @@ the headers through one helper, and `crates/corvis/tests/fixtures/throttler/` ex
 - [x] 5.3 `cargo test --workspace` passes, including the regression tests of 1.4 and 1.5 and both differential tests
   (storage replay and HTTP replay)
 - [x] 5.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences (none uses the throttler)
 
 ## Workflow follow-up

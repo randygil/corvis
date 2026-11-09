@@ -186,3 +186,13 @@ See proposal.md for motivation; the behavior is in the two spec deltas. Current 
 - Cap (info): at most 128 distinct names per request; beyond it `set_response_header` returns false (replacing a
   recorded name still works). Documented in `docs/guards.md` and `docs/es/guards.md`. Test:
   `at_most_128_distinct_names_are_recorded`.
+
+
+## Verification (2026-11-09)
+
+Verified together in batch-m (#120, #135, #128, #151): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and per-feature clippy of corvis are clean; `cargo test --workspace --no-fail-fast` with
+`CORVIS_ORM_PG_REQUIRED=1` passed 1064 tests with 0 failures (and `cargo test -p corvis` passed 689 again after the
+last #135 fixes); naming, crate-files, the examples (32/32 smoke checks) and `npm run docs:check` pass. CI run
+42599828082 was green except `audit`/`deny`, which failed on RUSTSEC-2026-0459 (unrelated; ignored on main with #155).
+corvis-parity: consi 832/832, facten 727/727, houseplan 636/636 equal, databases equivalent. Security review findings (framing headers, panic, header cap) fixed before the batch.
