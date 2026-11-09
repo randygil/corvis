@@ -738,7 +738,12 @@ pub(crate) async fn execute_route(route: Arc<CompiledRoute>, mut req: Request, p
 /// header it already has.
 fn apply_enhancer_headers(ctx: &ExecutionContext, resp: &mut Response) {
     let Some(headers) = crate::common::context::EnhancerHeaders::of(ctx.request()) else { return };
+    // A body brings its own type (JSON, text, bytes with an explicit type, a stream): an enhancer must not retype it.
+    let has_body = !matches!(resp.body, crate::http::response::Body::Empty);
     for (name, value) in headers.iter() {
+        if *name == http::header::CONTENT_TYPE && has_body {
+            continue;
+        }
         if !resp.headers().contains_key(name) {
             resp.headers_mut().append(name.clone(), value.clone());
         }
@@ -761,8 +766,8 @@ async fn run_pipeline(route: Arc<CompiledRoute>, ctx: ExecutionContext) -> Handl
         }
         if let Some(recorded) = crate::common::context::EnhancerHeaders::of(req) {
             for (name, value) in recorded.iter() {
-                if let (false, Ok(v)) = (res.has_header(name.as_str()), value.to_str()) {
-                    res.set(name.as_str(), v);
+                if name != http::header::CONTENT_TYPE && !res.has_header(name.as_str()) {
+                    res.set_header_value(name.clone(), value.clone());
                 }
             }
         }

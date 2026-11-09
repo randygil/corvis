@@ -227,7 +227,7 @@ La verificación cubre las rutas de controladores y los handlers de mensajes de 
 
 ## Poner cabeceras de respuesta
 
-Un guard no tiene una respuesta donde escribir, pero puede registrar cabeceras con `ctx.switch_to_http().set_response_header(nombre, valor)`. Devuelve `false` y no registra nada cuando el nombre o el valor no son una cabecera válida (un valor con CR o LF incluido) y en un contexto de WebSocket.
+Un guard no tiene una respuesta donde escribir, pero puede registrar cabeceras con `ctx.switch_to_http().set_response_header(nombre, valor)`. Devuelve `false` y no registra nada cuando el nombre o el valor no son una cabecera válida (los valores admiten tabulador, ASCII visible y U+0080..U+00FF; CR y LF se rechazan), para las cabeceras de framing que gestiona el framework (`Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Upgrade`), cuando ya hay 128 nombres distintos registrados para la petición y en un contexto de WebSocket. Un `Content-Type` puesto así solo se aplica a una respuesta sin cuerpo: JSON, texto, bytes y streams conservan su propio tipo.
 
 ```rust
 ctx.switch_to_http().set_response_header("X-Trace-Id", "abc123");

@@ -147,6 +147,13 @@ pub struct HttpArgumentsHost<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RouteStatus(pub(crate) http::StatusCode);
 
+/// Headers that frame the response or the connection; `set_response_header` refuses them.
+const RESERVED_RESPONSE_HEADERS: [&str; 8] =
+    ["content-length", "transfer-encoding", "connection", "keep-alive", "proxy-connection", "te", "trailer", "upgrade"];
+
+/// Distinct header names an enhancer chain can record for one request.
+const MAX_ENHANCER_HEADERS: usize = 128;
+
 /// Response headers recorded by guards, interceptors and pipes (see
 /// [`HttpArgumentsHost::set_response_header`]). Created on first use.
 #[derive(Clone, Default)]
@@ -164,15 +171,28 @@ impl<'a> HttpArgumentsHost<'a> {
     /// error and filter responses) only when the response has no header with that name, and written to the `Res` of
     /// `#[res]` routes when absent there. A later call with the same name replaces the recorded value.
     ///
-    /// Returns `false`, recording nothing, when the name or value is not a valid HTTP header (values with CR or LF
-    /// included) and in a WebSocket context.
+    /// Returns `false`, recording nothing, when
+    /// - the name is not a valid header name, or the value has a character Node would refuse (anything but tab,
+    ///   visible ASCII and U+0080..U+00FF, so CR and LF included);
+    /// - the name is a framing or connection header the framework owns (`Content-Length`, `Transfer-Encoding`,
+    ///   `Connection`, `Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Upgrade`);
+    /// - 128 distinct names are already recorded for the request (replacing a recorded name still works);
+    /// - the context is a WebSocket one.
+    ///
+    /// A `Content-Type` recorded here applies only to a response without a body: a body (JSON, text, bytes, a
+    /// stream) keeps its own type, and `#[res]` routes never receive it.
     pub fn set_response_header(&self, name: &str, value: &str) -> bool {
         if self.ctx.inner.context_type != ContextType::Http {
             return false;
         }
-        let (Ok(n), Ok(v)) = (http::HeaderName::from_bytes(name.as_bytes()), http::HeaderValue::from_str(value)) else {
+        let Ok(n) = http::HeaderName::from_bytes(name.as_bytes()) else { return false };
+        if RESERVED_RESPONSE_HEADERS.contains(&n.as_str()) {
             return false;
-        };
+        }
+        if !value.chars().all(|c| matches!(c as u32, 0x09 | 0x20..=0x7e | 0x80..=0xff)) {
+            return false;
+        }
+        let Ok(v) = http::HeaderValue::from_bytes(value.as_bytes()) else { return false };
         let req = &self.ctx.inner.request;
         let store = match req.get::<EnhancerHeaders>() {
             Some(s) => s,
@@ -182,12 +202,19 @@ impl<'a> HttpArgumentsHost<'a> {
                 s
             }
         };
-        store.0.lock().unwrap_or_else(|e| e.into_inner()).insert(n.clone(), v);
-        if let Some(res) = req.get::<crate::http::Res>()
+        {
+            let mut headers = store.0.lock().unwrap_or_else(|e| e.into_inner());
+            if headers.len() >= MAX_ENHANCER_HEADERS && !headers.contains_key(&n) {
+                return false;
+            }
+            headers.insert(n.clone(), v.clone());
+        }
+        if n != http::header::CONTENT_TYPE
+            && let Some(res) = req.get::<crate::http::Res>()
             && !res.headers_sent()
             && !res.has_header(n.as_str())
         {
-            res.set(n.as_str(), value);
+            res.set_header_value(n, v);
         }
         true
     }
