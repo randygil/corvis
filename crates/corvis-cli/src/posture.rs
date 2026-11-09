@@ -251,7 +251,7 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-fn cargo_program() -> String {
+pub(crate) fn cargo_program() -> String {
     std::env::var("CORVIS_CARGO").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| "cargo".to_string())
 }
 

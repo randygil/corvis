@@ -91,14 +91,24 @@ corvis start [--watch] [--release] [-- <argumentos del programa>]
 | `corvis start` | `cargo run` |
 | `corvis start --release` (o `--prod`) | `cargo run --release` |
 | `corvis start -- --mi-flag` | `cargo run -- --mi-flag` |
-| `corvis start --watch` | `cargo watch -x run` |
-| `corvis start --watch --release` | `cargo watch -x "run --release"` |
-| `corvis start --watch -- --port 4000` | `cargo watch -x "run -- --port 4000"` |
+| `corvis start --watch` | `watchexec -r -n ... -- cargo run` |
+| `corvis start --watch --release` | `watchexec -r -n ... -- cargo run --release` |
+| `corvis start --watch -- --port 4000` | `watchexec -r -n ... -- cargo run -- --port 4000` |
 
 Las opciones de `corvis` (`--watch`, `--release`, `--prod`) se leen solo antes del primer `--`. Todo lo que va después de `--` llega a tu programa sin cambios, así que `corvis start -- --release` ejecuta `cargo run -- --release` (una compilación debug que recibe `--release`).
 Sin `--watch`, el comando imprime antes el perfil que ejecuta (`Running the debug profile ...` o `Running the release profile`).
 
-`--watch` necesita [`cargo-watch`](https://crates.io/crates/cargo-watch) (`cargo install cargo-watch`). Antes de ejecutarlo, la CLI busca `cargo-watch` en los directorios de `PATH` y en `$CARGO_HOME/bin` (por defecto `~/.cargo/bin`); si no está, el comando falla con `cargo-watch is not installed` e indica ejecutar `cargo install cargo-watch` o usar `corvis start` sin `--watch`. En modo watch, `--release` y los argumentos tras `--` pasan al comando vigilado. Como `cargo watch` ejecuta ese comando a través de un shell, el modo watch solo acepta argumentos formados por letras, dígitos y `- _ . / : = , + @`; cualquier otro argumento (por ejemplo uno con un espacio) hace que el comando falle antes de iniciar Cargo, y puedes usar `corvis start` sin `--watch`.
+`--watch` necesita [watchexec](https://github.com/watchexec/watchexec) 2.0 o posterior. Instálalo con `cargo install --locked watchexec-cli`, `cargo binstall watchexec-cli`, un gestor de paquetes o un binario precompilado (ver la [página de instalación de watchexec](https://github.com/watchexec/watchexec#install)). Antes de ejecutar nada, la CLI busca `watchexec` en los directorios de `PATH` y en `$CARGO_HOME/bin` (por defecto `~/.cargo/bin`); si no está, el comando falla con `watchexec is not installed` e indica cómo instalarlo o usar `corvis start` sin `--watch`.
+
+Las formas cortas de la tabla representan el comando completo, donde `<root>` es la raíz del workspace de Cargo del directorio actual (puedes lanzarlo desde `src/` y un cambio en `Cargo.toml` se detecta igual):
+
+```bash
+watchexec --restart --shell=none --project-origin <root> --watch <root> --ignore /target/** -- cargo run [--release] [-- <argumentos del programa>]
+```
+
+La carpeta `target` se ignora de forma explícita, así que un proyecto creado con `--skip-git` no se reinicia en bucle con su propia salida de compilación. watchexec ejecuta Cargo sin shell, de modo que `--release` y los argumentos tras `--` llegan a Cargo sin cambios: `corvis start --watch -- --name "my app"` entrega al programa un solo argumento, `my app`. Las dependencias por ruta fuera del workspace no se vigilan.
+
+Proyectos que usaban `cargo-watch`: ya no se usa, puedes desinstalarlo.
 
 ## `corvis build`
 

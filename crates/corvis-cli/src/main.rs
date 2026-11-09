@@ -72,7 +72,7 @@ Commands:
   generate|g <schematic> <name> [--flat] [--path <dir>] [--no-spec]
                                  Generate a Corvis element.
   start [--watch] [--release] [-- args]
-                                 Run the application (cargo run, or cargo watch -x "run ..." with --watch).
+                                 Run the application (cargo run; with --watch, watchexec restarts it when files change).
   build [--release]              Build the application (debug profile unless --release).
   posture [--json] [--release] [--timeout <seconds>] [-- args]
                                  Print the route posture report (which routes are guarded, public or unprotected).
@@ -431,10 +431,10 @@ fn generate_resource(p: &Project, n: &Names, dir: &str) -> Res {
 
 // ---------------------------------------------------------------------- start / build / info
 
-/// Looks for the `cargo-<name>` executable where Cargo finds external subcommands: the
-/// directories of `PATH` and `$CARGO_HOME/bin` (default `~/.cargo/bin`).
-fn find_cargo_subcommand(name: &str) -> Option<PathBuf> {
-    let file = format!("cargo-{name}{}", std::env::consts::EXE_SUFFIX);
+/// Looks for the `file_stem` executable in the directories of `PATH` and in `$CARGO_HOME/bin`
+/// (default `~/.cargo/bin`), where `cargo install` puts binaries.
+fn find_executable(file_stem: &str) -> Option<PathBuf> {
+    let file = format!("{file_stem}{}", std::env::consts::EXE_SUFFIX);
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
         let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") };
@@ -444,68 +444,87 @@ fn find_cargo_subcommand(name: &str) -> Option<PathBuf> {
     dirs.into_iter().map(|d| d.join(&file)).find(|f| f.is_file())
 }
 
-/// Builds the arguments given to `cargo` for `corvis start` (`sub == "run"`) or `corvis build`.
-/// `--watch`, `--release` and `--prod` are read only before the first `--`; everything after it
-/// belongs to the program.
-fn cargo_invocation(args: &[String], sub: &str) -> Result<Vec<String>, String> {
-    let (own, program) = match args.iter().position(|a| a == "--") {
+/// Splits `corvis start`/`build` arguments at the first `--`: `--watch`, `--release` and `--prod`
+/// are read only before it; everything after it belongs to the program.
+fn split_program_args(args: &[String]) -> (&[String], Option<&[String]>) {
+    match args.iter().position(|a| a == "--") {
         Some(i) => (&args[..i], Some(&args[i + 1..])),
         None => (args, None),
-    };
-    let release = flag(own, "--release") || flag(own, "--prod");
-    let watch = sub == "run" && flag(own, "--watch");
-    let program = program.unwrap_or(&[]);
-    if watch {
-        let mut line = String::from("run");
-        if release {
-            line.push_str(" --release");
-        }
-        if !program.is_empty() {
-            line.push_str(" --");
-            for a in program {
-                if !watch_safe(a) {
-                    return Err(format!(
-                        "argument \"{a}\" cannot be passed through cargo watch (it runs the command through a shell).                          Run \"corvis start\" without --watch, or run cargo watch directly with your shell's quoting."
-                    ));
-                }
-                line.push(' ');
-                line.push_str(a);
-            }
-        }
-        return Ok(vec!["watch".into(), "-x".into(), line]);
     }
+}
+
+/// Builds the arguments given to `cargo` for `corvis start` (`sub == "run"`) or `corvis build`,
+/// without watch mode.
+fn cargo_invocation(args: &[String], sub: &str) -> Vec<String> {
+    let (own, program) = split_program_args(args);
     let mut out = vec![sub.to_string()];
-    if release {
+    if flag(own, "--release") || flag(own, "--prod") {
         out.push("--release".into());
     }
-    if args.iter().any(|a| a == "--") {
+    if let Some(program) = program {
         out.push("--".into());
         out.extend(program.iter().cloned());
     }
-    Ok(out)
+    out
 }
 
-/// A program argument that a shell hands over unchanged: non-empty, letters, digits and `-_./:=,+@`.
-fn watch_safe(arg: &str) -> bool {
-    !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=,+@".contains(c))
+/// Builds the arguments given to `watchexec` for `corvis start --watch`: it restarts
+/// `cargo run [--release] [-- <program arguments>]` without a shell, so every argument
+/// reaches Cargo unchanged.
+fn watch_invocation(args: &[String], root: &Path) -> Vec<String> {
+    let root = root.display().to_string();
+    let mut out: Vec<String> = ["--restart", "--shell=none", "--project-origin"].map(String::from).into();
+    out.push(root.clone());
+    out.push("--watch".into());
+    out.push(root);
+    out.extend(["--ignore", "/target/**", "--", "cargo"].map(String::from));
+    out.extend(cargo_invocation(args, "run"));
+    out
+}
+
+/// Reads the workspace root from the output of `cargo locate-project --workspace
+/// --message-format plain`: the folder of the manifest it prints.
+fn parse_workspace_root(output: &str) -> Option<PathBuf> {
+    let manifest = output.trim();
+    if manifest.is_empty() {
+        return None;
+    }
+    Path::new(manifest).parent().map(Path::to_path_buf)
+}
+
+/// The Cargo workspace root of the current directory.
+fn workspace_root() -> Result<PathBuf, String> {
+    let out = Command::new(posture::cargo_program())
+        .args(["locate-project", "--workspace", "--message-format", "plain"])
+        .output()
+        .map_err(|e| format!("failed to run cargo: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    parse_workspace_root(&String::from_utf8_lossy(&out.stdout)).ok_or_else(|| "cargo locate-project printed no manifest path".to_string())
 }
 
 fn cmd_cargo(args: &[String], sub: &str) -> Res {
-    let invocation = cargo_invocation(args, sub)?;
-    let watch = invocation.first().map(String::as_str) == Some("watch");
-    if !watch {
-        let release = invocation.iter().take_while(|a| *a != "--").any(|a| a == "--release");
-        let verb = if sub == "build" { "Building" } else { "Running" };
-        if release {
-            println!("{verb} the release profile");
-        } else {
-            println!("{verb} the debug profile (use --release for an optimized build)");
-        }
-    } else if find_cargo_subcommand("watch").is_none() {
-        return Err(format!(
-            "cargo-watch is not installed: corvis start --watch runs \"cargo watch -x \\\"{}\\\"\".                 Install it with \"cargo install cargo-watch\", or run \"corvis start\" without --watch.",
-            invocation[2]
-        ));
+    let (own, _) = split_program_args(args);
+    if sub == "run" && flag(own, "--watch") {
+        let Some(watchexec) = find_executable("watchexec") else {
+            return Err("watchexec is not installed: corvis start --watch runs \"watchexec --restart --shell=none ... -- \
+                cargo <run command>\". Install it with \"cargo install --locked watchexec-cli\" (prebuilt binaries and \
+                package managers: https://github.com/watchexec/watchexec#install), or run \"corvis start\" without --watch."
+                .to_string());
+        };
+        let root = workspace_root()?;
+        let status =
+            Command::new(&watchexec).args(watch_invocation(args, &root)).status().map_err(|e| format!("failed to run watchexec: {e}"))?;
+        return if status.success() { Ok(()) } else { Err("watchexec failed".to_string()) };
+    }
+    let invocation = cargo_invocation(args, sub);
+    let release = invocation.iter().take_while(|a| *a != "--").any(|a| a == "--release");
+    let verb = if sub == "build" { "Building" } else { "Running" };
+    if release {
+        println!("{verb} the release profile");
+    } else {
+        println!("{verb} the debug profile (use --release for an optimized build)");
     }
     let status = Command::new("cargo").args(&invocation).status().map_err(|e| format!("failed to run cargo: {e}"))?;
     if status.success() { Ok(()) } else { Err(format!("cargo {sub} failed")) }
@@ -581,16 +600,19 @@ mod tests {
     }
 
     #[test]
-    fn finds_cargo_watch_in_cargo_home() {
+    fn finds_watchexec_in_cargo_home() {
         let home = std::env::temp_dir().join(format!("corvis-cli-unit-{}-home", std::process::id()));
         let bin = home.join("bin");
         fs::create_dir_all(&bin).unwrap();
-        let file = bin.join(format!("cargo-watch{}", std::env::consts::EXE_SUFFIX));
+        let file = bin.join(format!("watchexec{}", std::env::consts::EXE_SUFFIX));
         fs::write(&file, "").unwrap();
-        // SAFETY: no other test in this binary reads or writes CARGO_HOME.
-        unsafe { std::env::set_var("CARGO_HOME", &home) };
-        assert_eq!(find_cargo_subcommand("watch"), Some(file));
-        assert_eq!(find_cargo_subcommand("corvis-no-such-subcommand"), None);
+        // SAFETY: no other test in this binary reads or writes CARGO_HOME or PATH.
+        unsafe {
+            std::env::set_var("CARGO_HOME", &home);
+            std::env::set_var("PATH", &home);
+        }
+        assert_eq!(find_executable("watchexec"), Some(file));
+        assert_eq!(find_executable("corvis-no-such-executable"), None);
         let _ = fs::remove_dir_all(home);
     }
 
@@ -598,45 +620,67 @@ mod tests {
         a.iter().map(|s| s.to_string()).collect()
     }
 
-    fn inv(a: &[&str], sub: &str) -> Result<Vec<String>, String> {
+    fn inv(a: &[&str], sub: &str) -> Vec<String> {
         cargo_invocation(&v(a), sub)
     }
 
     #[test]
     fn builds_start_and_build_commands() {
-        assert_eq!(inv(&[], "run").unwrap(), v(&["run"]));
-        assert_eq!(inv(&["--release"], "run").unwrap(), v(&["run", "--release"]));
-        assert_eq!(inv(&["--prod"], "run").unwrap(), v(&["run", "--release"]));
-        assert_eq!(inv(&["--", "a", "b"], "run").unwrap(), v(&["run", "--", "a", "b"]));
-        assert_eq!(inv(&["--", "--release"], "run").unwrap(), v(&["run", "--", "--release"]));
-        assert_eq!(inv(&["--", "--watch"], "run").unwrap(), v(&["run", "--", "--watch"]));
-        assert_eq!(inv(&[], "build").unwrap(), v(&["build"]));
-        assert_eq!(inv(&["--release"], "build").unwrap(), v(&["build", "--release"]));
-        assert_eq!(inv(&["--", "x"], "build").unwrap(), v(&["build", "--", "x"]));
+        assert_eq!(inv(&[], "run"), v(&["run"]));
+        assert_eq!(inv(&["--release"], "run"), v(&["run", "--release"]));
+        assert_eq!(inv(&["--prod"], "run"), v(&["run", "--release"]));
+        assert_eq!(inv(&["--", "a", "b"], "run"), v(&["run", "--", "a", "b"]));
+        assert_eq!(inv(&["--", "--release"], "run"), v(&["run", "--", "--release"]));
+        assert_eq!(inv(&["--", "--watch"], "run"), v(&["run", "--", "--watch"]));
+        assert_eq!(inv(&["--", "my app"], "run"), v(&["run", "--", "my app"]));
+        assert_eq!(inv(&[], "build"), v(&["build"]));
+        assert_eq!(inv(&["--release"], "build"), v(&["build", "--release"]));
+        assert_eq!(inv(&["--", "x"], "build"), v(&["build", "--", "x"]));
+    }
+
+    fn watch(a: &[&str]) -> Vec<String> {
+        watch_invocation(&v(a), Path::new("/src/my-app"))
+    }
+
+    fn watch_expect(tail: &[&str]) -> Vec<String> {
+        let mut out = v(&[
+            "--restart",
+            "--shell=none",
+            "--project-origin",
+            "/src/my-app",
+            "--watch",
+            "/src/my-app",
+            "--ignore",
+            "/target/**",
+            "--",
+            "cargo",
+        ]);
+        out.extend(v(tail));
+        out
     }
 
     #[test]
     fn builds_watch_commands() {
-        assert_eq!(inv(&["--watch"], "run").unwrap(), v(&["watch", "-x", "run"]));
-        assert_eq!(inv(&["--watch", "--release"], "run").unwrap(), v(&["watch", "-x", "run --release"]));
+        assert_eq!(watch(&["--watch"]), watch_expect(&["run"]));
+        assert_eq!(watch(&["--watch", "--release"]), watch_expect(&["run", "--release"]));
+        assert_eq!(watch(&["--watch", "--prod"]), watch_expect(&["run", "--release"]));
+        assert_eq!(watch(&["--watch", "--prod", "--", "--port", "4000"]), watch_expect(&["run", "--release", "--", "--port", "4000"]));
+        assert_eq!(watch(&["--watch", "--", "--name", "my app"]), watch_expect(&["run", "--", "--name", "my app"]));
         assert_eq!(
-            inv(&["--watch", "--prod", "--", "--port", "4000"], "run").unwrap(),
-            v(&["watch", "-x", "run --release -- --port 4000"])
+            watch(&["--watch", "--", "a;b", "$HOME", "%PATH%", "a&b", "a|b", "\"q\"", ""]),
+            watch_expect(&["run", "--", "a;b", "$HOME", "%PATH%", "a&b", "a|b", "\"q\"", ""])
         );
-        assert_eq!(
-            inv(&["--watch", "--", "--config=./dev.toml", "--host", "127.0.0.1"], "run").unwrap(),
-            v(&["watch", "-x", "run -- --config=./dev.toml --host 127.0.0.1"])
-        );
-        assert_eq!(inv(&["--watch", "--", "http://localhost:3000/x"], "run").unwrap().len(), 3);
     }
 
     #[test]
-    fn watch_rejects_shell_sensitive_arguments() {
-        for bad in ["my app", "", "a;b", "$HOME", "%PATH%", "a&b", "a|b", "\"q\""] {
-            let err = inv(&["--watch", "--", bad], "run").unwrap_err();
-            assert!(err.contains(&format!("argument \"{bad}\"")) && err.contains("without --watch"), "{bad}: {err}");
-        }
-        assert_eq!(inv(&["--", "my app"], "run").unwrap(), v(&["run", "--", "my app"]));
+    fn parses_the_workspace_root() {
+        assert_eq!(parse_workspace_root("/src/my-app/Cargo.toml\n"), Some(PathBuf::from("/src/my-app")));
+        assert_eq!(
+            parse_workspace_root("C:\\src\\my app\\Cargo.toml\r\n"),
+            Path::new("C:\\src\\my app\\Cargo.toml").parent().map(Path::to_path_buf)
+        );
+        assert_eq!(parse_workspace_root("\n"), None);
+        assert_eq!(parse_workspace_root(""), None);
     }
 
     fn dep(args: &[&str], env: Option<&str>) -> Result<String, String> {
