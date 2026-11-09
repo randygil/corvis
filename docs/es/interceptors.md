@@ -165,3 +165,15 @@ El código "antes" se ejecuta en ese orden y el código "después", en el orden 
 ## Leer el estado de la ruta
 
 Dentro de un interceptor, `ctx.switch_to_http().status_code()` devuelve el estado que tendrá la respuesta si el handler no lo cambia: el de `#[http_code]`, `201` en `POST` o `200`. Sirve, por ejemplo, para guardar `{ status, body }` en una caché.
+
+## Poner cabeceras de respuesta
+
+Un interceptor puede añadir una cabecera a la respuesta, también después de que corra el handler, con `ctx.switch_to_http().set_response_header(nombre, valor)`:
+
+```rust
+let result = next.handle().await;
+ctx.switch_to_http().set_response_header("X-Elapsed-Ms", &started.elapsed().as_millis().to_string());
+result
+```
+
+La cabecera se mezcla en la respuesta final en éxito, en errores y en la respuesta de un filtro de excepciones, y nunca reemplaza una cabecera que la respuesta ya tiene. Devuelve `false` y no registra nada con un nombre o valor inválido. Ver [Guards](/es/guards#poner-cabeceras-de-respuesta).

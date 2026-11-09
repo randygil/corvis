@@ -149,3 +149,22 @@ See proposal.md for motivation; the behavior is in the two spec deltas. Current 
    issue; this change checks `Retry-After` by presence only, as proposed.
 7. The module-level switch is enough; per-throttler `setHeaders` is not added (it would break struct literals).
 8. Middleware cannot set throttler headers; acceptable (the throttler is a guard).
+
+## Implementation notes
+
+- The regression tests (tasks 1.2, 1.3) were written together with the code rather than seen failing first; they cover
+  every scenario of both specs and pass. The WebSocket scenarios are unit tests in `modules/throttler.rs` (they need
+  `EnhancerHeaders`, which is crate-private).
+- Fixture (`tests/fixtures/throttler/`): `@nestjs/throttler` 6.7.1 with `@nestjs/*` 12.4.0, three apps (`named`,
+  `second`, `default`). Header names and the allowed/blocked split match the spec. `Retry-After` does reach the 429;
+  on the first block it equals the full `ttl` (60 / 30), as Decision 5 predicted, and it is compared by presence only.
+  The blocking throttler sets no `X-RateLimit-*` and earlier throttlers' headers stay, as in the spec.
+- Finding: the original `@SkipThrottle()` without arguments skips only the throttler named `default`; Corvis's
+  `SKIP_THROTTLE` skips all throttlers. The fixture skips every throttler by name to compare the same behavior, and
+  the docs list the difference under Limitations. Not changed here.
+- The header code is the private `ThrottlerGuard::set_headers` (name, limit, hits, time to expire, blocked), so #135
+  only changes the counter call.
+- Throttler names are validated by `set_response_header` (`HeaderName::from_bytes`); an invalid name drops the header
+  and a test covers it.
+- Task 5.5 (corvis-parity) is left to the maintainer's session as instructed. `corvis-orm` tests were not run (asked
+  to exclude them).

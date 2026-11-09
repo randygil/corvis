@@ -131,7 +131,31 @@ Usa `true` (confiar en todos los saltos) solo si todas las peticiones pasan por 
 reescribe `X-Forwarded-For`: si no, un cliente puede elegir su IP y saltarse el límite. Ver
 [Adaptadores HTTP](/es/http/performance).
 
+## Cabeceras de respuesta
+
+Igual que la librería original, `ThrottlerGuard` le dice al cliente cómo va. Por cada throttler que cuenta una petición y la deja pasar envía:
+
+| Cabecera | Valor |
+|---|---|
+| `X-RateLimit-Limit` | El límite efectivo (después de `THROTTLE_LIMIT`) |
+| `X-RateLimit-Remaining` | Peticiones que quedan en la ventana, nunca menos de 0 |
+| `X-RateLimit-Reset` | Segundos hasta que termina la ventana, redondeados hacia arriba |
+
+Cuando un throttler bloquea la petición, el `429` lleva `Retry-After` (segundos hasta que termina la ventana, al menos 1) y ninguna cabecera `X-RateLimit-*` de ese throttler. Las cabeceras de los throttlers revisados antes se mantienen en el `429`. Las rutas con `SKIP_THROTTLE` no reciben ninguna.
+
+Para un throttler que no se llama `default`, los nombres de las cabeceras terminan en `-<nombre>`: con los throttlers `short` y `long` de arriba, una respuesta lleva `X-RateLimit-Limit-short`, `X-RateLimit-Remaining-long`, `Retry-After-long`, etc. El nombre del throttler pasa a ser parte del nombre de una cabecera, así que usa un token simple (letras, dígitos y `-`) que no revele nada interno; un nombre que no sea un nombre de cabecera válido hace que sus cabeceras se descarten.
+
+Las cabeceras vienen activadas por defecto y le cuentan a cualquier cliente cada límite, su ventana y los nombres de los throttlers. Para ocultarlas, sin cambiar el conteo ni el bloqueo, se desactivan en el storage:
+
+```rust
+ThrottlerModule::for_root_storage(
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_headers(false),
+)
+```
+
+Los navegadores solo dejan que una página lea estas cabeceras si la configuración de CORS las expone (`Access-Control-Expose-Headers` en `CorsOptions`). `Retry-After` sigue la ventana fija de Corvis: es el tiempo hasta que se reinicia el contador, que puede diferir del valor de la librería original en el primer bloqueo de una ventana. Un mensaje de WebSocket se cuenta pero no recibe cabeceras. Otros guards e interceptors pueden poner cabeceras con `ctx.switch_to_http().set_response_header` (ver [Guards](/es/guards#poner-cabeceras-de-respuesta)).
+
 ## Limitaciones
 
-- No se envían cabeceras informativas (`Retry-After`, `X-RateLimit-*`).
+- `SKIP_THROTTLE` omite todos los throttlers, mientras que el `@SkipThrottle()` original solo omite el throttler llamado `default` salvo que se listen los demás.
 - Un `ThrottlerGuard` global también cuenta los mensajes de los gateways de WebSocket, por IP del handshake y por handler, así que una conexión duradera puede agotar su límite. `app.apply_global_enhancers_to_gateways(false)` deja fuera a los gateways. Los listeners `corvis::ws` planos nunca se cuentan.

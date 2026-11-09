@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
-use crate::common::context::ExecutionContext;
+use crate::common::context::{ContextType, ExecutionContext};
 use crate::common::guard::CanActivate;
 use crate::common::reflector::Reflector;
 use crate::di::{DynamicModule, Module, ModuleDefinition, Provider, Token};
@@ -70,11 +70,25 @@ pub struct ThrottlerStorage {
     pub(crate) throttlers: Vec<ThrottlerOptions>,
     counters: Mutex<Counters>,
     max_entries: usize,
+    headers: bool,
 }
 
 impl ThrottlerStorage {
     pub fn new(throttlers: Vec<ThrottlerOptions>) -> Self {
-        ThrottlerStorage { throttlers, counters: Mutex::new(Counters::default()), max_entries: DEFAULT_THROTTLER_MAX_ENTRIES }
+        ThrottlerStorage {
+            throttlers,
+            counters: Mutex::new(Counters::default()),
+            max_entries: DEFAULT_THROTTLER_MAX_ENTRIES,
+            headers: true,
+        }
+    }
+
+    /// Whether [`ThrottlerGuard`] sends the `X-RateLimit-*` and `Retry-After` headers (default `true`, as in
+    /// the original throttler library). They reveal each limit, its window and the throttler names to every client; pass `false`
+    /// to hide them. Counting and blocking are not affected.
+    pub fn with_headers(mut self, headers: bool) -> Self {
+        self.headers = headers;
+        self
     }
 
     /// Maximum number of counters kept in memory (default [`DEFAULT_THROTTLER_MAX_ENTRIES`]).
@@ -185,6 +199,29 @@ pub struct ThrottlerGuard {
     reflector: Arc<Reflector>,
 }
 
+impl ThrottlerGuard {
+    /// Sets the rate limit headers of one throttler, as the original throttler library does: `Retry-After` when it blocks the
+    /// request (`time_to_block_expire`), otherwise `X-RateLimit-Limit`, `-Remaining` and `-Reset`; names carry a
+    /// `-<name>` suffix unless the throttler is `default`. Values are seconds, rounded up. Nothing is set outside
+    /// HTTP or when the storage has headers turned off. A throttler name that is not a valid header token makes
+    /// the header be dropped.
+    fn set_headers(&self, ctx: &ExecutionContext, name: &str, limit: u32, hits: u32, time_to_block_expire: Duration, blocked: bool) {
+        if !self.storage.headers || ctx.get_type() != ContextType::Http {
+            return;
+        }
+        let suffix = if name == "default" { String::new() } else { format!("-{name}") };
+        let seconds = time_to_block_expire.as_millis().div_ceil(1000);
+        let http = ctx.switch_to_http();
+        if blocked {
+            http.set_response_header(&format!("Retry-After{suffix}"), &seconds.max(1).to_string());
+        } else {
+            http.set_response_header(&format!("X-RateLimit-Limit{suffix}"), &limit.to_string());
+            http.set_response_header(&format!("X-RateLimit-Remaining{suffix}"), &limit.saturating_sub(hits).to_string());
+            http.set_response_header(&format!("X-RateLimit-Reset{suffix}"), &seconds.to_string());
+        }
+    }
+}
+
 #[async_trait]
 impl CanActivate for ThrottlerGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
@@ -197,8 +234,10 @@ impl CanActivate for ThrottlerGuard {
             let limit = self.reflector.get_all_and_override::<u32>(THROTTLE_LIMIT, &targets).unwrap_or(t.limit);
             let ttl = self.reflector.get_all_and_override::<u64>(THROTTLE_TTL, &targets).unwrap_or(t.ttl);
             let key = format!("{}:{}:{}:{}", t.name, req.ip(), ctx.get_class().name, ctx.get_handler().name);
-            let (hits, _) = self.storage.increment(&key, Duration::from_millis(ttl));
-            if hits > limit {
+            let (hits, time_to_expire) = self.storage.increment(&key, Duration::from_millis(ttl));
+            let blocked = hits > limit;
+            self.set_headers(ctx, &t.name, limit, hits, time_to_expire, blocked);
+            if blocked {
                 return Err(HttpException::new("ThrottlerException: Too Many Requests", 429));
             }
         }
@@ -222,6 +261,31 @@ mod tests {
         });
         assert!(!guard.controls_access());
         assert!(guard.guard_name().ends_with("ThrottlerGuard"));
+    }
+
+    /// A gateway message is counted but gets no headers.
+    #[tokio::test]
+    async fn websocket_context_records_no_headers() {
+        use crate::common::context::{EnhancerHeaders, Target};
+        use crate::http::Request;
+        let guard = ThrottlerGuard {
+            storage: Arc::new(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])),
+            reflector: Arc::new(Reflector),
+        };
+        let request = Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap();
+        let ctx = ExecutionContext::for_ws(
+            request.clone(),
+            Arc::new(Target::new("Gw")),
+            Arc::new(Target::new("on_message")),
+            None,
+            Arc::new(()),
+            serde_json::json!({}),
+        );
+        assert!(guard.can_activate(&ctx).await.unwrap());
+        assert!(EnhancerHeaders::of(&request).is_none());
+        assert!(!ctx.switch_to_http().set_response_header("X-Trace", "abc"));
+        assert_eq!(guard.can_activate(&ctx).await.unwrap_err().status(), 429, "still counted and blocked");
+        assert!(EnhancerHeaders::of(&request).is_none());
     }
 
     /// Keys are stored hashed (fixed size), expired counters are purged without waiting for

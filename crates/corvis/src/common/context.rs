@@ -147,7 +147,51 @@ pub struct HttpArgumentsHost<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RouteStatus(pub(crate) http::StatusCode);
 
+/// Response headers recorded by guards, interceptors and pipes (see
+/// [`HttpArgumentsHost::set_response_header`]). Created on first use.
+#[derive(Clone, Default)]
+pub(crate) struct EnhancerHeaders(pub(crate) Arc<std::sync::Mutex<http::HeaderMap>>);
+
+impl EnhancerHeaders {
+    /// A snapshot of the recorded headers, if any enhancer set one.
+    pub(crate) fn of(request: &Request) -> Option<http::HeaderMap> {
+        request.get::<EnhancerHeaders>().map(|h| h.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+}
+
 impl<'a> HttpArgumentsHost<'a> {
+    /// Records a header for the response of the current HTTP request. It is added to the final response (success,
+    /// error and filter responses) only when the response has no header with that name, and written to the `Res` of
+    /// `#[res]` routes when absent there. A later call with the same name replaces the recorded value.
+    ///
+    /// Returns `false`, recording nothing, when the name or value is not a valid HTTP header (values with CR or LF
+    /// included) and in a WebSocket context.
+    pub fn set_response_header(&self, name: &str, value: &str) -> bool {
+        if self.ctx.inner.context_type != ContextType::Http {
+            return false;
+        }
+        let (Ok(n), Ok(v)) = (http::HeaderName::from_bytes(name.as_bytes()), http::HeaderValue::from_str(value)) else {
+            return false;
+        };
+        let req = &self.ctx.inner.request;
+        let store = match req.get::<EnhancerHeaders>() {
+            Some(s) => s,
+            None => {
+                let s = EnhancerHeaders::default();
+                req.insert(s.clone());
+                s
+            }
+        };
+        store.0.lock().unwrap_or_else(|e| e.into_inner()).insert(n.clone(), v);
+        if let Some(res) = req.get::<crate::http::Res>()
+            && !res.headers_sent()
+            && !res.has_header(n.as_str())
+        {
+            res.set(n.as_str(), value);
+        }
+        true
+    }
+
     pub fn get_request(&self) -> &'a Request {
         &self.ctx.inner.request
     }

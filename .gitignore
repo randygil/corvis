@@ -28,6 +28,7 @@ docs/.vitepress/dist
 
 crates/corvis/tests/fixtures/terminus/node_modules
 crates/corvis/tests/fixtures/ws_gateways/node_modules
+crates/corvis/tests/fixtures/throttler/node_modules
 crates/corvis/tests/fixtures/empty_results/node_modules
 
 # Port-versus-original benchmark: raw oha output, logs and quick runs

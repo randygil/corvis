@@ -131,7 +131,31 @@ Use `true` (trust all hops) only if every request goes through a proxy that
 rewrites `X-Forwarded-For`: otherwise, a client can choose its IP and bypass the limit. See
 [HTTP adapters](/http/performance).
 
+## Response headers
+
+Like the original library, `ThrottlerGuard` tells the client where it stands. For every throttler that counts a request and lets it through it sends:
+
+| Header | Value |
+|---|---|
+| `X-RateLimit-Limit` | The effective limit (after `THROTTLE_LIMIT`) |
+| `X-RateLimit-Remaining` | Requests left in the window, never below 0 |
+| `X-RateLimit-Reset` | Seconds until the window ends, rounded up |
+
+When a throttler blocks the request, the `429` carries `Retry-After` (seconds until the window ends, at least 1) and no `X-RateLimit-*` header for that throttler. Headers of throttlers checked earlier stay on the `429`. Routes skipped with `SKIP_THROTTLE` get none of them.
+
+For a throttler not named `default` the header names end in `-<name>`: with the `short` and `long` throttlers above a response carries `X-RateLimit-Limit-short`, `X-RateLimit-Remaining-long`, `Retry-After-long` and so on. The throttler name becomes part of a header name, so use a plain token (letters, digits and `-`) that says nothing internal; a name that is not a valid header name makes its headers be dropped.
+
+The headers are on by default and tell every client each limit, its window and the throttler names. To hide them, keep counting and blocking as they are, and turn them off on the storage:
+
+```rust
+ThrottlerModule::for_root_storage(
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_headers(false),
+)
+```
+
+Browsers only let a page read these headers if the CORS configuration exposes them (`Access-Control-Expose-Headers` in `CorsOptions`). `Retry-After` follows Corvis's fixed window: it is the time until the counter resets, which can differ from the value the original library reports on the first block of a window. A WebSocket message is counted but gets no headers. Other guards and interceptors can set headers with `ctx.switch_to_http().set_response_header` (see [Guards](/guards#setting-response-headers)).
+
 ## Limitations
 
-- No informational headers are sent (`Retry-After`, `X-RateLimit-*`).
+- `SKIP_THROTTLE` skips every throttler, while the original's `@SkipThrottle()` skips only the throttler named `default` unless the others are listed.
 - A global `ThrottlerGuard` also counts WebSocket gateway messages, per handshake IP and handler, so a long-lived connection can exhaust its limit. `app.apply_global_enhancers_to_gateways(false)` leaves gateways out. Plain `corvis::ws` listeners are never counted.
