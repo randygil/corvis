@@ -127,7 +127,8 @@ impl AuthController {
 - Cada opción se resuelve por separado, primero el handler y después el controlador, y gana el primer valor presente.
   Un handler que solo define `limit` conserva el `ttl` del controlador para ese throttler. Una opción que nadie define
   vuelve a la configuración del throttler (y la duración del bloqueo a `with_block_duration` y luego al `ttl` efectivo).
-- Un `null` JSON cuenta como ausente.
+- Un `null` JSON cuenta como ausente: en un handler pasa al valor del controlador, que puede ser más permisivo que el
+  del propio throttler, así que no lo uses para endurecer una ruta.
 - Los handlers de gateways no tienen `#[apply_decorators]`; usa `#[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), 1)]`.
 - Las claves sin nombre `THROTTLE_LIMIT`, `THROTTLE_TTL` y `THROTTLE_BLOCK_DURATION` son la entrada del throttler
   `default`, igual que el `SKIP_THROTTLE` sin nombre: `#[set_metadata(THROTTLE_LIMIT, 5)]` es
@@ -138,14 +139,15 @@ impl AuthController {
   `Invalid "limit" for the "short" throttler: ...`; el guard no vuelve a un valor más permisivo. El builder solo recibe
   enteros, así que esto solo puede ocurrir con un `#[set_metadata]` escrito a mano.
 - Un nombre que ningún throttler tiene (`throttle("shrot")`), o una clave sin nombre cuando ningún throttler se llama
-  `default`, no cambia nada y registra una advertencia por ruta con el nombre de la ruta, los nombres desconocidos y los
-  configurados.
+  `default`, responde `500` en cada petición de esa ruta y registra un error por ruta con el nombre de la ruta, los
+  nombres desconocidos y los configurados. La librería original ignora esos overrides; Corvis falla cerrado porque un
+  nombre mal escrito dejaría la ruta con el límite global, más permisivo, sin ninguna señal.
 
 ::: warning Cambio de comportamiento
 Antes, `THROTTLE_LIMIT`, `THROTTLE_TTL` y `THROTTLE_BLOCK_DURATION` se aplicaban a todos los throttlers: un
 `THROTTLE_LIMIT` de 5 sin nombre subía también un throttler `short` de 3 a 5, y un `THROTTLE_TTL` sin nombre daba a todos
 los throttlers la misma ventana. Ahora se aplican solo al throttler llamado `default`. En una app cuyos throttlers
-tienen todos otros nombres, un override sin nombre ya no hace nada (el guard registra una advertencia por cada ruta
+tienen todos otros nombres, un override sin nombre hace que esa ruta responda `500` (el guard registra un error por cada ruta
 así); reemplázalo por `throttle("nombre")` para cada throttler al que iba dirigido.
 :::
 
@@ -169,7 +171,7 @@ ThrottlerModule::for_root_storage(
             })
         })
         // el generateKey(context, tracker, throttlerName) del original: síncrono
-        .with_key_generator(|_ctx, tracker, name| format!("{name}:{tracker}")),
+        .with_key_generator(|_ctx, tracker, name| format!("{name}:shared:{tracker}")),
 )
 ```
 
@@ -183,17 +185,29 @@ ThrottlerModule::for_root_storage(
 - Un tracker propio reemplaza por completo al predeterminado, incluida la agrupación IPv6: llama tú a `normalize_ip`,
   como en el ejemplo.
 - El nombre del throttler siempre forma parte de la clave guardada. Un generador que ignora el nombre (`|_, tracker, _|
-  tracker.to_string()`) comparte un contador entre rutas, que es para lo que sirve, pero nunca entre throttlers. La
+  tracker.to_string()`) comparte un contador entre las rutas que lo usan, que es para lo que sirve, pero nunca entre throttlers. La clave
+  guardada también registra su origen (el predeterminado, el generador del módulo o un generador registrado por id), así
+  que las claves de orígenes distintos nunca se encuentran: un cliente no puede fabricar un tracker que caiga en el
+  contador predeterminado de otra ruta. La
   librería original comparte la ventana de reporte y el bloqueo entre dos throttlers que obtienen la misma clave, así que
   su `X-RateLimit-Reset-long` muestra la ventana del otro throttler y un bloqueo de `long` hace que `short` responda
   `Retry-After-short`; Corvis mantiene los valores de cada throttler. La prueba diferencial registra este caso y
   comprueba que Corvis difiere de él.
+- Un generador no debería devolver un texto que el cliente controla por completo (el valor de una cabecera): antepón un
+  prefijo constante, como en `format!("shared:{tracker}")`. Las rutas que usan el mismo generador comparten contadores,
+  así que un cliente que elige el tracker elige cuál de esos contadores golpea.
 
 ::: warning Trackers elegidos por el cliente
 Un tracker que lee una cabecera o un campo del cuerpo deja que el cliente elija su contador, así que un cliente que rota
-el valor obtiene un límite nuevo cada vez. Mantén un throttler basado en la IP junto al de cuenta (el throttler
-`default` cuenta por IP, uno con nombre cuenta por cuenta en la ruta de login con `.tracker(..)`). Un tracker que devuelve
-un solo valor para todas las peticiones anónimas las pone todas en un contador, y un cliente puede agotarlo para todos.
+el valor obtiene un límite nuevo cada vez. Cada valor rotado además crea un contador, así que un cliente que envía
+muchos valores llena `max_entries` y expulsa los contadores de otros clientes (lo que los reinicia). Mantén un throttler
+basado en la IP junto al de cuenta (el throttler `default` cuenta por IP, uno con nombre cuenta por cuenta en la ruta de
+login con `.tracker(..)`), pero ten en cuenta que solo frena esto si se comprueba primero: los throttlers se comprueban
+en orden ascendente de `ttl` y el primero que rechaza detiene la revisión, así que el throttler por IP necesita el `ttl`
+más corto; si no, el throttler de cuenta cuenta el acceso antes de que el de IP lo rechace. Normaliza el identificador de
+cuenta (por ejemplo, un email en minúsculas) para que las variantes de escritura no tengan contadores separados, y
+recuerda que un límite por cuenta puede usarse para bloquear a una víctima a propósito: cualquiera puede enviar su
+identificador. Un tracker que devuelve un solo valor para todas las peticiones anónimas las pone todas en un contador, y un cliente puede agotarlo para todos.
 :::
 
 ### Omitir throttlers

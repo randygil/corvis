@@ -36,7 +36,8 @@ per-account login limit cannot be expressed without writing a guard by hand.
   generator, the id of a registered function) answers 500 and logs the key and value, like the original's
   `Invalid "limit" for the "short" throttler` error. Today such a value is silently ignored.
 - Overrides naming a throttler that is not configured (including bare keys when no throttler is named `default`) are
-  logged once per route, naming the route and the unknown name.
+  answer 500 on every request and are logged once per route, naming the route and the unknown name (fail closed; the
+  original ignores them. Superseded the warn-only first design, see design.md).
 - Module-level hooks on `ThrottlerStorage` (the module options): `with_tracker(f)` (the original's `getTracker`,
   async, gets the `ExecutionContext`) and `with_key_generator(f)` (`generateKey(context, tracker, name)`).
 - Route-level hooks by registered name: `with_named_tracker(id, f)` and `with_named_key_generator(id, f)` register

@@ -157,7 +157,8 @@ impl From<ThrottleOverride> for CustomDecorator {
 /// `@Throttle({ short: { limit, ttl, blockDuration, getTracker, generateKey } })` for the throttler called `name`:
 /// `#[apply_decorators(throttle("short").limit(1), throttle("long").limit(100))]` on a controller or a route. Each
 /// option is resolved on its own, handler before controller; options that are not set fall back to the throttler's
-/// configuration. A name no throttler has is reported in the log (once per route) and changes nothing.
+/// configuration. A name no throttler has makes the route answer 500 (and is logged once per route): the original ignores it, but a
+/// misspelled name would leave the route on the looser global limit.
 pub fn throttle(name: impl Into<String>) -> ThrottleOverride {
     ThrottleOverride { name: name.into(), limit: None, ttl: None, block_duration: None, tracker: None, key_generator: None }
 }
@@ -615,8 +616,10 @@ impl ThrottlerStorage {
     }
 
     /// The module-level `generateKey(context, tracker, throttlerName)`: builds the counter key. The throttler name
-    /// is always part of the stored key as well, so a generator that ignores it shares a counter between routes
-    /// but never between throttlers. Calling it twice keeps the last function.
+    /// is always part of the stored key as well, and so is the generator's source (built-in, module or registered
+    /// name), so a generator that ignores the name shares a counter between routes but never between throttlers, and
+    /// its keys never meet the built-in ones. Do not return a string that the client fully controls (a header
+    /// value): put a constant prefix in front of it. Calling it twice keeps the last function.
     pub fn with_key_generator<F>(mut self, f: F) -> Self
     where
         F: Fn(&ExecutionContext, &str, &str) -> String + Send + Sync + 'static,
@@ -892,11 +895,11 @@ impl ThrottlerGuard {
         name: &str,
         targets: &[&Target],
         registry: &'s HashMap<String, T>,
-    ) -> Result<Option<&'s T>, HttpException> {
+    ) -> Result<Option<(&'s str, &'s T)>, HttpException> {
         match self.override_value(option, name, targets) {
             None => Ok(None),
-            Some(serde_json::Value::String(id)) => match registry.get(id) {
-                Some(f) => Ok(Some(f)),
+            Some(serde_json::Value::String(id)) => match registry.get_key_value(id) {
+                Some((id, f)) => Ok(Some((id.as_str(), f))),
                 None => Err(HttpException::from_anyhow(anyhow::anyhow!(
                     "Invalid \"{label}\" for the \"{name}\" throttler: no {label} is registered as \"{id}\"."
                 ))),
@@ -905,9 +908,11 @@ impl ThrottlerGuard {
         }
     }
 
-    /// Logs once per route the override keys that name no configured throttler, and bare keys when no throttler is
-    /// named `default`.
-    fn warn_unknown_overrides(&self, ctx: &ExecutionContext, targets: &[&Target]) {
+    /// Fails the request (500) when the route has override keys that name no configured throttler, or a bare key that
+    /// overrides nothing (a bare limit, ttl or block duration while no throttler is named `default`, or a bare tracker
+    /// or key generator key). A misspelled name would otherwise leave the route on the looser global limit. The
+    /// error is logged once per route; the request is rejected every time.
+    fn check_unknown_overrides(&self, ctx: &ExecutionContext, targets: &[&Target]) -> Result<(), HttpException> {
         let has_default = self.storage.throttlers.iter().any(|t| t.name == "default");
         let mut unknown = BTreeSet::new();
         let mut bare = BTreeSet::new();
@@ -926,34 +931,34 @@ impl ThrottlerGuard {
             }
         }
         if unknown.is_empty() && bare.is_empty() {
-            return;
+            return Ok(());
         }
         let route = (ctx.get_class().name.to_string(), ctx.get_handler().name.to_string());
-        if !self.warned_overrides.lock().unwrap_or_else(|e| e.into_inner()).insert(route.clone()) {
-            return;
-        }
-        let configured: Vec<String> = self.storage.throttlers.iter().map(|t| format!("`{}`", t.name)).collect();
-        let mut problems = Vec::new();
-        if !unknown.is_empty() {
-            problems.push(format!(
-                "overrides for throttlers that are not configured ({})",
-                unknown.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+        if self.warned_overrides.lock().unwrap_or_else(|e| e.into_inner()).insert(route.clone()) {
+            let configured: Vec<String> = self.storage.throttlers.iter().map(|t| format!("`{}`", t.name)).collect();
+            let mut problems = Vec::new();
+            if !unknown.is_empty() {
+                problems.push(format!(
+                    "overrides for throttlers that are not configured ({})",
+                    unknown.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+                ));
+            }
+            if !bare.is_empty() {
+                problems.push(format!(
+                    "the bare key(s) {}, which override nothing (a bare limit, ttl or block duration applies to the throttler named                      `default`, and the tracker and key generator have no bare form)",
+                    bare.iter().copied().collect::<Vec<_>>().join(", ")
+                ));
+            }
+            Logger::new("ThrottlerGuard").error(format!(
+                "{}.{} has {}; configured throttlers: {}. The route answers 500 until the override names a configured throttler                  (throttle(\"name\"))",
+                route.0,
+                route.1,
+                problems.join(" and "),
+                configured.join(", ")
             ));
         }
-        if !bare.is_empty() {
-            problems.push(format!(
-                "the bare key(s) {}, which override nothing (a bare limit, ttl or block duration applies to the throttler named \
-                 `default`, and the tracker and key generator have no bare form)",
-                bare.iter().copied().collect::<Vec<_>>().join(", ")
-            ));
-        }
-        Logger::new("ThrottlerGuard").warn(format!(
-            "{}.{} has {}; configured throttlers: {}. Use throttle(\"name\") with a configured name",
-            route.0,
-            route.1,
-            problems.join(" and "),
-            configured.join(", ")
-        ));
+        // Not marked internal: the exception filter would log it on every request.
+        Err(HttpException::new(serde_json::json!({ "statusCode": 500, "message": "Internal server error" }), 500))
     }
 
     /// Whether the throttler called `name` is skipped for this request: the first of the handler and the controller
@@ -1016,7 +1021,7 @@ impl CanActivate for ThrottlerGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let targets = [ctx.get_handler(), ctx.get_class()];
         self.warn_bare_skip_without_default(ctx, &targets);
-        self.warn_unknown_overrides(ctx, &targets);
+        self.check_unknown_overrides(ctx, &targets)?;
         let req = ctx.request();
         let client = normalize_ip(&req.ip(), self.storage.ipv6_subnet_prefix);
         for t in &self.storage.throttlers {
@@ -1032,21 +1037,23 @@ impl CanActivate for ThrottlerGuard {
             };
             let tracker_fn = self
                 .function_override(THROTTLE_TRACKER, "tracker", name, &targets, &self.storage.named_trackers)?
+                .map(|(_, f)| f)
                 .or(self.storage.tracker.as_ref());
-            let key_fn = self
-                .function_override(THROTTLE_KEY_GENERATOR, "keyGenerator", name, &targets, &self.storage.named_key_generators)?
-                .or(self.storage.key_generator.as_ref());
+            let key_fn =
+                self.function_override(THROTTLE_KEY_GENERATOR, "keyGenerator", name, &targets, &self.storage.named_key_generators)?;
             let tracker = match tracker_fn {
                 Some(f) => f(ctx.clone()).await?,
                 None => client.clone(),
             };
-            let generated = match key_fn {
-                Some(f) => f(ctx, &tracker, name),
-                None => format!("{}:{}:{}", ctx.get_class().name, ctx.get_handler().name, tracker),
+            // The stored key is `<name length>:<name>:` plus a source marker and what that source produced, so a
+            // throttler never shares a counter with another, and the built-in keys, the module generator and each
+            // registered generator never share one either, whatever string a generator returns (a client-chosen
+            // tracker cannot be crafted into another source's key).
+            let key = match (key_fn, self.storage.key_generator.as_ref()) {
+                (Some((id, f)), _) => format!("{}:{}:n{}:{}:{}", name.len(), name, id.len(), id, f(ctx, &tracker, name)),
+                (None, Some(f)) => format!("{}:{}:m:{}", name.len(), name, f(ctx, &tracker, name)),
+                (None, None) => format!("{}:{}:b:{}:{}:{}", name.len(), name, ctx.get_class().name, ctx.get_handler().name, tracker),
             };
-            // The throttler name, length-prefixed, keeps throttlers (and a name from the generated key) apart
-            // whatever the key generator returns.
-            let key = format!("{}:{}:{}", name.len(), name, generated);
             let record = self.storage.record_hit(&key, Duration::from_millis(ttl), limit, Duration::from_millis(block_duration));
             self.set_headers(ctx, &t.name, limit, &record);
             if record.is_blocked {

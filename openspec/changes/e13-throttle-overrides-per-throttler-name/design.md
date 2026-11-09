@@ -126,7 +126,9 @@ under `crates/corvis/` unless stated.
    that does not makes the guard return `HttpException::from_anyhow` with the original's message shape
    (`Invalid "limit" for the "short" throttler: expected a number, got "abc".`), so the client gets the standard 500
    body and `BaseExceptionFilter` logs the message. JSON `null` counts as absent (it falls through to the controller,
-   then the throttler), which is stricter than the original's "null skips the class" and needs no special case.
+   then the throttler), which differs from the original's "null skips the class" and needs no special case. (Review note 2026-11-09, security
+   review: this is not always stricter. On a handler, `null` inherits the controller's value, which can be looser than the
+   throttler's own; the docs say not to use it to tighten a route.)
    Numeric strings (`"5"`), fractions, negatives and values above the type's range are rejected; the original
    coerces strings with `Number()` and accepts fractions and negatives.
    *Alternatives:* keep ignoring invalid values (today's behavior). Rejected: a mistyped tightening silently falls
@@ -174,10 +176,11 @@ under `crates/corvis/` unless stated.
    (`Token`) resolved through DI. Rejected: more machinery than a string id, and ids appear in logs and errors.
 
 8. **Counters stay per throttler.** The guard stores each hit under
-   `format!("{}:{}:{}", name.len(), name, generated)`, where `generated` is the key generator's output; the built-in
-   generator returns `"{class}:{handler}:{tracker}"`, so the client-chosen part comes last, as in the original's
-   `<Class>-<handler>-<name>-<tracker>`. The length prefix keeps names and generated keys from running into each
-   other. A custom generator that ignores the name (`|_, tracker, _| tracker.into()`) therefore shares a counter across
+   `{len}:{name}:` followed by a source marker and that source's output: `b:{class}:{handler}:{tracker}` for the built-in
+   key (the client-chosen part comes last, as in the original's `<Class>-<handler>-<name>-<tracker>`), `m:{generated}`
+   for the module generator and `n{len(id)}:{id}:{generated}` for a registered generator (amended after the security
+   review, see the review notes below: the length prefix alone only separated throttler names). The prefix and the
+   markers keep throttlers, and the three sources inside one throttler, from running into each other. A custom generator that ignores the name (`|_, tracker, _| tracker.into()`) therefore shares a counter across
    routes (the reason to have one) but never across throttlers. The original shares the reporting window and the block
    between throttlers in that case (Context, Storage), so `X-RateLimit-Reset-long` shows the first throttler's window
    and a block by `long` makes `short` answer `Retry-After-short`; Corvis keeps each throttler's own values. This is a
@@ -268,3 +271,27 @@ under `crates/corvis/` unless stated.
   override) live in `tests/throttler_skip_log_ws.rs`; the other scenarios are in `tests/throttler_headers.rs`.
 - Task 7.5 (corvis-parity) is not run here: the brief leaves it to the maintainer's session. No port app uses the
   throttler.
+
+## Review notes (2026-11-09, security review of 82ff086)
+
+The review found nothing critical, high or medium. The maintainer decided:
+
+- **Decision 8 amended (low finding).** The stored key is `{len}:{name}:` followed by a source marker: `b:` and
+  `{class}:{handler}:{tracker}` for the built-in key, `m:` and the module generator's output, `n{len(id)}:{id}:` and the
+  registered generator's output. The length prefix alone only separated throttler names; within one throttler the three
+  sources shared a key space, so a client-chosen tracker could be crafted into another route's built-in key (PoC: tracker
+  `OvrController:sensitive:<ip>` through a generator that returns the tracker made the victim's first request answer 429).
+  Routes that use the same generator still share counters; sources never meet. Docs (EN and ES) tell users to prefix a
+  constant to a generator's output and not to return a string the client fully controls. Regression test:
+  `a_crafted_tracker_cannot_hit_another_routes_builtin_counter`.
+- **Docs only (low finding).** A client-chosen tracker on a throttler with a shorter `ttl` counts its hit before the IP
+  throttler rejects it, and rotating it fills `max_entries` and evicts other clients' counters. The docs (EN and ES) say the
+  IP throttler only stops this when it is checked first (shorter `ttl`), and mention normalizing the account identifier
+  and targeted account lockout.
+- **Decision 5 superseded (informational, fail closed).** An override that names an unknown throttler, or a bare key that
+  overrides nothing, no longer only warns: the route answers 500 on every request and the error is logged once per route.
+  The response is not an internal exception, so the exception filter does not log it on each request. It diverges from the
+  original, which ignores unknown names; the fixture requests `/ovr/unknown` and `/ovr/default` of `overrides-named` are
+  listed in `REJECTED_ROUTES` in the replay (the recording answers 200, Corvis must answer 500). The earlier note in
+  "Risks" about warning once per route no longer applies.
+- **`null` wording (informational).** Corrected in Decision 4 above and in the docs.

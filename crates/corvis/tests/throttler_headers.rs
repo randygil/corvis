@@ -191,6 +191,17 @@ impl OvrController {
         "ok"
     }
 
+    #[get("sensitive")]
+    fn sensitive(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("shared")]
+    #[apply_decorators(throttle("default").key_generator("shared"))]
+    fn shared(&self) -> &'static str {
+        "ok"
+    }
+
     #[get("fixed")]
     #[apply_decorators(throttle("default").tracker("fixed"))]
     fn fixed(&self) -> &'static str {
@@ -621,10 +632,37 @@ async fn a_bare_limit_next_to_a_named_throttler_only_changes_default() {
 }
 
 #[corvis::test]
-async fn a_bare_limit_with_named_throttlers_only_overrides_nothing() {
+async fn a_bare_limit_with_named_throttlers_only_fails_closed() {
     let app = app(short_long()).await;
     let r = request(&app).get("/ovr/default").send().await;
-    r.expect_status(200).expect_header("x-ratelimit-limit-short", "3").expect_header("x-ratelimit-limit-long", "5");
+    r.expect_status(500);
+    assert_eq!(names(&r), Vec::<String>::new());
+}
+
+#[corvis::test]
+async fn an_unknown_throttler_name_fails_closed() {
+    let app = app_hooks(short_long()).await;
+    let r = request(&app).get("/ovr/unknown").send().await;
+    r.expect_status(500);
+    assert_eq!(names(&r), Vec::<String>::new());
+}
+
+/// The generator sources never share a key. The attacker picks the tracker (`x-email`) and a route that uses a registered
+/// generator returning it as is; the victim's built-in key on `/ovr/sensitive` is `OvrController:sensitive:<tracker>`.
+#[corvis::test]
+async fn a_crafted_tracker_cannot_hit_another_routes_builtin_counter() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)])
+        .with_tracker(|ctx| async move { Ok(ctx.request().header("x-email").unwrap_or("victim-ip").to_string()) })
+        .with_named_key_generator("shared", |_, tracker, _| tracker.to_string());
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    for _ in 0..4 {
+        c.get("/ovr/shared").header("x-email", "OvrController:sensitive:victim-ip").send().await;
+    }
+    c.get("/ovr/sensitive").send().await.expect_status(200);
+    // Routes that select the same generator still share counters.
+    c.get("/ovr/shared").header("x-email", "a").send().await.expect_status(200);
+    c.get("/ovr/shared").header("x-email", "a").send().await.expect_status(429);
 }
 
 #[corvis::test]
@@ -746,6 +784,11 @@ fn storage_for_case(case: &str, throttlers: Vec<ThrottlerOptions>) -> ThrottlerS
 /// `counters_stay_separate_per_throttler`.
 const KNOWN_DIVERGENCES: [&str; 1] = ["shared-key"];
 
+/// Recorded requests where Corvis fails closed and the original does not: an override for a throttler that is not
+/// configured (`@Throttle({ shrot })`, or `@Throttle({ default })` with no `default` throttler) is ignored by the
+/// original and answered 200; Corvis answers 500 with no throttler headers (design.md, review note of the security review).
+const REJECTED_ROUTES: [(&str, &str); 2] = [("overrides-named", "/ovr/unknown"), ("overrides-named", "/ovr/default")];
+
 /// Whether a response has the status and the throttler headers of a recorded one (time values within one second).
 fn matches_recording(r: &TestResponse, expected: &Value) -> bool {
     let mut want: Vec<String> = expected["headers"].as_object().unwrap().keys().cloned().collect();
@@ -792,6 +835,12 @@ async fn replays_the_original_library_fixture() {
             let at = format!("{case_name} #{i} {path}");
             if KNOWN_DIVERGENCES.contains(&case_name) {
                 differences += usize::from(!matches_recording(&r, expected));
+                continue;
+            }
+            if REJECTED_ROUTES.contains(&(case_name, path)) {
+                assert_eq!(r.status, 500, "{at}: fails closed");
+                assert_eq!(names(&r), Vec::<String>::new(), "{at}");
+                assert_eq!(expected["status"].as_u64().unwrap(), 200, "{at}: the original answered 200");
                 continue;
             }
             assert_eq!(r.status as u64, expected["status"].as_u64().unwrap(), "{at}");

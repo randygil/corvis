@@ -126,7 +126,8 @@ impl AuthController {
 - Each option is resolved on its own, handler first and then controller, and the first value present wins. A handler
   that only sets `limit` keeps the controller's `ttl` for that throttler. An option nobody sets falls back to the
   throttler's configuration (and the block duration to `with_block_duration`, then to the effective `ttl`).
-- A JSON `null` counts as absent.
+- A JSON `null` counts as absent: on a handler it falls through to the controller's value, which can be looser than the
+  throttler's own, so do not use it to tighten a route.
 - Gateway handlers have no `#[apply_decorators]`; use `#[set_metadata(throttle_key(THROTTLE_LIMIT, "short"), 1)]`.
 - The bare `THROTTLE_LIMIT`, `THROTTLE_TTL` and `THROTTLE_BLOCK_DURATION` keys are the `default` throttler's entry,
   like the bare `SKIP_THROTTLE`: `#[set_metadata(THROTTLE_LIMIT, 5)]` is `throttle("default").limit(5)`. When a target
@@ -136,14 +137,16 @@ impl AuthController {
   `"5"`, a negative number, a fraction) answers `500` with the standard body and logs `Invalid "limit" for the "short"
   throttler: ...`; the guard does not fall back to a looser value. The builder only takes integers, so this can only
   happen with a hand-written `#[set_metadata]`.
-- A name that no throttler has (`throttle("shrot")`), or a bare key when no throttler is named `default`, changes
-  nothing and logs one warning per route naming the route, the unknown names and the configured ones.
+- A name that no throttler has (`throttle("shrot")`), or a bare key when no throttler is named `default`, answers `500`
+  on every request of that route and logs one error per route naming the route, the unknown names and the configured
+  ones. The original library ignores such overrides; Corvis fails closed because a misspelled name would otherwise leave
+  the route on the looser global limit without any sign.
 
 ::: warning Behavior change
 Before, `THROTTLE_LIMIT`, `THROTTLE_TTL` and `THROTTLE_BLOCK_DURATION` applied to every throttler: a bare
 `THROTTLE_LIMIT` of 5 also raised a `short` throttler from 3 to 5, and a bare `THROTTLE_TTL` gave every throttler the
 same window. They now apply to the throttler named `default` only. In an app whose throttlers all have other names,
-a bare override no longer does anything (the guard logs one warning per such route); replace it with
+a bare override now makes that route answer `500` (the guard logs one error per such route); replace it with
 `throttle("name")` for each throttler it was meant for.
 :::
 
@@ -167,7 +170,7 @@ ThrottlerModule::for_root_storage(
             })
         })
         // the original's generateKey(context, tracker, throttlerName): synchronous
-        .with_key_generator(|_ctx, tracker, name| format!("{name}:{tracker}")),
+        .with_key_generator(|_ctx, tracker, name| format!("{name}:shared:{tracker}")),
 )
 ```
 
@@ -181,17 +184,28 @@ ThrottlerModule::for_root_storage(
 - A custom tracker replaces the built-in one entirely, including IPv6 grouping: call `normalize_ip` yourself, as in the
   example.
 - The throttler name is always part of the stored key. A key generator that ignores the name (`|_, tracker, _|
-  tracker.to_string()`) shares a counter between routes, which is its use, but never between throttlers. The original
+  tracker.to_string()`) shares a counter between routes that use it, which is its use, but never between throttlers.
+  The stored key also records where it came from (built-in, the module generator, or a registered generator by id), so
+  keys from different sources never meet: a client cannot craft a tracker that lands on another route's built-in counter. The original
   library shares the reporting window and the block between two throttlers that get the same key, so its
   `X-RateLimit-Reset-long` shows the other throttler's window and a block by `long` makes `short` answer
   `Retry-After-short`; Corvis keeps each throttler's own values. The differential test records this case and checks
   that Corvis differs from it.
+- A generator should not return a string that the client fully controls (a header value): put a constant prefix in
+  front of it, as in `format!("shared:{tracker}")`. Routes that use the same generator share counters, so a client
+  that chooses the tracker chooses which of those counters it hits.
 
 ::: warning Client-chosen trackers
 A tracker that reads a header or a body field lets the client choose its counter, so a client that rotates the value
-gets a fresh limit each time. Keep an IP-based throttler next to a per-account one (the `default` throttler counts by IP,
-a named throttler counts by account on the login route with `.tracker(..)`). A tracker that returns one value for every
-anonymous request puts all of them in one counter, and one client can exhaust it for everybody.
+gets a fresh limit each time. Each rotated value also creates a counter, so a client that sends many values fills
+`max_entries` and evicts the counters of other clients (which resets them). Keep an IP-based throttler next to a
+per-account one (the `default` throttler counts by IP, a named throttler counts by account on the login route with
+`.tracker(..)`), but note that it only stops this when it is checked first: throttlers are checked in ascending `ttl`
+order and the first that rejects stops the check, so the IP throttler needs the shorter `ttl`; otherwise the account
+throttler counts the hit before the IP throttler rejects it. Normalize the account identifier (lowercase an email, for
+example) so that spelling variants do not get separate counters, and remember that a limit per account can be used to lock
+a victim out on purpose: anyone can send the victim's identifier. A tracker that returns one value for every anonymous
+request puts all of them in one counter, and one client can exhaust it for everybody.
 :::
 
 ### Skipping throttlers
