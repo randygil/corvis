@@ -189,3 +189,16 @@ None. The technical choices, including the public builder names, are recorded ab
 - The ordering test (2.2) is a unit test in `throttler.rs` because `throttlers` is private; the `for_root_async` test
   of 2.1 is in `tests/throttler_headers.rs`.
 - Task 6.5 (`corvis-parity`) is left to the maintainer's session, as instructed for this run.
+
+## Review notes, security round (2026-11-09)
+
+- LOW, fixed: an active block was skipped when the same key came with a block duration of 0 (a `with_block_duration_fn`
+  value, or a `with_ttl_fn` value when the block defaults to the ttl), so a blocked key saw an empty counter. The
+  storage now always consults the block table (`record_hit_at` no longer skips it for a zero block duration); the
+  `resumed` path already handled expired blocks. Regression tests:
+  `an_active_block_survives_a_zero_block_duration_function` and `an_active_block_survives_a_zero_ttl_function`. The
+  rustdoc of `with_ttl_fn` and `with_block_duration_fn` says the value should be stable per key.
+- Informative, decided: a ttl function returning 0 disables the throttler for that request (as a static 0 and the
+  original do). The guard logs a warning once per throttler name (`warned_zero_ttl`); the docs say it.
+- Docs keep: an `Err` from a function stops the check before later throttlers count (keep the IP throttler static
+  with the shortest ttl), and a tracker must never return a string the client controls.

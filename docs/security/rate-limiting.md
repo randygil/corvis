@@ -244,6 +244,12 @@ ThrottlerModule::for_root_storage(
   ttl, as before.
 - An `Err` is returned by the guard unchanged (a 500 for an internal error, the exception's own status otherwise) and
   no hit is counted for that throttler or the ones after it.
+- An `Err` stops the check: the throttlers after it do not count the request, so keep the IP throttler static with
+  the shortest ttl so that it is checked first.
+- Keep each value stable per key. A key that is blocked stays blocked until its block ends, whatever value a later
+  request gets, but the length of a new block follows the request that causes it.
+- A ttl function that returns `0` disables that throttler for the request, as a static ttl of `0` does. A warning is
+  logged once per throttler; do not map a missing value (a failed lookup) to `0`.
 - The builders panic when no configured throttler has that name, while the module is configured.
 - Throttlers with a ttl function are checked after the throttlers with a static ttl, in configured order, as in the
   original; their static `ttl` is not used. Keep the IP throttler static with the shortest ttl so that it is checked

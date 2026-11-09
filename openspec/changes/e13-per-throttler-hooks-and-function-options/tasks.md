@@ -69,3 +69,8 @@ numbers in design.md refer to that commit.
 
 - Archive the change with `/opsx:archive` after review.
 - Close issue #162, tick it in epic #13 and move its card to Done (see the `corvis-task` skill).
+
+## 7. Security round (2026-11-09)
+
+- [x] 7.1 Always consult the block table in `record_hit_at`; regression tests for `with_block_duration_fn` and `with_ttl_fn` returning 0 for a blocked key
+- [x] 7.2 Warn once per throttler when a ttl function returns 0; rustdoc and docs EN + ES (stable per key, ttl 0, `Err` stops later throttlers)

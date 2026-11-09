@@ -704,6 +704,10 @@ impl ThrottlerStorage {
     /// static ttl, in configured order, so keep the IP throttler static with the shortest ttl. Use a ttl that depends
     /// on stable properties of the client: each hit expires after the ttl it was counted with.
     ///
+    /// The value should be stable per key: a key that is blocked stays blocked until its block ends, but a ttl of 0
+    /// disables the throttler for that request (as a static `0` does; a warning is logged once per throttler), so
+    /// do not map a missing value to 0.
+    ///
     /// # Panics
     ///
     /// When no configured throttler is called `name`.
@@ -725,6 +729,9 @@ impl ThrottlerStorage {
     /// block duration override takes precedence over it, and it takes precedence over
     /// [`with_block_duration`](Self::with_block_duration) and the effective ttl. Same cautions as
     /// [`with_limit_fn`](Self::with_limit_fn).
+    ///
+    /// The value should be stable per key: an active block is honored even if a later request gets a shorter
+    /// block duration, but the length of a new block follows the value of the request that causes it.
     ///
     /// # Panics
     ///
@@ -835,7 +842,8 @@ impl ThrottlerStorage {
 
     /// Counts a hit for `key` as the original throttler library does. Each hit expires `ttl` after it was counted;
     /// the hit that takes the count over `limit` blocks the key for `block_duration` (requests during the block are
-    /// not counted and do not extend it; the first one after it starts from one hit). With a zero `block_duration`
+    /// not counted and do not extend it; the first one after it starts from one hit; an active block is honored whatever
+    /// `block_duration` the request passes). With a zero `block_duration`
     /// nothing is blocked: the request is rejected while the key holds `limit` unexpired hits and is not counted.
     /// A `limit` of 0 rejects every request. Hits closer together than `ttl / 64` share a bucket (see
     /// [`ThrottlerStorage`]).
@@ -858,7 +866,7 @@ impl ThrottlerStorage {
         // A blocked key is answered from the compact table; when its block has ended it resumes as a fresh counter that
         // keeps the reporting window.
         let mut resumed = None;
-        let blocked = if block_duration.is_zero() { None } else { c.remove_blocked(&hash) };
+        let blocked = c.remove_blocked(&hash);
         if let Some(mut b) = blocked {
             if b.window_end <= now {
                 b.window_end = after(now, ttl);
@@ -987,6 +995,9 @@ pub struct ThrottlerGuard {
     /// Routes already reported for overrides that name an unknown throttler; bounded by the number of routes.
     #[default]
     warned_overrides: Mutex<HashSet<(String, String)>>,
+    /// Throttlers whose ttl function returned 0 (which disables them for that request); bounded by the throttlers.
+    #[default]
+    warned_zero_ttl: Mutex<HashSet<String>>,
 }
 
 /// The option keys that carry a throttler name as a suffix.
@@ -1179,7 +1190,17 @@ impl CanActivate for ThrottlerGuard {
             let ttl = match self.number_override::<u64>(THROTTLE_TTL, "ttl", name, &targets)? {
                 Some(v) => v,
                 None => match self.storage.ttl_fns.get(name) {
-                    Some(f) => f(ctx.clone()).await?,
+                    Some(f) => {
+                        let ttl = f(ctx.clone()).await?;
+                        if ttl == 0 && self.warned_zero_ttl.lock().unwrap_or_else(|e| e.into_inner()).insert(t.name.clone()) {
+                            Logger::new("ThrottlerGuard").warn(format!(
+                                "the ttl function of throttler `{}` returned 0, which disables it for that request (as a static ttl of 0 does); \
+                                 make sure a missing value is not mapped to 0",
+                                t.name
+                            ));
+                        }
+                        ttl
+                    }
                     None => t.ttl,
                 },
             };
@@ -1236,6 +1257,7 @@ mod tests {
             reflector: Arc::new(Reflector),
             warned: Default::default(),
             warned_overrides: Default::default(),
+            warned_zero_ttl: Default::default(),
         });
         assert!(!guard.controls_access());
         assert!(guard.guard_name().ends_with("ThrottlerGuard"));
@@ -1251,6 +1273,7 @@ mod tests {
             reflector: Arc::new(Reflector),
             warned: Default::default(),
             warned_overrides: Default::default(),
+            warned_zero_ttl: Default::default(),
         };
         let request = Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap();
         let ctx = ExecutionContext::for_ws(
@@ -1710,6 +1733,7 @@ mod tests {
             reflector: Arc::new(Reflector),
             warned: Default::default(),
             warned_overrides: Default::default(),
+            warned_zero_ttl: Default::default(),
         }
     }
 

@@ -1117,3 +1117,32 @@ async fn a_for_root_async_factory_keeps_the_per_throttler_functions() {
     let app = app_with(module).await;
     request(&app).get("/ptr/pro").header("x-plan", "pro").send().await.expect_status(200).expect_header("x-ratelimit-limit", "3");
 }
+
+/// Security round: an active block survives a request for which a function returns 0.
+#[corvis::test]
+async fn an_active_block_survives_a_zero_block_duration_function() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 2)])
+        .with_block_duration_fn("default", |ctx| async move { Ok(if ctx.request().header("x-zero").is_some() { 0 } else { 300_000 }) });
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/plain").send().await.expect_status(429);
+    for _ in 0..3 {
+        c.get("/plain").header("x-zero", "1").send().await.expect_status(429);
+    }
+}
+
+#[corvis::test]
+async fn an_active_block_survives_a_zero_ttl_function() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 2)])
+        .with_ttl_fn("default", |ctx| async move { Ok(if ctx.request().header("x-zero").is_some() { 0 } else { 60_000 }) });
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/plain").send().await.expect_status(429);
+    for _ in 0..3 {
+        c.get("/plain").header("x-zero", "1").send().await.expect_status(429);
+    }
+}

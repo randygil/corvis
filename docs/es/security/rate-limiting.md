@@ -246,6 +246,12 @@ ThrottlerModule::for_root_storage(
   `with_block_duration` y luego al ttl efectivo, como antes.
 - Un `Err` lo devuelve el guard sin cambios (un 500 para un error interno, el estado propio de la excepción en otro
   caso) y no se cuenta ningún acceso para ese throttler ni para los siguientes.
+- Un `Err` detiene la revisión: los throttlers posteriores no cuentan la petición, así que mantén el throttler por IP
+  estático y con el `ttl` más corto para que se compruebe primero.
+- Mantén cada valor estable por clave. Una clave bloqueada sigue bloqueada hasta que termina su bloqueo, sin importar
+  el valor de una petición posterior, pero la duración de un bloqueo nuevo sigue a la petición que lo provoca.
+- Una función de ttl que devuelve `0` desactiva ese throttler para la petición, igual que un ttl estático de `0`. Se
+  registra una advertencia una vez por throttler; no conviertas un valor ausente (una consulta fallida) en `0`.
 - Los builders provocan un panic si ningún throttler configurado tiene ese nombre, mientras se configura el módulo.
 - Los throttlers con función de ttl se comprueban después de los de ttl estático, en el orden configurado, como en la
   original; su `ttl` estático no se usa. Mantén el throttler por IP estático y con el `ttl` más corto para que se
