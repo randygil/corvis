@@ -660,7 +660,9 @@ async fn reset_after_headers(
     }
     let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let headers = std::sync::Arc::new(AtomicUsize::new(0));
-    let (flag, seen) = (closed.clone(), headers.clone());
+    // Streams whose response body ended (DATA with END_STREAM): the server counts those as completed by then.
+    let ended = std::sync::Arc::new(AtomicUsize::new(0));
+    let (flag, seen, done) = (closed.clone(), headers.clone(), ended.clone());
     tokio::spawn(async move {
         loop {
             let mut head = [0u8; 9];
@@ -675,12 +677,15 @@ async fn reset_after_headers(
             if head[3] == 1 {
                 seen.fetch_add(1, Ordering::SeqCst);
             }
+            if head[3] == 0 && head[4] & 1 != 0 {
+                done.fetch_add(1, Ordering::SeqCst);
+            }
         }
         flag.store(true, Ordering::SeqCst);
     });
     let mid = request_block(cancel_path);
     let ok = request_block("/t/ok");
-    let (mut id, mut expected, mut sent) = (1u32, 0usize, 0u32);
+    let (mut id, mut expected, mut sent, mut fast_sent) = (1u32, 0usize, 0u32, 0usize);
     let started = Instant::now();
     while sent < total_cancels && !closed.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(40) {
         let mut batch = Vec::new();
@@ -695,12 +700,16 @@ async fn reset_after_headers(
             batch.extend(frame_bytes(1, 0x5, id, &ok));
             id += 2;
             expected += 1;
+            fast_sent += 1;
         }
         if wr.write_all(&batch).await.is_err() {
             break;
         }
         let wait = Instant::now() + Duration::from_secs(5);
-        while headers.load(Ordering::SeqCst) < expected && !closed.load(Ordering::SeqCst) && Instant::now() < wait {
+        while (headers.load(Ordering::SeqCst) < expected || ended.load(Ordering::SeqCst) < fast_sent)
+            && !closed.load(Ordering::SeqCst)
+            && Instant::now() < wait
+        {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         let resets: Vec<u8> = to_reset.iter().flat_map(|sid| frame_bytes(3, 0, *sid, &8u32.to_be_bytes())).collect();

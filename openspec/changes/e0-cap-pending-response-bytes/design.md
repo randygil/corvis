@@ -335,9 +335,10 @@ differs from the text above (Decision 5, 7 and the first implementation note), t
    answered in 20 s). New `ServerOptions::max_pending_response_wait` (default 5 s, `None` waits without limit, risk
    documented): a request that waits longer is refused. Over HTTP/2 the stream is reset with `REFUSED_STREAM` (the
    handler never ran, so a retry is safe, RFC 9113 section 8.7) and it is not recorded for the rapid-reset rule
-   (`Outcome::Refused`); over HTTP/1 the connection is closed without a drain (after finding 1 the wait there lasts
-   only while the previous response is still unsent, which `send_timeout` covers). The first refusal per connection is
-   logged (`Budget::warned_wait`). The proxy case (Envoy, HAProxy) is in the docs.
+   (`Outcome::Refused`); the option is **HTTP/2 only** (decision of the second round: over HTTP/1 the wait only delays the
+   same client's own pipelined requests, it ends as the client reads or when `send_timeout` closes the connection, and
+   closing the connection would truncate a legitimate slow download of a pipelining client). The first refusal per
+   connection is logged (`Budget::warned_wait`). The proxy case (Envoy, HAProxy) is in the docs.
 3. **Slack over a connection's life (low):** fixed by 1; unit test `an_http1_charge_is_released_even_when_hyper_wrote_fewer_bytes_than_it_took`
    runs 1000 truncated responses and checks `pending` stays at 0.
 4. **Small responses were "completed" before a byte left (low).** Hyper polls an HTTP/2 body before h2 has capacity,
@@ -364,6 +365,15 @@ differs from the text above (Decision 5, 7 and the first implementation note), t
      of the whole response. `H2_TAIL` is now `H2_SEND_BUF + 2 * H2_SLICE` (64 KiB): the last four slices are copies
      and the real bound after a body ended is 64 KiB per open stream, not "cap plus one response". The unit test
      `the_last_slices_of_an_http2_body_are_copies` asserts it.
+
+**Second round (2026-11-09).** Closed by the reviewer with two items:
+- `max_pending_response_wait` applies only to HTTP/2 (see 2 above); rustdoc, spec delta, docs EN + ES and the HTTP/1
+  test were updated (the test now runs three pipelined requests with a wait of 1 ms and shows none is refused or cut;
+  a Windows loopback socket cannot be made to hold a response, so a longer HTTP/1 wait is not reproducible there).
+- Accepted limit, no code change: with `SETTINGS_INITIAL_WINDOW_SIZE=1` a reset after the HEADERS still counts as
+  completed, because hyper hands the whole chunk to h2 (which buffers it up to the send buffer), polls the body again and
+  gets `None`. The client pays a full handler run per stream, like a legitimate request, and the credit it earns is
+  bounded by the ceiling of 2000 cancellations per 10 s; the spec scenario (window 0) holds.
 
 Reviewer's modes re-run against this round (release build, `capreview`, server on 127.0.0.1):
 

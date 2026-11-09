@@ -181,12 +181,15 @@ impl ServerOptions {
     /// long as that response takes: behind a proxy that multiplexes several users on one HTTP/2 connection (Envoy,
     /// HAProxy), one slow download could otherwise hold the requests of the others for ever.
     ///
-    /// When the time is up over HTTP/2 the stream is reset with `REFUSED_STREAM`: the handler never ran, so the client
-    /// (or the proxy) may retry the request on another connection, as RFC 9113 section 8.7 allows. It does not count
-    /// as a cancelled request for the rapid-reset rule. Over HTTP/1 the connection is closed. The first expiry on a
-    /// connection is logged. With `None`, a waiting request has no bound other than [`send_timeout`](Self::send_timeout)
-    /// closing a connection whose client reads nothing: a client that reads a trickle every period keeps its waiting
-    /// streams waiting as long as it likes.
+    /// It applies to HTTP/2 only. When the time is up the stream is reset with `REFUSED_STREAM`: the handler never ran, so
+    /// the client (or the proxy) may retry the request on another connection, as RFC 9113 section 8.7 allows. It does not
+    /// count as a cancelled request for the rapid-reset rule. The first expiry on a connection is logged. With `None`, a
+    /// waiting request has no bound other than [`send_timeout`](Self::send_timeout) closing a connection whose client
+    /// reads nothing: a client that reads a trickle every period keeps its waiting streams waiting as long as it likes.
+    ///
+    /// Over HTTP/1 the wait is never cut: it only delays the requests that the same client pipelined behind a response it
+    /// has not finished reading, and it ends as the client reads or when `send_timeout` closes the connection; closing it
+    /// sooner would truncate a legitimate slow download.
     pub fn max_pending_response_wait(mut self, t: impl Into<Option<Duration>>) -> Self {
         self.max_pending_response_wait = t.into();
         self
@@ -759,14 +762,13 @@ impl ConnState {
     }
 
     /// Logs, once per connection, that a request waited too long for room.
-    fn warn_wait_once(&self, wait: Duration, http2: bool) {
+    fn warn_wait_once(&self, wait: Duration) {
         let first = !std::mem::replace(&mut self.budget.lock().unwrap_or_else(|e| e.into_inner()).warned_wait, true);
         if first {
-            let outcome = if http2 { "the HTTP/2 stream was refused (REFUSED_STREAM)" } else { "the connection was closed" };
             crate::logger::Logger::warn_with(
                 format!(
                     "A request waited more than {wait:?} for room in the connection's response budget \
-                     (ServerOptions::max_pending_response_bytes) and {outcome}; its handler never ran. Raise \
+                     (ServerOptions::max_pending_response_bytes) and its HTTP/2 stream was refused (REFUSED_STREAM); its handler never ran. Raise \
                      ServerOptions::max_pending_response_wait or the byte limit if clients read large responses slowly. \
                      Further refusals on this connection are not logged."
                 ),
@@ -1892,19 +1894,17 @@ pub(crate) async fn serve(
                             Some(cap) => {
                                 let limit = if http2 { stream_cap } else { 1 };
                                 let admit = guard.0.admit(cap / limit, cap);
-                                let admitted = match opts.max_pending_response_wait {
+                                // Over HTTP/1 the wait only delays the client's own pipelined requests and ends when it
+                                // reads (or `send_timeout` closes the connection): closing it would cut a slow download.
+                                let admitted = match opts.max_pending_response_wait.filter(|_| http2) {
                                     Some(t) => tokio::time::timeout(t, admit).await.ok(),
                                     None => Some(admit.await),
                                 };
                                 let Some(admission) = admitted else {
                                     // The handler never ran: neither cancelled nor completed.
                                     watch.outcome = Outcome::Refused;
-                                    guard.0.warn_wait_once(opts.max_pending_response_wait.unwrap_or_default(), http2);
-                                    if http2 {
-                                        return Err(ServiceError::Reset(h2::Error::from(h2::Reason::REFUSED_STREAM)));
-                                    }
-                                    guard.0.no_linger.store(true, Ordering::SeqCst);
-                                    return Err(ServiceError::Destroyed);
+                                    guard.0.warn_wait_once(opts.max_pending_response_wait.unwrap_or_default());
+                                    return Err(ServiceError::Reset(h2::Error::from(h2::Reason::REFUSED_STREAM)));
                                 };
                                 Some((admission, cap))
                             }

@@ -139,7 +139,10 @@ requests of its connection while it does. Behind a proxy that multiplexes severa
 (Envoy, HAProxy with HTTP/2 backends), that would let one slow user hold the requests of the others for ever. A
 request that waits longer is refused: over HTTP/2 its stream is reset with `REFUSED_STREAM` (the handler never ran,
 so the proxy or client may retry it on another connection, RFC 9113 section 8.7) and it does not count as a cancelled
-request for the rapid-reset rule; over HTTP/1 the connection is closed. The first refusal of a connection is logged.
+request for the rapid-reset rule. The first refusal of a connection is logged. The option applies to HTTP/2 only: over
+HTTP/1 the wait only delays the requests that the same client pipelined behind a response it has not finished reading,
+and it ends as the client reads or when `send_timeout` closes the connection; closing it sooner would truncate a
+legitimate slow download.
 With `None` a client that reads a trickle every `send_timeout` can keep the other streams of its connection waiting
 as long as it likes: use it only when every client is trusted, or stream large bodies.
 

@@ -93,7 +93,8 @@ of `tests/send_timeout.rs`.
   truncated responses leave `pending` at 0) and `tests/response_memory.rs` (a truncated response does not wedge the
   connection)
 - [x] 8.2 Add `ServerOptions::max_pending_response_wait` (default 5 s, `None`) and refuse a request that waited too
-  long: `REFUSED_STREAM` over HTTP/2 without counting it, connection closed over HTTP/1, warning once per connection;
+  long: `REFUSED_STREAM` over HTTP/2 without counting it (HTTP/2 only; the HTTP/1 wait is not cut), warning once per
+  connection;
   verify the new response_memory tests (refused and not counted, big response read slowly, unlimited wait)
 - [x] 8.3 `GuardedBody::is_end_stream` reports false over HTTP/2 until `poll_frame` returned `None` once data was
   handed to hyper; verify the unit tests and the small-response test in `tests/http2_limits.rs`

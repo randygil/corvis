@@ -108,11 +108,13 @@ pending bytes fit in the share reserved for its handler MUST never be reset for 
 - **THEN** all 100 are answered `200` with their full body and no stream is reset
 
 ### Requirement: Waiting for room is bounded
-A request SHALL wait for room in the connection's budget at most `ServerOptions::max_pending_response_wait` (default
-5 seconds; `None` waits without limit). When the time is up over HTTP/2 the server MUST reset the stream with
+Over HTTP/2 a request SHALL wait for room in the connection's budget at most `ServerOptions::max_pending_response_wait`
+(default 5 seconds; `None` waits without limit). When the time is up the server MUST reset the stream with
 `REFUSED_STREAM` without running the handler, and the request SHALL NOT count as cancelled or completed for the
-rapid-reset rule. Over HTTP/1 the server MUST close the connection. The first expiry on a connection SHALL be logged
-as a warning naming the option, and later ones on the same connection MUST NOT be logged.
+rapid-reset rule. The first expiry on a connection SHALL be logged as a warning naming the option, and later ones on
+the same connection MUST NOT be logged. Over HTTP/1 the option MUST NOT apply: the wait only delays the requests the
+same client pipelined behind a response it has not finished reading, and it ends as the client reads or when
+`send_timeout` closes the connection.
 
 #### Scenario: A slow download does not hold the other streams for ever
 - **WHEN** an HTTP/2 client holds an in-memory response of 1 MiB on a server with a 1 MiB cap and
@@ -122,6 +124,10 @@ as a warning naming the option, and later ones on the same connection MUST NOT b
 #### Scenario: Refusals are not cancellations
 - **WHEN** six streams that waited too long are refused on a connection with `http2_max_cancelled_streams(3)`
 - **THEN** the connection is not closed and none of their handlers ran
+
+#### Scenario: HTTP/1 waits are not cut
+- **WHEN** a server has `max_pending_response_wait` of one millisecond and an HTTP/1 client pipelines three requests
+- **THEN** all three are answered and the connection is not closed
 
 #### Scenario: Unlimited wait
 - **WHEN** a server has `max_pending_response_wait(None)` and a stalled client's held responses fill the budget

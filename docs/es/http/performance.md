@@ -144,8 +144,10 @@ las demás peticiones de su conexión mientras tanto. Detrás de un proxy que mu
 conexión HTTP/2 (Envoy, HAProxy con backends HTTP/2), eso dejaría que un usuario lento retuviera para siempre las
 peticiones de los demás. Una petición que espera más se rechaza: en HTTP/2 su stream se resetea con `REFUSED_STREAM`
 (el handler nunca corrió, así que el proxy o el cliente pueden reintentarla en otra conexión, RFC 9113 sección 8.7) y no
-cuenta como petición cancelada para la regla de rapid reset; en HTTP/1 se cierra la conexión. El primer rechazo de
-una conexión se registra. Con `None`, un cliente que lee un goteo cada `send_timeout` puede mantener esperando a los
+cuenta como petición cancelada para la regla de rapid reset. El primer rechazo de una conexión se registra. La opción
+aplica solo a HTTP/2: en HTTP/1 la espera solo retrasa las peticiones que el mismo cliente puso en pipeline detrás de
+una respuesta que aún no terminó de leer, y termina cuando el cliente lee o cuando `send_timeout` cierra la conexión;
+cerrarla antes truncaría una descarga lenta legítima. Con `None`, un cliente que lee un goteo cada `send_timeout` puede mantener esperando a los
 demás streams de su conexión todo lo que quiera: úsalo solo si todos los clientes son de confianza, o envía los
 cuerpos grandes en streaming.
 

@@ -49,7 +49,7 @@ regardless of what the client reads.
   lowered from 400 KiB to 32 KiB, so an ended body leaves at most about 64 KiB of its own per open stream.
 - **Security round (2026-11-09):** new option `ServerOptions::max_pending_response_wait` (default 5 s, `None` waits
   without limit): a request that waits longer for room is refused (`REFUSED_STREAM` over HTTP/2, not counted as
-  cancelled; the connection is closed over HTTP/1). Over HTTP/1 the charge of a body hyper took ends when hyper flushes
+  cancelled; HTTP/2 only, over HTTP/1 the wait is bounded by the client's own reading and `send_timeout`). Over HTTP/1 the charge of a body hyper took ends when hyper flushes
   the socket. A response with data is not "ended" for the rapid-reset rule until its body says so. The copied tail
   covers 64 KiB because h2's codec keeps one frame outside its buffer.
 - Regression tests reproducing `mixed`, `rstcycle`, `trickle` and the zero-copy tail, plus tests that legitimate

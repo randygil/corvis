@@ -394,10 +394,12 @@ async fn new_streams_wait_while_a_stalled_client_holds_the_budget() {
 
 /// Pipelined HTTP/1 requests run one handler at a time (the share of an HTTP/1 handler is the whole cap), and all of
 /// them are answered. (A loopback socket takes tens of MiB without the client reading, so the wait for a response that
-/// is still being written is covered by the unit tests of the budget.)
+/// is still being written is covered by the unit tests of the budget.) `max_pending_response_wait` does not apply over
+/// HTTP/1: even with a wait of one millisecond no pipelined request is refused or cut, each one is served once the
+/// previous response is out.
 #[tokio::test]
-async fn pipelined_http1_requests_run_one_handler_at_a_time() {
-    let addr = serve(quiet(ServerOptions::new())).await;
+async fn pipelined_http1_requests_run_one_handler_at_a_time_and_are_never_cut_by_the_wait() {
+    let addr = serve(quiet(ServerOptions::new().max_pending_response_wait(Duration::from_millis(1)))).await;
     let mut s = TcpStream::connect(addr).await.unwrap();
     let mut requests = Vec::new();
     for i in 0..3 {
