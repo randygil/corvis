@@ -270,6 +270,10 @@ Now the table evicts in FIFO order by when the block started (a strict sequence 
 because a brute-force attacker could then free their own long block with one short block. With FIFO, freeing another
 client's block takes `max_blocked` new blocks after it, the same cost as rotating keys. A block that is refreshed while
 it lasts keeps its sequence number. The measured heap is about 178 bytes per blocked key; the FIFO index adds about 50,
-so the docs and the `with_max_blocked` rustdoc say about 230 bytes (about 23 MB at the default, 200 MB with the counters).
+so the docs and the `with_max_blocked` rustdoc first said about 230 bytes. A later measurement gave 266 bytes at 100,000
+keys and 290 at 20,000 (hash table capacity rounds to a power of two, B-tree nodes are heavier than their entries), so
+they now say about 300 bytes, about 30 MB at 100,000 keys, about 200 MB with the counters, and `memory_usage()` adds a
+fixed 110 bytes per blocked key to match. FIFO trade-off, documented: the oldest block leaves first even with a long
+time left, so `max_blocked` should be at least the number of blocks started during the longest block duration.
 Tests: `short_blocks_cannot_evict_each_other_after_long_blocks_pin_the_table` and
 `the_oldest_block_is_evicted_first_whatever_its_length`.
