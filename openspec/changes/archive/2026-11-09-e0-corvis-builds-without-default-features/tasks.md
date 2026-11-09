@@ -11,7 +11,7 @@
 
 ## 3. Release
 
-- [ ] 3.1 Apply the fix to the `release/0.0.1` branch before #11 publishes; verify `cargo publish --dry-run` there
+- [x] 3.1 Apply the fix to the `release/0.0.1` branch before #11 publishes; verify `cargo publish --dry-run` there
 
 ## 4. Definition of done
 
@@ -22,4 +22,4 @@
 
 ## Workflow follow-up
 
-- [ ] Archive with /opsx:archive, close #153, tick it in epic #1, move the card to Done
+- [x] Archive with /opsx:archive, close #153, tick it in epic #1, move the card to Done

@@ -24,3 +24,5 @@ the feature nothing constrains the element type, so type inference fails (E0282)
 
 `cargo clippy -p corvis --no-default-features [--features jwt|websockets|health-tls] -- -D warnings`: 0 errors and
 0 warnings in all four sets (they failed before the fix).
+
+CI run 42562502491 passed on Linux and Windows, including the new per-feature step. The fix is also on `release/0.0.1`, where `cargo publish --dry-run` of the seven crates passes.
