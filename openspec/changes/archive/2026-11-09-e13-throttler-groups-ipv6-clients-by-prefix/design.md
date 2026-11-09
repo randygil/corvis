@@ -229,3 +229,14 @@ replay test lists the diverging inputs and checks that each differs from the rec
 - Docs (EN and ES) describe these and add the shared-hosting example (a /64 sliced between VMs: use prefix 128 or a
   custom tracker).
 - Fixture inputs affected: `1.2.3.4:80`, `[::1]`, `::1.2.3.4`, `64:ff9b::1.2.3.4`, `::2`.
+
+
+## Verification (2026-11-09)
+
+Verified together in batch-n (#150, #118, #152, #154): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1122 tests and `cargo test -p corvis --features compression` passed 790, 0 failures; naming, crate files, the examples
+(32/32 smoke checks) and `npm run docs:check` pass. CI run 42649679693 is green on Linux and Windows. corvis-parity:
+consi 832/832, facten 727/727, houseplan 636/636 equal, databases equivalent (the ports use neither the throttler nor
+compression, so #152 and #154 are covered by their own tests and fixtures). Security review: no differences against the original over about 1.1M differential cases; NAT64, 6to4, Teredo and IPv4-compatible addresses map to their IPv4, and ports or brackets in forwarded entries are stripped (documented divergences).

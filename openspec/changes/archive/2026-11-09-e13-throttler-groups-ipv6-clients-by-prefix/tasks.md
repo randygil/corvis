@@ -66,7 +66,7 @@ implement them first.
 - [x] 5.3 `cargo test --workspace` passes, including the regression tests of 1.3, 3.1 and 3.4 and the differential
   replay of `normalize-ip.json`
 - [x] 5.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 5.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences (none uses the throttler)
 
 ## Workflow follow-up

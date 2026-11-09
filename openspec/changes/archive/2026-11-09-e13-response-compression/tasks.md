@@ -97,7 +97,7 @@
 - [x] 7.3 `cargo test --workspace` passes, plus `cargo test -p corvis --features compression`, including the unit tests
   of 3 and 4, the integration tests of 5.2 and the differential replay of 5.3
 - [x] 7.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 7.5 Framework runtime code changed (`server::handle`, the test client): run the `corvis-parity` check and verify
+- [x] 7.5 Framework runtime code changed (`server::handle`, the test client): run the `corvis-parity` check and verify
   the three port apps keep 0 apidiff differences (they do not enable compression)
 - [x] 7.6 `cargo deny check` passes with the new crates
 

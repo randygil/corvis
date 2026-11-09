@@ -179,3 +179,14 @@ package's `dist/throttler.decorator.js`, `dist/throttler.constants.js` and `dist
 - The warn-once and gateway tests live in `tests/throttler_skip_log_ws.rs` (own binary: process-wide logger).
 - Review note Q2 (per-name overrides as a follow-up) is #156; no code here.
 - Task 5.5 (corvis-parity) is left to the maintainer's session.
+
+
+## Verification (2026-11-09)
+
+Verified together in batch-n (#150, #118, #152, #154): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` and clippy of corvis without default features and with each feature alone (jwt, websockets,
+health-tls, compression) are clean; `cargo test --workspace --no-fail-fast` with `CORVIS_ORM_PG_REQUIRED=1` passed
+1122 tests and `cargo test -p corvis --features compression` passed 790, 0 failures; naming, crate files, the examples
+(32/32 smoke checks) and `npm run docs:check` pass. CI run 42649679693 is green on Linux and Windows. corvis-parity:
+consi 832/832, facten 727/727, houseplan 636/636 equal, databases equivalent (the ports use neither the throttler nor
+compression, so #152 and #154 are covered by their own tests and fixtures).

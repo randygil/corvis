@@ -42,9 +42,9 @@
 
 - [x] 4.1 `cargo build --workspace --all-targets` with no warnings
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 4.3 `cargo test --workspace` passes, including the regression tests of 1.2
+- [x] 4.3 `cargo test --workspace` passes, including the regression tests of 1.2
 - [x] 4.4 Docs updated in English and Spanish (`docs/` and `docs/es/`) and `npm run docs:check` passes in `docs/`
-- [ ] 4.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
+- [x] 4.5 Framework runtime code changed: run the `corvis-parity` check and verify the three port apps keep 0 apidiff
   differences (they speak HTTP/1 only)
 - [x] 4.6 Leave a note on #117 (or its change, if drafted) that its TLS accept path must use `connection_builder` so
   ALPN `h2` connections get these limits

@@ -15,7 +15,7 @@ set its `X-RateLimit-*<suffix>` or `Retry-After<suffix>` header. Throttlers that
 request and set their headers as for any other request. A request skipped for every configured throttler carries no
 `X-RateLimit-*` or `Retry-After` header.
 
-#### Scenario: Skipped route with the default throttler
+#### Scenario: Skipped route
 - **WHEN** the only throttler is `ThrottlerOptions::new(60_000, 10)` and a route declares
   `#[set_metadata(SKIP_THROTTLE, true)]`
 - **THEN** the response carries no `X-RateLimit-*` or `Retry-After` header
