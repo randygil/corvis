@@ -155,7 +155,7 @@ memory that does not depend on its limit or on the number of requests it receive
 goes over its limit MUST move to a separate compact table of blocked keys (its hits are dropped; only the end of the
 block and of the reporting window are kept) with its own cap (`with_max_blocked`, default the value of `max_entries`),
 so blocked keys never displace counters. When the counters table is full the counters that would become idle soonest
-MUST be evicted; when the blocked table is full the block that ends soonest MUST be dropped. A key whose hits have
+MUST be evicted; when the blocked table is full the block that started first MUST be dropped (first in, first out, whatever the block lengths). A key whose hits have
 expired, whose reporting window has ended and that is not blocked, and a block that has ended with its window, MUST be
 removed. A block duration or `ttl` too large to represent MUST saturate to a far instant, never to the present.
 

@@ -259,3 +259,17 @@ unchanged. The "blocked keys are evicted last" rule above is replaced by this on
 - Regression tests: `pinning_the_blocked_table_does_not_disable_other_counters` (PoC mode `pin`),
   `a_short_block_keeps_the_reporting_window`, `the_blocked_table_has_its_own_cap_and_drops_the_soonest_block`.
 - IPv6 /64 normalization stays out of scope (tracked separately).
+
+### Finding 5: eviction by end time let short blocks evict each other (re-review, 2026-11-09)
+
+The blocked table evicted the block that ends soonest. An attacker who filled it with long blocks (a route with a 1 h
+block duration) made short blocks on normal routes evict each other, and an evicted key restarts from zero (91% of
+requests passed with two keys alternating bursts of `limit + 1`; the control with equal block lengths let 0.2% through).
+Now the table evicts in FIFO order by when the block started (a strict sequence number kept in a separate index,
+`blocked_fifo`); `blocked_idle` is used only to purge expired entries. Evicting the block that ends latest was rejected
+because a brute-force attacker could then free their own long block with one short block. With FIFO, freeing another
+client's block takes `max_blocked` new blocks after it, the same cost as rotating keys. A block that is refreshed while
+it lasts keeps its sequence number. The measured heap is about 178 bytes per blocked key; the FIFO index adds about 50,
+so the docs and the `with_max_blocked` rustdoc say about 230 bytes (about 23 MB at the default, 200 MB with the counters).
+Tests: `short_blocks_cannot_evict_each_other_after_long_blocks_pin_the_table` and
+`the_oldest_block_is_evicted_first_whatever_its_length`.

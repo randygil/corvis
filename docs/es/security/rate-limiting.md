@@ -130,10 +130,12 @@ claves bloqueadas no puede desplazar los contadores de otros clientes:
   con más claves distintas que el tope, se pueden reiniciar los contadores de clientes no bloqueados, así que
   dimensiona el tope según tu tráfico.
 - Claves bloqueadas: tantas como `with_max_entries` salvo que uses `with_max_blocked`. Una clave bloqueada
-  ocupa unos 120 bytes, unos 12 MB con el valor por defecto. Cuando esa tabla se llena se descarta el
-  bloqueo que termina antes, lo que permite a esa clave volver a contar.
+  ocupa unos 230 bytes (unos 178 medidos, más el índice que ordena los bloqueos por inicio), unos 23 MB con
+  el valor por defecto. Cuando esa tabla se llena se descarta el bloqueo que empezó primero, sea cual sea su
+  duración, lo que permite a esa clave volver a contar; liberar el bloqueo de otro cliente exige por tanto
+  tantos bloqueos nuevos como cabe en la tabla.
 
-Juntas, el peor caso con los valores por defecto es de unos 190 MB. Para cambiar los topes:
+Juntas, el peor caso con los valores por defecto es de unos 200 MB. Para cambiar los topes:
 
 ```rust
 use corvis::ThrottlerStorage;
