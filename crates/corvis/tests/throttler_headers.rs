@@ -4,7 +4,9 @@
 
 use corvis::prelude::*;
 use corvis::testing::{Test, TestResponse, request};
-use corvis::{CorvisApplication, SKIP_THROTTLE, THROTTLE_LIMIT, ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerStorage};
+use corvis::{
+    CorvisApplication, SKIP_THROTTLE, THROTTLE_LIMIT, THROTTLE_TTL, ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerStorage,
+};
 
 #[controller]
 #[use_guards(ThrottlerGuard)]
@@ -26,6 +28,41 @@ impl LimitedController {
     #[get("override")]
     #[set_metadata(THROTTLE_LIMIT, 1)]
     fn limit_override(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("ttl5")]
+    #[set_metadata(THROTTLE_TTL, 5_000)]
+    #[set_metadata(THROTTLE_LIMIT, 1)]
+    fn ttl5(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("block1")]
+    #[set_metadata(THROTTLE_LIMIT, 1)]
+    #[set_metadata(THROTTLE_BLOCK_DURATION, 1_000)]
+    fn block1(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("block10")]
+    #[set_metadata(THROTTLE_LIMIT, 1)]
+    #[set_metadata(THROTTLE_BLOCK_DURATION, 10_000)]
+    fn block10(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("noblock")]
+    #[set_metadata(THROTTLE_LIMIT, 2)]
+    #[set_metadata(THROTTLE_BLOCK_DURATION, 0)]
+    fn noblock(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("closed")]
+    #[set_metadata(THROTTLE_LIMIT, 0)]
+    #[set_metadata(THROTTLE_BLOCK_DURATION, 1_000)]
+    fn closed(&self) -> &'static str {
         "ok"
     }
 
@@ -141,8 +178,94 @@ async fn throttler_names_that_are_not_header_names_are_dropped() {
     assert!(r.header("x-evil").is_none());
 }
 
-/// Header names and values of the original throttler library. `Retry-After` is compared by presence: the original blocks for
-/// `blockDuration` from the moment of the block (#135), Corvis until its window ends.
+async fn sleep(ms: u64) {
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+}
+
+#[corvis::test]
+async fn block_default_follows_the_ttl_override() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 10)]).await;
+    let c = request(&app);
+    c.get("/ttl5").send().await.expect_status(200);
+    c.get("/ttl5").send().await.expect_status(429).expect_header("retry-after", "5");
+}
+
+#[corvis::test]
+async fn retry_during_the_block_counts_down_and_does_not_extend_it() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 1)]).await;
+    let c = request(&app);
+    c.get("/block1").send().await.expect_status(200);
+    c.get("/block1").send().await.expect_status(429).expect_header("retry-after", "1");
+    sleep(1_100).await;
+    let r = c.get("/block1").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-remaining", "0").expect_header("x-ratelimit-limit", "1");
+}
+
+#[corvis::test]
+async fn metadata_overrides_the_storage_block_duration() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 5)]).with_block_duration("default", 300_000);
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/block10").send().await.expect_status(200);
+    c.get("/block10").send().await.expect_status(429).expect_header("retry-after", "10");
+}
+
+#[corvis::test]
+async fn storage_block_duration_applies_without_metadata() {
+    let storage = ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]).with_block_duration("default", 300_000);
+    let app = app_with(ThrottlerModule::for_root_storage(storage)).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200);
+    c.get("/plain").send().await.expect_status(429).expect_header("retry-after", "300");
+}
+
+#[corvis::test]
+async fn a_block_duration_of_zero_is_a_sliding_limit() {
+    let app = app(vec![ThrottlerOptions::new(2_000, 100)]).await;
+    let c = request(&app);
+    c.get("/noblock").send().await.expect_status(200);
+    c.get("/noblock").send().await.expect_status(200);
+    let r = c.get("/noblock").send().await;
+    r.expect_status(429);
+    let retry: u64 = r.header("retry-after").unwrap().parse().unwrap();
+    assert!((1..=2).contains(&retry), "{retry}");
+    sleep(2_200).await;
+    c.get("/noblock").send().await.expect_status(200);
+}
+
+#[corvis::test]
+async fn a_limit_of_zero_rejects_every_request() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 10)]).await;
+    let c = request(&app);
+    c.get("/closed").send().await.expect_status(429);
+    sleep(1_500).await;
+    c.get("/closed").send().await.expect_status(429);
+}
+
+#[corvis::test]
+async fn throttlers_configured_longest_first_are_checked_shortest_first() {
+    let app = app(vec![throttler("long", 60_000, 100), throttler("short", 1_000, 1)]).await;
+    let c = request(&app);
+    c.get("/plain").send().await.expect_status(200);
+    sleep(100).await;
+    let r = c.get("/plain").send().await;
+    r.expect_status(429);
+    assert!(r.header("retry-after-short").is_some());
+    assert!(r.header("x-ratelimit-limit-long").is_none(), "{:?}", names(&r));
+    sleep(1_200).await;
+    let r = c.get("/plain").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-remaining-long", "98");
+}
+
+/// The new constant and record type come with the prelude.
+#[test]
+fn prelude_exports_the_block_duration_items() {
+    assert_eq!(THROTTLE_BLOCK_DURATION, "THROTTLER:BLOCK_DURATION");
+    let _ = std::any::type_name::<ThrottlerRecord>();
+}
+
+/// Header names and values of the original throttler library. `Reset` and `Retry-After` are compared within one
+/// second; entries with `at` are sent that many milliseconds after the first request of their sequence.
 #[corvis::test]
 async fn replays_the_original_library_fixture() {
     let fixture: Value = serde_json::from_str(include_str!("fixtures/throttler/throttler.json")).unwrap();
@@ -156,8 +279,12 @@ async fn replays_the_original_library_fixture() {
             .collect();
         let app = app(throttlers).await;
         let c = request(&app);
+        let start = std::time::Instant::now();
         for (i, expected) in case["responses"].as_array().unwrap().iter().enumerate() {
             let path = expected["path"].as_str().unwrap();
+            if let Some(at) = expected["at"].as_u64() {
+                sleep((at as u128).saturating_sub(start.elapsed().as_millis()) as u64).await;
+            }
             let r = c.get(path).send().await;
             let at = format!("{case_name} #{i} {path}");
             assert_eq!(r.status as u64, expected["status"].as_u64().unwrap(), "{at}");
@@ -167,9 +294,7 @@ async fn replays_the_original_library_fixture() {
             for (name, value) in expected["headers"].as_object().unwrap() {
                 let got = r.header(name).unwrap();
                 let value = value.as_str().unwrap();
-                if name.starts_with("retry-after") {
-                    assert!(got.parse::<u64>().unwrap() >= 1, "{at}: {name}");
-                } else if name.starts_with("x-ratelimit-reset") {
+                if name.starts_with("retry-after") || name.starts_with("x-ratelimit-reset") {
                     let (got, value): (i64, i64) = (got.parse().unwrap(), value.parse().unwrap());
                     assert!((got - value).abs() <= 1, "{at}: {name} {got} vs {value}");
                 } else {

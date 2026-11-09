@@ -1,0 +1,934 @@
+[
+ {
+  "name": "block_with_retries",
+  "calls": [
+   {
+    "t": 0,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 60,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 1000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 59,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000001
+    }
+   },
+   {
+    "t": 2000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 58,
+     "isBlocked": true,
+     "timeToBlockExpire": 60
+    }
+   },
+   {
+    "t": 30000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 30,
+     "isBlocked": true,
+     "timeToBlockExpire": 32
+    }
+   },
+   {
+    "t": 61000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 60,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 62000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 59,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 63000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 58,
+     "isBlocked": false,
+     "timeToBlockExpire": -1
+    }
+   },
+   {
+    "t": 64000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 57,
+     "isBlocked": true,
+     "timeToBlockExpire": 60
+    }
+   },
+   {
+    "t": 125000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 60000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 60,
+     "isBlocked": false,
+     "timeToBlockExpire": -1
+    }
+   }
+  ]
+ },
+ {
+  "name": "sliding_window",
+  "calls": [
+   {
+    "t": 0,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 9500,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 1,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000009
+    }
+   },
+   {
+    "t": 9600,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 1,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000009
+    }
+   },
+   {
+    "t": 10100,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000010
+    }
+   },
+   {
+    "t": 10200,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 4,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 10
+    }
+   },
+   {
+    "t": 10500,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 4,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 10
+    }
+   },
+   {
+    "t": 19000,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 4,
+     "timeToExpire": 2,
+     "isBlocked": true,
+     "timeToBlockExpire": 2
+    }
+   },
+   {
+    "t": 20150,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 20300,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 3,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   }
+  ]
+ },
+ {
+  "name": "block_longer_than_ttl",
+  "calls": [
+   {
+    "t": 0,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 300000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 60,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 1000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 300000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 59,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000001
+    }
+   },
+   {
+    "t": 2000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 300000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 58,
+     "isBlocked": true,
+     "timeToBlockExpire": 300
+    }
+   },
+   {
+    "t": 63000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 300000,
+    "result": {
+     "totalHits": 0,
+     "timeToExpire": 60,
+     "isBlocked": true,
+     "timeToBlockExpire": 239
+    }
+   },
+   {
+    "t": 301999,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 300000,
+    "result": {
+     "totalHits": 0,
+     "timeToExpire": 60,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 302000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 300000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 60,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 303000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 300000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 59,
+     "isBlocked": false,
+     "timeToBlockExpire": -1
+    }
+   },
+   {
+    "t": 304000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 300000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 58,
+     "isBlocked": true,
+     "timeToBlockExpire": 300
+    }
+   }
+  ]
+ },
+ {
+  "name": "block_shorter_than_ttl",
+  "calls": [
+   {
+    "t": 0,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 60,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 1,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 60,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 2000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 58,
+     "isBlocked": true,
+     "timeToBlockExpire": 5
+    }
+   },
+   {
+    "t": 3000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 57,
+     "isBlocked": true,
+     "timeToBlockExpire": 4
+    }
+   },
+   {
+    "t": 6999,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 54,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 7000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 53,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 7600,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 53,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 7700,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 53,
+     "isBlocked": true,
+     "timeToBlockExpire": 5
+    }
+   },
+   {
+    "t": 7800,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 53,
+     "isBlocked": true,
+     "timeToBlockExpire": 5
+    }
+   },
+   {
+    "t": 13000,
+    "key": "a",
+    "ttl": 60000,
+    "limit": 2,
+    "blockDuration": 5000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 47,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   }
+  ]
+ },
+ {
+  "name": "block_zero",
+  "calls": [
+   {
+    "t": 0,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 1000,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 9,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 2000,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 8,
+     "isBlocked": true,
+     "timeToBlockExpire": 8
+    }
+   },
+   {
+    "t": 3000,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 7,
+     "isBlocked": true,
+     "timeToBlockExpire": 7
+    }
+   },
+   {
+    "t": 9999,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 1,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 10000,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 10500,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 11000,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 9,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 11500,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 9,
+     "isBlocked": true,
+     "timeToBlockExpire": 9
+    }
+   },
+   {
+    "t": 12000,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 8,
+     "isBlocked": true,
+     "timeToBlockExpire": 8
+    }
+   },
+   {
+    "t": 21500,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 0,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   }
+  ]
+ },
+ {
+  "name": "interleaved_keys",
+  "calls": [
+   {
+    "t": 0,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 100,
+    "key": "b",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 200,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 300,
+    "key": "b",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 400,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 10
+    }
+   },
+   {
+    "t": 500,
+    "key": "b",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 10
+    }
+   },
+   {
+    "t": 600,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 10
+    }
+   },
+   {
+    "t": 9000,
+    "key": "b",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 2,
+     "isBlocked": true,
+     "timeToBlockExpire": 2
+    }
+   },
+   {
+    "t": 10250,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 10350,
+    "key": "b",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 10450,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 2,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   }
+  ]
+ },
+ {
+  "name": "different_ttl_per_key",
+  "calls": [
+   {
+    "t": 0,
+    "key": "fast",
+    "ttl": 1000,
+    "limit": 2,
+    "blockDuration": 1000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 1,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 100,
+    "key": "slow",
+    "ttl": 5000,
+    "limit": 3,
+    "blockDuration": 8000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 5,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 200,
+    "key": "fast",
+    "ttl": 1000,
+    "limit": 2,
+    "blockDuration": 1000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 1,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 300,
+    "key": "slow",
+    "ttl": 5000,
+    "limit": 3,
+    "blockDuration": 8000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 5,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 400,
+    "key": "fast",
+    "ttl": 1000,
+    "limit": 2,
+    "blockDuration": 1000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 1,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 500,
+    "key": "slow",
+    "ttl": 5000,
+    "limit": 3,
+    "blockDuration": 8000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 5,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 600,
+    "key": "slow",
+    "ttl": 5000,
+    "limit": 3,
+    "blockDuration": 8000,
+    "result": {
+     "totalHits": 4,
+     "timeToExpire": 5,
+     "isBlocked": true,
+     "timeToBlockExpire": 8
+    }
+   },
+   {
+    "t": 1500,
+    "key": "fast",
+    "ttl": 1000,
+    "limit": 2,
+    "blockDuration": 1000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 1,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 1700,
+    "key": "fast",
+    "ttl": 1000,
+    "limit": 2,
+    "blockDuration": 1000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 1,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 8000,
+    "key": "slow",
+    "ttl": 5000,
+    "limit": 3,
+    "blockDuration": 8000,
+    "result": {
+     "totalHits": 0,
+     "timeToExpire": 5,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 8700,
+    "key": "slow",
+    "ttl": 5000,
+    "limit": 3,
+    "blockDuration": 8000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 5,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   }
+  ]
+ }
+]

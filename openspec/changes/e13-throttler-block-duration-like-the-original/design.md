@@ -190,3 +190,24 @@ a block ends, and master blocks it again.
 4. With `limit` 0 every request is rejected (the divergence from 6.7.1 is confirmed and documented).
 5. `with_block_duration` with an unknown throttler name panics at registration.
 6. The size is M. Implement after #120.
+
+## Implementation notes
+
+- Reference version: `crates/corvis/tests/fixtures/throttler/package.json` pins `@nestjs/throttler` 6.7.1, the version
+  design.md was written against; no re-read was needed.
+- The recorded storage fixture shows two behaviors worth knowing: while a key is blocked, `totalHits` is the number of
+  hits still unexpired (hits expire during a block, so it can drop below the limit while `isBlocked` stays true), and
+  `timeToBlockExpire` is negative when the key is not blocked (the replay compares `max(0, .)`). `record_hit`
+  reproduces both; `total_hits` of a blocked key is the live hit count.
+- `ThrottlerStorage::hits_len()` was added (public, read-only) so tests and operators can see the stored timestamps.
+- Hits are stored as `Instant` (not milliseconds since creation); the budget is counted in timestamps.
+- Clock arithmetic never panics: every `Instant + Duration` goes through `after`, which clamps the span to ten years and
+  falls back to `now` if the addition would still overflow. Values of `u64::MAX` ms for the ttl and the block duration
+  are covered by a test.
+- When one key alone fills `max_hits` (for example through `increment`, which has no limit), its oldest hits are dropped,
+  so its count is capped at the budget; other keys are evicted by idle time first.
+- A key used with different `ttl` values keeps its hits in expiry order (`partition_point`), as Decision 2 allows.
+- The HTTP fixture gained a `block` app (2 s throttler, limit 2) and `generate.mjs` accepts requests of the form
+  `{ path, at }` (milliseconds after the first request). The replay compares `Retry-After` and `X-RateLimit-Reset`
+  within one second.
+- Task 5.5 (corvis-parity) is left to the maintainer's session, as agreed in the brief.

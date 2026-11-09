@@ -44,10 +44,14 @@ Cuando se supera el límite, la petición recibe:
 
 - La clave de cada contador combina el nombre del límite, la IP del cliente (`req.ip()`), el
   controlador y el handler. Cada ruta tiene su propio contador por cliente.
-- La ventana es fija: el primer acceso crea el contador con su vencimiento y las peticiones
-  siguientes lo incrementan hasta que vence.
-- Con varios límites en el vector, se comprueban todos y basta con que uno se supere. Para
-  distinguirlos, `ThrottlerOptions` tiene un campo público `name` (`"default"` por defecto):
+- La ventana es deslizante: cada petición cuenta durante `ttl` milisegundos desde el momento en que se
+  hizo, y el conteo de una petición es el número de accesos de esa clave en los últimos `ttl`. Un cliente
+  no puede enviar el doble del límite en el borde de una ventana fija.
+- La petición que lleva el conteo por encima del límite bloquea la clave (ver [Bloqueo](#bloqueo)). Las
+  peticiones rechazadas mientras la clave está bloqueada no se cuentan ni alargan el bloqueo.
+- Con varios límites en el vector, se comprueban en orden ascendente de `ttl` (los empates mantienen el
+  orden dado) y el primero que rechaza la petición detiene la revisión: los límites siguientes no cuentan
+  esa petición. Para distinguirlos, `ThrottlerOptions` tiene un campo público `name` (`"default"` por defecto):
 
   ```rust
   ThrottlerModule::for_root(vec![
@@ -56,15 +60,38 @@ Cuando se supera el límite, la petición recibe:
   ])
   ```
 
+## Bloqueo
+
+Una clave que supera su límite se bloquea durante la **duración del bloqueo**, contada desde el momento
+del bloqueo: toda petición en ese tiempo recibe `429` con `Retry-After` igual al tiempo que falta. La
+primera petición después del bloqueo vuelve a contar desde uno. La duración del bloqueo es el `ttl` del
+throttler (después de `THROTTLE_TTL`) salvo que la configures:
+
+- Para un throttler, en el storage, por nombre: `ThrottlerStorage::new(...).with_block_duration("default", 300_000)`
+  (milisegundos). Un nombre que no coincide con ningún throttler provoca un panic al construir el storage.
+- Para una ruta o un controlador, con la metadata `THROTTLE_BLOCK_DURATION` (milisegundos, para todos los
+  throttlers); tiene prioridad sobre el valor del storage.
+- `0` desactiva el bloqueo: una petición se rechaza mientras la clave ya tenga `limit` accesos en los
+  últimos `ttl` y no se cuenta; `Retry-After` es el tiempo hasta que vence el más antiguo de esos accesos.
+
+Un límite de `0` rechaza todas las peticiones, incluida la primera después de un bloqueo. La librería
+original (6.7.1) deja pasar una petición cada vez que termina un bloqueo; Corvis no, igual que el código
+actual de la librería.
+
+Esto cambia el comportamiento de las apps que ya usaban el guard: el bloqueo ahora dura una duración
+completa desde el momento del bloqueo en lugar del resto de una ventana fija, y los accesos se cuentan en
+una ventana deslizante.
+
 ## Cambiar el límite por ruta
 
-El guard lee tres claves de metadata, en el método o en el controlador:
+El guard lee cuatro claves de metadata, en el método o en el controlador:
 
 | Constante | Efecto |
 |---|---|
 | `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` omite el límite |
 | `THROTTLE_LIMIT` | Cambia el número máximo de peticiones |
 | `THROTTLE_TTL` | Cambia la ventana, en milisegundos |
+| `THROTTLE_BLOCK_DURATION` | Cambia la duración del bloqueo, en milisegundos (`0`: sin bloqueo) |
 
 ```rust
 #[routes]
@@ -84,19 +111,27 @@ impl AuthController {
 }
 ```
 
-`THROTTLE_LIMIT` y `THROTTLE_TTL` se aplican a todos los límites configurados, no a uno por nombre.
+`THROTTLE_LIMIT`, `THROTTLE_TTL` y `THROTTLE_BLOCK_DURATION` se aplican a todos los límites configurados, no a uno por nombre.
 
 ## Almacenamiento
 
-Los contadores viven en memoria, en `ThrottlerStorage`. Guarda `sha256` de cada clave, borra los
-contadores vencidos en cada petición y no supera 100 000 entradas; al llenarse descarta el que antes
-vence. Para cambiar ese tope:
+Los contadores viven en memoria, en `ThrottlerStorage`. Guarda el `sha256` de cada clave y una marca de
+tiempo por cada acceso que todavía cuenta. Las claves sin accesos vivos, con la ventana terminada y sin
+bloqueo se borran en cada petición. La memoria tiene dos topes: como máximo 100 000 claves
+(`with_max_entries`) y como máximo 1 000 000 de marcas de tiempo en total (`with_max_hits`, unos 16 MB).
+Una clave guarda como máximo `limit + 1` accesos. Al alcanzar cualquiera de los topes se descartan las
+claves que antes quedan inactivas, lo que reinicia sus contadores. Bajo un ataque con muchas direcciones
+eso significa que también se pueden reiniciar los contadores de otros clientes, así que dimensiona los
+topes según tu tráfico; un `limit` por encima de unos 10 000 por clave necesita un `with_max_hits` mayor.
+Para cambiar los topes:
 
 ```rust
 use corvis::ThrottlerStorage;
 
 ThrottlerModule::for_root_storage(
-    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_max_entries(500_000),
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)])
+        .with_max_entries(500_000)
+        .with_max_hits(5_000_000),
 )
 ```
 
@@ -138,10 +173,10 @@ Igual que la librería original, `ThrottlerGuard` le dice al cliente cómo va. P
 | Cabecera | Valor |
 |---|---|
 | `X-RateLimit-Limit` | El límite efectivo (después de `THROTTLE_LIMIT`) |
-| `X-RateLimit-Remaining` | Peticiones que quedan en la ventana, nunca menos de 0 |
-| `X-RateLimit-Reset` | Segundos hasta que termina la ventana, redondeados hacia arriba |
+| `X-RateLimit-Remaining` | El límite menos los accesos contados en los últimos `ttl`, nunca menos de 0 |
+| `X-RateLimit-Reset` | Segundos hasta que termina la ventana de reporte de la clave, redondeados hacia arriba |
 
-Cuando un throttler bloquea la petición, el `429` lleva `Retry-After` (segundos hasta que termina la ventana, al menos 1) y ninguna cabecera `X-RateLimit-*` de ese throttler. Las cabeceras de los throttlers revisados antes se mantienen en el `429`. Las rutas con `SKIP_THROTTLE` no reciben ninguna.
+Cuando un throttler bloquea la petición, el `429` lleva `Retry-After` (segundos hasta que termina el bloqueo, al menos 1) y ninguna cabecera `X-RateLimit-*` de ese throttler. Las cabeceras de los throttlers revisados antes se mantienen en el `429`. Las rutas con `SKIP_THROTTLE` no reciben ninguna.
 
 Para un throttler que no se llama `default`, los nombres de las cabeceras terminan en `-<nombre>`: con los throttlers `short` y `long` de arriba, una respuesta lleva `X-RateLimit-Limit-short`, `X-RateLimit-Remaining-long`, `Retry-After-long`, etc. El nombre del throttler pasa a ser parte del nombre de una cabecera, así que usa un token simple (letras, dígitos y `-`) que no revele nada interno; un nombre que no sea un nombre de cabecera válido hace que sus cabeceras se descarten.
 
@@ -153,7 +188,7 @@ ThrottlerModule::for_root_storage(
 )
 ```
 
-Los navegadores solo dejan que una página lea estas cabeceras si la configuración de CORS las expone (`Access-Control-Expose-Headers` en `CorsOptions`). `Retry-After` sigue la ventana fija de Corvis: es el tiempo hasta que se reinicia el contador, que puede diferir del valor de la librería original en el primer bloqueo de una ventana. Un mensaje de WebSocket se cuenta pero no recibe cabeceras. Otros guards e interceptors pueden poner cabeceras con `ctx.switch_to_http().set_response_header` (ver [Guards](/es/guards#poner-cabeceras-de-respuesta)).
+Los navegadores solo dejan que una página lea estas cabeceras si la configuración de CORS las expone (`Access-Control-Expose-Headers` en `CorsOptions`). `Retry-After` y los valores de `X-RateLimit-*` siguen a la librería original para las mismas peticiones. Un mensaje de WebSocket se cuenta pero no recibe cabeceras. Otros guards e interceptors pueden poner cabeceras con `ctx.switch_to_http().set_response_header` (ver [Guards](/es/guards#poner-cabeceras-de-respuesta)).
 
 ## Limitaciones
 

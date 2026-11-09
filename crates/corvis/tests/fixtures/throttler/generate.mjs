@@ -45,13 +45,17 @@ async function record(throttlers, requests) {
   await app.listen(0, '127.0.0.1');
   const base = `http://127.0.0.1:${app.getHttpServer().address().port}`;
   const out = [];
-  for (const path of requests) {
+  const start = Date.now();
+  for (const request of requests) {
+    // A request is a path, or { path, at } to send it `at` milliseconds after the start of the sequence.
+    const { path, at } = typeof request === 'string' ? { path: request } : request;
+    if (at !== undefined) await new Promise((r) => setTimeout(r, Math.max(0, start + at - Date.now())));
     const res = await fetch(base + path);
     const headers = {};
     for (const [k, v] of res.headers) {
       if (k.startsWith('x-ratelimit') || k.startsWith('retry-after')) headers[k] = v;
     }
-    out.push({ path, status: res.status, headers });
+    out.push(at === undefined ? { path, status: res.status, headers } : { path, at, status: res.status, headers });
   }
   await app.close();
   return out;
@@ -78,6 +82,20 @@ const apps = [
     name: 'default',
     throttlers: [{ name: 'default', ttl: 60000, limit: 3 }],
     requests: ['/plain', '/plain', '/plain', '/plain', '/skip', '/override', '/override'],
+  },
+  // A 2-second throttler that blocks (#135): the block lasts one ttl from the moment of the third request. The retry at
+  // 500 ms and the request at 2600 ms are at least 300 ms away from every expiry (about 2000 ms).
+  {
+    name: 'block',
+    throttlers: [{ name: 'default', ttl: 2000, limit: 2 }],
+    requests: [
+      '/plain',
+      '/plain',
+      '/plain',
+      { path: '/plain', at: 500 },
+      { path: '/plain', at: 2600 },
+      { path: '/plain', at: 2700 },
+    ],
   },
 ];
 for (const a of apps) a.responses = await record(a.throttlers, a.requests);

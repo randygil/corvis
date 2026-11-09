@@ -44,9 +44,14 @@ When the limit is exceeded, the request receives:
 
 - The key of each counter combines the limit name, the client IP (`req.ip()`), the
   controller and the handler. Each route has its own counter per client.
-- The window is fixed: the first access creates the counter with its expiry and later
-  requests increment it until it expires.
-- With several limits in the vector, all are checked and it is enough for one to be exceeded. To
+- The window slides: each request counts for `ttl` milliseconds from the moment it was made, and the
+  count of a request is the number of hits of that key in the last `ttl`. A client cannot send twice the
+  limit around the edge of a fixed window.
+- The request that takes the count over the limit blocks the key (see [Blocking](#blocking)). Requests
+  rejected while the key is blocked are not counted and do not extend the block.
+- With several limits in the vector, they are checked in ascending `ttl` order (ties keep the order
+  given) and the first one that rejects the request stops the
+  check: later limits do not count that request. To
   tell them apart, `ThrottlerOptions` has a public `name` field (`"default"` by default):
 
   ```rust
@@ -56,15 +61,37 @@ When the limit is exceeded, the request receives:
   ])
   ```
 
+## Blocking
+
+A key that goes over its limit is blocked for the **block duration**, counted from the moment of the
+block: every request in that time answers `429` with `Retry-After` set to the time left. The first request
+after the block starts counting again from one. The block duration is the throttler's `ttl` (after
+`THROTTLE_TTL`) unless you set it:
+
+- For a throttler, on the storage, by throttler name: `ThrottlerStorage::new(...).with_block_duration("default", 300_000)`
+  (milliseconds). A name that matches no throttler panics when the storage is built.
+- For a route or controller, with the `THROTTLE_BLOCK_DURATION` metadata (milliseconds, for every throttler);
+  it takes precedence over the storage value.
+- `0` turns the block off: a request is rejected while the key already holds `limit` hits from the last
+  `ttl` and is not counted; `Retry-After` is the time until the oldest of those hits expires.
+
+A limit of `0` rejects every request, including the first one after a block. The original library
+(6.7.1) lets one request through each time a block ends; Corvis does not, like the library's current source.
+
+This changes the behavior of apps that used the guard before: the block now lasts a whole block duration
+from the moment of the block instead of the rest of a fixed window, and hits are counted in a sliding
+window.
+
 ## Changing the limit per route
 
-The guard reads three metadata keys, on the method or on the controller:
+The guard reads four metadata keys, on the method or on the controller:
 
 | Constant | Effect |
 |---|---|
 | `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` skips the limit |
 | `THROTTLE_LIMIT` | Changes the maximum number of requests |
 | `THROTTLE_TTL` | Changes the window, in milliseconds |
+| `THROTTLE_BLOCK_DURATION` | Changes the block duration, in milliseconds (`0`: no block) |
 
 ```rust
 #[routes]
@@ -84,19 +111,25 @@ impl AuthController {
 }
 ```
 
-`THROTTLE_LIMIT` and `THROTTLE_TTL` apply to all configured limits, not to one by name.
+`THROTTLE_LIMIT`, `THROTTLE_TTL` and `THROTTLE_BLOCK_DURATION` apply to all configured limits, not to one by name.
 
 ## Storage
 
-Counters live in memory, in `ThrottlerStorage`. It stores the `sha256` of each key, deletes expired
-counters on every request and does not exceed 100,000 entries; when full it discards the one that
-expires soonest. To change that cap:
+Counters live in memory, in `ThrottlerStorage`. It stores the `sha256` of each key and one timestamp for
+every hit it still counts. Keys with no live hit, an ended window and no block are deleted on every request.
+Memory has two caps: at most 100,000 keys (`with_max_entries`) and at most 1,000,000 hit timestamps in total
+(`with_max_hits`, about 16 MB). A key holds at most `limit + 1` hits. When either cap is reached the keys
+that become idle soonest are discarded, which resets their counters. Under an attack with many addresses
+that means other clients' counters can be reset too, so size the caps for your traffic; a `limit` above
+roughly 10,000 per key needs a larger `with_max_hits`. To change the caps:
 
 ```rust
 use corvis::ThrottlerStorage;
 
 ThrottlerModule::for_root_storage(
-    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_max_entries(500_000),
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)])
+        .with_max_entries(500_000)
+        .with_max_hits(5_000_000),
 )
 ```
 
@@ -138,10 +171,10 @@ Like the original library, `ThrottlerGuard` tells the client where it stands. Fo
 | Header | Value |
 |---|---|
 | `X-RateLimit-Limit` | The effective limit (after `THROTTLE_LIMIT`) |
-| `X-RateLimit-Remaining` | Requests left in the window, never below 0 |
-| `X-RateLimit-Reset` | Seconds until the window ends, rounded up |
+| `X-RateLimit-Remaining` | The limit minus the hits counted in the last `ttl`, never below 0 |
+| `X-RateLimit-Reset` | Seconds until the key's reporting window ends, rounded up |
 
-When a throttler blocks the request, the `429` carries `Retry-After` (seconds until the window ends, at least 1) and no `X-RateLimit-*` header for that throttler. Headers of throttlers checked earlier stay on the `429`. Routes skipped with `SKIP_THROTTLE` get none of them.
+When a throttler blocks the request, the `429` carries `Retry-After` (seconds until the block ends, at least 1) and no `X-RateLimit-*` header for that throttler. Headers of throttlers checked earlier stay on the `429`. Routes skipped with `SKIP_THROTTLE` get none of them.
 
 For a throttler not named `default` the header names end in `-<name>`: with the `short` and `long` throttlers above a response carries `X-RateLimit-Limit-short`, `X-RateLimit-Remaining-long`, `Retry-After-long` and so on. The throttler name becomes part of a header name, so use a plain token (letters, digits and `-`) that says nothing internal; a name that is not a valid header name makes its headers be dropped.
 
@@ -153,7 +186,7 @@ ThrottlerModule::for_root_storage(
 )
 ```
 
-Browsers only let a page read these headers if the CORS configuration exposes them (`Access-Control-Expose-Headers` in `CorsOptions`). `Retry-After` follows Corvis's fixed window: it is the time until the counter resets, which can differ from the value the original library reports on the first block of a window. A WebSocket message is counted but gets no headers. Other guards and interceptors can set headers with `ctx.switch_to_http().set_response_header` (see [Guards](/guards#setting-response-headers)).
+Browsers only let a page read these headers if the CORS configuration exposes them (`Access-Control-Expose-Headers` in `CorsOptions`). `Retry-After` and the `X-RateLimit-*` values follow the original library for the same requests. A WebSocket message is counted but gets no headers. Other guards and interceptors can set headers with `ctx.switch_to_http().set_response_header` (see [Guards](/guards#setting-response-headers)).
 
 ## Limitations
 
