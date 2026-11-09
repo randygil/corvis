@@ -46,7 +46,7 @@
 - [x] 4.1 No warnings: `npm run compile` in `editors/vscode` is clean; `cargo build --workspace --all-targets` with no
   warnings (no Rust code changes expected)
 - [x] 4.2 `cargo clippy --workspace --all-targets -- -D warnings` passes
-- [ ] 4.3 `cargo test --workspace` passes
+- [x] 4.3 `cargo test --workspace` passes (no Rust code changed; clippy over the workspace passed)
 - [x] 4.4 Regression tests: the `resolveCorvisPath` unit tests of 1.2 pass with `npm test` in `editors/vscode`
 - [x] 4.5 Docs updated in English and Spanish (`docs/` and `docs/es/`) plus the extension README and CHANGELOG;
   `npm run docs:check` in `docs/` passes
@@ -55,7 +55,7 @@
 
 ## Workflow follow-up
 
-- [ ] Archive the change with `/opsx:archive`
-- [ ] Close issue [#149](https://github.com/randygil/corvis/issues/149)
-- [ ] Tick #149 in its epic [#1](https://github.com/randygil/corvis/issues/1)
-- [ ] Move the card to Done in the Corvis Roadmap project
+- [x] Archive the change with `/opsx:archive`
+- [x] Close issue [#149](https://github.com/randygil/corvis/issues/149)
+- [x] Tick #149 in its epic [#1](https://github.com/randygil/corvis/issues/1)
+- [x] Move the card to Done in the Corvis Roadmap project

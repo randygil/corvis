@@ -134,3 +134,8 @@ What the extension does today (`editors/vscode/`):
 - Manual checks of tasks 2.1 and 2.3 in an Extension Development Host were not run (unattended); the helper is covered by unit tests and the TypeScript build is clean.
 - `cargo test --workspace` (task 4.3) was not run: the change has no Rust code. `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings` pass.
 - The README and CHANGELOG were translated to English per review note 4.
+
+## Verification (2026-11-08)
+
+- `npm test` in `editors/vscode`: 7/7 pass (the new `resolveCorvisPath` test covers empty, whitespace, crate folder, repository root, `~`, relative path, folder without `Cargo.toml` and a Windows-style path); `tsc` compiles clean; naming and docs checks pass.
+- Not run: the manual checks in an Extension Development Host listed in tasks 2.1 and 2.3 (Settings UI entry, and the generated `Cargo.toml` for an empty setting, a crate folder, a repository root, and an invalid path). The session was unattended; the resolution logic they exercise is covered by the unit test.
