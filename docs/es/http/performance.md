@@ -43,6 +43,7 @@ app.set_server_options(
         .send_timeout(Duration::from_secs(30))       // 60 s por defecto; cierra la conexión
         .max_connections(10_000)                     // sin tope por defecto
         .max_pending_response_bytes(4 * 1024 * 1024) // 8 MiB por defecto, por conexión; ver abajo
+        .max_pending_response_wait(Duration::from_secs(2)) // 5 s por defecto; ver abajo
         .max_header_size(16 * 1024)                  // 32 KiB por defecto; responde 431 (HTTP/1 y HTTP/2)
         .http2_max_concurrent_streams(50)            // 100 por defecto, por conexión HTTP/2
         .http2_keep_alive_interval(Duration::from_secs(30)) // sin PING de HTTP/2 por defecto
@@ -110,27 +111,43 @@ concede un goteo, uno que resetea y reabre streams.
 - **Qué cuenta.** El tamaño completo de una respuesta en memoria (JSON, texto, bytes; también cuando la comprime, que
   cuenta el tamaño sin comprimir) desde que su handler devuelve hasta que su cuerpo termina o se descarta, y, para los
   cuerpos en streaming (archivos, Server-Sent Events), la parte del frame de datos actual que aún no se entregó a la
-  capa de protocolo. En HTTP/1 una respuesta cuenta hasta que el socket aceptó sus bytes.
+  capa de protocolo. En HTTP/1 una respuesta cuenta hasta que el servidor la escribió en el socket.
 - **Admisión antes del handler.** Cada petición reserva una parte del límite (el límite dividido entre las peticiones
   que la conexión puede ejecutar a la vez: `http2_max_concurrent_streams` en HTTP/2, 1 en HTTP/1, o sea 83.886 bytes
   por handler con los valores por defecto). Su handler arranca solo cuando los bytes pendientes más las reservas dejan
   sitio, o cuando la conexión no retiene nada. Hasta entonces la petición espera sin llegar a un handler; ocupa su
   hueco de `http2_max_concurrent_streams`, y un cliente que la resetea mientras tanto cuenta como si hubiera cancelado
-  una petición.
+  una petición. La espera está acotada por `max_pending_response_wait` (ver abajo).
 - **Por encima del límite, HTTP/2 resetea.** Cuando handlers que corrieron juntos devuelven respuestas que llevarían a
   una conexión que ya retiene bytes pendientes por encima del límite, el servidor descarta las respuestas sobrantes y
   resetea sus streams con `ENHANCE_YOUR_CALM`. El primer reset de una conexión se registra como advertencia. Una
-  respuesta que cabe en su parte nunca se resetea, y una respuesta siempre se envía, sea cual sea su tamaño.
+  respuesta que cabe en su parte nunca se resetea, y una respuesta siempre se envía, sea cual sea su tamaño. Esto
+  también le pasa a un cliente que lee a toda velocidad: cuando muchas respuestas grandes están listas en los mismos
+  instantes (una ráfaga de handlers lentos que devuelven juntos), las que superan el límite se resetean aunque nadie
+  esté detenido. Dimensiona el límite para lo que esperas tener en vuelo, al menos `http2_max_concurrent_streams`
+  veces tu respuesta habitual más grande, y baja `http2_max_concurrent_streams` si tu API devuelve respuestas de varios
+  megabytes; un cliente que recibe `ENHANCE_YOUR_CALM` puede reintentar.
 - **HTTP/1.** Las peticiones en pipeline corren un handler a la vez: el siguiente espera a que salga la respuesta
   anterior.
 
-La cota de una conexión es el mayor entre el límite y su respuesta más grande, más unos 48 KiB por stream HTTP/2
+La cota de una conexión es el mayor entre el límite y su respuesta más grande, más unos 64 KiB por stream HTTP/2
 abierto que hyper aún retiene después de que un cuerpo terminó (los últimos fragmentos de cada respuesta se copian,
 así que nunca mantienen viva la respuesta entera; el buffer de envío por stream de hyper es de 32 KiB), más los
 codificadores de compresión (`max_per_connection`). No incluye las cabeceras y cuerpos de las peticiones, ni la
 memoria que la aplicación guarda fuera de la respuesta: un canal sin límite que alimenta un stream, una caché
 repartida en respuestas. En todo el servidor la cota es `max_connections` x el límite (`max_connections` no tiene valor
 por defecto: define uno en un servidor expuesto a internet).
+
+**La espera tiene un límite (`max_pending_response_wait`, 5 s por defecto, `None` espera sin límite).** Una respuesta en
+memoria cuenta entera hasta que se envía, así que un cliente que descarga despacio una respuesta muy grande retrasa
+las demás peticiones de su conexión mientras tanto. Detrás de un proxy que multiplexa varios usuarios en una misma
+conexión HTTP/2 (Envoy, HAProxy con backends HTTP/2), eso dejaría que un usuario lento retuviera para siempre las
+peticiones de los demás. Una petición que espera más se rechaza: en HTTP/2 su stream se resetea con `REFUSED_STREAM`
+(el handler nunca corrió, así que el proxy o el cliente pueden reintentarla en otra conexión, RFC 9113 sección 8.7) y no
+cuenta como petición cancelada para la regla de rapid reset; en HTTP/1 se cierra la conexión. El primer rechazo de
+una conexión se registra. Con `None`, un cliente que lee un goteo cada `send_timeout` puede mantener esperando a los
+demás streams de su conexión todo lo que quiera: úsalo solo si todos los clientes son de confianza, o envía los
+cuerpos grandes en streaming.
 
 Los payloads grandes pertenecen a cuerpos en streaming (los archivos estáticos lo son): un cuerpo en streaming solo
 cuenta el frame que retiene. Una ráfaga de respuestas en memoria mayores que su parte puede perder streams por
@@ -171,7 +188,8 @@ Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1
   para que el proxy pueda reintentar en otra conexión las peticiones sin respuesta; desde entonces los streams nuevos
   se reinician sin llegar a un handler, y la conexión se cierra tras 1 s. Sube `http2_max_cancelled_streams` si algún
   proxy tuyo cancela más que eso. Una petición cuenta como completada solo cuando termina el cuerpo de su respuesta: un
-  stream reseteado después de que su handler devolvió, con el cuerpo aún en envío, cuenta como cancelado, y también una
+  stream reseteado después de que su handler devolvió, con el cuerpo aún en envío (o antes de su último frame DATA,
+  posiblemente vacío), cuenta como cancelado, y también una
   respuesta que el servidor descarta por superar `max_pending_response_bytes`. Una petición que el cliente cancela no se
   registra.
 - El keep-alive con PING detecta clientes que dejaron de responder, no que dejaron de leer; de esos se ocupa

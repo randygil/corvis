@@ -89,6 +89,7 @@ app.set_server_options(
         .send_timeout(Duration::from_secs(30))       // default 60 s (closes a client that stops reading)
         .max_connections(10_000)                     // default: no cap
         .max_pending_response_bytes(4 * 1024 * 1024) // default 8 MiB of unread responses per connection
+        .max_pending_response_wait(Duration::from_secs(2)) // default 5 s a request waits for room (then refused)
         .max_header_size(16 * 1024),                 // default 32 KiB (responds 431; HTTP/1 and HTTP/2)
 );
 ```

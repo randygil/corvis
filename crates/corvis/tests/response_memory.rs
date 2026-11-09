@@ -21,8 +21,10 @@ use tokio::net::{TcpSocket, TcpStream};
 const MIB: usize = 1024 * 1024;
 const ENHANCE_YOUR_CALM: u32 = 0xb;
 const CANCEL: u32 = 0x8;
+const REFUSED_STREAM: u32 = 0x7;
 
 static COUNTED: AtomicUsize = AtomicUsize::new(0);
+static COUNTED_REFUSED: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_H1: AtomicUsize = AtomicUsize::new(0);
 static MAX_ACTIVE_H1: AtomicUsize = AtomicUsize::new(0);
 static COUNTED_WAIT: AtomicUsize = AtomicUsize::new(0);
@@ -87,6 +89,20 @@ impl TController {
     fn counted_wait(&self) -> String {
         COUNTED_WAIT.fetch_add(1, Ordering::SeqCst);
         "a".repeat(256 * 1024)
+    }
+
+    /// 256 KiB; counts its runs (the refused-after-waiting test).
+    #[get("counted-refused")]
+    fn counted_refused(&self) -> String {
+        COUNTED_REFUSED.fetch_add(1, Ordering::SeqCst);
+        "a".repeat(256 * 1024)
+    }
+
+    /// A stream longer than its declared length: hyper writes ten bytes and drops the rest.
+    #[get("badlen")]
+    fn badlen(&self) -> StreamableFile {
+        let s = futures::stream::iter(vec![Ok::<_, std::io::Error>(Bytes::from(vec![120u8; 64 * 1024]))]);
+        StreamableFile::from_stream(Box::pin(s), StreamableFileOptions::new().length(10))
     }
 
     /// Counts the handlers of one connection that run at the same time (HTTP/1 pipelining).
@@ -475,6 +491,82 @@ async fn an_rst_cycle_keeps_eight_responses_per_round_and_is_closed() {
     }
     until("the connection is closed", 10, || c.is_closed()).await;
     assert!(rounds >= 3, "closed too early: {rounds} rounds");
+}
+
+/// A request that waits for room longer than `max_pending_response_wait` is refused (the handler never ran, the client
+/// may retry), and refusals do not count against the rapid-reset rule: with a ceiling of three, six of them leave the
+/// connection open. The streams that were held keep working.
+#[tokio::test]
+async fn a_request_that_waits_too_long_is_refused_and_not_counted_as_cancelled() {
+    let addr = serve(small_cap().max_pending_response_wait(Duration::from_millis(700)).http2_max_cancelled_streams(3)).await;
+    let c = H2Raw::connect(addr, SETTINGS_WINDOW_0).await;
+    let held = c.open(4, "/t/counted-refused", &[]).await;
+    until("four responses are held", 10, || c.headers(&held).len() == 4).await;
+    let waiting = c.open(6, "/t/counted-refused", &[]).await;
+    until("every waiting stream was refused", 10, || c.resets(&waiting, REFUSED_STREAM) == 6).await;
+    assert_eq!(COUNTED_REFUSED.load(Ordering::SeqCst), 4, "the handlers of the refused streams never ran");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!c.is_closed(), "refusals are not cancellations");
+    // The held responses still flow once the client reads.
+    c.grant(held[0], 256 * 1024).await;
+    until("a held response is delivered", 10, || c.data_of(held[0]) == 256 * 1024).await;
+}
+
+/// One big response read at a trickle must not block the other streams of the connection for ever.
+#[tokio::test]
+async fn a_slowly_read_big_response_does_not_block_other_streams_for_ever() {
+    let addr = serve(small_cap().max_pending_response_wait(Duration::from_millis(800))).await;
+    let c = H2Raw::connect(addr, SETTINGS_WINDOW_0).await;
+    c.send(&frame_bytes(8, 0, 0, &(1u32 << 30).to_be_bytes())).await;
+    let big = c.open(1, "/t/huge", &[]).await;
+    until("the big response is held", 10, || c.headers(&big).len() == 1).await;
+    let small = c.open(5, "/t/ok", &[]).await;
+    for _ in 0..8 {
+        c.grant(big[0], 16 * 1024).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(c.resets(&small, REFUSED_STREAM), 5, "the waiting requests were refused, not left waiting");
+    assert!(!c.is_closed());
+}
+
+/// Without a limit the wait has no end of its own.
+#[tokio::test]
+async fn the_wait_can_be_unlimited() {
+    let addr = serve(small_cap().max_pending_response_wait(None)).await;
+    let c = H2Raw::connect(addr, SETTINGS_WINDOW_0).await;
+    let held = c.open(4, "/t/quarter", &[]).await;
+    until("four responses are held", 10, || c.headers(&held).len() == 4).await;
+    let waiting = c.open(1, "/t/ok", &[]).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(c.headers(&waiting).is_empty());
+    assert_eq!(c.resets(&waiting, REFUSED_STREAM), 0);
+}
+
+/// Bytes hyper drops (a stream longer than its declared length) must not leave the connection waiting for ever for
+/// room that never comes back.
+#[tokio::test]
+async fn an_http1_response_hyper_truncates_does_not_wedge_the_connection() {
+    let addr = serve(quiet(ServerOptions::new())).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let mut buf = vec![0u8; 65536];
+    for _ in 0..3 {
+        s.write_all(b"GET /t/badlen HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_millis(500), s.read(&mut buf)).await;
+    }
+    s.write_all(b"GET /t/ok HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+    let mut got = Vec::new();
+    let answered = tokio::time::timeout(Duration::from_secs(3), async {
+        while !String::from_utf8_lossy(&got).contains("\"ok\":true") {
+            let n = s.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                return false;
+            }
+            got.extend_from_slice(&buf[..n]);
+        }
+        true
+    })
+    .await;
+    assert_eq!(answered, Ok(true), "the next request on the connection was never answered");
 }
 
 #[cfg(feature = "compression")]

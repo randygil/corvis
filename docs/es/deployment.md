@@ -89,6 +89,7 @@ app.set_server_options(
         .send_timeout(Duration::from_secs(30))       // por defecto 60 s (cierra a un cliente que deja de leer)
         .max_connections(10_000)                     // por defecto sin tope
         .max_pending_response_bytes(4 * 1024 * 1024) // por defecto 8 MiB de respuestas sin leer por conexión
+        .max_pending_response_wait(Duration::from_secs(2)) // por defecto 5 s que espera una petición por sitio (luego se rechaza)
         .max_header_size(16 * 1024),                 // por defecto 32 KiB (responde 431; HTTP/1 y HTTP/2)
 );
 ```

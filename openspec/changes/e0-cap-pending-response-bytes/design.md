@@ -314,3 +314,65 @@ release build; RSS before the scenario 7 MiB):
 
 That is 11 to 13 MiB above the idle baseline against 103 to 114 MiB: the 8 MiB the cap allows plus transient
 allocations of handlers whose responses were dropped.
+
+## Review notes, security round (2026-11-09)
+
+A security review of `df648f8` confirmed the bound (20 connections of 100 streams at window 0 held 9.2 to 9.4 MiB each)
+and found no critical or high issue. Two medium and several low findings were fixed in this round; where this section
+differs from the text above (Decision 5, 7 and the first implementation note), this section wins.
+
+1. **HTTP/1 connection wedged for ever (medium).** The counters `handed` and `written` assumed every byte handed to
+   hyper reaches the socket. Hyper drops bytes of a body longer than its `Content-Length` (a `StreamableFile` with a
+   stale `length(n)`), so `written` never reached the mark, `pending` never returned to 0 and the next request waited
+   for room with nothing to end the wait (no timer applies to a connection with a request in flight). The counters
+   are gone: the charge of an HTTP/1 body that hyper took is added to `ConnState::deferred` when the body is dropped and
+   released when `TimedIo::poll_flush` completes, because hyper calls `io.poll_flush` only when its write buffer is
+   empty (`hyper-1.12.0/src/proto/h1/io.rs`, `poll_flush`: the buffer is written to the socket before the flush;
+   `flush_pipeline` is off). This also removes the slack that accumulated with the heads and chunk framing that
+   `written` counted and `handed` did not (about 186 bytes per small request, 8 MiB after 45,000 requests; finding 3).
+2. **Head-of-line blocking over HTTP/2 (medium).** One in-memory response of 8 MiB or more read at a trickle kept the
+   watchdog quiet and held every other stream of the connection in admission for ever (`hol`: 0 of 20 small requests
+   answered in 20 s). New `ServerOptions::max_pending_response_wait` (default 5 s, `None` waits without limit, risk
+   documented): a request that waits longer is refused. Over HTTP/2 the stream is reset with `REFUSED_STREAM` (the
+   handler never ran, so a retry is safe, RFC 9113 section 8.7) and it is not recorded for the rapid-reset rule
+   (`Outcome::Refused`); over HTTP/1 the connection is closed without a drain (after finding 1 the wait there lasts
+   only while the previous response is still unsent, which `send_timeout` covers). The first refusal per connection is
+   logged (`Budget::warned_wait`). The proxy case (Envoy, HAProxy) is in the docs.
+3. **Slack over a connection's life (low):** fixed by 1; unit test `an_http1_charge_is_released_even_when_hyper_wrote_fewer_bytes_than_it_took`
+   runs 1000 truncated responses and checks `pending` stays at 0.
+4. **Small responses were "completed" before a byte left (low).** Hyper polls an HTTP/2 body before h2 has capacity,
+   and a single-chunk body reported `is_end_stream() == true`, so `GuardedBody::drop` recorded it as completed
+   (`rstsmall`: 3000 resets of `/t/ok` in 2.7 s without a GOAWAY). Over HTTP/2, once data was handed to hyper,
+   `is_end_stream()` is false until `poll_frame` has returned `None`; the cost is an empty DATA frame with END_STREAM
+   for each response with data. Empty bodies (HEAD, 204) are still finished from the start. `tests/http2_limits.rs`
+   gets the small-route scenario.
+5. **Fast readers can get `ENHANCE_YOUR_CALM` on bursts (low).** Kept: holding an over-cap response would break the
+   memory bound. Documented in `performance.md` (EN + ES) with how to size `max_pending_response_bytes` and
+   `http2_max_concurrent_streams`.
+6. **Informative.**
+   - (a) Thundering herd: `notify_waiters` woke every waiter on each released chunk. Now `Budget` counts the waiting
+     requests and the share of the last attempt, and waiters are woken only when `should_wake()` (somebody waits and
+     the budget has room for one more share, or is idle). When there is room all waiters still wake and re-check; a
+     `notify_one` chain was not used because a waiter that is cancelled (timeout, client reset) after being notified
+     would have to hand the wake-up on, a lost-wake-up risk for no measurable gain.
+   - (b) The h2 codec hypothesis is true. In `h2-0.4.20/src/codec/framed_write.rs` (`Encoder::buffer`), a data frame of
+     256 bytes or more is stored in `self.next = Some(Next::Data(frame))` until the socket takes it, after it was
+     popped from the stream's queue, so it is not part of `buffered_send_data`. It is a slice of at most 16 KiB. With a
+     blocked socket h2 holds, after the body ended: that frame, up to `max_send_buf_size` (32 KiB) in the queue, and the
+     slice handed over when capacity was positive (up to 16 KiB). The tail that was copied (`send buffer + 16 KiB` =
+     48 KiB) covered the last three slices and left the slice before them, the one in the codec, an uncopied piece
+     of the whole response. `H2_TAIL` is now `H2_SEND_BUF + 2 * H2_SLICE` (64 KiB): the last four slices are copies
+     and the real bound after a body ended is 64 KiB per open stream, not "cap plus one response". The unit test
+     `the_last_slices_of_an_http2_body_are_copies` asserts it.
+
+Reviewer's modes re-run against this round (release build, `capreview`, server on 127.0.0.1):
+
+| Mode | Before | After |
+|---|---|---|
+| `wedge` | the next requests on the connection never answered | answered after 58 to 154 microseconds |
+| `wedgehold` (`max_connections(4)`, four connections) | four connections held all slots for more than 90 s | four connections answered, a new client served in 0.7 ms |
+| `hol` (20 small requests next to a trickled 8 MiB response) | 0 answered in 20 s | 20 refused with `REFUSED_STREAM` at 5.0 s, connection open |
+| `rstsmall` (`/t/ok`, window 0) | 3000 resets in 2.7 s, no GOAWAY | connection closed after 550 resets (13 ms) |
+| `burst` (30 requests to a 512 KiB route, 300 ms handler, full-speed reader) | 14 of 30 reset | 16 ok, 14 reset with `ENHANCE_YOUR_CALM` (kept; documented) |
+| `herd` (98 waiters, 256 MiB) | 1.1 to 1.7 times the CPU per MiB | 2.87 ms of CPU per MiB, 319 MiB/s |
+| `h1slack` | slack let extra pipelined handlers run | 2 huge handlers ran while the client did not read: a Windows loopback socket absorbs the 8 MiB, so this mode cannot hold a response; the slack itself is covered by the unit test |

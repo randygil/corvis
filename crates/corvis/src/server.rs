@@ -58,6 +58,7 @@ pub struct ServerOptions {
     pub(crate) http2_keep_alive_timeout: Duration,
     pub(crate) http2_max_cancelled_streams: u32,
     pub(crate) max_pending_response_bytes: Option<usize>,
+    pub(crate) max_pending_response_wait: Option<Duration>,
 }
 
 /// Default of [`ServerOptions::max_pending_response_bytes`]: 8 MiB per connection.
@@ -79,6 +80,7 @@ impl Default for ServerOptions {
             http2_keep_alive_timeout: Duration::from_secs(20),
             http2_max_cancelled_streams: 2000,
             max_pending_response_bytes: Some(DEFAULT_MAX_PENDING_RESPONSE_BYTES),
+            max_pending_response_wait: Some(Duration::from_secs(5)),
         }
     }
 }
@@ -156,7 +158,12 @@ impl ServerOptions {
     /// sent whatever its size: a connection holds at most the larger of the limit and its largest response. Large
     /// payloads belong in streamed bodies (static files are).
     ///
-    /// Not counted: what hyper keeps of a finished HTTP/2 body (at most about 48 KiB per open stream), compression
+    /// A request that waits for room longer than [`max_pending_response_wait`](Self::max_pending_response_wait) is refused.
+    /// The reset also reaches a client that reads at full speed when many large responses finish together (a burst
+    /// of handlers that return within the same instants): size the limit for the bytes you expect to be in flight, that
+    /// is at least `http2_max_concurrent_streams` times your largest common response, or lower the stream cap.
+    ///
+    /// Not counted: what hyper keeps of a finished HTTP/2 body (at most about 64 KiB per open stream), compression
     /// encoders (see the compression options), request heads and bodies, and memory the application holds outside
     /// the response (an unbounded channel feeding a stream, a cache). Server-wide the bound is
     /// [`max_connections`](Self::max_connections) times this limit.
@@ -165,6 +172,23 @@ impl ServerOptions {
     /// while exceeded; Node's `http` module has no limit.
     pub fn max_pending_response_bytes(mut self, n: impl Into<Option<usize>>) -> Self {
         self.max_pending_response_bytes = n.into();
+        self
+    }
+    /// Longest a request waits for room in the connection's response budget before its handler runs (default 5 s,
+    /// `None` waits without limit). It only matters with [`max_pending_response_bytes`](Self::max_pending_response_bytes)
+    /// on. A request waits while the responses the connection holds (an in-memory response is counted whole until it
+    /// is sent) leave no room, so a client that reads one very large response slowly delays its other streams for as
+    /// long as that response takes: behind a proxy that multiplexes several users on one HTTP/2 connection (Envoy,
+    /// HAProxy), one slow download could otherwise hold the requests of the others for ever.
+    ///
+    /// When the time is up over HTTP/2 the stream is reset with `REFUSED_STREAM`: the handler never ran, so the client
+    /// (or the proxy) may retry the request on another connection, as RFC 9113 section 8.7 allows. It does not count
+    /// as a cancelled request for the rapid-reset rule. Over HTTP/1 the connection is closed. The first expiry on a
+    /// connection is logged. With `None`, a waiting request has no bound other than [`send_timeout`](Self::send_timeout)
+    /// closing a connection whose client reads nothing: a client that reads a trickle every period keeps its waiting
+    /// streams waiting as long as it likes.
+    pub fn max_pending_response_wait(mut self, t: impl Into<Option<Duration>>) -> Self {
+        self.max_pending_response_wait = t.into();
         self
     }
     /// Maximum number of open connections (`server.maxConnections`); when reached, new
@@ -615,13 +639,9 @@ struct ConnState {
     budget: Mutex<Budget>,
     /// Signalled whenever pending bytes or running handlers drop, so waiting requests look again.
     budget_freed: tokio::sync::Notify,
-    /// HTTP/1: bytes of response data bodies handed to hyper, which queues a frame whole in its write buffer.
-    handed: AtomicU64,
-    /// Bytes the socket accepted since the connection started.
-    written: AtomicU64,
-    /// HTTP/1: charges of bodies hyper already took, released when the socket has accepted what was handed to
-    /// hyper up to that body's end, as `(handed mark, charge)` in order.
-    deferred: Mutex<std::collections::VecDeque<(u64, usize)>>,
+    /// HTTP/1: charges of bodies hyper already took into its write buffer, released when hyper flushes the socket
+    /// (it only does so with its write buffer empty).
+    deferred: AtomicUsize,
 }
 
 /// What a connection holds of the responses of its handlers (design of `e0-cap-pending-response-bytes`).
@@ -633,6 +653,13 @@ struct Budget {
     running: usize,
     /// The reset for exceeding the cap was logged already.
     warned: bool,
+    /// The refusal of a request that waited too long was logged already.
+    warned_wait: bool,
+    /// Requests waiting for room.
+    waiting: usize,
+    /// Share and cap of the last admission attempt (all requests of a connection use the same ones).
+    share: usize,
+    cap: usize,
 }
 
 /// What to do with the response a handler returned.
@@ -646,6 +673,7 @@ impl Budget {
     /// Reserves `share` for a handler when `pending + reservations + share` fits `cap`, or when the connection holds
     /// nothing at all.
     fn try_admit(&mut self, share: usize, cap: usize) -> bool {
+        (self.share, self.cap) = (share, cap);
         let idle = self.pending == 0 && self.running == 0;
         let fits = self.pending.saturating_add(self.running.saturating_add(1).saturating_mul(share)) <= cap;
         if idle || fits {
@@ -668,40 +696,42 @@ impl Budget {
     fn release(&mut self, charge: usize) {
         self.pending = self.pending.saturating_sub(charge);
     }
+
+    /// A request is waiting and would be admitted now: only then is waking the waiters worth the work.
+    fn should_wake(&self) -> bool {
+        let idle = self.pending == 0 && self.running == 0;
+        self.waiting > 0 && (idle || self.pending.saturating_add(self.running.saturating_add(1).saturating_mul(self.share)) <= self.cap)
+    }
 }
 
 impl ConnState {
-    /// The socket accepted `n` bytes: releases the HTTP/1 charges whose bytes are out of hyper's write buffer.
-    fn wrote(&self, n: usize) {
-        let written = self.written.fetch_add(n as u64, Ordering::Relaxed) + n as u64;
-        self.release_deferred(written);
-    }
-
-    fn release_deferred(&self, written: u64) {
-        let mut released = 0usize;
-        {
-            let mut d = self.deferred.lock().unwrap_or_else(|e| e.into_inner());
-            while let Some(&(mark, charge)) = d.front() {
-                if mark > written {
-                    break;
-                }
-                released = released.saturating_add(charge);
-                d.pop_front();
-            }
-        }
-        self.release_budget(released);
-    }
-
-    /// HTTP/1: a body was taken by hyper, which holds its data in the write buffer until the socket takes it.
+    /// HTTP/1: hyper took a body into its write buffer; the memory is held until the buffer is flushed.
     fn defer_release(&self, charge: usize) {
-        let mark = self.handed.load(Ordering::Relaxed);
-        self.deferred.lock().unwrap_or_else(|e| e.into_inner()).push_back((mark, charge));
-        self.release_deferred(self.written.load(Ordering::Relaxed));
+        self.deferred.fetch_add(charge, Ordering::Relaxed);
+    }
+
+    /// Hyper flushed the socket, which it only does with its write buffer empty: what it took is out.
+    fn flush_deferred(&self) {
+        let charge = self.deferred.swap(0, Ordering::Relaxed);
+        self.release_budget(charge);
     }
 
     fn release_budget(&self, charge: usize) {
         if charge > 0 {
-            self.budget.lock().unwrap_or_else(|e| e.into_inner()).release(charge);
+            let wake = {
+                let mut b = self.budget.lock().unwrap_or_else(|e| e.into_inner());
+                b.release(charge);
+                b.should_wake()
+            };
+            if wake {
+                self.budget_freed.notify_waiters();
+            }
+        }
+    }
+
+    /// Wakes the waiting requests when one of them could be admitted.
+    fn wake_if_room(&self) {
+        if self.budget.lock().unwrap_or_else(|e| e.into_inner()).should_wake() {
             self.budget_freed.notify_waiters();
         }
     }
@@ -709,15 +739,50 @@ impl ConnState {
     /// Waits until the budget has room for a handler with this `share`; the reservation lasts until the handler
     /// returns or the returned value is dropped.
     async fn admit(self: &Arc<Self>, share: usize, cap: usize) -> Admission {
+        let mut waiting: Option<Waiting> = None;
         loop {
             let notified = self.budget_freed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.budget.lock().unwrap_or_else(|e| e.into_inner()).try_admit(share, cap) {
-                return Admission { state: Some(self.clone()) };
+            {
+                let mut b = self.budget.lock().unwrap_or_else(|e| e.into_inner());
+                if b.try_admit(share, cap) {
+                    return Admission { state: Some(self.clone()) };
+                }
+                if waiting.is_none() {
+                    b.waiting += 1;
+                    waiting = Some(Waiting(self.clone()));
+                }
             }
             notified.await;
         }
+    }
+
+    /// Logs, once per connection, that a request waited too long for room.
+    fn warn_wait_once(&self, wait: Duration, http2: bool) {
+        let first = !std::mem::replace(&mut self.budget.lock().unwrap_or_else(|e| e.into_inner()).warned_wait, true);
+        if first {
+            let outcome = if http2 { "the HTTP/2 stream was refused (REFUSED_STREAM)" } else { "the connection was closed" };
+            crate::logger::Logger::warn_with(
+                format!(
+                    "A request waited more than {wait:?} for room in the connection's response budget \
+                     (ServerOptions::max_pending_response_bytes) and {outcome}; its handler never ran. Raise \
+                     ServerOptions::max_pending_response_wait or the byte limit if clients read large responses slowly. \
+                     Further refusals on this connection are not logged."
+                ),
+                "HttpServer",
+            );
+        }
+    }
+}
+
+/// A request counted as waiting for room, until it is admitted or gives up.
+struct Waiting(Arc<ConnState>);
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        let mut b = self.0.budget.lock().unwrap_or_else(|e| e.into_inner());
+        b.waiting = b.waiting.saturating_sub(1);
     }
 }
 
@@ -736,7 +801,7 @@ impl Admission {
             let first = verdict == Verdict::Reset && !std::mem::replace(&mut b.warned, true);
             (verdict, first)
         };
-        state.budget_freed.notify_waiters();
+        state.wake_if_room();
         if first {
             crate::logger::Logger::warn_with(
                 format!(
@@ -757,7 +822,7 @@ impl Drop for Admission {
             let mut b = state.budget.lock().unwrap_or_else(|e| e.into_inner());
             b.running = b.running.saturating_sub(1);
             drop(b);
-            state.budget_freed.notify_waiters();
+            state.wake_if_room();
         }
     }
 }
@@ -916,9 +981,10 @@ impl Drop for InflightGuard {
 const H2_SLICE: usize = 16 * 1024;
 /// What hyper may buffer per HTTP/2 stream (`max_send_buf_size`; its default is 400 KiB).
 const H2_SEND_BUF: usize = 32 * 1024;
-/// h2 can still hold this much of a stream after its body ended: the send buffer plus the slice that was handed over
-/// when there was room. Slices that may be part of it are copied, so they do not keep the whole response alive.
-const H2_TAIL: usize = H2_SEND_BUF + H2_SLICE;
+/// h2 can still hold this much of a stream after its body ended: the send buffer, the slice that was handed over
+/// when there was room, and the one data frame its codec keeps after taking it out of the stream's queue (it is not
+/// counted in the buffer). Slices that may be part of it are copied, so they do not keep the whole response alive.
+const H2_TAIL: usize = H2_SEND_BUF + 2 * H2_SLICE;
 
 /// Cuts the first [`H2_SLICE`] bytes off `data` for hyper. A slice that may outlive the body (fewer than
 /// [`H2_TAIL`] bytes of the frame remain after it) is copied into an allocation of its own.
@@ -952,6 +1018,8 @@ struct GuardedBody {
     track: bool,
     /// The body reported its end (or had nothing to send).
     ended: bool,
+    /// A data frame was handed to hyper.
+    sent_data: bool,
     /// The body records the outcome of its request for the rapid-reset rule: completed when it ended, cancelled when
     /// it is dropped before.
     record: bool,
@@ -979,6 +1047,7 @@ impl GuardedBody {
             fixed: charge.is_some_and(|c| c > 0),
             track: charge.is_some(),
             ended: false,
+            sent_data: false,
             record,
         }
     }
@@ -1029,6 +1098,7 @@ impl hyper::body::Body for GuardedBody {
         }
         if !this.rest.is_empty() {
             let part = cut_slice(&mut this.rest);
+            this.sent_data = true;
             this.charge_rest();
             this.clock.wait_for_hyper(&this.guard.0.epoch);
             return Poll::Ready(Some(Ok(Frame::data(part))));
@@ -1040,12 +1110,7 @@ impl hyper::body::Body for GuardedBody {
             }
             Poll::Ready(Some(Ok(frame))) => {
                 this.clock.wait_for_hyper(&this.guard.0.epoch);
-                if this.track
-                    && !this.slice
-                    && let Some(data) = frame.data_ref()
-                {
-                    this.guard.0.handed.fetch_add(data.len() as u64, Ordering::Relaxed);
-                }
+                this.sent_data |= frame.is_data();
                 if this.slice {
                     match frame.into_data() {
                         Ok(mut data) if data.len() > H2_SLICE => {
@@ -1070,7 +1135,11 @@ impl hyper::body::Body for GuardedBody {
         }
     }
     fn is_end_stream(&self) -> bool {
-        self.rest.is_empty() && self.inner.is_end_stream()
+        let drained = self.rest.is_empty() && self.inner.is_end_stream();
+        // Over HTTP/2 hyper asks this right after taking a frame, before h2 has room for it: a response that is a
+        // single small frame would count as finished while no byte left. It ends when `poll_frame` says so (at the
+        // cost of an empty DATA frame with END_STREAM).
+        if self.slice && self.sent_data { drained && self.ended } else { drained }
     }
     fn size_hint(&self) -> SizeHint {
         let mut hint = self.inner.size_hint();
@@ -1428,7 +1497,6 @@ impl TimedIo {
     fn write_progress(&mut self, written: &[io::IoSlice<'_>], n: usize) {
         self.write_stalled_since = None;
         self.write_blocked = false;
-        self.state.wrote(n);
         self.sync();
         // A response still being flushed is progress, not idleness. Over HTTP/2 only the frames of a response count:
         // PONGs, SETTINGS acknowledgements and the like would keep an idle connection open for ever.
@@ -1631,6 +1699,8 @@ impl AsyncWrite for TimedIo {
                 if !this.write_blocked {
                     this.write_stalled_since = None;
                 }
+                // Hyper flushes only with its write buffer empty: the HTTP/1 responses it took are out of memory.
+                this.state.flush_deferred();
                 Poll::Ready(Ok(()))
             }
             Poll::Pending => this.poll_write_deadline(cx),
@@ -1719,12 +1789,13 @@ pub(crate) fn connection_builder(options: &ServerOptions) -> auto::Builder<Tokio
     builder
 }
 
-/// Why a request ends without a response: the socket is destroyed (upgrade listeners, flood), or the response is
-/// dropped for exceeding `max_pending_response_bytes` and hyper resets the stream with the reason in the source.
+/// Why a request ends without a response: the socket is destroyed (upgrade listeners, flood, a wait for room that
+/// took too long over HTTP/1), or the server resets the HTTP/2 stream (response above `max_pending_response_bytes`,
+/// wait for room that took too long) and hyper uses the reason in the source.
 #[derive(Debug)]
 enum ServiceError {
     Destroyed,
-    OverCap(h2::Error),
+    Reset(h2::Error),
 }
 
 impl From<crate::http_adapter::SocketDestroyed> for ServiceError {
@@ -1737,7 +1808,7 @@ impl std::fmt::Display for ServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ServiceError::Destroyed => f.write_str("socket destroyed"),
-            ServiceError::OverCap(_) => f.write_str("response dropped: the connection holds too many pending response bytes"),
+            ServiceError::Reset(_) => f.write_str("stream reset: the connection holds too many pending response bytes"),
         }
     }
 }
@@ -1746,7 +1817,7 @@ impl std::error::Error for ServiceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ServiceError::Destroyed => None,
-            ServiceError::OverCap(e) => Some(e),
+            ServiceError::Reset(e) => Some(e),
         }
     }
 }
@@ -1820,7 +1891,22 @@ pub(crate) async fn serve(
                         let admission = match opts.max_pending_response_bytes {
                             Some(cap) => {
                                 let limit = if http2 { stream_cap } else { 1 };
-                                Some((guard.0.admit(cap / limit, cap).await, cap))
+                                let admit = guard.0.admit(cap / limit, cap);
+                                let admitted = match opts.max_pending_response_wait {
+                                    Some(t) => tokio::time::timeout(t, admit).await.ok(),
+                                    None => Some(admit.await),
+                                };
+                                let Some(admission) = admitted else {
+                                    // The handler never ran: neither cancelled nor completed.
+                                    watch.outcome = Outcome::Refused;
+                                    guard.0.warn_wait_once(opts.max_pending_response_wait.unwrap_or_default(), http2);
+                                    if http2 {
+                                        return Err(ServiceError::Reset(h2::Error::from(h2::Reason::REFUSED_STREAM)));
+                                    }
+                                    guard.0.no_linger.store(true, Ordering::SeqCst);
+                                    return Err(ServiceError::Destroyed);
+                                };
+                                Some((admission, cap))
                             }
                             None => None,
                         };
@@ -1853,7 +1939,7 @@ pub(crate) async fn serve(
                                     // Dropping the response frees its allocation and its compression slot now.
                                     drop(resp);
                                     watch.outcome = Outcome::Dropped;
-                                    return Err(ServiceError::OverCap(h2::Error::from(h2::Reason::ENHANCE_YOUR_CALM)));
+                                    return Err(ServiceError::Reset(h2::Error::from(h2::Reason::ENHANCE_YOUR_CALM)));
                                 }
                                 Some(size)
                             }
@@ -2144,10 +2230,10 @@ mod tests {
         assert!(b.try_admit(10, 100));
         assert_eq!(b.finish_handler(1000, 100, true), Verdict::Keep, "pending was 0: one response is always sent");
         assert_eq!(b.pending, 1000);
-        let mut b = Budget { pending: 90, running: 1, warned: false };
+        let mut b = Budget { pending: 90, running: 1, ..Budget::default() };
         assert_eq!(b.finish_handler(20, 100, true), Verdict::Reset);
         assert_eq!((b.pending, b.running), (90, 0), "a reset response is not charged");
-        let mut b = Budget { pending: 90, running: 1, warned: false };
+        let mut b = Budget { pending: 90, running: 1, ..Budget::default() };
         assert_eq!(b.finish_handler(20, 100, false), Verdict::Keep, "HTTP/1 never resets");
     }
 
@@ -2184,26 +2270,90 @@ mod tests {
         assert_eq!(pending(&state), 0);
     }
 
-    /// HTTP/1: hyper takes a whole frame into its write buffer, so the body ending does not free the memory.
+    /// HTTP/1: hyper takes a whole frame into its write buffer, so the body ending does not free the memory; the
+    /// flush of the socket (hyper flushes only with an empty write buffer) does.
     #[test]
-    fn an_http1_body_stays_charged_until_the_socket_accepted_its_bytes() {
+    fn an_http1_body_stays_charged_until_hyper_flushes_the_socket() {
         let state = Arc::new(ConnState::default());
         let mut body = charged_body(vec![Some(Ok(Frame::data(Bytes::from(vec![1u8; 1000]))))], false, Some(1000), &state);
         assert!(matches!(poll_once(&mut body), Poll::Ready(Some(Ok(_)))));
         assert!(matches!(poll_once(&mut body), Poll::Ready(None)));
         drop(body);
         assert_eq!(pending(&state), 1000, "the data is still in hyper's write buffer");
-        state.wrote(600);
-        assert_eq!(pending(&state), 1000);
-        state.wrote(400);
+        state.flush_deferred();
         assert_eq!(pending(&state), 0);
-        // Bytes the socket took before a later body was handed over do not release it.
-        let mut body = charged_body(vec![Some(Ok(Frame::data(Bytes::from(vec![1u8; 500]))))], false, Some(500), &state);
+        state.flush_deferred();
+        assert_eq!(pending(&state), 0, "a flush with nothing deferred changes nothing");
+    }
+
+    /// Bytes hyper drops after taking them (a body longer than its `Content-Length`) never reach the socket: the
+    /// charge must not depend on counting them, or the connection waits for ever.
+    #[test]
+    fn an_http1_charge_is_released_even_when_hyper_wrote_fewer_bytes_than_it_took() {
+        let state = Arc::new(ConnState::default());
+        for _ in 0..1000 {
+            let mut body = charged_body(vec![Some(Ok(Frame::data(Bytes::from(vec![1u8; 64 * 1024]))))], false, Some(64 * 1024), &state);
+            assert!(matches!(poll_once(&mut body), Poll::Ready(Some(Ok(_)))));
+            drop(body);
+            // Only ten bytes of it were written; hyper still flushes with its buffer empty.
+            state.flush_deferred();
+            assert_eq!(pending(&state), 0);
+        }
+    }
+
+    #[test]
+    fn waiters_are_woken_only_when_one_of_them_could_be_admitted() {
+        let mut b = Budget { pending: 95, running: 0, waiting: 0, share: 10, cap: 100, ..Budget::default() };
+        assert!(!b.should_wake(), "nobody waits");
+        b.waiting = 3;
+        assert!(!b.should_wake(), "95 pending leave no room for a share of 10");
+        b.release(10);
+        assert!(b.should_wake());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_that_waits_too_long_gives_up_without_a_reservation() {
+        let state = Arc::new(ConnState::default());
+        let held = state.admit(60, 100).await;
+        state.budget.lock().unwrap().pending = 100;
+        let waited = tokio::time::timeout(Duration::from_secs(5), state.admit(10, 100)).await;
+        assert!(waited.is_err(), "no room: the wait times out");
+        {
+            let b = state.budget.lock().unwrap();
+            assert_eq!((b.running, b.waiting), (1, 0), "the abandoned wait holds nothing");
+        }
+        drop(held);
+    }
+
+    /// An HTTP/2 body of two bytes in one frame, as handlers of small JSON responses produce.
+    fn full_body(state: &Arc<ConnState>) -> GuardedBody {
+        state.budget.lock().unwrap().pending += 2;
+        GuardedBody::with_charge(full(Bytes::from_static(b"{}")), InflightGuard::new(state.clone()), true, Some(2), true)
+    }
+
+    #[test]
+    fn an_http2_response_that_fits_one_frame_is_not_finished_until_its_body_says_so() {
+        let state = Arc::new(ConnState::default());
+        let mut body = full_body(&state);
         assert!(matches!(poll_once(&mut body), Poll::Ready(Some(Ok(_)))));
+        assert!(!hyper::body::Body::is_end_stream(&body), "the frame is with hyper but may not have left");
+        // Dropped now (a client reset while h2 had no room): cancelled, not completed.
         drop(body);
-        assert_eq!(pending(&state), 500);
-        state.wrote(500);
-        assert_eq!(pending(&state), 0);
+        let w = state.window.lock().unwrap().unwrap();
+        assert_eq!((w.cancelled, w.completed), (1, 0));
+        let mut body = full_body(&state);
+        assert!(matches!(poll_once(&mut body), Poll::Ready(Some(Ok(_)))));
+        assert!(matches!(poll_once(&mut body), Poll::Ready(None)));
+        assert!(hyper::body::Body::is_end_stream(&body));
+        drop(body);
+        let w = state.window.lock().unwrap().unwrap();
+        assert_eq!((w.cancelled, w.completed), (1, 1));
+    }
+
+    #[test]
+    fn an_empty_http2_body_is_finished_from_the_start() {
+        let body = GuardedBody::with_charge(empty_body(), InflightGuard::new(Arc::new(ConnState::default())), true, Some(0), true);
+        assert!(hyper::body::Body::is_end_stream(&body));
     }
 
     #[test]
@@ -2245,8 +2395,8 @@ mod tests {
         }
         assert_eq!(slices.len(), 64);
         let shared: Vec<bool> = slices.iter().map(|s| inside(&original, s)).collect();
-        assert!(shared[..61].iter().all(|s| *s), "the earlier slices keep pointing into the response");
-        assert!(shared[61..].iter().all(|s| !*s), "the last 48 KiB are copies");
+        assert!(shared[..60].iter().all(|s| *s), "the earlier slices keep pointing into the response");
+        assert!(shared[60..].iter().all(|s| !*s), "the last 64 KiB (send buffer, one slice, one frame in the codec) are copies");
         assert!(slices.iter().all(|s| s.iter().all(|b| *b == 7)));
     }
 

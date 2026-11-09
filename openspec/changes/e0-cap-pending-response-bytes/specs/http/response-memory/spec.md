@@ -107,6 +107,36 @@ pending bytes fit in the share reserved for its handler MUST never be reset for 
   default options
 - **THEN** all 100 are answered `200` with their full body and no stream is reset
 
+### Requirement: Waiting for room is bounded
+A request SHALL wait for room in the connection's budget at most `ServerOptions::max_pending_response_wait` (default
+5 seconds; `None` waits without limit). When the time is up over HTTP/2 the server MUST reset the stream with
+`REFUSED_STREAM` without running the handler, and the request SHALL NOT count as cancelled or completed for the
+rapid-reset rule. Over HTTP/1 the server MUST close the connection. The first expiry on a connection SHALL be logged
+as a warning naming the option, and later ones on the same connection MUST NOT be logged.
+
+#### Scenario: A slow download does not hold the other streams for ever
+- **WHEN** an HTTP/2 client holds an in-memory response of 1 MiB on a server with a 1 MiB cap and
+  `max_pending_response_wait` of 800 ms, reads it at a trickle, and opens five other streams
+- **THEN** the five streams are reset with `REFUSED_STREAM` and the connection stays open
+
+#### Scenario: Refusals are not cancellations
+- **WHEN** six streams that waited too long are refused on a connection with `http2_max_cancelled_streams(3)`
+- **THEN** the connection is not closed and none of their handlers ran
+
+#### Scenario: Unlimited wait
+- **WHEN** a server has `max_pending_response_wait(None)` and a stalled client's held responses fill the budget
+- **THEN** a new stream is neither answered nor reset after 1.5 seconds
+
+### Requirement: HTTP/1 charges end when hyper flushes the socket
+Over HTTP/1 the charge of a response body that hyper took into its write buffer SHALL be released when hyper flushes
+the connection's socket (which it does only with its write buffer empty), whatever number of bytes it wrote, so that
+bytes hyper drops (a body longer than its declared length) never leave the connection waiting for room.
+
+#### Scenario: Truncated response
+- **WHEN** a handler returns a stream longer than its declared `Content-Length` and the client sends another request
+  on the same connection
+- **THEN** the second request is answered
+
 ### Requirement: Slow and resetting clients hold bounded memory
 With the limit on, the pending bytes of in-memory responses on one connection MUST NOT exceed the larger of the cap
 and the largest single response, whatever the client reads; streamed bodies add at most the data frame each holds.
@@ -137,12 +167,14 @@ implementation requires 64 KiB.
 
 ### Requirement: Ended HTTP/2 bodies do not keep their allocation alive
 Over HTTP/2 the server SHALL hand the slices of a data frame that may still be buffered after its body ends (the last
-send-buffer size plus 16 KiB of each frame it cuts) in allocations of their own, so that the memory kept for a
+send-buffer size plus 32 KiB of each frame it cuts: one slice handed when there was room and one frame held by the
+protocol codec) in allocations of their own, so that the memory kept for a
 stream after its response body ended is at most that amount, not the whole response.
 
 #### Scenario: Last slices are copies
 - **WHEN** `GuardedBody` hands a 1 MiB in-memory HTTP/2 body to hyper in 16 KiB slices with a 32 KiB send buffer
-- **THEN** the slices of the last 48 KiB do not point into the original allocation, and the earlier slices do
+- **THEN** the slices of the last 64 KiB (send buffer, the slice handed when there was room, and the one frame the
+  HTTP/2 codec keeps outside its buffer count) do not point into the original allocation, and the earlier slices do
 
 #### Scenario: Window update trickle after the body ended
 - **WHEN** an HTTP/2 client downloads all but the last bytes of a 1 MiB response and then grants one byte of window

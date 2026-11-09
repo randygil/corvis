@@ -86,6 +86,26 @@ of `tests/send_timeout.rs`.
   default options and record the peak RSS in design.md (expected: about 8 MiB above the baseline per connection
   instead of 103-114 MiB)
 
+## 8. Security round (2026-11-09)
+
+- [x] 8.1 HTTP/1: release the deferred charges when `TimedIo::poll_flush` completes (remove the `handed` / `written`
+  counters); verify the unit tests (a charge is released even when hyper wrote fewer bytes than it took, 1000
+  truncated responses leave `pending` at 0) and `tests/response_memory.rs` (a truncated response does not wedge the
+  connection)
+- [x] 8.2 Add `ServerOptions::max_pending_response_wait` (default 5 s, `None`) and refuse a request that waited too
+  long: `REFUSED_STREAM` over HTTP/2 without counting it, connection closed over HTTP/1, warning once per connection;
+  verify the new response_memory tests (refused and not counted, big response read slowly, unlimited wait)
+- [x] 8.3 `GuardedBody::is_end_stream` reports false over HTTP/2 until `poll_frame` returned `None` once data was
+  handed to hyper; verify the unit tests and the small-response test in `tests/http2_limits.rs`
+- [x] 8.4 Copy a 64 KiB tail (`H2_TAIL` = send buffer + two slices) because h2's codec keeps one data frame outside
+  its buffer; verify the unit test of the copied slices
+- [x] 8.5 Wake the waiting requests only when one could be admitted (`Budget::should_wake`); verify the unit test
+- [x] 8.6 Docs EN + ES: the new option, the head-of-line caveat, the burst caveat for fast readers, 64 KiB; run
+  `npm run docs:check`
+- [x] 8.7 Re-run fmt, clippy (workspace, no default features, each feature), `cargo test --workspace`,
+  `cargo test -p corvis --features compression`; re-run the reviewer's modes `wedge`, `wedgehold`, `hol`, `rstsmall`,
+  `burst`, `herd`, `h1slack` and record the results
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

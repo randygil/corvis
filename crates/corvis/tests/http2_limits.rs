@@ -641,7 +641,12 @@ async fn idle_http2_connection_is_closed() {
 /// `cancels` streams to a 100 KiB route (the client never grants window beyond the initial 64 KiB, so their bodies do
 /// not end) and `fast` quick requests, waits until every stream got its HEADERS, then resets the first kind. Returns
 /// whether the server closed the connection, and how many requests were answered when it stopped.
-async fn reset_after_headers(addr: std::net::SocketAddr, (cancels, fast): (u32, u32), total_cancels: u32) -> (bool, u32) {
+async fn reset_after_headers(
+    addr: std::net::SocketAddr,
+    (cancels, fast): (u32, u32),
+    total_cancels: u32,
+    (cancel_path, zero_window): (&str, bool),
+) -> (bool, u32) {
     let mut c = RawClient::connect(addr).await;
     let first = c.frame(Duration::from_secs(5)).await.unwrap().unwrap();
     assert_eq!(first.kind, FRAME_SETTINGS);
@@ -649,6 +654,10 @@ async fn reset_after_headers(addr: std::net::SocketAddr, (cancels, fast): (u32, 
     wr.write_all(&frame_bytes(FRAME_SETTINGS, 1, 0, &[])).await.unwrap();
     // A large connection window, so the bodies of the reset streams do not starve the quick requests.
     wr.write_all(&frame_bytes(8, 0, 0, &(1u32 << 30).to_be_bytes())).await.unwrap();
+    if zero_window {
+        // No stream window at all: not a byte of any body leaves, however small.
+        wr.write_all(&frame_bytes(FRAME_SETTINGS, 0, 0, &[0, 4, 0, 0, 0, 0])).await.unwrap();
+    }
     let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let headers = std::sync::Arc::new(AtomicUsize::new(0));
     let (flag, seen) = (closed.clone(), headers.clone());
@@ -669,7 +678,7 @@ async fn reset_after_headers(addr: std::net::SocketAddr, (cancels, fast): (u32, 
         }
         flag.store(true, Ordering::SeqCst);
     });
-    let mid = request_block("/t/mid");
+    let mid = request_block(cancel_path);
     let ok = request_block("/t/ok");
     let (mut id, mut expected, mut sent) = (1u32, 0usize, 0u32);
     let started = Instant::now();
@@ -708,7 +717,7 @@ async fn reset_after_headers(addr: std::net::SocketAddr, (cancels, fast): (u32, 
 #[corvis::test]
 async fn streams_reset_after_their_handler_finished_count_as_cancelled() {
     let addr = serve(ServerOptions::new().h2c(true)).await;
-    let (closed, answered) = reset_after_headers(addr, (50, 0), 800).await;
+    let (closed, answered) = reset_after_headers(addr, (50, 0), 800, ("/t/mid", false)).await;
     assert!(closed, "the server closed the connection after {answered} answers");
 }
 
@@ -717,7 +726,16 @@ async fn streams_reset_after_their_handler_finished_count_as_cancelled() {
 #[corvis::test]
 async fn completed_requests_still_earn_credit_against_streams_reset_after_their_headers() {
     let addr = serve(ServerOptions::new().h2c(true)).await;
-    let (closed, answered) = reset_after_headers(addr, (10, 50), 600).await;
+    let (closed, answered) = reset_after_headers(addr, (10, 50), 600, ("/t/mid", false)).await;
     assert!(answered >= 3600, "the whole pattern ran ({answered} answers)");
     assert!(!closed, "3000 completed requests earn credit for 600 resets");
+}
+
+/// The same for responses that fit one frame: hyper takes the whole body before h2 has room for it, but not a byte
+/// leaves while the client's window is 0, so a reset after the HEADERS is still a cancelled request.
+#[corvis::test]
+async fn small_responses_reset_after_their_headers_count_as_cancelled() {
+    let addr = serve(ServerOptions::new().h2c(true)).await;
+    let (closed, answered) = reset_after_headers(addr, (50, 0), 800, ("/t/ok", true)).await;
+    assert!(closed, "the server closed the connection after {answered} answers");
 }

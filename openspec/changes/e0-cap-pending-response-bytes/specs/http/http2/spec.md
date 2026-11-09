@@ -33,6 +33,12 @@ logged.
 - **THEN** the server sends a GOAWAY and closes the connection, because those requests count as cancelled and none
   completed
 
+#### Scenario: Small responses reset after their headers
+- **WHEN** an HTTP/2 client with window 0 opens streams to a route whose response fits one frame, waits for each
+  response's HEADERS and resets the stream before any DATA, 600 times within 10 seconds
+- **THEN** the server sends a GOAWAY and closes the connection: a response counts as completed only after its body
+  reported its end, which for a response with data is after the last, possibly empty, DATA frame
+
 #### Scenario: Downloads that finish still earn credit
 - **WHEN** an HTTP/2 client completes 3000 small requests and resets 600 streams after their HEADERS within 10 seconds
 - **THEN** the connection is not closed
