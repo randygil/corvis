@@ -472,27 +472,34 @@ async fn trickled_window_updates_keep_at_most_eight_responses_and_new_streams_wa
     assert!(!c.is_closed());
 }
 
-/// Open 100 streams, never read, reset them, open 100 more: every round keeps at most eight responses and the resets
-/// of the cycle count as cancelled requests, so the connection is eventually told to go away.
+/// Open 100 streams, never read, reset them, open 100 more: every round keeps at most eight responses. The pace follows
+/// the server (a round ends when its eight kept responses are out), not the clock.
 #[tokio::test]
-async fn an_rst_cycle_keeps_eight_responses_per_round_and_is_closed() {
+async fn an_rst_cycle_keeps_eight_responses_per_round() {
     let addr = serve(quiet(ServerOptions::new())).await;
     let c = H2Raw::connect(addr, SETTINGS_WINDOW_0).await;
-    let mut rounds = 0;
-    while !c.is_closed() && rounds < 25 {
+    for round in 0..3 {
         let ids = c.open(100, "/t/slow-big", &[]).await;
-        let t = Instant::now();
-        until("the round was answered or the connection closed", 15, || {
-            c.is_closed() || c.headers(&ids).len() + c.resets(&ids, ENHANCE_YOUR_CALM) >= 100 || t.elapsed() > Duration::from_secs(3)
-        })
-        .await;
-        assert!(c.headers(&ids).len() <= 8, "round {rounds} kept {}", c.headers(&ids).len());
+        until("the eight responses of the round are out", 60, || c.is_closed() || c.headers(&ids).len() >= 8).await;
+        // Give a ninth response the chance to show up before resetting.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(c.headers(&ids).len() <= 8, "round {round} kept {}", c.headers(&ids).len());
         c.reset(&ids).await;
-        rounds += 1;
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    until("the connection is closed", 10, || c.is_closed()).await;
-    assert!(rounds >= 3, "closed too early: {rounds} rounds");
+}
+
+/// The streams an RST cycle opens and resets count as cancelled requests, whether the server dropped their response,
+/// they were still waiting for room, or their handler was running: one round of 100 passes a ceiling of 30 and the
+/// connection is told to go away. The rapid-reset rule is a rate (a default floor of 500 cancelled requests per 10 s),
+/// so the ceiling is lowered to make the outcome depend on counts, not on how fast the machine runs the cycle.
+#[tokio::test]
+async fn an_rst_cycle_is_closed_by_the_rapid_reset_rule() {
+    let addr = serve(quiet(ServerOptions::new()).http2_max_cancelled_streams(30)).await;
+    let c = H2Raw::connect(addr, SETTINGS_WINDOW_0).await;
+    let ids = c.open(100, "/t/slow-big", &[]).await;
+    until("eight responses are out", 60, || c.is_closed() || c.headers(&ids).len() >= 8).await;
+    c.reset(&ids).await;
+    until("the connection is told to go away", 60, || c.is_closed()).await;
 }
 
 /// A request that waits for room longer than `max_pending_response_wait` is refused (the handler never ran, the client

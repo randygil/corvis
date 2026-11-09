@@ -288,6 +288,26 @@ Implemented on top of `batch/phase07-o` (`f09eb10`). Decisions and deviations:
   before it was answered. The stalled stream now uses `/t/big` (1 MiB); the assertion about progress is unchanged.
   The same head-of-line effect applies to a real client that downloads one very large in-memory response while
   opening other streams: they wait until it ends (documented under "Large payloads belong in streamed bodies").
+- **CI failure of `an_rst_cycle_keeps_eight_responses_per_round_and_is_closed` (batch run 42680389608, ubuntu and
+  windows): timing of the test, not a security gap.** The test cycled up to 25 rounds of 100 streams, waited for each
+  round up to 3 s and expected the rapid-reset rule to close the connection. On a fast machine all 100 handlers are
+  admitted at once (their shares fit), eight responses are kept, 92 are reset and a round takes under a second:
+  100 cancellations per round reach the floor of 500 per 10 s within about six rounds. On a slow machine the
+  streams reach admission spread over more than the 500 ms the handlers sleep, so the cap fills with the first eight
+  responses and the rest wait for room until the client resets them; the round then lasts the whole 3 s, which is 33
+  cancelled requests per second, under the floor of 500 per 10 s (50 per second) of #150, and the connection is
+  correctly left open. Reproduced locally by running the test next to 64 busy processes on 32 cores: 25 rounds, never
+  closed (also with a pace that followed the server instead of the clock, about 3.5 s per round). The counting is
+  right: the streams that wait for room count as cancelled when the client resets them (`Outcome::Pending` on the
+  dropped future; the unit and integration tests of the waiting request cover it), the dropped responses count as
+  cancelled (`Outcome::Dropped`), and nothing in a cycle completes. A cycle slower than 50 cancelled requests per
+  second is inside the rule's designed tolerance, and what it holds meanwhile is bounded by the cap (8 MiB per
+  connection) and its handler runs by the same rate (waiting streams run no handler), so an attacker on a slow server
+  cannot hold more memory or run more handlers than the floor allows. No change to the counting. The test is split in
+  two that depend on counts, not on speed: `an_rst_cycle_keeps_eight_responses_per_round` (three rounds paced by the
+  server, at most eight responses each) and `an_rst_cycle_is_closed_by_the_rapid_reset_rule`, which lowers
+  `http2_max_cancelled_streams` to 30 so that one round of 100 cancelled requests closes the connection whatever the
+  machine does. Both pass next to 64 busy processes.
 - The parity check (task 7.5) was not run: the implementation brief leaves it to the maintainer's session.
 
 ### Measurements
