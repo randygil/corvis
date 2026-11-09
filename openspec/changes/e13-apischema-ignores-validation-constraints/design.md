@@ -171,3 +171,24 @@ the code on 2026-11-08:
 1. `is_enum` maps to `enum`.
 2. The two quirks of the original plugin are fixed, not copied, and documented as differences: `is_positive` / `is_negative` on floats produce `exclusiveMinimum: 0` / `exclusiveMaximum: 0` (integers keep `minimum: 1` / `maximum: -1`), and `contains` produces a `pattern` with the text escaped.
 3. The fixture pins an exact class-validator 0.14.x version.
+
+## Implementation notes
+
+- The review notes were applied: `is_enum` maps to `enum`; floats get `exclusiveMinimum: 0` / `exclusiveMaximum: 0` for
+  `is_positive` / `is_negative` (a field whose type, through `Option` / `Vec` / `Box`, is `f32` or `f64`; integers and
+  any other type keep `minimum: 1` / `maximum: -1`; a type alias to a float is seen as an integer); `contains` emits an
+  escaped `pattern` (`__private::escape_pattern` escapes `\ ^ $ . * + ? ( ) [ ] { } |`, valid in ECMAScript and Rust
+  regex syntax); the fixture pins class-validator 0.14.4.
+- For a float, `is_positive` does not replace an earlier `minimum` (it adds `exclusiveMinimum`), so `min(5)` with
+  `is_positive` on an `f64` gives both keys.
+- Deviation: the intended differences are listed in the Rust test (`known_differences()` in
+  `api_schema_constraints.rs`, asserted against the recorded value) and not in the generated JSON, because the JSON is
+  produced by the original and a hand-edited entry would be lost on regeneration. The fixture matched the spec delta
+  otherwise (no change to the mapping or the precedence).
+- Fixture details: the plugin refuses `dtoFileNameSuffix: ['.ts']`, so the DTOs are in `cases.dto.ts`; the plugin emits
+  `require()`, so `generate.mjs` compiles to CommonJS in `out/` (ignored by git, like `node_modules`). The committed
+  files are `package.json`, `package-lock.json`, `cases.dto.ts`, `generate.mjs` and `class_validator_shim.json`.
+- `scripts/check-naming.mjs` gained an allowlist entry for `crates/corvis-swagger/tests/fixtures/**` (the fixture names
+  the original's packages).
+- Port apps (task 6.1): no `derive(... ApiSchema` or `derive(... Validate` under
+  `C:/Users/Usuario/Devel/corvis-tests/corvis/*/src` (grep on 2026-11-09 found none).- `cargo doc -p corvis-swagger --no-deps` prints two warnings that were already there and are not in code of this change: an unresolved link to `crate::model` and a public doc of `serialize_config_to_js` that links to the private item `escape_inline_json`.
