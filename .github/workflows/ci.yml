@@ -1,14 +1,15 @@
-# The definition-of-done checks of CONTRIBUTING.md, on every pull request to main.
+# The definition-of-done checks of CONTRIBUTING.md, on every pull request to main and on every push to main.
 #
-# The repository is private and Actions minutes are limited, so this workflow runs only on pull requests and on
-# manual dispatch: no push or schedule trigger. A manual run on main also refreshes the caches that every pull
-# request can restore.
+# main is protected: these jobs are required status checks, so changes reach main only through a pull request whose
+# checks passed. Runs on main also refresh the caches that every pull request can restore.
 #
 # Third-party actions are pinned to a full commit SHA (version in the comment); actions/* to a major version.
 name: CI
 
 on:
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -17,7 +18,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request cancels its run; every commit on main keeps its own result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # The one place the Rust version is set. Bumping it is a deliberate pull request that fixes any new lints.

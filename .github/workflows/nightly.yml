@@ -1,10 +1,13 @@
 # The long checks: fuzzing with 100,000 cases per property and `cargo audit` against the latest advisory database.
 #
-# Manual only (Actions > Nightly checks > Run workflow): the repository is private and Actions minutes are limited, so
-# there is no schedule trigger. Run it on main before a release, after a change to a parser, and every few weeks.
+# Runs every day on main, and by hand (Actions > Nightly checks > Run workflow), for example after a change to a parser
+# or before a release.
 name: Nightly checks
 
 on:
+  schedule:
+    # 07:17 UTC every day (off the hour, when scheduled runs are less delayed).
+    - cron: "17 7 * * *"
   workflow_dispatch:
     inputs:
       cases:
@@ -32,7 +35,7 @@ jobs:
     timeout-minutes: 120
     env:
       # Passed through the environment, never expanded into a script.
-      PROPTEST_CASES: ${{ inputs.cases }}
+      PROPTEST_CASES: ${{ inputs.cases || '100000' }}
     steps:
       - uses: actions/checkout@v7
         with:
