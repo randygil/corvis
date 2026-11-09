@@ -29,3 +29,29 @@ export function parseChanges(output: string, cwd: string): FileChange[] {
   return changes;
 }
 
+export interface CorvisPathResult {
+  /** The folder to pass as `CORVIS_PATH` (the `crates/corvis` crate folder). */
+  path?: string;
+  /** Why the configured value cannot be used. */
+  error?: string;
+}
+
+/**
+ * Resolves the `corvis.new.corvisPath` setting. Empty gives `{}`; a valid value gives the
+ * `crates/corvis` folder (a repository root is accepted and turned into it); anything else
+ * gives an error message. `home` and `exists` are parameters so no file system is needed.
+ */
+export function resolveCorvisPath(value: string | undefined, home: string, exists: (p: string) => boolean): CorvisPathResult {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return {};
+  const expanded = trimmed.startsWith('~') ? path.join(home, trimmed.slice(1)) : trimmed;
+  if (!path.isAbsolute(expanded)) {
+    return { error: `corvis.new.corvisPath must be an absolute path (got "${trimmed}")` };
+  }
+  const resolved = exists(path.join(expanded, 'crates', 'corvis-cli', 'Cargo.toml')) ? path.join(expanded, 'crates', 'corvis') : expanded;
+  if (!exists(path.join(resolved, 'Cargo.toml'))) {
+    return { error: `corvis.new.corvisPath points at ${resolved}, which has no Cargo.toml` };
+  }
+  return { path: resolved };
+}
+

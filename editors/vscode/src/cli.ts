@@ -120,11 +120,12 @@ export async function requireCli(project?: CargoProject): Promise<CliInvocation 
 }
 
 /** Runs the CLI and streams its output to the "Corvis" output channel. */
-export function runCli(cli: CliInvocation, args: string[], cwd: string, token?: vscode.CancellationToken): Promise<RunResult> {
+export function runCli(cli: CliInvocation, args: string[], cwd: string, token?: vscode.CancellationToken, extraEnv?: Record<string, string>): Promise<RunResult> {
   const out = outputChannel();
   const shown = [cli.label, ...args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))].join(' ');
   out.appendLine(`> ${shown}`);
   out.appendLine(`  (cwd: ${cwd})`);
+  if (extraEnv?.CORVIS_PATH) out.appendLine(`  (CORVIS_PATH: ${extraEnv.CORVIS_PATH})`);
   return new Promise((resolve) => {
     let buffer = '';
     let child: cp.ChildProcess;
@@ -133,7 +134,7 @@ export function runCli(cli: CliInvocation, args: string[], cwd: string, token?: 
         cwd,
         shell: needsShell(cli.command),
         windowsHide: true,
-        env: { ...process.env, NO_COLOR: '1', CARGO_TERM_COLOR: 'never' },
+        env: { ...process.env, ...extraEnv, NO_COLOR: '1', CARGO_TERM_COLOR: 'never' },
       });
     } catch (e) {
       out.appendLine(String(e));

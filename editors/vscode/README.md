@@ -1,104 +1,111 @@
-# Corvis para VS Code
+# Corvis for VS Code
 
-Extensión para trabajar con [Corvis](https://github.com/randygil/corvis), el framework web
-modular para Rust (módulos, inyección de dependencias, controladores y decoradores). Incluye
-snippets de los atributos reales del framework, comandos que ejecutan la CLI `corvis`, un
-explorador de módulos, controladores y rutas, y resaltado propio para `#[controller]`, `#[get]`,
-`#[injectable]` y el resto de los "decoradores".
+Extension for working with [Corvis](https://github.com/randygil/corvis), the modular web
+framework for Rust (modules, dependency injection, controllers and decorators). It includes
+snippets for the framework's real attributes, commands that run the `corvis` CLI, an
+explorer for modules, controllers and routes, and its own highlighting for `#[controller]`, `#[get]`,
+`#[injectable]` and the rest of the "decorators".
 
-## Qué incluye
+## What is included
 
 ### Snippets
 
-Todos los prefijos empiezan con `cv-` (también funcionan con `corvis-`, por ejemplo
-`corvis-controller`). Cada snippet se expande y se compila contra Corvis antes de publicarse
-(ver [Desarrollo](#desarrollo)).
+All prefixes start with `cv-` (they also work with `corvis-`, for example
+`corvis-controller`). Every snippet is expanded and compiled against Corvis before being published
+(see [Development](#development)).
 
-| Prefijo | Genera |
+| Prefix | Generates |
 |---|---|
-| `cv-main` | `#[corvis::main]` con `CorvisFactory::create`, pipes globales y `listen` |
+| `cv-main` | `#[corvis::main]` with `CorvisFactory::create`, global pipes and `listen` |
 | `cv-module`, `cv-module-empty`, `cv-module-global` | `#[module(imports, controllers, providers, exports)]`, `#[module]`, `#[module(global, ...)]` |
-| `cv-dynamic-module` | Módulo con `for_root(...) -> DynamicModule` |
-| `cv-configure` | `impl CorvisModule` que aplica un middleware con `consumer.apply::<M>()` |
-| `cv-controller`, `cv-controller-empty` | `#[controller]` + `#[routes]` con CRUD, o con un solo `#[get]` |
-| `cv-get`, `cv-get-id`, `cv-post`, `cv-put`, `cv-patch`, `cv-delete` | Handlers con `#[param("id", ParseIntPipe)]` y `#[body]` |
-| `cv-get-query`, `cv-route-roles` | `#[query]`; ruta con `#[set_metadata(ROLES_KEY, [...])]` y `#[use_guards]` |
-| `cv-body`, `cv-param`, `cv-query`, `cv-header-param`, `cv-body-zod` | Parámetros decorados (`@Body()`, `@Param()`, `@Query()`, `@Headers()`, `ZodValidationPipe`) |
-| `cv-service`, `cv-dep`, `cv-inject` | `#[injectable]`, campo `Arc<T>` inyectado, `#[inject("TOKEN")]` |
+| `cv-dynamic-module` | Module with `for_root(...) -> DynamicModule` |
+| `cv-configure` | `impl CorvisModule` that applies a middleware with `consumer.apply::<M>()` |
+| `cv-controller`, `cv-controller-empty` | `#[controller]` + `#[routes]` with CRUD, or with a single `#[get]` |
+| `cv-get`, `cv-get-id`, `cv-post`, `cv-put`, `cv-patch`, `cv-delete` | Handlers with `#[param("id", ParseIntPipe)]` and `#[body]` |
+| `cv-get-query`, `cv-route-roles` | `#[query]`; route with `#[set_metadata(ROLES_KEY, [...])]` and `#[use_guards]` |
+| `cv-body`, `cv-param`, `cv-query`, `cv-header-param`, `cv-body-zod` | Decorated parameters (`@Body()`, `@Param()`, `@Query()`, `@Headers()`, `ZodValidationPipe`) |
+| `cv-service`, `cv-dep`, `cv-inject` | `#[injectable]`, injected `Arc<T>` field, `#[inject("TOKEN")]` |
 | `cv-use-value`, `cv-use-factory` | `Provider::use_value(...)`, `Provider::use_factory(...)` |
-| `cv-guard`, `cv-roles-guard` | `CanActivate`; guard de roles con `Reflector::get_all_and_override` |
+| `cv-guard`, `cv-roles-guard` | `CanActivate`; roles guard with `Reflector::get_all_and_override` |
 | `cv-interceptor`, `cv-pipe`, `cv-filter`, `cv-middleware` | `CorvisInterceptor`, `PipeTransform`, `ExceptionFilter`, `CorvisMiddleware` |
-| `cv-param-decorator` | Parámetro propio con `FromContext` (`createParamDecorator`) |
-| `cv-on-module-init` | `OnModuleInit`, `OnApplicationBootstrap` u `OnModuleDestroy` |
-| `cv-on-event`, `cv-cron` | `#[handlers]` con `#[on_event]`, `#[cron]` e `#[interval]` |
-| `cv-gateway` | `#[websocket_gateway]` con `#[subscribe_message]` |
-| `cv-dto` | DTO con `#[derive(Validate)]` (class-validator) |
-| `cv-zod-dto`, `cv-zod-schema`, `cv-zod-object`, `cv-zod-query` | `zod_dto!(Dto, z::object! {..})`, función de schema, `z::object!`, query con `z::coerce` |
-| `cv-model`, `cv-orm-service` | Modelo `#[derive(Model)]` de corvis-orm y servicio con `Arc<OrmService>` |
-| `cv-find-many`, `cv-find-unique`, `cv-create`, `cv-update`, `cv-upsert`, `cv-delete-record`, `cv-count`, `cv-transaction` | Consultas de corvis-orm con argumentos JSON (`where`, `include`, `orderBy`...) |
+| `cv-param-decorator` | Custom parameter with `FromContext` (`createParamDecorator`) |
+| `cv-on-module-init` | `OnModuleInit`, `OnApplicationBootstrap` or `OnModuleDestroy` |
+| `cv-on-event`, `cv-cron` | `#[handlers]` with `#[on_event]`, `#[cron]` and `#[interval]` |
+| `cv-gateway` | `#[websocket_gateway]` with `#[subscribe_message]` |
+| `cv-dto` | DTO with `#[derive(Validate)]` (class-validator) |
+| `cv-zod-dto`, `cv-zod-schema`, `cv-zod-object`, `cv-zod-query` | `zod_dto!(Dto, z::object! {..})`, schema function, `z::object!`, query with `z::coerce` |
+| `cv-model`, `cv-orm-service` | corvis-orm `#[derive(Model)]` model and service with `Arc<OrmService>` |
+| `cv-find-many`, `cv-find-unique`, `cv-create`, `cv-update`, `cv-upsert`, `cv-delete-record`, `cv-count`, `cv-transaction` | corvis-orm queries with JSON arguments (`where`, `include`, `orderBy`...) |
 | `cv-api-controller`, `cv-api-route`, `cv-swagger-setup` | `#[api_tags]`, `#[api_operation]`, `#[api_ok_response]`; `DocumentBuilder` + `SwaggerModule::setup` |
-| `cv-test` | `#[corvis::test]` con `Test::create_testing_module()` y `request(&app)` |
+| `cv-test` | `#[corvis::test]` with `Test::create_testing_module()` and `request(&app)` |
 | `cv-use` | `use corvis::prelude::*;` |
 
-Los snippets suponen `use corvis::prelude::*;` en el archivo. Los de modelos de corvis-orm usan
-`use corvis_orm::prelude::*;` y los de Swagger, `use corvis_swagger::*;`.
+The snippets assume `use corvis::prelude::*;` in the file. The corvis-orm model snippets use
+`use corvis_orm::prelude::*;` and the Swagger ones use `use corvis_swagger::*;`.
 
-### Comandos de la CLI
+### CLI commands
 
-| Comando | Qué hace |
+| Command | What it does |
 |---|---|
-| **Corvis: Generate…** | Elige el schematic (resource, module, controller, service, guard, interceptor, pipe, filter, middleware, gateway), el nombre y las opciones `--flat` / `--no-spec`, y ejecuta `corvis g` en la raíz del proyecto |
-| **Corvis: Generate Resource (CRUD)…**, **Generate Module…**, ... | Lo mismo, con el schematic ya elegido |
-| **Corvis: New Project…** | `corvis new <nombre>` en la carpeta que elijas; al terminar ofrece abrirla |
-| **Corvis: Start Application** / **(watch)** | `corvis start` / `corvis start --watch` en una tarea de la terminal |
+| **Corvis: Generate…** | Picks the schematic (resource, module, controller, service, guard, interceptor, pipe, filter, middleware, gateway), the name and the `--flat` / `--no-spec` options, and runs `corvis g` at the project root |
+| **Corvis: Generate Resource (CRUD)…**, **Generate Module…**, ... | The same, with the schematic already chosen |
+| **Corvis: New Project…** | `corvis new <name>` in the folder you pick; when it finishes it offers to open it. With `corvis.new.corvisPath` set, it passes that folder as `CORVIS_PATH` (see below) |
+| **Corvis: Start Application** / **(watch)** | `corvis start` / `corvis start --watch` in a terminal task |
 | **Corvis: Build Application (release)** | `corvis build --release` |
-| **Corvis: Show Project Info** | `corvis info` en el panel de salida "Corvis" |
-| **Corvis: Go to Route…** | Busca una ruta por método, path o handler y abre el archivo en esa línea |
+| **Corvis: Show Project Info** | `corvis info` in the "Corvis" output panel |
+| **Corvis: Go to Route…** | Searches a route by method, path or handler and opens the file at that line |
 
-En el explorador de archivos, el clic derecho sobre una carpeta muestra el submenú **Corvis** con
-los mismos schematics. Si la carpeta está directamente dentro de `src/` (por ejemplo
-`src/users`), los archivos se crean ahí con `--path users`, que es lo que admite la CLI. Al
-terminar se abre el archivo principal generado, y los mensajes `CREATE`/`UPDATE` quedan en el panel
-de salida **Corvis**.
+In the file explorer, right-clicking a folder shows the **Corvis** submenu with the same
+schematics. If the folder is directly inside `src/` (for example
+`src/users`), the files are created there with `--path users`, which is what the CLI supports. When
+it finishes, the main generated file is opened, and the `CREATE`/`UPDATE` messages are written to the
+**Corvis** output panel.
 
-La extensión busca la CLI en este orden:
+The extension looks for the CLI in this order:
 
-1. El ajuste `corvis.cli.path`.
-2. `corvis` en el `PATH`, o `~/.cargo/bin/corvis`.
-3. `cargo run -q --manifest-path <repo>/crates/corvis-cli/Cargo.toml --`, donde `<repo>` es el
-   ajuste `corvis.frameworkPath`, una carpeta del workspace que sea el repositorio de Corvis, o
-   la ruta de la dependencia `corvis = { path = "..." }` del `Cargo.toml` del proyecto.
+1. The `corvis.cli.path` setting.
+2. `corvis` in the `PATH`, or `~/.cargo/bin/corvis`.
+3. `cargo run -q --manifest-path <repo>/crates/corvis-cli/Cargo.toml --`, where `<repo>` is the
+   `corvis.frameworkPath` setting, a workspace folder that is the Corvis repository, or
+   the path of the `corvis = { path = "..." }` dependency in the project's `Cargo.toml`.
 
-Para instalar la CLI: `cargo install --path crates/corvis-cli` desde el repositorio de Corvis.
+To install the CLI: `cargo install --path crates/corvis-cli` from the Corvis repository.
 
-### Explorador de la aplicación
+**New Project** and the framework dependency. `corvis new` writes `corvis = { version = "<CLI version>" }` unless
+`CORVIS_PATH` points at a local checkout. If the `corvis.new.corvisPath` setting is not empty, **New Project** runs
+the CLI with `CORVIS_PATH` set to it (only for that command; an empty setting leaves the environment untouched). Until
+Corvis is published on crates.io, fill it in so the new project can resolve `corvis`. The value is the `crates/corvis`
+folder of your checkout (the repository root is also accepted), absolute, with `~` expanded, and it must contain a
+`Cargo.toml`; otherwise the extension shows an error and does not run the CLI.
 
-La vista **Corvis** de la barra de actividad tiene dos paneles, construidos a partir de los
-archivos `.rs` del workspace (sin compilar):
+### Application explorer
 
-- **Modules**: cada `#[module]` con sus imports (enlazados al módulo importado), controladores con
-  sus rutas, providers (con sus `#[cron]`, `#[on_event]` y `#[subscribe_message]`) y exports. El
-  módulo que recibe `CorvisFactory::create::<M>()` aparece primero, marcado como `root`.
-- **Routes**: los controladores ordenados por path, cada uno con sus rutas `GET /api/v1/cats/:id`.
+The **Corvis** view in the activity bar has two panels, built from the workspace's
+`.rs` files (without compiling):
 
-El path completo tiene en cuenta `app.set_global_prefix("...")` y el versionado por URI
+- **Modules**: each `#[module]` with its imports (linked to the imported module), controllers with
+  their routes, providers (with their `#[cron]`, `#[on_event]` and `#[subscribe_message]`) and exports. The
+  module that receives `CorvisFactory::create::<M>()` appears first, marked as `root`.
+- **Routes**: the controllers sorted by path, each with its `GET /api/v1/cats/:id` routes.
+
+The full path takes into account `app.set_global_prefix("...")` and URI versioning
 (`enable_versioning(VersioningOptions::uri().default_version("1"))`, `#[controller(version = ..)]`,
-`#[version(..)]`). Al hacer clic se abre el archivo en la línea del item, y el ícono de copiar
-de una ruta copia su path. Si el workspace tiene varios crates, se agrupan por crate.
+`#[version(..)]`). Clicking opens the file at the item's line, and the copy icon
+of a route copies its path. If the workspace has several crates, they are grouped by crate.
 
-### Resaltado
+### Highlighting
 
-- Una gramática TextMate inyectada en Rust resalta los atributos de Corvis por categoría: DI
-  (`#[module]`, `#[controller]`, `#[injectable]`, `#[routes]`, `#[handlers]`...), rutas
+- A TextMate grammar injected into Rust highlights Corvis attributes by category: DI
+  (`#[module]`, `#[controller]`, `#[injectable]`, `#[routes]`, `#[handlers]`...), routes
   (`#[get]`, `#[post]`...), enhancers (`#[use_guards]`, `#[set_metadata]`, `#[http_code]`...),
-  parámetros (`#[body]`, `#[param]`, `#[query]`...), handlers (`#[cron]`, `#[on_event]`...),
-  Swagger (`#[api_*]`), class-validator y corvis-orm. También resalta `:id` y `*` dentro de los
-  paths de las rutas, las claves `imports =`, `controllers =`, etc., las llamadas a `z::...` y
-  `zod_dto!`. Además, los atributos con corchetes anidados (`controllers = [A, B]`) ya no
-  cortan el resaltado como pasa con la gramática de Rust que trae VS Code.
-- Con rust-analyzer activo, el resaltado semántico reemplaza los colores TextMate de los nombres
-  de atributos. Por eso la extensión también colorea esos nombres con decoraciones del editor,
-  que se dibujan encima. Los colores se cambian en `workbench.colorCustomizations`:
+  parameters (`#[body]`, `#[param]`, `#[query]`...), handlers (`#[cron]`, `#[on_event]`...),
+  Swagger (`#[api_*]`), class-validator and corvis-orm. It also highlights `:id` and `*` inside route
+  paths, the `imports =`, `controllers =`, etc. keys, `z::...` calls and
+  `zod_dto!`. In addition, attributes with nested brackets (`controllers = [A, B]`) no longer
+  break the highlighting as they do with the Rust grammar that ships with VS Code.
+- With rust-analyzer active, semantic highlighting replaces the TextMate colors of attribute
+  names. That is why the extension also colors those names with editor decorations,
+  which are drawn on top. The colors are changed in `workbench.colorCustomizations`:
 
   ```jsonc
   "workbench.colorCustomizations": {
@@ -110,66 +117,67 @@ de una ruta copia su path. Si el workspace tiene varios crates, se agrupan por c
   }
   ```
 
-- Junto a cada `#[get]`, `#[post]`, etc. aparece el path completo de la ruta (`GET /api/v1/cats/:id`).
+- Next to each `#[get]`, `#[post]`, etc. the full path of the route appears (`GET /api/v1/cats/:id`).
 
-Las decoraciones solo se aplican en workspaces cuyo `Cargo.toml` depende de Corvis.
+Decorations are only applied in workspaces whose `Cargo.toml` depends on Corvis.
 
-## Instalación
+## Installation
 
-Desde el archivo `.vsix`:
+From the `.vsix` file:
 
 ```bash
 code --install-extension corvis-vscode-0.1.0.vsix
 ```
 
-O en VS Code: vista de extensiones → menú `...` → **Install from VSIX...**.
+Or in VS Code: extensions view → `...` menu → **Install from VSIX...**.
 
-Requiere VS Code 1.90 o superior. Para los comandos de la CLI hace falta Rust (`cargo`) y la
-CLI `corvis` o el repositorio de Corvis (ver arriba).
+Requires VS Code 1.90 or later. The CLI commands need Rust (`cargo`) and the
+`corvis` CLI or the Corvis repository (see above).
 
-## Ajustes
+## Settings
 
-| Ajuste | Valor por defecto | Descripción |
+| Setting | Default | Description |
 |---|---|---|
-| `corvis.cli.path` | `""` | Ruta al ejecutable `corvis` |
-| `corvis.frameworkPath` | `""` | Carpeta del repositorio de Corvis, para usar `cargo run -p corvis-cli` |
-| `corvis.generate.flat` | `false` | Preselecciona `--flat` |
-| `corvis.generate.spec` | `true` | Si es `false`, preselecciona `--no-spec` |
-| `corvis.generate.openGeneratedFile` | `true` | Abre el archivo principal generado |
-| `corvis.decorations.enabled` | `true` | Colorea los atributos de Corvis con decoraciones |
-| `corvis.routeHints.enabled` | `true` | Muestra el path completo junto a cada ruta |
-| `corvis.explorer.exclude` | `**/{target,node_modules,.git}/**` | Archivos que no se indexan |
+| `corvis.cli.path` | `""` | Path to the `corvis` executable |
+| `corvis.frameworkPath` | `""` | Folder of the Corvis repository, to use `cargo run -p corvis-cli` |
+| `corvis.new.corvisPath` | `""` | Passed as `CORVIS_PATH` to `corvis new` (**New Project**): the `crates/corvis` folder of a local checkout, or the repository root |
+| `corvis.generate.flat` | `false` | Preselects `--flat` |
+| `corvis.generate.spec` | `true` | When `false`, preselects `--no-spec` |
+| `corvis.generate.openGeneratedFile` | `true` | Opens the main generated file |
+| `corvis.decorations.enabled` | `true` | Colors Corvis attributes with decorations |
+| `corvis.routeHints.enabled` | `true` | Shows the full path next to each route |
+| `corvis.explorer.exclude` | `**/{target,node_modules,.git}/**` | Files that are not indexed |
 
-## Limitaciones
+## Limitations
 
-- El explorador lee el código fuente con un escáner propio, no con rust-analyzer. No expande
-  macros ni resuelve `use`: enlaza los items por nombre dentro de cada crate. Los paths que no son
-  literales (`#[get(PATH)]`) se muestran tal cual.
-- `corvis g --path` solo admite carpetas directamente dentro de `src/`. Si eliges una carpeta más
-  profunda, la extensión te avisa y genera en `src/<nombre>/`.
-- La gramática TextMate no sabe si el crate usa Corvis, así que también colorea `#[get]` en otros
-  frameworks como actix o rocket. Las decoraciones sí se limitan a proyectos Corvis.
+- The explorer reads the source code with its own scanner, not with rust-analyzer. It does not expand
+  macros or resolve `use`: it links items by name inside each crate. Paths that are not
+  literals (`#[get(PATH)]`) are shown as they are.
+- `corvis g --path` only supports folders directly inside `src/`. If you pick a deeper
+  folder, the extension warns you and generates in `src/<name>/`.
+- The TextMate grammar does not know whether the crate uses Corvis, so it also colors `#[get]` in other
+  frameworks such as actix or rocket. The decorations are limited to Corvis projects.
 
-## Desarrollo
+## Development
 
 ```bash
 cd editors/vscode
 npm install
 npm run compile            # tsc -> out/
-npm test                   # pruebas del escáner (node --test)
-npm run verify-snippets    # expande cada snippet y ejecuta cargo check en un crate de prueba
-node scripts/smoke.mjs <carpeta-temporal>   # VS Code real: activa la extensión y ejecuta corvis g
-npm run package            # genera dist/corvis-vscode-<versión>.vsix
+npm test                   # scanner tests (node --test)
+npm run verify-snippets    # expands every snippet and runs cargo check in a test crate
+node scripts/smoke.mjs <temp-folder>   # real VS Code: activates the extension and runs corvis g
+npm run package            # produces dist/corvis-vscode-<version>.vsix
 ```
 
-`scripts/verify-snippets.mjs` escribe por defecto en `../corvis-tests/tmp/vscode` (fuera del
-workspace de Cargo de Corvis); puedes cambiarlo con `--crate <carpeta>`. Cada opción de los
-snippets con alternativas (`${1|get,post|}`) se compila por separado. La gramática se genera con
-`node scripts/build-grammar.mjs` y el ícono con `python scripts/make-icon.py` (Pillow).
+`scripts/verify-snippets.mjs` writes by default to `../corvis-tests/tmp/vscode` (outside the
+Corvis Cargo workspace); you can change it with `--crate <folder>`. Each snippet option
+with alternatives (`${1|get,post|}`) is compiled separately. The grammar is generated with
+`node scripts/build-grammar.mjs` and the icon with `python scripts/make-icon.py` (Pillow).
 
-Para probar la extensión sin empaquetarla, abre `editors/vscode` en VS Code y presiona `F5`
+To try the extension without packaging it, open `editors/vscode` in VS Code and press `F5`
 (**Run Extension**).
 
-## Licencia
+## License
 
 MIT

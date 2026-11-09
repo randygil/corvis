@@ -92,3 +92,5 @@ Corvis todavía no está en crates.io, así que un proyecto generado con los val
 ## Extensión para VS Code
 
 En `editors/vscode` hay una extensión con snippets, los comandos de la CLI en la paleta y un explorador de rutas. Su README explica cómo instalarla.
+
+**Corvis: New Project** ejecuta `corvis new`, así que la advertencia "Hasta el primer lanzamiento" de arriba también le aplica. Configura el ajuste `corvis.new.corvisPath` de la extensión con la carpeta `crates/corvis` de tu clon (también se acepta la raíz del repositorio) y el comando se ejecuta con `CORVIS_PATH` apuntando a ella, de modo que el proyecto generado tiene `corvis = { path = "..." }`. El valor debe ser absoluto (se expande `~`) y contener un `Cargo.toml`; si no, la extensión muestra un error y no ejecuta la CLI. Solo **New Project** recibe la variable. Con el ajuste vacío la extensión no cambia nada, y un `CORVIS_PATH` exportado en el shell que abrió VS Code sigue aplicando.
