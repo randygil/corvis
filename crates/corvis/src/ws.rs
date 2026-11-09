@@ -66,40 +66,63 @@ pub(crate) enum PushError {
     Full,
 }
 
-#[derive(Default)]
-struct OutState {
-    items: VecDeque<(Message, usize, Option<Ack>)>,
+/// What a queue holds: it reports the bytes an item counts against the queue's limit.
+pub(crate) trait QueueItem {
+    fn size(&self) -> usize;
+}
+
+impl QueueItem for Message {
+    fn size(&self) -> usize {
+        self.len() + 16
+    }
+}
+
+struct OutState<M> {
+    items: VecDeque<(M, usize, Option<Ack>)>,
     queued: usize,
     writing: usize,
     closed: bool,
 }
 
+impl<M> Default for OutState<M> {
+    fn default() -> Self {
+        OutState { items: VecDeque::new(), queued: 0, writing: 0, closed: false }
+    }
+}
+
 /// The outgoing queue of a connection, bounded in bytes. A single writer task drains it,
 /// so a peer that does not read only blocks its own writer; [`OutQueue::buffered`] is the
 /// `bufferedAmount` of `ws` (queued bytes plus the frame being written).
-pub(crate) struct OutQueue {
-    state: Mutex<OutState>,
+///
+/// It is generic over its item so Engine.IO sessions reuse the same bound: the WebSocket
+/// queues are `OutQueue<Message>` (the default), an Engine.IO session's outbox queues packets.
+pub(crate) struct OutQueue<M: QueueItem = Message> {
+    state: Mutex<OutState<M>>,
     notify: Notify,
+    /// Woken with `notify_waiters` on every change, for consumers that only look at the queue
+    /// (a pending long-poll) and must not take the single wake-up of the writer.
+    watchers: Notify,
     limit: usize,
 }
 
-fn frame_size(m: &Message) -> usize {
-    m.len() + 16
-}
-
-impl OutQueue {
+impl<M: QueueItem> OutQueue<M> {
     pub(crate) fn new(limit: usize) -> Self {
-        OutQueue { state: Mutex::new(OutState::default()), notify: Notify::new(), limit: limit.max(1) }
+        OutQueue { state: Mutex::new(OutState::default()), notify: Notify::new(), watchers: Notify::new(), limit: limit.max(1) }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, OutState> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, OutState<M>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queues a frame. A frame is always accepted when nothing is pending (so one message
+    fn wake(&self) {
+        self.notify.notify_one();
+        self.watchers.notify_waiters();
+    }
+
+    /// Queues an item. An item is always accepted when nothing is pending (so one message
     /// larger than the limit can still be sent); otherwise the total must stay within it.
-    pub(crate) fn push(&self, m: Message, ack: Option<Ack>) -> Result<(), PushError> {
-        let size = frame_size(&m);
+    pub(crate) fn push(&self, m: M, ack: Option<Ack>) -> Result<(), PushError> {
+        let size = m.size();
         let mut s = self.lock();
         if s.closed {
             return Err(PushError::Closed);
@@ -111,13 +134,13 @@ impl OutQueue {
         s.items.push_back((m, size, ack));
         s.queued += size;
         drop(s);
-        self.notify.notify_one();
+        self.wake();
         Ok(())
     }
 
-    /// Queues a close frame after the pending frames (or instead of them with `discard`) and
-    /// rejects any later frame. Returns `false` if the queue was already closed.
-    pub(crate) fn close(&self, frame: Option<CloseFrame<'static>>, discard: bool) -> bool {
+    /// Rejects any later item. The pending ones stay queued for the writer, or are dropped with
+    /// `discard`. Returns `false` if the queue was already closed.
+    pub(crate) fn seal(&self, discard: bool) -> bool {
         let mut s = self.lock();
         if s.closed && !discard {
             return false;
@@ -126,18 +149,58 @@ impl OutQueue {
             s.items.clear();
             s.queued = 0;
         }
-        let m = Message::Close(frame);
-        let size = frame_size(&m);
-        s.items.push_back((m, size, None));
-        s.queued += size;
         s.closed = true;
         drop(s);
-        self.notify.notify_one();
+        self.wake();
         true
     }
 
-    /// Next frame to write; `None` once closed and drained.
-    pub(crate) async fn next(&self) -> Option<(Message, usize, Option<Ack>)> {
+    /// `true` once sealed and every queued item was taken.
+    pub(crate) fn is_drained(&self) -> bool {
+        let s = self.lock();
+        s.closed && s.items.is_empty()
+    }
+
+    /// Number of queued items (not counting the one being written).
+    pub(crate) fn len(&self) -> usize {
+        self.lock().items.len()
+    }
+
+    /// Takes queued items in order while `cost` of the taken ones stays within `budget`; always at least one
+    /// when any is queued. Taken items no longer count against the limit.
+    pub(crate) fn take_batch(&self, budget: usize, mut cost: impl FnMut(&M) -> usize) -> Vec<M> {
+        let mut s = self.lock();
+        let mut taken = Vec::new();
+        let mut spent = 0usize;
+        while let Some((m, _, _)) = s.items.front() {
+            let c = cost(m);
+            if !taken.is_empty() && spent + c > budget {
+                break;
+            }
+            spent += c;
+            let (m, size, _) = s.items.pop_front().expect("front exists");
+            s.queued -= size;
+            taken.push(m);
+        }
+        taken
+    }
+
+    /// Resolves when an item is queued or the queue is sealed, without taking anything.
+    pub(crate) async fn wait_ready(&self) {
+        loop {
+            let notified = self.watchers.notified();
+            {
+                let s = self.lock();
+                if !s.items.is_empty() || s.closed {
+                    return;
+                }
+            }
+            notified.await;
+        }
+    }
+
+    /// Next item to write; `None` once closed and drained.
+    pub(crate) async fn next(&self) -> Option<(M, usize, Option<Ack>)> {
         loop {
             let notified = self.notify.notified();
             {
@@ -173,7 +236,30 @@ impl OutQueue {
         s.queued = 0;
         s.writing = 0;
         drop(s);
-        self.notify.notify_one();
+        self.wake();
+    }
+}
+
+impl OutQueue<Message> {
+    /// Queues a close frame after the pending frames (or instead of them with `discard`) and
+    /// rejects any later frame. Returns `false` if the queue was already closed.
+    pub(crate) fn close(&self, frame: Option<CloseFrame<'static>>, discard: bool) -> bool {
+        let mut s = self.lock();
+        if s.closed && !discard {
+            return false;
+        }
+        if discard {
+            s.items.clear();
+            s.queued = 0;
+        }
+        let m = Message::Close(frame);
+        let size = m.size();
+        s.items.push_back((m, size, None));
+        s.queued += size;
+        s.closed = true;
+        drop(s);
+        self.wake();
+        true
     }
 }
 
@@ -190,11 +276,23 @@ pub(crate) enum WriteEnd {
 
 /// Writes the frames of `queue` to `sink` until a close frame is written, a write fails or
 /// the queue is shut down.
-pub(crate) async fn write_loop<S>(mut sink: S, queue: Arc<OutQueue>) -> WriteEnd
+pub(crate) async fn write_loop<S>(sink: S, queue: Arc<OutQueue>) -> WriteEnd
 where
     S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
+    write_loop_with(sink, queue, |m| m).await
+}
+
+/// [`write_loop`] for a queue of any item, with `encode` turning each item into the frame to write. A queue that
+/// ends (sealed and drained) ends the loop with [`WriteEnd::Closed`], like a written close frame.
+pub(crate) async fn write_loop_with<S, M, F>(mut sink: S, queue: Arc<OutQueue<M>>, encode: F) -> WriteEnd
+where
+    S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+    M: QueueItem,
+    F: Fn(M) -> Message,
+{
     while let Some((m, size, ack)) = queue.next().await {
+        let m = encode(m);
         let close = matches!(m, Message::Close(_));
         let result = sink.send(m).await;
         queue.written(size);
@@ -238,26 +336,35 @@ pub(crate) fn guarded(context: &str, f: impl FnOnce()) -> bool {
 
 /// Bytes received and not yet taken from the `messages()` streams; the read loop stops
 /// reading from the socket while it is above the limit (TCP backpressure).
-struct UnreadGauge {
+pub(crate) struct UnreadGauge {
     bytes: AtomicUsize,
-    notify: Notify,
+    pub(crate) notify: Notify,
     limit: usize,
 }
 
 impl UnreadGauge {
-    fn over_limit(&self) -> bool {
+    pub(crate) fn new(limit: usize) -> Self {
+        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit }
+    }
+
+    pub(crate) fn over_limit(&self) -> bool {
         self.bytes.load(Ordering::SeqCst) > self.limit
+    }
+
+    /// Bytes received and not yet taken.
+    pub(crate) fn unread(&self) -> usize {
+        self.bytes.load(Ordering::SeqCst)
     }
 }
 
 /// Accounts one message queued in a `messages()` stream until it is taken (or dropped).
-struct UnreadTicket {
+pub(crate) struct UnreadTicket {
     gauge: Arc<UnreadGauge>,
     size: usize,
 }
 
 impl UnreadTicket {
-    fn new(gauge: &Arc<UnreadGauge>, size: usize) -> Self {
+    pub(crate) fn new(gauge: &Arc<UnreadGauge>, size: usize) -> Self {
         gauge.bytes.fetch_add(size, Ordering::SeqCst);
         UnreadTicket { gauge: gauge.clone(), size }
     }

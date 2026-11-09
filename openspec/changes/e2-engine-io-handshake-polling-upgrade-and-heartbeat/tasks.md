@@ -22,10 +22,10 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
 
 ## 2. Reuse refactors (no behavior change)
 
-- [ ] 2.1 Make `OutQueue` generic (`OutQueue<M: QueueItem = Message>`) and add the encoder variant of `write_loop` in
+- [x] 2.1 Make `OutQueue` generic (`OutQueue<M: QueueItem = Message>`) and add the encoder variant of `write_loop` in
   `crates/corvis/src/ws.rs` (design.md Decision 3); verify `cargo test -p corvis --test ws_security --test websockets
   --test send_timeout_ws --test http_adapter` pass unmodified
-- [ ] 2.2 Split `validate_handshake` in `crates/corvis/src/websockets.rs` into the origin-list form plus the gateway
+- [x] 2.2 Split `validate_handshake` in `crates/corvis/src/websockets.rs` into the origin-list form plus the gateway
   wrapper; verify `tests/ws_security.rs` (`gateway_handshake_is_validated`) and `tests/tls_ws.rs` (with `--features
   tls`) pass unmodified
 
