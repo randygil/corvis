@@ -120,18 +120,28 @@ agrupados en como máximo 64 cubos de `ttl / 64`: los accesos cuyo vencimiento c
 juntos y vencen juntos, así que una clave usa la misma memoria sea cual sea su límite y cuantas peticiones
 reciba. Las claves sin accesos vivos, con la ventana terminada y sin bloqueo se borran en cada petición.
 
-La memoria queda acotada por el número de claves, 100 000 como máximo por defecto (`with_max_entries`). El
-peor caso es de unos 1,8 KB por clave (64 cubos de 24 bytes más el estado fijo de la clave), unos 180 MB con
-el valor por defecto. Cuando la tabla se llena se descartan las claves que antes quedan inactivas, lo que
-reinicia sus contadores; las claves bloqueadas se descartan al final, así que inundar otras claves nunca
-levanta un bloqueo. Bajo un ataque con más claves distintas que el tope, se pueden reiniciar los contadores
-de clientes no bloqueados, así que dimensiona el tope según tu tráfico. Para cambiarlo:
+Una clave que supera su límite pasa a una tabla aparte y compacta de claves bloqueadas (sus accesos se
+descartan: no se usan durante el bloqueo). Las dos tablas tienen su propio tope, así que una inundación de
+claves bloqueadas no puede desplazar los contadores de otros clientes:
+
+- Contadores: 100 000 claves como máximo por defecto (`with_max_entries`). El peor caso es de unos 1,8 KB por
+  clave (64 cubos de 24 bytes más el estado fijo de la clave), unos 180 MB con el valor por defecto. Cuando la
+  tabla se llena se descartan los contadores que antes quedan inactivos, lo que los reinicia. Bajo un ataque
+  con más claves distintas que el tope, se pueden reiniciar los contadores de clientes no bloqueados, así que
+  dimensiona el tope según tu tráfico.
+- Claves bloqueadas: tantas como `with_max_entries` salvo que uses `with_max_blocked`. Una clave bloqueada
+  ocupa unos 120 bytes, unos 12 MB con el valor por defecto. Cuando esa tabla se llena se descarta el
+  bloqueo que termina antes, lo que permite a esa clave volver a contar.
+
+Juntas, el peor caso con los valores por defecto es de unos 190 MB. Para cambiar los topes:
 
 ```rust
 use corvis::ThrottlerStorage;
 
 ThrottlerModule::for_root_storage(
-    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_max_entries(500_000),
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)])
+        .with_max_entries(500_000)
+        .with_max_blocked(200_000),
 )
 ```
 

@@ -95,25 +95,34 @@ struct Record {
     origin: Instant,
     /// End of the reporting window.
     window_end: Instant,
-    /// End of the block, while the key is blocked.
-    blocked_until: Option<Instant>,
+}
+
+/// A blocked key: no buckets, only what is needed to answer during the block and to resume after it.
+#[derive(Clone, Copy)]
+struct Blocked {
+    /// End of the block.
+    until: Instant,
+    /// End of the reporting window, kept so `X-RateLimit-Reset` is the same as without the separate table.
+    window_end: Instant,
+}
+
+impl Blocked {
+    fn idle_at(&self) -> Instant {
+        self.until.max(self.window_end)
+    }
 }
 
 impl Record {
     fn new(now: Instant, window_end: Instant) -> Self {
-        Record { buckets: VecDeque::new(), hits: 0, origin: now, window_end, blocked_until: None }
+        Record { buckets: VecDeque::new(), hits: 0, origin: now, window_end }
     }
 
     /// The instant after which the record holds nothing that matters.
     fn idle_at(&self) -> Instant {
-        let mut idle = self.window_end;
-        if let Some(last) = self.buckets.back() {
-            idle = idle.max(last.expiry);
+        match self.buckets.back() {
+            Some(last) => self.window_end.max(last.expiry),
+            None => self.window_end,
         }
-        if let Some(b) = self.blocked_until {
-            idle = idle.max(b);
-        }
-        idle
     }
 
     fn prune(&mut self, now: Instant) {
@@ -124,11 +133,6 @@ impl Record {
             self.hits -= u64::from(front.count);
             self.buckets.pop_front();
         }
-    }
-
-    fn clear_hits(&mut self) {
-        self.buckets.clear();
-        self.hits = 0;
     }
 
     /// Counts a hit that expires at `expiry`. Hits whose expiries fall in the same slice share a bucket, which then
@@ -158,46 +162,66 @@ impl Record {
 struct Counters {
     /// `sha256(key)` -> record.
     records: HashMap<KeyHash, Record>,
-    /// Keys that are not blocked, ordered by idle time, for amortized purging and eviction.
-    unblocked: BTreeSet<(Instant, KeyHash)>,
-    /// Blocked keys, ordered by idle time. They are evicted only when no unblocked key is left.
-    blocked: BTreeSet<(Instant, KeyHash)>,
+    /// The same keys ordered by idle time, for amortized purging and eviction.
+    idle: BTreeSet<(Instant, KeyHash)>,
+    /// Blocked keys. A separate, compact table with its own cap, so a flood of blocked keys cannot displace counters.
+    blocked: HashMap<KeyHash, Blocked>,
+    /// Blocked keys ordered by when they become idle.
+    blocked_idle: BTreeSet<(Instant, KeyHash)>,
 }
 
 impl Counters {
     fn remove(&mut self, hash: &KeyHash) -> Option<Record> {
         let record = self.records.remove(hash)?;
-        let set = if record.blocked_until.is_some() { &mut self.blocked } else { &mut self.unblocked };
-        set.remove(&(record.idle_at(), *hash));
+        self.idle.remove(&(record.idle_at(), *hash));
         Some(record)
     }
 
-    /// Drops the key that becomes idle soonest, unblocked keys first. Returns false when the table is empty.
+    /// Drops the counter that becomes idle soonest. Returns false when the table is empty.
     fn evict_one(&mut self) -> bool {
-        let Some((_, hash)) = self.unblocked.pop_first().or_else(|| self.blocked.pop_first()) else { return false };
+        let Some((_, hash)) = self.idle.pop_first() else { return false };
         self.records.remove(&hash);
         true
     }
 
-    /// Drops every key that is idle at `now`.
+    /// Drops every counter and every block that is idle at `now`.
     fn purge(&mut self, now: Instant) {
-        for blocked in [false, true] {
-            loop {
-                let set = if blocked { &mut self.blocked } else { &mut self.unblocked };
-                let Some(&(idle, hash)) = set.first() else { break };
-                if idle > now {
-                    break;
-                }
-                set.pop_first();
-                self.records.remove(&hash);
+        while let Some(&(idle, hash)) = self.idle.first() {
+            if idle > now {
+                break;
             }
+            self.idle.pop_first();
+            self.records.remove(&hash);
+        }
+        while let Some(&(idle, hash)) = self.blocked_idle.first() {
+            if idle > now {
+                break;
+            }
+            self.blocked_idle.pop_first();
+            self.blocked.remove(&hash);
         }
     }
 
     fn insert(&mut self, hash: KeyHash, record: Record) {
-        let set = if record.blocked_until.is_some() { &mut self.blocked } else { &mut self.unblocked };
-        set.insert((record.idle_at(), hash));
+        self.idle.insert((record.idle_at(), hash));
         self.records.insert(hash, record);
+    }
+
+    fn remove_blocked(&mut self, hash: &KeyHash) -> Option<Blocked> {
+        let b = self.blocked.remove(hash)?;
+        self.blocked_idle.remove(&(b.idle_at(), *hash));
+        Some(b)
+    }
+
+    /// Stores a block, first dropping the blocks that end soonest while the table is full (those are keys the
+    /// attacker pinned, not counters of other clients).
+    fn insert_blocked(&mut self, hash: KeyHash, b: Blocked, max: usize) {
+        while self.blocked.len() >= max {
+            let Some((_, h)) = self.blocked_idle.pop_first() else { break };
+            self.blocked.remove(&h);
+        }
+        self.blocked_idle.insert((b.idle_at(), hash));
+        self.blocked.insert(hash, b);
     }
 }
 
@@ -215,14 +239,18 @@ fn after(now: Instant, span: Duration) -> Instant {
 /// Keys are stored as `sha256(key)`, so their size does not depend on the request. Each key holds at most 64 buckets
 /// of hits, whatever its limit: hits whose expiries fall in the same `ttl / 64` slice share a bucket and expire
 /// together, so `X-RateLimit-Remaining` and `Reset` can differ from the original library by up to `ttl / 64` when a
-/// client sends hits closer together than that. Memory is bounded by `max_entries`: idle keys (no live hit,
-/// reporting window ended, not blocked) are removed on every call, and when the table is full the keys that become
-/// idle soonest are dropped, blocked keys last.
+/// client sends hits closer together than that.
+///
+/// Blocked keys live in a separate compact table (no buckets: their hits are dropped when the block starts) with its
+/// own cap, so a flood of blocked keys cannot displace the counters of other clients. Memory is bounded by
+/// `max_entries` counters plus `max_blocked` blocks: idle entries are removed on every call, and when a table is full
+/// the entries that become idle soonest are dropped.
 pub struct ThrottlerStorage {
     pub(crate) throttlers: Vec<ThrottlerOptions>,
     pub(crate) block_durations: HashMap<String, u64>,
     counters: Mutex<Counters>,
     max_entries: usize,
+    max_blocked: Option<usize>,
     headers: bool,
 }
 
@@ -243,8 +271,17 @@ impl ThrottlerStorage {
             block_durations: HashMap::new(),
             counters: Mutex::new(Counters::default()),
             max_entries: DEFAULT_THROTTLER_MAX_ENTRIES,
+            max_blocked: None,
             headers: true,
         }
+    }
+
+    /// Maximum number of blocked keys kept in memory (default: the value of [`with_max_entries`](Self::with_max_entries)).
+    /// A blocked key takes about 120 bytes. When the table is full the block that ends soonest is dropped, which lets
+    /// that key start counting again; counters are not affected.
+    pub fn with_max_blocked(mut self, max_blocked: usize) -> Self {
+        self.max_blocked = Some(max_blocked.max(1));
+        self
     }
 
     /// Whether [`ThrottlerGuard`] sends the `X-RateLimit-*` and `Retry-After` headers (default `true`, as in
@@ -275,20 +312,24 @@ impl ThrottlerStorage {
         self
     }
 
-    /// Number of live keys.
+    /// Number of live keys, counters and blocked keys.
     pub fn len(&self) -> usize {
-        self.counters.lock().unwrap_or_else(|e| e.into_inner()).records.len()
+        let c = self.counters.lock().unwrap_or_else(|e| e.into_inner());
+        c.records.len() + c.blocked.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Approximate memory used by the keys and their buckets, in bytes.
+    /// Approximate memory used by the keys, their buckets and the blocked keys, in bytes.
     pub fn memory_usage(&self) -> usize {
         let per_entry = std::mem::size_of::<(KeyHash, Record)>() + std::mem::size_of::<(Instant, KeyHash)>() + 16;
+        let per_blocked = std::mem::size_of::<(KeyHash, Blocked)>() + std::mem::size_of::<(Instant, KeyHash)>() + 16;
         let c = self.counters.lock().unwrap_or_else(|e| e.into_inner());
-        c.records.len() * per_entry + c.records.values().map(|r| r.buckets.capacity() * std::mem::size_of::<Bucket>()).sum::<usize>()
+        c.records.len() * per_entry
+            + c.records.values().map(|r| r.buckets.capacity() * std::mem::size_of::<Bucket>()).sum::<usize>()
+            + c.blocked.len() * per_blocked
     }
 
     /// Counts a hit for `key` in a sliding window and returns `(hits, time_to_expire)`. Equivalent to
@@ -318,7 +359,29 @@ impl ThrottlerStorage {
         // Idle keys behave like fresh ones, so removing them is not observable.
         c.purge(now);
 
-        let mut rec = c.remove(&hash).unwrap_or_else(|| Record::new(now, after(now, ttl)));
+        let max_blocked = self.max_blocked.unwrap_or(self.max_entries);
+
+        // A blocked key is answered from the compact table; when its block has ended it resumes as a fresh counter that
+        // keeps the reporting window.
+        let mut resumed = None;
+        let blocked = if block_duration.is_zero() { None } else { c.remove_blocked(&hash) };
+        if let Some(mut b) = blocked {
+            if b.window_end <= now {
+                b.window_end = after(now, ttl);
+            }
+            if b.until > now {
+                c.insert_blocked(hash, b, max_blocked);
+                return ThrottlerRecord {
+                    total_hits: limit.saturating_add(1),
+                    time_to_expire: b.window_end.saturating_duration_since(now),
+                    is_blocked: true,
+                    time_to_block_expire: b.until.saturating_duration_since(now),
+                };
+            }
+            resumed = Some(Record::new(now, b.window_end));
+        }
+
+        let mut rec = resumed.or_else(|| c.remove(&hash)).unwrap_or_else(|| Record::new(now, after(now, ttl)));
         rec.prune(now);
         if rec.window_end <= now {
             rec.window_end = after(now, ttl);
@@ -338,20 +401,23 @@ impl ThrottlerStorage {
                 (true, None) => time_to_expire,
             };
         } else {
-            if rec.blocked_until.is_some_and(|b| b <= now) {
-                rec.blocked_until = None;
-                rec.clear_hits();
+            rec.add_hit(after(now, ttl), slice);
+            if rec.hits > u64::from(limit) {
+                // The hits are not used during the block and are discarded when it ends: only the block is kept.
+                let until = after(now, block_duration);
+                let total_hits = u32::try_from(rec.hits).unwrap_or(u32::MAX);
+                c.insert_blocked(hash, Blocked { until, window_end: rec.window_end }, max_blocked);
+                return ThrottlerRecord {
+                    total_hits,
+                    time_to_expire,
+                    is_blocked: true,
+                    time_to_block_expire: until.saturating_duration_since(now),
+                };
             }
-            if rec.blocked_until.is_none() {
-                rec.add_hit(after(now, ttl), slice);
-                if rec.hits > u64::from(limit) {
-                    rec.blocked_until = Some(after(now, block_duration));
-                }
-            }
-            is_blocked = rec.blocked_until.is_some();
-            time_to_block_expire = rec.blocked_until.map_or(Duration::ZERO, |b| b.saturating_duration_since(now));
+            is_blocked = false;
+            time_to_block_expire = Duration::ZERO;
         }
-        let total_hits = u32::try_from(rec.hits + u64::from(is_blocked && block_duration.is_zero())).unwrap_or(u32::MAX);
+        let total_hits = u32::try_from(rec.hits + u64::from(is_blocked)).unwrap_or(u32::MAX);
 
         while c.records.len() >= self.max_entries {
             if !c.evict_one() {
@@ -584,7 +650,8 @@ mod tests {
                 let at = format!("{name} #{i} t={}", n("t"));
                 let tolerance = if exact { 0 } else { (n("ttl") / 64).div_ceil(1000) as i64 + 1 };
                 let close = |got: i64, want: i64| (got - want).abs() <= tolerance;
-                if exact {
+                // A blocked key drops its hits, so the count of a blocked response is not compared (the guard ignores it).
+                if exact && !r.is_blocked {
                     assert_eq!(r.total_hits as u64, want["totalHits"].as_u64().unwrap(), "{at}: total_hits");
                 }
                 assert_eq!(r.is_blocked, want["isBlocked"].as_bool().unwrap(), "{at}: is_blocked");
@@ -694,8 +761,51 @@ mod tests {
                 hit(&storage, base, 2, &format!("other{k}"), 3_600_000, 10, 3_600_000);
             }
         }
-        assert!(storage.len() <= 100);
+        assert!(storage.len() <= 101, "100 counters and the blocked key");
         assert!(hit(&storage, base, 3, "me", 3_600_000, 10, 3_600_000).is_blocked);
+    }
+
+    /// Security review, mode `pin`: filling the table with blocked keys must not turn counting off for other clients.
+    #[test]
+    fn pinning_the_blocked_table_does_not_disable_other_counters() {
+        let storage = ThrottlerStorage::new(vec![]).with_max_entries(100);
+        let base = Instant::now();
+        for k in 0..1_000 {
+            hit(&storage, base, 0, &format!("login{k}"), 3_600_000, 1, 3_600_000);
+            assert!(hit(&storage, base, 0, &format!("login{k}"), 3_600_000, 1, 3_600_000).is_blocked);
+        }
+        assert!(storage.len() <= 100, "blocked table is capped: {}", storage.len());
+        for key in ["a", "b"] {
+            let allowed = (0..20).filter(|_| !hit(&storage, base, 1, key, 3_600_000, 10, 3_600_000).is_blocked).count();
+            assert_eq!(allowed, 10, "{key}");
+        }
+        let allowed = (0..50).filter(|_| !hit(&storage, base, 2, "victim", 3_600_000, 3, 3_600_000).is_blocked).count();
+        assert_eq!(allowed, 3);
+    }
+
+    #[test]
+    fn a_short_block_keeps_the_reporting_window() {
+        let storage = ThrottlerStorage::new(vec![]);
+        let base = Instant::now();
+        hit(&storage, base, 0, "k", 60_000, 1, 5_000);
+        assert!(hit(&storage, base, 100, "k", 60_000, 1, 5_000).is_blocked);
+        let r = hit(&storage, base, 6_000, "k", 60_000, 1, 5_000);
+        assert!(!r.is_blocked);
+        assert_eq!(r.total_hits, 1);
+        assert_eq!(secs(r.time_to_expire), 54);
+    }
+
+    #[test]
+    fn the_blocked_table_has_its_own_cap_and_drops_the_soonest_block() {
+        let storage = ThrottlerStorage::new(vec![]).with_max_blocked(2);
+        let base = Instant::now();
+        for (i, key) in ["a", "b", "c"].iter().enumerate() {
+            let block = 10_000 * (i as u64 + 1);
+            hit(&storage, base, 0, key, 1_000, 0, block);
+        }
+        assert_eq!(storage.len(), 2);
+        assert!(!hit(&storage, base, 1, "a", 1_000, 5, 10_000).is_blocked, "a was the soonest block and was dropped");
+        assert!(hit(&storage, base, 1, "c", 1_000, 5, 30_000).is_blocked);
     }
 
     /// A limit as large as the old global budget still blocks: the count does not depend on stored timestamps.

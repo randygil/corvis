@@ -120,17 +120,27 @@ most 64 buckets of `ttl / 64`: hits whose expiry falls in the same bucket are co
 together, so a key uses the same memory whatever its limit and however many requests it receives. Keys with no
 live hit, an ended window and no block are deleted on every request.
 
-Memory is bounded by the number of keys, at most 100,000 by default (`with_max_entries`). The worst case is
-about 1.8 KB per key (64 buckets of 24 bytes plus the key's fixed state), roughly 180 MB at the default. When the
-table is full the keys that become idle soonest are discarded, which resets their counters; blocked keys are
-discarded last, so flooding other keys never lifts a block. Under an attack with more distinct keys than the cap,
-counters of unblocked clients can be reset, so size the cap for your traffic. To change it:
+A key that goes over its limit moves to a separate, compact table of blocked keys (its hits are dropped: they
+are not used during the block). The two tables have their own caps, so a flood of blocked keys cannot displace
+the counters of other clients:
+
+- Counters: at most 100,000 keys by default (`with_max_entries`). The worst case is about 1.8 KB per key (64
+  buckets of 24 bytes plus the key's fixed state), roughly 180 MB at the default. When the table is full the
+  counters that become idle soonest are discarded, which resets them. Under an attack with more distinct keys
+  than the cap, counters of clients that are not blocked can be reset, so size the cap for your traffic.
+- Blocked keys: at most as many as `with_max_entries` unless you set `with_max_blocked`. A blocked key takes
+  about 120 bytes, roughly 12 MB at the default. When that table is full the block that ends soonest is
+  dropped, which lets that key count again.
+
+Together the worst case at the defaults is about 190 MB. To change the caps:
 
 ```rust
 use corvis::ThrottlerStorage;
 
 ThrottlerModule::for_root_storage(
-    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_max_entries(500_000),
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)])
+        .with_max_entries(500_000)
+        .with_max_blocked(200_000),
 )
 ```
 

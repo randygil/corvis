@@ -151,11 +151,13 @@ not count it.
 
 ### Requirement: Storage memory stays bounded
 `ThrottlerStorage` SHALL keep at most `max_entries` keys (`with_max_entries`, default 100,000), and each key MUST use
-memory that does not depend on its limit or on the number of requests it receives (at most 64 hit buckets). When the
-table is full the keys that would become idle soonest MUST be evicted, a blocked key only when no unblocked key is
-left, so flooding other keys never unblocks a blocked key. A key whose hits have expired, whose reporting window has
-ended and that is not blocked MUST be removed. A block duration or `ttl` too large to represent MUST saturate to a far
-instant, never to the present.
+memory that does not depend on its limit or on the number of requests it receives (at most 64 hit buckets). A key that
+goes over its limit MUST move to a separate compact table of blocked keys (its hits are dropped; only the end of the
+block and of the reporting window are kept) with its own cap (`with_max_blocked`, default the value of `max_entries`),
+so blocked keys never displace counters. When the counters table is full the counters that would become idle soonest
+MUST be evicted; when the blocked table is full the block that ends soonest MUST be dropped. A key whose hits have
+expired, whose reporting window has ended and that is not blocked, and a block that has ended with its window, MUST be
+removed. A block duration or `ttl` too large to represent MUST saturate to a far instant, never to the present.
 
 #### Scenario: Round-robin keys cannot exceed the limit
 - **WHEN** 2,000 distinct keys each send requests in turn with a limit of 100 per hour
@@ -164,6 +166,11 @@ instant, never to the present.
 #### Scenario: Blocked key survives a flood
 - **WHEN** a key is blocked and 5,000 other keys then record hits on a storage built with `with_max_entries(100)`
 - **THEN** the storage holds at most 100 keys and the first key is still blocked
+
+#### Scenario: Pinning the blocked table does not disable other counters
+- **WHEN** 1,000 keys are blocked on a storage built with `with_max_entries(100)`, and then two other keys alternate
+  requests with a limit of 10 and a victim key has a limit of 3
+- **THEN** each of the two keys gets exactly 10 requests through in the window and the victim gets exactly 3
 
 #### Scenario: Memory per key does not grow with hits
 - **WHEN** one key records 20,000 hits

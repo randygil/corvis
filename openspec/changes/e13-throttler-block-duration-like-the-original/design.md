@@ -239,3 +239,23 @@ review note 3 and the hit-budget notes of "Implementation notes".
 - **Regression tests** reproduce the PoC modes: `round_robin_keys_get_at_most_the_limit_each` (churn),
   `a_blocked_key_stays_blocked_while_others_flood` (unblock, with a full table), `a_large_limit_still_blocks`, and
   `a_key_uses_bounded_memory_whatever_its_hits` (cap).
+
+### Finding 4: blocked keys pinned the counters table (re-review, 2026-11-09)
+
+Evicting blocked keys last (above) let an attacker fill the table with blocked keys (200,000 requests to
+`default:<IPv6>:Auth:login` with limit 1 pinned 100,000 entries in 56 ms): `evict_one` then emptied the unblocked
+keys, so every new counter evicted the previous idle one and no counter reached its limit. Fix, as suggested by the
+reviewer: blocked keys live in a separate compact table (`key hash -> { until, window_end }`, no buckets; the hits are
+cleared when the key is blocked, because they are not used during the block and are discarded when it ends) with its own
+cap, `with_max_blocked` (default the value of `max_entries`, about 120 bytes per key). The counters table keeps its
+full `max_entries`, so blocked keys cannot displace it. When the blocked table is full the block that ends soonest is
+dropped (that frees only keys the attacker pinned). A key is looked up in the blocked table first; when its block has
+ended it resumes as a fresh counter that keeps the reporting window (`window_end`), so `Retry-After` and `Reset` are
+unchanged. The "blocked keys are evicted last" rule above is replaced by this one.
+
+- `total_hits` of a response for a blocked key is now `limit + 1` instead of the live hit count (the guard ignores it);
+  the storage replay no longer compares `total_hits` for blocked responses.
+- Worst case at the defaults: counters about 180 MB plus blocked keys about 12 MB.
+- Regression tests: `pinning_the_blocked_table_does_not_disable_other_counters` (PoC mode `pin`),
+  `a_short_block_keeps_the_reporting_window`, `the_blocked_table_has_its_own_cap_and_drops_the_soonest_block`.
+- IPv6 /64 normalization stays out of scope (tracked separately).
