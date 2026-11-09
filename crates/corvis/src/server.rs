@@ -112,7 +112,12 @@ impl ServerOptions {
     ///
     /// It measures lack of progress, not total time: progress restarts it, so slow but live downloads are not cut;
     /// it never runs while the server has nothing to send (slow handlers, idle Server-Sent Events streams, idle
-    /// keep-alive connections), and it does not apply to upgraded connections (WebSockets).
+    /// keep-alive connections).
+    ///
+    /// It also applies to upgraded connections (WebSockets, any `upgrade` listener), writes only: a write that the
+    /// socket accepts no byte of for `send_timeout` fails and the connection is destroyed without a close frame
+    /// (a gateway or `WebSocket` sees close code 1006). Bytes the peer accepts of any frame restart it; frames
+    /// received never do. The stalled-body watchdog and the idle timers stay off for upgraded connections.
     ///
     /// What it does not bound: how little a client may read to keep a connection. A client needs to take about
     /// 16 KiB (one HTTP/2 frame) from some stream each period over HTTP/2. Over HTTP/1 the server notices progress
@@ -139,7 +144,8 @@ impl ServerOptions {
     /// [`http2_max_concurrent_streams`](Self::http2_max_concurrent_streams). Upgraded (WebSocket)
     /// connections count until they close, and so do sockets in their short closing drain
     /// (up to 2 s after an early error response); with a cap, give gateways a heartbeat so
-    /// dead WebSocket clients do not hold slots.
+    /// dead WebSocket clients on idle connections do not hold slots (clients that stop reading while the server
+    /// sends are dropped by [`send_timeout`](Self::send_timeout)).
     pub fn max_connections(mut self, n: impl Into<Option<usize>>) -> Self {
         self.max_connections = n.into();
         self
@@ -1130,9 +1136,6 @@ impl TimedIo {
     /// the task woken at the deadline.
     fn poll_write_deadline(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let Some(timeout) = self.send_timeout else { return Poll::Pending };
-        if self.state.upgraded.load(Ordering::SeqCst) {
-            return Poll::Pending;
-        }
         let since = *self.write_stalled_since.get_or_insert_with(Instant::now);
         let Some(deadline) = since.checked_add(timeout) else { return Poll::Pending };
         let sleep = self.write_sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));

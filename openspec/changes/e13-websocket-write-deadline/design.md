@@ -150,3 +150,15 @@ None that needs a maintainer: reuse of `send_timeout`, destroying the connection
 - Approved as drafted: reuse `send_timeout` for upgraded connections, destroy the connection without a close
   frame (local `1006`), and count only bytes the socket accepts as progress.
 - Archive after `e0-write-deadline-for-stalled-clients` (#157), since it modifies `http/send-timeout`.
+
+## Implementation notes
+
+- `write_loop` returns `WriteEnd::{Closed, Failed(io::ErrorKind)}`; the kind is taken from `tungstenite::Error::Io`, any
+  other write error is `Other`.
+- `ws.rs::run`: on `Closed` the loop ends only if a close frame was already received; otherwise it keeps waiting for the
+  peer's reply until `close_timeout`.
+- Tests: one test per spec scenario in `tests/send_timeout_ws.rs`, serialised with a static mutex because they share
+  counters. The closing-handshake test probes the connection by reading after four seconds instead of timing the exact
+  moment of closure. The stall tests were not run against the unchanged code to see them fail first.
+- `cargo clippy -p corvis --no-default-features --all-targets` fails to compile several existing test files (they need
+  the default features); this predates the change, so `--lib --bins` was checked instead.

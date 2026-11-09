@@ -74,9 +74,12 @@ La conexión se descarta de inmediato: sin GOAWAY, sin el resto de la respuesta 
 
 Mide la falta de progreso, no la duración de la respuesta: el progreso lo reinicia, así que una descarga lenta no se
 corta. Nunca corre mientras el servidor no tiene nada que enviar: un handler lento, un stream de Server-Sent Events
-inactivo y una conexión keep-alive ociosa no se ven afectados, ni tampoco una conexión WebSocket ya establecida (su
-cola de envío está acotada por `max_buffered_amount`). Un valor demasiado largo para sumarlo a una lectura del reloj
+inactivo y una conexión keep-alive ociosa no se ven afectados. Un valor demasiado largo para sumarlo a una lectura del reloj
 (`Duration::MAX`) significa sin límite.
+
+Las conexiones WebSocket establecidas conservan solo el plazo de escritura: una escritura de la que el socket no acepta
+ningún byte durante `send_timeout` falla y la conexión se destruye, sin trama de cierre. Los WebSockets inactivos no se
+ven afectados. Ver [pares que dejan de leer](/es/websockets/gateways#pares-que-dejan-de-leer).
 
 **Lo que no acota.** No limita lo poco que un cliente tiene que leer para conservar su conexión, ni la memoria que se
 retiene para él:

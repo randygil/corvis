@@ -57,7 +57,7 @@ use crate::logger::Logger;
 use crate::router::controller::ParamDef;
 use crate::router::{AppShared, RouterConfig};
 use crate::server::ResBody;
-use crate::ws::{CLOSE_INTERNAL_ERROR, CLOSE_POLICY_VIOLATION, OutQueue, PushError, guarded, write_loop};
+use crate::ws::{CLOSE_INTERNAL_ERROR, CLOSE_POLICY_VIOLATION, OutQueue, PushError, WriteEnd, guarded, write_loop};
 
 /// Implemented by `#[websocket_gateway]`.
 pub trait Gateway: Send + Sync + 'static {
@@ -1014,8 +1014,19 @@ where
             }
             _ = timeout => break,
             // The writer stops after a write error: the connection is gone.
-            _ = &mut writer, if !writer_done => {
+            end = &mut writer, if !writer_done => {
                 writer_done = true;
+                // A failed write ends the connection at once, also during a closing handshake: nothing more can
+                // reach the peer.
+                if let Ok(WriteEnd::Failed(kind)) = end {
+                    if kind == std::io::ErrorKind::TimedOut {
+                        Logger::new("WebSocketGateway").warn(format!(
+                            "client {}: accepted no data for the server's send_timeout, connection dropped",
+                            client.id()
+                        ));
+                    }
+                    break;
+                }
                 if !client.is_closing() {
                     break;
                 }

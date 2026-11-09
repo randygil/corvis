@@ -73,8 +73,11 @@ The connection is dropped at once: no GOAWAY, no rest of the response, no closin
 
 It measures lack of progress, not the length of the response: progress restarts it, so a slow download is not cut.
 It never runs while the server has nothing to send: a slow handler, an idle Server-Sent Events stream and an idle
-keep-alive connection are not affected, and neither is an established WebSocket connection (its send queue is bounded
-by `max_buffered_amount`). A value too long to add to a clock reading (`Duration::MAX`) means no limit.
+keep-alive connection are not affected. A value too long to add to a clock reading (`Duration::MAX`) means no limit.
+
+Established WebSocket connections keep only the write deadline: a write that the socket accepts no byte of for
+`send_timeout` fails and the connection is destroyed, without a close frame. Idle WebSockets are not affected. See
+[peers that stop reading](/websockets/gateways#peers-that-stop-reading).
 
 **What it does not bound.** It does not limit how little a client has to read to keep its connection, nor the
 memory held for such a client:
