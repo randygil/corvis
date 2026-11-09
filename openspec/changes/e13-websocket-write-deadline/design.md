@@ -144,3 +144,9 @@ Locked dependencies: hyper 1.12.0, tokio-tungstenite 0.24.0, tungstenite 0.24.0.
 
 None that needs a maintainer: reuse of `send_timeout`, destroying the connection with a local `1006` (and why not
 `1008`/`1011` on the wire), and how pings and pongs count were settled above in favor of security, then parity.
+
+## Review notes (2026-11-09)
+
+- Approved as drafted: reuse `send_timeout` for upgraded connections, destroy the connection without a close
+  frame (local `1006`), and count only bytes the socket accepts as progress.
+- Archive after `e0-write-deadline-for-stalled-clients` (#157), since it modifies `http/send-timeout`.

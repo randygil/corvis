@@ -231,3 +231,12 @@ saves nothing; only not running the handler (admission) or dropping the response
 
 None that needs a maintainer: default (8 MiB), behavior above the cap (wait, then reset with `ENHANCE_YOUR_CALM`),
 counter (the #150 one) and the global cap (out of scope) were settled above in favor of security, then parity.
+
+## Review notes (2026-11-09)
+
+- Approved as drafted. The default of 8 MiB per connection, admission before the handler and the
+  `ENHANCE_YOUR_CALM` reset above the cap stand; security wins over the Node `maxSessionMemory` behavior.
+- The per-stream send buffer goes down to 32 KiB only if task 7 shows a throughput loss of 10 % or less;
+  otherwise use 64 KiB and record the numbers here.
+- Implement on top of `batch/phase07-o` (it needs `send_timeout` and the #150 counter); do not change the
+  watchdog rule of #157.
