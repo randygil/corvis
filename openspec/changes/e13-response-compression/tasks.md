@@ -101,6 +101,13 @@
   the three port apps keep 0 apidiff differences (they do not enable compression)
 - [x] 7.6 `cargo deny check` passes with the new crates
 
+## Security review fixes
+
+- [x] 8.1 Cap the brotli window at 2^19; verify the unit test of the window
+- [x] 8.2 Add `max_concurrent`, the slots held by the compressed body, the `br` to `gzip` to identity fallback and
+  `Vary`; verify the unit and integration tests
+- [x] 8.3 Docs (EN and ES) for the cap, the window cap and the stalled-client note; verify `npm run docs:check`
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

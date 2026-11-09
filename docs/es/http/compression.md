@@ -38,8 +38,9 @@ mismo código que el servidor, así que una aplicación de test comprime igual q
 | `.level(0..=9)` | 6 | `level` (gzip y deflate) |
 | `.brotli_quality(0..=11)` | 4 | `brotli.params[BROTLI_PARAM_QUALITY]` |
 | `.filter(\|ctx\| ...)` | `should_compress` | `filter` |
+| `.max_concurrent(n)` | 8 veces los núcleos disponibles | ninguna (ver [el límite](#compresiones-concurrentes)) |
 
-Los valores fuera de rango se ajustan al límite (`level(20)` es 9, `brotli_quality(50)` es 11).
+Los valores fuera de rango se ajustan al límite (`level(20)` es 9, `brotli_quality(50)` es 11, `max_concurrent(0)` es 1).
 
 `filter` recibe un `CompressionContext` con el método, la ruta y las cabeceras de la petición y el estado y las
 cabeceras de la respuesta. `corvis::should_compress` es el filtro por defecto y es público, como `compression.filter`,
@@ -105,9 +106,10 @@ cuerpo grande no retiene un hilo de trabajo. Cuando la fuente no tiene nada list
   la falta de `Content-Encoding` en un `206`.
 - No disponibles: `enforceEncoding`, `chunkSize`, `memLevel`, `windowBits`, `strategy` ni `params` propios de brotli;
   `res.flush()` no hace falta.
-- La ventana de brotli se elige por respuesta: la más pequeña de 64 KiB a 4 MiB (el tamaño fijo de Node) que cubra el
-  cuerpo, 1 MiB para un stream de longitud desconocida. La salida decodificada es la misma; una respuesta pequeña no
-  reserva una ventana de 4 MiB.
+- **La ventana de brotli es como máximo de 512 KiB (2^19)**, donde Node usa 4 MiB fijos (2^22). Por debajo de eso se
+  elige por respuesta: la más pequeña desde 64 KiB que cubra el cuerpo. La salida decodificada es la misma; la tasa de
+  compresión es algo menor en cuerpos muy grandes, y un codificador cuesta unos 5 MiB en lugar de unos 15 MiB.
+- **Un límite de compresiones en curso** (ver [más abajo](#compresiones-concurrentes)); el middleware no tiene ninguno.
 - Los bytes comprimidos no son los que produce el zlib de Node, solo equivalentes: los clientes decodifican ambos igual.
 
 ## Seguridad
@@ -145,14 +147,28 @@ servidor en reposo, medido con `crates/corvis/tests/compression_memory.rs`:
 | Cuerpo | gzip / deflate | brotli |
 |---|---|---|
 | 1 KiB | unos 350 KiB | unos 560 KiB |
-| Stream de 5 MiB de longitud desconocida | unos 410 KiB | unos 7,6 MiB (ventana de 1 MiB) |
-| Archivo de 5 MiB de longitud conocida | unos 2,4 MiB* | unos 11 MiB (ventana de 4 MiB) |
+| Stream de 5 MiB de longitud desconocida | unos 410 KiB | unos 4,5 MiB (ventana de 512 KiB) |
+| Archivo de 5 MiB de longitud conocida | unos 2,4 MiB* | unos 4,0 MiB (ventana de 512 KiB) |
 
 \* Incluye la salida comprimida que recoge el cliente de pruebas; el servidor la envía en streaming.
 
-Calcula `max_connections` por los streams de cada conexión por estas cifras. En esta versión Corvis no limita las
-compresiones concurrentes; ajusta `max_connections` en consecuencia o comprime en un proxy los cuerpos grandes con
-brotli.
+**Clientes que dejan de leer.** Un cliente que abre una conexión, pide una respuesta comprimida y no la lee mantiene su
+codificador, y su memoria, hasta que la conexión se cierra: Corvis aún no tiene un timeout de envío (está en
+[#157](https://github.com/randygil/corvis/issues/157)). Con `br` y un archivo de 11,6 MiB, 500 conexiones HTTP/1 así
+ocuparon unos 440 MiB con el límite de abajo (unos 0,85 MiB cada una), frente a 127 MiB sin compresión. Define
+`ServerOptions::max_connections` cuando la compresión esté activada y calcúlalo con las cifras anteriores.
+
+### Compresiones concurrentes
+
+Como máximo `max_concurrent` respuestas se comprimen a la vez (por defecto, 8 veces los núcleos disponibles, mínimo 1).
+Una respuesta toma un hueco al empezar y lo conserva hasta que su cuerpo termina, falla o se descarta. El límite acota
+la memoria de arriba y la CPU que los clientes pueden pedir.
+
+- `br` puede usar como máximo la mitad de los huecos (al menos uno), así que no deja sin huecos a `gzip`.
+- Cuando no hay hueco para `br`, la respuesta usa `gzip` (o `deflate`) si el cliente lo acepta y hay un hueco libre para
+  él. Si no, se envía sin comprimir, con estado 200 y sus cabeceras normales.
+- Las respuestas que eran elegibles para compresión llevan siempre `Vary: Accept-Encoding`, también cuando el límite
+  hizo que salieran sin comprimir, para que las cachés sigan siendo correctas.
 
 **ETag fuertes.** Con `app.set_etag(EtagMode::Strong)` el `ETag` del cuerpo sin comprimir se conserva en el comprimido,
 como en el middleware. El `ETag` débil por defecto es correcto para ambos.

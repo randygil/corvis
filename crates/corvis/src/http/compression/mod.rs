@@ -14,6 +14,9 @@
 //! 7. responses with `Content-Range` and bodyless statuses (a deliberate difference);
 //! 8. the encoding negotiated from `Accept-Encoding` (`br`, `gzip`, `deflate`; no header, no compression).
 //!
+//! At most [`CompressionOptions::max_concurrent`] bodies are compressed at once: `br` falls back to `gzip`
+//! and then to no compression when no slot is free, and `Vary` is set either way.
+//!
 //! `text/event-stream` is never compressed either (a second deliberate difference, in the filter).
 
 mod body;
@@ -25,9 +28,10 @@ use std::sync::Arc;
 use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 
 use self::body::{Coding, CompressedBody};
-use self::negotiate::{js_number, negotiate};
+use self::negotiate::{js_number, negotiate, negotiate_among};
 use crate::http::express::RequestInfo;
 use crate::server::ResBody;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Default size threshold in bytes (`compression`'s `threshold`, 1 KiB).
 pub const DEFAULT_THRESHOLD: usize = 1024;
@@ -35,6 +39,36 @@ pub const DEFAULT_THRESHOLD: usize = 1024;
 pub const DEFAULT_LEVEL: u32 = 6;
 /// Default brotli quality (the reference's).
 pub const DEFAULT_BROTLI_QUALITY: u32 = 4;
+
+/// The compressions in progress. `total` bounds every encoder; `brotli` is a sub-cap of half of it
+/// (at least one), so brotli, the most expensive encoder, cannot take every slot and starve gzip.
+struct Limits {
+    max: usize,
+    total: Arc<Semaphore>,
+    brotli: Arc<Semaphore>,
+}
+
+impl Limits {
+    fn new(max: usize) -> Limits {
+        let max = max.max(1);
+        Limits { max, total: Arc::new(Semaphore::new(max)), brotli: Arc::new(Semaphore::new((max / 2).max(1))) }
+    }
+
+    fn acquire(&self, coding: Coding) -> Option<Permit> {
+        let brotli = match coding {
+            Coding::Brotli => Some(self.brotli.clone().try_acquire_owned().ok()?),
+            _ => None,
+        };
+        let total = self.total.clone().try_acquire_owned().ok()?;
+        Some(Permit { _total: total, _brotli: brotli })
+    }
+}
+
+/// A slot of the compression cap, released when dropped.
+pub(crate) struct Permit {
+    _total: OwnedSemaphorePermit,
+    _brotli: Option<OwnedSemaphorePermit>,
+}
 
 /// What a [`CompressionOptions::filter`] sees: the request method, path and headers and the
 /// status and headers of the response about to be sent.
@@ -70,11 +104,23 @@ pub struct CompressionOptions {
     level: u32,
     brotli_quality: u32,
     filter: Option<Filter>,
+    limits: Arc<Limits>,
+}
+
+/// The default cap on compressions in progress: 8 per available core.
+fn default_max_concurrent() -> usize {
+    8 * std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
 impl Default for CompressionOptions {
     fn default() -> Self {
-        CompressionOptions { threshold: DEFAULT_THRESHOLD, level: DEFAULT_LEVEL, brotli_quality: DEFAULT_BROTLI_QUALITY, filter: None }
+        CompressionOptions {
+            threshold: DEFAULT_THRESHOLD,
+            level: DEFAULT_LEVEL,
+            brotli_quality: DEFAULT_BROTLI_QUALITY,
+            filter: None,
+            limits: Arc::new(Limits::new(default_max_concurrent())),
+        }
     }
 }
 
@@ -85,6 +131,7 @@ impl std::fmt::Debug for CompressionOptions {
             .field("level", &self.level)
             .field("brotli_quality", &self.brotli_quality)
             .field("filter", &self.filter.as_ref().map(|_| "custom"))
+            .field("max_concurrent", &self.limits.max)
             .finish()
     }
 }
@@ -116,6 +163,29 @@ impl CompressionOptions {
     pub fn filter(mut self, filter: impl Fn(&CompressionContext<'_>) -> bool + Send + Sync + 'static) -> Self {
         self.filter = Some(Arc::new(filter));
         self
+    }
+
+    /// The most responses compressed at the same time (at least 1; default 8 times the available
+    /// parallelism). A slot is held until the response body ends or is dropped, so a client that
+    /// stops reading holds one until its connection closes. At the cap, a response that would use
+    /// `br` falls back to `gzip` (or `deflate`) when the client accepts it and a slot is free,
+    /// and otherwise goes out uncompressed, still with `Vary: Accept-Encoding`. `br` can use at
+    /// most half of the slots (at least one), so it cannot starve gzip. Clones of the options
+    /// share the same cap.
+    pub fn max_concurrent(mut self, max: usize) -> Self {
+        self.limits = Arc::new(Limits::new(max));
+        self
+    }
+
+    /// The configured cap on compressions in progress.
+    pub fn max_concurrent_compressions(&self) -> usize {
+        self.limits.max
+    }
+
+    /// Free compression slots (total, brotli).
+    #[cfg(test)]
+    pub(crate) fn available_slots(&self) -> (usize, usize) {
+        (self.limits.total.available_permits(), self.limits.brotli.available_permits())
     }
 
     pub fn threshold_bytes(&self) -> usize {
@@ -261,7 +331,17 @@ pub(crate) fn apply(resp: hyper::Response<ResBody>, req: &RequestInfo, opts: &Co
             parts.headers.insert(header::VARY, v);
         }
     }
-    let Some(coding) = decision.encoding.and_then(Coding::from_name) else {
+    // A compression slot is needed for the whole life of the body. When none is free `br` falls
+    // back to what else the client accepts, and then to no compression (`Vary` is already set).
+    let wanted = decision.encoding.and_then(Coding::from_name);
+    let mut chosen = wanted.and_then(|c| opts.limits.acquire(c).map(|p| (c, p)));
+    if chosen.is_none() && wanted == Some(Coding::Brotli) {
+        let accept = req.accept_encoding();
+        chosen = negotiate_among(accept.as_deref(), &["gzip", "deflate", "identity"])
+            .and_then(Coding::from_name)
+            .and_then(|c| opts.limits.acquire(c).map(|p| (c, p)));
+    }
+    let Some((coding, permit)) = chosen else {
         return hyper::Response::from_parts(parts, body);
     };
     // The window only needs the length of the plain body: `Content-Length` if present, else the exact size.
@@ -269,7 +349,7 @@ pub(crate) fn apply(resp: hyper::Response<ResBody>, req: &RequestInfo, opts: &Co
         parts.headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok()).or(body_len);
     parts.headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding.name()));
     parts.headers.remove(header::CONTENT_LENGTH);
-    let body = CompressedBody::new(body, coding, opts.level, opts.brotli_quality, plain_len);
+    let body = CompressedBody::new(body, coding, opts.level, opts.brotli_quality, plain_len, Some(permit));
     hyper::Response::from_parts(parts, http_body_util::BodyExt::boxed_unsync(body))
 }
 

@@ -607,6 +607,37 @@ fn partial_decode(encoding: &str, data: &[u8]) -> Vec<u8> {
     out
 }
 
+#[corvis::test]
+async fn the_cap_leaves_new_responses_uncompressed_until_a_slot_frees() {
+    let files = Files::new();
+    let mut app = app(&files.root, Some(CompressionOptions::new().max_concurrent(1)), false).await;
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    // A client takes the only slot and does not finish reading (the stream waits 1.5 s).
+    let mut held = tokio::net::TcpStream::connect(addr).await.unwrap();
+    held.write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip\r\n\r\n").await.unwrap();
+    let mut tmp = [0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(5), held.read(&mut tmp)).await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&tmp[..n]).to_ascii_lowercase().contains("content-encoding: gzip"));
+    let r = raw(addr, "GET", "/json-large", &[("Accept-Encoding", "gzip")]).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.header("content-encoding"), None);
+    assert_eq!(r.header("vary"), Some("Accept-Encoding"));
+    assert_eq!(r.body, serde_json::to_vec(&json!({ "d": text(10232) })).unwrap());
+    // Closing the connection frees the slot.
+    drop(held);
+    let mut compressed = None;
+    for _ in 0..50 {
+        let r = raw(addr, "GET", "/json-large", &[("Accept-Encoding", "gzip")]).await;
+        if r.header("content-encoding") == Some("gzip") {
+            compressed = Some(r);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(compressed.is_some(), "the slot was never released");
+    app.close().await.unwrap();
+}
+
 // ---- Replay of the requests recorded against the original stack ----
 
 fn sha(data: &[u8]) -> String {

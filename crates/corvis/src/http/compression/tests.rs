@@ -86,8 +86,10 @@ fn brotli_window_follows_the_body_length() {
     assert_eq!(brotli_window(Some(1024)), 16);
     assert_eq!(brotli_window(Some(65_520)), 16);
     assert_eq!(brotli_window(Some(65_521)), 17);
-    assert_eq!(brotli_window(Some(10 * 1024 * 1024)), 22);
-    assert_eq!(brotli_window(None), 20);
+    assert_eq!(brotli_window(Some(262_128)), 18);
+    assert_eq!(brotli_window(Some(262_129)), 19);
+    assert_eq!(brotli_window(Some(10 * 1024 * 1024)), 19);
+    assert_eq!(brotli_window(None), 19);
 }
 
 #[test]
@@ -249,7 +251,7 @@ fn decode(coding: Coding, data: &[u8]) -> Vec<u8> {
 }
 
 fn compress(coding: Coding, chunks: Vec<Bytes>, len: Option<u64>) -> CompressedBody {
-    CompressedBody::new(body_of(chunks), coding, 6, 4, len)
+    CompressedBody::new(body_of(chunks), coding, 6, 4, len, None)
 }
 
 fn sample(n: usize) -> Vec<u8> {
@@ -297,7 +299,7 @@ async fn a_failing_source_ends_the_body_with_an_error() {
             Ok::<_, std::io::Error>(Frame::data(Bytes::from(sample(5000)))),
             Err(std::io::Error::other("disk failure")),
         ]);
-        let mut body = CompressedBody::new(StreamBody::new(stream).boxed_unsync(), coding, 6, 4, None);
+        let mut body = CompressedBody::new(StreamBody::new(stream).boxed_unsync(), coding, 6, 4, None, None);
         let mut error = None;
         while let Some(frame) = body.frame().await {
             if let Err(e) = frame {
@@ -314,7 +316,7 @@ async fn a_slow_stream_is_flushed_before_the_next_chunk() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
         let stream =
             futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|c| (Ok::<_, std::io::Error>(Frame::data(c)), rx)) });
-        let mut body = CompressedBody::new(StreamBody::new(stream).boxed_unsync(), coding, 6, 4, None);
+        let mut body = CompressedBody::new(StreamBody::new(stream).boxed_unsync(), coding, 6, 4, None, None);
         let first = sample(2048);
         tx.send(Bytes::from(first.clone())).unwrap();
         let mut got = Vec::new();
@@ -367,4 +369,96 @@ async fn the_compressed_body_has_no_exact_size() {
     while let Some(chunk) = stream.next().await {
         chunk.unwrap();
     }
+}
+
+// ---- The cap on compressions in progress ----
+
+/// A JSON response of `size` bytes in one chunk; with `stalled` the body then never ends.
+fn wire(size: usize, stalled: bool) -> hyper::Response<ResBody> {
+    let first = futures::stream::iter([Ok::<_, std::io::Error>(Frame::data(Bytes::from(sample(size))))]);
+    let body = if stalled {
+        StreamBody::new(first.chain(futures::stream::pending())).boxed_unsync()
+    } else {
+        StreamBody::new(first).boxed_unsync()
+    };
+    let mut resp = hyper::Response::new(body);
+    resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    resp
+}
+
+fn request_accepting(accept: &str) -> RequestInfo {
+    let mut info = RequestInfo::new(&Method::GET, &HeaderMap::new());
+    info.headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_str(accept).unwrap());
+    info
+}
+
+fn encoding_of(resp: &hyper::Response<ResBody>) -> Option<&str> {
+    resp.headers().get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok())
+}
+
+#[tokio::test]
+async fn at_the_cap_brotli_falls_back_to_gzip_and_then_to_identity() {
+    // two slots, so brotli may use one
+    let opts = CompressionOptions::new().threshold(0).max_concurrent(2);
+    assert_eq!(opts.max_concurrent_compressions(), 2);
+    let req = request_accepting("br, gzip");
+    let first = apply(wire(2000, true), &req, &opts);
+    assert_eq!(encoding_of(&first), Some("br"));
+    assert_eq!(opts.available_slots(), (1, 0));
+    // the brotli sub-cap is spent: gzip takes the last slot
+    let second = apply(wire(2000, true), &req, &opts);
+    assert_eq!(encoding_of(&second), Some("gzip"));
+    assert_eq!(opts.available_slots(), (0, 0));
+    // nothing is free: uncompressed, but still marked as varying so caches stay correct
+    let third = apply(wire(2000, true), &req, &opts);
+    assert_eq!(encoding_of(&third), None);
+    assert_eq!(third.headers().get(header::VARY).unwrap(), "Accept-Encoding");
+    // a client that only takes brotli gets nothing either
+    let fourth = apply(wire(2000, true), &request_accepting("br"), &opts);
+    assert_eq!(encoding_of(&fourth), None);
+    assert_eq!(fourth.headers().get(header::VARY).unwrap(), "Accept-Encoding");
+    // dropping a response frees its slots
+    drop(first);
+    assert_eq!(opts.available_slots(), (1, 1));
+    let fifth = apply(wire(2000, true), &req, &opts);
+    assert_eq!(encoding_of(&fifth), Some("br"));
+    drop((second, fifth));
+    assert_eq!(opts.available_slots(), (2, 1));
+}
+
+#[tokio::test]
+async fn the_slot_is_released_when_the_body_ends() {
+    let opts = CompressionOptions::new().threshold(0).max_concurrent(4);
+    let resp = apply(wire(5000, false), &request_accepting("gzip"), &opts);
+    assert_eq!(opts.available_slots().0, 3);
+    let mut body = resp.into_body();
+    while let Some(frame) = body.frame().await {
+        frame.unwrap();
+    }
+    // the body is still alive, its slot is already free
+    assert_eq!(opts.available_slots().0, 4);
+}
+
+#[tokio::test]
+async fn the_slot_is_released_when_a_stalled_body_is_dropped() {
+    let opts = CompressionOptions::new().threshold(0).max_concurrent(4);
+    let resp = apply(wire(5000, true), &request_accepting("br"), &opts);
+    let mut body = resp.into_body();
+    // read the first bytes and stop, as a client that goes away does
+    let _ = tokio::time::timeout(Duration::from_millis(50), body.frame()).await;
+    assert_eq!(opts.available_slots(), (3, 1));
+    drop(body);
+    assert_eq!(opts.available_slots(), (4, 2));
+}
+
+#[tokio::test]
+async fn clones_share_the_cap_and_zero_means_one() {
+    let opts = CompressionOptions::new().threshold(0).max_concurrent(0);
+    assert_eq!(opts.max_concurrent_compressions(), 1);
+    let copy = opts.clone();
+    let held = apply(wire(2000, true), &request_accepting("gzip"), &opts);
+    assert_eq!(encoding_of(&held), Some("gzip"));
+    let other = apply(wire(2000, true), &request_accepting("gzip"), &copy);
+    assert_eq!(encoding_of(&other), None);
+    assert!(CompressionOptions::new().max_concurrent_compressions() >= 8);
 }

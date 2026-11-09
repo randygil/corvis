@@ -127,10 +127,10 @@ async fn peak_memory_of_one_compressed_response() {
     let brotli_small = figures.iter().find(|(p, a, _)| *p == "/small" && *a == "br").unwrap().2;
     assert!(brotli_small < 1024 * 1024, "brotli on a small body needs {brotli_small} bytes; Node's fixed 4 MiB window is not used");
     // A 5 MiB body is never held as a whole: gzip and deflate stay far below its size, and brotli
-    // needs its 4 MiB window plus tables (a stream of unknown length uses a 1 MiB window).
+    // needs its window (at most 2^19) plus tables, about 4 MiB.
     for (path, accept, peak) in &figures {
         if *path != "/small" {
-            let limit = if *accept == "br" { 16 * 1024 * 1024 } else { 5 * 1024 * 1024 };
+            let limit = if *accept == "br" { 8 * 1024 * 1024 } else { 5 * 1024 * 1024 };
             assert!(*peak < limit, "{path} {accept}: {peak}");
         }
     }

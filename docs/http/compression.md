@@ -38,8 +38,9 @@ same code as the server, so a test application compresses exactly like the real 
 | `.level(0..=9)` | 6 | `level` (gzip and deflate) |
 | `.brotli_quality(0..=11)` | 4 | `brotli.params[BROTLI_PARAM_QUALITY]` |
 | `.filter(\|ctx\| ...)` | `should_compress` | `filter` |
+| `.max_concurrent(n)` | 8 times the available cores | none (see [the cap](#concurrent-compressions)) |
 
-Values out of range are clamped (`level(20)` is 9, `brotli_quality(50)` is 11).
+Values out of range are clamped (`level(20)` is 9, `brotli_quality(50)` is 11, `max_concurrent(0)` is 1).
 
 `filter` receives a `CompressionContext` with the request method, path and headers and the response status and
 headers. `corvis::should_compress` is the default filter and is public, like `compression.filter`, so a custom filter can
@@ -105,9 +106,10 @@ very slow streams.
   `Content-Encoding` on a `206`.
 - Not available: `enforceEncoding`, `chunkSize`, `memLevel`, `windowBits`, `strategy` and custom brotli `params`;
   `res.flush()` is not needed.
-- The brotli window is chosen per response: the smallest from 64 KiB to 4 MiB (Node's fixed size) that covers the body,
-  1 MiB for a stream of unknown length. The decoded output is the same; a small response does not allocate a 4 MiB
-  window.
+- **The brotli window is at most 512 KiB (2^19)**, where Node uses a fixed 4 MiB (2^22). Below that it is chosen per
+  response: the smallest from 64 KiB that covers the body. The decoded output is the same; the ratio is slightly lower on
+  very large bodies, and an encoder costs about 5 MiB instead of about 15 MiB.
+- **A cap on compressions in progress** (see [below](#concurrent-compressions)); the middleware has none.
 - The compressed bytes are not the ones Node's zlib produces, only equivalent: clients decode both the same.
 
 ## Security
@@ -145,13 +147,28 @@ with `crates/corvis/tests/compression_memory.rs`:
 | Body | gzip / deflate | brotli |
 |---|---|---|
 | 1 KiB | about 350 KiB | about 560 KiB |
-| 5 MiB stream of unknown length | about 410 KiB | about 7.6 MiB (1 MiB window) |
-| 5 MiB file of known length | about 2.4 MiB* | about 11 MiB (4 MiB window) |
+| 5 MiB stream of unknown length | about 410 KiB | about 4.5 MiB (512 KiB window) |
+| 5 MiB file of known length | about 2.4 MiB* | about 4.0 MiB (512 KiB window) |
 
 \* Includes the compressed output that the test client collects; the server streams it.
 
-Plan for `max_connections` times the streams per connection times these figures. Corvis does not cap concurrent
-compressions in this version; set `max_connections` accordingly or compress large brotli bodies in a proxy.
+**Clients that stop reading.** A client that opens a connection, asks for a compressed response and does not read it
+keeps its encoder, and its memory, until the connection closes: Corvis has no send timeout yet (it is tracked in
+[#157](https://github.com/randygil/corvis/issues/157)). With `br` and an 11.6 MiB file, 500 such HTTP/1 connections
+held about 440 MiB with the cap below (about 0.85 MiB each), against 127 MiB with no compression. Set
+`ServerOptions::max_connections` when compression is on, and size it from the figures above.
+
+### Concurrent compressions
+
+At most `max_concurrent` responses are compressed at the same time (default: 8 times the available cores, minimum 1).
+A response takes a slot when it starts and keeps it until its body ends, fails or is dropped. The cap bounds the memory
+above and the CPU that clients can ask for.
+
+- `br` can use at most half of the slots (at least one), so it cannot starve `gzip`.
+- When no slot is free for `br`, the response uses `gzip` (or `deflate`) if the client accepts it and a slot is free for
+  it. Otherwise it is sent uncompressed, with status 200 and its normal headers.
+- Responses that were eligible for compression always carry `Vary: Accept-Encoding`, also when the cap made them go out
+  uncompressed, so caches stay correct.
 
 **Strong ETags.** With `app.set_etag(EtagMode::Strong)` the `ETag` of the uncompressed body is kept on the compressed
 one, as in the middleware. The default weak `ETag` is correct for both.

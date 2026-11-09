@@ -211,11 +211,16 @@ fn compare(a: &Priority, b: &Priority, provided: &[&str]) -> Ordering {
 /// `new Negotiator(req).encoding(SUPPORTED, PREFERRED)`: the best encoding for the `Accept-Encoding`
 /// header value (`None` when the header is absent), or `None` when nothing is acceptable.
 pub(super) fn negotiate(accept_encoding: Option<&str>) -> Option<&'static str> {
+    negotiate_among(accept_encoding, &SUPPORTED)
+}
+
+/// [`negotiate`] over a subset of [`SUPPORTED`] (used when an encoding is not available right now).
+pub(super) fn negotiate_among(accept_encoding: Option<&str>, supported: &[&'static str]) -> Option<&'static str> {
     let accepted = parse_accept_encoding(accept_encoding.unwrap_or(""));
-    let mut priorities: Vec<Priority> = SUPPORTED.iter().enumerate().map(|(i, e)| priority_of(e, &accepted, i)).collect();
+    let mut priorities: Vec<Priority> = supported.iter().enumerate().map(|(i, e)| priority_of(e, &accepted, i)).collect();
     priorities.retain(|p| p.q > 0.0);
-    priorities.sort_by(|a, b| compare(a, b, &SUPPORTED));
-    priorities.first().map(|p| SUPPORTED[p.index])
+    priorities.sort_by(|a, b| compare(a, b, supported));
+    priorities.first().map(|p| supported[p.index])
 }
 
 #[cfg(test)]

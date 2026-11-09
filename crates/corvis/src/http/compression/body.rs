@@ -47,13 +47,18 @@ impl Coding {
     }
 }
 
-/// The brotli window (log2 of its size) for a body: the smallest from 2^16 to 2^22 (Node's
-/// default) that covers `len` bytes, or 2^20 when the length is unknown. A smaller window gives the
+/// The largest brotli window (log2 of its size). Node uses 2^22, which costs about 15 MiB per
+/// compressor; 2^19 costs about 5 MiB and gives the same decoded output with a slightly lower ratio
+/// on very large bodies.
+pub(super) const MAX_BROTLI_WINDOW: u32 = 19;
+
+/// The brotli window (log2 of its size) for a body: the smallest from 2^16 to [`MAX_BROTLI_WINDOW`]
+/// that covers `len` bytes, or the maximum when the length is unknown. A smaller window gives the
 /// same decoded output with less memory per response.
 pub(super) fn brotli_window(len: Option<u64>) -> u32 {
     match len {
-        None => 20,
-        Some(len) => (16..=22).find(|lgwin| (1u64 << lgwin) - 16 >= len).unwrap_or(22),
+        None => MAX_BROTLI_WINDOW,
+        Some(len) => (16..=MAX_BROTLI_WINDOW).find(|lgwin| (1u64 << lgwin) - 16 >= len).unwrap_or(MAX_BROTLI_WINDOW),
     }
 }
 
@@ -119,13 +124,24 @@ pub(super) struct CompressedBody {
     dirty: bool,
     source_done: bool,
     ended: bool,
+    /// The compression slot, held while the encoder lives: released when the body ends, fails or
+    /// is dropped (a client that stops reading keeps it until its connection closes).
+    permit: Option<super::Permit>,
 }
 
 impl CompressedBody {
     /// `body_len` is the length of the uncompressed body when it is known (it only sizes the
     /// brotli window).
-    pub(super) fn new(inner: ResBody, coding: Coding, level: u32, brotli_quality: u32, body_len: Option<u64>) -> Self {
+    pub(super) fn new(
+        inner: ResBody,
+        coding: Coding,
+        level: u32,
+        brotli_quality: u32,
+        body_len: Option<u64>,
+        permit: Option<super::Permit>,
+    ) -> Self {
         CompressedBody {
+            permit,
             inner,
             encoder: Some(Encoder::new(coding, level, brotli_quality, body_len)),
             pending_input: Bytes::new(),
@@ -138,6 +154,7 @@ impl CompressedBody {
     fn fail(&mut self, e: io::Error) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
         self.encoder = None;
         self.ended = true;
+        self.permit = None;
         Poll::Ready(Some(Err(e)))
     }
 }
@@ -179,7 +196,9 @@ impl Body for CompressedBody {
             }
             if this.source_done {
                 let Some(encoder) = this.encoder.take() else { continue };
-                return match encoder.finish() {
+                let finished = encoder.finish();
+                this.permit = None;
+                return match finished {
                     Ok(out) if !out.is_empty() => data(out),
                     Ok(_) => {
                         this.ended = true;
@@ -233,7 +252,7 @@ mod tests {
         let total = 1024 * 1024;
         let data = Bytes::from(vec![7u8; total]);
         let stream = futures::stream::iter(vec![Ok::<_, io::Error>(Frame::data(data))]);
-        let mut body = CompressedBody::new(StreamBody::new(stream).boxed_unsync(), Coding::Gzip, 6, 4, Some(total as u64));
+        let mut body = CompressedBody::new(StreamBody::new(stream).boxed_unsync(), Coding::Gzip, 6, 4, Some(total as u64), None);
         // Poll until the first slice went through the encoder, and no further.
         std::future::poll_fn(|cx| match Pin::new(&mut body).poll_frame(cx) {
             Poll::Ready(Some(Ok(_))) => Poll::Ready(()),

@@ -90,7 +90,8 @@ compressible 2.0.18 and mime-db 1.54.0)**
 - CPU and memory per response stay bounded and documented.
 
 **Non-Goals:**
-- Request decompression, extra encodings or zlib tuning options, a concurrency cap (proposal, Out of scope).
+- Request decompression, extra encodings or zlib tuning options (proposal, Out of scope). A send timeout for
+  clients that stop reading is #157.
 
 ## Decisions
 
@@ -147,8 +148,9 @@ compressible 2.0.18 and mime-db 1.54.0)**
    fixture's comparison by name.
 7. **Options and defaults.** `CompressionOptions { threshold: 1024, level: 6, brotli_quality: 4, filter: None }` with
    builder setters; `level` clamped to 0..=9, `brotli_quality` to 0..=11. The brotli window is chosen per response:
-   the smallest window (between 2^16 and 2^22, Node's default) that covers the body when its length is known, 2^20 for
-   streams of unknown length, so a small JSON response does not allocate a 4 MiB ring buffer. The filter is
+   the smallest window (between 2^16 and 2^19) that covers the body when its length is known, 2^19 for streams of
+   unknown length and for bodies above 512 KiB, so a small JSON response does not allocate a large ring buffer (the
+   first draft went up to Node's 2^22; see "Security review fixes"). The filter is
    `Arc<dyn Fn(&CompressionContext) -> bool + Send + Sync>`; `CompressionContext` exposes the request method, path and
    headers and the response status and headers; `should_compress(&CompressionContext)` is public, like
    `compression.filter`. The request headers are cloned into `RequestInfo` only when a custom filter is set;
@@ -202,10 +204,11 @@ compressible 2.0.18 and mime-db 1.54.0)**
 
 ## Review notes (2026-11-09)
 
-- Q1: no concurrency cap in this change; a later change may add one.
+- Q1: ~~no concurrency cap in this change~~ superseded by the security review (see Implementation notes, "Security
+  review fixes"): this change adds a cap on compressions in progress and caps the brotli window at 2^19.
 - Q2: confirmed: responses with `Content-Range` and `text/event-stream` responses are not compressed. Both divergences
   from the reference are documented.
-- Q3: confirmed: per-response brotli window.
+- Q3: confirmed: per-response brotli window, now capped at 2^19 (see Implementation notes).
 
 ## Implementation notes
 
@@ -229,7 +232,8 @@ compressible 2.0.18 and mime-db 1.54.0)**
   `encoded` route (a gzip body with its own `Content-Encoding`) is compared on the gunzipped body and without the exact
   `ETag` or `Content-Length` (Node's zlib and `miniz_oxide` produce different bytes). The `Range` cases are recorded
   against the original (which compresses the `206`) and asserted against the documented Corvis behavior.
-- **Task 4.3, measured peak heap above the idle server** (`tests/compression_memory.rs`, a counting allocator; the
+- **Task 4.3, measured peak heap above the idle server** (first version, windows up to 2^22; after the security fixes
+  the 5 MiB brotli rows are 4.0 MiB for the file and 4.5 MiB for the stream, the others unchanged) (`tests/compression_memory.rs`, a counting allocator; the
   figures include the output that the test client collects):
 
   | Body | gzip | deflate | brotli |
@@ -249,3 +253,33 @@ compressible 2.0.18 and mime-db 1.54.0)**
 - **`cargo deny check`** passes (advisories, bans, licenses, sources); the added crates are `flate2`, `miniz_oxide`,
   `crc32fast`, `adler2`, `simd-adler32`, `brotli`, `brotli-decompressor`, `alloc-no-stdlib`, `alloc-stdlib`. Cargo.lock also
   lists `zlib-rs` (an optional backend of `flate2`, not compiled). No new license was needed.
+
+### Security review fixes
+
+The review of a0438cf found that a client that stops reading keeps its compressor alive for as long as it keeps the
+connection open (measured on a release build with an 11.6 MiB JSON file: 500 idle HTTP/1 connections with `br` held 4.9
+GiB committed against 113 MiB without compression; one h2c connection with 200 streams held 1.96 GiB; a 2^22 window
+is 14.7 MiB per compressor, 2^19 is 5.0 MiB, 2^18 is 3.3 MiB, gzip level 6 is 0.36 MiB). Fixes in this change:
+
+- **Brotli window capped at 2^19** in every case (still the smallest that covers a body below 512 KiB). A divergence from
+  Node's fixed 2^22: the decoded output is the same and the ratio is slightly lower on very large bodies.
+- **Cap on compressions in progress**, `CompressionOptions::max_concurrent(n)`: two `tokio` semaphores shared by the clones
+  of the options. A response takes a slot with `try_acquire` (it never waits) and keeps it in the `CompressedBody` until
+  the body ends, fails or is dropped.
+  - **Default 8 x `available_parallelism`.** Compression is CPU-bound and each encoder runs one 64 KiB step per poll, so
+    a few per core keeps every core busy while bodies interleave; a larger number only adds memory (about 5 MiB per
+    brotli and 0.4 MiB per gzip encoder) and room for stalled clients. It is configurable, minimum 1.
+  - **Starvation scheme.** `br` needs a slot of a second semaphore of `max/2` (at least 1) as well as a total slot, so it
+    can never use more than half of the slots and gzip always has some. Brotli is also the most expensive encoder in
+    CPU and memory.
+  - **Fallback.** When `br` was negotiated and no brotli or total slot is free, the negotiation is repeated over
+    `gzip, deflate, identity` (same algorithm, `br` removed) and the winner takes a total slot; if the client accepts
+    only `br`, or the total cap is reached, the response is uncompressed. `Vary: Accept-Encoding` is set before a slot
+    is tried, so eligible responses that go out uncompressed still vary.
+  - A client that stops reading still holds its slot until its connection closes; #157 (a send timeout) closes that.
+    Re-measured after the fix with the same 11.6 MiB file on a 32-core machine and the default cap (256, so at most 128
+    brotli): 500 idle HTTP/1 connections with `br` hold 440 MiB (about 0.85 MiB each), against 127 MiB for the same 500
+    without compression and 4.9 GiB before. `encmem` was not re-run: its 5.0 MiB per encoder at 2^19 is the review's
+    figure.
+- Tests: unit tests of the fallback chain (brotli, gzip, identity, `Vary`), of the release when the body ends, fails or is
+  dropped, and of clones sharing the cap; an integration test over a listening server with a stalled client.
