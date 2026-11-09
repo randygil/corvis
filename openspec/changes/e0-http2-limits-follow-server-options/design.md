@@ -208,4 +208,9 @@ See proposal.md for motivation; the behavior is in the spec delta. Current state
 - Known limitations moved to #157 and documented, not fixed here: a peer that never reads holds the connection (no
   write deadline, and `inflight > 0` disables the timers), and an unread PING flood blocks writing so neither the idle
   timeouts nor the PING timeout fire.
+- Test robustness on fast machines (Linux CI): h2's own mitigation of streams reset before they are accepted can close the
+  connection first with GOAWAY 11 (ENHANCE_YOUR_CALM), and the client's written count overshoots what the server
+  processed. The flood tests therefore accept GOAWAY 0 or 11, check no handler starts between the first GOAWAY and the
+  close, and assert counts on the server side (handlers started) instead of the client's, with lower bounds only when the
+  GOAWAY is 0. The client paces on server progress (responses received, handlers started) instead of fixed sleeps.
 - Task 4.5 (parity check) is left to the maintainer's session; the note on #117 (task 4.6) is posted.
