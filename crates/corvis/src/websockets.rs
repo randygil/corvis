@@ -293,7 +293,6 @@ impl WsClient {
     pub fn in_room(&self, room: &str) -> bool {
         self.inner.rooms.lock().unwrap().contains(room)
     }
-    /// The HTTP upgrade request (headers, query string, ...).
     /// The client address of the connection, `handshake().ip()` resolved once when the connection
     /// was accepted (`set_trust_proxy` applies). Messages read this value, so their cost does not
     /// depend on the size of the handshake's `X-Forwarded-For`.
@@ -301,6 +300,7 @@ impl WsClient {
         &self.inner.ip
     }
 
+    /// The HTTP upgrade request (headers, query string, ...).
     pub fn handshake(&self) -> &Request {
         &self.inner.handshake
     }

@@ -1167,14 +1167,26 @@ impl ThrottlerGuard {
     }
 }
 
+/// The client address of the context's request. In a WebSocket context it is the per-connection address, resolved
+/// once when the connection was accepted.
+fn request_ip(ctx: &ExecutionContext) -> String {
+    #[cfg(feature = "websockets")]
+    if let Some(client) = ctx.switch_to_ws().get_client::<crate::websockets::WsClient>() {
+        return client.ip().to_owned();
+    }
+    ctx.request().ip()
+}
+
 #[async_trait]
 impl CanActivate for ThrottlerGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let targets = [ctx.get_handler(), ctx.get_class()];
         self.warn_bare_skip_without_default(ctx, &targets);
         self.check_unknown_overrides(ctx, &targets)?;
-        let req = ctx.request();
-        let client = normalize_ip(&req.ip(), self.storage.ipv6_subnet_prefix);
+        // In a WebSocket context the address was resolved once, when the connection was accepted: resolving
+        // it again for every message would walk the handshake's `X-Forwarded-For` each time.
+        let ip = request_ip(ctx);
+        let client = normalize_ip(&ip, self.storage.ipv6_subnet_prefix);
         for t in &self.storage.throttlers {
             if self.is_skipped(&t.name, &targets) {
                 continue;

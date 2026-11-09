@@ -161,3 +161,13 @@ None. The technical choices are recorded above and in the review notes.
 - Measured with the reviewer's PoC (release, `#[ip]`, 29 KB `X-Forwarded-For`, trust proxy `true`): 20.5 us/message
   after the fix, against about 1470 us before; the baseline is 20.3 us.
 
+## Review notes, security round 2 (2026-11-09)
+
+- Finding (LOW, pre-existing): `ThrottlerGuard` called `ctx.request().ip()` for every WebSocket message, which walks the
+  handshake's `X-Forwarded-For` again when the trust setting trusts the client's chain (about 230 us per message).
+- Fix: in a WebSocket context the guard's built-in tracker uses `WsClient::ip()` (resolved once per connection) from the
+  context's client; HTTP requests and custom trackers are unchanged. The `websockets` feature gates the lookup.
+- Test: `the_throttler_tracks_gateway_messages_with_the_connection_address` checks, through a key generator, that the
+  tracker of every message equals `client.ip()`.
+- The rustdoc of `WsClient::handshake()` and `WsClient::ip()` had been swapped; each has its own sentence again.
+

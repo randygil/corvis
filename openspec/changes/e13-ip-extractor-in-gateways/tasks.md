@@ -57,6 +57,7 @@ numbers in design.md refer to that commit.
 - [x] 6.2 Make `Request::ip()` lazy (`proxy_addr::client_addr`) with a differential test against `all_addrs`, long
   headers and the edge cases
 - [x] 6.3 Test that the address is the same value for every message of a connection
+- [x] 6.4 `ThrottlerGuard` uses `WsClient::ip()` in WebSocket contexts, with a test that the tracker equals `client.ip()`
 
 ## Workflow follow-up
 

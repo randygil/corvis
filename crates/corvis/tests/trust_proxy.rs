@@ -400,3 +400,43 @@ async fn gateway_ip_parameter_keeps_the_full_ipv6_address() {
     let v = ws_ip(addr, &[("X-Forwarded-For", "2001:db8:1:2:aaaa:bbbb:cccc:dddd")]).await;
     assert_eq!(v, "2001:db8:1:2:aaaa:bbbb:cccc:dddd");
 }
+
+static TRACKED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+#[websocket_gateway(path = "/tracked-ws")]
+pub struct TrackedGateway {
+    #[websocket_server]
+    server: WsServer,
+}
+
+#[handlers]
+impl TrackedGateway {
+    #[subscribe_message("hit")]
+    fn hit(&self, #[ip] ip: String) -> String {
+        ip
+    }
+}
+
+#[module(
+    imports = [ThrottlerModule::for_root_storage(
+        corvis::modules::throttler::ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_key_generator(|ctx, tracker, _| {
+            let ip = ctx.switch_to_ws().get_client::<WsClient>().map(|c| c.ip().to_string()).unwrap_or_default();
+            TRACKED.lock().unwrap().push((tracker.to_string(), ip));
+            tracker.to_string()
+        }),
+    )],
+    providers = [TrackedGateway, Provider::app_guard::<ThrottlerGuard>()],
+)]
+pub struct WsTrackedModule;
+
+#[corvis::test]
+async fn the_throttler_tracks_gateway_messages_with_the_connection_address() {
+    let (_app, addr) = start_ws::<WsTrackedModule>(hops(1)).await;
+    let mut ws = ws_connect(addr, "/tracked-ws", &[("X-Forwarded-For", "203.0.113.7")]).await.unwrap();
+    for _ in 0..3 {
+        assert_eq!(ws_call(&mut ws, "hit").await["data"], "203.0.113.7");
+    }
+    let seen = TRACKED.lock().unwrap().clone();
+    assert_eq!(seen.len(), 3);
+    assert!(seen.iter().all(|(tracker, ip)| tracker == "203.0.113.7" && ip == "203.0.113.7"), "{seen:?}");
+}
