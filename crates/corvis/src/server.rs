@@ -355,13 +355,14 @@ async fn handle(
     #[cfg(feature = "websockets")]
     {
         if let Some(gw) = crate::websockets::match_upgrade(&shared, req.headers(), req.uri().path()) {
-            return Ok(crate::websockets::upgrade(gw, req, remote));
+            return Ok(crate::websockets::upgrade(gw, req, remote, &shared.http_settings.body_parser.trust_proxy));
         }
     }
     // `server.on('upgrade', ...)` listeners take every upgrade request (Node semantics).
     if crate::http_adapter::is_upgrade_request(&req) {
         if shared.http_server.upgrade_listener_count() > 0 {
-            return crate::http_adapter::dispatch_upgrade(&shared.http_server, req, remote).await;
+            return crate::http_adapter::dispatch_upgrade(&shared.http_server, req, remote, &shared.http_settings.body_parser.trust_proxy)
+                .await;
         }
         // Like the `ws` adapter, upgrades for paths without a gateway are destroyed.
         #[cfg(feature = "websockets")]

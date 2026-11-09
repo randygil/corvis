@@ -182,6 +182,9 @@ requests would come from the proxy's IP and share a counter. Configure `trust pr
 app.set_trust_proxy(1); // one proxy in front
 ```
 
+The setting also applies to gateway messages: a `ThrottlerGuard` on a gateway keys by the handshake
+request's `ip()`, which resolves `X-Forwarded-For` the same way (see [Gateways](/websockets/gateways)).
+
 Use `true` (trust all hops) only if every request goes through a proxy that
 rewrites `X-Forwarded-For`: otherwise, a client can choose its IP and bypass the limit. See
 [HTTP adapters](/http/performance).

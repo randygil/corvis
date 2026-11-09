@@ -127,3 +127,11 @@ throttler packages), and `@nestjs/core` 11.2.1 from `corvis-tests/nest/facten-ap
 
 - Q1: the handshake following `set_query_parser` is filed as a separate issue (low priority), out of scope here.
 - Q2: `#[ip]` in gateway handlers is filed as a separate issue (low priority), out of scope here.
+
+## Implementation notes
+
+- `Request::for_upgrade` is as designed (`src/http/request.rs`), with a unit test (`upgrade_tests`). It is not feature-gated: `http_adapter` uses it with and without `websockets`.
+- Tests: the gateway, throttler and `verify_client` scenarios are in `tests/trust_proxy.rs`, plus an untrusted peer forging `X-Forwarded-For` / `X-Forwarded-Host` (ignored) and a one-hop chain where the client-supplied left-most entry is ignored. The upgrade listener tests are in `tests/http_adapter.rs`, on their own small module: the bridge module's listener destroys unknown paths before a second listener could answer.
+- The throttler test checks the `exception` event of the third message; without trust both clients share the `127.0.0.1` counter.
+- Docs: the line numbers of the rate-limiting page had moved since the design; edited its "Behind a proxy" section.
+- Task 4.5 (`corvis-parity`) is left to the maintainer's session, as instructed.
