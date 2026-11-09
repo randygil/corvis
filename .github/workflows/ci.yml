@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           cargo clippy -p corvis --no-default-features -- -D warnings
-          for f in jwt websockets health-tls compression; do
+          for f in jwt websockets health-tls compression tls; do
             cargo clippy -p corvis --no-default-features --features "$f" -- -D warnings
           done
 
@@ -107,6 +107,8 @@ jobs:
         run: cargo test --workspace --no-fail-fast
       - name: Test the compression feature
         run: cargo test -p corvis --features compression --no-fail-fast
+      - name: Test the tls feature
+        run: cargo test -p corvis --features tls --lib --test tls --test tls_ws --test tls_provider --no-fail-fast
 
   test-windows:
     name: test (windows-latest)
@@ -128,6 +130,8 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Test (Postgres tests skip, no server)
         run: cargo test --workspace --no-fail-fast
+      - name: Test the tls feature
+        run: cargo test -p corvis --features tls --lib --test tls --test tls_ws --test tls_provider --no-fail-fast
 
   # The property-based suites with more cases than the 2,000 that `cargo test` runs. Dev profile, so debug
   # assertions and overflow checks stay on.

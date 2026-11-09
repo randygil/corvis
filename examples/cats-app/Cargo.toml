@@ -8,3 +8,7 @@ publish = false
 corvis = { path = "../../crates/corvis" }
 corvis-swagger = { path = "../../crates/corvis-swagger" }
 serde = { version = "1", features = ["derive"] }
+
+[features]
+# HTTPS next to the plain listener when CATS_TLS_CERT and CATS_TLS_KEY are set.
+tls = ["corvis/tls"]

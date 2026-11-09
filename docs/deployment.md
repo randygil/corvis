@@ -60,7 +60,7 @@ Inside a container you need to listen on all interfaces (`0.0.0.0`), not on `127
 
 ## Behind a reverse proxy
 
-Corvis serves unencrypted HTTP/1.1 (HTTP/2 with `h2c(true)`); it **does not terminate TLS**. In production, put it behind a reverse proxy or load balancer (nginx, Caddy, Traefik, your provider's) that handles HTTPS.
+Corvis has two ways to serve HTTPS: terminate TLS in the application with the `tls` feature (`app.listen_tls(addr, TlsOptions::from_pem_files(cert, key)?)`, see [HTTPS and multiple servers](/faq/multiple-servers)), or put it behind a reverse proxy or load balancer (nginx, Caddy, Traefik, your provider's) that handles HTTPS. The built-in server speaks unencrypted HTTP/1.1 (HTTP/2 with `h2c(true)`) on plain listeners. Use a proxy when you need automatic certificates, certificate reloads without a restart, or HTTP/3.
 
 Behind a proxy, the socket IP is the proxy's. For `req.ip()`, `#[ip]`, and the `ThrottlerGuard` to see the client's, say whom to trust:
 
@@ -177,6 +177,6 @@ Corvis applications require the Rust 2024 edition (Rust 1.85 or later). If you u
 - Built with `--release`.
 - Environment variables defined and validated at startup.
 - `enable_shutdown_hooks()` enabled.
-- TLS terminated at the proxy and `set_trust_proxy` configured if there is a proxy.
+- TLS terminated at the proxy (with `set_trust_proxy` configured) or in the application (`tls` feature and `listen_tls`).
 - Swagger routes, static files, and plain `corvis::ws` listeners protected separately if they are not public: global guards don't cover them. Gateways do get the global guards: mark public gateways explicitly.
 - A health check endpoint.

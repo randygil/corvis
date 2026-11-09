@@ -66,6 +66,8 @@ pub mod ws;
 
 mod server;
 pub use server::ServerOptions;
+#[cfg(feature = "tls")]
+pub use server::tls;
 
 #[doc(hidden)]
 pub mod __private;

@@ -114,6 +114,9 @@ postura de las rutas.
   Indícalos en cada llamada.
 - CORS: un origen dado como expresión regular no está anclado, como `regex.test` de JavaScript, y `reflect_origin()`
   con `credentials(true)` refleja cualquier origen. Consulta [CORS](/es/security/cors).
+- HTTP/2 sobre TLS se negocia con ALPN (`h2`) en los listeners iniciados con `listen_tls`; la comprobación de framing de
+  HTTP/1 se aplica a HTTP/1.1 sobre TLS igual que a las conexiones planas, y una conexión TLS que no negoció `h2` rechaza
+  el preface de HTTP/2 diga lo que diga `h2c`.
 - HTTP/2 sin TLS (h2c) está desactivado por defecto, como en el módulo `http` de Node, que no lo habla.
   `ServerOptions::new().h2c(true)` lo activa para un proxy o plataforma configurado para enviarlo; los límites de
   HTTP/2 siguen a `ServerOptions`: como máximo 100 streams concurrentes por conexión (`http2_max_concurrent_streams`),
