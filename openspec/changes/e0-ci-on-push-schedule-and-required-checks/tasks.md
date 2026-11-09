@@ -10,13 +10,16 @@
 - [ ] 2.1 Throwaway pull requests, one failure each: an unused import, a clippy warning, a misformatted line, a failing
   Postgres assertion, an English docs page without its Spanish page; record which job failed for each, then close them
 - [ ] 2.2 Run `nightly.yml` by hand on `main` once; record its duration and adjust the timeout or case count
-- [ ] 2.3 Check the duration of the `deny` job's tool install over these runs; cache or pin it if it is slow again
+- [x] 2.3 Check the duration of the `deny` job's tool install over these runs; cache or pin it if it is slow again
 
 ## 3. Protection
 
-- [ ] 3.1 Protect `main` with the required status checks, enforced for administrators; verify a direct push is rejected
+- [ ] 3.1 Create `dev` from `main` once this change is merged
+- [ ] 3.2 Protect `main` with the required status checks, enforced for administrators, no force push or deletion;
+  verify a direct push is rejected
+- [ ] 3.3 Block force pushes and deletion of `dev`
 
 ## 4. Definition of done
 
-- [ ] 4.1 This change merged through a pull request with every check green
-- [ ] 4.2 Archive with /opsx:archive, tick #140, close it
+- [ ] 4.1 This change merged into `main` through a pull request with every check green
+- [ ] 4.2 Archive with /opsx:archive on `dev`, tick #140, close it

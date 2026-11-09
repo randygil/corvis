@@ -1,7 +1,8 @@
 # The long checks: fuzzing with 100,000 cases per property and `cargo audit` against the latest advisory database.
 #
-# Runs every day on main, and by hand (Actions > Nightly checks > Run workflow), for example after a change to a parser
-# or before a release.
+# Runs every day, and by hand (Actions > Nightly checks > Run workflow) on any branch, for example after a change to a
+# parser or before a release. A scheduled run always starts on the default branch (main), so it checks out dev, the
+# integration branch where work lands; drop that `ref` when dev is retired.
 name: Nightly checks
 
 on:
@@ -40,6 +41,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
       - id: toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
         with:
@@ -75,6 +77,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}

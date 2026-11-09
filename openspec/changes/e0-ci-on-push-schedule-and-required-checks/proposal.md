@@ -12,12 +12,15 @@ schedule, and nothing stopped a commit that breaks the definition of done from l
 
 ## What Changes
 
-- `ci.yml` also runs on every push to `main`; runs on `main` are not cancelled by a newer push (each commit keeps its
-  result), runs on pull requests still are.
-- `nightly.yml` runs on a daily schedule as well as by hand; a scheduled run uses 100,000 cases per property.
+- Work lands on a new `dev` integration branch; `main` stays as it is until the roadmap phases and open issues are
+  done, and then receives `dev` through a pull request.
+- `ci.yml` also runs on pull requests to `dev` and on every push to `main` or `dev`; those runs are not cancelled by
+  a newer push (each commit keeps its result), runs on pull requests still are.
+- `nightly.yml` runs on a daily schedule as well as by hand; a scheduled run checks out `dev` and uses 100,000 cases
+  per property.
 - `main` is protected: the CI jobs are required status checks, administrators included, so every change reaches
-  `main` through a pull request whose checks passed.
-- `CONTRIBUTING.md` describes the new triggers and the pull-request-only flow.
+  `main` through a pull request whose checks passed; force pushes and deletion are blocked on `main` and `dev`.
+- `CONTRIBUTING.md` describes the branches, the triggers and the pull-request-only flow to `main`.
 
 ## Capabilities
 
@@ -25,9 +28,17 @@ schedule, and nothing stopped a commit that breaks the definition of done from l
 
 ## Impact
 
-- `.github/workflows/ci.yml`, `.github/workflows/nightly.yml`, `CONTRIBUTING.md`, the branch protection of `main`
-  (repository setting, applied with `gh api`).
-- Maintainer workflow: batches are merged through pull requests (`gh pr merge --merge`) instead of a direct push.
+- `.github/workflows/ci.yml`, `.github/workflows/nightly.yml`, `CONTRIBUTING.md`, the `dev` branch and the branch
+  protection of `main` and `dev` (repository settings, applied with `gh api`).
+- Maintainer workflow: batches are pushed to `dev` instead of `main`; `main` receives `dev` through one pull request.
+
+## Review notes
+
+- `main` stays the default branch, so the repository page keeps showing the last released state. Scheduled workflows
+  always start on the default branch, so the nightly checkout names `dev` for scheduled runs; that `ref` is dropped
+  when `dev` is retired.
+- `dev` gets no required checks: CI runs on every push to it, and a red run is fixed by the next push. Requiring
+  checks there would force a pull request per batch for one maintainer.
 
 ## Out of scope
 

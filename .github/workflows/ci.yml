@@ -1,16 +1,18 @@
-# The definition-of-done checks of CONTRIBUTING.md, on every pull request to main and on every push to main.
+# The definition-of-done checks of CONTRIBUTING.md, on every pull request to main or dev and on every push to main or
+# dev.
 #
-# main is protected: these jobs are required status checks, so changes reach main only through a pull request whose
-# checks passed. Runs on main also refresh the caches that every pull request can restore.
+# Work lands on dev, the integration branch, and reaches main through a pull request. main is protected: these jobs
+# are required status checks, so changes reach main only through a pull request whose checks passed. Runs on main and
+# dev also refresh the caches that pull requests to those branches can restore.
 #
 # Third-party actions are pinned to a full commit SHA (version in the comment); actions/* to a major version.
 name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +20,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # A newer push to a pull request cancels its run; every commit on main keeps its own result.
+  # A newer push to a pull request cancels its run; every commit on main and dev keeps its own result.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -60,7 +62,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Each feature of corvis on its own
         shell: bash
@@ -102,7 +104,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - name: Build with warnings denied
         run: cargo build --workspace --all-targets
       - name: Test
@@ -127,7 +129,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - name: Build with warnings denied
         run: cargo build --workspace --all-targets
       - name: Test (Postgres tests skip, no server)
@@ -155,7 +157,7 @@ jobs:
         with:
           # Shared with the long run of nightly.yml, which builds the same test targets.
           shared-key: fuzz
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       # Every suite runs even when an earlier one failed, so one run reports all failing properties.
       - name: Parsers, JWT, routes, multipart
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
@@ -244,7 +246,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - name: Crate files and metadata
         run: node scripts/check-crate-files.mjs
       - name: Package the published crates
