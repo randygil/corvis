@@ -165,3 +165,9 @@ the code on 2026-11-08:
    diverge (`exclusiveMinimum: 0` / escaped pattern) and list them as differences in the fixture.
 3. **`class-validator` version.** The originals do not depend on class-validator (none of consi, facten or houseplan
    uses it), so the fixture picks the current 0.14.x release; the plugin's mapping does not depend on it. Confirm.
+
+## Review notes (2026-11-08)
+
+1. `is_enum` maps to `enum`.
+2. The two quirks of the original plugin are fixed, not copied, and documented as differences: `is_positive` / `is_negative` on floats produce `exclusiveMinimum: 0` / `exclusiveMaximum: 0` (integers keep `minimum: 1` / `maximum: -1`), and `contains` produces a `pattern` with the text escaped.
+3. The fixture pins an exact class-validator 0.14.x version.

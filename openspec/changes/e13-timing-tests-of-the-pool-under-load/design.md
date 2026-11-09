@@ -166,3 +166,9 @@
    or must it keep the default URL and use `< 4 s`?
 3. If the maintainer wants a permanent load check, should CI run `pg_pool_url` and `pg_connect_timeout` a second time
    alongside a CPU burner? Recommendation: no; the stress run of task 4.1 is a one-off verification.
+
+## Review notes (2026-11-08)
+
+1. A 250 ms settling window is accepted.
+2. Adding `connect_timeout=30` to the URL of the encoding test is accepted.
+3. No permanent under-load run in CI; the stress run stays a manual task.

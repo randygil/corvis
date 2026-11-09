@@ -120,3 +120,10 @@ What the extension does today (`editors/vscode/`):
    (opens the setting)? Recommendation: a later issue, after the first release changes what that note means.
 4. The extension README and CHANGELOG are in Spanish only. This change edits them in Spanish to keep them consistent;
    confirm, or file the translation separately (listed in Out of scope).
+
+## Review notes (2026-11-08)
+
+1. The setting is `corvis.new.corvisPath`.
+2. The path is not derived automatically from a CLI run with `cargo run`.
+3. A "Set Corvis path…" button on the success message is not part of this change.
+4. Public repository text is in English: the new README and CHANGELOG entries are written in English, and the extension README and CHANGELOG are translated to English in this change.

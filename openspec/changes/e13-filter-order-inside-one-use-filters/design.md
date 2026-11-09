@@ -158,3 +158,8 @@ So within one attribute and across stacked attributes, Corvis tries filters in s
    fixture pins 12.4.0. Confirm 11.2.1 for HTTP, or move it to 12.4.0 so both fixtures match.
 2. **Migration guide wording.** This proposal adds a behavior-change bullet next to the #116 gateway bullet in
    `docs/migration-guide.md`. Confirm, or move release notes elsewhere if a changelog is introduced.
+
+## Review notes (2026-11-08)
+
+1. The new HTTP fixture pins the same version as the existing HTTP fixtures (11.2.1); unifying it with the gateway fixture (12.4.0) is not part of this change.
+2. The behavior change is noted in `docs/migration-guide.md` (EN + ES), with no switch.

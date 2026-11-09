@@ -181,3 +181,12 @@ a block ends, and master blocks it again.
 4. **`limit` 0.** Confirm following the original's master order (every request rejected) over 6.7.1 (one request let
    through after each block).
 5. **Unknown name.** Panic (proposed) or ignore a `with_block_duration` name that matches no throttler?
+
+## Review notes (2026-11-08)
+
+1. The sliding window is in scope, as in the original 6.7.1: each hit expires `ttl` after it was made.
+2. The block duration is configured on the storage (`ThrottlerStorage::with_block_duration`) and through the `THROTTLE_BLOCK_DURATION` metadata; `ThrottlerOptions` gets no new field.
+3. `with_max_hits` defaults to 1,000,000.
+4. With `limit` 0 every request is rejected (the divergence from 6.7.1 is confirmed and documented).
+5. `with_block_duration` with an unknown throttler name panics at registration.
+6. The size is M. Implement after #120.

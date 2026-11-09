@@ -151,3 +151,9 @@ Upstream facts used below (from the projects' own documentation, checked 2026-11
    Unix? Recommendation: keep watchexec's default (10 s) to let shutdown hooks finish.
 3. Should the docs keep a one-line note for users who still have cargo-watch installed ("no longer used, you can
    uninstall it")? Recommendation: yes, in `docs/cli/usages.md` only.
+
+## Review notes (2026-11-08)
+
+1. watchexec replaces cargo-watch, run without a shell and with an explicit `--ignore /target/**`.
+2. Keep watchexec's default `--stop-timeout`.
+3. Add a migration note for cargo-watch users in `docs/cli/usages.md` and its Spanish copy only.
