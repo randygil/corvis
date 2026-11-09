@@ -27,6 +27,13 @@ use crate::http::{Body, HttpException, Request, Response};
 use crate::router::{AppShared, dispatch};
 
 mod h1_framing;
+#[cfg(feature = "tls")]
+pub mod tls;
+mod transport;
+#[cfg(all(test, feature = "tls"))]
+mod transport_tests;
+
+use transport::ServerIo;
 
 pub(crate) type ResBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
@@ -622,7 +629,7 @@ struct ConnState {
     no_linger: AtomicBool,
     /// The socket and its permit, left here by `TimedIo::drop` for the connection task, which decides
     /// whether to drain before closing (hyper's own timeouts are only visible to that task).
-    closing: Mutex<Option<(TcpStream, Option<OwnedSemaphorePermit>)>>,
+    closing: Mutex<Option<(ServerIo, Option<OwnedSemaphorePermit>)>>,
     /// Task waiting on the IO, woken when the last in-flight request ends.
     waker: Mutex<Option<Waker>>,
     /// Requests cancelled and completed in the current and the previous window (rapid reset detection).
@@ -1170,6 +1177,19 @@ enum Phase {
     KeepAlive(Instant),
 }
 
+/// Which protocol a connection speaks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Proto {
+    /// A plain listener: HTTP/1, or HTTP/2 when `h2c` is on, told apart by the first bytes.
+    Auto,
+    /// TLS with ALPN `http/1.1` (or none): HTTP/1 only, the HTTP/2 preface is refused.
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    H1Only,
+    /// TLS with ALPN `h2`: HTTP/2 only.
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    H2Only,
+}
+
 /// hyper's `ignore_invalid_headers`; it must stay off while the framing check is on.
 const IGNORE_INVALID_HEADERS: bool = false;
 
@@ -1224,7 +1244,7 @@ impl H2Frames {
 /// that an error response sent before the request was fully read is not lost to a TCP reset.
 struct TimedIo {
     /// `None` only while `Drop` hands the socket to the closing task.
-    io: Option<TcpStream>,
+    io: Option<ServerIo>,
     /// Held until the socket is really closed, so `max_connections` also counts closing sockets.
     permit: Option<OwnedSemaphorePermit>,
     state: Arc<ConnState>,
@@ -1242,6 +1262,8 @@ struct TimedIo {
     /// refresh the keep-alive phase (a PONG or a SETTINGS acknowledgement does not make a connection busy).
     h2_out: Option<H2Frames>,
     h2c: bool,
+    /// TLS with ALPN `h2`: the connection must start with the HTTP/2 preface.
+    h2_only: bool,
     send_timeout: Option<Duration>,
     /// Since when `poll_write` or `poll_flush` have been pending without the socket accepting a byte.
     write_stalled_since: Option<Instant>,
@@ -1259,6 +1281,9 @@ struct TimedIo {
     read_sleep: Option<Pin<Box<Sleep>>>,
     /// The send timeout fired: an upgraded connection fails its reads too.
     send_failed: bool,
+    /// Bytes TCP had accepted when the send deadline last restarted (TLS: the progress shows below rustls).
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    seen_accepted: u64,
     /// The HTTP/1 framing check; `None` with `insecure_http_parser(true)`.
     framing: Option<Box<h1_framing::Framing>>,
     /// Bytes the check released that did not fit in hyper's buffer yet, served before the socket.
@@ -1292,6 +1317,16 @@ impl ReadCredit {
     fn exhausted(&self) -> bool {
         self.0 == 0
     }
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    fn available(&self) -> usize {
+        self.0
+    }
+}
+
+impl Default for ReadCredit {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Most input the server reads and discards after an early error response before closing.
@@ -1304,7 +1339,7 @@ const LINGER_MAX_TIME: Duration = Duration::from_secs(2);
 /// it closes, `LINGER_MAX_BYTES` or `LINGER_MAX_TIME`. Dropping a socket that still has unread
 /// input makes Windows (and Linux) send a reset, and the peer then discards the response it has
 /// not read yet. Both bounds keep a peer from holding the connection (and its connection permit).
-async fn linger_close(mut io: TcpStream) {
+async fn linger_close(mut io: ServerIo) {
     let drain = async {
         let _ = tokio::io::AsyncWriteExt::shutdown(&mut io).await;
         let mut buf = [0u8; 4 * 1024];
@@ -1443,7 +1478,11 @@ async fn finish_connection<C>(
 }
 
 impl TimedIo {
-    fn new(io: TcpStream, permit: Option<OwnedSemaphorePermit>, state: Arc<ConnState>, options: &ServerOptions) -> Self {
+    fn new(io: ServerIo, permit: Option<OwnedSemaphorePermit>, state: Arc<ConnState>, options: &ServerOptions, proto: Proto) -> Self {
+        let framing = match proto {
+            Proto::H2Only => None,
+            _ => (!options.insecure_http_parser).then(|| Box::new(h1_framing::Framing::new(options.max_header_size.max(8 * 1024)))),
+        };
         TimedIo {
             io: Some(io),
             permit,
@@ -1456,7 +1495,13 @@ impl TimedIo {
             preface: Some(0),
             h2: None,
             h2_out: None,
-            h2c: options.h2c,
+            // HTTP/2 negotiated with ALPN starts with the preface too, and is always allowed; HTTP/1 over TLS never is.
+            h2c: match proto {
+                Proto::Auto => options.h2c,
+                Proto::H1Only => false,
+                Proto::H2Only => true,
+            },
+            h2_only: proto == Proto::H2Only,
             send_timeout: options.send_timeout,
             write_stalled_since: None,
             write_sleep: None,
@@ -1466,7 +1511,8 @@ impl TimedIo {
             read_credit: ReadCredit::new(),
             read_sleep: None,
             send_failed: false,
-            framing: (!options.insecure_http_parser).then(|| Box::new(h1_framing::Framing::new(options.max_header_size.max(8 * 1024)))),
+            framing,
+            seen_accepted: 0,
             queue: Vec::new(),
             queue_pos: 0,
             sock_eof: false,
@@ -1484,7 +1530,7 @@ impl TimedIo {
         }
     }
 
-    fn sock(&mut self) -> Pin<&mut TcpStream> {
+    fn sock(&mut self) -> Pin<&mut ServerIo> {
         Pin::new(self.io.as_mut().expect("socket is present until drop"))
     }
 
@@ -1496,6 +1542,12 @@ impl TimedIo {
         if let Some(matched) = self.preface {
             let n = data.len().min(H2_PREFACE.len() - matched);
             if data[..n] != H2_PREFACE[matched..matched + n] {
+                if self.h2_only {
+                    // ALPN negotiated `h2`: anything but the HTTP/2 preface is a protocol violation, and must not be
+                    // parsed as HTTP/1 (the framing check is off on this path).
+                    self.state.no_linger.store(true, Ordering::SeqCst);
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 connection preface expected"));
+                }
                 self.preface = None;
             } else if matched + n == H2_PREFACE.len() {
                 if !self.h2c {
@@ -1524,6 +1576,7 @@ impl TimedIo {
     /// the task woken at the deadline.
     fn poll_write_deadline(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let Some(timeout) = self.send_timeout else { return Poll::Pending };
+        self.sync_wire_progress();
         let since = *self.write_stalled_since.get_or_insert_with(Instant::now);
         let Some(deadline) = since.checked_add(timeout) else { return Poll::Pending };
         let sleep = self.write_sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
@@ -1534,6 +1587,63 @@ impl TimedIo {
             Poll::Ready(()) => Poll::Ready(Err(self.send_timed_out())),
             Poll::Pending => Poll::Pending,
         }
+    }
+
+    /// Under TLS a flush can stay pending while TCP keeps taking bytes: whatever TCP accepted since the last look is
+    /// progress, so the send deadline restarts from now.
+    fn sync_wire_progress(&mut self) {
+        #[cfg(feature = "tls")]
+        if let Some(ServerIo::Tls(t)) = self.io.as_ref() {
+            let accepted = t.wire.accepted();
+            if accepted != self.seen_accepted {
+                self.seen_accepted = accepted;
+                self.write_stalled_since = None;
+            }
+        }
+    }
+
+    fn is_tls(&self) -> bool {
+        #[cfg(feature = "tls")]
+        {
+            matches!(self.io, Some(ServerIo::Tls(_)))
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            false
+        }
+    }
+
+    /// Whether the last write is blocked. Under TLS that is the last TCP write, or ciphertext rustls still holds.
+    fn write_is_blocked(&self) -> bool {
+        #[cfg(feature = "tls")]
+        if let Some(ServerIo::Tls(t)) = self.io.as_ref() {
+            return t.wire.blocked() || t.wants_write();
+        }
+        self.write_blocked
+    }
+
+    fn read_credit_exhausted(&self) -> bool {
+        #[cfg(feature = "tls")]
+        if let Some(ServerIo::Tls(t)) = self.io.as_ref() {
+            return t.wire.credit_exhausted();
+        }
+        self.read_credit.exhausted()
+    }
+
+    /// Pushes the ciphertext rustls holds to the socket. `true` when nothing is left pending (or the flush failed,
+    /// which the next read reports); `false` when the socket does not take it yet. The task whose write is pending
+    /// keeps the socket's write waker.
+    fn drain_tls(&mut self, cx: &mut Context<'_>) -> bool {
+        #[cfg(feature = "tls")]
+        if let Some(ServerIo::Tls(t)) = self.io.as_mut()
+            && t.wants_write()
+        {
+            let waker = self.write_waker.clone().unwrap_or_else(|| cx.waker().clone());
+            let mut wcx = Context::from_waker(&waker);
+            return !Pin::new(&mut t.stream).poll_flush(&mut wcx).is_pending();
+        }
+        let _ = cx;
+        true
     }
 
     /// The send timeout fired: mark the socket for an abortive close and wake both halves of an upgraded
@@ -1551,7 +1661,10 @@ impl TimedIo {
     fn write_progress(&mut self, written: &[io::IoSlice<'_>], n: usize) {
         self.write_stalled_since = None;
         self.write_blocked = false;
-        self.read_credit.earn(n);
+        // Under TLS the credit is earned by the bytes TCP accepts (the gate), not by plaintext rustls buffers.
+        if !self.is_tls() {
+            self.read_credit.earn(n);
+        }
         if let Some(w) = self.read_waker.take() {
             w.wake();
         }
@@ -1724,22 +1837,33 @@ impl TimedIo {
     /// its own timer. The reader is woken by `write_progress`, by the timer, or by the writer's own wake-up when the
     /// socket becomes writable (a protocol layer that wakes both halves, like tokio-tungstenite, wakes it too).
     fn read_paused(&mut self, cx: &mut Context<'_>) -> Option<Poll<io::Result<()>>> {
-        if !self.write_blocked || !self.read_credit.exhausted() || !self.state.upgraded.load(Ordering::SeqCst) {
+        if !self.state.upgraded.load(Ordering::SeqCst) || !self.write_is_blocked() || !self.read_credit_exhausted() {
             return None;
         }
         // The blocked write may have been issued by the read path itself (a pong flushed while reading), in which
         // case nobody else retries it: if the socket is writable again, or reports an error, let the read go on
         // (which retries the write, or returns the error) and wake the task whose write is pending. The credit is
         // not refilled: only bytes the socket accepts earn it.
-        let probe = self.io.as_ref().expect("socket is present until drop").try_write(&[]);
-        if !matches!(&probe, Err(e) if e.kind() == io::ErrorKind::WouldBlock) {
+        //
+        // Under TLS a writable socket is not enough: ciphertext rustls still holds is pushed first, and the pause
+        // lifts only when none is left (or the socket took part of it, which earns credit).
+        if self.io.as_ref().expect("socket is present until drop").socket_writable() && self.drain_tls(cx) {
             self.write_blocked = false;
+            #[cfg(feature = "tls")]
+            if let Some(ServerIo::Tls(t)) = self.io.as_ref() {
+                t.wire.unblock();
+            }
             if let Some(w) = self.write_waker.take() {
                 w.wake();
             }
             return None;
         }
+        self.sync_wire_progress();
         self.read_waker = Some(cx.waker().clone());
+        #[cfg(feature = "tls")]
+        if let Some(ServerIo::Tls(t)) = self.io.as_ref() {
+            t.wire.park_reader(cx.waker());
+        }
         let Some(timeout) = self.send_timeout else { return Some(Poll::Pending) };
         let since = *self.write_stalled_since.get_or_insert_with(Instant::now);
         let Some(deadline) = since.checked_add(timeout) else { return Some(Poll::Pending) };
@@ -1766,6 +1890,21 @@ impl AsyncRead for TimedIo {
         let upgraded = this.state.upgraded.load(Ordering::SeqCst);
         if !upgraded {
             return this.poll_read_unpaused(cx, buf);
+        }
+        if this.is_tls() {
+            // The credit is spent below TLS, on the ciphertext the gate reads (see `transport::tls_io::Gate`). A read
+            // the gate parks looks again at the pause, which starts the deadline of the parked reader.
+            for _ in 0..2 {
+                let r = this.poll_read_unpaused(cx, buf);
+                if r.is_ready() {
+                    return r;
+                }
+                this.read_waker = Some(cx.waker().clone());
+                if let Some(paused) = this.read_paused(cx) {
+                    return paused;
+                }
+            }
+            return Poll::Pending;
         }
         // While a write is blocked, never read more than the credit left (it is not exhausted here, or the read
         // would have been paused): small slices accepted by the socket must not let whole chunks through.
@@ -1841,7 +1980,10 @@ impl AsyncWrite for TimedIo {
                 this.state.flush_deferred();
                 Poll::Ready(Ok(()))
             }
-            Poll::Pending => this.poll_write_deadline(cx),
+            Poll::Pending => {
+                this.write_waker = Some(cx.waker().clone());
+                this.poll_write_deadline(cx)
+            }
             other => other,
         }
     }
@@ -1961,11 +2103,178 @@ impl std::error::Error for ServiceError {
     }
 }
 
+/// Where a listener's connections come from: plain TCP, or TCP with a TLS handshake first.
+pub(crate) enum Transport {
+    Plain,
+    #[cfg(feature = "tls")]
+    Tls(tls::TlsSettings),
+}
+
+impl Transport {
+    pub(crate) fn is_secure(&self) -> bool {
+        match self {
+            Transport::Plain => false,
+            #[cfg(feature = "tls")]
+            Transport::Tls(_) => true,
+        }
+    }
+}
+
+/// What a connection task needs, gathered by the accept loop.
+struct ConnCtx {
+    shared: Arc<AppShared>,
+    opts: Arc<ServerOptions>,
+    builder: auto::Builder<TokioExecutor>,
+    stream_cap: usize,
+    remote: SocketAddr,
+    state: Arc<ConnState>,
+    stop: tokio::sync::watch::Receiver<()>,
+}
+
+/// Serves one connection to its end (see [`finish_connection`]).
+async fn run_connection(ctx: ConnCtx, stream: ServerIo, permit: Option<OwnedSemaphorePermit>, proto: Proto) {
+    let ConnCtx { shared, opts, builder, stream_cap, remote, state, stop } = ctx;
+    let send_timeout = opts.send_timeout;
+    let conn_state = state.clone();
+    let io = TimedIo::new(stream, permit, state.clone(), &opts, proto);
+    let handlers = Arc::new(tokio::sync::Semaphore::new(stream_cap));
+    // Compressions in progress of this connection (one set for all its HTTP/2 streams).
+    #[cfg(feature = "compression")]
+    let slots = crate::http::compression::ConnectionSlots::default();
+    let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
+        #[cfg(feature = "compression")]
+        let req = {
+            let mut req = req;
+            req.extensions_mut().insert(slots.clone());
+            req
+        };
+        let http2 = req.version() == http::Version::HTTP_2;
+        let guard = InflightGuard::new(state.clone());
+        let watch = CancelWatch { state: state.clone(), outcome: Outcome::Pending };
+        let handlers = handlers.clone();
+        let shared = shared.clone();
+        let opts = opts.clone();
+        async move {
+            // Streams reset and replaced faster than their handlers stop would otherwise run more
+            // handlers than the stream cap; the permit lives until this future is dropped.
+            let mut watch = watch;
+            // After a rapid-reset verdict the connection only waits for its GOAWAY: new streams are
+            // reset without reaching a handler (hyper resets the stream on a service error).
+            if guard.0.flooded.load(Ordering::SeqCst) {
+                watch.outcome = Outcome::Refused;
+                return Err(ServiceError::Destroyed);
+            }
+            let _permit = handlers.acquire_owned().await;
+            // Room in the connection's response budget before the handler runs (a client that resets
+            // its stream meanwhile drops this future: a cancelled request that never reached a handler).
+            let admission = match opts.max_pending_response_bytes {
+                Some(cap) => {
+                    let limit = if http2 { stream_cap } else { 1 };
+                    let admit = guard.0.admit(cap / limit, cap);
+                    // Over HTTP/1 the wait only delays the client's own pipelined requests and ends when it
+                    // reads (or `send_timeout` closes the connection): closing it would cut a slow download.
+                    let admitted = match opts.max_pending_response_wait.filter(|_| http2) {
+                        Some(t) => tokio::time::timeout(t, admit).await.ok(),
+                        None => Some(admit.await),
+                    };
+                    let Some(admission) = admitted else {
+                        // The handler never ran: neither cancelled nor completed.
+                        watch.outcome = Outcome::Refused;
+                        guard.0.warn_wait_once(opts.max_pending_response_wait.unwrap_or_default());
+                        return Err(ServiceError::Reset(h2::Error::from(h2::Reason::REFUSED_STREAM)));
+                    };
+                    Some((admission, cap))
+                }
+                None => None,
+            };
+            if guard.0.flooded.load(Ordering::SeqCst) {
+                watch.outcome = Outcome::Refused;
+                return Err(ServiceError::Destroyed);
+            }
+            let mut aborted = false;
+            let resp = handle(shared, req, remote, &opts, &mut aborted).await;
+            watch.outcome = if aborted { Outcome::ClientAborted } else { Outcome::Completed };
+            let resp = match resp {
+                Ok(r) => r,
+                Err(e) => {
+                    guard.0.destroyed.store(true, Ordering::SeqCst);
+                    return Err(e.into());
+                }
+            };
+            if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+                guard.0.upgraded.store(true, Ordering::SeqCst);
+            }
+            // What the response holds until its body ends: an in-memory body in full (also when
+            // compression hides its size), a streamed one only the unsent part of a cut frame.
+            let charge = match admission {
+                Some((admission, cap)) => {
+                    let size = hyper::body::Body::size_hint(resp.body())
+                        .exact()
+                        .or_else(|| resp.extensions().get::<PlainLen>().map(|p| p.0))
+                        .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
+                    if admission.finish(size, cap, http2) == Verdict::Reset {
+                        // Dropping the response frees its allocation and its compression slot now.
+                        drop(resp);
+                        watch.outcome = Outcome::Dropped;
+                        return Err(ServiceError::Reset(h2::Error::from(h2::Reason::ENHANCE_YOUR_CALM)));
+                    }
+                    Some(size)
+                }
+                None => None,
+            };
+            // From here the body decides how the request ends (completed or cancelled).
+            let record = !aborted;
+            if record {
+                watch.outcome = Outcome::Body;
+            }
+            Ok::<_, ServiceError>(resp.map(|inner| GuardedBody::with_charge(inner, guard, http2, charge, record).boxed_unsync()))
+        }
+    });
+    if proto == Proto::H2Only {
+        // ALPN said `h2`: the HTTP/2-only path. `serve_connection_with_upgrades` sniffs the first bytes whatever the
+        // builder's version says, which would let a client speak HTTP/1 here without the framing check.
+        let conn = builder.serve_connection(TokioIo::new(io), service).into_owned();
+        finish_connection(conn_state, conn, stop, |c| c.graceful_shutdown(), send_timeout).await;
+        return;
+    }
+    let conn = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
+    let conn = conn.into_owned();
+    finish_connection(conn_state, conn, stop, |c| c.graceful_shutdown(), send_timeout).await;
+}
+
+/// The TLS handshake of one connection, in the connection's own task: bounded by the handshake timeout, abandoned
+/// when the server stops, and never answered with HTTP data when it fails. The permit stays with the task, so a
+/// connection in its handshake counts against `max_connections`.
+#[cfg(feature = "tls")]
+async fn handshake(
+    settings: tls::TlsSettings,
+    tcp: TcpStream,
+    state: Arc<ConnState>,
+    stop: &mut tokio::sync::watch::Receiver<()>,
+) -> Option<(ServerIo, Proto)> {
+    use transport::tls_io::{Gate, TlsIo, Wire};
+    let wire = Wire::new();
+    let gate = Gate::new(tcp, wire.clone(), state);
+    let accept = settings.acceptor.accept(gate);
+    let stream = tokio::select! {
+        r = tokio::time::timeout(settings.handshake_timeout, accept) => r.ok()?.ok()?,
+        _ = stop.changed() => return None,
+    };
+    let tls = TlsIo { stream, wire };
+    let proto = match tls.alpn() {
+        Some(b"h2") => Proto::H2Only,
+        Some(b"http/1.1") | None => Proto::H1Only,
+        Some(_) => return None,
+    };
+    Some((ServerIo::Tls(Box::new(tls)), proto))
+}
+
 /// Accepts connections until `shutdown` resolves, then drains them gracefully.
 pub(crate) async fn serve(
     listener: TcpListener,
     shared: Arc<AppShared>,
     options: ServerOptions,
+    transport: Transport,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> std::io::Result<()> {
     let options = Arc::new(options);
@@ -1993,108 +2302,33 @@ pub(crate) async fn serve(
                     limit_unsent_bytes(&stream);
                 }
                 let state = Arc::new(ConnState { cancel_ceiling: options.http2_max_cancelled_streams, ..ConnState::default() });
-                let conn_state = state.clone();
-                let io = TimedIo::new(stream, permit, state.clone(), &options);
-                let shared = shared.clone();
-                let opts = options.clone();
-                let handlers = Arc::new(tokio::sync::Semaphore::new(stream_cap));
-                // Compressions in progress of this connection (one set for all its HTTP/2 streams).
-                #[cfg(feature = "compression")]
-                let slots = crate::http::compression::ConnectionSlots::default();
-                let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
-                    #[cfg(feature = "compression")]
-                    let req = {
-                        let mut req = req;
-                        req.extensions_mut().insert(slots.clone());
-                        req
-                    };
-                    let http2 = req.version() == http::Version::HTTP_2;
-                    let guard = InflightGuard::new(state.clone());
-                    let watch = CancelWatch { state: state.clone(), outcome: Outcome::Pending };
-                    let handlers = handlers.clone();
-                    let shared = shared.clone();
-                    let opts = opts.clone();
-                    async move {
-                        // Streams reset and replaced faster than their handlers stop would otherwise run more
-                        // handlers than the stream cap; the permit lives until this future is dropped.
-                        let mut watch = watch;
-                        // After a rapid-reset verdict the connection only waits for its GOAWAY: new streams are
-                        // reset without reaching a handler (hyper resets the stream on a service error).
-                        if guard.0.flooded.load(Ordering::SeqCst) {
-                            watch.outcome = Outcome::Refused;
-                            return Err(ServiceError::Destroyed);
-                        }
-                        let _permit = handlers.acquire_owned().await;
-                        // Room in the connection's response budget before the handler runs (a client that resets
-                        // its stream meanwhile drops this future: a cancelled request that never reached a handler).
-                        let admission = match opts.max_pending_response_bytes {
-                            Some(cap) => {
-                                let limit = if http2 { stream_cap } else { 1 };
-                                let admit = guard.0.admit(cap / limit, cap);
-                                // Over HTTP/1 the wait only delays the client's own pipelined requests and ends when it
-                                // reads (or `send_timeout` closes the connection): closing it would cut a slow download.
-                                let admitted = match opts.max_pending_response_wait.filter(|_| http2) {
-                                    Some(t) => tokio::time::timeout(t, admit).await.ok(),
-                                    None => Some(admit.await),
-                                };
-                                let Some(admission) = admitted else {
-                                    // The handler never ran: neither cancelled nor completed.
-                                    watch.outcome = Outcome::Refused;
-                                    guard.0.warn_wait_once(opts.max_pending_response_wait.unwrap_or_default());
-                                    return Err(ServiceError::Reset(h2::Error::from(h2::Reason::REFUSED_STREAM)));
-                                };
-                                Some((admission, cap))
-                            }
-                            None => None,
-                        };
-                        if guard.0.flooded.load(Ordering::SeqCst) {
-                            watch.outcome = Outcome::Refused;
-                            return Err(ServiceError::Destroyed);
-                        }
-                        let mut aborted = false;
-                        let resp = handle(shared, req, remote, &opts, &mut aborted).await;
-                        watch.outcome = if aborted { Outcome::ClientAborted } else { Outcome::Completed };
-                        let resp = match resp {
-                            Ok(r) => r,
-                            Err(e) => {
-                                guard.0.destroyed.store(true, Ordering::SeqCst);
-                                return Err(e.into());
-                            }
-                        };
-                        if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
-                            guard.0.upgraded.store(true, Ordering::SeqCst);
-                        }
-                        // What the response holds until its body ends: an in-memory body in full (also when
-                        // compression hides its size), a streamed one only the unsent part of a cut frame.
-                        let charge = match admission {
-                            Some((admission, cap)) => {
-                                let size = hyper::body::Body::size_hint(resp.body())
-                                    .exact()
-                                    .or_else(|| resp.extensions().get::<PlainLen>().map(|p| p.0))
-                                    .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
-                                if admission.finish(size, cap, http2) == Verdict::Reset {
-                                    // Dropping the response frees its allocation and its compression slot now.
-                                    drop(resp);
-                                    watch.outcome = Outcome::Dropped;
-                                    return Err(ServiceError::Reset(h2::Error::from(h2::Reason::ENHANCE_YOUR_CALM)));
-                                }
-                                Some(size)
-                            }
-                            None => None,
-                        };
-                        // From here the body decides how the request ends (completed or cancelled).
-                        let record = !aborted;
-                        if record {
-                            watch.outcome = Outcome::Body;
-                        }
-                        Ok::<_, ServiceError>(
-                            resp.map(|inner| GuardedBody::with_charge(inner, guard, http2, charge, record).boxed_unsync()),
-                        )
+                let ctx = ConnCtx {
+                    shared: shared.clone(),
+                    opts: options.clone(),
+                    builder: builder.clone(),
+                    stream_cap,
+                    remote,
+                    state,
+                    stop: stop_tx.subscribe(),
+                };
+                match &transport {
+                    Transport::Plain => {
+                        tokio::spawn(run_connection(ctx, ServerIo::Plain(stream), permit, Proto::Auto));
                     }
-                });
-                let conn = builder.serve_connection_with_upgrades(TokioIo::new(io), service);
-                let conn = conn.into_owned();
-                tokio::spawn(finish_connection(conn_state, conn, stop_tx.subscribe(), |c| c.graceful_shutdown(), options.send_timeout));
+                    #[cfg(feature = "tls")]
+                    Transport::Tls(settings) => {
+                        let settings = settings.clone();
+                        tokio::spawn(async move {
+                            let mut ctx = ctx;
+                            let Some((io, proto)) = handshake(settings, stream, ctx.state.clone(), &mut ctx.stop).await else { return };
+                            ctx.builder = match proto {
+                                Proto::H2Only => ctx.builder.http2_only(),
+                                _ => ctx.builder.http1_only(),
+                            };
+                            run_connection(ctx, io, permit, proto).await;
+                        });
+                    }
+                }
             }
             _ = &mut shutdown => break,
         }

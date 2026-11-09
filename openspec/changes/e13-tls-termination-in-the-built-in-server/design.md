@@ -197,3 +197,61 @@ gateways ride on the same server, so they are served as `wss://`.
 - Q2: `rcgen` as a dev-dependency for test certificates; no private keys checked in.
 - Q3: handshake timeout 10 s.
 - Q4: failed handshakes are not logged.
+
+## Implementation notes
+
+Written after the change was rebased on `batch/phase07-p` (send timeout, response cap, WebSocket write deadline and read
+pause). These differ from the design above.
+
+- **A gate under rustls (decision 4 changed).** The layering is TCP, `Gate`, rustls, `TimedIo`, hyper. `ServerIo::Tls`
+  holds `TlsStream<Gate>`, not `TlsStream<TcpStream>`. `Gate` (`crates/corvis/src/server/transport.rs`) forwards the socket and
+  shares a `Wire` with `TimedIo`: bytes TCP accepted, whether the last TCP write was pending, and the read credit. Reason:
+  the constraints recorded on #117 by #157 and #161 need to measure the wire, not the plaintext rustls buffers.
+  - Send timeout: `poll_write_deadline` restarts the deadline when TCP accepted bytes since the last look, so a TLS flush
+    that stays pending while the client reads slowly is not cut (plaintext writes are accepted into rustls' 64 KiB buffer
+    even when TCP is blocked, and flushes can be pending without any plaintext write).
+  - Read credit: earned by the bytes TCP accepts (`Gate`), spent by the ciphertext `Gate` reads, and the gate parks the
+    read itself once the credit is spent behind a blocked write on an upgraded connection. So the pause acts below TLS:
+    rustls cannot be fed more ciphertext, and so cannot queue more replies (`KeyUpdate` with `update_requested`, alerts),
+    than the credit allows.
+  - Writability check: `TimedIo::read_paused` lifts the pause only when the socket is writable and no ciphertext is left
+    in rustls (`wants_write`); it pushes that ciphertext with a flush first, using the pending writer's waker so it does
+    not take the writer's wake-up.
+  - Not done: a flush after every read to push TLS replies when nobody writes. rustls bounds `KeyUpdate` requests per
+    received application data (`TooManyKeyUpdateRequests`), and the read credit bounds what an upgraded peer can interleave.
+- **Graceful shutdown (decision 6 changed).** The loop already tracks connections with its own `watch` channel, so a TLS
+  task subscribes in the loop and selects on it during the handshake (a handshake in progress is abandoned at shutdown)
+  instead of using hyper-util's `GracefulShutdown::watcher()`.
+- **Connection task.** The per-connection body of `serve` moved to `run_connection` (`ConnCtx`); plain listeners spawn it
+  directly, TLS listeners spawn a task that handshakes first. `Proto` (`Auto`, `H1Only`, `H2Only`) tells `TimedIo` how to
+  start: `H2Only` has the framing check off and the preface allowed (ALPN `h2` clients still send it), `H1Only` refuses
+  the preface even with `h2c(true)`. The builder comes from `connection_builder` for every protocol (`http1_only()` or
+  `http2_only()` on a clone), so the HTTP/2 limits apply over TLS. See the security round below for how `H2Only` connections are served.
+- **`get_url`.** A separate `local_secure` flag next to `local_addr`.
+- **Tests.** WebSocket tests live in `tests/tls_ws.rs` (they need the `websockets` feature) and the process-wide provider
+  test in `tests/tls_provider.rs` (the provider can be installed once per process); helpers in `tests/tls_common/`.
+  `src/server/tls/tests.rs` (loading, errors, hardening) and `src/server/transport_tests.rs` (the gate) are unit tests.
+  The CI step runs `--lib --test tls --test tls_ws --test tls_provider`. Test certificates come from `rcgen` 0.14 (ring
+  backend, `default-features = false`), a dev-dependency only.
+- **Per-feature clippy.** `tls` joins the list: `cargo clippy -p corvis --no-default-features --features tls -- -D warnings`.
+
+## Review notes, security round (2026-11-09)
+
+- **MEDIUM, fixed: HTTP/1 over an `h2` connection skipped the framing check.** hyper-util's
+  `serve_connection_with_upgrades` sniffs the first bytes whatever `http2_only()` says, and `H2Only` had the framing
+  check off, so a client with ALPN `h2` could send HTTP/1 (bare LF, bad chunk sizes, `Content-Length` with
+  `Transfer-Encoding`, an HTTP/1 WebSocket upgrade). Two layers now close it, which supersedes decision 8's wording:
+  - `TimedIo` for `Proto::H2Only` rejects any start that is not the HTTP/2 client preface (`no_linger`, `InvalidData`,
+    on the first mismatching byte), the mirror of what `H1Only` does with the preface.
+  - `H2Only` connections go through `serve_connection` of the HTTP/2-only builder (no upgrades), so hyper cannot fall
+    back to HTTP/1. The `H2Frames` scanner and the HTTP/2 limits stay on that path.
+  Tests: `an_http1_request_over_an_h2_connection_gets_no_http_bytes` (CRLF, bare LF and `Content-Length` plus
+  `Transfer-Encoding`), `a_websocket_upgrade_over_an_h2_connection_is_not_upgraded`,
+  `the_http2_preface_over_an_http_1_1_connection_is_closed`. The reviewer's PoC (`atk smuggle`) re-run against the fix:
+  with ALPN `h2`, `clte`, `lf` and `chunkws` get no HTTP bytes and the connection ends; with ALPN `http/1.1` all three
+  get `400 Bad Request`.
+- **Docs only.** `headers_timeout` starts after the handshake (a slot can be held for `handshake_timeout` plus
+  `headers_timeout`, 10 + 60 s by default); no handshake rate limit and no default `max_connections`; RSA (especially
+  4096) costs far more per handshake than ECDSA P-256 and signing runs on the runtime threads; a partial ClientHello
+  costs about 75 KiB until the handshake timeout. Written in `docs/faq/multiple-servers.md`, `docs/deployment.md` and
+  their Spanish pages; `docs/security/http-parsing.md` now says what is enforced for `h2` connections.

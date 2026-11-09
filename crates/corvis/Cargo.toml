@@ -57,6 +57,7 @@ socket2 = { version = "0.6", features = ["all"] }
 default = ["jwt", "websockets"]
 jwt = ["dep:jsonwebtoken"]
 websockets = ["dep:tokio-tungstenite"]
+tls = ["dep:tokio-rustls"]
 health-tls = ["dep:tokio-rustls", "dep:webpki-roots"]
 compression = ["dep:flate2", "dep:brotli"]
 
@@ -65,5 +66,6 @@ proptest = "1"
 tokio = { workspace = true, features = ["test-util"] }
 serde = { workspace = true }
 tokio-tungstenite = "0.24"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
 flate2 = "1"
 brotli = "9"

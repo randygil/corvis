@@ -24,7 +24,9 @@ Esta página reúne lo que se puede configurar de ese servidor.
   `Content-Length` con `Transfer-Encoding`) se responden con `400` y se cierra la conexión.
   `ServerOptions::new().insecure_http_parser(true)` las vuelve a aceptar para clientes antiguos y registra un aviso al
   arrancar; consulta [Análisis de HTTP y compatibilidad](/es/security/http-parsing).
-- No hay HTTPS: termina TLS en un proxy inverso. Ver [HTTPS y varios servidores](/es/faq/multiple-servers).
+- HTTPS está disponible con la feature `tls` (`listen_tls`): ALPN `h2` sirve HTTP/2 y `http/1.1` sirve HTTP/1.x, con
+  los mismos límites de `ServerOptions`. Sin ella, termina TLS en un proxy inverso. Ver
+  [HTTPS y varios servidores](/es/faq/multiple-servers).
 - Upgrades a WebSocket, con gateways o con `corvis::ws`. Ver [Gateways](/es/websockets/gateways).
 
 ## Timeouts y conexiones

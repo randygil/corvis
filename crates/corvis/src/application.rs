@@ -18,6 +18,7 @@ use crate::logger::{LogLevel, Logger, LoggerService};
 use crate::router::cors::CorsOptions;
 use crate::router::versioning::VersioningOptions;
 use crate::router::{AppShared, RouterConfig, build_middleware, build_router, dispatch};
+use crate::server::Transport;
 
 pub mod introspection;
 
@@ -129,6 +130,8 @@ pub struct CorvisApplication {
     /// `false` for applications created by the testing module: they ignore `CORVIS_ROUTE_POSTURE_REPORT`.
     pub(crate) report_mode_allowed: bool,
     local_addr: Option<SocketAddr>,
+    /// The last listener started serves TLS (`get_url` says `https`).
+    local_secure: bool,
 }
 
 impl CorvisApplication {
@@ -182,6 +185,7 @@ impl CorvisApplication {
             started,
             report_mode_allowed: true,
             local_addr: None,
+            local_secure: false,
         })
     }
 
@@ -604,8 +608,19 @@ impl CorvisApplication {
 
     /// `app.listen(3000)`. Runs until the process is stopped (or, with
     /// `enable_shutdown_hooks()`, until SIGINT/SIGTERM, then closes gracefully).
-    pub async fn listen(mut self, addr: impl ListenAddr) -> crate::Result<()> {
-        let listener = self.bind(addr).await?;
+    pub async fn listen(self, addr: impl ListenAddr) -> crate::Result<()> {
+        self.listen_with(addr, Transport::Plain).await
+    }
+
+    /// Like [`listen`](Self::listen), over HTTPS (`tls` feature). The application is initialized, and the route
+    /// posture checked, before the port opens.
+    #[cfg(feature = "tls")]
+    pub async fn listen_tls(self, addr: impl ListenAddr, tls: crate::tls::TlsOptions) -> crate::Result<()> {
+        self.listen_with(addr, Transport::Tls(tls.settings())).await
+    }
+
+    async fn listen_with(mut self, addr: impl ListenAddr, transport: Transport) -> crate::Result<()> {
+        let listener = self.bind(addr, &transport).await?;
         let shared = self.shared.clone().expect("initialized");
         let hooks = self.shutdown_hooks;
         let (tx, rx) = tokio::sync::oneshot::channel::<String>();
@@ -619,7 +634,7 @@ impl CorvisApplication {
         }
         let signal = Arc::new(std::sync::Mutex::new(None::<String>));
         let signal2 = signal.clone();
-        crate::server::serve(listener, shared, self.config.server.clone(), async move {
+        crate::server::serve(listener, shared, self.config.server.clone(), transport, async move {
             if let Ok(s) = rx.await {
                 *signal2.lock().unwrap() = Some(s);
             }
@@ -632,17 +647,27 @@ impl CorvisApplication {
     /// Starts listening in the background and returns the bound address.
     /// Useful for e2e tests against a real socket. Use `port 0` for a random port.
     pub async fn listen_in_background(&mut self, addr: impl ListenAddr) -> crate::Result<SocketAddr> {
-        let listener = self.bind(addr).await?;
+        self.listen_in_background_with(addr, Transport::Plain).await
+    }
+
+    /// Like [`listen_in_background`](Self::listen_in_background), over HTTPS (`tls` feature).
+    #[cfg(feature = "tls")]
+    pub async fn listen_tls_in_background(&mut self, addr: impl ListenAddr, tls: crate::tls::TlsOptions) -> crate::Result<SocketAddr> {
+        self.listen_in_background_with(addr, Transport::Tls(tls.settings())).await
+    }
+
+    async fn listen_in_background_with(&mut self, addr: impl ListenAddr, transport: Transport) -> crate::Result<SocketAddr> {
+        let listener = self.bind(addr, &transport).await?;
         let shared = self.shared.clone().expect("initialized");
         let local = listener.local_addr()?;
         let server = self.config.server.clone();
         tokio::spawn(async move {
-            let _ = crate::server::serve(listener, shared, server, futures::future::pending()).await;
+            let _ = crate::server::serve(listener, shared, server, transport, futures::future::pending()).await;
         });
         Ok(local)
     }
 
-    async fn bind(&mut self, addr: impl ListenAddr) -> crate::Result<tokio::net::TcpListener> {
+    async fn bind(&mut self, addr: impl ListenAddr, transport: &Transport) -> crate::Result<tokio::net::TcpListener> {
         self.init().await?;
         // At listen time, not in `init`: the options may be set after `init()` (`set_server_options`).
         if self.config.server.insecure_http_parser {
@@ -659,8 +684,13 @@ impl CorvisApplication {
             }
         };
         self.local_addr = listener.local_addr().ok();
+        self.local_secure = transport.is_secure();
         self.get_http_server().set_address(self.local_addr);
-        Logger::new("CorvisApplication").log("Corvis application successfully started");
+        Logger::new("CorvisApplication").log(if transport.is_secure() {
+            "Corvis application successfully started (HTTPS)"
+        } else {
+            "Corvis application successfully started"
+        });
         let _ = self.started;
         Ok(listener)
     }
@@ -669,7 +699,8 @@ impl CorvisApplication {
     pub fn get_url(&self) -> Option<String> {
         self.local_addr.map(|a| {
             let host = if a.ip().is_unspecified() { "127.0.0.1".to_string() } else { a.ip().to_string() };
-            format!("http://{host}:{}", a.port())
+            let scheme = if self.local_secure { "https" } else { "http" };
+            format!("{scheme}://{host}:{}", a.port())
         })
     }
 
