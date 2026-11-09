@@ -117,11 +117,14 @@ fails. It is not part of CI.
 
 ## Continuous integration
 
-The workflow `.github/workflows/ci.yml` runs on every pull request to `main` and can be started by hand from the
-Actions tab (`workflow_dispatch`). The repository is private and Actions minutes are limited, so there is no push or
-schedule trigger; a newer push to the same pull request cancels the run in progress. Every job must pass before
-merging. Each one reproduces locally with the command in the table (on PowerShell, set environment variables first,
-for example `$env:PROPTEST_CASES = "20000"`):
+Work lands on `dev`, the integration branch, and reaches `main` through a pull request. `main` is protected: every CI
+job is a required status check (for administrators too), so a change reaches `main` only through a pull request whose
+jobs all passed, and force pushes and deletion are blocked. `dev` only blocks force pushes and deletion.
+
+The workflow `.github/workflows/ci.yml` runs on every pull request to `main` or `dev`, on every push to `main` or
+`dev`, and can be started by hand from the Actions tab (`workflow_dispatch`). A newer push to the same pull request
+cancels the run in progress; runs on `main` and `dev` are never cancelled. Each job reproduces locally with the
+command in the table (on PowerShell, set environment variables first, for example `$env:PROPTEST_CASES = "20000"`):
 
 | Job | Runs on | Local command |
 | --- | --- | --- |
@@ -140,12 +143,13 @@ new lints. `cargo deny` (0.20.2) reads `deny.toml` and `cargo audit` (0.22.2) re
 workflow passes no ignore flags, so every exception lives in those files with its reason. Install the same versions
 with `cargo install --locked cargo-deny@0.20.2 cargo-audit@0.22.2`.
 
-The workflow `.github/workflows/nightly.yml` (Actions > Nightly checks > Run workflow) is manual only. It runs the
-fuzzing suites with 100,000 cases per property (the `cases` input changes it) and `cargo audit` against the latest
-advisory database. Run it on `main` before a release, after a change to a parser, and every few weeks.
+The workflow `.github/workflows/nightly.yml` runs every day at 07:17 UTC on `dev` and can be started by hand on any
+branch (Actions > Nightly checks > Run workflow). It runs the fuzzing suites with 100,000 cases per property (the
+`cases` input of a manual run changes it) and `cargo audit` against the latest advisory database. Start it by hand
+after a change to a parser and before a release.
 
 The Rust jobs restore a dependency cache. Pull requests save their own caches, which only later runs of the same pull
-request can use; a manual run of `ci.yml` on `main` saves caches that every pull request can restore.
+request can use; runs of `ci.yml` on `main` and `dev` save caches that pull requests to that branch can restore.
 
 ## Packaging
 
