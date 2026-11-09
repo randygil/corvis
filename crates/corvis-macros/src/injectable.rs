@@ -6,8 +6,18 @@ use syn::{Expr, Fields, ItemStruct, Type};
 
 use crate::utils::{attr_args, attr_name, generic_inner, lit_str, type_display};
 
+/// The scope an `#[injectable]` class declares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScopeArg {
+    #[default]
+    Default,
+    Transient,
+    Request,
+}
+
+#[derive(Default)]
 pub struct InjectableOptions {
-    pub transient: bool,
+    pub scope: ScopeArg,
 }
 
 /// Removes `#[inject]`, `#[init]`, `#[default]` from fields and returns the `impl Injectable` block.
@@ -116,10 +126,10 @@ pub fn injectable_impl(item: &mut ItemStruct, opts: &InjectableOptions) -> syn::
         quote!(Self( #(#inits),* ))
     };
 
-    let scope = if opts.transient {
-        quote! { fn scope() -> ::corvis::Scope { ::corvis::Scope::Transient } }
-    } else {
-        quote! {}
+    let scope = match opts.scope {
+        ScopeArg::Default => quote! {},
+        ScopeArg::Transient => quote! { fn scope() -> ::corvis::Scope { ::corvis::Scope::Transient } },
+        ScopeArg::Request => quote! { fn scope() -> ::corvis::Scope { ::corvis::Scope::Request } },
     };
 
     let deps_lits: Vec<TokenStream> = deps.iter().map(|d| quote!(#d)).collect();
@@ -188,22 +198,44 @@ pub fn export_impl(item: &ItemStruct, module: bool) -> TokenStream {
     }
 }
 
+const SCOPE_HELP: &str = "expected scope = \"default\", scope = \"transient\" or scope = \"request\"";
+
+/// Parses the arguments of `#[injectable(..)]`: only `scope = "default" | "transient" | "request"` (or the
+/// `Scope::Default`, `Scope::Transient` and `Scope::Request` paths) is accepted.
 pub fn parse_injectable_args(args: TokenStream) -> syn::Result<InjectableOptions> {
-    let mut opts = InjectableOptions { transient: false };
+    let mut opts = InjectableOptions::default();
     if args.is_empty() {
         return Ok(opts);
     }
     let parser = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated;
     let exprs = syn::parse::Parser::parse2(parser, args)?;
     for e in exprs {
-        let s = quote!(#e).to_string().replace(' ', "").to_lowercase();
-        if s.contains("transient") {
-            opts.transient = true;
-        } else if s.contains("request") {
-            return Err(syn::Error::new_spanned(e, "request-scoped providers are not supported; use transient or default scope"));
+        let Expr::Assign(assign) = &e else {
+            return Err(syn::Error::new_spanned(&e, format!("unknown #[injectable] argument; {SCOPE_HELP}")));
+        };
+        let is_scope = matches!(&*assign.left, Expr::Path(p) if p.path.is_ident("scope"));
+        if !is_scope {
+            return Err(syn::Error::new_spanned(&assign.left, format!("unknown #[injectable] argument; {SCOPE_HELP}")));
         }
+        opts.scope = parse_scope_value(&assign.right)?;
     }
     Ok(opts)
+}
+
+fn parse_scope_value(value: &Expr) -> syn::Result<ScopeArg> {
+    let name = match value {
+        Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) => s.value(),
+        Expr::Path(p) if p.path.segments.len() >= 2 && p.path.segments[p.path.segments.len() - 2].ident == "Scope" => {
+            p.path.segments.last().map(|s| s.ident.to_string().to_lowercase()).unwrap_or_default()
+        }
+        _ => return Err(syn::Error::new_spanned(value, format!("unknown scope; {SCOPE_HELP}"))),
+    };
+    match name.as_str() {
+        "default" => Ok(ScopeArg::Default),
+        "transient" => Ok(ScopeArg::Transient),
+        "request" => Ok(ScopeArg::Request),
+        other => Err(syn::Error::new_spanned(value, format!("unknown scope \"{other}\"; {SCOPE_HELP}"))),
+    }
 }
 
 #[cfg(test)]
@@ -211,7 +243,7 @@ mod tests {
     use super::*;
 
     fn run(mut item: ItemStruct) -> syn::Result<TokenStream> {
-        injectable_impl(&mut item, &InjectableOptions { transient: false })
+        injectable_impl(&mut item, &InjectableOptions::default())
     }
 
     #[test]
@@ -234,5 +266,47 @@ mod tests {
             }
         };
         assert!(run(item).is_ok());
+    }
+
+    fn parse(args: TokenStream) -> syn::Result<ScopeArg> {
+        parse_injectable_args(args).map(|o| o.scope)
+    }
+
+    #[test]
+    fn no_arguments_is_the_default_scope() {
+        assert_eq!(parse(quote!()).unwrap(), ScopeArg::Default);
+    }
+
+    #[test]
+    fn exact_scope_strings_are_accepted() {
+        assert_eq!(parse(quote!(scope = "default")).unwrap(), ScopeArg::Default);
+        assert_eq!(parse(quote!(scope = "transient")).unwrap(), ScopeArg::Transient);
+        assert_eq!(parse(quote!(scope = "request")).unwrap(), ScopeArg::Request);
+    }
+
+    #[test]
+    fn scope_paths_are_accepted() {
+        assert_eq!(parse(quote!(scope = Scope::Request)).unwrap(), ScopeArg::Request);
+        assert_eq!(parse(quote!(scope = corvis::Scope::Transient)).unwrap(), ScopeArg::Transient);
+        assert_eq!(parse(quote!(scope = Scope::Default)).unwrap(), ScopeArg::Default);
+    }
+
+    #[test]
+    fn unknown_scopes_list_the_accepted_ones() {
+        for bad in [quote!(scope = "requested"), quote!(scope = "not_transient"), quote!(scope = "REQUEST"), quote!(transient)] {
+            let err = parse(bad).unwrap_err().to_string();
+            assert!(err.contains("\"default\"") && err.contains("\"transient\"") && err.contains("\"request\""), "{err}");
+        }
+        assert!(parse(quote!(scope = "requested")).unwrap_err().to_string().contains("requested"));
+    }
+
+    #[test]
+    fn request_scope_emits_the_scope_function() {
+        let mut item: ItemStruct = syn::parse_quote! { struct Ctx; };
+        let out = injectable_impl(&mut item, &InjectableOptions { scope: ScopeArg::Request }).unwrap().to_string();
+        assert!(out.contains("Scope :: Request"), "{out}");
+        let mut item: ItemStruct = syn::parse_quote! { struct Ctx; };
+        let out = injectable_impl(&mut item, &InjectableOptions::default()).unwrap().to_string();
+        assert!(!out.contains("fn scope"), "{out}");
     }
 }

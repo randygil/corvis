@@ -39,10 +39,11 @@ The first problem becomes high once HTTP/2 is reachable without opting in (TLS w
   `send_timeout` without the socket accepting a byte fails with `TimedOut`. The connection ends and the socket is closed
   without the linger drain and without trying to flush a GOAWAY or the rest of the response. Fixes problem 2 for HTTP/1
   and HTTP/2.
-- **Per-stream progress watchdog.** Each response body records when it is waiting for hyper to take its next frame
+- **Connection progress watchdog (rule changed after review; see design.md, Review notes).** Each response body records when it is waiting for hyper to take its next frame
   (it produced a frame, or has not been polled yet) as opposed to waiting for the application (its last poll returned
-  `Pending`). A watchdog in the connection task closes the connection, without linger, when any body has waited for
-  hyper for `send_timeout`. Fixes problem 1: a stream whose flow-control window the client never opens is detected even
+  `Pending`). A watchdog in the connection task closes the connection, without linger, when some body waits for
+  hyper and no body of the connection has had a frame taken for `send_timeout`; a stalled stream next to streams that
+  move does not count. Fixes problem 1: streams whose flow-control windows the client never opens are detected even
   while the connection keeps exchanging PING, SETTINGS or WINDOW_UPDATE frames.
 - **HTTP/2 responses are handed to hyper in slices of at most 16 KiB**, so a stream body cannot finish (and leave the
   watchdog's sight) while megabytes of it sit in h2's send buffer behind a window of a few bytes.
@@ -81,7 +82,7 @@ closed without it, like the other punitive closes that spec lists.)
 
 ## Out of scope
 
-- A minimum transfer rate (a client that accepts one byte per `send_timeout` keeps its connection, as with nginx's
+- A minimum transfer rate (a client that takes about one frame (16 KiB over HTTP/2, tens of KiB over HTTP/1) per `send_timeout` keeps its connection, as with nginx's
   `send_timeout` and Node's `server.timeout`): possible new issue.
 - Bounding the response bytes buffered per connection or server-wide while the timeout runs (bounded today by
   `max_connections × http2_max_concurrent_streams × response size` for up to `send_timeout`): possible new issue.

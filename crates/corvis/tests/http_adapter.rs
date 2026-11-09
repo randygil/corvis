@@ -397,3 +397,43 @@ async fn gateways_destroy_unknown_upgrade_paths_like_ws_adapter() {
     assert_eq!(serde_json::from_str::<Value>(&next_text(&mut chat).await).unwrap()["event"], "welcome");
     app.close().await.unwrap();
 }
+
+#[module(controllers = [PingController])]
+pub struct PlainModule;
+
+/// An `upgrade` listener that answers `401` with the resolved client address in `x-seen-ip`.
+async fn upgrade_seen_ip(trust: Option<corvis::TrustProxy>, forwarded: &str) -> String {
+    let mut app = CorvisFactory::create::<PlainModule>().await.unwrap();
+    if let Some(trust) = trust {
+        app.set_trust_proxy(trust);
+    }
+    app.get_http_server().on_upgrade(|req| {
+        if req.pathname() == "/ip" {
+            let ip = req.request().ip();
+            let _ = req.respond(Response::new().with_status(401).with_header("x-seen-ip", ip));
+        }
+    });
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let out = raw(
+        addr,
+        &format!("GET /ip HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Forwarded-For: {forwarded}\r\n\r\n"),
+    )
+    .await;
+    out.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("x-seen-ip: ").map(str::to_string)).unwrap_or_default()
+}
+
+#[corvis::test]
+async fn upgrade_listener_resolves_the_forwarded_client_behind_a_trusted_proxy() {
+    assert_eq!(upgrade_seen_ip(Some(corvis::TrustProxy::from(1usize)), "203.0.113.7").await, "203.0.113.7");
+}
+
+#[corvis::test]
+async fn upgrade_listener_ignores_forwarded_headers_by_default() {
+    assert_eq!(upgrade_seen_ip(None, "203.0.113.7").await, "127.0.0.1");
+}
+
+#[corvis::test]
+async fn upgrade_listener_ignores_forged_headers_from_an_untrusted_peer() {
+    let trust = corvis::TrustProxy::parse("10.0.0.0/8").unwrap();
+    assert_eq!(upgrade_seen_ip(Some(trust), "203.0.113.7").await, "127.0.0.1");
+}

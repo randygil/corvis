@@ -266,14 +266,13 @@ pub(crate) async fn dispatch_upgrade(
     server: &HttpServer,
     mut req: hyper::Request<hyper::body::Incoming>,
     remote: SocketAddr,
+    trust: &crate::http::proxy_addr::TrustProxy,
 ) -> Result<hyper::Response<crate::server::ResBody>, SocketDestroyed> {
     let on_upgrade = hyper::upgrade::on(&mut req);
     let (parts, _) = req.into_parts();
-    let Ok(mut request) = Request::new(parts.method, parts.uri, parts.headers, bytes::Bytes::new()) else {
+    let Ok(request) = Request::for_upgrade(parts, remote, trust) else {
         return Err(SocketDestroyed);
     };
-    request.version = parts.version;
-    request.remote_addr = Some(remote);
     let (tx, rx) = oneshot::channel();
     let upgrade = UpgradeRequest {
         inner: Arc::new(UpgradeInner { request, decision: Mutex::new(Some(tx)), on_upgrade: Mutex::new(Some(on_upgrade)) }),

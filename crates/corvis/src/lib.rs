@@ -104,7 +104,7 @@ pub use common::guard::CanActivate;
 pub use common::interceptor::{CallHandler, CorvisInterceptor, LoggingInterceptor, TimeoutInterceptor};
 pub use common::lifecycle::{BeforeApplicationShutdown, OnApplicationBootstrap, OnApplicationShutdown, OnModuleDestroy, OnModuleInit};
 pub use common::middleware::{CorvisMiddleware, FnMiddleware, IntoRouteSpecs, MiddlewareConsumer, Next, RouteInfo, RouteSpec};
-pub use common::param::FromContext;
+pub use common::param::{FromContext, Scoped};
 pub use common::parse_file::{
     FileTypePattern, FileTypeValidator, FileValidator, MaxFileSizeValidator, ParseFilePipe, ParseFilePipeBuilder,
 };
@@ -275,8 +275,9 @@ pub use modules::schedule;
 pub use modules::schedule::{CronExpression, CronJob, CronOptions, CronTime, ScheduleModule, ScheduleModuleOptions, SchedulerRegistry};
 pub use modules::serve_static::{ServeStaticModule, ServeStaticOptions};
 pub use modules::throttler::{
-    SKIP_THROTTLE, THROTTLE_BLOCK_DURATION, THROTTLE_LIMIT, THROTTLE_TTL, ThrottlerGuard, ThrottlerModule, ThrottlerOptions,
-    ThrottlerRecord, ThrottlerStorage, skip_throttle, skip_throttle_key,
+    SKIP_THROTTLE, THROTTLE_BLOCK_DURATION, THROTTLE_KEY_GENERATOR, THROTTLE_LIMIT, THROTTLE_TRACKER, THROTTLE_TTL, ThrottleOverride,
+    ThrottlerGuard, ThrottlerKeyGeneratorFn, ThrottlerModule, ThrottlerOptions, ThrottlerRecord, ThrottlerStorage, ThrottlerTrackerFn,
+    skip_throttle, skip_throttle_key, throttle, throttle_key,
 };
 #[cfg(feature = "websockets")]
 pub use websockets::{
@@ -297,11 +298,12 @@ pub mod prelude {
         InternalServerErrorException, IntoResponse, Json, Logger, MessageEvent, Middleware, ModuleImport, ModuleRef, Next,
         NotFoundException, OnApplicationBootstrap, OnApplicationShutdown, OnModuleDestroy, OnModuleInit, PUBLIC_METADATA, ParseArrayPipe,
         ParseBoolPipe, ParseEnumPipe, ParseFloatPipe, ParseIntPipe, ParseUUIDPipe, PipeTransform, Provider, Redirect, Reflector, Request,
-        RequestMethod, Response, ResultHttpExt, RouteInfo, RouteSpec, SKIP_THROTTLE, ScheduleModule, SchedulerRegistry, Scope,
-        ServeStaticModule, ServeStaticOptions, Sse, StreamableFile, THROTTLE_BLOCK_DURATION, THROTTLE_LIMIT, THROTTLE_TTL, TerminusModule,
-        ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerRecord, Token, UnauthorizedException, UnprocessableEntityException,
-        VERSION_NEUTRAL, Validate, ValidationPipe, VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json,
-        module, public, routes, skip_throttle, skip_throttle_key,
+        RequestMethod, Response, ResultHttpExt, RouteInfo, RouteSpec, SKIP_THROTTLE, ScheduleModule, SchedulerRegistry, Scope, Scoped,
+        ServeStaticModule, ServeStaticOptions, Sse, StreamableFile, THROTTLE_BLOCK_DURATION, THROTTLE_KEY_GENERATOR, THROTTLE_LIMIT,
+        THROTTLE_TRACKER, THROTTLE_TTL, TerminusModule, ThrottleOverride, ThrottlerGuard, ThrottlerModule, ThrottlerOptions,
+        ThrottlerRecord, Token, UnauthorizedException, UnprocessableEntityException, VERSION_NEUTRAL, Validate, ValidationPipe,
+        VersionValue, VersioningOptions, VersioningType, controller, handlers, injectable, json, module, public, routes, skip_throttle,
+        skip_throttle_key, throttle, throttle_key,
     };
     #[cfg(feature = "compression")]
     pub use crate::{CompressionOptions, should_compress};

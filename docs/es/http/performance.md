@@ -40,6 +40,7 @@ app.set_server_options(
         .headers_timeout(Duration::from_secs(30))    // 60 s por defecto
         .request_timeout(Duration::from_secs(120))   // 300 s por defecto; responde 408
         .keep_alive_timeout(Duration::from_secs(10)) // 5 s por defecto
+        .send_timeout(Duration::from_secs(30))       // 60 s por defecto; cierra la conexión
         .max_connections(10_000)                     // sin tope por defecto
         .max_header_size(16 * 1024)                  // 32 KiB por defecto; responde 431 (HTTP/1 y HTTP/2)
         .http2_max_concurrent_streams(50)            // 100 por defecto, por conexión HTTP/2
@@ -54,6 +55,53 @@ hasta que se cierran, y también un socket durante hasta 2 s después de una res
 ...), mientras el servidor deja que el cliente la lea antes de cerrar. Con un tope, agrega un heartbeat a tus gateways
 para que los clientes caídos no ocupen lugares.
 
+### Clientes que dejan de leer (`send_timeout`)
+
+`send_timeout` (60 s por defecto, `None` lo desactiva) es lo máximo que el servidor espera a que un cliente acepte
+bytes de la respuesta. Un cliente que dejara de leer retendría para siempre su conexión, su lugar de
+`max_connections` y la memoria de sus respuestas, porque ningún otro timer corre mientras hay una respuesta en curso.
+Funciona igual en HTTP/1 y en HTTP/2, de dos maneras:
+
+- **Socket bloqueado.** Si la escritura al socket de la conexión sigue bloqueada durante `send_timeout` sin que el
+  socket acepte un solo byte, la conexión se cierra. Así se detecta también a un cliente HTTP/2 que inunda de PING y
+  nunca lee las respuestas, y a uno HTTP/1 que encadena peticiones y nunca lee las respuestas.
+- **Ventanas de control de flujo cerradas.** Cuando las respuestas de una conexión HTTP/2 esperan a que el cliente
+  abra sus ventanas y ninguna se ha movido durante `send_timeout`, la conexión se cierra, aunque el cliente siga
+  contestando PING o enviando SETTINGS y WINDOW_UPDATE. Un stream detenido junto a otros que avanzan no cierra la
+  conexión: en un enlace lento con muchos streams, siempre hay algunos esperando ventana.
+
+La conexión se descarta de inmediato: sin GOAWAY, sin el resto de la respuesta y sin el drenaje de cierre.
+
+Mide la falta de progreso, no la duración de la respuesta: el progreso lo reinicia, así que una descarga lenta no se
+corta. Nunca corre mientras el servidor no tiene nada que enviar: un handler lento, un stream de Server-Sent Events
+inactivo y una conexión keep-alive ociosa no se ven afectados, ni tampoco una conexión WebSocket ya establecida (su
+cola de envío está acotada por `max_buffered_amount`). Un valor demasiado largo para sumarlo a una lectura del reloj
+(`Duration::MAX`) significa sin límite.
+
+**Lo que no acota.** No limita lo poco que un cliente tiene que leer para conservar su conexión, ni la memoria que se
+retiene para él:
+
+- En HTTP/2 el cliente tiene que tomar unos 16 KiB (un frame) de algún stream cada `send_timeout`.
+- En HTTP/1 el servidor nota el progreso cuando el sistema operativo avisa que el socket admite escritura. En Linux
+  configura `TCP_NOTSENT_LOWAT` a 64 KiB en sus sockets mientras `send_timeout` está activo, así que un cliente que lee
+  de forma constante se ve cuando toma unos 32 KiB por periodo (sin eso, Linux avisa solo cuando está libre cerca de la
+  mitad de un buffer de envío que el autoajuste hace crecer a varios MiB, y un lector lento se cortaría mientras lee).
+  En Windows hicieron falta unos 64 KiB por periodo en una conexión de loopback. En macOS y los BSD la opción no se
+  configura y la granularidad es la del buffer autoajustado, que puede ser de varios MiB: usa un `send_timeout` mayor
+  si sirves clientes lentos ahí.
+- Un cliente que reinicia streams y abre otros nuevos no necesita leer nada: cada respuesta nueva cuenta como
+  movimiento. Los límites de rapid reset acotan cuánto puede durar eso, no lo que retiene mientras tanto.
+
+Las respuestas retenidas para clientes lentos están acotadas por `max_connections` x `http2_max_concurrent_streams` x
+el tamaño de una respuesta. Un tope a los bytes de respuesta pendientes se sigue en
+[#163](https://github.com/randygil/corvis/issues/163); mientras tanto define `max_connections`.
+
+La opción más cercana de Node es `server.timeout`: está desactivada por defecto (0) y mide la inactividad en ambas
+direcciones, por lo que también corta handlers lentos, y por eso Node la desactivó. Con los valores por defecto de
+Node, un cliente que deja de leer nunca se desconecta; Corvis lo cierra a los 60 s (el `send_timeout` de nginx tiene el
+mismo valor y la misma semántica). Un reproductor que pausa una descarga progresiva más de un minuto se reconecta (los
+navegadores reanudan con `Range`); sube el valor o pasa `None` si necesitas el comportamiento anterior.
+
 ### Conexiones HTTP/2
 
 Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1.
@@ -66,7 +114,9 @@ Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1
 - `max_connections` cuenta conexiones, no streams, como `server.maxConnections` de Node. Las peticiones en curso de
   clientes HTTP/2 quedan acotadas por `max_connections` x `http2_max_concurrent_streams`.
 - `headers_timeout` y `keep_alive_timeout` aplican a la conexión mientras ninguno de sus streams está en curso, así que
-  un stream largo mantiene viva la conexión. `request_timeout` aplica al cuerpo de cada stream por separado: un `POST`
+  un stream largo mantiene viva la conexión. Una conexión ociosa sigue en la fase de keep-alive cuando el cliente envía
+  un frame que no inicia ninguna petición (WINDOW_UPDATE, PING, SETTINGS): solo una petición nueva la pasa a la fase de
+  cabeceras. `request_timeout` aplica al cuerpo de cada stream por separado: un `POST`
   detenido se responde `408` sin afectar a los demás streams.
 - `http2_keep_alive_interval` (desactivado por defecto) envía un PING cada intervalo, y `http2_keep_alive_timeout`
   cierra la conexión cuando un PING no se confirma a tiempo (mínimo 1 s; un intervalo cero significa sin PING).
@@ -83,9 +133,8 @@ Estas opciones aplican a toda conexión HTTP/2 (hoy h2c) y nunca a las de HTTP/1
   para que el proxy pueda reintentar en otra conexión las peticiones sin respuesta; desde entonces los streams nuevos
   se reinician sin llegar a un handler, y la conexión se cierra tras 1 s. Sube `http2_max_cancelled_streams` si algún
   proxy tuyo cancela más que eso. Una petición que el cliente cancela no se registra.
-- Limitación conocida ([#157](https://github.com/randygil/corvis/issues/157)): un cliente vivo que deja de leer retiene
-  su conexión. Mientras la escritura hacia el cliente está bloqueada, ni el timeout del PING ni los de inactividad se
-  activan; el keep-alive con PING detecta clientes que dejaron de responder, no que dejaron de leer.
+- El keep-alive con PING detecta clientes que dejaron de responder, no que dejaron de leer; de esos se ocupa
+  `send_timeout` (ver arriba).
 
 ## Cuerpos de las peticiones
 

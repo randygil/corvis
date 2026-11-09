@@ -190,7 +190,7 @@ The field marked with `#[websocket_server]` receives the gateway's server. Each 
 | `client.send_text(text)` | Sends a raw text frame |
 | `client.join(room)`, `client.leave(room)` | Joins or leaves a room |
 | `client.rooms()`, `client.in_room(room)` | The client's rooms |
-| `client.handshake()` | The upgrade's HTTP `Request`: headers, query string, IP |
+| `client.handshake()` | The upgrade's HTTP `Request`: headers, query string, IP (`ip()`, `ips()` and `hostname()` follow `set_trust_proxy`, like HTTP requests; `remote_addr()` keeps the socket address) |
 | `client.insert(value)`, `client.get::<T>()` | Data associated with the connection (for example, the authenticated user) |
 | `client.disconnect()` | Closes the connection |
 | `client.disconnect_with(4401, "Unauthorized")` | Closes with a code and a reason |
@@ -297,7 +297,11 @@ Things to keep in mind:
 - A global guard that only knows HTTP (it reads a bearer token from `ctx.switch_to_http()`, for example) refuses or breaks every message. Tell the transports apart with `ctx.get_type()` (`ContextType::Ws`), or mark the gateway with metadata the guard checks, such as `#[set_metadata(IS_PUBLIC_KEY, true)]` below `#[websocket_gateway]`.
 - A global interceptor sees WebSocket contexts too, so one that reads the HTTP request or sets headers has to check `ctx.get_type()` first.
 - A global pipe such as `ZodValidationPipe::auto()` runs on every `#[message_body]`. Repeating it on the gateway, as Tertulia does, makes it run twice, which is harmless for validation pipes.
-- A global `ThrottlerGuard` counts messages per handshake IP and handler.
+- A global `ThrottlerGuard` counts messages per handshake IP and handler. Behind a reverse proxy, configure `app.set_trust_proxy(...)` so that the handshake IP is the client's and not the proxy's (see [Rate limiting](/security/rate-limiting#behind-a-proxy)).
+
+::: warning Difference with a Node gateway behind Express
+In Node, a WebSocket upgrade never goes through Express, so `trust proxy` does not apply to it: a gateway guard sees the proxy's socket address (or nothing, with the stock throttler). Corvis applies the `set_trust_proxy` setting to the handshake, as it does for HTTP requests, so with a trust setting `client.handshake().ip()` is the forwarded client address. As with HTTP, a setting that trusts too many hops lets a client choose its IP with `X-Forwarded-For`.
+:::
 
 Applications that adopt gateways gradually can keep global enhancers HTTP-only with one call before `init()` (or `listen`):
 

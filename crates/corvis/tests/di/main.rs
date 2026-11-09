@@ -14,6 +14,7 @@ mod dynamic_modules;
 mod global_modules;
 mod module_ref;
 mod module_ref_cycles;
+mod request_scope;
 mod transient;
 mod transient_validation;
 

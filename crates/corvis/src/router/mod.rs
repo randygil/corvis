@@ -566,6 +566,8 @@ pub(crate) struct AppShared {
     pub static_dirs: Vec<Arc<crate::modules::serve_static::ServeStaticOptions>>,
     #[allow(dead_code)]
     pub container: Arc<Container>,
+    /// Some provider is request-scoped, so `dispatch` installs a per-request store.
+    pub request_scope: bool,
     #[cfg(feature = "websockets")]
     pub gateways: HashMap<String, Arc<crate::websockets::GatewayRuntime>>,
     /// The server exposed through `HttpAdapterHost` (raw `upgrade` listeners).
@@ -576,6 +578,9 @@ pub(crate) struct AppShared {
 
 /// Entry point for every request.
 pub(crate) async fn dispatch(shared: Arc<AppShared>, req: Request) -> Response {
+    // The store of request-scoped instances lives exactly as long as this call: the guard removes it when `dispatch`
+    // returns, panics or is cancelled. A nested dispatch of the same request keeps the outer store.
+    let _request_scope = shared.request_scope.then(|| crate::di::request_scope::RequestScopeGuard::install(&req));
     if let Some(cors) = &shared.cors
         && cors.is_preflight(&req)
     {

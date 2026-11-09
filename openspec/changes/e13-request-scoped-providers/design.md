@@ -159,7 +159,7 @@ request scope with a startup error instead of the original framework's scope bub
    depending on each other and resolved concurrently in one request). Factory providers stay unchecked, as for
    transients (documented).
 8. **`ModuleRef::resolve_for` / `resolve_token_for`.** `resolve_for::<T>(&request)` reads the request's slot
-   (`OutsideRequest` if absent), builds a `ResolveCtx` with `request: Some(..)` located in the `ModuleRef`'s module and
+   (without one, only request-scoped providers fail, with `OutsideRequest`; see Implementation notes), builds a `ResolveCtx` with `request: Some(..)` located in the `ModuleRef`'s module and
    continuing the current resolution path (as `ModuleRef::ctx` does, `module_ref.rs:69-78`), and resolves with the
    normal visibility rules. It works for any scope, so callers do not need to know the provider's scope. `get`,
    `get_token`, `get_strict` and `app.get` keep returning only stored instances, so they return `NotFound` for a
@@ -208,3 +208,28 @@ request scope with a startup error instead of the original framework's scope bub
 - Q3: confirmed: `dispatch` installs a store only if none is present, so a nested dispatch shares the outer request's
   instances.
 - This change and `e13-request-scoped-providers-scoped-parameter` together close #115.
+
+## Implementation notes
+
+- `RequestScope`, `RequestScopeSlot`, `RequestCtx` and a `RequestScopeGuard` live in
+  `crates/corvis/src/di/request_scope.rs`. `RequestCtx::of(&Request)` is the hook the follow-up change (`Scoped<T>`)
+  uses to find the store of a request being dispatched.
+- `dispatch` installs the store through `RequestScopeGuard::install`, which does nothing when the request already has a
+  slot (a nested dispatch shares the outer store; only the installer removes it). Unit tests cover removal on drop,
+  on panic and on task abort (cancellation).
+- `ModuleRef::resolve_for` needs the store only for request-scoped providers (maintainer decision after the first
+  implementation, which required it for every scope). Without a store the resolution runs with `request: None`, as
+  `resolve` does: singletons and transients resolve normally, and a request-scoped provider, directly or through a
+  transient chain, fails with `OutsideRequest`. The store is still installed only when the app has request-scoped
+  providers.
+- `#[injectable]` arguments: `InjectableOptions` now has `scope: ScopeArg` and derives `Default`, so the callers
+  (`controller`, `gateway`, `module`, and the tests) use `InjectableOptions::default()`. A bare `transient` identifier,
+  which the substring matching used to accept by accident, is now rejected.
+- The `DiError::OutsideRequest` message for `ResolveCtx::request()` and for a `Request` field names the token
+  `Request` and the resolution chain of the requester.
+- A request-scoped controller (hand-written `Injectable`) and a request-scoped enhancer by type are rejected with
+  `DiError::Other`.
+- Docs: besides `injection-scopes` and `common-errors`, the one-line "no request scope" statements of `providers.md`
+  and `migration-guide.md` (EN and ES) were updated; the follow-up change expands the migration guide.
+- Not done here: the benchmark (task 7.1) and the parity check (task 9.6), which the maintainer runs. A nested
+  `app.handle(req.clone())` from a handler shares the outer instances (end-to-end test `nested`).

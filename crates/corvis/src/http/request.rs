@@ -56,6 +56,21 @@ impl Request {
         }
     }
 
+    /// The handshake request of an upgrade (WebSocket gateways and `upgrade` listeners): the hyper
+    /// parts with an empty body, the peer address and the application's `trust proxy` setting, so
+    /// `ip()`, `ips()` and `hostname()` resolve like they do for HTTP requests.
+    pub(crate) fn for_upgrade(
+        parts: http::request::Parts,
+        remote: SocketAddr,
+        trust: &super::proxy_addr::TrustProxy,
+    ) -> Result<Self, HttpException> {
+        let mut req = Request::new(parts.method, parts.uri, parts.headers, Bytes::new())?;
+        req.version = parts.version;
+        req.remote_addr = Some(remote);
+        req.trust_proxy = trust.clone();
+        Ok(req)
+    }
+
     /// Builds a request keeping the body-parser error (if any) inside it: the router raises it
     /// after CORS and through the global filters, like an Express middleware calling `next(err)`.
     pub(crate) fn with_parser(
@@ -331,5 +346,30 @@ pub(crate) fn parse_query_with(q: &str, mode: super::body_parser::QueryParser) -
             }
             obj.into_map()
         }
+    }
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+    use crate::http::proxy_addr::TrustProxy;
+
+    fn parts(xff: &str) -> http::request::Parts {
+        http::Request::builder().uri("/ws?a=1").header("x-forwarded-for", xff).body(()).unwrap().into_parts().0
+    }
+
+    #[test]
+    fn for_upgrade_resolves_the_address_with_the_given_setting() {
+        let remote: SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let trusted = Request::for_upgrade(parts("203.0.113.7"), remote, &TrustProxy::from(1usize)).unwrap();
+        assert_eq!(trusted.ip(), "203.0.113.7");
+        assert_eq!(trusted.remote_addr(), Some(remote));
+        assert_eq!(trusted.query_param("a"), Some("1"));
+
+        let default = Request::for_upgrade(parts("203.0.113.7"), remote, &TrustProxy::default()).unwrap();
+        assert_eq!(default.ip(), "127.0.0.1");
+
+        let untrusted = Request::for_upgrade(parts("203.0.113.7"), remote, &TrustProxy::parse("10.0.0.0/8").unwrap()).unwrap();
+        assert_eq!(untrusted.ip(), "127.0.0.1");
     }
 }
