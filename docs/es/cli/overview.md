@@ -54,7 +54,7 @@ El `main.rs` generado lee el puerto de `PORT` a través de `ConfigService` (por 
 |---|---|---|
 | `corvis new <nombre>` | `n` | Crea un proyecto nuevo |
 | `corvis generate <schematic> <nombre>` | `g` | Genera un elemento y lo registra |
-| `corvis start` | | Ejecuta `cargo run` (con `--watch`, `cargo watch -x run`) |
+| `corvis start` | | Ejecuta `cargo run` (con `--watch`, `watchexec`) |
 | `corvis build` | | Ejecuta `cargo build` (debug); con `--release`, modo release |
 | `corvis posture` | | Imprime el informe de postura de rutas (rutas con guard, públicas, sin protección) |
 | `corvis info` | `i` | Muestra el sistema operativo y las versiones de Rust, Cargo y la CLI |

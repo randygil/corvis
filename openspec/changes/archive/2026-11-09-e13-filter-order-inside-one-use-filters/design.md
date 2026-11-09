@@ -163,3 +163,32 @@ So within one attribute and across stacked attributes, Corvis tries filters in s
 
 1. The new HTTP fixture pins the same version as the existing HTTP fixtures (11.2.1); unifying it with the gateway fixture (12.4.0) is not part of this change.
 2. The behavior change is noted in `docs/migration-guide.md` (EN + ES), with no switch.
+
+## Implementation notes
+
+- Fixtures: `http_filter_order` pins 11.2.1 (review note 1) and records six scenarios (method attribute, class
+  attribute, stacked method attributes, stacked class attributes, method before class, global last). The recorded order
+  matches the spec delta (`Second`; `B` for the stacked case; `M1`; `C2`). `ws_gateways.json` only gained the two new
+  keys (checked with a diff). Both fixtures were recorded with `npm ci` in the scratchpad, not in the repo; the new
+  fixture folder has its `node_modules` ignored in `.gitignore`, like the others.
+- Single-capital-letter names such as `A` or `B` count as constants for the macros (`is_const_like`), so
+  `#[use_filters(A, B)]` would build instances (`filter_instance`) instead of resolving through DI. The test filters
+  are therefore named `FltA`, `FltB`, ... in the Rust replays and `FilterA`, ... in the macro unit tests. Not a
+  change of behavior.
+- The fixture's `B` catches only a `RangeError` (HTTP: only `ForbiddenException`); in the gateway replay it is a
+  filter whose `catches` is always `false` and that records nothing, so `calls` match the fixture.
+- Corvis answers with the exception's status when a filter returns `Response::json(..)` without a status; the replay
+  filters call `.with_status(200)` to mirror the fixture's `res.status(200).json(..)`. The array-form scenario is not
+  in the fixture (the original has no array form); a Rust test covers it.
+- The gateway attribute and stacked-handler tests reuse the `FxModule` gateways (`/fx_gateway_order`, `/fx_stacked`)
+  and the fixture replay; no separate gateway was added to `AppModule`.
+- The red-first step of 2.1 to 2.3 was not run as a separate step: the tests assert the new order only and the macro
+  expansion showed `B, A, C` as soon as the helper existed.
+- Port apps grep (task 5.1, 2026-11-08): `UseFilters` in `nest/{consi-backend,facten-api,houseplan}` and
+  `use_filters` in `corvis/{consi-backend,facten-api,houseplan-api}` (sources only, excluding `node_modules`,
+  `target`, `dist`): 0 files each. No route has two filters in one decorator.
+- Task 6.5 (corvis-parity) is left to the maintainer's session, as instructed.
+
+## Verification (2026-11-09)
+
+Integration batch `batch/phase07-l` (926b31e, with #143, #145, #119 and #147): full workspace run with `CORVIS_ORM_PG_REQUIRED=1` in a target used by nothing else, 990 passed, 0 failed. Examples build and smoke 32/32, naming, crate files and `npm run docs:check` pass. CI passed on Linux and Windows (run 42560823847). Parity: consi 832/832, facten 727/727, houseplan 598/598 (quiet hours), databases equivalent.

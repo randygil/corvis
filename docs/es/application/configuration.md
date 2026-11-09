@@ -98,6 +98,19 @@ ConfigModule::for_root(ConfigModuleOptions {
 
 El mensaje que verás en el arranque empieza con `Config validation error:`.
 
+## Registro asíncrono
+
+Cuando las opciones dependen de otro provider, por ejemplo la ruta del archivo `.env`, usa `ConfigModule::for_root_async(is_global, fábrica)`. La fábrica devuelve `ConfigModuleOptions` y `ConfigService` se construye con ellas igual que con `for_root`. `is_global` es el argumento; el campo `is_global` de las opciones devueltas se ignora.
+
+```rust
+ConfigModule::for_root_async(true, |ctx| async move {
+    let paths = ctx.get::<EnvPaths>().await?; // de un módulo global
+    Ok(ConfigModuleOptions { env_file_path: paths.files.clone(), ..Default::default() })
+})
+```
+
+La fábrica no puede resolver `ConfigService`, porque es el provider que se está construyendo: falla al arrancar con un error de dependencia circular. La convención común a todas las variantes asíncronas está en [Módulos dinámicos](/es/fundamentals/dynamic-modules#convencion-de-las-variantes-asincronas).
+
 ## Formato de los archivos `.env`
 
 Los archivos se leen con la gramática de `dotenv` de Node.js (`corvis::config::parse_dotenv` la expone por si la necesitas):

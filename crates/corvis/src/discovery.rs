@@ -46,6 +46,9 @@ impl WsEnhancers {
         self.pipes.push(p);
         self
     }
+    /// Adds an exception filter. Filters are tried in the order they are added and the first whose
+    /// `catches` returns `true` answers. `#[use_filters(A, B)]` adds `B` and then `A`, like the original
+    /// framework, which tries the last listed filter first.
     pub fn filter(mut self, f: crate::common::enhancer::FilterRef) -> Self {
         self.filters.push(f);
         self

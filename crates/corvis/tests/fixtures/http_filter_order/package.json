@@ -1,0 +1,14 @@
+{
+  "name": "corvis-http-filter-order-fixture",
+  "private": true,
+  "type": "module",
+  "description": "Records which exception filter answers when several filters are declared at one level in the original framework into http_filter_order.json",
+  "scripts": { "generate": "node generate.mjs" },
+  "dependencies": {
+    "@nestjs/common": "11.2.1",
+    "@nestjs/core": "11.2.1",
+    "@nestjs/platform-express": "11.2.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  }
+}

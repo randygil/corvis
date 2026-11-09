@@ -82,6 +82,8 @@ filter in this order:
 3. The global ones, last registered first: those from `app.use_global_filters(...)` (from the last call
    to the first), then those registered with `Provider::app_filter` (from the last to the first).
 
+Inside one `#[use_filters(A, B)]` the last listed is tried first (`B`, then `A`), as in the original framework; stacked attributes keep the upper one first.
+
 The **first** filter whose `catches(&exception)` returns `true` is used. If none accepts it,
 `BaseExceptionFilter` responds with the standard body
 (`{"message":...,"error":...,"statusCode":...}` or `{"statusCode":500,"message":"Internal server error"}`).

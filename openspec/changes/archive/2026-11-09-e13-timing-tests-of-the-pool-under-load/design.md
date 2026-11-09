@@ -172,3 +172,16 @@
 1. A 250 ms settling window is accepted.
 2. Adding `connect_timeout=30` to the URL of the encoding test is accepted.
 3. No permanent under-load run in CI; the stress run stays a manual task.
+
+## Implementation notes
+
+- Gate helper, `pg_pool_url.rs` and `pg_connect_timeout.rs` follow the design. `Gate::close(db_url, key)` takes the URL of the database the queries run on; `Gate::wait_for` takes `&mut [Task]` and reports the result of a gated query that ends early. Gate keys: 7001 (`gated_peak`), 7002 (self-test), 7003 (leak test); each test has its own database.
+- Deviation: `recorded_waits_match` does not assert the `(Current connection pool timeout: T, connection limit: 1)` suffix of the recorded message: the `P2024` message of corvis-orm ends after the `More info` URL, and the old test only checked the prefix. `T` is still parsed from the recorded message and drives the bounds.
+- Mutation 2.3 (Postgres pool ignores `connection_limit`, `default_pool_size()` used): `limit_of_two_serves_six_queries` failed with `(6, 9)` instead of `(2, 2)`, `builder_wins_over_the_url` with `(12, 15)` instead of `(4, 4)`, `tls_parameter_is_kept_and_limit_applies` with `(9, 12)` instead of `(3, 3)`; `recorded_connection_counts_match` and the gate self-test failed as well. Reverted.
+- Mutation 2.2 (`pool_timeout` ignored, `DEFAULT_POOL_TIMEOUT` used): `recorded_waits_match` failed on the upper bound, "`connection_limit=1&pool_timeout=1`: waited 10.0024378s". Reverted.
+- Mutation 3.3 (one extra slot held by the test): `cancelled_queries_and_scripts_do_not_leak_slots` failed after about 3 s with "a gated query finished before 2 were blocked (blocked 1, backends 2)" and the `P2024` of the second query. Reverted.
+- Load run (4.1): a Node CPU burner with 32 busy worker threads (one per logical core) ran during the loops, on a machine that also had other sessions building and testing. `pg_pool_url`: 10 of 10 passed (9 tests, 26 to 58 s per run instead of about 9 s). `pg_connect_timeout`: 10 of 10 passed (13 tests; runs 1 to 9 under the burner at 52 to 174 s, run 10 after the burner ended at 11 s). No compile ran alongside; the burner saturated all cores. Two disturbances, not test failures: another session ran the same test binary against the same Postgres at the same time (`duplicate key ... pg_database_datname_index` when creating `orm_test_*` databases; the shared database names make two concurrent runs of the same binary collide, as the task already warns), and the shared test executable was removed once by another session's `cargo clean`; the loops ran on copies of the executables. One earlier `pg_connect_timeout` run under load failed once (1 test, after 231 s) while stray instances of my own loop were still running; its output was not captured and 10 clean runs followed.
+
+## Verification (2026-11-09)
+
+Integration batch `batch/phase07-l` (926b31e, with #143, #145, #119 and #147): full workspace run with `CORVIS_ORM_PG_REQUIRED=1` in a target used by nothing else, 990 passed, 0 failed. Examples build and smoke 32/32, naming, crate files and `npm run docs:check` pass. CI passed on Linux and Windows (run 42560823847). Parity: consi 832/832, facten 727/727, houseplan 598/598 (quiet hours), databases equivalent.

@@ -7,11 +7,13 @@ status: documented
 Rust compiles to a native binary, so there is no module replacement in a running process. What you can have is **recompiling and restarting** the application every time you save a file:
 
 ```bash
-cargo install cargo-watch     # only once
+cargo install --locked watchexec-cli     # only once
 corvis start --watch
 ```
 
-`corvis start --watch` runs `cargo watch -x run`: it watches the project, recompiles when a file changes and launches the server again. `--release` and the arguments after `--` are included: `corvis start --watch --release -- --port 4000` runs `cargo watch -x "run --release -- --port 4000"`. Without the CLI, the equivalent command is the same `cargo watch -x run`. If `cargo-watch` is not installed, `corvis start --watch` stops with a message that shows `cargo install cargo-watch`.
+`corvis start --watch` runs `cargo run` under [watchexec](https://github.com/watchexec/watchexec): it watches the project, recompiles when a file changes and launches the server again. `--release` and the arguments after `--` are included: `corvis start --watch --release -- --port 4000` restarts `cargo run --release -- --port 4000`. The exact command and the install options are in [Usage](/cli/usages#corvis-start). If watchexec is not installed, `corvis start --watch` stops with a message that shows `cargo install --locked watchexec-cli`.
+
+On Windows, watchexec can only force-terminate the running server when it restarts it, so shutdown hooks do not run on each restart during development. On Linux and macOS it sends a termination signal first.
 
 ## Compile times
 

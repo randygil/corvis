@@ -289,5 +289,45 @@
         "Second"
       ]
     }
+  ],
+  "filters_in_one_gateway_use_filters": [
+    {
+      "message": {
+        "event": "failFiltered",
+        "data": "x"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "by": "Second"
+          }
+        }
+      ],
+      "calls": [
+        "handler",
+        "Second"
+      ]
+    }
+  ],
+  "stacked_handler_use_filters": [
+    {
+      "message": {
+        "event": "failFiltered",
+        "data": "x"
+      },
+      "frames": [
+        {
+          "event": "exception",
+          "data": {
+            "by": "A"
+          }
+        }
+      ],
+      "calls": [
+        "handler",
+        "A"
+      ]
+    }
   ]
 }

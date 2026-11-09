@@ -69,7 +69,12 @@ pub fn expand(args: TokenStream, mut item: ItemStruct) -> syn::Result<TokenStrea
             }
         };
         let m = syn::Ident::new(builder, proc_macro2::Span::call_site());
-        for e in enhancer_tokens(builder, attr_args(&attr)?) {
+        let tokens = if builder == "filter" {
+            crate::utils::filter_tokens_in_try_order(attr_args(&attr)?)
+        } else {
+            enhancer_tokens(builder, attr_args(&attr)?)
+        };
+        for e in tokens {
             enhancers.push(quote!(.#m(#e)));
         }
     }

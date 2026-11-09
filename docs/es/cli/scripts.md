@@ -9,12 +9,12 @@ En un proyecto de Corvis no hay un archivo de scripts propio de la CLI: el proye
 | Tarea | Con la CLI | Con Cargo |
 |---|---|---|
 | Ejecutar en desarrollo | `corvis start` | `cargo run` |
-| Ejecutar y reiniciar al guardar | `corvis start --watch` | `cargo watch -x run` (con `--release` y argumentos tras `--`: ver [Uso](/es/cli/usages#corvis-start)) |
+| Ejecutar y reiniciar al guardar | `corvis start --watch` | `watchexec` reiniciando `cargo run` (con `--release` y argumentos tras `--`: ver [Uso](/es/cli/usages#corvis-start)) |
 | Compilar | `corvis build` | `cargo build` |
 | Compilar para producción | `corvis build --release` | `cargo build --release` |
 | Ejecutar los tests | | `cargo test` |
 
-`corvis start --watch` requiere `cargo-watch` (`cargo install cargo-watch`). Si falta, el comando falla y explica cómo instalarlo. Ver [Uso](/es/cli/usages#corvis-start).
+`corvis start --watch` requiere [watchexec](https://github.com/watchexec/watchexec) 2.0 o posterior (`cargo install --locked watchexec-cli`). Si falta, el comando falla y explica cómo instalarlo. Ver [Uso](/es/cli/usages#corvis-start).
 
 ## Comandos propios
 

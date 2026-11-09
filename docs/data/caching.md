@@ -56,6 +56,19 @@ fn count(&self) -> Value {
 pub struct AppModule;
 ```
 
+## Options from another provider
+
+`CacheModule::register_async(is_global, factory)` takes the options from a factory that can resolve other providers, such as `ConfigService`. The manager is built once and `Arc<CacheManager>` and `CACHE_MANAGER` resolve to the same instance:
+
+```rust
+CacheModule::register_async(true, |ctx| async move {
+    let config = ctx.get::<ConfigService>().await?;
+    Ok(CacheOptions { ttl: config.try_get::<u64>("CACHE_TTL")?, ..Default::default() })
+})
+```
+
+`is_global` is the argument; the `is_global` field of the returned options is ignored. If the factory fails, the application does not start (`Error while instantiating CacheManager: ...`).
+
 ## Use the store directly
 
 Inject `Arc<CacheManager>` (or, by token, `#[inject(corvis::CACHE_MANAGER)] cache: Arc<CacheManager>`):

@@ -284,6 +284,28 @@ impl ConfigModule {
             .global(global)
     }
 
+    /// `ConfigModule.forRootAsync({ useFactory })`: the options come from `factory`, which can resolve other
+    /// providers (of global modules or of modules added with `.import(..)`). The module is global when `is_global`
+    /// is `true`; the `is_global` field of the returned options is ignored because globality is fixed before any
+    /// factory runs. The factory cannot resolve `ConfigService` itself (circular dependency).
+    pub fn for_root_async<F, Fut>(is_global: bool, factory: F) -> DynamicModule
+    where
+        F: Fn(crate::di::ResolveCtx) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = crate::Result<ConfigModuleOptions>> + Send + 'static,
+    {
+        let factory = Arc::new(factory);
+        DynamicModule::new::<ConfigModule>()
+            .provider(Provider::use_factory(Token::of::<ConfigService>(), move |ctx| {
+                let factory = factory.clone();
+                async move {
+                    let options = factory(ctx).await?;
+                    ConfigService::load(&options).map_err(anyhow::Error::msg)
+                }
+            }))
+            .export(Token::of::<ConfigService>())
+            .global(is_global)
+    }
+
     /// `ConfigModule.forFeature(registerAs('db', ...))` – adds a namespace to the
     /// existing `ConfigService` and exposes the namespace value under `"CONFIGURATION(<ns>)"`.
     pub fn for_feature(factory: ConfigFactory) -> DynamicModule {

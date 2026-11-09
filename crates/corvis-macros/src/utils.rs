@@ -92,6 +92,16 @@ pub fn err(span: impl ToTokens, msg: &str) -> TokenStream {
     syn::Error::new_spanned(span, msg).to_compile_error()
 }
 
+/// The `filter_of` / `filter_instance` tokens of one `#[use_filters(...)]` attribute in the order the
+/// filters are tried: last listed first, like the original framework (`#[use_filters(A, B)]` tries `B`
+/// before `A`). Stacked attributes are not reordered here: each is reversed on its own and they are
+/// appended in source order.
+pub fn filter_tokens_in_try_order(exprs: Vec<Expr>) -> Vec<TokenStream> {
+    let mut tokens = enhancer_tokens("filter", exprs);
+    tokens.reverse();
+    tokens
+}
+
 pub fn enhancer_tokens(kind: &str, exprs: Vec<Expr>) -> Vec<TokenStream> {
     let (of, inst) = match kind {
         "guard" => (quote!(::corvis::guard_of), quote!(::corvis::guard_instance)),

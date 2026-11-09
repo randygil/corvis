@@ -275,6 +275,15 @@ For each exception, Corvis walks the filters in this order and uses **the first 
 
    Guards, interceptors and pipes run in registration order, but exception filters are tried in reverse, so a filter registered later takes precedence over an earlier one. The order was checked against the original framework.
 
+Inside one `#[use_filters(A, B)]` the **last listed is tried first**, as in the original framework: `B` goes before `A`. When several `#[use_filters]` attributes are stacked on the same method or controller, the upper attribute's filters are tried before those of the attributes below it, and each attribute's own list is still read last to first:
+
+```rust
+#[get]
+#[use_filters(A, B)]
+#[use_filters(C)]
+async fn list(&self) -> HttpResult<Vec<Cat>> { /* tried in the order B, A, C */ }
+```
+
 If none handles it, the default filter responds.
 
 Exceptions that occur outside a route (in a middleware, the `404` of a nonexistent route, a body parser error) only go through the global filters.

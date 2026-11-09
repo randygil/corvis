@@ -116,3 +116,18 @@ needed because the variants have no observable output beyond the options they bu
 
 4. No warning when the factory's `is_global` differs from the argument; document that the argument wins.
 5. `ScheduleModule::for_root_async(imports, f)` stays as a documented exception to the convention.
+
+## Implementation notes
+
+- Implemented as designed. The three factories wrap `Provider::use_factory`; `CacheModule::register_async` registers
+  the `CacheManager` factory plus `Provider::use_existing(CACHE_MANAGER, ..)`, so a failing factory is reported
+  against `CacheManager`.
+- The tests live in a nested `async_registration` module of `crates/corvis/tests/modules.rs`. Beyond the spec
+  scenarios they also cover that the `is_global` of the returned `ConfigModuleOptions` is ignored and the factory
+  errors of Config and Throttler. The non-global `.import(...)` scenario is tested with Cache and a short TTL read
+  from the imported provider.
+- Task 4.5 (`corvis-parity`) is left to the maintainer's session.
+
+## Verification (2026-11-09)
+
+Integration batch `batch/phase07-l` (926b31e, with #143, #145, #119 and #147): full workspace run with `CORVIS_ORM_PG_REQUIRED=1` in a target used by nothing else, 990 passed, 0 failed. Examples build and smoke 32/32, naming, crate files and `npm run docs:check` pass. CI passed on Linux and Windows (run 42560823847). Parity: consi 832/832, facten 727/727, houseplan 598/598 (quiet hours), databases equivalent.

@@ -111,12 +111,15 @@ fn default_folder_registration_is_unchanged() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[test]
-fn start_watch_without_cargo_watch_explains_how_to_install_it() {
-    let dir = sandbox("watch");
+fn watch_without_watchexec(name: &str, with_cargo_watch: bool) {
+    let dir = sandbox(name);
     let work = dir.join("work");
     let empty = dir.join("empty");
-    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::create_dir_all(empty.join("bin")).unwrap();
+    if with_cargo_watch {
+        let file = format!("cargo-watch{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(empty.join("bin").join(file), "").unwrap();
+    }
     let out = Command::new(env!("CARGO_BIN_EXE_corvis"))
         .args(["start", "--watch"])
         .current_dir(&work)
@@ -126,17 +129,22 @@ fn start_watch_without_cargo_watch_explains_how_to_install_it() {
         .unwrap();
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(!out.status.success(), "{text}");
-    assert!(text.contains("cargo install cargo-watch") && text.contains("without --watch"), "{text}");
+    assert!(
+        text.contains("watchexec is not installed")
+            && text.contains("cargo install --locked watchexec-cli")
+            && text.contains("without --watch"),
+        "{text}"
+    );
+    assert!(!text.contains("cargo watch"), "{text}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// `cargo watch` runs the command through a shell, so an argument the shell would split or interpret is
-/// rejected before any Cargo process starts.
 #[test]
-fn start_watch_rejects_shell_arguments() {
-    let dir = sandbox("watch-args");
-    let (ok, out) = corvis(&dir.join("work"), &["start", "--watch", "--", "my app"]);
-    assert!(!ok, "{out}");
-    assert!(out.contains("my app") && out.contains("without --watch"), "{out}");
-    let _ = std::fs::remove_dir_all(dir);
+fn start_watch_without_watchexec_explains_how_to_install_it() {
+    watch_without_watchexec("watch", false);
+}
+
+#[test]
+fn start_watch_ignores_an_installed_cargo_watch() {
+    watch_without_watchexec("watch-cargo-watch", true);
 }
