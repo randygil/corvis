@@ -24,6 +24,7 @@ mod compressible;
 mod negotiate;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 
@@ -54,18 +55,59 @@ impl Limits {
         Limits { max, total: Arc::new(Semaphore::new(max)), brotli: Arc::new(Semaphore::new((max / 2).max(1))) }
     }
 
-    fn acquire(&self, coding: Coding) -> Option<Permit> {
+    /// Takes the slots for one compression: the connection's (when the request came over one, so
+    /// a client cannot hold the global cap alone), the total one and, for brotli, a brotli one.
+    fn acquire(&self, coding: Coding, conn: Option<(&ConnectionSlots, usize)>) -> Option<Permit> {
+        let conn = match conn {
+            Some((slots, max)) => Some(slots.try_take(max)?),
+            None => None,
+        };
         let brotli = match coding {
             Coding::Brotli => Some(self.brotli.clone().try_acquire_owned().ok()?),
             _ => None,
         };
         let total = self.total.clone().try_acquire_owned().ok()?;
-        Some(Permit { _total: total, _brotli: brotli })
+        Some(Permit { _conn: conn, _total: total, _brotli: brotli })
     }
 }
 
-/// A slot of the compression cap, released when dropped.
+/// The compressions in progress of one connection. The server puts one in the extensions of every
+/// request of a connection; the test client has no connection and so no such cap.
+#[derive(Clone, Default, Debug)]
+pub(crate) struct ConnectionSlots(Arc<AtomicUsize>);
+
+impl ConnectionSlots {
+    fn try_take(&self, max: usize) -> Option<ConnectionSlot> {
+        let mut n = self.0.load(Ordering::SeqCst);
+        loop {
+            if n >= max {
+                return None;
+            }
+            match self.0.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Some(ConnectionSlot(self.0.clone())),
+                Err(current) => n = current,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_use(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// One slot of a connection, released when dropped.
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A slot of the compression caps, released when dropped.
 pub(crate) struct Permit {
+    _conn: Option<ConnectionSlot>,
     _total: OwnedSemaphorePermit,
     _brotli: Option<OwnedSemaphorePermit>,
 }
@@ -105,7 +147,11 @@ pub struct CompressionOptions {
     brotli_quality: u32,
     filter: Option<Filter>,
     limits: Arc<Limits>,
+    per_connection: usize,
 }
+
+/// The default cap per connection (an HTTP/1 connection never has more than one response at a time).
+pub const DEFAULT_MAX_PER_CONNECTION: usize = 4;
 
 /// The default cap on compressions in progress: 8 per available core.
 fn default_max_concurrent() -> usize {
@@ -120,6 +166,7 @@ impl Default for CompressionOptions {
             brotli_quality: DEFAULT_BROTLI_QUALITY,
             filter: None,
             limits: Arc::new(Limits::new(default_max_concurrent())),
+            per_connection: DEFAULT_MAX_PER_CONNECTION,
         }
     }
 }
@@ -175,6 +222,22 @@ impl CompressionOptions {
     pub fn max_concurrent(mut self, max: usize) -> Self {
         self.limits = Arc::new(Limits::new(max));
         self
+    }
+
+    /// The most responses of one connection compressed at the same time (at least 1; default 4).
+    /// It matters for HTTP/2, where one connection carries many streams: a client that opens many
+    /// streams and stops reading can hold only this many slots of the global cap. A response over
+    /// the cap is sent uncompressed, with `Vary: Accept-Encoding`. HTTP/1 connections have one
+    /// response at a time. The in-process test client has no connection, so only the global cap
+    /// applies to it.
+    pub fn max_per_connection(mut self, max: usize) -> Self {
+        self.per_connection = max.max(1);
+        self
+    }
+
+    /// The configured cap per connection.
+    pub fn max_per_connection_compressions(&self) -> usize {
+        self.per_connection
     }
 
     /// The configured cap on compressions in progress.
@@ -334,12 +397,13 @@ pub(crate) fn apply(resp: hyper::Response<ResBody>, req: &RequestInfo, opts: &Co
     // A compression slot is needed for the whole life of the body. When none is free `br` falls
     // back to what else the client accepts, and then to no compression (`Vary` is already set).
     let wanted = decision.encoding.and_then(Coding::from_name);
-    let mut chosen = wanted.and_then(|c| opts.limits.acquire(c).map(|p| (c, p)));
+    let conn = req.conn_slots.as_ref().map(|s| (s, opts.per_connection));
+    let mut chosen = wanted.and_then(|c| opts.limits.acquire(c, conn).map(|p| (c, p)));
     if chosen.is_none() && wanted == Some(Coding::Brotli) {
         let accept = req.accept_encoding();
         chosen = negotiate_among(accept.as_deref(), &["gzip", "deflate", "identity"])
             .and_then(Coding::from_name)
-            .and_then(|c| opts.limits.acquire(c).map(|p| (c, p)));
+            .and_then(|c| opts.limits.acquire(c, conn).map(|p| (c, p)));
     }
     let Some((coding, permit)) = chosen else {
         return hyper::Response::from_parts(parts, body);

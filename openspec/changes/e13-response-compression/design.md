@@ -281,5 +281,20 @@ is 14.7 MiB per compressor, 2^19 is 5.0 MiB, 2^18 is 3.3 MiB, gzip level 6 is 0.
     brotli): 500 idle HTTP/1 connections with `br` hold 440 MiB (about 0.85 MiB each), against 127 MiB for the same 500
     without compression and 4.9 GiB before. `encmem` was not re-run: its 5.0 MiB per encoder at 2^19 is the review's
     figure.
+- **Per-connection cap** (follow-up review: two h2c connections with 200 stalled streams each held all 256 slots and a
+  legitimate client was still served uncompressed 67 s later; 256 stalled HTTP/1 connections do the same).
+  `CompressionOptions::max_per_connection(n)`, default 4, minimum 1. Mechanism: `server.rs` creates one
+  `compression::ConnectionSlots` (an `Arc<AtomicUsize>`) per accepted connection and inserts a clone into the extensions of
+  every request of that connection; `handle` copies it into `RequestInfo.conn_slots` before the request is consumed.
+  `Limits::acquire` takes the connection slot first (a CAS loop against the cap), then the brotli and total slots; the
+  `Permit` that `CompressedBody` holds owns all of them, so the connection slot is released with the global one when the
+  body ends, fails or is dropped. A response over its connection's cap is uncompressed (no fallback to gzip: the cap is
+  per connection, not per encoding) with `Vary` already set. Alternatives: a field on `ConnState` (private to the
+  accept loop and unreachable from the compression layer without a new parameter on `handle`) or a map keyed by
+  remote address (wrong behind a proxy). The test client has no connection, so `conn_slots` is `None` and only the global
+  cap applies. HTTP/1 is naturally 1 (one response at a time).
+  Re-run of the starve PoC over h2c with 2 connections x 200 `br` streams on `/static/big.json`: each connection got 4
+  `br` and 196 `identity`, and a legitimate HTTP/1 client still got `br` for `/small` and the 11.6 MiB file.
+  Long-lived compressed streams (log tails) hold a slot for their whole life; this is documented.
 - Tests: unit tests of the fallback chain (brotli, gzip, identity, `Vary`), of the release when the body ends, fails or is
   dropped, and of clones sharing the cap; an integration test over a listening server with a stalled client.

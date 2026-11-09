@@ -64,6 +64,9 @@ pub(crate) struct RequestInfo {
     /// Every request header, kept only when a custom compression filter is set.
     #[cfg(feature = "compression")]
     pub all_headers: Option<HeaderMap>,
+    /// The compressions in progress of the connection the request came over (none in the test client).
+    #[cfg(feature = "compression")]
+    pub conn_slots: Option<super::compression::ConnectionSlots>,
 }
 
 impl RequestInfo {
@@ -81,6 +84,8 @@ impl RequestInfo {
             path: String::new(),
             #[cfg(feature = "compression")]
             all_headers: None,
+            #[cfg(feature = "compression")]
+            conn_slots: None,
         }
     }
 

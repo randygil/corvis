@@ -452,6 +452,53 @@ async fn the_slot_is_released_when_a_stalled_body_is_dropped() {
 }
 
 #[tokio::test]
+async fn one_connection_cannot_hold_more_than_its_cap() {
+    let opts = CompressionOptions::new().threshold(0).max_per_connection(4);
+    assert_eq!(opts.max_per_connection_compressions(), 4);
+    assert_eq!(CompressionOptions::new().max_per_connection(0).max_per_connection_compressions(), 1);
+    let conn = ConnectionSlots::default();
+    let mut req = request_accepting("br, gzip");
+    req.conn_slots = Some(conn.clone());
+    let mut held: Vec<_> = (0..4).map(|_| apply(wire(2000, true), &req, &opts)).collect();
+    assert!(held.iter().all(|r| encoding_of(r).is_some()));
+    assert_eq!(conn.in_use(), 4);
+    // the fifth response of the same connection goes out uncompressed but still varies
+    let fifth = apply(wire(2000, true), &req, &opts);
+    assert_eq!(encoding_of(&fifth), None);
+    assert_eq!(fifth.headers().get(header::VARY).unwrap(), "Accept-Encoding");
+    assert_eq!(opts.available_slots().0, opts.max_concurrent_compressions() - 4, "the global cap was not touched");
+    // another connection, and a request without a connection, are not affected
+    let mut other = request_accepting("gzip");
+    other.conn_slots = Some(ConnectionSlots::default());
+    assert_eq!(encoding_of(&apply(wire(2000, true), &other, &opts)), Some("gzip"));
+    assert_eq!(encoding_of(&apply(wire(2000, true), &request_accepting("gzip"), &opts)), Some("gzip"));
+    // a dropped body frees the connection's slot
+    drop(held.pop());
+    assert_eq!(conn.in_use(), 3);
+    let again = apply(wire(2000, true), &req, &opts);
+    assert!(encoding_of(&again).is_some());
+    assert_eq!(conn.in_use(), 4);
+    drop((held, again));
+    assert_eq!(conn.in_use(), 0);
+}
+
+#[tokio::test]
+async fn the_connection_slot_is_released_when_the_body_ends() {
+    let opts = CompressionOptions::new().threshold(0).max_per_connection(1);
+    let conn = ConnectionSlots::default();
+    let mut req = request_accepting("gzip");
+    req.conn_slots = Some(conn.clone());
+    let resp = apply(wire(5000, false), &req, &opts);
+    assert_eq!(conn.in_use(), 1);
+    let mut body = resp.into_body();
+    while let Some(frame) = body.frame().await {
+        frame.unwrap();
+    }
+    assert_eq!(conn.in_use(), 0, "released at the end of the body, which is still alive");
+    assert!(encoding_of(&apply(wire(5000, false), &req, &opts)).is_some());
+}
+
+#[tokio::test]
 async fn clones_share_the_cap_and_zero_means_one() {
     let opts = CompressionOptions::new().threshold(0).max_concurrent(0);
     assert_eq!(opts.max_concurrent_compressions(), 1);

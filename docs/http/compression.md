@@ -39,6 +39,7 @@ same code as the server, so a test application compresses exactly like the real 
 | `.brotli_quality(0..=11)` | 4 | `brotli.params[BROTLI_PARAM_QUALITY]` |
 | `.filter(\|ctx\| ...)` | `should_compress` | `filter` |
 | `.max_concurrent(n)` | 8 times the available cores | none (see [the cap](#concurrent-compressions)) |
+| `.max_per_connection(n)` | 4 | none (see [the cap](#concurrent-compressions)) |
 
 Values out of range are clamped (`level(20)` is 9, `brotli_quality(50)` is 11, `max_concurrent(0)` is 1).
 
@@ -169,6 +170,21 @@ above and the CPU that clients can ask for.
   it. Otherwise it is sent uncompressed, with status 200 and its normal headers.
 - Responses that were eligible for compression always carry `Vary: Accept-Encoding`, also when the cap made them go out
   uncompressed, so caches stay correct.
+
+**Per connection.** One connection can hold at most `max_per_connection` slots (default 4). An HTTP/1 connection has one
+response at a time, so it holds one; the cap matters for HTTP/2, where a single connection carries many streams. A
+response over its connection's cap is sent uncompressed, with `Vary: Accept-Encoding`, and the global cap and the other
+connections are not affected. The in-process test client has no connection, so only the global cap applies to it.
+
+**Stalled clients and long-lived streams.** A client that does not read keeps its slot until its connection closes,
+because Corvis has no send timeout yet (#157). Without the per-connection cap, a few HTTP/2 connections with many
+stalled streams, or as many stalled HTTP/1 connections as there are slots, could take the whole global cap and leave
+every other client uncompressed. With it, each connection takes at most 4 slots, so taking all of them needs
+`max_concurrent / 4` connections (32 by default on a 16-core machine), and `max_connections` bounds that further. In
+a test with two HTTP/2 connections of 200 stalled `br` streams each, a legitimate client kept getting `br`. Long-lived
+compressed streams (for example a `text/plain` log tail) hold a slot for their whole life; Server-Sent Events are
+never compressed and hold none. Size `max_concurrent` for the number of such streams you expect, or exclude them with
+`filter`.
 
 **Strong ETags.** With `app.set_etag(EtagMode::Strong)` the `ETag` of the uncompressed body is kept on the compressed
 one, as in the middleware. The default weak `ETag` is correct for both.

@@ -39,6 +39,7 @@ mismo código que el servidor, así que una aplicación de test comprime igual q
 | `.brotli_quality(0..=11)` | 4 | `brotli.params[BROTLI_PARAM_QUALITY]` |
 | `.filter(\|ctx\| ...)` | `should_compress` | `filter` |
 | `.max_concurrent(n)` | 8 veces los núcleos disponibles | ninguna (ver [el límite](#compresiones-concurrentes)) |
+| `.max_per_connection(n)` | 4 | ninguna (ver [el límite](#compresiones-concurrentes)) |
 
 Los valores fuera de rango se ajustan al límite (`level(20)` es 9, `brotli_quality(50)` es 11, `max_concurrent(0)` es 1).
 
@@ -169,6 +170,22 @@ la memoria de arriba y la CPU que los clientes pueden pedir.
   él. Si no, se envía sin comprimir, con estado 200 y sus cabeceras normales.
 - Las respuestas que eran elegibles para compresión llevan siempre `Vary: Accept-Encoding`, también cuando el límite
   hizo que salieran sin comprimir, para que las cachés sigan siendo correctas.
+
+**Por conexión.** Una conexión puede tener como máximo `max_per_connection` huecos (por defecto 4). Una conexión HTTP/1
+tiene una respuesta a la vez, así que ocupa uno; el límite importa en HTTP/2, donde una sola conexión lleva muchos
+streams. Una respuesta que supera el límite de su conexión se envía sin comprimir, con `Vary: Accept-Encoding`, y ni el
+límite global ni las demás conexiones se ven afectados. El cliente de pruebas en proceso no tiene conexión, así que solo
+le afecta el límite global.
+
+**Clientes detenidos y streams de larga vida.** Un cliente que no lee conserva su hueco hasta que se cierra su
+conexión, porque Corvis aún no tiene un timeout de envío (#157). Sin el límite por conexión, unas pocas conexiones
+HTTP/2 con muchos streams detenidos, o tantas conexiones HTTP/1 detenidas como huecos haya, podrían ocupar todo el
+límite global y dejar sin comprimir a los demás clientes. Con él, cada conexión toma como máximo 4 huecos, así que
+ocuparlos todos exige `max_concurrent / 4` conexiones (32 por defecto en una máquina de 16 núcleos), y `max_connections`
+lo acota más. En una prueba con dos conexiones HTTP/2 de 200 streams `br` detenidos cada una, un cliente legítimo siguió
+recibiendo `br`. Los streams comprimidos de larga vida (por ejemplo un `text/plain` que sigue un log) conservan un hueco
+durante toda su vida; los Server-Sent Events nunca se comprimen y no ocupan ninguno. Dimensiona `max_concurrent` para el
+número de esos streams que esperes, o exclúyelos con `filter`.
 
 **ETag fuertes.** Con `app.set_etag(EtagMode::Strong)` el `ETag` del cuerpo sin comprimir se conserva en el comprimido,
 como en el middleware. El `ETag` débil por defecto es correcto para ambos.

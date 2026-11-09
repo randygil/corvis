@@ -638,6 +638,60 @@ async fn the_cap_leaves_new_responses_uncompressed_until_a_slot_frees() {
     app.close().await.unwrap();
 }
 
+async fn h2_connection(addr: SocketAddr) -> hyper::client::conn::http2::SendRequest<http_body_util::Empty<Bytes>> {
+    let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (sender, conn) =
+        hyper::client::conn::http2::handshake(hyper_util::rt::TokioExecutor::new(), hyper_util::rt::TokioIo::new(tcp)).await.unwrap();
+    tokio::spawn(conn);
+    sender
+}
+
+async fn h2_slow(
+    sender: &mut hyper::client::conn::http2::SendRequest<http_body_util::Empty<Bytes>>,
+) -> hyper::Response<hyper::body::Incoming> {
+    let req =
+        hyper::Request::get("http://localhost/slow").header("accept-encoding", "gzip").body(http_body_util::Empty::<Bytes>::new()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), sender.send_request(req)).await.expect("response head in time").unwrap()
+}
+
+fn gzip_of(resp: &hyper::Response<hyper::body::Incoming>) -> bool {
+    resp.headers().get("content-encoding").is_some_and(|v| v == "gzip")
+}
+
+#[corvis::test]
+async fn an_h2c_connection_cannot_hold_more_than_its_cap() {
+    let files = Files::new();
+    let mut app = app(&files.root, Some(CompressionOptions::new()), false).await;
+    app.set_server_options(corvis::ServerOptions::new().h2c(true));
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let mut conn = h2_connection(addr).await;
+    // Five concurrent streams that are not read: four are compressed, the fifth is not.
+    let mut held = Vec::new();
+    for _ in 0..5 {
+        held.push(h2_slow(&mut conn).await);
+    }
+    assert!(held[..4].iter().all(gzip_of), "the first four are compressed");
+    assert!(!gzip_of(&held[4]), "the fifth is over the connection's cap");
+    assert_eq!(held[4].headers().get("vary").unwrap(), "Accept-Encoding");
+    // Another connection is not affected.
+    let mut other = h2_connection(addr).await;
+    assert!(gzip_of(&h2_slow(&mut other).await));
+    // Dropping a response resets its stream and frees the connection's slot.
+    drop(held.remove(0));
+    let mut compressed = false;
+    for _ in 0..50 {
+        let r = h2_slow(&mut conn).await;
+        if gzip_of(&r) {
+            compressed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(compressed, "the connection's slot was never released");
+    drop(held);
+    app.close().await.unwrap();
+}
+
 // ---- Replay of the requests recorded against the original stack ----
 
 fn sha(data: &[u8]) -> String {

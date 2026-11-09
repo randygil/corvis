@@ -382,7 +382,11 @@ async fn handle(
     let head = req.method() == http::Method::HEAD;
     let info = crate::http::express::RequestInfo::new(req.method(), req.headers());
     #[cfg(feature = "compression")]
-    let info = info.with_compression(req.uri().path(), req.headers(), &shared.http_settings);
+    let info = {
+        let mut info = info.with_compression(req.uri().path(), req.headers(), &shared.http_settings);
+        info.conn_slots = req.extensions().get::<crate::http::compression::ConnectionSlots>().cloned();
+        info
+    };
     let resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await {
         Ok(r) => {
             let pending = r.get::<PendingBodySlot>();
@@ -866,7 +870,16 @@ pub(crate) async fn serve(
                 let io = TimedIo::new(stream, permit, state.clone(), &options);
                 let shared = shared.clone();
                 let opts = options.clone();
-                let service = hyper::service::service_fn(move |req| {
+                // Compressions in progress of this connection (one set for all its HTTP/2 streams).
+                #[cfg(feature = "compression")]
+                let slots = crate::http::compression::ConnectionSlots::default();
+                let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
+                    #[cfg(feature = "compression")]
+                    let req = {
+                        let mut req = req;
+                        req.extensions_mut().insert(slots.clone());
+                        req
+                    };
                     let guard = InflightGuard::new(state.clone());
                     let shared = shared.clone();
                     let opts = opts.clone();

@@ -108,6 +108,10 @@
   `Vary`; verify the unit and integration tests
 - [x] 8.3 Docs (EN and ES) for the cap, the window cap and the stalled-client note; verify `npm run docs:check`
 
+- [x] 8.4 Add the per-connection cap (`max_per_connection`, default 4) with the connection state in the request
+  extensions; verify the unit tests and the h2c integration test
+- [x] 8.5 Docs (EN and ES): long-lived streams hold a slot, stalled clients and the per-connection mitigation
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.
