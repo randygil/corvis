@@ -83,7 +83,9 @@ impl CatsController {
 }
 ```
 
-`resolve_for::<T>(&req)` funciona con un provider de cualquier scope y sigue las reglas de visibilidad habituales;
+`resolve_for::<T>(&req)` funciona con un provider de cualquier scope y sigue las reglas de visibilidad habituales
+(solo un provider con scope por petición necesita una petición que se esté atendiendo; los demás se resuelven como con
+`resolve`);
 `resolve_token_for::<T>("TOKEN", &req)` hace lo mismo con un token propio. Un provider de factory lee la petición con
 `ctx.request()?`:
 

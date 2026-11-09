@@ -662,6 +662,15 @@ mod resolving {
     #[injectable(scope = "request")]
     pub struct RequestContext;
 
+    /// Needs the request scope through a transient provider.
+    #[injectable(scope = "transient")]
+    pub struct TransientUser {
+        _ctx: Arc<RequestContext>,
+    }
+
+    #[injectable(scope = "transient")]
+    pub struct PlainTransient;
+
     /// A private request-scoped provider of a module that does not export it.
     #[injectable(scope = "request")]
     pub struct Secret;
@@ -709,8 +718,24 @@ mod resolving {
         }
     }
 
-    #[module(imports = [VaultModule], controllers = [ResolvingController], providers = [CatsService, RequestContext])]
+    #[module(
+        imports = [VaultModule],
+        controllers = [ResolvingController],
+        providers = [CatsService, RequestContext, TransientUser, PlainTransient]
+    )]
     pub struct ResolvingModule;
+}
+
+/// The providers sit in the root module, so the application's own `ModuleRef` sees them.
+async fn resolving_root_app() -> corvis::CorvisApplication {
+    let builder = Test::create_testing_module()
+        .provider::<resolving::CatsService>()
+        .provider::<resolving::RequestContext>()
+        .provider::<resolving::TransientUser>()
+        .provider::<resolving::PlainTransient>();
+    let mut app = compile_ok(builder).await.create_corvis_application();
+    app.init().await.unwrap();
+    app
 }
 
 async fn resolving_app() -> corvis::CorvisApplication {
@@ -733,13 +758,36 @@ async fn resolve_for_does_not_see_providers_the_module_cannot_see() {
 
 #[corvis::test]
 async fn resolve_for_fails_for_a_request_that_was_never_dispatched() {
-    let app = resolving_app().await;
+    let app = resolving_root_app().await;
     let req = Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap();
     let module_ref = app.module_ref();
     let err = module_ref.resolve_for::<resolving::RequestContext>(&req).await.map(|_| ()).unwrap_err();
     assert!(matches!(err, DiError::OutsideRequest { .. }), "{err:?}");
-    let singleton = module_ref.resolve_for::<resolving::CatsService>(&req).await.map(|_| ()).unwrap_err();
-    assert!(matches!(singleton, DiError::OutsideRequest { .. }), "{singleton:?}");
+    // Through a transient provider the request scope is still needed.
+    let transient = module_ref.resolve_for::<resolving::TransientUser>(&req).await.map(|_| ()).unwrap_err();
+    assert!(matches!(transient, DiError::OutsideRequest { .. }), "{transient:?}");
+}
+
+#[corvis::test]
+async fn resolve_for_resolves_providers_that_are_not_request_scoped_without_a_store() {
+    let app = resolving_root_app().await;
+    let req = Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap();
+    let module_ref = app.module_ref();
+    let through_request = module_ref.resolve_for::<resolving::CatsService>(&req).await.unwrap();
+    assert!(Arc::ptr_eq(&through_request, &module_ref.get::<resolving::CatsService>().unwrap()));
+    let a = module_ref.resolve_for::<resolving::PlainTransient>(&req).await.unwrap();
+    let b = module_ref.resolve_for::<resolving::PlainTransient>(&req).await.unwrap();
+    assert!(!Arc::ptr_eq(&a, &b), "a transient provider is created for each call");
+}
+
+#[corvis::test]
+async fn resolve_for_works_in_an_application_without_request_scoped_providers() {
+    let mut module = compile_ok(Test::create_testing_module().provider::<startup::Clock>()).await;
+    module.init().await.unwrap();
+    let app = module.create_corvis_application();
+    let req = Request::new(http::Method::GET, "/".parse().unwrap(), http::HeaderMap::new(), bytes::Bytes::new()).unwrap();
+    let clock = app.module_ref().resolve_for::<startup::Clock>(&req).await.unwrap();
+    assert!(Arc::ptr_eq(&clock, &app.get::<startup::Clock>().unwrap()));
 }
 
 #[corvis::test]
@@ -760,6 +808,59 @@ async fn a_standalone_context_cannot_resolve_a_request_scoped_provider() {
         other => panic!("{other:?}"),
     }
     app.close().await.unwrap();
+}
+
+// ------------------------------------------------------------------ nested dispatch
+
+mod nested {
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicBool;
+
+    use super::*;
+
+    pub static APP: OnceLock<Arc<tokio::sync::Mutex<corvis::CorvisApplication>>> = OnceLock::new();
+    pub static ENTERED: AtomicBool = AtomicBool::new(false);
+
+    #[injectable(scope = "request")]
+    pub struct NestedCtx {
+        pub id: usize,
+    }
+
+    #[controller("nested")]
+    pub struct NestedController {
+        module_ref: ModuleRef,
+    }
+
+    #[routes]
+    impl NestedController {
+        /// The first call dispatches a clone of its own request again; that inner call just reports its instance.
+        #[get("run")]
+        async fn run(&self, #[req] req: Request) -> Value {
+            let outer = self.module_ref.resolve_for::<NestedCtx>(&req).await.unwrap();
+            if ENTERED.swap(true, Ordering::SeqCst) {
+                return json!({ "id": outer.id });
+            }
+            let inner = APP.get().unwrap().lock().await.handle(req.clone()).await.unwrap();
+            let inner_id = inner.json_body().expect("json body")["id"].as_u64().unwrap() as usize;
+            // The inner dispatch must not have removed the outer store.
+            let again = self.module_ref.resolve_for::<NestedCtx>(&req).await.unwrap();
+            json!({ "id": outer.id, "inner": inner_id, "same_after": Arc::ptr_eq(&outer, &again) })
+        }
+    }
+
+    #[module(controllers = [NestedController], providers = [NestedCtx])]
+    pub struct NestedModule;
+}
+
+#[corvis::test]
+async fn a_nested_dispatch_shares_the_instances_of_the_outer_request() {
+    let mut app = compile_ok(Test::create_testing_module().import::<nested::NestedModule>()).await.create_corvis_application();
+    app.init().await.unwrap();
+    let client = request(&app);
+    assert!(nested::APP.set(Arc::new(tokio::sync::Mutex::new(app))).is_ok());
+    let body = client.get("/nested/run").send().await.json_value();
+    assert_eq!(body["id"], body["inner"], "the nested dispatch built its own instance");
+    assert_eq!(body["same_after"], true);
 }
 
 #[cfg(feature = "websockets")]

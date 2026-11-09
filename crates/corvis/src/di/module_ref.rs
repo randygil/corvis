@@ -65,11 +65,12 @@ impl ModuleRef {
     /// instance of a transient provider and, for a request-scoped provider, the instance of that request (created on
     /// first use). The provider must be visible from this module, as for constructor injection.
     ///
-    /// The request must be one the application is dispatching (the one a handler, guard, interceptor, pipe, filter or
-    /// middleware receives, or a clone of it while the request is in flight). Otherwise, for example with a request
-    /// built by hand, after the response has been sent, or in a WebSocket message handler, it fails with
-    /// [`DiError::OutsideRequest`]. The application only keeps a per-request store when at least one provider is
-    /// request-scoped.
+    /// A provider that is not request-scoped resolves exactly as with [`ModuleRef::resolve`], whatever the request.
+    /// Resolving a request-scoped provider, directly or through transient providers, needs a request the application is
+    /// dispatching (the one a handler, guard, interceptor, pipe, filter or middleware receives, or a clone of it while
+    /// the request is in flight). Otherwise, for example with a request built by hand, after the response has been sent,
+    /// or in a WebSocket message handler, it fails with [`DiError::OutsideRequest`]. The application only keeps a
+    /// per-request store when at least one provider is request-scoped.
     ///
     /// ```ignore
     /// #[get("/me")]
@@ -89,11 +90,10 @@ impl ModuleRef {
         request: &crate::http::Request,
     ) -> Result<Arc<T>, DiError> {
         let token = token.into();
-        let Some(request) = RequestCtx::of(request) else {
-            return Err(DiError::OutsideRequest { token: token.display_name(), chain: String::new() });
-        };
+        // Without a store the resolution runs as `resolve` does: a request-scoped provider, directly or through a
+        // transient chain, then fails with `OutsideRequest`; any other provider resolves normally.
         let mut ctx = self.ctx();
-        ctx.request = Some(request);
+        ctx.request = RequestCtx::of(request);
         ctx.get_token::<T>(token).await
     }
 
