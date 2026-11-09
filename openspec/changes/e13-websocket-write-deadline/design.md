@@ -178,10 +178,33 @@ Reviewer PoCs, run from the review folder against this branch (release build):
   throughout (was +254 MiB in 15 s).
 - `e13poc 13 1 10` (trickle reader, send_timeout 10 s): 2 MiB sent in 13 s, heap delta 0 MiB (was +508 MiB).
 
+## Review notes, security round 2 (2026-11-09)
+
+1. **`read_paused` stole the writer's waker (medium).** A reader on another task registered its waker in two
+   single-slot places (the socket's write readiness and the write deadline `Sleep`), so the writer was never woken when
+   the deadline fired. Deviation from the suggested `will_wake` check: tokio-tungstenite uses a different waker proxy
+   for its read and write contexts, so `will_wake` would be false even for one task and the probe would never run.
+   Instead the reader no longer registers anything the writer uses. The socket is probed with a zero-byte
+   `try_write` (it reports the readiness the driver already knows and registers no waker); the parked reader has its
+   own `read_sleep` timer. When the timeout fires on either side, `send_timed_out` wakes both stored wakers and sets
+   `send_failed`, after which reads of the upgraded connection fail with `TimedOut` too (a reader that was not paused
+   also stores its waker when it returns `Pending`, so it can be woken). Test
+   `a_split_writer_ends_at_the_deadline_while_the_peer_sends_bytes`. The reviewer's `split` PoC now ends both tasks at
+   2.006 s with and without the 1-byte pokes (before: the writer hung for 15 s).
+2. **Read budget (low, compatibility).** While a write is blocked an upgraded connection may read
+   `READ_BUDGET_WHILE_BLOCKED` = 64 KiB (reset when the socket accepts bytes); beyond that it pauses as before.
+   Pending pongs stay bounded by the budget plus one read chunk. Test
+   `a_message_written_before_reading_is_processed_while_the_server_streams` (a 32 KiB message from a client that does
+   not read; fails with a budget of 0); the ping-flood tests still pass. Documented in the gateways page (EN + ES).
+3. **Note for #117 (built-in TLS, not done yet).** `read_paused` probes write readiness on the raw `TcpStream`. If
+   `TimedIo` ends up wrapping a TLS stream, the check must also consider ciphertext rustls still has to write
+   (`wants_write`), and the pause must keep acting below TLS so that replies TLS generates itself (KeyUpdate) cannot
+   pile up behind a peer that does not read.
+
 ## Implementation notes
 
 - `write_loop` returns `WriteEnd::{Closed, Failed(io::ErrorKind)}`; the kind is taken from `tungstenite::Error::Io`, any
-  other write error is `Other`.
+  other (non-socket) write error is reported as `WriteEnd::Refused`.
 - `ws.rs::run`: on `Closed` the loop ends only if a close frame was already received; otherwise it keeps waiting for the
   peer's reply until `close_timeout`.
 - Tests: one test per spec scenario in `tests/send_timeout_ws.rs`, serialised with a static mutex because they share

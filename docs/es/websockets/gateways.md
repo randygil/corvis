@@ -298,8 +298,9 @@ cierre, porque nada se le puede entregar a ese par: se ejecuta `handle_disconnec
   pares muertos en conexiones inactivas, envía tu propio heartbeat.
 - Lo mismo vale cuando un handshake de cierre espera a un par que no lee: la conexión termina tras `send_timeout`, no
   tras `close_timeout`.
-- Mientras una escritura está bloqueada el servidor deja de leer a ese cliente, así que una avalancha de pings no puede
-  hacerlo encolar pongs sin límite.
+- Mientras una escritura está bloqueada el servidor lee como máximo 64 KiB de ese cliente (el presupuesto se reinicia
+  cuando el socket acepta bytes), así que una avalancha de pings no puede hacerlo encolar pongs sin límite, y un cliente
+  que escribe un mensaje moderadamente grande antes de leer sigue siendo atendido.
 - `ServerOptions::send_timeout(None)` lo desactiva; entonces la cola solo está acotada por `max_buffered_amount`.
 
 El paquete `ws` no tiene este límite: conserva un par que nunca lee. Corvis se aparta a propósito (la memoria y la plaza

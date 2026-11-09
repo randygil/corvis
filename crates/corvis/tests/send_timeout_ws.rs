@@ -21,6 +21,8 @@ const PAYLOAD: usize = 128 * 1024;
 
 static DISCONNECTS: AtomicUsize = AtomicUsize::new(0);
 static CLIENTS_AT_DISCONNECT: AtomicUsize = AtomicUsize::new(usize::MAX);
+static RAW_MESSAGE_LEN: AtomicUsize = AtomicUsize::new(0);
+static SPLIT_WRITER_DONE: AtomicUsize = AtomicUsize::new(0);
 static RAW_CLOSES: AtomicUsize = AtomicUsize::new(0);
 static RAW_CLOSE: Mutex<Option<u16>> = Mutex::new(None);
 static RAW_ACK: Mutex<Option<bool>> = Mutex::new(None);
@@ -104,11 +106,34 @@ impl OnApplicationBootstrap for RawService {
                 });
                 return;
             }
+            if req.pathname() == "/split" {
+                // A custom protocol with a reader task and a writer task on the same upgraded socket.
+                let mut headers = http::HeaderMap::new();
+                headers.insert("upgrade", http::HeaderValue::from_static("chat"));
+                headers.insert("connection", http::HeaderValue::from_static("Upgrade"));
+                let Ok(upgraded) = req.switch_protocols(headers) else { return };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let Ok(io) = upgraded.await else { return };
+                    let (mut read, mut write) = tokio::io::split(io);
+                    tokio::spawn(async move {
+                        let chunk = vec![b'x'; 64 * 1024];
+                        while write.write_all(&chunk).await.is_ok() {}
+                        SPLIT_WRITER_DONE.store(1, Ordering::SeqCst);
+                    });
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 1024];
+                        while matches!(read.read(&mut buf).await, Ok(n) if n > 0) {}
+                    });
+                });
+                return;
+            }
             if req.pathname() != "/raw" {
                 return;
             }
             wss.handle_upgrade(&req, |ws| {
                 ws.on_close(|code, _| *RAW_CLOSE.lock().unwrap() = Some(code));
+                ws.on_message(|m| RAW_MESSAGE_LEN.store(m.to_text().len(), Ordering::SeqCst));
                 for _ in 0..3 {
                     ws.send(vec![b'x'; 1024 * 1024]).unwrap();
                 }
@@ -380,4 +405,37 @@ async fn an_invalid_frame_during_the_closing_handshake_closes_the_plain_socket_o
     wait_for("on_close", Duration::from_secs(5), || RAW_CLOSES.load(Ordering::SeqCst) >= 1).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(RAW_CLOSES.load(Ordering::SeqCst), 1);
+}
+
+/// A custom protocol with separate reader and writer tasks: the client sends a byte now and then but never reads.
+/// The deadline fires on the reader's poll as well; the writer must be woken and fail too.
+#[corvis::test]
+async fn a_split_writer_ends_at_the_deadline_while_the_peer_sends_bytes() {
+    use tokio::io::AsyncWriteExt;
+    let _g = SERIAL.lock().await;
+    SPLIT_WRITER_DONE.store(0, Ordering::SeqCst);
+    let (_app, addr) = start(timeout_1s()).await;
+    let mut stream = raw_client(addr, "/split").await;
+    let end = Instant::now() + Duration::from_secs(8);
+    while SPLIT_WRITER_DONE.load(Ordering::SeqCst) == 0 && Instant::now() < end {
+        let _ = stream.write_all(b"k").await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(SPLIT_WRITER_DONE.load(Ordering::SeqCst), 1, "the writer task hung");
+}
+
+/// A half-duplex client writes a moderately large message before it reads, while the server streams to it: the read
+/// budget lets the message through.
+#[corvis::test]
+async fn a_message_written_before_reading_is_processed_while_the_server_streams() {
+    use tokio::io::AsyncWriteExt;
+    let _g = SERIAL.lock().await;
+    RAW_MESSAGE_LEN.store(0, Ordering::SeqCst);
+    let (_app, addr) = start(ServerOptions::new().send_timeout(Duration::from_secs(30))).await;
+    let mut stream = raw_client(addr, "/raw").await;
+    let len = 32 * 1024usize;
+    let mut frame = vec![0x81, 0xFE, (len >> 8) as u8, len as u8, 0, 0, 0, 0];
+    frame.extend(std::iter::repeat_n(b'a', len));
+    tokio::time::timeout(Duration::from_secs(5), stream.write_all(&frame)).await.expect("the write completes").unwrap();
+    wait_for("the message", Duration::from_secs(5), || RAW_MESSAGE_LEN.load(Ordering::SeqCst) == len).await;
 }

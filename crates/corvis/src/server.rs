@@ -906,6 +906,13 @@ struct TimedIo {
     /// `poll_read`, and the task whose write is pending.
     read_waker: Option<Waker>,
     write_waker: Option<Waker>,
+    /// Bytes an upgraded connection may still read during the current blocked-write period.
+    read_budget: usize,
+    /// The deadline of the parked reader, separate from `write_sleep` (a `Sleep` keeps one waker: sharing it
+    /// would take the wake-up away from the task whose write is pending).
+    read_sleep: Option<Pin<Box<Sleep>>>,
+    /// The send timeout fired: an upgraded connection fails its reads too.
+    send_failed: bool,
     /// The HTTP/1 framing check; `None` with `insecure_http_parser(true)`.
     framing: Option<Box<h1_framing::Framing>>,
     /// Bytes the check released that did not fit in hyper's buffer yet, served before the socket.
@@ -914,6 +921,11 @@ struct TimedIo {
     /// The socket reported end of input.
     sock_eof: bool,
 }
+
+/// Bytes an upgraded connection may still read while a write is blocked (per blocked period): enough for a client
+/// that writes a moderately large message before reading, small enough to bound what a ping flood can make the
+/// protocol layer queue as replies.
+const READ_BUDGET_WHILE_BLOCKED: usize = 64 * 1024;
 
 /// Most input the server reads and discards after an early error response before closing.
 const LINGER_MAX_BYTES: usize = 1024 * 1024;
@@ -1084,6 +1096,9 @@ impl TimedIo {
             write_blocked: false,
             read_waker: None,
             write_waker: None,
+            read_budget: READ_BUDGET_WHILE_BLOCKED,
+            read_sleep: None,
+            send_failed: false,
             framing: (!options.insecure_http_parser).then(|| Box::new(h1_framing::Framing::new(options.max_header_size.max(8 * 1024)))),
             queue: Vec::new(),
             queue_pos: 0,
@@ -1149,18 +1164,27 @@ impl TimedIo {
             sleep.as_mut().reset(deadline);
         }
         match sleep.as_mut().poll(cx) {
-            Poll::Ready(()) => {
-                self.state.no_linger.store(true, Ordering::SeqCst);
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "send timeout")))
-            }
+            Poll::Ready(()) => Poll::Ready(Err(self.send_timed_out())),
             Poll::Pending => Poll::Pending,
         }
+    }
+
+    /// The send timeout fired: mark the socket for an abortive close and wake both halves of an upgraded
+    /// connection, so the one that is not polling the deadline sees the failure too.
+    fn send_timed_out(&mut self) -> io::Error {
+        self.state.no_linger.store(true, Ordering::SeqCst);
+        self.send_failed = true;
+        for w in [self.read_waker.take(), self.write_waker.take()].into_iter().flatten() {
+            w.wake();
+        }
+        io::Error::new(io::ErrorKind::TimedOut, "send timeout")
     }
 
     /// The socket accepted bytes: the client reads.
     fn write_progress(&mut self, written: &[io::IoSlice<'_>], n: usize) {
         self.write_stalled_since = None;
         self.write_blocked = false;
+        self.read_budget = READ_BUDGET_WHILE_BLOCKED;
         if let Some(w) = self.read_waker.take() {
             w.wake();
         }
@@ -1323,33 +1347,41 @@ impl TimedIo {
 }
 
 impl TimedIo {
-    /// Read backpressure of upgraded connections: while a write is blocked the peer is not read, so frames that
-    /// need a reply (WebSocket pings answered with pongs) cannot pile up in the protocol's write buffer behind a
-    /// peer that does not read; at most one read chunk is pending. `Some` is the result of the read poll while
-    /// paused, `None` means read normally.
+    /// Read backpressure of upgraded connections: while a write is blocked the peer is not read once
+    /// [`READ_BUDGET_WHILE_BLOCKED`] bytes were taken, so frames that need a reply (WebSocket pings answered with
+    /// pongs) cannot pile up in the protocol's write buffer behind a peer that does not read. `Some` is the result
+    /// of the read poll while paused, `None` means read normally.
+    ///
+    /// Nothing here registers a waker in a place the writer also uses: the socket is probed with a zero-byte
+    /// `try_write` (it reports the readiness the driver already knows, without a waker), and the parked reader has
+    /// its own timer. The reader is woken by `write_progress`, by the timer, or by the writer's own wake-up when the
+    /// socket becomes writable (a protocol layer that wakes both halves, like tokio-tungstenite, wakes it too).
     fn read_paused(&mut self, cx: &mut Context<'_>) -> Option<Poll<io::Result<()>>> {
-        if !self.write_blocked || !self.state.upgraded.load(Ordering::SeqCst) {
+        if !self.write_blocked || self.read_budget > 0 || !self.state.upgraded.load(Ordering::SeqCst) {
             return None;
         }
-        // The blocked write may have been issued from this very task (a pong flushed by the read path), in which
-        // case nobody else will retry it: look at the socket, and hand the retry to the writer if it is another
-        // task.
-        match self.io.as_ref().expect("socket is present until drop").poll_write_ready(cx) {
-            Poll::Ready(Ok(())) => {
-                self.write_blocked = false;
-                if let Some(w) = self.write_waker.take() {
-                    w.wake();
-                }
-                None
+        // The blocked write may have been issued by the read path itself (a pong flushed while reading), in which
+        // case nobody else retries it: if the socket is writable again, let the read go on (which retries it) and
+        // wake the task whose write is pending.
+        if self.io.as_ref().expect("socket is present until drop").try_write(&[]).is_ok() {
+            self.write_blocked = false;
+            self.read_budget = READ_BUDGET_WHILE_BLOCKED;
+            if let Some(w) = self.write_waker.take() {
+                w.wake();
             }
-            Poll::Ready(Err(e)) => Some(Poll::Ready(Err(e))),
-            Poll::Pending => {
-                self.read_waker = Some(cx.waker().clone());
-                match self.poll_write_deadline(cx) {
-                    Poll::Ready(Err(e)) => Some(Poll::Ready(Err(e))),
-                    _ => Some(Poll::Pending),
-                }
-            }
+            return None;
+        }
+        self.read_waker = Some(cx.waker().clone());
+        let Some(timeout) = self.send_timeout else { return Some(Poll::Pending) };
+        let since = *self.write_stalled_since.get_or_insert_with(Instant::now);
+        let Some(deadline) = since.checked_add(timeout) else { return Some(Poll::Pending) };
+        let sleep = self.read_sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
+        if sleep.deadline() != deadline {
+            sleep.as_mut().reset(deadline);
+        }
+        match sleep.as_mut().poll(cx) {
+            Poll::Ready(()) => Some(Poll::Ready(Err(self.send_timed_out()))),
+            Poll::Pending => Some(Poll::Pending),
         }
     }
 }
@@ -1357,9 +1389,28 @@ impl TimedIo {
 impl AsyncRead for TimedIo {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let this = &mut *self;
+        if this.send_failed && this.state.upgraded.load(Ordering::SeqCst) {
+            return Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "send timeout")));
+        }
         if let Some(r) = this.read_paused(cx) {
             return r;
         }
+        let before = buf.filled().len();
+        let r = this.poll_read_unpaused(cx, buf);
+        if r.is_pending() && this.state.upgraded.load(Ordering::SeqCst) {
+            // So that a send timeout noticed by the writer wakes this reader too.
+            this.read_waker = Some(cx.waker().clone());
+        }
+        if this.write_blocked && matches!(r, Poll::Ready(Ok(()))) {
+            this.read_budget = this.read_budget.saturating_sub(buf.filled().len() - before);
+        }
+        r
+    }
+}
+
+impl TimedIo {
+    fn poll_read_unpaused(&mut self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        let this = self;
         if this.framing.is_some() {
             return this.poll_read_checked(cx, buf);
         }

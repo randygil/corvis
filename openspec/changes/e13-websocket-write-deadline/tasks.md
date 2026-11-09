@@ -65,6 +65,16 @@ Start after #157 (`e0-write-deadline-for-stalled-clients`) is merged into `main`
   (`WriteEnd::Refused`)
 - [x] 5b.4 Run the reviewer's PoCs against the branch and record the results in design.md
 
+## 5c. Security review round 2 (2026-11-09)
+
+- [x] 5c.1 `TimedIo::read_paused` must not take the wake-up of the task whose write is pending: no waker is registered
+  in the socket's write slot or the write deadline by the reader; the parked reader has its own timer, and the timeout
+  wakes both halves and fails later reads of the upgraded connection; test with a split reader/writer protocol
+- [x] 5c.2 Bounded read budget (64 KiB per blocked period) so half-duplex clients can write before reading; test and
+  docs (EN + ES)
+- [x] 5c.3 Correct the Implementation notes (`Other` became `WriteEnd::Refused`) and note the TLS constraint for #117
+- [x] 5c.4 Re-run the reviewer's `split` PoC
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review (after #157's change is archived).
