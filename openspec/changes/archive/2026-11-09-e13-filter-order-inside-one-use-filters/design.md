@@ -188,3 +188,7 @@ So within one attribute and across stacked attributes, Corvis tries filters in s
   `use_filters` in `corvis/{consi-backend,facten-api,houseplan-api}` (sources only, excluding `node_modules`,
   `target`, `dist`): 0 files each. No route has two filters in one decorator.
 - Task 6.5 (corvis-parity) is left to the maintainer's session, as instructed.
+
+## Verification (2026-11-09)
+
+Integration batch `batch/phase07-l` (926b31e, with #143, #145, #119 and #147): full workspace run with `CORVIS_ORM_PG_REQUIRED=1` in a target used by nothing else, 990 passed, 0 failed. Examples build and smoke 32/32, naming, crate files and `npm run docs:check` pass. CI passed on Linux and Windows (run 42560823847). Parity: consi 832/832, facten 727/727, houseplan 598/598 (quiet hours), databases equivalent.

@@ -194,3 +194,7 @@ Upstream facts used below (from the projects' own documentation, checked 2026-11
    before the job adoption would not be in the job; watchexec starts cargo only after its own startup, so this is
    not expected in practice. On Unix the behavior is unchanged: corvis shares the terminal's process group, Ctrl+C
    reaches the whole tree, and `kill -9` of corvis alone leaves watchexec running (documented here, not changed).
+
+## Verification (2026-11-09)
+
+Integration batch `batch/phase07-l` (926b31e, with #143, #145, #119 and #147): full workspace run with `CORVIS_ORM_PG_REQUIRED=1` in a target used by nothing else, 990 passed, 0 failed. Examples build and smoke 32/32, naming, crate files and `npm run docs:check` pass. CI passed on Linux and Windows (run 42560823847). Parity: consi 832/832, facten 727/727, houseplan 598/598 (quiet hours), databases equivalent.
