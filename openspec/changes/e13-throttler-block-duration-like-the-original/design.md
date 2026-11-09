@@ -211,3 +211,31 @@ a block ends, and master blocks it again.
   `{ path, at }` (milliseconds after the first request). The replay compares `Retry-After` and `X-RateLimit-Reset`
   within one second.
 - Task 5.5 (corvis-parity) is left to the maintainer's session, as agreed in the brief.
+
+## Security review follow-up (2026-11-09)
+
+The security review found that the global hit budget (`with_max_hits`, Decision 3) let an attacker evict their own
+round-robin keys before they reached the limit (about 2,000 keys got 98% of requests through at 1,000 per hour, and a
+blocked key could be unblocked by flooding other keys), that a limit at or above the budget made a key prune its own hits
+and never block, and that `VecDeque` capacity is kept after pruning, so real memory was far above what the budget
+suggested. The maintainer chose to replace exact per-hit storage with fixed buckets. This section supersedes Decision 3,
+review note 3 and the hit-budget notes of "Implementation notes".
+
+- **Buckets.** A key keeps at most 64 buckets `(expiry, count)`. A hit joins the previous bucket when its expiry falls in
+  the same `ttl / 64` slice (counted from the key's first hit); the bucket then expires with its newest hit, so a merged
+  hit never expires earlier than exactly (fail closed). When 64 buckets are live, a new hit merges into the nearest
+  later bucket. Memory per key is at most 64 x 24 bytes plus a fixed overhead, whatever the limit, so memory is bounded
+  by `max_entries` alone (about 1.8 KB per key, 180 MB at the default 100,000 keys in the worst case).
+- **Removed:** `with_max_hits`, `DEFAULT_THROTTLER_MAX_HITS`, `hits_len`, and the global hit budget.
+- **Accuracy.** Exact while a key's hits are more than `ttl / 64` apart (the storage replay compares exactly for those
+  fixture cases); otherwise `X-RateLimit-Remaining` and `Reset` can differ from the original by up to `ttl / 64`. Block
+  semantics are unchanged. Documented as a known difference. The fixture was re-recorded with spaced hits and gained a
+  `dense_hits` scenario compared within `ttl / 64`.
+- **Eviction.** Blocked keys sit in a separate idle-time index and are evicted only when no unblocked key is left.
+- **Clock saturation.** `after()` saturates to a far instant (ten years, then shorter spans if the platform cannot
+  represent it) and falls back to `now` only if even one hour overflows, so an unrepresentable block still lasts.
+- **Duplicate names.** `ThrottlerStorage::new` logs a warning when two throttlers share a name (they share counters and
+  block durations).
+- **Regression tests** reproduce the PoC modes: `round_robin_keys_get_at_most_the_limit_each` (churn),
+  `a_blocked_key_stays_blocked_while_others_flood` (unblock, with a full table), `a_large_limit_still_blocks`, and
+  `a_key_uses_bounded_memory_whatever_its_hits` (cap).

@@ -1,4 +1,4 @@
-# Proposal
+﻿# Proposal
 
 Implements [randygil/corvis#135](https://github.com/randygil/corvis/issues/135) (epic [#13](https://github.com/randygil/corvis/issues/13)).
 Found while drafting #120 (`e13-rate-limit-headers-in-the-throttler`); this change builds on it and must be
@@ -33,8 +33,8 @@ also lets a client send up to twice the limit around a boundary; the sliding cou
 - Throttlers are checked in ascending `ttl` order, as the original sorts them.
 - `ThrottlerStorage::record_hit(key, ttl, limit, block_duration) -> ThrottlerRecord` exposes the new model;
   `increment(key, ttl)` keeps its signature and counts with the sliding window.
-- Memory stays bounded: besides `with_max_entries`, `with_max_hits(n)` (default 1,000,000) caps the stored hit
-  timestamps.
+- Memory stays bounded by `with_max_entries` alone: each key keeps its hits in at most 64 buckets (see design.md,
+  "Security review follow-up"), so there is no global hit budget.
 - The headers of #120 take their values from the new record: `Retry-After` from the block, `X-RateLimit-Remaining`
   from the sliding count; `X-RateLimit-Reset` keeps its meaning.
 - Differential tests: a storage-level fixture produced by running the original `ThrottlerStorageService.increment`
@@ -60,7 +60,7 @@ None.
 ## Impact
 
 - `crates/corvis/src/modules/throttler.rs`: storage records, `record_hit`, `ThrottlerRecord`,
-  `with_block_duration`, `with_max_hits`, sorting in `ThrottlerStorage::new`, `THROTTLE_BLOCK_DURATION`, and the
+  `with_block_duration`, sorting in `ThrottlerStorage::new`, `THROTTLE_BLOCK_DURATION`, and the
   guard.
 - `crates/corvis/src/lib.rs`: export `THROTTLE_BLOCK_DURATION` and `ThrottlerRecord` next to `THROTTLE_TTL` (the
   `modules::throttler` re-export and the prelude).
@@ -77,7 +77,7 @@ None.
 - **Order:** after #120. This change modifies two requirements #120 adds to `security/rate-limiting` and sets the
   values of the headers #120 introduces, so #120 must be archived first. Independent of #119
   (`ThrottlerModule::for_root_async`): a factory returning a configured `ThrottlerStorage` reaches
-  `with_block_duration` and `with_max_hits`, and #119's `From<Vec<ThrottlerOptions>>` delegates to
+  `with_block_duration`, and #119's `From<Vec<ThrottlerOptions>>` delegates to
   `ThrottlerStorage::new`, which sorts.
 
 ## Out of scope

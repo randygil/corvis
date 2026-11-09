@@ -115,23 +115,32 @@ impl AuthController {
 
 ## Storage
 
-Counters live in memory, in `ThrottlerStorage`. It stores the `sha256` of each key and one timestamp for
-every hit it still counts. Keys with no live hit, an ended window and no block are deleted on every request.
-Memory has two caps: at most 100,000 keys (`with_max_entries`) and at most 1,000,000 hit timestamps in total
-(`with_max_hits`, about 16 MB). A key holds at most `limit + 1` hits. When either cap is reached the keys
-that become idle soonest are discarded, which resets their counters. Under an attack with many addresses
-that means other clients' counters can be reset too, so size the caps for your traffic; a `limit` above
-roughly 10,000 per key needs a larger `with_max_hits`. To change the caps:
+Counters live in memory, in `ThrottlerStorage`. It stores the `sha256` of each key and its hits grouped in at
+most 64 buckets of `ttl / 64`: hits whose expiry falls in the same bucket are counted together and expire
+together, so a key uses the same memory whatever its limit and however many requests it receives. Keys with no
+live hit, an ended window and no block are deleted on every request.
+
+Memory is bounded by the number of keys, at most 100,000 by default (`with_max_entries`). The worst case is
+about 1.8 KB per key (64 buckets of 24 bytes plus the key's fixed state), roughly 180 MB at the default. When the
+table is full the keys that become idle soonest are discarded, which resets their counters; blocked keys are
+discarded last, so flooding other keys never lifts a block. Under an attack with more distinct keys than the cap,
+counters of unblocked clients can be reset, so size the cap for your traffic. To change it:
 
 ```rust
 use corvis::ThrottlerStorage;
 
 ThrottlerModule::for_root_storage(
-    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)])
-        .with_max_entries(500_000)
-        .with_max_hits(5_000_000),
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_max_entries(500_000),
 )
 ```
+
+Known difference from the original library: when a client sends hits closer together than `ttl / 64` (about
+0.9 s for a 60 s window), they share a bucket and expire together, so `X-RateLimit-Remaining` and
+`X-RateLimit-Reset` can differ by up to `ttl / 64`. Which requests are rejected, and `Retry-After`, are not
+affected. With hits spaced further apart the values are identical.
+
+Two throttlers with the same name share counters and block durations; a warning is logged when the storage is
+built.
 
 Being process memory, each instance of the application counts separately. There is no shared
 storage (Redis or other) included.

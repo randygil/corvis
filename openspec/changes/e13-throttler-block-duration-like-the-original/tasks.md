@@ -19,7 +19,7 @@ the headers through one helper, and `crates/corvis/tests/fixtures/throttler/` ex
   `throttler.json`; verify the new entries show `Retry-After` values and the request after the block succeeds
 - [x] 1.4 Add failing unit tests in `crates/corvis/src/modules/throttler.rs`: the `storage.json` replay through
   `record_hit_at`, and one clock-driven test per storage scenario of the spec (double burst, rejected requests not
-  counted, block end, block longer than ttl, block duration 0, limit 0, hit budget, idle keys removed, unknown name
+  counted, block end, block longer than ttl, block duration 0, limit 0, round-robin keys and blocked key under flood, idle keys removed, unknown name
   panics); verify with `cargo test -p corvis --lib throttler` that they fail to compile or fail for the expected reason
 - [x] 1.5 Add failing integration tests next to #120's throttler tests, one per guard scenario of the spec that needs
   the HTTP stack (`Retry-After: 60` on the first block, retry during the block, default following `THROTTLE_TTL`,
@@ -33,8 +33,8 @@ the headers through one helper, and `crates/corvis/tests/fixtures/throttler/` ex
   Decisions 1, 2, 5 and 7 (same `now` for every time computed in one call); re-implement `increment` on top of it;
   verify the replay test and the storage unit tests of 1.4 pass, and the existing `storage_memory_is_bounded` and
   `counts_per_key_and_resets_after_ttl` still pass
-- [x] 2.2 Add `with_max_hits` (default 1,000,000, clamped to at least 1), the eviction by idle time when either cap is
-  reached, and hits in `memory_usage`; verify the hit-budget and idle-key tests pass
+- [x] 2.2 (revised by the security review follow-up: fixed buckets of at most 64 per key replace `with_max_hits`) Eviction by idle time, blocked keys last, when the cap is
+  reached, and buckets in `memory_usage`; verify the round-robin, flood and idle-key tests pass
 - [x] 2.3 Add `with_block_duration(name, ms)` (panics on an unknown name) and the stable sort by `ttl` in
   `ThrottlerStorage::new`; verify the unknown-name test passes and, if #119 has landed, that its
   `From<Vec<ThrottlerOptions>>` still goes through `new`
@@ -57,7 +57,7 @@ the headers through one helper, and `crates/corvis/tests/fixtures/throttler/` ex
   the limit is exceeded, rejected requests not counted, throttlers checked by ascending `ttl`); add a "Blocking"
   section (default block duration, `with_block_duration`, `THROTTLE_BLOCK_DURATION`, `0` for no block, `limit` 0 and
   its difference from the original release); add `THROTTLE_BLOCK_DURATION` to the metadata table; update "Storage"
-  (both caps, `with_max_hits`, worst case per key, eviction under attack); update the "Response headers" section of
+  (the `max_entries` cap, the 64-bucket worst case per key, eviction under attack); update the "Response headers" section of
   #120 (`Retry-After` is the time left in the block); same in `docs/es/security/rate-limiting.md`
 - [x] 4.2 Run `npm run docs:check` in `docs/`; verify it passes
 

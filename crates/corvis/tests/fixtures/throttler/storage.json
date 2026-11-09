@@ -151,7 +151,7 @@
     }
    },
    {
-    "t": 9600,
+    "t": 9700,
     "key": "a",
     "ttl": 10000,
     "limit": 3,
@@ -177,7 +177,7 @@
     }
    },
    {
-    "t": 10200,
+    "t": 10300,
     "key": "a",
     "ttl": 10000,
     "limit": 3,
@@ -216,7 +216,7 @@
     }
    },
    {
-    "t": 20150,
+    "t": 20200,
     "key": "a",
     "ttl": 10000,
     "limit": 3,
@@ -229,7 +229,7 @@
     }
    },
    {
-    "t": 20300,
+    "t": 20400,
     "key": "a",
     "ttl": 10000,
     "limit": 3,
@@ -299,7 +299,7 @@
     }
    },
    {
-    "t": 301999,
+    "t": 301000,
     "key": "a",
     "ttl": 60000,
     "limit": 2,
@@ -319,7 +319,7 @@
     "blockDuration": 300000,
     "result": {
      "totalHits": 1,
-     "timeToExpire": 60,
+     "timeToExpire": 59,
      "isBlocked": false,
      "timeToBlockExpire": 0
     }
@@ -332,7 +332,7 @@
     "blockDuration": 300000,
     "result": {
      "totalHits": 2,
-     "timeToExpire": 59,
+     "timeToExpire": 58,
      "isBlocked": false,
      "timeToBlockExpire": -1
     }
@@ -345,7 +345,7 @@
     "blockDuration": 300000,
     "result": {
      "totalHits": 3,
-     "timeToExpire": 58,
+     "timeToExpire": 57,
      "isBlocked": true,
      "timeToBlockExpire": 300
     }
@@ -369,16 +369,16 @@
     }
    },
    {
-    "t": 1,
+    "t": 1000,
     "key": "a",
     "ttl": 60000,
     "limit": 2,
     "blockDuration": 5000,
     "result": {
      "totalHits": 2,
-     "timeToExpire": 60,
+     "timeToExpire": 59,
      "isBlocked": false,
-     "timeToBlockExpire": -1700000000
+     "timeToBlockExpire": -1700000001
     }
    },
    {
@@ -408,7 +408,7 @@
     }
    },
    {
-    "t": 6999,
+    "t": 6000,
     "key": "a",
     "ttl": 60000,
     "limit": 2,
@@ -434,42 +434,42 @@
     }
    },
    {
-    "t": 7600,
+    "t": 8000,
     "key": "a",
     "ttl": 60000,
     "limit": 2,
     "blockDuration": 5000,
     "result": {
      "totalHits": 2,
-     "timeToExpire": 53,
+     "timeToExpire": 52,
      "isBlocked": false,
-     "timeToBlockExpire": 0
+     "timeToBlockExpire": -1
     }
    },
    {
-    "t": 7700,
+    "t": 9000,
     "key": "a",
     "ttl": 60000,
     "limit": 2,
     "blockDuration": 5000,
     "result": {
      "totalHits": 3,
-     "timeToExpire": 53,
+     "timeToExpire": 51,
      "isBlocked": true,
      "timeToBlockExpire": 5
     }
    },
    {
-    "t": 7800,
+    "t": 10000,
     "key": "a",
     "ttl": 60000,
     "limit": 2,
     "blockDuration": 5000,
     "result": {
      "totalHits": 3,
-     "timeToExpire": 53,
+     "timeToExpire": 50,
      "isBlocked": true,
-     "timeToBlockExpire": 5
+     "timeToBlockExpire": 4
     }
    },
    {
@@ -479,10 +479,10 @@
     "limit": 2,
     "blockDuration": 5000,
     "result": {
-     "totalHits": 1,
+     "totalHits": 3,
      "timeToExpire": 47,
-     "isBlocked": false,
-     "timeToBlockExpire": 0
+     "isBlocked": true,
+     "timeToBlockExpire": 1
     }
    }
   ]
@@ -543,7 +543,7 @@
     }
    },
    {
-    "t": 9999,
+    "t": 9000,
     "key": "a",
     "ttl": 10000,
     "limit": 2,
@@ -628,6 +628,154 @@
     "blockDuration": 0,
     "result": {
      "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   }
+  ]
+ },
+ {
+  "name": "dense_hits",
+  "calls": [
+   {
+    "t": 0,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 50,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 2,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 100,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 150,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 4,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 200,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 5,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": -1700000000
+    }
+   },
+   {
+    "t": 250,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 6,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 10
+    }
+   },
+   {
+    "t": 300,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 6,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 10
+    }
+   },
+   {
+    "t": 5000,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 6,
+     "timeToExpire": 5,
+     "isBlocked": true,
+     "timeToBlockExpire": 6
+    }
+   },
+   {
+    "t": 10100,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 3,
+     "timeToExpire": 10,
+     "isBlocked": true,
+     "timeToBlockExpire": 1
+    }
+   },
+   {
+    "t": 10400,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 1,
+     "timeToExpire": 10,
+     "isBlocked": false,
+     "timeToBlockExpire": 0
+    }
+   },
+   {
+    "t": 10500,
+    "key": "a",
+    "ttl": 10000,
+    "limit": 5,
+    "blockDuration": 10000,
+    "result": {
+     "totalHits": 2,
      "timeToExpire": 10,
      "isBlocked": false,
      "timeToBlockExpire": 0

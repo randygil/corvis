@@ -23,6 +23,7 @@ use crate::common::guard::CanActivate;
 use crate::common::reflector::Reflector;
 use crate::di::{DynamicModule, Module, ModuleDefinition, Provider, Token};
 use crate::http::HttpException;
+use crate::logger::Logger;
 use crate::prelude::Arc;
 
 /// `@SkipThrottle()` – `#[set_metadata(SKIP_THROTTLE, true)]`.
@@ -53,8 +54,9 @@ impl ThrottlerOptions {
 /// Default maximum number of keys kept by [`ThrottlerStorage`].
 pub const DEFAULT_THROTTLER_MAX_ENTRIES: usize = 100_000;
 
-/// Default maximum number of hit timestamps kept by [`ThrottlerStorage`], in total.
-pub const DEFAULT_THROTTLER_MAX_HITS: usize = 1_000_000;
+/// Most buckets a key keeps. Hits of one key are grouped in buckets of `ttl / BUCKETS`, so a key's memory does not
+/// depend on its limit or on how many requests it sends.
+const BUCKETS: usize = 64;
 
 /// Longest duration added to a clock reading; keeps `Instant` arithmetic from overflowing on absurd values.
 const MAX_SPAN: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
@@ -75,10 +77,22 @@ pub struct ThrottlerRecord {
     pub time_to_block_expire: Duration,
 }
 
+/// Hits of one key that expire within the same `ttl / BUCKETS` slice.
+#[derive(Clone, Copy)]
+struct Bucket {
+    /// When the newest hit of the bucket expires: all its hits are counted until then.
+    expiry: Instant,
+    count: u32,
+}
+
 /// The state of one key.
 struct Record {
-    /// Expiry of each counted hit, in ascending order.
-    hits: VecDeque<Instant>,
+    /// Counted hits, grouped by expiry, in ascending order; at most `BUCKETS`.
+    buckets: VecDeque<Bucket>,
+    /// Sum of the bucket counts.
+    hits: u64,
+    /// Reference point for the bucket slices.
+    origin: Instant,
     /// End of the reporting window.
     window_end: Instant,
     /// End of the block, while the key is blocked.
@@ -86,16 +100,57 @@ struct Record {
 }
 
 impl Record {
+    fn new(now: Instant, window_end: Instant) -> Self {
+        Record { buckets: VecDeque::new(), hits: 0, origin: now, window_end, blocked_until: None }
+    }
+
     /// The instant after which the record holds nothing that matters.
     fn idle_at(&self) -> Instant {
         let mut idle = self.window_end;
-        if let Some(&last) = self.hits.back() {
-            idle = idle.max(last);
+        if let Some(last) = self.buckets.back() {
+            idle = idle.max(last.expiry);
         }
         if let Some(b) = self.blocked_until {
             idle = idle.max(b);
         }
         idle
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while let Some(front) = self.buckets.front() {
+            if front.expiry > now {
+                break;
+            }
+            self.hits -= u64::from(front.count);
+            self.buckets.pop_front();
+        }
+    }
+
+    fn clear_hits(&mut self) {
+        self.buckets.clear();
+        self.hits = 0;
+    }
+
+    /// Counts a hit that expires at `expiry`. Hits whose expiries fall in the same slice share a bucket, which then
+    /// lives until the newest of them expires (never shorter than the exact count: it fails closed).
+    fn add_hit(&mut self, expiry: Instant, slice: u128) {
+        self.hits += 1;
+        let index = |e: Instant| e.saturating_duration_since(self.origin).as_nanos() / slice;
+        let at = self.buckets.partition_point(|b| b.expiry < expiry);
+        if at > 0 && index(self.buckets[at - 1].expiry) == index(expiry) {
+            let b = &mut self.buckets[at - 1];
+            b.expiry = expiry;
+            b.count = b.count.saturating_add(1);
+        } else if at < self.buckets.len() && (index(self.buckets[at].expiry) == index(expiry) || self.buckets.len() >= BUCKETS) {
+            let b = &mut self.buckets[at];
+            b.count = b.count.saturating_add(1);
+        } else if self.buckets.len() >= BUCKETS {
+            let b = self.buckets.back_mut().expect("buckets are full");
+            b.expiry = b.expiry.max(expiry);
+            b.count = b.count.saturating_add(1);
+        } else {
+            self.buckets.insert(at, Bucket { expiry, count: 1 });
+        }
     }
 }
 
@@ -103,67 +158,91 @@ impl Record {
 struct Counters {
     /// `sha256(key)` -> record.
     records: HashMap<KeyHash, Record>,
-    /// The same keys ordered by idle time, for amortized purging and eviction. Holds the idle time stored for each key.
-    by_idle: BTreeSet<(Instant, KeyHash)>,
-    /// Hit timestamps held by all records.
-    total_hits: usize,
+    /// Keys that are not blocked, ordered by idle time, for amortized purging and eviction.
+    unblocked: BTreeSet<(Instant, KeyHash)>,
+    /// Blocked keys, ordered by idle time. They are evicted only when no unblocked key is left.
+    blocked: BTreeSet<(Instant, KeyHash)>,
 }
 
 impl Counters {
     fn remove(&mut self, hash: &KeyHash) -> Option<Record> {
         let record = self.records.remove(hash)?;
-        self.by_idle.remove(&(record.idle_at(), *hash));
-        self.total_hits -= record.hits.len();
+        let set = if record.blocked_until.is_some() { &mut self.blocked } else { &mut self.unblocked };
+        set.remove(&(record.idle_at(), *hash));
         Some(record)
     }
 
-    /// Drops the key that becomes idle soonest. Returns false when the table is empty.
+    /// Drops the key that becomes idle soonest, unblocked keys first. Returns false when the table is empty.
     fn evict_one(&mut self) -> bool {
-        let Some((_, hash)) = self.by_idle.pop_first() else { return false };
-        if let Some(record) = self.records.remove(&hash) {
-            self.total_hits -= record.hits.len();
-        }
+        let Some((_, hash)) = self.unblocked.pop_first().or_else(|| self.blocked.pop_first()) else { return false };
+        self.records.remove(&hash);
         true
     }
 
+    /// Drops every key that is idle at `now`.
+    fn purge(&mut self, now: Instant) {
+        for blocked in [false, true] {
+            loop {
+                let set = if blocked { &mut self.blocked } else { &mut self.unblocked };
+                let Some(&(idle, hash)) = set.first() else { break };
+                if idle > now {
+                    break;
+                }
+                set.pop_first();
+                self.records.remove(&hash);
+            }
+        }
+    }
+
     fn insert(&mut self, hash: KeyHash, record: Record) {
-        self.total_hits += record.hits.len();
-        self.by_idle.insert((record.idle_at(), hash));
+        let set = if record.blocked_until.is_some() { &mut self.blocked } else { &mut self.unblocked };
+        set.insert((record.idle_at(), hash));
         self.records.insert(hash, record);
     }
 }
 
+/// `now + span`, saturating to a far instant instead of panicking or going back to `now`: a block that cannot be
+/// represented must last, not vanish.
 fn after(now: Instant, span: Duration) -> Instant {
-    now.checked_add(span.min(MAX_SPAN)).unwrap_or(now)
+    now.checked_add(span.min(MAX_SPAN))
+        .or_else(|| [365 * 24 * 3600, 30 * 24 * 3600, 24 * 3600, 3600].into_iter().find_map(|s| now.checked_add(Duration::from_secs(s))))
+        .unwrap_or(now)
 }
 
 /// In-memory storage of the hits of each key, counted like the original throttler library: every hit expires `ttl`
 /// after it was counted (a sliding window), and a key that goes over the limit is blocked for the block duration.
 ///
-/// Keys are stored as `sha256(key)`, so their size does not depend on the request. Memory is bounded twice: the
-/// table never holds more than `max_entries` keys and more than `max_hits` hit timestamps in total. Idle keys (no
-/// live hit, reporting window ended, not blocked) are removed on every call, each one once, and when a cap is
-/// reached the keys that become idle soonest are dropped.
+/// Keys are stored as `sha256(key)`, so their size does not depend on the request. Each key holds at most 64 buckets
+/// of hits, whatever its limit: hits whose expiries fall in the same `ttl / 64` slice share a bucket and expire
+/// together, so `X-RateLimit-Remaining` and `Reset` can differ from the original library by up to `ttl / 64` when a
+/// client sends hits closer together than that. Memory is bounded by `max_entries`: idle keys (no live hit,
+/// reporting window ended, not blocked) are removed on every call, and when the table is full the keys that become
+/// idle soonest are dropped, blocked keys last.
 pub struct ThrottlerStorage {
     pub(crate) throttlers: Vec<ThrottlerOptions>,
     pub(crate) block_durations: HashMap<String, u64>,
     counters: Mutex<Counters>,
     max_entries: usize,
-    max_hits: usize,
     headers: bool,
 }
 
 impl ThrottlerStorage {
     /// Builds the storage. The throttlers are checked in ascending `ttl` order (ties keep the given order), as the
-    /// original throttler library does.
+    /// original throttler library does. Two throttlers with the same name share their counters and block durations,
+    /// so a warning is logged.
     pub fn new(mut throttlers: Vec<ThrottlerOptions>) -> Self {
         throttlers.sort_by_key(|t| t.ttl);
+        let mut seen = std::collections::HashSet::new();
+        for t in &throttlers {
+            if !seen.insert(t.name.as_str()) {
+                Logger::new("ThrottlerModule").warn(format!("more than one throttler is named `{}`; give each a distinct name", t.name));
+            }
+        }
         ThrottlerStorage {
             throttlers,
             block_durations: HashMap::new(),
             counters: Mutex::new(Counters::default()),
             max_entries: DEFAULT_THROTTLER_MAX_ENTRIES,
-            max_hits: DEFAULT_THROTTLER_MAX_HITS,
             headers: true,
         }
     }
@@ -176,16 +255,10 @@ impl ThrottlerStorage {
         self
     }
 
-    /// Maximum number of keys kept in memory (default [`DEFAULT_THROTTLER_MAX_ENTRIES`]).
+    /// Maximum number of keys kept in memory (default [`DEFAULT_THROTTLER_MAX_ENTRIES`]). Each key takes at most
+    /// 64 buckets of 24 bytes plus a fixed overhead, whatever the limit.
     pub fn with_max_entries(mut self, max_entries: usize) -> Self {
         self.max_entries = max_entries.max(1);
-        self
-    }
-
-    /// Maximum number of hit timestamps kept in memory, in total (default [`DEFAULT_THROTTLER_MAX_HITS`]). A key
-    /// holds at most `limit + 1` hits, so a large `limit` on a busy app needs a larger budget.
-    pub fn with_max_hits(mut self, max_hits: usize) -> Self {
-        self.max_hits = max_hits.max(1);
         self
     }
 
@@ -211,16 +284,11 @@ impl ThrottlerStorage {
         self.len() == 0
     }
 
-    /// Number of hit timestamps held.
-    pub fn hits_len(&self) -> usize {
-        self.counters.lock().unwrap_or_else(|e| e.into_inner()).total_hits
-    }
-
-    /// Approximate memory used by the keys and their hits, in bytes.
+    /// Approximate memory used by the keys and their buckets, in bytes.
     pub fn memory_usage(&self) -> usize {
         let per_entry = std::mem::size_of::<(KeyHash, Record)>() + std::mem::size_of::<(Instant, KeyHash)>() + 16;
         let c = self.counters.lock().unwrap_or_else(|e| e.into_inner());
-        c.records.len() * per_entry + c.total_hits * std::mem::size_of::<Instant>()
+        c.records.len() * per_entry + c.records.values().map(|r| r.buckets.capacity() * std::mem::size_of::<Bucket>()).sum::<usize>()
     }
 
     /// Counts a hit for `key` in a sliding window and returns `(hits, time_to_expire)`. Equivalent to
@@ -234,7 +302,8 @@ impl ThrottlerStorage {
     /// the hit that takes the count over `limit` blocks the key for `block_duration` (requests during the block are
     /// not counted and do not extend it; the first one after it starts from one hit). With a zero `block_duration`
     /// nothing is blocked: the request is rejected while the key holds `limit` unexpired hits and is not counted.
-    /// A `limit` of 0 rejects every request.
+    /// A `limit` of 0 rejects every request. Hits closer together than `ttl / 64` share a bucket (see
+    /// [`ThrottlerStorage`]).
     pub fn record_hit(&self, key: &str, ttl: Duration, limit: u32, block_duration: Duration) -> ThrottlerRecord {
         self.record_hit_at(key, Instant::now(), ttl, limit, block_duration)
     }
@@ -242,24 +311,15 @@ impl ThrottlerStorage {
     fn record_hit_at(&self, key: &str, now: Instant, ttl: Duration, limit: u32, block_duration: Duration) -> ThrottlerRecord {
         use sha2::Digest as _;
         let hash: KeyHash = sha2::Sha256::digest(key.as_bytes()).into();
+        let slice = (ttl.as_nanos() / BUCKETS as u128).max(1);
         let mut guard = self.counters.lock().unwrap_or_else(|e| e.into_inner());
         let c = &mut *guard;
 
         // Idle keys behave like fresh ones, so removing them is not observable.
-        while let Some(&(idle, h)) = c.by_idle.first() {
-            if idle > now {
-                break;
-            }
-            c.by_idle.pop_first();
-            if let Some(record) = c.records.remove(&h) {
-                c.total_hits -= record.hits.len();
-            }
-        }
+        c.purge(now);
 
-        let mut rec = c.remove(&hash).unwrap_or_else(|| Record { hits: VecDeque::new(), window_end: after(now, ttl), blocked_until: None });
-        while rec.hits.front().is_some_and(|&e| e <= now) {
-            rec.hits.pop_front();
-        }
+        let mut rec = c.remove(&hash).unwrap_or_else(|| Record::new(now, after(now, ttl)));
+        rec.prune(now);
         if rec.window_end <= now {
             rec.window_end = after(now, ttl);
         }
@@ -267,31 +327,31 @@ impl ThrottlerStorage {
 
         let (is_blocked, time_to_block_expire);
         if block_duration.is_zero() {
-            let full = rec.hits.len() >= limit as usize;
+            let full = rec.hits >= u64::from(limit);
             if !full {
-                self.push_hit(c, &mut rec, after(now, ttl));
+                rec.add_hit(after(now, ttl), slice);
             }
             is_blocked = full;
-            time_to_block_expire = match (full, rec.hits.front()) {
+            time_to_block_expire = match (full, rec.buckets.front()) {
                 (false, _) => Duration::ZERO,
-                (true, Some(&oldest)) => oldest.saturating_duration_since(now),
+                (true, Some(oldest)) => oldest.expiry.saturating_duration_since(now),
                 (true, None) => time_to_expire,
             };
         } else {
             if rec.blocked_until.is_some_and(|b| b <= now) {
                 rec.blocked_until = None;
-                rec.hits.clear();
+                rec.clear_hits();
             }
             if rec.blocked_until.is_none() {
-                self.push_hit(c, &mut rec, after(now, ttl));
-                if rec.hits.len() > limit as usize {
+                rec.add_hit(after(now, ttl), slice);
+                if rec.hits > u64::from(limit) {
                     rec.blocked_until = Some(after(now, block_duration));
                 }
             }
             is_blocked = rec.blocked_until.is_some();
             time_to_block_expire = rec.blocked_until.map_or(Duration::ZERO, |b| b.saturating_duration_since(now));
         }
-        let total_hits = u32::try_from(rec.hits.len() + usize::from(is_blocked && block_duration.is_zero())).unwrap_or(u32::MAX);
+        let total_hits = u32::try_from(rec.hits + u64::from(is_blocked && block_duration.is_zero())).unwrap_or(u32::MAX);
 
         while c.records.len() >= self.max_entries {
             if !c.evict_one() {
@@ -300,21 +360,6 @@ impl ThrottlerStorage {
         }
         c.insert(hash, rec);
         ThrottlerRecord { total_hits, time_to_expire, is_blocked, time_to_block_expire }
-    }
-
-    /// Adds a hit expiring at `expiry` (kept sorted), first making room under `max_hits`: other keys are evicted by
-    /// idle time and, when the key alone fills the budget, its oldest hit is dropped.
-    fn push_hit(&self, c: &mut Counters, rec: &mut Record, expiry: Instant) {
-        while c.total_hits + rec.hits.len() >= self.max_hits {
-            if !c.evict_one() {
-                rec.hits.pop_front();
-                if rec.hits.is_empty() {
-                    break;
-                }
-            }
-        }
-        let at = rec.hits.partition_point(|&e| e <= expiry);
-        rec.hits.insert(at, expiry);
     }
 }
 
@@ -520,15 +565,32 @@ mod tests {
         for scenario in fixture.as_array().unwrap() {
             let name = scenario["name"].as_str().unwrap();
             let storage = ThrottlerStorage::new(vec![]);
-            for (i, call) in scenario["calls"].as_array().unwrap().iter().enumerate() {
+            let calls = scenario["calls"].as_array().unwrap();
+            // Hits spaced more than ttl / 64 apart are counted exactly; closer ones share a bucket and only the blocked
+            // state and the times (within ttl / 64) are compared.
+            let mut last: HashMap<&str, u64> = HashMap::new();
+            let mut exact = true;
+            for call in calls {
+                let (key, t, ttl) = (call["key"].as_str().unwrap(), call["t"].as_u64().unwrap(), call["ttl"].as_u64().unwrap());
+                if let Some(prev) = last.insert(key, t) {
+                    exact &= t - prev > ttl / 64;
+                }
+            }
+            assert_eq!(exact, name != "dense_hits", "{name}: the fixture mixes exact and bucketed cases");
+            for (i, call) in calls.iter().enumerate() {
                 let n = |k: &str| call[k].as_u64().unwrap();
                 let r = hit(&storage, base, n("t"), call["key"].as_str().unwrap(), n("ttl"), n("limit") as u32, n("blockDuration"));
                 let want = &call["result"];
                 let at = format!("{name} #{i} t={}", n("t"));
-                assert_eq!(r.total_hits as u64, want["totalHits"].as_u64().unwrap(), "{at}: total_hits");
+                let tolerance = if exact { 0 } else { (n("ttl") / 64).div_ceil(1000) as i64 + 1 };
+                let close = |got: i64, want: i64| (got - want).abs() <= tolerance;
+                if exact {
+                    assert_eq!(r.total_hits as u64, want["totalHits"].as_u64().unwrap(), "{at}: total_hits");
+                }
                 assert_eq!(r.is_blocked, want["isBlocked"].as_bool().unwrap(), "{at}: is_blocked");
-                assert_eq!(secs(r.time_to_expire), want["timeToExpire"].as_i64().unwrap(), "{at}: time_to_expire");
-                assert_eq!(secs(r.time_to_block_expire), want["timeToBlockExpire"].as_i64().unwrap().max(0), "{at}: time_to_block_expire");
+                assert!(close(secs(r.time_to_expire), want["timeToExpire"].as_i64().unwrap()), "{at}: time_to_expire");
+                let want_block = want["timeToBlockExpire"].as_i64().unwrap().max(0);
+                assert!(close(secs(r.time_to_block_expire), want_block), "{at}: time_to_block_expire");
             }
         }
     }
@@ -598,27 +660,80 @@ mod tests {
         }
     }
 
+    /// Security review, mode `churn`: many keys sent round-robin must not get more than `limit` per window each.
     #[test]
-    fn hit_budget_bounds_the_stored_timestamps() {
-        let storage = ThrottlerStorage::new(vec![]).with_max_hits(100);
+    fn round_robin_keys_get_at_most_the_limit_each() {
+        let storage = ThrottlerStorage::new(vec![]);
         let base = Instant::now();
-        for i in 0..1_000 {
-            for _ in 0..5 {
-                hit(&storage, base, 0, &format!("k{i}"), 60_000, 10, 60_000);
+        let (keys, limit) = (2_000usize, 100u32);
+        let (mut allowed, mut blocked) = (0u64, 0u64);
+        for round in 0..(limit as u64 + 50) {
+            for k in 0..keys {
+                if hit(&storage, base, round, &format!("ip{k}"), 3_600_000, limit, 3_600_000).is_blocked {
+                    blocked += 1;
+                } else {
+                    allowed += 1;
+                }
             }
-            assert!(storage.hits_len() <= 100, "{}", storage.hits_len());
         }
-        assert!(storage.hits_len() > 0);
+        assert_eq!(allowed, keys as u64 * u64::from(limit));
+        assert_eq!(blocked, keys as u64 * 50);
+    }
+
+    /// Security review, mode `unblock`: flooding other keys does not unblock a blocked key, even when the table is full.
+    #[test]
+    fn a_blocked_key_stays_blocked_while_others_flood() {
+        let storage = ThrottlerStorage::new(vec![]).with_max_entries(100);
+        let base = Instant::now();
+        for _ in 0..=10 {
+            hit(&storage, base, 0, "me", 3_600_000, 10, 3_600_000);
+        }
+        assert!(hit(&storage, base, 1, "me", 3_600_000, 10, 3_600_000).is_blocked);
+        for k in 0..5_000 {
+            for _ in 0..10 {
+                hit(&storage, base, 2, &format!("other{k}"), 3_600_000, 10, 3_600_000);
+            }
+        }
+        assert!(storage.len() <= 100);
+        assert!(hit(&storage, base, 3, "me", 3_600_000, 10, 3_600_000).is_blocked);
+    }
+
+    /// A limit as large as the old global budget still blocks: the count does not depend on stored timestamps.
+    #[test]
+    fn a_large_limit_still_blocks() {
+        let storage = ThrottlerStorage::new(vec![]);
+        let base = Instant::now();
+        let limit = 1_500_000u32;
+        let mut blocked = false;
+        for i in 0..=limit as u64 {
+            blocked = storage.record_hit_at("k", base + ms(i / 30_000), ms(60_000), limit, ms(60_000)).is_blocked;
+        }
+        assert!(blocked);
     }
 
     #[test]
-    fn one_key_cannot_exceed_the_hit_budget() {
-        let storage = ThrottlerStorage::new(vec![]).with_max_hits(50);
-        for _ in 0..10_000 {
-            storage.increment("one", Duration::from_secs(60));
+    fn a_key_uses_bounded_memory_whatever_its_hits() {
+        let storage = ThrottlerStorage::new(vec![]);
+        let base = Instant::now();
+        for i in 0..20_000u64 {
+            storage.record_hit_at("k", base + ms(i), ms(60_000), u32::MAX, ms(60_000));
         }
-        assert_eq!(storage.hits_len(), 50);
         assert_eq!(storage.len(), 1);
+        assert!(storage.memory_usage() < 8 * 1024, "{}", storage.memory_usage());
+        let r = hit(&storage, base, 20_000, "k", 60_000, u32::MAX, 60_000);
+        assert_eq!(r.total_hits, 20_001);
+    }
+
+    #[test]
+    fn unrepresentable_durations_saturate_instead_of_vanishing() {
+        let now = Instant::now();
+        assert!(after(now, Duration::MAX) > now + Duration::from_secs(3600));
+        let storage = ThrottlerStorage::new(vec![]);
+        let r = storage.record_hit("k", Duration::from_secs(60), 1, Duration::MAX);
+        assert!(!r.is_blocked);
+        let r = storage.record_hit("k", Duration::from_secs(60), 1, Duration::MAX);
+        assert!(r.is_blocked);
+        assert!(r.time_to_block_expire > Duration::from_secs(3600));
     }
 
     #[test]
@@ -628,7 +743,6 @@ mod tests {
         hit(&storage, base, 0, "a", 1_000, 5, 1_000);
         hit(&storage, base, 1_500, "b", 1_000, 5, 1_000);
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage.hits_len(), 1);
     }
 
     #[test]

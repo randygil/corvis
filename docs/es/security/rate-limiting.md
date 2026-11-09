@@ -115,25 +115,33 @@ impl AuthController {
 
 ## Almacenamiento
 
-Los contadores viven en memoria, en `ThrottlerStorage`. Guarda el `sha256` de cada clave y una marca de
-tiempo por cada acceso que todavía cuenta. Las claves sin accesos vivos, con la ventana terminada y sin
-bloqueo se borran en cada petición. La memoria tiene dos topes: como máximo 100 000 claves
-(`with_max_entries`) y como máximo 1 000 000 de marcas de tiempo en total (`with_max_hits`, unos 16 MB).
-Una clave guarda como máximo `limit + 1` accesos. Al alcanzar cualquiera de los topes se descartan las
-claves que antes quedan inactivas, lo que reinicia sus contadores. Bajo un ataque con muchas direcciones
-eso significa que también se pueden reiniciar los contadores de otros clientes, así que dimensiona los
-topes según tu tráfico; un `limit` por encima de unos 10 000 por clave necesita un `with_max_hits` mayor.
-Para cambiar los topes:
+Los contadores viven en memoria, en `ThrottlerStorage`. Guarda el `sha256` de cada clave y sus accesos
+agrupados en como máximo 64 cubos de `ttl / 64`: los accesos cuyo vencimiento cae en el mismo cubo se cuentan
+juntos y vencen juntos, así que una clave usa la misma memoria sea cual sea su límite y cuantas peticiones
+reciba. Las claves sin accesos vivos, con la ventana terminada y sin bloqueo se borran en cada petición.
+
+La memoria queda acotada por el número de claves, 100 000 como máximo por defecto (`with_max_entries`). El
+peor caso es de unos 1,8 KB por clave (64 cubos de 24 bytes más el estado fijo de la clave), unos 180 MB con
+el valor por defecto. Cuando la tabla se llena se descartan las claves que antes quedan inactivas, lo que
+reinicia sus contadores; las claves bloqueadas se descartan al final, así que inundar otras claves nunca
+levanta un bloqueo. Bajo un ataque con más claves distintas que el tope, se pueden reiniciar los contadores
+de clientes no bloqueados, así que dimensiona el tope según tu tráfico. Para cambiarlo:
 
 ```rust
 use corvis::ThrottlerStorage;
 
 ThrottlerModule::for_root_storage(
-    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)])
-        .with_max_entries(500_000)
-        .with_max_hits(5_000_000),
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100)]).with_max_entries(500_000),
 )
 ```
+
+Diferencia conocida con la librería original: cuando un cliente envía accesos más juntos que `ttl / 64` (unos
+0,9 s en una ventana de 60 s), comparten cubo y vencen juntos, así que `X-RateLimit-Remaining` y
+`X-RateLimit-Reset` pueden diferir hasta `ttl / 64`. Las peticiones que se rechazan y `Retry-After` no se
+ven afectados. Con accesos más espaciados los valores son idénticos.
+
+Dos throttlers con el mismo nombre comparten contadores y duraciones de bloqueo; se registra una advertencia
+al construir el storage.
 
 Al ser memoria del proceso, cada instancia de la aplicación cuenta por separado. No hay un
 almacenamiento compartido (Redis u otro) incluido.
