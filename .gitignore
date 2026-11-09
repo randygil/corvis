@@ -36,3 +36,4 @@ crates/corvis/tests/fixtures/http_filter_order/node_modules
 bench/port-vs-original/raw
 crates/corvis-swagger/tests/fixtures/class_validator_shim/node_modules
 crates/corvis-swagger/tests/fixtures/class_validator_shim/out
+crates/corvis/tests/fixtures/compression/node_modules

@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           cargo clippy -p corvis --no-default-features -- -D warnings
-          for f in jwt websockets health-tls; do
+          for f in jwt websockets health-tls compression; do
             cargo clippy -p corvis --no-default-features --features "$f" -- -D warnings
           done
 
@@ -105,6 +105,8 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace --no-fail-fast
+      - name: Test the compression feature
+        run: cargo test -p corvis --features compression --no-fail-fast
 
   test-windows:
     name: test (windows-latest)

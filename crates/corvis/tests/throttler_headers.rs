@@ -20,8 +20,26 @@ impl LimitedController {
     }
 
     #[get("skip")]
-    #[set_metadata(SKIP_THROTTLE, true)]
+    #[apply_decorators(skip_throttle(["default", "short", "long"]))]
     fn skip(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("bare")]
+    #[set_metadata(SKIP_THROTTLE, true)]
+    fn bare(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("byname")]
+    #[apply_decorators(skip_throttle(["short"]))]
+    fn byname(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("string-key")]
+    #[set_metadata(skip_throttle_key("short"), true)]
+    fn string_key(&self) -> &'static str {
         "ok"
     }
 
@@ -73,12 +91,61 @@ impl LimitedController {
     }
 }
 
+/// A controller skip that its handler `on` undoes for `default` (`@SkipThrottle()` on the class and
+/// `@SkipThrottle({ default: false })` on the handler).
+#[controller("undo")]
+#[use_guards(ThrottlerGuard)]
+#[set_metadata(SKIP_THROTTLE, true)]
+pub struct UndoController;
+
+#[routes]
+impl UndoController {
+    #[get("on")]
+    #[set_metadata(SKIP_THROTTLE, false)]
+    fn on(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("off")]
+    fn off(&self) -> &'static str {
+        "ok"
+    }
+
+    #[get("short-on")]
+    #[set_metadata(skip_throttle_key("default"), false)]
+    fn short_on(&self) -> &'static str {
+        "ok"
+    }
+}
+
+/// A controller that skips `short` while its handler has a bare skip: each name is resolved on its own.
+#[controller("mixed")]
+#[use_guards(ThrottlerGuard)]
+#[apply_decorators(skip_throttle(["short"]))]
+pub struct MixedController;
+
+#[routes]
+impl MixedController {
+    #[get("h")]
+    #[set_metadata(SKIP_THROTTLE, true)]
+    fn h(&self) -> &'static str {
+        "ok"
+    }
+}
+
 fn throttler(name: &str, ttl: u64, limit: u32) -> ThrottlerOptions {
     ThrottlerOptions { name: name.into(), ttl, limit }
 }
 
 async fn app_with(module: corvis::DynamicModule) -> CorvisApplication {
-    let module = Test::create_testing_module().import_dynamic(module).controller::<LimitedController>().compile().await.unwrap();
+    let module = Test::create_testing_module()
+        .import_dynamic(module)
+        .controller::<LimitedController>()
+        .controller::<UndoController>()
+        .controller::<MixedController>()
+        .compile()
+        .await
+        .unwrap();
     let mut app = module.create_corvis_application();
     app.init().await.unwrap();
     app
@@ -255,6 +322,91 @@ async fn throttlers_configured_longest_first_are_checked_shortest_first() {
     sleep(1_200).await;
     let r = c.get("/plain").send().await;
     r.expect_status(200).expect_header("x-ratelimit-remaining-long", "98");
+}
+
+#[corvis::test]
+async fn bare_skip_with_the_default_throttler_only() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 10)]).await;
+    let r = request(&app).get("/bare").send().await;
+    r.expect_status(200);
+    assert_eq!(names(&r), Vec::<String>::new());
+}
+
+#[corvis::test]
+async fn bare_skip_next_to_a_named_throttler_only_skips_default() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 10), throttler("short", 1_000, 3)]).await;
+    let r = request(&app).get("/bare").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit-short", "3").expect_header("x-ratelimit-remaining-short", "2");
+    assert!(r.header("x-ratelimit-limit").is_none());
+}
+
+#[corvis::test]
+async fn bare_skip_with_named_throttlers_only_still_limits() {
+    let app = app(vec![throttler("short", 30_000, 3), throttler("long", 60_000, 5)]).await;
+    let c = request(&app);
+    for _ in 0..3 {
+        let r = c.get("/bare").send().await;
+        r.expect_status(200).expect_header("x-ratelimit-limit-short", "3").expect_header("x-ratelimit-limit-long", "5");
+    }
+    let r = c.get("/bare").send().await;
+    r.expect_status(429);
+    assert!(r.header("retry-after-short").is_some());
+}
+
+#[corvis::test]
+async fn skip_by_name_counts_only_the_other_throttlers() {
+    let app = app(vec![throttler("short", 30_000, 3), throttler("long", 60_000, 5)]).await;
+    let c = request(&app);
+    for i in 0..5 {
+        let r = c.get("/byname").send().await;
+        r.expect_status(200).expect_header("x-ratelimit-limit-long", "5").expect_header("x-ratelimit-remaining-long", &(4 - i).to_string());
+        assert!(r.header("x-ratelimit-limit-short").is_none());
+    }
+    c.get("/byname").send().await.expect_status(429);
+}
+
+#[corvis::test]
+async fn a_string_key_works_on_a_route() {
+    let app = app(vec![throttler("short", 60_000, 3), throttler("long", 60_000, 5)]).await;
+    let r = request(&app).get("/string-key").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit-long", "5");
+    assert!(r.header("x-ratelimit-limit-short").is_none());
+}
+
+#[corvis::test]
+async fn a_handler_undoes_the_controllers_skip() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 10)]).await;
+    let c = request(&app);
+    c.get("/undo/on").send().await.expect_status(200).expect_header("x-ratelimit-limit", "10");
+    let r = c.get("/undo/off").send().await;
+    r.expect_status(200);
+    assert_eq!(names(&r), Vec::<String>::new());
+}
+
+#[corvis::test]
+async fn a_per_name_false_undoes_only_that_name() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 10), throttler("short", 60_000, 3)]).await;
+    let r = request(&app).get("/undo/short-on").send().await;
+    r.expect_status(200).expect_header("x-ratelimit-limit", "10").expect_header("x-ratelimit-limit-short", "3");
+}
+
+#[corvis::test]
+async fn controller_and_handler_skip_different_throttlers() {
+    let app = app(vec![ThrottlerOptions::new(60_000, 1), throttler("short", 60_000, 1)]).await;
+    let c = request(&app);
+    for _ in 0..3 {
+        let r = c.get("/mixed/h").send().await;
+        r.expect_status(200);
+        assert_eq!(names(&r), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn skip_helpers_use_the_original_key_spelling() {
+    assert_eq!(skip_throttle_key("short"), "THROTTLER:SKIPshort");
+    let d = skip_throttle(["short", "long"]);
+    assert_eq!(d.entries(), [("THROTTLER:SKIPshort".to_string(), json!(true)), ("THROTTLER:SKIPlong".to_string(), json!(true))].as_slice());
+    assert!(skip_throttle(Vec::<String>::new()).is_empty());
 }
 
 /// The new constant and record type come with the prelude.

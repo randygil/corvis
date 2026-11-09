@@ -107,3 +107,73 @@ fn invalid_trust_lists_are_errors() {
     assert_eq!(TrustProxy::parse("loopback, 300.0.0.1").unwrap_err().to_string(), "invalid IP address: 300.0.0.1");
     assert_eq!(TrustProxy::parse("10.0.0.0/40").unwrap_err().to_string(), "invalid range on address: 10.0.0.0/40");
 }
+
+async fn limited_statuses(addr: SocketAddr, clients: &[&str]) -> Vec<u16> {
+    let mut out = Vec::new();
+    for c in clients {
+        out.push(get(addr, "/limited", &[&format!("X-Forwarded-For: {c}")]).await.0);
+    }
+    out
+}
+
+#[corvis::test]
+async fn ipv6_forwarded_clients_share_a_counter_per_64() {
+    let (_app, addr) = start(true).await;
+    // Limit 2: three addresses of one /64 share it, a client of another /64 starts fresh.
+    let got = limited_statuses(addr, &["2001:db8:1:2::1", "2001:db8:1:2::2", "2001:db8:1:2:ffff::9", "2001:db8:1:3::1"]).await;
+    assert_eq!(got, [200, 200, 429, 200]);
+}
+
+#[corvis::test]
+async fn ipv4_mapped_forwarded_client_shares_the_ipv4_counter() {
+    let (_app, addr) = start(true).await;
+    let got = limited_statuses(addr, &["::ffff:198.51.100.7", "198.51.100.7", "::ffff:c633:6407"]).await;
+    assert_eq!(got, [200, 200, 429]);
+}
+
+#[corvis::test]
+async fn forwarded_ipv4_clients_stay_apart() {
+    let (_app, addr) = start(true).await;
+    let got = limited_statuses(addr, &["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.1", "198.51.100.1"]).await;
+    assert_eq!(got, [200, 200, 200, 200, 429]);
+}
+
+#[corvis::test]
+async fn forwarded_non_ip_entries_are_kept_as_they_are() {
+    let (_app, addr) = start(true).await;
+    let got = limited_statuses(addr, &["unknown", "unknown", "unknown", "other"]).await;
+    assert_eq!(got, [200, 200, 429, 200]);
+}
+
+#[corvis::test]
+async fn forwarded_ports_and_brackets_are_normalized() {
+    let (_app, addr) = start(true).await;
+    let got = limited_statuses(addr, &["203.0.113.5:54321", "203.0.113.5:54322", "203.0.113.5"]).await;
+    assert_eq!(got, [200, 200, 429], "the port does not make a new client");
+    let got = limited_statuses(addr, &["[2001:db8:1:2::1]:443", "[2001:db8:1:2::9]", "2001:db8:1:2::5"]).await;
+    assert_eq!(got, [200, 200, 429], "brackets and ports are dropped, then the /64 applies");
+    let v = who(addr, &["X-Forwarded-For: 203.0.113.5:54321"]).await;
+    assert_eq!(v["ip"], "203.0.113.5:54321", "req.ip() keeps the raw entry");
+}
+
+#[corvis::test]
+async fn forwarded_nat64_clients_keep_their_ipv4_counters() {
+    let (_app, addr) = start(true).await;
+    let got =
+        limited_statuses(addr, &["64:ff9b::198.51.100.1", "64:ff9b::198.51.100.1", "64:ff9b::198.51.100.1", "64:ff9b::198.51.100.2"]).await;
+    assert_eq!(got, [200, 200, 429, 200]);
+}
+
+#[corvis::test]
+async fn the_ip_parameter_keeps_the_full_address() {
+    let (_app, addr) = start(true).await;
+    let v = who(addr, &["X-Forwarded-For: 2001:db8:1:2:aaaa:bbbb:cccc:dddd"]).await;
+    assert_eq!(v["ip"], "2001:db8:1:2:aaaa:bbbb:cccc:dddd");
+    assert_eq!(v["ips"], json!(["2001:db8:1:2:aaaa:bbbb:cccc:dddd"]));
+}
+
+#[test]
+fn normalize_ip_is_public_in_the_throttler_module() {
+    use corvis::modules::throttler::{DEFAULT_IPV6_SUBNET_PREFIX, normalize_ip};
+    assert_eq!(normalize_ip("2001:db8:1:2::9", DEFAULT_IPV6_SUBNET_PREFIX), "2001:db8:1:2::/64");
+}

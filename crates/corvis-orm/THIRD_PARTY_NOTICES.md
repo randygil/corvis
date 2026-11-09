@@ -33,10 +33,12 @@ their products are trademarks of their respective owners and are used here only 
 | content-disposition | MIT | Copyright (c) 2014-2017 Douglas Christopher Wilson | `Content-Disposition` header. |
 | type-is | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com> | `Content-Type` matching. |
 | mime-types | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | MIME type lookup. |
-| mime-db | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015-2022 Douglas Christopher Wilson <doug@somethingdoug.com> | MIME type and charset data. |
+| mime-db | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015-2022 Douglas Christopher Wilson <doug@somethingdoug.com> | MIME type and charset data, and the `compressible` flags behind the response compression filter. |
 | accepts | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Content negotiation. |
-| negotiator | MIT | Copyright (c) 2012-2014 Federico Romero<br>Copyright (c) 2012-2014 Isaac Z. Schlueter<br>Copyright (c) 2014-2015 Douglas Christopher Wilson | Content negotiation. |
-| vary | MIT | Copyright (c) 2014-2017 Douglas Christopher Wilson | `Vary` header. |
+| negotiator | MIT | Copyright (c) 2012-2014 Federico Romero<br>Copyright (c) 2012-2014 Isaac Z. Schlueter<br>Copyright (c) 2014-2015 Douglas Christopher Wilson | Content negotiation, including `Accept-Encoding` for response compression. |
+| compression | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Response compression rules and defaults (`corvis::http::compression`). |
+| compressible | MIT | Copyright (c) 2013 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2014 Jeremiah Senkpiel <fishrock123@rocketmail.com><br>Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> | Compressible `Content-Type` check. |
+| vary | MIT | Copyright (c) 2014-2017 Douglas Christopher Wilson | `Vary` header, including `Accept-Encoding` for response compression. |
 | statuses | MIT | Copyright (c) 2014 Jonathan Ong <me@jongleberry.com><br>Copyright (c) 2016 Douglas Christopher Wilson <doug@somethingdoug.com> | HTTP status code texts. |
 | http-errors | MIT | Copyright (c) 2014 Jonathan Ong me@jongleberry.com<br>Copyright (c) 2016 Douglas Christopher Wilson doug@somethingdoug.com | HTTP errors of the body parser. |
 | encodeurl | MIT | Copyright (c) 2016 Douglas Christopher Wilson | `Location` encoding. |

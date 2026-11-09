@@ -16,9 +16,9 @@ This page gathers what can be configured on that server.
 
 - The server accepts HTTP/1.1 only, like Node's `http` module. `ServerOptions::new().h2c(true)` also accepts HTTP/2
   without TLS by prior knowledge (h2c), for a proxy or platform configured to send it (Caddy `h2c://`, Traefik
-  `scheme=h2c`, nginx `grpc_pass`, Cloud Run with an `h2c` port). With h2c on, one connection carries up to 200
-  concurrent requests, `max_connections` limits connections rather than requests, the HTTP/2 header limit is 16 KiB,
-  and `max_header_size` applies to HTTP/1 only. With h2c off, a prior-knowledge connection is closed without a
+  `scheme=h2c`, nginx `grpc_pass`, Cloud Run with an `h2c` port). With h2c on, one connection carries up to 100
+  concurrent requests (`http2_max_concurrent_streams`), `max_header_size` also limits the HTTP/2 header list (`431`),
+  and `max_connections` limits connections rather than requests. With h2c off, a prior-knowledge connection is closed without a
   response. See [HTTP parsing and compatibility](/security/http-parsing).
 - HTTP/1 requests with ambiguous framing (bare LF line endings, whitespace after a chunk size, `Content-Length` with
   `Transfer-Encoding`) are answered with `400` and the connection is closed.
@@ -41,7 +41,10 @@ app.set_server_options(
         .request_timeout(Duration::from_secs(120))   // 300 s by default; responds 408
         .keep_alive_timeout(Duration::from_secs(10)) // 5 s by default
         .max_connections(10_000)                     // no cap by default
-        .max_header_size(16 * 1024),                 // 32 KiB by default; responds 431
+        .max_header_size(16 * 1024)                  // 32 KiB by default; responds 431 (HTTP/1 and HTTP/2)
+        .http2_max_concurrent_streams(50)            // 100 by default, per HTTP/2 connection
+        .http2_keep_alive_interval(Duration::from_secs(30)) // no HTTP/2 PINGs by default
+        .http2_keep_alive_timeout(Duration::from_secs(10)), // 20 s by default
 );
 ```
 
@@ -49,6 +52,37 @@ Each timeout accepts `None` to disable it, for example `.request_timeout(None)`.
 `max_connections` is reached, new connections wait in the `accept` queue. Open WebSocket connections count until
 they close, and so does a socket for up to 2 s after an early error response (`413`, `431`, ...) while the server
 lets the client read it before closing. With a cap, give your gateways a heartbeat so dead clients do not hold slots.
+
+### HTTP/2 connections
+
+These options apply to every HTTP/2 connection (h2c today) and never to HTTP/1 ones.
+
+- `max_header_size` bounds the HTTP/2 header list, counted as RFC 9113 does (name and value lengths plus 32 bytes per
+  field), so the same number is comparable with HTTP/1, not byte-identical. A request over it is answered `431` on
+  its stream and the other streams keep working.
+- `http2_max_concurrent_streams` (default 100, minimum 1) is the number of streams a client may have open at once on
+  one connection.
+- `max_connections` counts connections, not streams, like Node's `server.maxConnections`. The requests in flight from
+  HTTP/2 clients are bounded by `max_connections` x `http2_max_concurrent_streams`.
+- `headers_timeout` and `keep_alive_timeout` apply to the connection while none of its streams is in flight, so one
+  long stream keeps the connection alive. `request_timeout` applies to the body of each stream on its own: a stalled
+  `POST` is answered `408` without affecting the other streams.
+- `http2_keep_alive_interval` (off by default) sends a PING every interval, and `http2_keep_alive_timeout` closes the
+  connection when a PING is not acknowledged in time (minimum 1 s; a zero interval means no PINGs). Set it with SSE or
+  other long streams over HTTP/2, where a peer that stopped answering would otherwise never be noticed.
+- A client that resets streams and opens new ones faster than their handlers stop never gets more handlers running at
+  once than `http2_max_concurrent_streams` (rapid reset). A connection is also closed when the requests it cancelled
+  before their response (a reset stream, also while its body was being read) exceed 500 and exceed a quarter of the
+  requests it completed, over the last 10 s, or exceed `http2_max_cancelled_streams` (default 2000, about 200 per
+  second sustained) whatever it completed. A proxy that multiplexes many users (Envoy, Cloud Run) and sees a few
+  percent of aborts is never cut: it tolerates about 20% of aborts, and 5,000 requests/s with 2% aborted stays well
+  under the ceiling. An attacker pays four completed requests per reset and is capped by the ceiling. The server sends
+  a graceful GOAWAY first, so the proxy can retry unanswered requests on another connection; from then on new streams
+  are reset without reaching a handler, and the connection is dropped after 1 s. Raise `http2_max_cancelled_streams`
+  if a proxy of yours aborts more than that. A request the client aborts is not logged.
+- Known limitation ([#157](https://github.com/randygil/corvis/issues/157)): a live peer that stops reading holds its
+  connection. While writing to the client is blocked, the PING timeout and the idle timeouts do not fire; the PING
+  keep-alive detects peers that stopped answering, not peers that stopped reading.
 
 ## Request bodies
 

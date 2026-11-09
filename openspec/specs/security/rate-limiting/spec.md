@@ -37,11 +37,21 @@ The `<suffix>` of every throttler header SHALL be empty for a throttler named `d
   `X-RateLimit-Limit-long: 100` and `X-RateLimit-Remaining-long: 99`, each with its `X-RateLimit-Reset-<name>`
 
 ### Requirement: Skipped requests carry no throttler headers
-Requests skipped with `SKIP_THROTTLE` metadata SHALL get no `X-RateLimit-*` or `Retry-After` header.
+A throttler skipped for a request (see "Throttlers are skipped one by one") SHALL NOT count the request and MUST NOT
+set its `X-RateLimit-*<suffix>` or `Retry-After<suffix>` header. Throttlers that are not skipped SHALL count the
+request and set their headers as for any other request. A request skipped for every configured throttler carries no
+`X-RateLimit-*` or `Retry-After` header.
 
 #### Scenario: Skipped route
-- **WHEN** a route declares `#[set_metadata(SKIP_THROTTLE, true)]`
+- **WHEN** the only throttler is `ThrottlerOptions::new(60_000, 10)` and a route declares
+  `#[set_metadata(SKIP_THROTTLE, true)]`
 - **THEN** the response carries no `X-RateLimit-*` or `Retry-After` header
+
+#### Scenario: Bare skip with a named throttler next to the default one
+- **WHEN** the throttlers are `default` (`ttl: 60_000`, `limit: 10`) and `short` (`ttl: 1_000`, `limit: 3`) and a
+  route declares `#[set_metadata(SKIP_THROTTLE, true)]`
+- **THEN** the response carries `X-RateLimit-Limit-short: 3` and `X-RateLimit-Remaining-short: 2` and no
+  `X-RateLimit-Limit` header without a suffix
 
 ### Requirement: A throttled request carries Retry-After
 When a throttler rejects a request, `ThrottlerGuard` SHALL set `Retry-After<suffix>` to the seconds until that
@@ -228,3 +238,202 @@ requests that are rejected as the limit is exceeded stay the same.
 - **WHEN** the unit test replays recorded calls whose hits are closer together than `ttl / 64`
 - **THEN** the blocked state equals the recorded one and the times are within `ttl / 64` (rounded up to seconds, plus
   one second)
+
+### Requirement: The guard tracks clients by their normalized IP
+`ThrottlerGuard` SHALL build the client part of every counter key, for HTTP requests and gateway messages alike, as
+`normalize_ip(&req.ip(), prefix)`, where `prefix` is the storage's IPv6 subnet prefix. The rest of the key (throttler
+name, controller and handler) SHALL stay as it is.
+
+#### Scenario: Two addresses of one /64
+- **WHEN** a route is limited to 1 request per minute and requests come from `2001:db8:1:2::a` and then from
+  `2001:db8:1:2:ffff:ffff:ffff:ffff`
+- **THEN** the second request is rejected with status 429
+
+#### Scenario: Addresses of different /64 prefixes
+- **WHEN** a route is limited to 1 request per minute and requests come from `2001:db8:1:2::a` and then from
+  `2001:db8:1:3::a`
+- **THEN** both requests are accepted
+
+#### Scenario: IPv4-mapped address shares the IPv4 counter
+- **WHEN** a route is limited to 1 request per minute and requests come from `1.2.3.4` and then from
+  `::ffff:1.2.3.4`
+- **THEN** the second request is rejected with status 429
+
+#### Scenario: IPv4 clients are unchanged
+- **WHEN** a route is limited to 1 request per minute and requests come from `1.2.3.4` and then from `1.2.3.5`
+- **THEN** both requests are accepted
+
+### Requirement: normalize_ip keeps IPv4 addresses and values that are not addresses
+`normalize_ip` SHALL return the input unchanged when it is empty. It SHALL cut the input at its first `%` (zone
+identifier) and, when the rest is a valid IPv4 address, return that rest. When the rest is not a valid IP address, it
+SHALL return the input unchanged, zone included.
+
+#### Scenario: Zone identifier
+- **WHEN** `normalize_ip` receives `fe80::1%eth0` with prefix 64, and `1.2.3.4%x`
+- **THEN** it returns `fe80::/64` and `1.2.3.4`
+
+#### Scenario: Value that is not an IP address
+- **WHEN** `normalize_ip` receives `unknown`, `1.2.3.4:80` or `[::1]`
+- **THEN** it returns the input unchanged
+
+### Requirement: normalize_ip reduces IPv6 addresses to their prefix
+When the input without its zone is a valid IPv6 address, `normalize_ip` SHALL return `::1` for the loopback address
+whatever the prefix, the dotted IPv4 form for an IPv4-mapped address (`::ffff:0:0/96`), and for any other address the
+address with every bit after the prefix cleared, in lowercase compressed form (the first longest run of two or more
+zero groups replaced by `::`), followed by `/` and the prefix.
+
+#### Scenario: Default prefix
+- **WHEN** `normalize_ip` receives `2001:db8:1:2:ffff:ffff:ffff:ffff` with prefix 64
+- **THEN** it returns `2001:db8:1:2::/64`
+
+#### Scenario: Loopback and mapped addresses
+- **WHEN** `normalize_ip` receives `::1` with prefix 0, and `::ffff:1.2.3.4` with prefix 64
+- **THEN** it returns `::1` and `1.2.3.4`
+
+#### Scenario: Full prefix
+- **WHEN** `normalize_ip` receives `2001:db8:1:2::a` with prefix 128
+- **THEN** it returns `2001:db8:1:2::a/128`
+
+### Requirement: The IPv6 subnet prefix is configurable
+`ThrottlerStorage` SHALL use `DEFAULT_IPV6_SUBNET_PREFIX` (64) as the IPv6 subnet prefix unless
+`ThrottlerStorage::with_ipv6_subnet_prefix(prefix)` sets another one. Values above 128 SHALL be treated as 128. The
+prefix SHALL apply to every configured throttler. A prefix of 128 SHALL keep each IPv6 address in its own counter.
+
+#### Scenario: Opting out of grouping
+- **WHEN** the storage is built with `with_ipv6_subnet_prefix(128)`, a route is limited to 1 request per minute, and
+  requests come from `2001:db8:1:2::a` and then from `2001:db8:1:2::b`
+- **THEN** both requests are accepted
+
+#### Scenario: Larger allocation
+- **WHEN** the storage is built with `with_ipv6_subnet_prefix(48)`, a route is limited to 1 request per minute, and
+  requests come from `2001:db8:1:2::a` and then from `2001:db8:1:3::a`
+- **THEN** the second request is rejected with status 429
+
+#### Scenario: Out-of-range prefix
+- **WHEN** the storage is built with `with_ipv6_subnet_prefix(200)`
+- **THEN** it behaves as with `with_ipv6_subnet_prefix(128)`
+
+#### Scenario: Factory-built storage
+- **WHEN** `ThrottlerModule::for_root_async` returns a `ThrottlerStorage` built with `with_ipv6_subnet_prefix(56)`
+- **THEN** the guard groups IPv6 clients by /56
+
+### Requirement: The tracker follows the trust proxy setting
+The client IP that `ThrottlerGuard` normalizes SHALL be `req.ip()`: the socket address by default, and the client
+entry of `X-Forwarded-For` resolved by the `trust proxy` setting when one is configured. Normalization SHALL NOT
+change `req.ip()`, `req.ips()` or the value of `#[ip]` parameters.
+
+#### Scenario: IPv6 clients behind a trusted proxy
+- **WHEN** `trust proxy` trusts the loopback range, a route is limited to 1 request per minute, and two requests from
+  `127.0.0.1` carry `X-Forwarded-For: 2001:db8:1:2::a` and `X-Forwarded-For: 2001:db8:1:2::b`
+- **THEN** the second request is rejected with status 429
+
+#### Scenario: IPv4-mapped entry behind a trusted proxy
+- **WHEN** `trust proxy` trusts the loopback range, a route is limited to 1 request per minute, and two requests from
+  `127.0.0.1` carry `X-Forwarded-For: 1.2.3.4` and `X-Forwarded-For: ::ffff:1.2.3.4`
+- **THEN** the second request is rejected with status 429
+
+#### Scenario: Forwarded header without trust proxy
+- **WHEN** no `trust proxy` setting is configured and requests from `127.0.0.1` carry different IPv6
+  `X-Forwarded-For` values
+- **THEN** they all share the counter of `127.0.0.1`
+
+#### Scenario: `#[ip]` keeps the full address
+- **WHEN** `trust proxy` trusts the loopback range and a request from `127.0.0.1` carries
+  `X-Forwarded-For: 2001:db8:1:2::a` to a route that returns its `#[ip]` parameter
+- **THEN** the response contains `2001:db8:1:2::a`
+
+### Requirement: normalize_ip is public
+`normalize_ip(ip: &str, ipv6_subnet_prefix: u8) -> String` and `DEFAULT_IPV6_SUBNET_PREFIX` SHALL be public under
+`corvis::modules::throttler` and re-exported at the crate root next to `ThrottlerStorage`, so that code calling
+`ThrottlerStorage::record_hit` directly can build the same tracker as the guard.
+
+#### Scenario: Custom guard
+- **WHEN** application code calls `corvis::normalize_ip("2001:db8:1:2::a", corvis::DEFAULT_IPV6_SUBNET_PREFIX)`
+- **THEN** it receives `2001:db8:1:2::/64`
+
+### Requirement: IP normalization matches @nestjs/throttler
+For every address and prefix recorded in the differential fixture, `normalize_ip` SHALL return exactly the string that
+`normalizeIp` of `@nestjs/throttler` 6.7.1 returns; for prefixes above 128 it SHALL return the recorded output for
+128. The fixture SHALL cover IPv4, IPv6 in several spellings, IPv4-mapped addresses, loopback, zone identifiers and
+values that are not addresses, at prefixes from 0 to 128.
+
+#### Scenario: Replay of the recorded normalizations
+- **WHEN** the Rust test replays `normalize-ip.json`, produced by running the original `normalizeIp` over the corpus
+- **THEN** every output string is equal
+
+### Requirement: Throttlers are skipped one by one
+For each configured throttler, `ThrottlerGuard` SHALL decide whether to skip it from the boolean metadata stored
+under `skip_throttle_key(name)`, read from the handler and then from the controller, the first value found winning.
+A throttler with no value, or with `false`, MUST NOT be skipped. Skipping one throttler MUST NOT stop the guard from
+checking the others.
+
+#### Scenario: Skip by name
+- **WHEN** the throttlers are `short` and `long` and a route declares
+  `#[apply_decorators(skip_throttle(["short"]))]`
+- **THEN** the response carries the `X-RateLimit-*-long` headers and no `X-RateLimit-*-short` header, and only `long`
+  counts the request
+
+#### Scenario: Gateway handler skips by name
+- **WHEN** a global `ThrottlerGuard` runs on a gateway handler that declares
+  `#[set_metadata(skip_throttle_key("short"), true)]` and the throttlers are `short` and `long`
+- **THEN** the message is counted by `long` only
+
+### Requirement: A bare skip is the default throttler's entry
+For the throttler named `default`, a `SKIP_THROTTLE` value on a target (handler or controller) SHALL count as that
+target's `skip_throttle_key("default")` value when the target has no such entry. `SKIP_THROTTLE` MUST NOT affect
+throttlers with other names.
+
+#### Scenario: Bare skip with named throttlers only
+- **WHEN** the throttlers are `short` (`ttl: 30_000`, `limit: 3`) and `long` (`ttl: 60_000`, `limit: 5`), a route
+  declares `#[set_metadata(SKIP_THROTTLE, true)]`, and a client sends four requests to it
+- **THEN** the first three answer `200` with `X-RateLimit-*-short` and `X-RateLimit-*-long` headers and the fourth
+  answers `429` with `Retry-After-short`
+
+#### Scenario: Handler undoes the controller's skip
+- **WHEN** a controller declares `#[set_metadata(SKIP_THROTTLE, true)]`, one of its handlers declares
+  `#[set_metadata(SKIP_THROTTLE, false)]`, and the only throttler is `default`
+- **THEN** that handler's responses carry `X-RateLimit-Limit` and the controller's other handlers carry no throttler
+  header
+
+#### Scenario: Controller and handler skip different throttlers
+- **WHEN** a controller declares `#[apply_decorators(skip_throttle(["short"]))]`, a handler of it declares
+  `#[set_metadata(SKIP_THROTTLE, true)]`, and the throttlers are `default` and `short`
+- **THEN** that handler's responses carry no throttler header (each name is resolved on its own)
+
+### Requirement: Per-name skip helpers
+The crate SHALL export, from `corvis::modules::throttler` and the prelude, `skip_throttle_key(name) -> String`
+returning `"THROTTLER:SKIP"` followed by the name, and `skip_throttle(names) -> CustomDecorator` that sets
+`skip_throttle_key(name)` to `true` for each name. `#[set_metadata(key, value)]` MUST accept a `String` key on routes,
+controllers and gateway handlers.
+
+#### Scenario: Key spelling
+- **WHEN** `skip_throttle_key("short")` is called
+- **THEN** it returns `THROTTLER:SKIPshort`
+
+#### Scenario: String key on a route
+- **WHEN** a route declares `#[set_metadata(skip_throttle_key("short"), true)]`
+- **THEN** the application compiles and `short` is skipped for that route
+
+### Requirement: A bare skip that skips nothing is reported
+When `ThrottlerGuard` sees `SKIP_THROTTLE` set to `true` for a route and no configured throttler is named `default`,
+it SHALL log one warning for that route (identified by controller and handler), naming the route, explaining that a
+bare skip only affects the `default` throttler, and pointing to `skip_throttle([...])`. It MUST NOT log it again for
+the same route, and it MUST still apply the other throttlers.
+
+#### Scenario: Warning once
+- **WHEN** the throttlers are `short` and `long` and a client sends three requests to a route with
+  `#[set_metadata(SKIP_THROTTLE, true)]`
+- **THEN** one warning naming the route is logged and the three requests are counted by both throttlers
+
+### Requirement: Skips match @nestjs/throttler
+For the same throttlers, skip metadata and request sequence, the requests Corvis counts, rejects and answers with
+throttler headers SHALL be the same as with `@nestjs/throttler`, where `#[set_metadata(SKIP_THROTTLE, true)]`
+corresponds to `@SkipThrottle()`, `skip_throttle([names])` to `@SkipThrottle({ name: true, ... })`, and a `false`
+value to `@SkipThrottle({ name: false })`. This is verified by the differential fixture of #120 and #135.
+
+#### Scenario: Replay of the recorded skip cases
+- **WHEN** the Rust test replays the skip cases recorded from `@nestjs/throttler` (a bare skip with named throttlers
+  only, a bare skip next to `default`, a skip by name, a controller skip undone by its handler, controller and handler
+  skipping different names)
+- **THEN** every response has the same status and the same throttler header names and values as recorded (time-based
+  values within one second)

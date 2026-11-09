@@ -425,6 +425,25 @@ mod async_registration {
     }
 
     #[corvis::test]
+    async fn throttler_factory_can_set_the_ipv6_prefix() {
+        let module = Test::create_testing_module()
+            .import_dynamic(ThrottlerModule::for_root_async(|_| async {
+                Ok(ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 1)]).with_ipv6_subnet_prefix(56))
+            }))
+            .controller::<AsyncThrottledController>()
+            .compile()
+            .await
+            .unwrap();
+        let mut app = module.create_corvis_application();
+        app.set_trust_proxy(true);
+        app.init().await.unwrap();
+        let c = request(&app);
+        c.get("/async-throttled").header("X-Forwarded-For", "2001:db8:0:10::1").send().await.expect_status(200);
+        c.get("/async-throttled").header("X-Forwarded-For", "2001:db8:0:1f::1").send().await.expect_status(429);
+        c.get("/async-throttled").header("X-Forwarded-For", "2001:db8:0:100::1").send().await.expect_status(200);
+    }
+
+    #[corvis::test]
     async fn throttler_factory_error_aborts_bootstrap() {
         let err = Test::create_testing_module()
             .import_dynamic(ThrottlerModule::for_root_async(|_| async { Err::<Vec<ThrottlerOptions>, _>(anyhow::anyhow!("no limit")) }))

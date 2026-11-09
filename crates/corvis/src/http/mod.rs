@@ -1,6 +1,8 @@
 //! HTTP primitives: requests, responses, exceptions and status codes.
 
 pub mod body_parser;
+#[cfg(feature = "compression")]
+pub mod compression;
 pub mod exception;
 pub mod express;
 pub mod json_parse;

@@ -43,7 +43,10 @@ When the limit is exceeded, the request receives:
 ## How counting works
 
 - The key of each counter combines the limit name, the client IP (`req.ip()`), the
-  controller and the handler. Each route has its own counter per client.
+  controller and the handler. Each route has its own counter per client. The IP is normalized like the original
+  library does: an IPv4 address is used as it is, an IPv4-mapped IPv6 address (`::ffff:1.2.3.4`) counts as its
+  IPv4 form, `::1` stays alone, and any other IPv6 address counts as its /64 prefix (see
+  [IPv6 clients](#ipv6-clients)).
 - The window slides: each request counts for `ttl` milliseconds from the moment it was made, and the
   count of a request is the number of hits of that key in the last `ttl`. A client cannot send twice the
   limit around the edge of a fixed window.
@@ -88,7 +91,8 @@ The guard reads four metadata keys, on the method or on the controller:
 
 | Constant | Effect |
 |---|---|
-| `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` skips the limit |
+| `SKIP_THROTTLE` | `#[set_metadata(SKIP_THROTTLE, true)]` skips the throttler named `default`, like a bare `@SkipThrottle()` |
+| `skip_throttle([..])`, `skip_throttle_key(name)` | Skip throttlers by name (see [Skipping throttlers](#skipping-throttlers)) |
 | `THROTTLE_LIMIT` | Changes the maximum number of requests |
 | `THROTTLE_TTL` | Changes the window, in milliseconds |
 | `THROTTLE_BLOCK_DURATION` | Changes the block duration, in milliseconds (`0`: no block) |
@@ -112,6 +116,41 @@ impl AuthController {
 ```
 
 `THROTTLE_LIMIT`, `THROTTLE_TTL` and `THROTTLE_BLOCK_DURATION` apply to all configured limits, not to one by name.
+
+### Skipping throttlers
+
+Skips are decided per throttler, as in the original library. `SKIP_THROTTLE` only skips the throttler named `default`; other throttlers keep counting the request and sending their headers. Skip them by name with `skip_throttle`, which returns a `CustomDecorator` (`@SkipThrottle({ short: true, long: true })`):
+
+```rust
+#[get("status")]
+#[apply_decorators(skip_throttle(["short", "long"]))]
+fn status(&self) -> &'static str {
+    "ok"
+}
+```
+
+The names must match `ThrottlerOptions::name`; a name no throttler has skips nothing. A skipped throttler does not count the request and sets no `X-RateLimit-*` or `Retry-After` header.
+
+For each throttler the guard looks at the method first and then at the controller, and the first value found wins. A method can undo a controller's skip for one throttler with `false`, using `skip_throttle_key(name)` (`"THROTTLER:SKIP"` followed by the name, as the original stores it); for `default`, `SKIP_THROTTLE` set to `false` works too:
+
+```rust
+#[controller("accounts")]
+#[apply_decorators(skip_throttle(["short"]))]
+pub struct AccountsController;
+
+#[routes]
+impl AccountsController {
+    #[post("login")]
+    #[set_metadata(skip_throttle_key("short"), false)]
+    fn login(&self) { /* ... */ }
+}
+```
+
+Gateway handlers use the same keys with `#[set_metadata(skip_throttle_key("short"), true)]`, since they have no `#[apply_decorators]`.
+
+::: warning Behavior change
+Before, `SKIP_THROTTLE` skipped every throttler. An app whose throttlers all have other names (`short`, `long`) and a route with `SKIP_THROTTLE` now throttles that route. The guard logs one warning per such route on its first request, naming the route; replace the skip with `skip_throttle(["short", "long"])` to keep the old behavior.
+:::
 
 ## Storage
 
@@ -172,6 +211,56 @@ ThrottlerModule::for_root_async(|ctx| async move {
 
 If the factory fails, the application does not start (`Error while instantiating ThrottlerStorage: ...`).
 
+## IPv6 clients
+
+A host or home connection usually gets a whole /64 (2^64 addresses). If every address counted as a different
+client, one client could get a fresh limit with each address it rotates through. `ThrottlerGuard` therefore keys
+IPv6 clients by prefix, 64 bits by default, as the original throttler library does since 6.7.0 (`ipv6SubnetPrefix`). Clients in
+the same /64 share their counters, like IPv4 clients behind one NAT.
+
+Change the length with `ThrottlerStorage::with_ipv6_subnet_prefix`. It applies to every throttler and works with
+`for_root_storage` and with `for_root_async` factories that return a storage:
+
+```rust
+use corvis::modules::throttler::ThrottlerStorage;
+
+// Larger allocations: many providers delegate a /56 or /48 to one customer.
+ThrottlerModule::for_root_storage(
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 10)]).with_ipv6_subnet_prefix(56),
+)
+```
+
+- `128` keeps each IPv6 address apart (the way to opt out of grouping). IPv4-mapped addresses still count as IPv4 and
+  `::1` stays alone. Values above 128 count as 128.
+- `56` or `48` make rotation harder for endpoints such as login, but clients that share such a prefix also share the
+  limit.
+- A prefix shorter than 32 bits is accepted, but it puts a large part of the address space in one counter, so a
+  warning is logged once when it is configured.
+
+Shared hosting is the case where grouping hurts: if a provider gives each VM a slice of one /64 (often a /128 per VM),
+all the VMs, and so all of your clients that live on them, share one counter. If your clients can sit on such
+addresses, use `with_ipv6_subnet_prefix(128)`, or key the counters yourself with a guard that calls `record_hit`.
+
+Where Corvis differs from the original library (security over parity), `normalize_ip` returns the client's IPv4
+address for addresses that embed it, whatever the prefix:
+
+- NAT64 `64:ff9b::/96`. A stateless translator (NAT46, SIIT-DC) shows every IPv4 client as `64:ff9b::a.b.c.d`; the
+  /64 would put all of them in one counter. A deployment with its own translation prefix is not recognized: use
+  `with_ipv6_subnet_prefix(128)` or a custom tracker there.
+- 6to4 `2002::/16` (the IPv4 address is bits 16 to 47; one IPv4 address owns a whole /48 of them) and Teredo
+  `2001::/32` (the client's IPv4 address is the last 32 bits, inverted).
+- The deprecated IPv4-compatible form `::a.b.c.d`, except `::` and `::1`.
+
+An address with a port (`203.0.113.5:54321`, `[2001:db8:1:2::1]:443`) or a bracketed IPv6 address
+(`[2001:db8:1:2::1]`) counts as the address alone; some proxies write the port in `X-Forwarded-For`, and every
+connection would otherwise get its own counter. The rest of the original's output is unchanged and checked against it.
+
+`req.ip()`, `req.ips()` and `#[ip]` still return the full address; only the throttler key changes. A guard of your
+own that calls `ThrottlerStorage::record_hit` can build the same client key with
+`corvis::modules::throttler::normalize_ip(&req.ip(), prefix)`, a port of the original's `normalizeIp`. Anything that is
+not an IP address, with or without a port (see [Behind a proxy](#behind-a-proxy)) is returned unchanged, and a zone identifier (`%eth0`) is
+dropped from valid addresses.
+
 ## Behind a proxy
 
 The key uses `req.ip()`, which by default is the socket address. Behind a reverse proxy all
@@ -185,6 +274,9 @@ app.set_trust_proxy(1); // one proxy in front
 Use `true` (trust all hops) only if every request goes through a proxy that
 rewrites `X-Forwarded-For`: otherwise, a client can choose its IP and bypass the limit. See
 [HTTP adapters](/http/performance).
+
+The counter uses the normalized form of the client entry that `trust proxy` resolves. Entries that are neither IP
+addresses nor an address with a port are kept as they are, so a client that can choose its `X-Forwarded-For` entry still chooses its counter.
 
 ## Response headers
 
@@ -212,5 +304,4 @@ Browsers only let a page read these headers if the CORS configuration exposes th
 
 ## Limitations
 
-- `SKIP_THROTTLE` skips every throttler, while the original's `@SkipThrottle()` skips only the throttler named `default` unless the others are listed.
 - A global `ThrottlerGuard` also counts WebSocket gateway messages, per handshake IP and handler, so a long-lived connection can exhaust its limit. `app.apply_global_enhancers_to_gateways(false)` leaves gateways out. Plain `corvis::ws` listeners are never counted.
