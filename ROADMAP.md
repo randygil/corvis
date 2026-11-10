@@ -86,7 +86,7 @@ Gateways compatible with socket.io (the default WebSocket adapter of the origina
 | #34 | Rooms and broadcast | M | `e2-socket-io-rooms-and-broadcast` |
 | #35 | IoAdapter for gateways | M | `e2-socket-io-gateway-adapter` |
 | #36 | Redis adapter for multiple instances | M | `e2-socket-io-redis-adapter` |
-| #37 | Differential tests against Node socket.io | M | `e2-differential-tests-against-node-socket-io` |
+| #37 | Differential tests against Node socket.io | M | `e2-socket-io-differential-tests` |
 | #38 | Socket.IO docs and example | S | `e2-socket-io-docs-and-example` |
 
 ### E3 · Authentication strategies (Passport style) — #39
