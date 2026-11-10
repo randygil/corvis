@@ -169,7 +169,8 @@ async fn every_recorded_case_is_replayed() {
             continue;
         }
         let req = &case["request"];
-        let headers: Vec<(&str, &str)> = req["headers"].as_object().unwrap().iter().map(|(k, v)| (k.as_str(), v.as_str().unwrap())).collect();
+        let headers: Vec<(&str, &str)> =
+            req["headers"].as_object().unwrap().iter().map(|(k, v)| (k.as_str(), v.as_str().unwrap())).collect();
         let r = post(&app, req["path"].as_str().unwrap(), &headers, req["body"].as_str().unwrap_or("")).await;
         let recorded = &case["response"];
         assert_eq!(r.status as u64, recorded["status"].as_u64().unwrap(), "{name}: status, body {}", r.text());

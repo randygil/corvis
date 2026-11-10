@@ -2,6 +2,8 @@ use corvis::Validate;
 use corvis_swagger::ApiSchema;
 use serde::{Deserialize, Serialize};
 
+// The fields are validated and documented here; the `local` strategy of the login route reads the credentials itself.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Validate, ApiSchema)]
 pub struct SignInDto {
     #[is_string]

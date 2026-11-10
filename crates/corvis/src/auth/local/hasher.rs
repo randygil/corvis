@@ -316,7 +316,9 @@ fn check_algorithm_range(algorithm: &Algorithm, limits: &VerifyLimits) -> Result
                 || p.iterations > limits.max_argon2_iterations
                 || p.parallelism > limits.max_argon2_parallelism
             {
-                return Err(PasswordError::Config("argon2 parameters are above the verification limits, the hasher could not verify its own hashes"));
+                return Err(PasswordError::Config(
+                    "argon2 parameters are above the verification limits, the hasher could not verify its own hashes",
+                ));
             }
         }
         Algorithm::Bcrypt { cost } => {
@@ -324,7 +326,9 @@ fn check_algorithm_range(algorithm: &Algorithm, limits: &VerifyLimits) -> Result
                 return Err(PasswordError::Config("bcrypt cost must be between 4 and 31"));
             }
             if *cost > limits.max_bcrypt_cost {
-                return Err(PasswordError::Config("bcrypt cost is above the verification limit, the hasher could not verify its own hashes"));
+                return Err(PasswordError::Config(
+                    "bcrypt cost is above the verification limit, the hasher could not verify its own hashes",
+                ));
             }
         }
     }
@@ -500,8 +504,7 @@ impl PasswordHasher {
     }
 
     fn run_blocking<T>(&self, work: impl FnOnce(&Inner) -> Result<T, PasswordError>) -> Result<T, PasswordError> {
-        let _permit =
-            futures::executor::block_on(self.inner.slots.clone().acquire_owned()).map_err(|_| PasswordError::Internal)?;
+        let _permit = futures::executor::block_on(self.inner.slots.clone().acquire_owned()).map_err(|_| PasswordError::Internal)?;
         catch_unwind(AssertUnwindSafe(|| work(&self.inner))).unwrap_or(Err(PasswordError::Internal))
     }
 }
@@ -633,6 +636,13 @@ fn hash_with(algorithm: &Algorithm, password: &[u8], max_password: Option<usize>
 }
 
 #[cfg(test)]
+impl PasswordHasher {
+    pub(crate) fn probe(&self) -> &probe::Probe {
+        &self.inner.probe
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod probe {
     //! Counts the key derivations of a hasher, the peak of concurrent ones, and lets a test hold them.
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -689,12 +699,5 @@ pub(crate) mod probe {
         fn drop(&mut self) {
             self.0.running.fetch_sub(1, Ordering::SeqCst);
         }
-    }
-}
-
-#[cfg(test)]
-impl PasswordHasher {
-    pub(crate) fn probe(&self) -> &probe::Probe {
-        &self.inner.probe
     }
 }

@@ -56,10 +56,14 @@ async fn bcrypt_hashes_are_2b_and_verify() {
 #[test]
 fn parameters_below_the_floor_stop_construction() {
     assert!(PasswordHasher::new(PasswordHasherOptions::argon2id(SMALL)).is_err());
-    assert!(PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params { memory_kib: 19456, iterations: 1, parallelism: 1 })).is_err());
+    assert!(
+        PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params { memory_kib: 19456, iterations: 1, parallelism: 1 })).is_err()
+    );
     assert!(PasswordHasher::new(PasswordHasherOptions::bcrypt(9)).is_err());
     // The other OWASP equivalent is accepted: 46 MiB with one iteration.
-    assert!(PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params { memory_kib: 47104, iterations: 1, parallelism: 1 })).is_ok());
+    assert!(
+        PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params { memory_kib: 47104, iterations: 1, parallelism: 1 })).is_ok()
+    );
     assert!(PasswordHasher::new(PasswordHasherOptions::bcrypt(10)).is_ok());
     // The opt-out is explicit.
     assert!(PasswordHasher::new(PasswordHasherOptions::bcrypt(4).allow_weak_parameters()).is_ok());
@@ -194,7 +198,8 @@ async fn bcryptjs_hashes_verify_whatever_the_configured_algorithm() {
 
 #[tokio::test]
 async fn needs_rehash_follows_the_configuration() {
-    let two = PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params { memory_kib: 19456, iterations: 2, parallelism: 1 })).unwrap();
+    let two =
+        PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params { memory_kib: 19456, iterations: 2, parallelism: 1 })).unwrap();
     let old = small_argon().hash("x").await.unwrap(); // m=8, t=1
     assert!(two.needs_rehash(&old));
     let fresh = two.hash("x").await.unwrap();
@@ -231,7 +236,10 @@ async fn an_unknown_user_costs_one_derivation_like_a_known_one() {
 
 #[tokio::test]
 async fn the_dummy_algorithm_can_differ() {
-    let h = PasswordHasher::new(PasswordHasherOptions::argon2id(SMALL).allow_weak_parameters().dummy_algorithm(DummyAlgorithm::Bcrypt { cost: 4 })).unwrap();
+    let h = PasswordHasher::new(
+        PasswordHasherOptions::argon2id(SMALL).allow_weak_parameters().dummy_algorithm(DummyAlgorithm::Bcrypt { cost: 4 }),
+    )
+    .unwrap();
     assert!(!h.verify_dummy("x").await);
     assert_eq!(derivations(&h), 1);
 }
