@@ -75,16 +75,25 @@ si configuraste `expires_in`) y devuelve el token:
 use corvis::JwtService;
 use corvis::prelude::*;
 
+use corvis::auth::local::PasswordHasher;
+
 #[injectable]
 pub struct AuthService {
     users_service: Arc<UsersService>,
     jwt_service: Arc<JwtService>,
+    hasher: Arc<PasswordHasher>,
 }
 
 impl AuthService {
     pub async fn sign_in(&self, username: &str, pass: &str) -> HttpResult<Value> {
         let user = self.users_service.find_one(username).await;
-        let Some(user) = user.filter(|u| u.password == pass) else {
+        // Una verificación real exista o no el usuario, para que el tiempo de respuesta no revele usuarios.
+        let ok = self
+            .hasher
+            .verify_or_dummy(pass, user.as_ref().map(|u| u.password_hash.as_str()))
+            .await
+            .map_err(|_| InternalServerErrorException::empty())?;
+        let Some(user) = user.filter(|_| ok) else {
             return Err(UnauthorizedException.into());
         };
         let payload = JwtPayload { sub: user.user_id, username: user.username, roles: user.roles };
@@ -94,6 +103,7 @@ impl AuthService {
 }
 ```
 
+<<<<<<< ours
 ::: warning Texto del error
 El texto `Display` de un error de verificación puede citar partes del token (por ejemplo el valor de una cabecera o
 de un claim), nunca material de claves. Puedes registrarlo, pero no lo devuelvas a los clientes tal cual.
@@ -103,6 +113,13 @@ de un claim), nunca material de claves. Puedes registrarlo, pero no lo devuelvas
 El ejemplo compara contraseñas en texto plano para no distraer del flujo. En una aplicación real
 guarda un hash y compáralo con una función de derivación lenta; ver
 [Cifrado y hashing](/es/security/encryption-and-hashing).
+=======
+::: tip Contraseñas
+El ejemplo guarda un hash (argon2id por defecto) y lo verifica con `PasswordHasher`, una pieza de Corvis
+(`auth-local`); ver [Cifrado y hashing](/es/security/encryption-and-hashing). Con la estrategia `local` el
+guard hace por ti la lectura de las credenciales y esta validación: ver
+[Passport](/es/recipes/passport#estrategia-local-usuario-y-contrasena).
+>>>>>>> theirs
 :::
 
 Para opciones por llamada existe `sign_with(&payload, JwtSignOptions { .. })`, con `expires_in`,

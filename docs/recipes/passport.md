@@ -6,7 +6,7 @@ status: partial
 
 Corvis has the **strategy model** of Passport and its integration for the original framework: strategies registered by name, an `AuthGuard` that runs them, the user on the request and the `401` the original answers when every strategy fails. Its behavior is checked against the original passport integration (12.0.1) over `passport` 0.7.0 with recorded responses.
 
-What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy). The other strategies arrive one by one: local (username and password), API keys, sessions and OAuth2 are tracked in their own issues (#41, #45, #44 and #43). A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
+What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy) and the [local strategy](#local-strategy-username-and-password) (username and password, with the `auth-local` feature). The other strategies arrive one by one: API keys, sessions and OAuth2 are tracked in their own issues (#45, #44 and #43). A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
 
 ## The model
 
@@ -262,6 +262,81 @@ A failed attempt keeps its reason as `request.auth_info()` (`{"message": "jwt ex
 ### Testing against the original
 
 `crates/corvis/tests/fixtures/auth/jwt.mjs` runs `passport-jwt` 4.0.1 (over `jsonwebtoken` 9.0.x) behind the original guard with one route per strategy and records 65 cases (`jwt.json`): extractors, `Authorization` parsing, algorithms (`none`, confusion between families, explicit lists), time claims, audience and issuer, key providers, RS256, PS256 and ES256. `crates/corvis/tests/auth_jwt.rs` replays them against the same routes, signing the tokens again, with no Node needed at test time.
+
+## Local strategy (username and password)
+
+The local strategy is the port of `passport-local` 1.0.0. It needs the `auth-local` cargo feature, which also brings [`PasswordHasher`](/security/encryption-and-hashing). You write the validator, the class `PassportStrategy(Strategy)` is in the original, and register `LocalStrategy<YourValidator>`:
+
+```rust
+use corvis::auth::local::{LocalStrategy, LocalValidator, PasswordHasher};
+use corvis::auth::{AuthGuard, User};
+use corvis::prelude::*;
+
+#[injectable]
+pub struct LocalAuth {
+    users: Arc<UsersService>,
+    hasher: Arc<PasswordHasher>,
+}
+
+#[async_trait]
+impl LocalValidator for LocalAuth {
+    type User = PublicUser; // Serialize + Clone; leave the password hash out of it
+
+    async fn validate(&self, _req: &Request, username: &str, password: &str) -> Result<Option<PublicUser>, HttpException> {
+        let user = self.users.find_by_username(username).await;
+        // one real verification whether the user exists or not
+        let ok = self
+            .hasher
+            .verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str()))
+            .await
+            .map_err(|_| InternalServerErrorException::empty())?;
+        Ok(user.filter(|_| ok).map(PublicUser::from))
+    }
+}
+
+#[module(
+    providers = [
+        Provider::class::<PasswordHasher>(),
+        Provider::class::<LocalAuth>(),
+        Provider::strategy::<LocalStrategy<LocalAuth>>(),
+    ],
+    controllers = [AuthController],
+)]
+pub struct AuthModule;
+
+#[controller("auth")]
+pub struct AuthController;
+
+#[routes]
+impl AuthController {
+    #[post("login")]
+    #[use_guards(AuthGuard::new("local"))]
+    fn login(&self, user: User<PublicUser>) -> Value {
+        json!({ "username": user.username })
+    }
+}
+```
+
+`validate` returns the user (a success), `Ok(None)` (the credentials are refused: `401`) or an exception, which is answered as it is (a `ForbiddenException::new("Account locked")` gives the `403`). The strategy is named `"local"`; set `const NAME` in the validator for another name.
+
+| `passport-local` | Corvis (`LocalValidator::options`) |
+|---|---|
+| `usernameField` (`username`) | `LocalStrategyOptions::default().username_field("email")` |
+| `passwordField` (`password`) | `.password_field("pass")` |
+| `passReqToCallback` | `validate` always receives the `Request` |
+| none | `.max_username_bytes(1024)`, `.max_password_bytes(1024)` |
+
+Credentials are read like `passport-local` does: each field is looked up in the parsed body (JSON or `application/x-www-form-urlencoded`) and then, if the body has no value, in the query string. A field name like `user[email]` is a path (`body.user.email`); a segment of an array is an index; a string met before the end of the path is the value; an object or array at the end gives no value. A value that is absent, empty, or not a string is missing, and when either credential is missing the strategy fails without calling `validate`. `AuthGuard` answers the same `401` for every failure; the failure itself (`{"message":"Missing credentials"}`, status `400`) is available to `.on_failure(..)`. An empty field name stops the application at startup.
+
+Do not send credentials in the query string unless you have to: URLs end up in logs. The query is read because the original reads it.
+
+### Differences from passport-local
+
+- **Non-string credentials are missing.** The original passes a number or a boolean to `validate()`; Corvis treats them as missing, so a user lookup never sees a type it did not expect.
+- **Credentials are bounded.** A username or a password over 1024 bytes (configurable) fails without calling `validate`. The original has no limit besides the body size. Raise the limits with `.max_password_bytes(4096)` if your users need it; the hasher has its own `max_password_bytes`.
+- **Failures are uniform.** Missing credentials, wrong passwords and unknown users all give the same `401`, and the validator above spends one hash verification in every case.
+- **Login throttling is separate.** Pair the login route with the [throttler](/security/rate-limiting) (the cats example allows five attempts a minute per client); hashing is expensive on purpose, and a flood queues behind the hasher's `max_concurrent` slots.
+
 
 ## Differential testing
 

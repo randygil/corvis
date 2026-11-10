@@ -75,16 +75,25 @@ if you configured `expires_in`) and returns the token:
 use corvis::JwtService;
 use corvis::prelude::*;
 
+use corvis::auth::local::PasswordHasher;
+
 #[injectable]
 pub struct AuthService {
     users_service: Arc<UsersService>,
     jwt_service: Arc<JwtService>,
+    hasher: Arc<PasswordHasher>,
 }
 
 impl AuthService {
     pub async fn sign_in(&self, username: &str, pass: &str) -> HttpResult<Value> {
         let user = self.users_service.find_one(username).await;
-        let Some(user) = user.filter(|u| u.password == pass) else {
+        // One real verification whether the user exists or not, so the response time does not reveal usernames.
+        let ok = self
+            .hasher
+            .verify_or_dummy(pass, user.as_ref().map(|u| u.password_hash.as_str()))
+            .await
+            .map_err(|_| InternalServerErrorException::empty())?;
+        let Some(user) = user.filter(|_| ok) else {
             return Err(UnauthorizedException.into());
         };
         let payload = JwtPayload { sub: user.user_id, username: user.username, roles: user.roles };
@@ -94,6 +103,7 @@ impl AuthService {
 }
 ```
 
+<<<<<<< ours
 ::: warning Error text
 The `Display` text of a verification error can quote parts of the token (for example a header or claim value),
 never key material. Log it if you need to, but do not return it to clients verbatim.
@@ -103,6 +113,13 @@ never key material. Log it if you need to, but do not return it to clients verba
 The example compares passwords in plain text so as not to distract from the flow. In a real application,
 store a hash and compare it with a slow derivation function; see
 [Encryption and hashing](/security/encryption-and-hashing).
+=======
+::: tip Passwords
+The example stores a hash (argon2id by default) and verifies it with `PasswordHasher`, a feature of Corvis
+(`auth-local`); see [Encryption and hashing](/security/encryption-and-hashing). With the `local` strategy the
+guard does the credential reading and this validation for you: see
+[Passport](/recipes/passport#local-strategy-username-and-password).
+>>>>>>> theirs
 :::
 
 For per-call options there is `sign_with(&payload, JwtSignOptions { .. })`, with `expires_in`,
