@@ -104,6 +104,9 @@ artifacts if it differs.
 - [x] 8.9 Round 3: `check_header` and `JwtService::decode` parse untrusted bytes with a plain visitor, not
   `serde_json::Value`; tests with `raw_value` on (nested token on a 2 MiB stack, feature-dependent header)
 
+- [x] 8.10 Round 4: `check_header` validates the header with a discarding visitor (no `Value`), verified claims decode
+  through `PlainJson`, design note on `arbitrary_precision`; tests in `tests/auth_jwt_header.rs`
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

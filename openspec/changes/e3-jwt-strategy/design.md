@@ -367,3 +367,27 @@ The first security review found the points below. The maintainer's decisions ove
 2. **Audit of the rest.** `verify_claims` parses the payload into `Value` through `jsonwebtoken::decode`, which does so
    only after the signature verified; that is fine. The key provider receives the raw token and does its own parsing.
    Nothing else in `jwt.rs` or `auth/jwt/` deserializes unverified bytes.
+
+## Security review (round 4)
+
+1. **The header check keeps nothing** (Low). `check_header` built a full `Value` of the unverified header to learn two
+   facts, so a header such as `{"alg":"HS256","z":[[0],[0],...]}` cost about 97 times its size in transient heap before
+   the signature was checked. It now deserializes into `HeaderShape`, a visitor that reports whether the top level is an
+   object and whether any top-level key equals `crit` exactly (after unescaping, duplicates in any order included), and
+   discards every value through `Discard`. `Discard` is not `serde::de::IgnoredAny`: that type makes `serde_json` take
+   its fast `ignore_value` path, which does not validate numbers, surrogates or UTF-8 (the round 2 bypass). `Discard`
+   goes through `deserialize_any`, so the text parser validates the whole document as before (strings, escapes,
+   numbers, UTF-8, the depth limit of 128, trailing characters). Heap is O(longest key or string), not O(document); the
+   reviewer's memory probe reports 1.0x the decoded header.
+2. **Claims are decoded through `PlainJson`** (Info). After the signature, `verify_claims` decoded the payload with
+   `jsonwebtoken::decode::<Value>`, whose visitor re-parses the `RawValue` magic key when `serde_json/raw_value` is on,
+   so a signed, nested payload could overflow a 2 MiB stack in a debug build. It now uses
+   `decode::<PlainJson>(...).claims.0`. The generic `T` that `JwtService::verify::<T>` finally returns is the caller's
+   own type: a caller that asks for `Value` gets that type's own deserializer.
+3. **Feature independence** (Info). The claim that results do not depend on `serde_json` features holds for the features
+   in the lock file (`preserve_order`, `raw_value`). `arbitrary_precision` is not supported: with it, numbers reach a
+   visitor as a one-member map keyed `$serde_json::private::Number`, which `PlainJson` would keep as an object.
+   Tests: `tests/auth_jwt_header.rs` (the round 2 headers and the `crit` forms unchanged, a signed nested magic-key
+   payload on a 2 MiB stack through `verify` and the strategy, a wide header accepted when signed and refused with
+   `crit`). The reviewer's proofs of concept (`crit` matrices, 40000-header grammar fuzz with 0 bypasses, decode
+   parity) give the same results with and without `raw_value`.

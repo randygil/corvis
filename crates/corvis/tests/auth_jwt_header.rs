@@ -147,3 +147,77 @@ fn decode_does_not_follow_the_magic_key() {
     let payload = b64(format!(r#"{{"z":{{"{RAW}":"[1"}}}}"#).as_bytes());
     assert!(svc.decode(&format!("a.{payload}.c")).is_some());
 }
+
+fn sign_payload(header: &str, payload: &str) -> String {
+    let message = format!("{}.{}", b64(header.as_bytes()), b64(payload.as_bytes()));
+    let sig = jsonwebtoken::crypto::sign(message.as_bytes(), &EncodingKey::from_secret(SECRET.as_bytes()), Algorithm::HS256).unwrap();
+    format!("{message}.{sig}")
+}
+
+#[test]
+fn the_round_two_headers_and_the_crit_forms_keep_their_outcome() {
+    let svc = JwtService::new(JwtModuleOptions::new(SECRET));
+    let refused = [
+        r#"{"alg":"HS256","crit":["x"]}"#,
+        r#"{"alg":"HS256","crit":["x"]}"#,
+        r#"{"crit":["a"],"alg":"HS256","crit":1}"#,
+        r#"{"alg":"HS256","crit":["x"],"x":1}"#,
+        r#"{"alg":"HS256","z":1e,"crit":["x"]}"#,
+        r#"{"alg":"HS256","z":"\ud800","crit":["x"]}"#,
+        r#"{"alg":"HS256","z":01,"crit":["x"]}"#,
+        r#"{"alg":"HS256"} x"#,
+        r#"["alg"]"#,
+        r#""HS256""#,
+        r#"{"alg":"HS256","z":1e999999,"crit":1}"#,
+    ];
+    for header in refused {
+        assert!(svc.verify::<Value>(&sign(header)).is_err(), "{header}");
+    }
+    let accepted = [
+        r#"{"alg":"HS256","CRIT":["x"]}"#,
+        r#"{"alg":"HS256","crit2":1}"#,
+        r#"{"alg":"HS256","z":{"crit":1}}"#,
+        r#"{"alg":"HS256","z":"crit"}"#,
+    ];
+    for header in accepted {
+        assert!(svc.verify::<Value>(&sign(header)).is_ok(), "{header}");
+    }
+    // Invalid UTF-8 inside a string of the header.
+    let mut bad = br#"{"alg":"HS256","z":"x"#.to_vec();
+    bad.push(0xff);
+    bad.extend_from_slice(br#"","crit":1}"#);
+    let message = format!("{}.{}", b64(&bad), b64(br#"{"sub":"u"}"#));
+    let sig = jsonwebtoken::crypto::sign(message.as_bytes(), &EncodingKey::from_secret(SECRET.as_bytes()), Algorithm::HS256).unwrap();
+    assert!(svc.verify::<Value>(&format!("{message}.{sig}")).is_err());
+}
+
+#[test]
+fn a_signed_payload_with_the_magic_key_nested_is_handled_on_a_small_stack() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let payload = raw_nest(8, 125).replacen(r#""alg":"HS256","#, r#""sub":"u","exp":4102444800,"#, 1);
+    let token = sign_payload(r#"{"alg":"HS256","typ":"JWT"}"#, &payload);
+    assert!(token.len() < 8192);
+    let strategy_token = token.clone();
+    small_stack(move || {
+        let svc = JwtService::new(JwtModuleOptions::new(SECRET));
+        // The claims are read as plain JSON; a caller that asks for `Value` back would parse them again itself, so
+        // this asks for a type that keeps nothing.
+        assert!(svc.verify::<serde::de::IgnoredAny>(&token).is_ok());
+    });
+    let code = small_stack(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(status(&strategy_token))
+    });
+    assert_eq!(code, 200);
+}
+
+#[test]
+fn a_wide_header_is_accepted_when_signed_and_refused_with_crit() {
+    let svc = JwtService::new(JwtModuleOptions::new(SECRET));
+    let wide = format!(r#"{{"alg":"HS256","z":[{}]"#, vec!["[0]"; 1400].join(","));
+    let token = sign(&format!("{wide}}}"));
+    assert!(token.len() < 8192, "{}", token.len());
+    assert!(svc.verify::<Value>(&token).is_ok());
+    assert!(svc.verify::<Value>(&sign(&format!(r#"{wide},"crit":["x"]}}"#))).is_err());
+    assert!(svc.verify::<Value>(&sign(&format!(r#"{{"crit":["x"],{}}}"#, &wide[1..]))).is_err());
+}

@@ -248,7 +248,7 @@ pub(crate) fn verify_claims(token: &str, key: &DecodingKey, validation: &Validat
         Some(HeaderProblem::Malformed) => return Err(VerifyError::Claim("jwt malformed")),
         None => {}
     }
-    let claims = jsonwebtoken::decode::<Value>(token, key, validation).map_err(VerifyError::Decode)?.claims;
+    let claims = jsonwebtoken::decode::<PlainJson>(token, key, validation).map_err(VerifyError::Decode)?.claims.0;
     check_time_claims(&claims, rules, chrono::Utc::now().timestamp())?;
     Ok(claims)
 }
@@ -349,15 +349,130 @@ pub(crate) fn parse_untrusted(bytes: &[u8]) -> Option<Value> {
     serde_json::from_slice::<PlainJson>(bytes).ok().map(|p| p.0)
 }
 
-/// Checks the protected header and fails closed: a header that is not a JSON object parsed by [`parse_untrusted`]
-/// is refused, because the decoder skips unknown members without validating them and would let such a header
-/// carry a `crit` member unseen. Only the exact member name `crit` counts.
+/// What the header check needs to know about a document, found without keeping any of it.
+struct HeaderShape {
+    object: bool,
+    crit: bool,
+}
+
+/// Deserializes and discards a value. Unlike `serde::de::IgnoredAny` it goes through `deserialize_any`, so the text
+/// parser validates everything (numbers, escapes, surrogates, UTF-8, the depth limit) as for a value that is kept.
+struct Discard;
+
+impl<'de> serde::Deserialize<'de> for Discard {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Discard;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_str<E>(self, _: &str) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_unit<E>(self) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Discard, A::Error> {
+                while seq.next_element::<Discard>()?.is_some() {}
+                Ok(Discard)
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Discard, A::Error> {
+                while map.next_entry::<Discard, Discard>()?.is_some() {}
+                Ok(Discard)
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+/// A member name reduced to whether it is exactly `crit` (after unescaping).
+struct IsCrit(bool);
+
+impl<'de> serde::Deserialize<'de> for IsCrit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = IsCrit;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a member name")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<IsCrit, E> {
+                Ok(IsCrit(v == "crit"))
+            }
+        }
+        deserializer.deserialize_str(V)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HeaderShape {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        struct V;
+        const OTHER: HeaderShape = HeaderShape { object: false, crit: false };
+        impl<'de> Visitor<'de> for V {
+            type Value = HeaderShape;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_str<E>(self, _: &str) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_unit<E>(self) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<HeaderShape, A::Error> {
+                while seq.next_element::<Discard>()?.is_some() {}
+                Ok(OTHER)
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<HeaderShape, A::Error> {
+                let mut crit = false;
+                while let Some(IsCrit(is_crit)) = map.next_key::<IsCrit>()? {
+                    crit |= is_crit;
+                    map.next_value::<Discard>()?;
+                }
+                Ok(HeaderShape { object: true, crit })
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+/// Checks the protected header and fails closed: a header that is not a JSON object accepted by the strict text
+/// parser is refused, because the decoder skips unknown members without validating them and would let such a header
+/// carry a `crit` member unseen. Only the exact member name `crit` counts. The header is validated while it is read
+/// and nothing of it is kept, so the memory used does not grow with the document.
 pub(crate) fn check_header(token: &str) -> Option<HeaderProblem> {
     use base64::Engine as _;
     let header = token.split('.').next().unwrap_or("");
     let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(header) else { return Some(HeaderProblem::Malformed) };
-    match parse_untrusted(&bytes) {
-        Some(Value::Object(map)) => map.contains_key("crit").then_some(HeaderProblem::Crit),
+    match serde_json::from_slice::<HeaderShape>(&bytes) {
+        Ok(HeaderShape { object: true, crit }) => crit.then_some(HeaderProblem::Crit),
         _ => Some(HeaderProblem::Malformed),
     }
 }
