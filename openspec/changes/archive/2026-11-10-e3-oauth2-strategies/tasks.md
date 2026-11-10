@@ -16,7 +16,7 @@ No compilation is needed to review this plan; every task below ends with how to 
   `crates/corvis/Cargo.toml` and the empty `corvis::auth::oauth2` module behind it; verify
   `cargo clippy -p corvis --no-default-features --features auth-oauth2 -- -D warnings` passes, `cargo tree -d -p
   corvis --features auth-oauth2` shows no new duplicate, `Cargo.lock` gains no package, and `cargo deny check` passes
-- [ ] 1.3 Add `auth-oauth2` to the per-feature loop (`.github/workflows/ci.yml:68-73`) and a
+- [x] 1.3 Add `auth-oauth2` to the per-feature loop (`.github/workflows/ci.yml:68-73`) and a
   `cargo test -p corvis --features auth-oauth2 --no-fail-fast` step next to the `compression` one (line 114); verify
   the steps run in the pull request's CI
 
@@ -153,7 +153,7 @@ No compilation is needed to review this plan; every task below ends with how to 
   `auth_oauth2.rs`, without Node and without network access beyond `127.0.0.1`
 - [x] 9.4 Regression tests exist for every scenario of `auth/oauth2`
 - [x] 9.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 9.6 corvis-parity check: the change adds code only behind `auth-oauth2`, which the ports do not enable; if any
+- [x] 9.6 corvis-parity check: the change adds code only behind `auth-oauth2`, which the ports do not enable; if any
   runtime code compiled without the feature changed (for example `Request`, `AuthGuard`, the `Authenticator`), run
   the check and verify the three port apps (consi, facten, houseplan) keep 0 apidiff differences; otherwise record in
   the archive notes that nothing outside the feature changed
@@ -199,6 +199,28 @@ No compilation is needed to review this plan; every task below ends with how to 
   startup warning; verify with the provider assertions and the log test
 - [x] 11.3 Redeemed entries kept through the second they expire in; cookie-name prefixes compared without case
 - [x] 11.4 Docs (EN, ES), the option's rustdoc, the example's comment and the spec state the provider rule
+
+## Verification
+
+Checked on `dev` at 3f38204 (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy with the `auth-oauth2` feature loop, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test --workspace` | 1926 passed, 0 failed, 95 ignored |
+| `cargo check -p corvis --tests --features <f>` for compression, auth-local, auth-api-key, auth-session, socket-io, auth-oauth2 | no warnings |
+| `cargo deny check` | advisories, bans, licenses, sources ok (no new dependency) |
+| Security review, first round | eight areas with proofs of concept; 2 medium (one flow could hold every in-flight slot; `provider` fixed for a preset pointed elsewhere), 2 low, notes; all fixed (group 10) |
+| Security review, second round | no fix bypassed; 2 low (a 404 answered the callback's query; a strategy named like a preset shared its id space), notes; fixed (group 11) |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 636 checks equal, 0 different; route tables identical; databases equivalent (see note) |
+
+Notes: the group 11 changes were verified by their regression tests and the full workspace run, not by a third review
+round. The first houseplan run had one difference of 636, in a comparison of recorded outgoing calls (one message to
+the mocked Telegram API present on the port's side and not on the original's for one scenario), with every HTTP
+status and body equal; the immediate rerun was clean and the difference was not investigated further. It is not on a
+path this change touches.
 
 ## Workflow follow-up
 
