@@ -648,7 +648,9 @@ parsing, logs and the session interaction held. The maintainer decided these fix
   subdomain can plant a cookie (login CSRF) and how to fix it. Not an error: plain-HTTP development and shared
   domains are legitimate.
 - **L2 (Low, example).** The cats example's exception filter answered `request.url()` and echoed the callback's `code`
-  and `state`; it now answers `redacted_url()` (tested).
+  and `state`; it now answers `redacted_url()` (tested). The strategies also declare `error_description` and
+  `error_uri` as query parameters to hide: they are no credentials, but they are text the other side of the redirect
+  chose, and a log line or an error body that prints the redacted URL must not reflect them.
 - **I1.** Flow expiry used unchecked arithmetic and overflowed for a timestamp of `i64::MIN`. It now uses checked
   arithmetic and treats an impossible timestamp as an invalid flow.
 - **I2.** A validator returning `None` or an empty user answered 401 even with `failure_redirect`. With a failure

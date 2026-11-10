@@ -558,7 +558,9 @@ impl<V: OAuth2Validator> Strategy for OAuth2Strategy<V> {
 
     /// The callback carries the authorization `code` and the `state` in its query string.
     fn credential_query_params(&self) -> Vec<String> {
-        vec!["code".to_string(), "state".to_string()]
+        // `error_description` and `error_uri` are no credentials, but they are text the other side of the redirect
+        // chose: hidden too, so no log line or error body that prints the redacted URL reflects them.
+        ["code", "state", "error_description", "error_uri"].map(String::from).to_vec()
     }
 
     async fn authenticate(&self, ctx: &ExecutionContext, options: &AuthenticateOptions) -> StrategyOutcome {
