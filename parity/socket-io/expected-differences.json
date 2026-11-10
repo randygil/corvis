@@ -106,5 +106,59 @@
     "path": "$.entries[1].data.closed",
     "reason": "the same bound: the packet is undecodable, Corvis closes the connection (stricter, fail-closed) and Node keeps it open",
     "spec": "ws/socket-io: Lone surrogates are refused (Lone surrogate in an argument)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[0].data.ok",
+    "reason": "Node has no bound on the rooms of a socket and joins all 1,000 of the call (1,001 with its own id); Corvis refuses a join that would pass max_rooms_per_socket (1,000) and joins none of its rooms",
+    "spec": "ws/socket-io-rooms: Rooms per socket are bounded (Room cap)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[0].data.rooms",
+    "reason": "the same bound: Node acknowledges the 1,001 rooms of the socket, Corvis acknowledges the refusal and no room count",
+    "spec": "ws/socket-io-rooms: Rooms per socket are bounded (Room cap)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[1].data.rooms",
+    "reason": "the same bound: the refused join left the socket in its own room only",
+    "spec": "ws/socket-io-rooms: Rooms per socket are bounded (Room cap)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[3].data.ok",
+    "reason": "Node accepts a room name of any length; Corvis refuses one over max_room_name_length (256 bytes)",
+    "spec": "ws/socket-io-rooms: Room names are bounded and never widen a broadcast (Long name in join)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[4].data.rooms",
+    "reason": "the same bound: the refused 257-byte name left the socket without the room Node would have joined",
+    "spec": "ws/socket-io-rooms: Room names are bounded and never widen a broadcast (Long name in join)"
+  },
+  {
+    "scenario": "socket-io/rooms/broadcast-ack",
+    "path": "$.entries[3].data.ok",
+    "reason": "Node without timeout() sets a timer with an undefined delay, which fires at once: the call fails with operation has timed out before any client answered; Corvis applies the default deadline (ack_timeout, 30 s) and collects the answers",
+    "spec": "ws/socket-io-rooms: Broadcast acknowledgements are bounded (Default deadline)"
+  },
+  {
+    "scenario": "socket-io/rooms/broadcast-ack",
+    "path": "$.entries[3].data.message",
+    "reason": "the same default deadline: Node reports operation has timed out, Corvis succeeds",
+    "spec": "ws/socket-io-rooms: Broadcast acknowledgements are bounded (Default deadline)"
+  },
+  {
+    "scenario": "socket-io/rooms/broadcast-ack",
+    "path": "$.entries[3].data.responses[0]",
+    "reason": "the same default deadline: Node collected no answer before failing, Corvis collected the first",
+    "spec": "ws/socket-io-rooms: Broadcast acknowledgements are bounded (Default deadline)"
+  },
+  {
+    "scenario": "socket-io/rooms/broadcast-ack",
+    "path": "$.entries[3].data.responses[1]",
+    "reason": "the same default deadline: Node collected no answer before failing, Corvis collected the second",
+    "spec": "ws/socket-io-rooms: Broadcast acknowledgements are bounded (Default deadline)"
   }
 ]
