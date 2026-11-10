@@ -156,8 +156,10 @@ async fn a_peer_that_never_reads_is_dropped_after_the_send_timeout() {
     let feeder = {
         let socket = socket.clone();
         tokio::spawn(async move {
+            // 1 MB/s: slow enough that `max_buffered_amount` (8 MiB) cannot fill before the send timeout fires,
+            // whatever the timer resolution of the platform.
             while socket.send(chunk.clone()).is_ok() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
     };
