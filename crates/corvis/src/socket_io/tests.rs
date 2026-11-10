@@ -1,0 +1,1275 @@
+//! Tests of the Socket.IO layer without a network: a session is fed packets and read directly, and the clock is
+//! paused, so every timer is checked at its exact time and nothing here depends on how fast the machine is. The same
+//! behaviors are exercised over real transports in `tests/socket_io.rs` and `tests/socket_io_security.rs`.
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use bytes::Bytes;
+use serde_json::json;
+use tokio::sync::Notify;
+
+use super::engine::{EngineMessage, EngineOptions, EngineSocket};
+use super::*;
+
+const DAY: Duration = Duration::from_secs(24 * 3600);
+
+fn options() -> IoOptions {
+    IoOptions::new().engine(EngineOptions::new().ping_interval(DAY).ping_timeout(DAY))
+}
+
+async fn settle() {
+    for _ in 0..40 {
+        tokio::task::yield_now().await;
+    }
+}
+
+async fn advance(ms: u64) {
+    tokio::time::advance(Duration::from_millis(ms)).await;
+    settle().await;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Out {
+    T(String),
+    B(Vec<u8>),
+}
+
+fn t(s: &str) -> Out {
+    Out::T(s.to_string())
+}
+
+struct Conn {
+    socket: EngineSocket,
+}
+
+impl Conn {
+    fn text(&self, s: &str) {
+        self.socket.feed(EngineMessage::Text(s.to_string()));
+    }
+
+    fn bin(&self, b: &[u8]) {
+        self.socket.feed(EngineMessage::Binary(Bytes::copy_from_slice(b)));
+    }
+
+    async fn sent(&self) -> Vec<Out> {
+        settle().await;
+        self.socket
+            .take_sent()
+            .into_iter()
+            .map(|m| match m {
+                EngineMessage::Text(s) => Out::T(s),
+                EngineMessage::Binary(b) => Out::B(b.to_vec()),
+            })
+            .collect()
+    }
+
+    /// Joins a namespace with the given CONNECT packet and returns the socket id from the answer.
+    async fn join(&self, connect: &str) -> String {
+        self.text(connect);
+        let sent = self.sent().await;
+        let Some(Out::T(answer)) = sent.first() else { panic!("no answer to {connect}: {sent:?}") };
+        let json_at = answer.find('{').expect("an object");
+        let body: serde_json::Value = serde_json::from_str(&answer[json_at..]).unwrap_or_else(|_| panic!("not an object: {answer}"));
+        body["sid"].as_str().unwrap_or_else(|| panic!("no sid in {answer}")).to_string()
+    }
+}
+
+trait Open {
+    fn conn(&self) -> Conn;
+}
+
+impl Open for IoServer {
+    fn conn(&self) -> Conn {
+        Conn { socket: self.engine().open_test_socket() }
+    }
+}
+
+type Log = Arc<Mutex<Vec<String>>>;
+type Results<K> = Arc<Mutex<Vec<(K, Result<Args, AckError>)>>>;
+
+fn log() -> Log {
+    Arc::new(Mutex::new(Vec::new()))
+}
+
+fn entries(log: &Log) -> Vec<String> {
+    log.lock().unwrap().clone()
+}
+
+fn server(options: IoOptions) -> IoServer {
+    IoServer::new(options).unwrap()
+}
+
+/// Records the id of every connected socket and the reasons of every disconnect, per namespace.
+fn record_disconnects(namespace: &IoNamespace, log: &Log) {
+    let log = log.clone();
+    namespace.on_connection(move |socket| {
+        let log = log.clone();
+        let name = socket.namespace().name().to_string();
+        socket.on_disconnect(move |_socket, reason| log.lock().unwrap().push(format!("{name}:{reason}")));
+    });
+}
+
+// ------------------------------------------------------------------------------------- namespaces and connection
+
+#[tokio::test(start_paused = true)]
+async fn auth_is_visible_to_the_server_and_the_answer_carries_a_socket_id() {
+    let io = server(options());
+    let seen = log();
+    {
+        let seen = seen.clone();
+        io.on_connection(move |socket| seen.lock().unwrap().push(socket.handshake().auth().to_string()));
+    }
+    let conn = io.conn();
+    let sid = conn.join(r#"0{"token":"abc"}"#).await;
+    assert_eq!(sid.len(), 20);
+    assert_eq!(entries(&seen), [r#"{"token":"abc"}"#]);
+    // Without auth the handshake exposes an empty object, as Node.
+    let conn = io.conn();
+    conn.join("0").await;
+    assert_eq!(entries(&seen)[1], "{}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn socket_ids_are_not_session_ids_and_differ() {
+    let io = server(options());
+    io.of("/admin").unwrap();
+    let conn = io.conn();
+    let main = conn.join("0").await;
+    let admin = conn.join("0/admin,").await;
+    assert_eq!(main.len(), 20);
+    assert_eq!(admin.len(), 20);
+    assert_ne!(main, admin);
+    assert_ne!(main, conn.socket.id());
+    assert_ne!(admin, conn.socket.id());
+    assert!(io.main().socket(&main).is_some());
+    assert!(io.of("/admin").unwrap().socket(&admin).is_some());
+    assert!(io.main().socket(&admin).is_none(), "an id belongs to its namespace");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unknown_namespace_gets_invalid_namespace_and_is_not_created() {
+    let io = server(options());
+    let conn = io.conn();
+    conn.text("0/missing,");
+    assert_eq!(conn.sent().await, [t(r#"4/missing,{"message":"Invalid namespace"}"#)]);
+    // The connection stays open and the namespace is still unknown.
+    conn.text("0/missing,");
+    assert_eq!(conn.sent().await, [t(r#"4/missing,{"message":"Invalid namespace"}"#)]);
+    assert!(!conn.socket.is_closing());
+    conn.join("0").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_namespaces_on_one_session_each_receive_their_own_events() {
+    let io = server(options());
+    let seen = log();
+    for name in ["/", "/admin"] {
+        let seen = seen.clone();
+        io.of(name).unwrap().on_connection(move |socket| {
+            let seen = seen.clone();
+            socket.on("ping", move |socket, args, _ack| {
+                let seen = seen.clone();
+                async move { seen.lock().unwrap().push(format!("{}:{}", socket.namespace().name(), args.get::<i64>(0).unwrap())) }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.join("0/admin,").await;
+    conn.text(r#"2["ping",1]"#);
+    conn.text(r#"2/admin,["ping",2]"#);
+    settle().await;
+    assert_eq!(entries(&seen), ["/:1", "/admin:2"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn connection_handlers_run_after_connect_and_before_the_first_event() {
+    let io = server(options());
+    let seen = log();
+    {
+        let seen = seen.clone();
+        io.on_connection(move |socket| {
+            let seen = seen.clone();
+            // The welcome event goes out after the CONNECT packet.
+            socket.emit("welcome", ("hi",)).unwrap();
+            socket.on("early", move |_s, _a, _k| {
+                let seen = seen.clone();
+                async move { seen.lock().unwrap().push("early".into()) }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.text("0");
+    let sent = conn.sent().await;
+    conn.text(r#"2["early"]"#);
+    settle().await;
+    assert_eq!(entries(&seen), ["early"], "the handler registered by the connection handler sees the first event");
+    assert!(matches!(&sent[0], Out::T(s) if s.starts_with("0{\"sid\":")));
+    assert_eq!(sent[1], t(r#"2["welcome","hi"]"#));
+}
+
+// ---------------------------------------------------------------------------------------------------- middleware
+
+#[tokio::test(start_paused = true)]
+async fn middleware_runs_in_order_and_the_first_error_stops_the_chain() {
+    let io = server(options());
+    let order = log();
+    for (i, fail) in [(1, false), (2, true), (3, false)] {
+        let order = order.clone();
+        io.use_middleware(move |_socket| {
+            let order = order.clone();
+            async move {
+                order.lock().unwrap().push(format!("m{i}"));
+                if fail { Err(ConnectError::new("stop")) } else { Ok(()) }
+            }
+        });
+    }
+    let connected = log();
+    {
+        let connected = connected.clone();
+        io.on_connection(move |_| connected.lock().unwrap().push("connected".into()));
+    }
+    let conn = io.conn();
+    conn.text("0");
+    assert_eq!(conn.sent().await, [t(r#"4{"message":"stop"}"#)]);
+    assert_eq!(entries(&order), ["m1", "m2"]);
+    assert!(entries(&connected).is_empty(), "connection handlers do not run for a refused socket");
+    assert_eq!(io.main().socket_count(), 0);
+    // The slot is free again: a retry runs the middleware again.
+    conn.text("0");
+    assert_eq!(conn.sent().await, [t(r#"4{"message":"stop"}"#)]);
+    assert!(!conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn middleware_errors_carry_data_only_when_given() {
+    let io = server(options());
+    io.of("/a").unwrap().use_middleware(|_| async { Err(ConnectError::new("not authorized").data(json!({ "content": "retry later" }))) });
+    io.of("/b").unwrap().use_middleware(|_| async { Err(ConnectError::new("not authorized")) });
+    let conn = io.conn();
+    conn.text("0/a,");
+    conn.text("0/b,");
+    assert_eq!(
+        conn.sent().await,
+        [t(r#"4/a,{"message":"not authorized","data":{"content":"retry later"}}"#), t(r#"4/b,{"message":"not authorized"}"#)]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn middleware_panics_and_hangs_are_contained_and_answered_uniformly() {
+    let io = server(options().middleware_timeout(Duration::from_secs(2)));
+    io.of("/panics").unwrap().use_middleware(|_| async { panic!("secret internal detail") });
+    io.of("/panics-early").unwrap().use_middleware(|_| -> std::future::Ready<Result<(), ConnectError>> { panic!("also secret") });
+    io.of("/hangs").unwrap().use_middleware(|_| std::future::pending::<Result<(), ConnectError>>());
+    let conn = io.conn();
+    conn.text("0/panics,");
+    conn.text("0/panics-early,");
+    conn.text("0/hangs,");
+    let sent = conn.sent().await;
+    assert_eq!(sent.len(), 2, "the hanging middleware has not answered yet: {sent:?}");
+    for out in &sent {
+        let Out::T(text) = out else { panic!() };
+        assert!(text.ends_with(r#"{"message":"Internal server error"}"#), "{text}");
+        assert!(!text.contains("secret"));
+    }
+    advance(1_999).await;
+    assert!(conn.sent().await.is_empty(), "not before the middleware timeout");
+    advance(1).await;
+    assert_eq!(conn.sent().await, [t(r#"4/hangs,{"message":"Internal server error"}"#)]);
+    // Other namespaces still work.
+    conn.join("0").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_socket_in_middleware_cannot_emit_but_can_carry_the_user() {
+    let io = server(options());
+    let result = log();
+    {
+        let result = result.clone();
+        io.use_middleware(move |socket| {
+            let result = result.clone();
+            async move {
+                result.lock().unwrap().push(format!("{:?}", socket.emit("x", ())));
+                result.lock().unwrap().push(format!("{}", socket.connected()));
+                socket.insert(String::from("alice"));
+                socket.set_data(json!({ "user": "alice" }));
+                Ok(())
+            }
+        });
+    }
+    let user = log();
+    {
+        let user = user.clone();
+        io.on_connection(move |socket| user.lock().unwrap().push(format!("{:?} {}", socket.get::<String>(), socket.data())));
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    assert_eq!(entries(&result), ["Err(NotConnected)", "false"]);
+    assert_eq!(entries(&user), [r#"Some("alice") {"user":"alice"}"#]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_closes_during_middleware_gets_no_handlers_and_no_error() {
+    let io = server(options());
+    let gate = Arc::new(Notify::new());
+    {
+        let gate = gate.clone();
+        io.use_middleware(move |_| {
+            let gate = gate.clone();
+            async move {
+                gate.notified().await;
+                Ok(())
+            }
+        });
+    }
+    let connected = log();
+    record_disconnects(&io.main(), &connected);
+    let conn = io.conn();
+    conn.text("0");
+    settle().await;
+    conn.socket.close();
+    advance(31_000).await; // the close timeout of the session: no transport drains it here
+    gate.notify_waiters();
+    settle().await;
+    assert!(entries(&connected).is_empty(), "no connection handler, so no disconnect either");
+    assert_eq!(io.main().socket_count(), 0);
+    assert!(conn.sent().await.is_empty(), "nothing was queued after the close");
+}
+
+// --------------------------------------------------------------------------------------- one socket per namespace
+
+#[tokio::test(start_paused = true)]
+async fn a_second_connect_for_a_joined_namespace_closes_the_connection() {
+    let io = server(options());
+    let reasons = log();
+    record_disconnects(&io.main(), &reasons);
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text("0");
+    settle().await;
+    assert!(conn.socket.is_closing());
+    assert_eq!(entries(&reasons), ["/:forced server close"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connect_flood_during_slow_middleware_runs_it_once_and_closes_at_the_second_connect() {
+    let io = server(options());
+    let runs = Arc::new(AtomicUsize::new(0));
+    {
+        let runs = runs.clone();
+        io.of("/admin").unwrap().use_middleware(move |_| {
+            let runs = runs.clone();
+            async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(())
+            }
+        });
+    }
+    let conn = io.conn();
+    for _ in 0..1_000 {
+        conn.text("0/admin,");
+    }
+    settle().await;
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the middleware ran once");
+    assert!(conn.socket.is_closing(), "the second CONNECT closed the connection");
+    advance(2_000).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    assert_eq!(io.of("/admin").unwrap().socket_count(), 0, "the attempt was dropped with the connection");
+}
+
+#[tokio::test(start_paused = true)]
+async fn packets_for_a_namespace_that_is_not_joined_close_the_connection() {
+    for first in [r#"2["echo",1]"#, "1", r#"30["x"]"#, r#"2/admin,["echo"]"#] {
+        let io = server(options());
+        io.of("/admin").unwrap();
+        let conn = io.conn();
+        conn.text(first);
+        settle().await;
+        assert!(conn.socket.is_closing(), "{first}");
+    }
+    // A packet for a namespace that is still in middleware is not a joined namespace either.
+    let io = server(options());
+    io.use_middleware(|_| std::future::pending::<Result<(), ConnectError>>());
+    let conn = io.conn();
+    conn.text("0");
+    conn.text(r#"2["echo"]"#);
+    settle().await;
+    assert!(conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn connect_error_from_a_client_closes_the_connection() {
+    let io = server(options());
+    let reasons = log();
+    record_disconnects(&io.main(), &reasons);
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"4{"message":"x"}"#);
+    settle().await;
+    assert!(conn.socket.is_closing());
+    assert_eq!(entries(&reasons), ["/:forced server close"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_joins_no_namespace_is_closed_at_connect_timeout_not_before() {
+    let io = server(options().connect_timeout(Duration::from_millis(1_000)));
+    let conn = io.conn();
+    settle().await;
+    advance(999).await;
+    assert!(!conn.socket.is_closing());
+    advance(1).await;
+    assert!(conn.socket.is_closing());
+    // Joining in time clears the timer for good, even when the socket leaves again.
+    let conn = io.conn();
+    settle().await;
+    advance(500).await;
+    conn.join("0").await;
+    conn.text("1");
+    advance(5_000).await;
+    assert!(!conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pending_connection_attempt_does_not_stop_the_connect_timeout() {
+    let io = server(options().connect_timeout(Duration::from_millis(1_000)));
+    io.use_middleware(|_| std::future::pending::<Result<(), ConnectError>>());
+    let conn = io.conn();
+    settle().await;
+    conn.text("0");
+    settle().await;
+    advance(1_000).await;
+    assert!(conn.socket.is_closing());
+}
+
+// ------------------------------------------------------------------------------------------------------ events
+
+#[tokio::test(start_paused = true)]
+async fn events_carry_any_number_of_arguments_and_unhandled_events_are_ignored() {
+    let io = server(options());
+    let seen = log();
+    {
+        let seen = seen.clone();
+        io.on_connection(move |socket| {
+            let seen = seen.clone();
+            socket.on("many", move |_s, args, ack| {
+                let seen = seen.clone();
+                async move {
+                    seen.lock().unwrap().push(format!(
+                        "{} {}",
+                        args.len(),
+                        args.to_json().unwrap().iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+                    ));
+                    assert!(ack.is_none());
+                }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"2["many"]"#);
+    conn.text(r#"2["many",1,"two",{"three":3},null,[4]]"#);
+    conn.text(r#"2["nobody-listens",1]"#);
+    conn.text(r#"22["nobody-listens-with-ack"]"#);
+    settle().await;
+    assert_eq!(entries(&seen), ["0 ", r#"5 1|"two"|{"three":3}|null|[4]"#]);
+    assert!(conn.sent().await.is_empty(), "an event without a handler is not acknowledged");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_server_emits_events_with_several_arguments_and_refuses_reserved_names() {
+    let io = server(options());
+    let result = log();
+    {
+        let result = result.clone();
+        io.on_connection(move |socket| {
+            socket.emit("update", (1, "two", json!({ "three": 3 }))).unwrap();
+            for name in ["connect", "connect_error", "disconnect", "disconnecting", "newListener", "removeListener"] {
+                let err = socket.emit(name, ()).unwrap_err();
+                result.lock().unwrap().push(err.to_string());
+            }
+        });
+    }
+    let conn = io.conn();
+    conn.text("0");
+    let sent = conn.sent().await;
+    assert_eq!(sent.len(), 2, "only the CONNECT and the update were sent: {sent:?}");
+    assert_eq!(sent[1], t(r#"2["update",1,"two",{"three":3}]"#));
+    assert_eq!(entries(&result)[2], "\"disconnect\" is a reserved event name");
+    assert_eq!(entries(&result).len(), 6);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_client_ack_carries_its_id_and_several_values_and_is_sent_once() {
+    let io = server(options());
+    io.on_connection(|socket| {
+        socket.on("sum", |_s, args, ack| async move {
+            let total: i64 = args.iter().filter_map(IoValue::as_i64).sum();
+            let ack = ack.expect("asked for an ack");
+            ack.send((total, "ok")).unwrap();
+        });
+        socket.on("silent", |_s, _args, _ack| async {});
+    });
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"2127["sum",1,2]"#);
+    conn.text(r#"29007199254740991["silent"]"#);
+    assert_eq!(conn.sent().await, [t(r#"3127[3,"ok"]"#)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn handlers_start_in_arrival_order() {
+    let io = server(options());
+    let order = log();
+    {
+        let order = order.clone();
+        io.on_connection(move |socket| {
+            for name in ["set", "get"] {
+                let order = order.clone();
+                socket.on(name, move |_s, _a, _k| {
+                    let order = order.clone();
+                    async move {
+                        order.lock().unwrap().push(format!("{name} started"));
+                        tokio::task::yield_now().await;
+                        order.lock().unwrap().push(format!("{name} done"));
+                    }
+                });
+            }
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"2["set"]"#);
+    conn.text(r#"2["get"]"#);
+    settle().await;
+    let order = entries(&order);
+    assert_eq!(&order[..2], ["set started", "get started"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_panicking_handler_is_contained_and_the_next_event_is_handled() {
+    let io = server(options());
+    let seen = log();
+    {
+        let seen = seen.clone();
+        io.on_connection(move |socket| {
+            socket.on("boom", |_s, _a, _k| async { panic!("handler detail") });
+            let seen = seen.clone();
+            socket.on("ok", move |_s, _a, _k| {
+                let seen = seen.clone();
+                async move { seen.lock().unwrap().push("ok".into()) }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"2["boom"]"#);
+    conn.text(r#"2["ok"]"#);
+    settle().await;
+    assert_eq!(entries(&seen), ["ok"]);
+    assert!(!conn.socket.is_closing());
+    assert_eq!(io.main().socket_count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn blocked_handlers_are_bounded_per_connection_and_reads_stop() {
+    let io = server(options().max_inflight(4));
+    io.of("/other").unwrap();
+    let running = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(Notify::new());
+    let released = Arc::new(AtomicBool::new(false));
+    for name in ["/", "/other"] {
+        let (running, peak, release, released) = (running.clone(), peak.clone(), release.clone(), released.clone());
+        io.of(name).unwrap().on_connection(move |socket| {
+            let (running, peak, release, released) = (running.clone(), peak.clone(), release.clone(), released.clone());
+            socket.on("block", move |_s, _a, _k| {
+                let (running, peak, release, released) = (running.clone(), peak.clone(), release.clone(), released.clone());
+                async move {
+                    let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    while !released.load(Ordering::SeqCst) {
+                        release.notified().await;
+                    }
+                    running.fetch_sub(1, Ordering::SeqCst);
+                }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.join("0/other,").await;
+    // Other connections are served meanwhile.
+    for i in 0..200 {
+        conn.text(&format!(r#"2{}["block"]"#, if i % 2 == 0 { "" } else { "/other," }));
+    }
+    settle().await;
+    assert_eq!(running.load(Ordering::SeqCst), 4, "four handlers across both namespaces, no more");
+    let unread = conn.socket.unread_bytes();
+    assert!(unread >= 196 * (10 + 64), "the packets that were not taken stay accounted: {unread}");
+    let other = io.conn();
+    other.join("0").await;
+    other.text(r#"2["nothing"]"#);
+    settle().await;
+    assert!(!other.socket.is_closing());
+    // Releasing the handlers lets the rest through, still four at a time.
+    released.store(true, Ordering::SeqCst);
+    release.notify_waiters();
+    settle().await;
+    assert_eq!(running.load(Ordering::SeqCst), 0);
+    assert_eq!(peak.load(Ordering::SeqCst), 4);
+    assert_eq!(conn.socket.unread_bytes(), 0, "everything is released when the handlers finish");
+}
+
+#[tokio::test(start_paused = true)]
+async fn decoded_packets_are_charged_until_their_handler_finishes() {
+    let io = server(options());
+    let release = Arc::new(Notify::new());
+    {
+        let release = release.clone();
+        io.on_connection(move |socket| {
+            let release = release.clone();
+            socket.on("slow", move |_s, _a, _k| {
+                let release = release.clone();
+                async move { release.notified().await }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    let before = conn.socket.unread_bytes();
+    // 5,000 empty arrays: 20 kB of text but 5,000 nodes of structure.
+    let arrays = vec!["[]"; 5_000].join(",");
+    conn.text(&format!(r#"2["slow",[{arrays}]]"#));
+    settle().await;
+    let charged = conn.socket.unread_bytes() - before;
+    assert!(charged >= 5_000 * 48, "empty structures cost their real size: {charged}");
+    release.notify_waiters();
+    settle().await;
+    assert_eq!(conn.socket.unread_bytes(), before);
+}
+
+// ------------------------------------------------------------------------------------------------ acknowledgements
+
+#[tokio::test(start_paused = true)]
+async fn a_server_emit_with_ack_resolves_with_the_clients_answer() {
+    let io = server(options());
+    let result: Arc<Mutex<Option<Result<Args, AckError>>>> = Arc::new(Mutex::new(None));
+    {
+        let result = result.clone();
+        io.on_connection(move |socket| {
+            let result = result.clone();
+            tokio::spawn(async move {
+                let answer = socket.emit_with_ack("ask", ("question",)).await;
+                *result.lock().unwrap() = Some(answer);
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.text("0");
+    let sent = conn.sent().await;
+    assert_eq!(sent[1], t(r#"20["ask","question"]"#), "the first id of a namespace is 0");
+    assert!(result.lock().unwrap().is_none());
+    conn.text(r#"30["yes",7]"#);
+    settle().await;
+    let answer = result.lock().unwrap().take().unwrap().unwrap();
+    assert_eq!(answer.to_json().unwrap(), vec![json!("yes"), json!(7)]);
+    let socket = io.main().sockets().pop().unwrap();
+    assert_eq!(socket.pending_acks(), 0);
+    // A replay of the same answer, and an answer for an id never issued, are ignored.
+    conn.text(r#"30["again"]"#);
+    conn.text(r#"3999["never issued"]"#);
+    settle().await;
+    assert!(!conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_acknowledgement_ids_count_per_namespace_from_zero() {
+    let io = server(options());
+    io.of("/b").unwrap();
+    for name in ["/", "/b"] {
+        io.of(name).unwrap().on_connection(|socket| {
+            for _ in 0..2 {
+                let socket = socket.clone();
+                tokio::spawn(async move {
+                    let _ = socket.timeout(Duration::from_secs(5)).emit_with_ack("e", ()).await;
+                });
+            }
+        });
+    }
+    let first = io.conn();
+    first.text("0");
+    first.text("0/b,");
+    let sent = first.sent().await;
+    assert!(sent.contains(&t(r#"20["e"]"#)) && sent.contains(&t(r#"21["e"]"#)));
+    assert!(sent.contains(&t(r#"2/b,0["e"]"#)) && sent.contains(&t(r#"2/b,1["e"]"#)));
+    // A second connection continues the namespace's counter.
+    let second = io.conn();
+    second.text("0");
+    let sent = second.sent().await;
+    assert!(sent.contains(&t(r#"22["e"]"#)) && sent.contains(&t(r#"23["e"]"#)), "{sent:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_emit_fails_at_its_timeout_and_the_default_is_30_seconds() {
+    let io = server(options());
+    let results: Results<&'static str> = Arc::new(Mutex::new(Vec::new()));
+    let sockets: Arc<Mutex<Vec<IoSocket>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (results, sockets) = (results.clone(), sockets.clone());
+        io.on_connection(move |socket| {
+            sockets.lock().unwrap().push(socket.clone());
+            let (results_short, s) = (results.clone(), socket.clone());
+            tokio::spawn(async move {
+                let r = s.timeout(Duration::from_millis(200)).emit_with_ack("short", ()).await;
+                results_short.lock().unwrap().push(("short", r));
+            });
+            let (results, s) = (results.clone(), socket);
+            tokio::spawn(async move {
+                let r = s.emit_with_ack("default", ()).await;
+                results.lock().unwrap().push(("default", r));
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    advance(199).await;
+    assert!(results.lock().unwrap().is_empty(), "not before the timeout");
+    advance(1).await;
+    {
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.as_ref().unwrap_err().to_string(), "operation has timed out");
+    }
+    advance(29_000).await;
+    assert_eq!(results.lock().unwrap().len(), 1, "the default deadline is 30 s");
+    advance(799).await;
+    assert_eq!(results.lock().unwrap().len(), 1);
+    advance(1).await;
+    assert_eq!(results.lock().unwrap().len(), 2);
+    assert_eq!(results.lock().unwrap()[1].1, Err(AckError::Timeout));
+    assert_eq!(sockets.lock().unwrap()[0].pending_acks(), 0, "the slots are free");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_pending_cap_fails_the_extra_call_at_once_and_sends_nothing_for_it() {
+    let io = server(options().max_pending_acks(2));
+    let results: Results<usize> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let results = results.clone();
+        io.on_connection(move |socket| {
+            for i in 0..3 {
+                let (results, socket) = (results.clone(), socket.clone());
+                tokio::spawn(async move {
+                    let r = socket.emit_with_ack("ask", (i,)).await;
+                    results.lock().unwrap().push((i, r));
+                });
+            }
+        });
+    }
+    let conn = io.conn();
+    conn.text("0");
+    let sent = conn.sent().await;
+    assert_eq!(sent.len(), 3, "CONNECT and two events: {sent:?}");
+    assert_eq!(sent[1], t(r#"20["ask",0]"#));
+    assert_eq!(sent[2], t(r#"21["ask",1]"#));
+    {
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], (2, Err(AckError::TooManyPending)));
+    }
+    conn.text(r#"30["a"]"#);
+    conn.text(r#"31["b"]"#);
+    settle().await;
+    let results = results.lock().unwrap();
+    assert_eq!(results.len(), 3);
+    assert!(results.iter().filter(|(_, r)| r.is_ok()).count() == 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ack_from_another_socket_does_not_resolve_the_call() {
+    let io = server(options());
+    let result: Arc<Mutex<Option<Result<Args, AckError>>>> = Arc::new(Mutex::new(None));
+    let first = Arc::new(AtomicBool::new(true));
+    {
+        let (result, first) = (result.clone(), first.clone());
+        io.on_connection(move |socket| {
+            if first.swap(false, Ordering::SeqCst) {
+                let result = result.clone();
+                tokio::spawn(async move {
+                    let answer = socket.timeout(Duration::from_secs(10)).emit_with_ack("ask", ()).await;
+                    *result.lock().unwrap() = Some(answer);
+                });
+            }
+        });
+    }
+    let a = io.conn();
+    a.join("0").await;
+    let b = io.conn();
+    b.join("0").await;
+    b.text(r#"30["forged"]"#);
+    settle().await;
+    assert!(result.lock().unwrap().is_none(), "B cannot answer A's call");
+    a.text(r#"30["real"]"#);
+    settle().await;
+    assert_eq!(result.lock().unwrap().take().unwrap().unwrap().to_json().unwrap(), vec![json!("real")]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn pending_calls_fail_at_once_when_the_socket_disconnects() {
+    let io = server(options());
+    let result: Arc<Mutex<Option<Result<Args, AckError>>>> = Arc::new(Mutex::new(None));
+    {
+        let result = result.clone();
+        io.on_connection(move |socket| {
+            let result = result.clone();
+            tokio::spawn(async move {
+                let answer = socket.emit_with_ack("ask", ()).await;
+                *result.lock().unwrap() = Some(answer);
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    assert!(result.lock().unwrap().is_none());
+    conn.text("1");
+    settle().await;
+    assert_eq!(result.lock().unwrap().take().unwrap(), Err(AckError::Disconnected));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_abandoned_call_frees_its_slot_and_expired_slots_are_purged() {
+    let io = server(options().max_pending_acks(1));
+    let sockets: Arc<Mutex<Vec<IoSocket>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let sockets = sockets.clone();
+        io.on_connection(move |socket| sockets.lock().unwrap().push(socket));
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    let socket = sockets.lock().unwrap()[0].clone();
+    // A call that is dropped after it started gives its slot back.
+    let call = tokio::spawn({
+        let socket = socket.clone();
+        async move { socket.emit_with_ack("a", ()).await }
+    });
+    settle().await;
+    assert_eq!(socket.pending_acks(), 1);
+    call.abort();
+    settle().await;
+    assert_eq!(socket.pending_acks(), 0);
+    // A call whose future is parked, never polled again, still expires and does not hold the cap.
+    let parked_emitter = socket.timeout(Duration::from_millis(100));
+    let mut parked = Box::pin(parked_emitter.emit_with_ack("b", ()));
+    assert!(futures::poll!(parked.as_mut()).is_pending());
+    assert_eq!(socket.pending_acks(), 1);
+    advance(150).await;
+    let second_emitter = socket.timeout(Duration::from_secs(5));
+    let second = second_emitter.emit_with_ack("c", ());
+    tokio::pin!(second);
+    assert!(futures::poll!(second.as_mut()).is_pending(), "the expired slot did not count against max_pending_acks");
+    assert_eq!(socket.pending_acks(), 1);
+}
+
+// ----------------------------------------------------------------------------------------------------- binary
+
+#[tokio::test(start_paused = true)]
+async fn a_binary_event_is_reassembled_and_a_binary_ack_is_sent_whole() {
+    let io = server(options());
+    io.on_connection(|socket| {
+        socket.on("echo", |_s, args, ack| async move {
+            ack.unwrap().send(args).unwrap();
+        });
+    });
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"51-3["echo",{"name":"a","data":{"_placeholder":true,"num":0}}]"#);
+    conn.bin(&[1, 2, 3]);
+    assert_eq!(conn.sent().await, [t(r#"61-3[{"name":"a","data":{"_placeholder":true,"num":0}}]"#), Out::B(vec![1, 2, 3])]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn binary_arguments_reach_the_handler_in_place_and_deserialize_into_structs() {
+    #[derive(serde::Deserialize, Debug, PartialEq)]
+    struct Upload {
+        name: String,
+        data: Binary,
+    }
+    let io = server(options());
+    let seen = log();
+    {
+        let seen = seen.clone();
+        io.on_connection(move |socket| {
+            let seen = seen.clone();
+            socket.on("upload", move |_s, args, _k| {
+                let seen = seen.clone();
+                async move {
+                    let upload: Upload = args.get(0).unwrap();
+                    seen.lock().unwrap().push(format!("{} {:?}", upload.name, upload.data.as_bytes()));
+                }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"51-["upload",{"name":"f","data":{"_placeholder":true,"num":0}}]"#);
+    conn.bin(&[9, 8]);
+    settle().await;
+    assert_eq!(entries(&seen), ["f [9, 8]"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_server_emits_binary_events_with_placeholders_and_refuses_too_many_attachments() {
+    let io = server(options().max_attachments(2));
+    let result = log();
+    {
+        let result = result.clone();
+        io.on_connection(move |socket| {
+            socket.emit("file", (json!({ "k": 1 }), Binary::from(vec![1u8, 2]), IoValue::from(Bytes::from_static(b"zz")))).unwrap();
+            let three = (Binary::from(vec![1u8]), Binary::from(vec![2u8]), Binary::from(vec![3u8]));
+            result.lock().unwrap().push(format!("{:?}", socket.emit("too-many", three)));
+        });
+    }
+    let conn = io.conn();
+    conn.text("0");
+    let sent = conn.sent().await;
+    assert_eq!(sent.len(), 4, "CONNECT, then the packet and its two attachments together: {sent:?}");
+    assert_eq!(sent[1], t(r#"52-["file",{"k":1},{"_placeholder":true,"num":0},{"_placeholder":true,"num":1}]"#));
+    assert_eq!(sent[2], Out::B(vec![1, 2]));
+    assert_eq!(sent[3], Out::B(b"zz".to_vec()));
+    assert_eq!(entries(&result), ["Err(TooManyAttachments)"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn too_many_attachments_close_the_connection_before_any_is_accepted() {
+    let io = server(options());
+    let reasons = log();
+    record_disconnects(&io.main(), &reasons);
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"511-["x"]"#);
+    settle().await;
+    assert!(conn.socket.is_closing());
+    assert_eq!(entries(&reasons), ["/:forced close"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_binary_packet_that_never_completes_is_closed_at_attachment_timeout() {
+    let io = server(options().attachment_timeout(Duration::from_secs(10)));
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"510-["x",{"_placeholder":true,"num":0}]"#);
+    conn.bin(&[1]);
+    settle().await;
+    advance(9_999).await;
+    assert!(!conn.socket.is_closing());
+    // More attachments do not extend the deadline of the packet.
+    conn.bin(&[2]);
+    settle().await;
+    advance(1).await;
+    assert!(conn.socket.is_closing(), "closed at the deadline although the client kept sending");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_completed_binary_packet_stops_its_timer() {
+    let io = server(options().attachment_timeout(Duration::from_secs(10)));
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"51-["x",{"_placeholder":true,"num":0}]"#);
+    advance(5_000).await;
+    conn.bin(&[1]);
+    advance(60_000).await;
+    assert!(!conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_attachments_of_an_incomplete_packet_stay_accounted_and_are_freed_with_the_session() {
+    let io = server(options().attachment_timeout(Duration::from_secs(10)));
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"510-["x"]"#);
+    for _ in 0..9 {
+        conn.bin(&vec![0u8; 100_000]);
+    }
+    settle().await;
+    assert!(conn.socket.unread_bytes() >= 9 * 100_000, "the attachments count against max_unread_bytes");
+    advance(10_000).await;
+    assert!(conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_attachment_without_a_header_and_text_during_reassembly_close_the_connection() {
+    let io = server(options());
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.bin(&[1]);
+    settle().await;
+    assert!(conn.socket.is_closing());
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"51-["x",{"_placeholder":true,"num":0}]"#);
+    conn.text(r#"2["y"]"#);
+    settle().await;
+    assert!(conn.socket.is_closing());
+}
+
+// ----------------------------------------------------------------------------------------- malformed and limits
+
+#[tokio::test(start_paused = true)]
+async fn undecodable_packets_close_the_connection_with_forced_close() {
+    for bad in [
+        "9",
+        "",
+        r#"2{"a":1}"#,
+        r#"2["disconnect"]"#,
+        r#"2abc["x"]"#,
+        r#"2["x""#,
+        "5-[\"x\"]",
+        "2[\"x\"] x",
+        "20000000000000000000[\"x\"]",
+        "29007199254740992[\"x\"]",
+    ] {
+        let io = server(options());
+        let reasons = log();
+        record_disconnects(&io.main(), &reasons);
+        let conn = io.conn();
+        conn.join("0").await;
+        conn.text(bad);
+        settle().await;
+        assert!(conn.socket.is_closing(), "{bad:?}");
+        assert_eq!(entries(&reasons), ["/:forced close"], "{bad:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn nesting_above_the_limit_and_extreme_nesting_close_the_connection() {
+    for depth in [200usize, 100_000] {
+        let io = server(options());
+        let conn = io.conn();
+        conn.join("0").await;
+        conn.text(&format!("2[\"x\",{}{}]", "[".repeat(depth), "]".repeat(depth)));
+        settle().await;
+        assert!(conn.socket.is_closing(), "{depth}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_oversized_ack_id_closes_the_connection_and_the_largest_is_echoed() {
+    let io = server(options());
+    io.on_connection(|socket| {
+        socket.on("echo", |_s, args, ack| async move {
+            ack.unwrap().send(args).unwrap();
+        });
+    });
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"29007199254740991["echo",1]"#);
+    assert_eq!(conn.sent().await, [t(r#"39007199254740991[1]"#)]);
+    conn.text(r#"212345678901234567890["echo",1]"#);
+    settle().await;
+    assert!(conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn event_name_and_argument_limits_close_the_connection() {
+    let io = server(options().max_event_name_len(8).max_args(3));
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"2["12345678",1,2,3]"#);
+    settle().await;
+    assert!(!conn.socket.is_closing());
+    for bad in [r#"2["123456789"]"#, r#"2["x",1,2,3,4]"#, r#"30["a",1,2,3,4]"#] {
+        let conn = io.conn();
+        conn.join("0").await;
+        conn.text(bad);
+        settle().await;
+        assert!(conn.socket.is_closing(), "{bad}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_huge_namespace_in_a_packet_closes_the_connection() {
+    let io = server(options());
+    let conn = io.conn();
+    conn.text(&format!("0/{},", "a".repeat(300)));
+    settle().await;
+    assert!(conn.socket.is_closing());
+}
+
+// --------------------------------------------------------------------------------------------------- disconnect
+
+#[tokio::test(start_paused = true)]
+async fn the_client_leaves_one_namespace_and_can_join_it_again() {
+    let io = server(options());
+    io.of("/admin").unwrap();
+    let reasons = log();
+    record_disconnects(&io.main(), &reasons);
+    record_disconnects(&io.of("/admin").unwrap(), &reasons);
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.join("0/admin,").await;
+    conn.text("1/admin,");
+    settle().await;
+    assert_eq!(entries(&reasons), ["/admin:client namespace disconnect"]);
+    assert!(!conn.socket.is_closing());
+    assert_eq!(io.of("/admin").unwrap().socket_count(), 0);
+    assert_eq!(io.main().socket_count(), 1);
+    conn.join("0/admin,").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_server_leaves_one_namespace_or_closes_the_connection() {
+    let io = server(options());
+    io.of("/admin").unwrap();
+    let reasons = log();
+    record_disconnects(&io.main(), &reasons);
+    record_disconnects(&io.of("/admin").unwrap(), &reasons);
+    let conn = io.conn();
+    conn.join("0").await;
+    let admin = conn.join("0/admin,").await;
+    io.of("/admin").unwrap().socket(&admin).unwrap().disconnect(false);
+    assert_eq!(conn.sent().await, [t("1/admin,")]);
+    assert_eq!(entries(&reasons), ["/admin:server namespace disconnect"]);
+    assert!(!conn.socket.is_closing());
+    io.main().sockets()[0].disconnect(true);
+    assert_eq!(conn.sent().await, [t("1")]);
+    assert!(conn.socket.is_closing());
+    assert_eq!(entries(&reasons), ["/admin:server namespace disconnect", "/:server namespace disconnect"]);
+    // Disconnecting twice does nothing.
+    if let Some(socket) = io.main().sockets().first() {
+        socket.disconnect(false);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn disconnecting_handlers_find_the_socket_and_disconnect_handlers_do_not_each_once() {
+    let io = server(options());
+    let order = log();
+    {
+        let order = order.clone();
+        io.on_connection(move |socket| {
+            let (a, b) = (order.clone(), order.clone());
+            socket.on_disconnecting(move |s, reason| {
+                a.lock().unwrap().push(format!("disconnecting {} {}", s.namespace().socket(s.id()).is_some(), reason))
+            });
+            socket.on_disconnect(move |s, reason| {
+                b.lock().unwrap().push(format!("disconnect {} {}", s.namespace().socket(s.id()).is_some(), reason))
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.socket.close();
+    let socket = io.main().sockets().pop().unwrap();
+    socket.disconnect(false);
+    socket.disconnect(false);
+    conn.text("1");
+    settle().await;
+    assert_eq!(entries(&order), ["disconnecting true server namespace disconnect", "disconnect false server namespace disconnect"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_engine_reason_reaches_the_sockets() {
+    let io = server(options());
+    let reasons = log();
+    record_disconnects(&io.main(), &reasons);
+    let conn = io.conn();
+    conn.join("0").await;
+    // A session that closes by itself: here through the server closing the engine path of a graceful close.
+    conn.socket.close();
+    advance(31_000).await;
+    assert_eq!(entries(&reasons), ["/:forced close"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn closing_the_server_reports_server_shutting_down_before_the_engine_closes_and_fails_acks() {
+    let io = server(options());
+    let reasons = log();
+    record_disconnects(&io.main(), &reasons);
+    let result: Arc<Mutex<Option<Result<Args, AckError>>>> = Arc::new(Mutex::new(None));
+    {
+        let result = result.clone();
+        io.on_connection(move |socket| {
+            let result = result.clone();
+            tokio::spawn(async move {
+                *result.lock().unwrap() = Some(socket.emit_with_ack("ask", ()).await);
+            });
+        });
+    }
+    let (a, b) = (io.conn(), io.conn());
+    a.join("0").await;
+    b.join("0").await;
+    io.close();
+    settle().await;
+    assert_eq!(entries(&reasons), ["/:server shutting down", "/:server shutting down"]);
+    assert!(a.socket.is_closing() && b.socket.is_closing());
+    assert_eq!(result.lock().unwrap().take().unwrap(), Err(AckError::Disconnected));
+    io.close();
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_engine_hook_reports_the_shutdown_when_the_application_closes_the_engine() {
+    let io = server(options());
+    let reasons = log();
+    record_disconnects(&io.main(), &reasons);
+    let conn = io.conn();
+    conn.join("0").await;
+    io.engine().close();
+    settle().await;
+    assert_eq!(entries(&reasons), ["/:server shutting down"]);
+    assert!(conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn emits_after_the_disconnect_fail_and_send_nothing() {
+    let io = server(options());
+    let sockets: Arc<Mutex<Vec<IoSocket>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let sockets = sockets.clone();
+        io.on_connection(move |socket| sockets.lock().unwrap().push(socket));
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text("1");
+    settle().await;
+    let socket = sockets.lock().unwrap()[0].clone();
+    assert!(!socket.connected());
+    assert_eq!(socket.emit("x", ()), Err(EmitError::NotConnected));
+    assert_eq!(socket.timeout(Duration::from_secs(1)).emit_with_ack("x", ()).await, Err(AckError::Emit(EmitError::NotConnected)));
+    assert!(conn.sent().await.is_empty());
+    // An event that arrives after the DISCONNECT is a packet for a namespace that is no longer joined.
+    conn.text(r#"2["late"]"#);
+    settle().await;
+    assert!(conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_event_that_runs_when_the_connection_ends_gets_a_grace_period() {
+    let io = server(options());
+    let done = Arc::new(AtomicBool::new(false));
+    {
+        let done = done.clone();
+        io.on_connection(move |socket| {
+            let done = done.clone();
+            socket.on("slow", move |_s, _a, _k| {
+                let done = done.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    done.store(true, Ordering::SeqCst);
+                }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"2["slow"]"#);
+    settle().await;
+    conn.text("1");
+    conn.text("0");
+    conn.text("0");
+    settle().await;
+    advance(5_000).await;
+    assert!(done.load(Ordering::SeqCst), "a handler already running is not cancelled by the end of the connection");
+}
