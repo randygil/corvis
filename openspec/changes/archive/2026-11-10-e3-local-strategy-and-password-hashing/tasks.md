@@ -10,7 +10,7 @@ fixture package) and update the artifacts if it differs.
   `crates/corvis/Cargo.toml`; check the dependency generations with `cargo tree -d -p corvis --features auth-local` and
   licenses with `cargo deny check`; record the chosen versions in `design.md`; verify `cargo clippy -p corvis
   --no-default-features --features auth-local -- -D warnings` passes on an empty module
-- [ ] 1.2 Add `[profile.dev.package]` `opt-level = 3` for `argon2`, `blake2`, `bcrypt`, `blowfish` in the workspace
+- [x] 1.2 Add `[profile.dev.package]` `opt-level = 3` for `argon2`, `blake2`, `bcrypt`, `blowfish` in the workspace
   `Cargo.toml` (design decision 8); add `auth-local` to the per-feature loop (`.github/workflows/ci.yml:71`) and a
   `cargo test -p corvis --features auth-local` step next to the `compression` one (line 113); verify the new steps run
   in the CI of the pull request
@@ -79,7 +79,7 @@ fixture package) and update the artifacts if it differs.
   and `auth_local.rs` without Node
 - [x] 6.4 Regression tests for every scenario of `auth/local`
 - [x] 6.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 6.6 corvis-parity check: run it if any framework runtime code outside the `auth-local` feature changed; otherwise
+- [x] 6.6 corvis-parity check: run it if any framework runtime code outside the `auth-local` feature changed; otherwise
   record in the archive notes that the ports do not enable the feature and nothing else changed
 - [x] 6.7 `cargo deny check` passes with the new crates
 - [x] 6.8 Run the security-reviewer agent over `corvis::auth::local` (timing of unknown users and refused hashes,
@@ -125,6 +125,23 @@ fixture package) and update the artifacts if it differs.
 - [x] 9.1 Compare the raw argon2 `m`, `t`, `p` of a stored hash with the limits before the crate builds its
   parameters; bound `max_argon2_parallelism`; verify with
   `an_argon2_hash_with_a_huge_parallelism_is_refused_without_a_panic_or_a_derivation`
+
+## Verification
+
+Checked on `dev` at 9c6c9d9 (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy with the `auth-local` feature loop, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test --workspace` | 1537 passed, 0 failed, 78 ignored |
+| Security review, first round | 2 medium (refused stored hash answered 500, timing for migrated hashes), 4 low, notes; all fixed (group 7) |
+| Security review, second round | 6 of 7 fixes held; 1 medium (blocking variants could hang the runtime), 3 low, notes; all fixed (group 8) |
+| Security review, third round | all fixes held; 1 low (argon2 `p` overflow before the limits), fixed (group 9) |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; databases equivalent |
+| Parity, houseplan | 598 checks equal (quiet hours), 0 different; databases equivalent |
+
+The round-3 fix was verified by its regression test and the full workspace run, not by a fourth review round.
 
 ## Workflow follow-up
 
