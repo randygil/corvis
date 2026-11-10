@@ -101,12 +101,17 @@ has no limit besides the body size.
 ### Requirement: New hashes use argon2id with documented parameters
 The password hasher SHALL create argon2id hashes (version 19) in PHC string format with, by default, 19456 KiB of
 memory, 2 iterations, parallelism 1, a 16-byte random salt from the operating system's generator and a 32-byte
-output. The parameters SHALL be configurable; configured values weaker than these defaults in memory or iterations
-SHALL log a warning when the hasher is created.
+output. The parameters SHALL be configurable, but values below the floor (argon2id 19456 KiB with 2 iterations, or
+47104 KiB with 1; bcrypt cost 10) MUST fail creation unless weak parameters are explicitly allowed, which logs a
+warning.
 
 #### Scenario: Default hash format
 - **WHEN** a hasher with default options hashes `"secret"`
 - **THEN** the result starts with `$argon2id$v=19$m=19456,t=2,p=1$` and verifies with `"secret"`
+
+#### Scenario: Parameters below the floor
+- **WHEN** a hasher is created with argon2id at 8 KiB and 1 iteration, or with bcrypt cost 4
+- **THEN** creation fails, unless the options explicitly allow weak parameters, and then it succeeds and logs a warning
 
 #### Scenario: Two hashes of the same password
 - **WHEN** the same password is hashed twice

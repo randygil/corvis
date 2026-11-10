@@ -31,8 +31,9 @@ async fn the_documented_credentials_log_in_and_the_rest_get_the_same_401() {
     let wrong = c.post("/api/v1/auth/login").json(&json!({ "username": "john", "password": "wrong-password" })).send().await;
     let unknown = c.post("/api/v1/auth/login").json(&json!({ "username": "nobody", "password": "wrong-password" })).send().await;
     assert_eq!(wrong.status, 401);
-    assert_eq!((unknown.status, unknown.text()), (401, wrong.text()));
+    // The body carries a timestamp, so compare what the client can tell apart.
+    assert_eq!((unknown.status, unknown.json_value()["message"].clone()), (401, wrong.json_value()["message"].clone()));
 
     let missing = c.post("/api/v1/auth/login").json(&json!({ "username": "john" })).send().await;
-    assert_eq!((missing.status, missing.text()), (401, wrong.text()));
+    assert_eq!((missing.status, missing.json_value()["message"].clone()), (401, wrong.json_value()["message"].clone()));
 }
