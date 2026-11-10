@@ -587,6 +587,13 @@ impl IoSocket {
         }
     }
 
+    /// The bytes queued for this socket's connection and not yet written. Unstable and hidden: for the tests that
+    /// check what a broadcast holds.
+    #[doc(hidden)]
+    pub fn buffered_amount(&self) -> usize {
+        self.inner.client.engine.buffered_amount()
+    }
+
     /// The number of acknowledged emits still waiting for the client.
     pub fn pending_acks(&self) -> usize {
         self.state().acks.len()
