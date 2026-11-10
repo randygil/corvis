@@ -14,7 +14,7 @@ whether new issues are created before this change starts.
   shares `digest` 0.10 with `sha2` and no duplicate generation appears, and with `cargo deny check` that licenses
   pass; verify `cargo clippy -p corvis --no-default-features --features auth-session -- -D warnings` passes on empty
   modules
-- [ ] 1.2 Add `auth-session` to the per-feature loop (`.github/workflows/ci.yml:72`), a
+- [x] 1.2 Add `auth-session` to the per-feature loop (`.github/workflows/ci.yml:72`), a
   `cargo test -p corvis --features auth-session --no-fail-fast` step next to the `compression` one (line 114), and
   the feature to the fuzz step (line 165); verify the new steps run in the CI of the pull request
 
@@ -130,7 +130,7 @@ whether new issues are created before this change starts.
   `signed_cookies.rs` and `auth_session.rs` without Node
 - [x] 8.4 Regression tests exist for every scenario of `http/signed-cookies` and `auth/sessions`
 - [x] 8.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 8.6 corvis-parity check: run it if any framework runtime code compiled without the `auth-session` feature
+- [x] 8.6 corvis-parity check: run it if any framework runtime code compiled without the `auth-session` feature
   changed (for example `AuthGuard`, `Request`, the middleware chain); otherwise record in the archive notes that the
   ports do not enable the feature and nothing else changed; verify the three port apps (consi, facten, houseplan)
   keep 0 apidiff differences when it runs
@@ -164,6 +164,28 @@ whether new issues are created before this change starts.
   `Secure` sentence)
 - [x] 9.10 Specs updated (`auth/sessions`, `http/signed-cookies`); `openspec validate e3-sessions-and-signed-cookies
   --strict` passes
+
+## Verification
+
+Checked on `dev` at 7b3e1d6 (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy with the `auth-session` feature loop, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test --workspace` | 1786 passed, 0 failed, 91 ignored |
+| `cargo check -p corvis --tests --features <f>` for compression, auth-local, auth-api-key, socket-io, auth-session | no warnings |
+| Security review, first round | 2 medium (logout racing a regeneration revived the session; memory store not bounded in real memory), 4 low, notes; all fixed (group 9) |
+| Security review, second round | round 1 held (no resurrection in 16 interleavings and 100,000-request runs); 2 medium (a filter kept a guard login; parsing under the store lock), 5 low; all fixed or documented (group 10) |
+| Security review, third round | round 2 held; 2 low (rejection mark missed two paths; login over an ended logged-in session), fixed (group 11) |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 636 checks equal, 0 different; route tables identical; databases equivalent |
+
+Notes: the first CI run of the merge failed one test on Linux, the contention comparison of the memory store
+(`big_sessions_do_not_slow_down_other_users`): on a runner with few cores the ratio measures the CPU the attackers
+take, not the lock. It is now a measurement run on request (`--ignored`); 7b3e1d6. The group 11 changes were verified
+by their regression tests and the full workspace run, not by a fourth review round. The parity run of facten and
+houseplan was on f8814dd, which differs from 7b3e1d6 by that test file only; consi was rerun on 7b3e1d6.
 
 ## Workflow follow-up
 
