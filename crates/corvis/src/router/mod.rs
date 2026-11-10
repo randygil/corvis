@@ -699,7 +699,12 @@ pub(crate) async fn execute_route(route: Arc<CompiledRoute>, mut req: Request, p
     req.insert(crate::common::context::RouteStatus(route.default_status));
     let ctx = ExecutionContext::new(req, route.class_target.clone(), route.handler_target.clone(), Some(route.module_ref.clone()));
     let result = match AssertUnwindSafe(run_pipeline(route.clone(), ctx.clone())).catch_unwind().await {
-        Ok(r) => r,
+        Ok(Pipeline::Stored(mut resp)) => {
+            // A guard ended the request: no `finalize`, filters or `#[res]` merge, only the recorded headers.
+            apply_enhancer_headers(&ctx, &mut resp, true);
+            return resp;
+        }
+        Ok(Pipeline::Done(r)) => r,
         Err(panic) => Err(panic_exception(panic)),
     };
     let res = route.response_mode.and_then(|_| ctx.request().get::<Res>());
@@ -708,7 +713,7 @@ pub(crate) async fn execute_route(route: Arc<CompiledRoute>, mut req: Request, p
             Ok(resp) => finalize(resp, &route),
             Err(e) => handle_exception(e, &ctx, &route.filters).await,
         };
-        apply_enhancer_headers(&ctx, &mut resp);
+        apply_enhancer_headers(&ctx, &mut resp, true);
         return resp;
     };
     // `@Res()`: a response ended by the handler is what the client gets (a later
@@ -727,38 +732,91 @@ pub(crate) async fn execute_route(route: Arc<CompiledRoute>, mut req: Request, p
             // and `#[header]`, set before the handler ran.
             res.merge_into(&mut resp, true);
             let mut resp = finalize(resp, &route);
-            apply_enhancer_headers(&ctx, &mut resp);
+            // The `Res` already holds the appended values.
+            apply_enhancer_headers(&ctx, &mut resp, false);
             resp
         }
         Err(e) => {
             let mut resp = handle_exception(e, &ctx, &route.filters).await;
             res.merge_into(&mut resp, true);
-            apply_enhancer_headers(&ctx, &mut resp);
+            apply_enhancer_headers(&ctx, &mut resp, false);
             resp
         }
     }
 }
 
 /// Adds the headers enhancers recorded with `set_response_header` to the response of the route, never replacing a
-/// header it already has.
-fn apply_enhancer_headers(ctx: &ExecutionContext, resp: &mut Response) {
-    let Some(headers) = crate::common::context::EnhancerHeaders::of(ctx.request()) else { return };
+/// header it already has, and, when `appended` is set, the values recorded with `append_response_header`:
+/// every `Set-Cookie` before the response's own, any other name only when the response has none (or only has the
+/// value this function just added for that name).
+fn apply_enhancer_headers(ctx: &ExecutionContext, resp: &mut Response, appended: bool) {
+    let recorded = crate::common::context::EnhancerHeaders::of(ctx.request());
     // A body brings its own type (JSON, text, bytes with an explicit type, a stream): an enhancer must not retype it.
     let has_body = !matches!(resp.body, crate::http::response::Body::Empty);
-    for (name, value) in headers.iter() {
+    let mut added: Vec<http::HeaderName> = Vec::new();
+    if let Some(headers) = recorded {
+        for (name, value) in headers.iter() {
+            if *name == http::header::CONTENT_TYPE && has_body {
+                continue;
+            }
+            if !resp.headers().contains_key(name) {
+                resp.headers_mut().append(name.clone(), value.clone());
+                added.push(name.clone());
+            }
+        }
+    }
+    if !appended {
+        return;
+    }
+    let Some(values) = crate::common::context::AppendedHeaders::of(ctx.request()) else { return };
+    let mut cookies_done = false;
+    for (name, value) in values.iter() {
+        if *name == http::header::SET_COOKIE {
+            if !cookies_done {
+                cookies_done = true;
+                let own: Vec<http::HeaderValue> = resp.headers().get_all(name).iter().cloned().collect();
+                resp.headers_mut().remove(name);
+                for (n, v) in values.iter().filter(|(n, _)| n == name) {
+                    resp.headers_mut().append(n.clone(), v.clone());
+                }
+                for v in own {
+                    resp.headers_mut().append(name.clone(), v);
+                }
+            }
+            continue;
+        }
         if *name == http::header::CONTENT_TYPE && has_body {
             continue;
         }
-        if !resp.headers().contains_key(name) {
+        if !resp.headers().contains_key(name) || added.contains(name) {
             resp.headers_mut().append(name.clone(), value.clone());
+            if !added.contains(name) {
+                added.push(name.clone());
+            }
         }
     }
 }
 
-async fn run_pipeline(route: Arc<CompiledRoute>, ctx: ExecutionContext) -> HandlerResult {
+/// How the guards and interceptors ended: a result to finalize, or a response a guard stored with `respond_with`.
+enum Pipeline {
+    Done(HandlerResult),
+    Stored(Response),
+}
+
+async fn run_pipeline(route: Arc<CompiledRoute>, ctx: ExecutionContext) -> Pipeline {
     for g in &route.guards {
-        if !g.can_activate(&ctx).await? {
-            return Err(ForbiddenException::new("Forbidden resource"));
+        let verdict = g.can_activate(&ctx).await;
+        if let Some(resp) = crate::common::context::PendingResponse::take(ctx.request()) {
+            if !matches!(verdict, Ok(true)) {
+                crate::logger::Logger::new("ExceptionsHandler")
+                    .error("Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client");
+            }
+            return Pipeline::Stored(resp);
+        }
+        match verdict {
+            Ok(true) => {}
+            Ok(false) => return Pipeline::Done(Err(ForbiddenException::new("Forbidden resource"))),
+            Err(e) => return Pipeline::Done(Err(e)),
         }
     }
     if let Some(mode) = route.response_mode {
@@ -769,16 +827,31 @@ async fn run_pipeline(route: Arc<CompiledRoute>, ctx: ExecutionContext) -> Handl
         for (k, v) in &route.headers {
             res.set(k, v);
         }
+        let mut copied: Vec<http::HeaderName> = Vec::new();
         if let Some(recorded) = crate::common::context::EnhancerHeaders::of(req) {
             for (name, value) in recorded.iter() {
                 if name != http::header::CONTENT_TYPE && !res.has_header(name.as_str()) {
                     res.set_header_value(name.clone(), value.clone());
+                    copied.push(name.clone());
+                }
+            }
+        }
+        if let Some(values) = crate::common::context::AppendedHeaders::of(req) {
+            for (name, value) in values {
+                if name == http::header::CONTENT_TYPE {
+                    continue;
+                }
+                if name == http::header::SET_COOKIE || !res.has_header(name.as_str()) || copied.contains(&name) {
+                    if name != http::header::SET_COOKIE && !copied.contains(&name) {
+                        copied.push(name.clone());
+                    }
+                    res.append_header_value(name, value);
                 }
             }
         }
         req.insert(res);
     }
-    call_interceptors(route.interceptors.clone(), 0, ctx, route).await
+    Pipeline::Done(call_interceptors(route.interceptors.clone(), 0, ctx, route).await)
 }
 
 fn call_interceptors(
