@@ -1,0 +1,894 @@
+{
+  "meta": {
+    "passport-oauth2": "1.8.0",
+    "passport-google-oauth20": "2.0.0",
+    "passport-github2": "0.1.12",
+    "passport-oauth2-refresh": "2.2.0",
+    "note": "values of state, code_challenge and code_verifier are placeholders; <provider> is the fake provider"
+  },
+  "authorization": [
+    {
+      "config": "generic",
+      "state_and_pkce": false,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ],
+      "divergence": "Corvis always sends state and a PKCE challenge: the redirect has code_challenge, code_challenge_method=S256 and state where this one has none"
+    },
+    {
+      "config": "generic",
+      "state_and_pkce": true,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "code_challenge",
+          "<challenge>"
+        ],
+        [
+          "code_challenge_method",
+          "S256"
+        ],
+        [
+          "state",
+          "<state>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ]
+    },
+    {
+      "config": "generic-scope",
+      "state_and_pkce": false,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "scope",
+          "a b"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ],
+      "divergence": "Corvis always sends state and a PKCE challenge: the redirect has code_challenge, code_challenge_method=S256 and state where this one has none"
+    },
+    {
+      "config": "generic-scope",
+      "state_and_pkce": true,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "scope",
+          "a b"
+        ],
+        [
+          "code_challenge",
+          "<challenge>"
+        ],
+        [
+          "code_challenge_method",
+          "S256"
+        ],
+        [
+          "state",
+          "<state>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ]
+    },
+    {
+      "config": "generic-tenant",
+      "state_and_pkce": false,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "tenant",
+          "a"
+        ],
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ],
+      "divergence": "Corvis always sends state and a PKCE challenge: the redirect has code_challenge, code_challenge_method=S256 and state where this one has none"
+    },
+    {
+      "config": "generic-tenant",
+      "state_and_pkce": true,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "tenant",
+          "a"
+        ],
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "code_challenge",
+          "<challenge>"
+        ],
+        [
+          "code_challenge_method",
+          "S256"
+        ],
+        [
+          "state",
+          "<state>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ]
+    },
+    {
+      "config": "google",
+      "state_and_pkce": false,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "scope",
+          "email profile"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ],
+      "divergence": "Corvis always sends state and a PKCE challenge: the redirect has code_challenge, code_challenge_method=S256 and state where this one has none"
+    },
+    {
+      "config": "google",
+      "state_and_pkce": true,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "scope",
+          "email profile"
+        ],
+        [
+          "code_challenge",
+          "<challenge>"
+        ],
+        [
+          "code_challenge_method",
+          "S256"
+        ],
+        [
+          "state",
+          "<state>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ]
+    },
+    {
+      "config": "google-offline",
+      "state_and_pkce": false,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "access_type",
+          "offline"
+        ],
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "scope",
+          "email profile"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ],
+      "divergence": "Corvis always sends state and a PKCE challenge: the redirect has code_challenge, code_challenge_method=S256 and state where this one has none"
+    },
+    {
+      "config": "google-offline",
+      "state_and_pkce": true,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "access_type",
+          "offline"
+        ],
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "scope",
+          "email profile"
+        ],
+        [
+          "code_challenge",
+          "<challenge>"
+        ],
+        [
+          "code_challenge_method",
+          "S256"
+        ],
+        [
+          "state",
+          "<state>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ]
+    },
+    {
+      "config": "github",
+      "state_and_pkce": false,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "scope",
+          "user:email,read:user"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ],
+      "divergence": "Corvis always sends state and a PKCE challenge: the redirect has code_challenge, code_challenge_method=S256 and state where this one has none"
+    },
+    {
+      "config": "github",
+      "state_and_pkce": true,
+      "status": 302,
+      "location_path": "/authorize",
+      "params": [
+        [
+          "response_type",
+          "code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "scope",
+          "user:email,read:user"
+        ],
+        [
+          "code_challenge",
+          "<challenge>"
+        ],
+        [
+          "code_challenge_method",
+          "S256"
+        ],
+        [
+          "state",
+          "<state>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ]
+      ]
+    }
+  ],
+  "token_request": {
+    "generic": {
+      "method": "POST",
+      "path": "/token",
+      "query": [],
+      "content_type": "application/x-www-form-urlencoded",
+      "authorization": null,
+      "user_agent": "Node-oauth",
+      "form": [
+        [
+          "grant_type",
+          "authorization_code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "code_verifier",
+          "<verifier>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ],
+        [
+          "client_secret",
+          "client-secret-FAKE"
+        ],
+        [
+          "code",
+          "ok"
+        ]
+      ]
+    },
+    "google": {
+      "method": "POST",
+      "path": "/token",
+      "query": [],
+      "content_type": "application/x-www-form-urlencoded",
+      "authorization": null,
+      "user_agent": "Node-oauth",
+      "form": [
+        [
+          "grant_type",
+          "authorization_code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "code_verifier",
+          "<verifier>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ],
+        [
+          "client_secret",
+          "client-secret-FAKE"
+        ],
+        [
+          "code",
+          "ok"
+        ]
+      ]
+    },
+    "github": {
+      "method": "POST",
+      "path": "/token",
+      "query": [],
+      "content_type": "application/x-www-form-urlencoded",
+      "authorization": null,
+      "user_agent": "passport-github",
+      "form": [
+        [
+          "grant_type",
+          "authorization_code"
+        ],
+        [
+          "redirect_uri",
+          "https://app.example/auth/callback"
+        ],
+        [
+          "code_verifier",
+          "<verifier>"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ],
+        [
+          "client_secret",
+          "client-secret-FAKE"
+        ],
+        [
+          "code",
+          "ok"
+        ]
+      ]
+    },
+    "divergence": "Corvis also sends Accept: application/json and its own User-Agent; the compared parts are the method, the path, the content type and the form fields in order"
+  },
+  "profile_requests": {
+    "google": [
+      {
+        "method": "GET",
+        "path": "/userinfo",
+        "query": [
+          [
+            "access_token",
+            "ACCESS-ok"
+          ]
+        ],
+        "content_type": null,
+        "authorization": null,
+        "user_agent": "Node-oauth",
+        "form": null
+      }
+    ],
+    "github": [
+      {
+        "method": "GET",
+        "path": "/user",
+        "query": [],
+        "content_type": null,
+        "authorization": "Bearer",
+        "user_agent": "passport-github",
+        "form": null
+      },
+      {
+        "method": "GET",
+        "path": "/user/emails",
+        "query": [],
+        "content_type": null,
+        "authorization": "Bearer",
+        "user_agent": "passport-github",
+        "form": null
+      }
+    ],
+    "github-default-emails": [
+      {
+        "method": "GET",
+        "path": "/user",
+        "query": [],
+        "content_type": null,
+        "authorization": "Bearer",
+        "user_agent": "passport-github",
+        "form": null
+      },
+      {
+        "method": "GET",
+        "path": "/user/emails",
+        "query": [],
+        "content_type": null,
+        "authorization": "Bearer",
+        "user_agent": "passport-github",
+        "form": null
+      }
+    ],
+    "github-no-email-scope": [
+      {
+        "method": "GET",
+        "path": "/user",
+        "query": [],
+        "content_type": null,
+        "authorization": "Bearer",
+        "user_agent": "passport-github",
+        "form": null
+      }
+    ],
+    "divergence": "the original sends the Google access token as the access_token query parameter (and GitHub in an Authorization: Bearer header); Corvis sends a bearer header for both and never a token in a URL"
+  },
+  "profiles": {
+    "generic": {
+      "status": 200,
+      "profile": {},
+      "access_token": "ACCESS-ok",
+      "refresh_token": "REFRESH-ok",
+      "params": {
+        "access_token": "ACCESS-ok",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "email profile"
+      }
+    },
+    "google": {
+      "status": 200,
+      "profile": {
+        "id": "110169484474386276334",
+        "displayName": "Ana Perez",
+        "name": {
+          "familyName": "Perez",
+          "givenName": "Ana"
+        },
+        "emails": [
+          {
+            "value": "ana@example.com",
+            "verified": true
+          }
+        ],
+        "photos": [
+          {
+            "value": "https://lh3.example/a.png"
+          }
+        ],
+        "provider": "google",
+        "_json": {
+          "sub": "110169484474386276334",
+          "name": "Ana Perez",
+          "given_name": "Ana",
+          "family_name": "Perez",
+          "picture": "https://lh3.example/a.png",
+          "email": "ana@example.com",
+          "email_verified": true
+        }
+      },
+      "access_token": "ACCESS-ok",
+      "refresh_token": "REFRESH-ok",
+      "params": {
+        "access_token": "ACCESS-ok",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "email profile"
+      }
+    },
+    "github": {
+      "status": 200,
+      "profile": {
+        "id": "583231",
+        "nodeId": "MDQ6VXNlcjU4MzIzMQ==",
+        "displayName": "The Octocat",
+        "username": "octocat",
+        "profileUrl": "https://github.com/octocat",
+        "photos": [
+          {
+            "value": "https://avatars.example/u/583231"
+          }
+        ],
+        "provider": "github",
+        "_json": {
+          "login": "octocat",
+          "id": 583231,
+          "node_id": "MDQ6VXNlcjU4MzIzMQ==",
+          "avatar_url": "https://avatars.example/u/583231",
+          "html_url": "https://github.com/octocat",
+          "name": "The Octocat",
+          "email": null
+        },
+        "emails": [
+          {
+            "primary": false,
+            "verified": true,
+            "visibility": null,
+            "value": "octocat@users.noreply.github.com"
+          },
+          {
+            "primary": true,
+            "verified": true,
+            "visibility": "public",
+            "value": "octocat@example.com"
+          }
+        ]
+      },
+      "access_token": "ACCESS-ok",
+      "refresh_token": "REFRESH-ok",
+      "params": {
+        "access_token": "ACCESS-ok",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "email profile"
+      }
+    },
+    "github-default-emails": {
+      "status": 200,
+      "profile": {
+        "id": "583231",
+        "nodeId": "MDQ6VXNlcjU4MzIzMQ==",
+        "displayName": "The Octocat",
+        "username": "octocat",
+        "profileUrl": "https://github.com/octocat",
+        "photos": [
+          {
+            "value": "https://avatars.example/u/583231"
+          }
+        ],
+        "provider": "github",
+        "_json": {
+          "login": "octocat",
+          "id": 583231,
+          "node_id": "MDQ6VXNlcjU4MzIzMQ==",
+          "avatar_url": "https://avatars.example/u/583231",
+          "html_url": "https://github.com/octocat",
+          "name": "The Octocat",
+          "email": null
+        },
+        "emails": [
+          {
+            "value": "octocat@example.com"
+          }
+        ]
+      },
+      "access_token": "ACCESS-ok",
+      "refresh_token": "REFRESH-ok",
+      "params": {
+        "access_token": "ACCESS-ok",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "email profile"
+      }
+    },
+    "github-no-email-scope": {
+      "status": 200,
+      "profile": {
+        "id": "583231",
+        "nodeId": "MDQ6VXNlcjU4MzIzMQ==",
+        "displayName": "The Octocat",
+        "username": "octocat",
+        "profileUrl": "https://github.com/octocat",
+        "photos": [
+          {
+            "value": "https://avatars.example/u/583231"
+          }
+        ],
+        "provider": "github",
+        "_json": {
+          "login": "octocat",
+          "id": 583231,
+          "node_id": "MDQ6VXNlcjU4MzIzMQ==",
+          "avatar_url": "https://avatars.example/u/583231",
+          "html_url": "https://github.com/octocat",
+          "name": "The Octocat",
+          "email": null
+        }
+      },
+      "access_token": "ACCESS-ok",
+      "refresh_token": "REFRESH-ok",
+      "params": {
+        "access_token": "ACCESS-ok",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "email profile"
+      }
+    },
+    "github_public_email": {
+      "status": 200,
+      "profile": {
+        "id": "583231",
+        "nodeId": "MDQ6VXNlcjU4MzIzMQ==",
+        "displayName": "The Octocat",
+        "username": "octocat",
+        "profileUrl": "https://github.com/octocat",
+        "emails": [
+          {
+            "value": "public@example.com"
+          }
+        ],
+        "photos": [
+          {
+            "value": "https://avatars.example/u/583231"
+          }
+        ],
+        "provider": "github",
+        "_json": {
+          "login": "octocat",
+          "id": 583231,
+          "node_id": "MDQ6VXNlcjU4MzIzMQ==",
+          "avatar_url": "https://avatars.example/u/583231",
+          "html_url": "https://github.com/octocat",
+          "name": "The Octocat",
+          "email": "public@example.com"
+        }
+      }
+    },
+    "divergence": "GitHub e-mails: with user:email Corvis keeps every address of /user/emails as { value, primary, verified } (the original with allRawEmails: true, which adds visibility; without it only the primary address as { value }); every e-mail has a verified flag, which the original omits for GitHub"
+  },
+  "outcomes": [
+    {
+      "name": "success",
+      "config": "google",
+      "query": "code=ok&state=<state>",
+      "status": 200,
+      "token_requests": 1
+    },
+    {
+      "name": "access_denied",
+      "config": "google",
+      "query": "error=access_denied&error_description=denied&state=<state>",
+      "status": 401,
+      "token_requests": 0
+    },
+    {
+      "name": "other_provider_error",
+      "config": "google",
+      "query": "error=server_error&error_description=boom&state=<state>",
+      "status": 502,
+      "token_requests": 0,
+      "divergence": "Corvis answers 401 for a provider error other than access_denied: it is caused by the request, not by the server (auth/oauth2: Request-caused callback failures are answered 401)"
+    },
+    {
+      "name": "state_mismatch",
+      "config": "google",
+      "query": "code=ok&state=forged",
+      "status": 403,
+      "token_requests": 0,
+      "note": "passport answers the status the strategy gave (403); the AuthGuard of Corvis answers 401 for every failed attempt"
+    },
+    {
+      "name": "no_state",
+      "config": "google",
+      "query": "code=ok",
+      "status": 403,
+      "token_requests": 0
+    },
+    {
+      "name": "token_400",
+      "config": "google",
+      "query": "code=badrequest&state=<state>",
+      "status": 500,
+      "token_requests": 1,
+      "divergence": "Corvis answers 401 when the token endpoint rejects the code (400 or 401): the request caused it (a reused or forged code)"
+    },
+    {
+      "name": "token_500",
+      "config": "google",
+      "query": "code=down&state=<state>",
+      "status": 500,
+      "token_requests": 1
+    },
+    {
+      "name": "token_redirect",
+      "config": "google",
+      "query": "code=redirect&state=<state>",
+      "status": 500,
+      "token_requests": 1,
+      "note": "node-oauth does not follow the redirect; the empty answer has no access token"
+    },
+    {
+      "name": "token_garbage",
+      "config": "google",
+      "query": "code=garbage&state=<state>",
+      "status": 500,
+      "token_requests": 1
+    },
+    {
+      "name": "token_without_access_token",
+      "config": "google",
+      "query": "code=noaccess&state=<state>",
+      "status": 500,
+      "token_requests": 1
+    },
+    {
+      "name": "token_form_encoded",
+      "config": "google",
+      "query": "code=form&state=<state>",
+      "status": 200,
+      "token_requests": 1
+    },
+    {
+      "name": "profile_500",
+      "config": "google",
+      "query": "code=profile500&state=<state>",
+      "status": 500,
+      "token_requests": 1
+    },
+    {
+      "name": "validator_false",
+      "config": "google",
+      "query": "code=validatorfalse&state=<state>",
+      "status": 401,
+      "token_requests": 1
+    },
+    {
+      "name": "no_refresh_token",
+      "config": "google",
+      "query": "code=norefresh&state=<state>",
+      "status": 200,
+      "token_requests": 1
+    }
+  ],
+  "refresh": {
+    "request": {
+      "method": "POST",
+      "path": "/token",
+      "query": [],
+      "content_type": "application/x-www-form-urlencoded",
+      "authorization": null,
+      "user_agent": "Node-oauth",
+      "form": [
+        [
+          "grant_type",
+          "refresh_token"
+        ],
+        [
+          "client_id",
+          "client-id-FAKE"
+        ],
+        [
+          "client_secret",
+          "client-secret-FAKE"
+        ],
+        [
+          "refresh_token",
+          "OLD-REFRESH"
+        ]
+      ]
+    },
+    "access_token": "ACCESS-refreshed",
+    "refresh_token": "REFRESH-refreshed",
+    "params": {
+      "access_token": "ACCESS-refreshed",
+      "expires_in": 1800,
+      "token_type": "Bearer"
+    }
+  }
+}
