@@ -140,6 +140,7 @@ impl<M: QueueItem> OutQueue<M> {
 
     /// Rejects any later item. The pending ones stay queued for the writer, or are dropped with
     /// `discard`. Returns `false` if the queue was already closed.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn seal(&self, discard: bool) -> bool {
         let mut s = self.lock();
         if s.closed && !discard {
@@ -156,6 +157,7 @@ impl<M: QueueItem> OutQueue<M> {
     }
 
     /// `true` once sealed and every queued item was taken.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn is_drained(&self) -> bool {
         let s = self.lock();
         s.closed && s.items.is_empty()
@@ -163,6 +165,7 @@ impl<M: QueueItem> OutQueue<M> {
 
     /// Takes queued items in order while `cost` of the taken ones stays within `budget`; always at least one
     /// when any is queued. Taken items no longer count against the limit.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn take_batch(&self, budget: usize, mut cost: impl FnMut(&M) -> usize) -> Vec<M> {
         let mut s = self.lock();
         let mut taken = Vec::new();
@@ -181,6 +184,7 @@ impl<M: QueueItem> OutQueue<M> {
     }
 
     /// Resolves when an item is queued or the queue is sealed, without taking anything.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) async fn wait_ready(&self) {
         loop {
             let notified = self.watchers.notified();
@@ -339,6 +343,7 @@ pub(crate) struct UnreadGauge {
 }
 
 impl UnreadGauge {
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn new(limit: usize) -> Self {
         UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit }
     }
@@ -348,6 +353,7 @@ impl UnreadGauge {
     }
 
     /// Bytes received and not yet taken.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn unread(&self) -> usize {
         self.bytes.load(Ordering::SeqCst)
     }

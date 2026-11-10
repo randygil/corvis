@@ -12,7 +12,8 @@ use bytes::Bytes;
 pub const SEPARATOR: char = '\x1e';
 
 /// Decodes base64 with or without padding, as `engine.io-parser` does.
-const LENIENT: GeneralPurpose = GeneralPurpose::new(&base64::alphabet::STANDARD, GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent));
+const LENIENT: GeneralPurpose =
+    GeneralPurpose::new(&base64::alphabet::STANDARD, GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent));
 
 /// The payload of a `message` packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,7 +336,8 @@ mod tests {
 
     #[test]
     fn payloads_round_trip() {
-        let packets = vec![text("a"), Packet::Noop, Packet::Message(EngineMessage::Binary(Bytes::from_static(&[255, 0, 7]))), Packet::Close];
+        let packets =
+            vec![text("a"), Packet::Noop, Packet::Message(EngineMessage::Binary(Bytes::from_static(&[255, 0, 7]))), Packet::Close];
         let wire = encode_payload(&packets);
         let back: Vec<Packet> = decode_payload(&wire, 10)
             .unwrap()

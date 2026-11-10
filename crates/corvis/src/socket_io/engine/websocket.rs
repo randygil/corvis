@@ -14,9 +14,9 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role as WsRole, WebSocketConfig};
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use super::EngineServer;
 use super::packet::{Incoming, Packet, WsFrame, decode_frame};
@@ -130,9 +130,10 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
                 }
                 // tungstenite answers pings by itself.
                 Some(Ok(_)) => {}
-                Some(Err(tokio_tungstenite::tungstenite::Error::ConnectionClosed | tokio_tungstenite::tungstenite::Error::AlreadyClosed | tokio_tungstenite::tungstenite::Error::Io(_))) => {
-                    break Exit::Peer { close_frame: false };
-                }
+                Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) => break Exit::Peer { close_frame: false },
+                // The socket failed (a reset, or the server cut it after `send_timeout`): `ws` reports a socket error
+                // as `transport error`, and the connection is gone, so there is no closing handshake.
+                Some(Err(WsError::Io(_))) => break Exit::WriterFailed,
                 Some(Err(e)) => {
                     let (_, code) = protocol_error(&e);
                     break Exit::Protocol(code);

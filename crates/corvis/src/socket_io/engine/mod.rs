@@ -161,7 +161,14 @@ impl EngineServer {
         self.inner.path.starts_with(&other.inner.path) || other.inner.path.starts_with(&self.inner.path)
     }
 
-    fn handshake_refused(&self, handshake: &Request, upgrade: bool, status: StatusCode, code: u8, message: &str) -> hyper::Response<ResBody> {
+    fn handshake_refused(
+        &self,
+        handshake: &Request,
+        upgrade: bool,
+        status: StatusCode,
+        code: u8,
+        message: &str,
+    ) -> hyper::Response<ResBody> {
         let _ = handshake;
         let mut resp = polling::json_error(status, code, message);
         if upgrade {
@@ -257,9 +264,8 @@ impl EngineServer {
     ) -> hyper::Response<ResBody> {
         let query = Query::parse(handshake.uri().query());
         let options = &self.inner.options;
-        let abort = |code: u8| -> hyper::Response<ResBody> {
-            if upgrade { polling::abort_upgrade(code) } else { polling::abort_request(code) }
-        };
+        let abort =
+            |code: u8| -> hyper::Response<ResBody> { if upgrade { polling::abort_upgrade(code) } else { polling::abort_request(code) } };
 
         // Node's `verify`, in its order.
         let transport = match query.get("transport") {
@@ -347,7 +353,12 @@ impl EngineServer {
         query: &Query,
     ) -> hyper::Response<ResBody> {
         let Some(on_upgrade) = on_upgrade else { return polling::abort_upgrade(3) };
-        if !handshake.headers().get(http::header::UPGRADE).and_then(|v| v.to_str().ok()).is_some_and(|u| u.eq_ignore_ascii_case("websocket")) {
+        if !handshake
+            .headers()
+            .get(http::header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|u| u.eq_ignore_ascii_case("websocket"))
+        {
             return crate::websockets::reject_handshake(400, "Invalid Upgrade header", &[]);
         }
         let key = match crate::websockets::validate_ws_handshake(handshake.headers(), handshake.method(), None) {
@@ -358,7 +369,9 @@ impl EngineServer {
         let close_timeout = self.inner.options.close_timeout;
         let (session, role) = match session {
             // An upgrade of an existing session; a transport other than `websocket` is closed right away.
-            Some(session) => (session, if transport == TransportKind::WebSocket { websocket::Role::Candidate } else { websocket::Role::Refuse }),
+            Some(session) => {
+                (session, if transport == TransportKind::WebSocket { websocket::Role::Candidate } else { websocket::Role::Refuse })
+            }
             None => {
                 if transport != TransportKind::WebSocket {
                     return polling::abort_upgrade(3);
@@ -498,4 +511,3 @@ impl EngineSocket {
         self.session.unread.unread()
     }
 }
-

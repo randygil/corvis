@@ -319,3 +319,32 @@ served with `listen_in_background`.
 7. Every timing test runs on Tokio's paused clock or asserts only lower bounds with generous margins: CI runners are
    slow and shared (a Windows SSE test failed on a timing race on 2026-11-09).
 8. Security review (task 9.7) is mandatory; run `security-reviewer` rounds until closed, as for the WebSocket work.
+
+## Implementation notes
+
+1. Test layout. The handshake, polling and error scenarios are in `tests/engine_io.rs`; the WebSocket transport, upgrade,
+   CORS and origin allowlist, heartbeat, close and shutdown scenarios are in `tests/engine_io_ws.rs`; every bound of
+   Decision 8 that is not a wire behavior of Node is in `tests/engine_io_security.rs`. `tests/engine_support/` holds the
+   shared client helpers and the harness application. The session state machine has unit tests on the paused clock
+   (`session::tests`, `session::session_tests`): exact ping and pong times, `upgrade_timeout`, one upgrade at a time,
+   and the 100 ms noop of a pending poll while probing.
+2. `CorvisApplication::listen_until_in_background(addr, shutdown)` (hidden) exists so a test can trigger the graceful
+   shutdown of `serve` without a signal; it does not run the lifecycle hooks.
+3. A single configured CORS origin is sent as is whatever the request's `Origin` says: that is what the `cors` package
+   does and the `engine-io/cors` scenario confirms against Node. It is not a divergence.
+4. An I/O error on the WebSocket (a reset, or the connection cut by the server's `send_timeout`) closes the session with
+   `transport error`; an end of stream or a close frame is `transport close`. Before, a read-side error could win the
+   race against the writer's failure and report `transport close` for a peer that never reads.
+5. `expected-differences.json` has no entry for `max_unread_bytes` (the harness application always reads, so no wire
+   difference is observable; the bound is covered by `engine_io_security.rs`), for the session id (same length and
+   alphabet, normalized by the harness) or for `max_http_buffer_size` (same behavior as Node).
+6. The upstream protocol suite runs against Corvis and, as a control, against the Node reference
+   (`tests/engine_io_conformance.rs`). The suite test "forcefully closes the session" (HTTP long-polling) sends a `GET`
+   and a `POST` carrying the close packet concurrently and expects the `GET` to arrive first; on a multi-threaded
+   runtime the `POST` wins that race in about one run in twenty (1 of 21 measured) and the `GET` then correctly
+   answers `400`, as Node would if the requests arrived in that order. The behavior was not changed to hide the race.
+7. `OutQueue::seal`, `is_drained`, `take_batch`, `wait_ready` and `UnreadGauge::new`/`unread` are used only by the
+   Engine.IO session; they carry `cfg_attr(not(feature = "socket-io"), allow(dead_code))` so the build without the
+   feature stays free of warnings.
+8. Upgrade ordering was checked in 20 consecutive runs of the harness scenario "Upgrade with queued packets" (official
+   `engine.io-client` against the `burst` preset) and of the upgrade tests: no message lost, duplicated or reordered.

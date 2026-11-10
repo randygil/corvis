@@ -28,7 +28,9 @@ fn packet() -> impl Strategy<Value = Packet> {
 /// Fragments that make payloads that are often valid, or almost.
 fn soup() -> impl Strategy<Value = String> {
     prop::collection::vec(
-        prop::sample::select(vec!["0", "1", "2", "3", "4", "5", "6", "7", "b", "bAQID", "probe", "\x1e", "{}", "é", " ", "=", "***", "4hello"]),
+        prop::sample::select(vec![
+            "0", "1", "2", "3", "4", "5", "6", "7", "b", "bAQID", "probe", "\x1e", "{}", "é", " ", "=", "***", "4hello",
+        ]),
         0..40,
     )
     .prop_map(|v| v.concat())
