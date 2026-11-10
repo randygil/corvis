@@ -2,6 +2,7 @@
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -9,6 +10,7 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::auth::warn_limit::WarnLimiter;
 use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Injectable, ResolveCtx};
@@ -17,6 +19,12 @@ use crate::logger::Logger;
 
 /// The default of `max_username_bytes` and `max_password_bytes`.
 pub const DEFAULT_MAX_CREDENTIAL_BYTES: usize = 1024;
+
+/// The default of [`validator_timeout`](LocalStrategyOptions::validator_timeout).
+pub const DEFAULT_VALIDATOR_TIMEOUT: Duration = Duration::from_secs(5);
+
+const MIN_VALIDATOR_TIMEOUT: Duration = Duration::from_millis(1);
+const MAX_VALIDATOR_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The options of the local strategy, the `usernameField` and `passwordField` of `passport-local` plus the length
 /// limits.
@@ -27,6 +35,7 @@ pub struct LocalStrategyOptions {
     max_username_bytes: usize,
     max_password_bytes: usize,
     allow_query_credentials: bool,
+    validator_timeout: Duration,
 }
 
 impl Default for LocalStrategyOptions {
@@ -37,6 +46,7 @@ impl Default for LocalStrategyOptions {
             max_username_bytes: DEFAULT_MAX_CREDENTIAL_BYTES,
             max_password_bytes: DEFAULT_MAX_CREDENTIAL_BYTES,
             allow_query_credentials: false,
+            validator_timeout: DEFAULT_VALIDATOR_TIMEOUT,
         }
     }
 }
@@ -49,6 +59,14 @@ impl LocalStrategyOptions {
     /// The field that holds the username (`usernameField`), `username` by default. `a[b]` reads `body.a.b`.
     pub fn username_field(mut self, field: impl Into<String>) -> Self {
         self.username_field = field.into();
+        self
+    }
+
+    /// How long the validator may run, 5 seconds by default, 1 ms to 300 s. A validator that takes longer is dropped
+    /// (its future is cancelled) and the request is answered with a `503 Service Unavailable` that is the same for
+    /// every caller.
+    pub fn validator_timeout(mut self, timeout: Duration) -> Self {
+        self.validator_timeout = timeout;
         self
     }
 
@@ -127,6 +145,7 @@ struct Resolved {
     max_username_bytes: usize,
     max_password_bytes: usize,
     allow_query: bool,
+    validator_timeout: Duration,
 }
 
 /// `field.split(']').join('').split('[')` of `utils.lookup`.
@@ -145,14 +164,84 @@ impl Resolved {
         if options.max_username_bytes == 0 || options.max_password_bytes == 0 {
             return Err("max_username_bytes and max_password_bytes must be at least 1".to_string());
         }
+        if !(MIN_VALIDATOR_TIMEOUT..=MAX_VALIDATOR_TIMEOUT).contains(&options.validator_timeout) {
+            return Err("validator_timeout must be between 1 ms and 300 s".to_string());
+        }
         Ok(Resolved {
             username: split_path(&options.username_field),
             password: split_path(&options.password_field),
             max_username_bytes: options.max_username_bytes,
             max_password_bytes: options.max_password_bytes,
             allow_query: options.allow_query_credentials,
+            validator_timeout: options.validator_timeout,
         })
     }
+
+    /// The query the lookup reads: the request's when `allow_query_credentials` is on, `Null` (nothing) otherwise.
+    fn query_of(&self, req: &Request) -> Value {
+        if self.allow_query { Value::Object(req.query().clone()) } else { Value::Null }
+    }
+
+    /// The username the strategy would read from `req`: `None` when it is missing or longer than the limit (the cases
+    /// where the strategy answers "Missing credentials" or "Credentials too long" before the validator). The one
+    /// place both [`LocalStrategy`] and [`login_tracker`] get a username from, so they cannot disagree.
+    fn username_of(&self, req: &Request) -> Option<String> {
+        let query = self.query_of(req);
+        credential(req.body(), &query, &self.username).filter(|u| u.len() <= self.max_username_bytes).map(str::to_string)
+    }
+}
+
+/// A throttler tracker (for `ThrottlerStorage::with_named_tracker`) that counts login attempts per account: the
+/// username the local strategy configured with `options` will read from the same request (same field, same body then
+/// query order, same length limit), as `"acct:"` and the hex SHA-256 of its bytes. The digest keeps usernames out of
+/// the storage and bounds the key. A request with no readable username is counted by the normalized client address,
+/// as the built-in tracker does, so it is still limited. The username is used as submitted (no case folding): wrap the
+/// tracker when the application treats `Ana@x.io` and `ana@x.io` as one account.
+///
+/// ```ignore
+/// ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100), ThrottlerOptions::named("login", 60_000, 5)])
+///     .with_named_tracker("login-account", login_tracker(LocalStrategyOptions::default()))
+/// // on the route: #[apply_decorators(throttle("login").tracker("login-account"))]
+/// ```
+///
+/// # Panics
+///
+/// When `options` are not valid for the strategy (an empty field name, a zero length limit): the strategy would stop
+/// the application at startup for the same reason.
+pub fn login_tracker(
+    options: LocalStrategyOptions,
+) -> impl Fn(ExecutionContext) -> std::future::Ready<Result<String, HttpException>> + Send + Sync + 'static {
+    let resolved = Resolved::new(&options).unwrap_or_else(|problem| panic!("login_tracker: invalid local strategy options: {problem}"));
+    move |ctx| {
+        let req = ctx.request();
+        std::future::ready(Ok(match resolved.username_of(req) {
+            Some(username) => account_key(&username),
+            None => client_key(&ctx),
+        }))
+    }
+}
+
+/// `"acct:"` and the lowercase hex SHA-256 of the username's bytes.
+fn account_key(username: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let digest = Sha256::digest(username.as_bytes());
+    let mut key = String::with_capacity(5 + 64);
+    key.push_str("acct:");
+    for byte in digest {
+        let _ = write!(key, "{byte:02x}");
+    }
+    key
+}
+
+/// The built-in tracker's value for the request: the client address, normalized as the throttler normalizes it.
+fn client_key(ctx: &ExecutionContext) -> String {
+    let prefix = ctx
+        .module_ref()
+        .and_then(|m| m.get::<crate::modules::throttler::ThrottlerStorage>().ok())
+        .map(|s| s.ipv6_subnet_prefix())
+        .unwrap_or(crate::modules::throttler::DEFAULT_IPV6_SUBNET_PREFIX);
+    crate::modules::throttler::normalize_ip(&ctx.request().ip(), prefix)
 }
 
 /// What a lookup of a field in one source found.
@@ -200,6 +289,7 @@ fn credential<'a>(body: &'a Value, query: &'a Value, path: &[String]) -> Option<
 pub struct LocalStrategy<V: LocalValidator> {
     validator: Arc<V>,
     resolved: Resolved,
+    warnings: WarnLimiter,
     _marker: PhantomData<fn() -> V>,
 }
 
@@ -225,7 +315,7 @@ impl<V: LocalValidator> Injectable for LocalStrategy<V> {
                 token: format!("LocalStrategy \"{}\" ({})", V::NAME, std::any::type_name::<V>()),
                 cause: Arc::new(anyhow::anyhow!("invalid local strategy options: {problem}")),
             })?;
-            Ok(LocalStrategy { validator, resolved, _marker: PhantomData })
+            Ok(LocalStrategy { validator, resolved, warnings: WarnLimiter::new(Duration::from_secs(60)), _marker: PhantomData })
         }
         .boxed()
     }
@@ -252,7 +342,7 @@ impl<V: LocalValidator> Strategy for LocalStrategy<V> {
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
         // Without `allow_query_credentials` only the body is read: an empty query never yields a value.
-        let query = if self.resolved.allow_query { Value::Object(req.query().clone()) } else { Value::Null };
+        let query = self.resolved.query_of(req);
         let (Some(username), Some(password)) =
             (credential(req.body(), &query, &self.resolved.username), credential(req.body(), &query, &self.resolved.password))
         else {
@@ -261,7 +351,21 @@ impl<V: LocalValidator> Strategy for LocalStrategy<V> {
         if username.len() > self.resolved.max_username_bytes || password.len() > self.resolved.max_password_bytes {
             return fail("Credentials too long");
         }
-        match self.validator.validate(req, username, password).await {
+        let validated = match tokio::time::timeout(self.resolved.validator_timeout, self.validator.validate(req, username, password)).await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                if let Some(suppressed) = self.warnings.allow("validator-timeout", Instant::now()) {
+                    let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
+                    Logger::new("LocalStrategy").warn(format!(
+                        "strategy \"{}\": the validator did not answer within validator_timeout; answered 503{more}",
+                        V::NAME
+                    ));
+                }
+                return StrategyOutcome::Error(HttpException::new((), http::StatusCode::SERVICE_UNAVAILABLE));
+            }
+        };
+        match validated {
             Err(e) => StrategyOutcome::Error(e),
             Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
             Ok(Some(user)) => {

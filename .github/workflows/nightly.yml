@@ -64,6 +64,9 @@ jobs:
       - name: Signed cookies and sessions
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test -p corvis --features auth-session --lib fuzz
+      - name: Authentication (gate model, sessions, OAuth2 callback, redirects, canary secrets)
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2" --test fuzz_auth
       - name: Static file serving
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test -p corvis --test fuzz_static

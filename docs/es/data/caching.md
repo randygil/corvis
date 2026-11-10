@@ -56,6 +56,10 @@ fn count(&self) -> Value {
 pub struct AppModule;
 ```
 
+::: danger No registres `CacheInterceptor` para toda la aplicación si tiene rutas `GET` autenticadas
+La clave de la caché es la URL, así que una respuesta se repite a quien pase los guards de la ruta: con el registro global de arriba, la respuesta de `GET /me` del primer usuario se sirve a todos los demás, y a clientes anónimos en las rutas cuyo guard es opcional o que no tienen guard. Regístralo de forma global solo en una aplicación cuyas rutas `GET` devuelven el mismo cuerpo para todos; en otro caso aplica `#[use_interceptors(CacheInterceptor)]` a las rutas que sí. En seguimiento en #177.
+:::
+
 ## Opciones desde otro provider
 
 `CacheModule::register_async(is_global, fábrica)` toma las opciones de una fábrica que puede resolver otros providers, como `ConfigService`. El gestor se construye una sola vez y `Arc<CacheManager>` y `CACHE_MANAGER` resuelven a la misma instancia:
@@ -106,4 +110,4 @@ Los valores se guardan como JSON. Cuando se supera `max`, se descarta la entrada
 ## Límites
 
 - El almacén vive en la memoria del proceso: no se comparte entre instancias ni sobrevive a un reinicio. No hay adaptadores para almacenes externos como Redis; si los necesitas, crea un provider propio con el cliente del almacén (ver [Visión general](/es/data/overview)).
-- La caché de respuestas no distingue usuarios: no la apliques a rutas cuyo contenido depende de quién hace la petición, salvo que fijes una clave que lo incluya.
+- La caché de respuestas no distingue usuarios: no la apliques a rutas cuyo contenido depende de quién hace la petición (la clave es la URL, o la clave fija que establezcas, y todavía no hay forma de que dependa del usuario: #177).

@@ -84,7 +84,8 @@ new session identifier, or stores a new OAuth2 state. Deleting cookies, re-signi
 
 #### Scenario: Failed OAuth2 callback
 - **WHEN** an OAuth2 callback fails its state check
-- **THEN** the only `Set-Cookie` of the response deletes the state cookie
+- **THEN** the only `Set-Cookie` of the response deletes the state cookie or sends back the flows the browser already
+  had, and carries no new state
 
 ### Requirement: Public routes and guard order
 A guard built with `.skip_public()` SHALL run no strategy on a route whose handler or controller is marked
@@ -181,6 +182,68 @@ carries it, or the `Debug` output of a framework type.
 #### Scenario: Debug of every public type
 - **WHEN** the test formats every public type of `corvis::auth` that can hold a secret with `{:?}`
 - **THEN** the output contains none of the secrets it was built with
+
+### Requirement: A token cookie sent twice is no token
+A cookie extractor of the JWT strategy SHALL yield no token when the cookie name appears more than once in the request,
+so the answer is the uniform `401` and a cookie planted from a sibling subdomain cannot replace the victim's own. At
+startup, a cookie extractor whose cookie has no `__Host-` prefix MUST log one warning naming the strategy and the cookie.
+
+#### Scenario: Planted cookie in front of the victim's
+- **WHEN** a request carries `jwt=<attacker's token>; jwt=<victim's token>`, alone or on a chain that continues with the
+  session strategy
+- **THEN** the JWT strategy reads no token, no validator runs for it, and a chain is decided by its next strategy
+
+#### Scenario: Cookie without the prefix
+- **WHEN** the application starts with a JWT strategy that reads the cookie `jwt`
+- **THEN** startup logs one warning naming the strategy and the cookie, and none for a cookie named `__Host-jwt`
+
+### Requirement: An OAuth2 flow completes only under the session it started under
+When the OAuth2 state is kept in a cookie and the request that starts the flow has a session, the flow SHALL record a
+keyed digest of the session identifier, or a mark that there was none, and the callback MUST be refused with the uniform
+failure when its session differs. The digest MUST NOT allow recovering the identifier. The check is skipped when no
+session module runs.
+
+#### Scenario: Logout and another user's login in between
+- **WHEN** ana starts a flow, logs out, bob logs in on the same browser and the callback of ana's flow arrives
+- **THEN** the response is the uniform `401`, the provider is not contacted and the validator does not run
+
+#### Scenario: Same session, and no session on either side
+- **WHEN** the callback arrives under the session the flow started under, or with no session when it started with none
+- **THEN** the login completes; a session where there was none, or none where there was one, is refused
+
+### Requirement: An OAuth2 flow completes only for the user that started it
+With either state store, the flow SHALL record a digest of the user the request that starts it carries, or a mark that
+there was none (keyed when the record is kept in a cookie). A callback whose request carries a user MUST complete only
+a flow that the same user started; a callback with no user is not checked. The digest MUST NOT reveal the user.
+
+#### Scenario: A token of another user at the callback
+- **WHEN** ana starts a flow on a route guarded by a token strategy, and the callback arrives with bob's token
+- **THEN** the response is the uniform `401`, the provider is not contacted and the validator does not run
+
+#### Scenario: A flow nobody started, completed as a user
+- **WHEN** a flow starts on a route with no user and its callback arrives with a user
+- **THEN** it is refused; with no user at the callback either, the login completes
+
+### Requirement: The application's callbacks have a deadline
+The JWT key provider, the JWT validator and the local validator SHALL each have a deadline, 5 seconds by default and
+between 1 ms and 300 s (`key_provider_timeout`, `validator_timeout`), like the API key validator. A callback that
+misses it is dropped and every caller gets the same `503`, with one warning a minute that holds no request data.
+
+#### Scenario: Key provider that never answers
+- **WHEN** a forged but well-formed token reaches a key provider that never answers
+- **THEN** the response is the `503` that every token gets, the provider's future is cancelled, and a chain does not go on
+
+#### Scenario: Validators that never answer
+- **WHEN** the JWT validator or the local validator does not answer within its deadline
+- **THEN** the response is the same `503`, and a validator that answers in time is unaffected
+
+### Requirement: A guard that passes clears what an earlier guard set
+When an `AuthGuard` ends in `Pass`, the request MUST have neither a user nor auth info left from an earlier guard.
+
+#### Scenario: Pass after a successful guard
+- **WHEN** a guard that authenticated with an info value is followed by a guard whose strategy passes
+- **THEN** the handler sees no user and no auth info
+
 
 ### Requirement: Invariants hold under random input
 Fuzz targets SHALL exercise these invariants with random requests: a gate property compared with a reference model,

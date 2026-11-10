@@ -203,6 +203,9 @@ ThrottlerModule::for_root_storage(
   that chooses the tracker chooses which of those counters it hits.
 
 ::: warning Client-chosen trackers
+For login routes use `login_tracker` and the [recipe below](#protecting-a-login-route) instead of writing the tracker
+yourself: it reads the username the strategy reads, so the counter cannot be dodged by moving the field.
+
 A tracker that reads a header or a body field lets the client choose its counter, so a client that rotates the value
 gets a fresh limit each time. Each rotated value also creates a counter, so a client that sends many values fills
 `max_entries` and evicts the counters of other clients (which resets them). Keep an IP-based throttler next to a
@@ -295,6 +298,86 @@ Gateway handlers use the same keys with `#[set_metadata(skip_throttle_key("short
 ::: warning Behavior change
 Before, `SKIP_THROTTLE` skipped every throttler. An app whose throttlers all have other names (`short`, `long`) and a route with `SKIP_THROTTLE` now throttles that route. The guard logs one warning per such route on its first request, naming the route; replace the skip with `skip_throttle(["short", "long"])` to keep the old behavior.
 :::
+
+## Protecting a login route
+
+A login route is where password guessing happens, and the work it asks of the server (a password hash, a session store
+write, a request to an OAuth2 provider) is what an attacker spends your resources on. Two things protect it: a limit per
+**client** and a limit per **account**, and both must run **before** the authentication.
+
+The recipe below limits the local strategy's login to 10 attempts a minute per client address and 5 attempts per account
+every five minutes, from any number of addresses. `login_tracker` returns the tracker of the second limit: it reads the
+username the local strategy will read from the same request, with the same options (the field name, `user[email]` style
+paths, the body first and then the query when the strategy reads it, the length limit), so moving the username to another
+place cannot dodge the counter.
+
+```rust
+use corvis::auth::local::{LocalStrategyOptions, login_tracker};
+use corvis::prelude::*;
+
+// The options the strategy of `LocalAuth::options()` returns.
+fn local_options() -> LocalStrategyOptions {
+    LocalStrategyOptions::default()
+}
+
+#[module(
+    imports = [ThrottlerModule::for_root_storage(
+        ThrottlerStorage::new(vec![
+            // Per client. The shorter ttl: the guard checks throttlers by ascending ttl, so a client that is over its limit
+            // stops here and does not add to the per-account counter.
+            ThrottlerOptions::new(60_000, 100),
+            // Per account, five minutes.
+            ThrottlerOptions { name: "login".into(), ttl: 300_000, limit: 100 },
+        ])
+        .with_named_tracker("login-account", login_tracker(local_options())),
+    )],
+    // A global guard registered through the container runs before every `AuthGuard`.
+    providers = [Provider::app_guard::<ThrottlerGuard>(), /* strategies */],
+    controllers = [AuthController],
+)]
+pub struct AppModule;
+
+#[controller("auth")]
+pub struct AuthController;
+
+#[routes]
+impl AuthController {
+    #[post("login")]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
+    #[use_guards(AuthGuard::new("local"))]
+    fn login(&self, user: User<PublicUser>) -> Value { /* ... */ }
+}
+```
+
+`crates/corvis/tests/auth_login_throttle.rs` runs this recipe against the whole authentication module.
+
+What to know about it:
+
+- **Order matters.** Guards run global, then controller, then route, and a `ThrottlerGuard` that runs after an `AuthGuard`
+  limits nothing: the password was already hashed. Register the throttler as a global guard with `Provider::app_guard`
+  (those run before the instance guards of `use_global_guards`) or list it first. When an `AuthGuard` runs before a
+  `ThrottlerGuard` on a route, startup logs a warning naming the method and the path; it is a warning because limiting
+  signed-in users per account after authenticating them is legitimate. A guard that wraps both and shows neither through
+  `as_any` or `inner_guards` hides them from the check.
+- **A throttled request costs nothing.** When the throttler rejects, the response is the `429` and no strategy runs: no key
+  derivation, no validator call, no session store write, no request to the provider.
+- **What is counted.** Every attempt, successful or not, counts: the counter does not know the outcome. A request without a
+  readable username (missing, not a string, longer than the strategy's limit) is counted for the normalized client address,
+  so it is still limited and still answered as the strategy answers it. The tracker value is `acct:` and the SHA-256 of the
+  username, so usernames never reach the storage and the key has a fixed size. Existing and unknown accounts are counted
+  alike, so the headers do not tell them apart.
+- **Spelling.** The username is used as submitted. If your application treats `Ana@x.io` and `ana@x.io` as one account,
+  wrap the tracker and lowercase first.
+- **A per-account limit is a lockout tool for everybody.** Anyone can send a victim's username, so with a limit of 5 an
+  attacker keeps that account blocked for the block duration (it defaults to the ttl). Choose limits that annoy an attacker
+  more than the owner, keep the per-client throttler next to it, and decide the lockout policy (a captcha, a second
+  factor, an e-mail) in your application: the throttler counts, it does not lock accounts.
+- **OAuth2 routes.** Login start and callback have no username: limit them per client with the `default` throttler (the
+  recipe's `throttle("default").limit(5)` on both routes). With `state_in_session()` every login start writes a session
+  record, so an unlimited login route lets a client fill the store.
+
+See the [authentication threat model](/security/authentication-threat-model#login-rate-limiting) for what each limit
+covers and what is left.
 
 ## Storage
 

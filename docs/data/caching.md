@@ -56,6 +56,10 @@ fn count(&self) -> Value {
 pub struct AppModule;
 ```
 
+::: danger Do not register `CacheInterceptor` for the whole application when it has authenticated `GET` routes
+The cache key is the URL, so a response is replayed to whoever passes the route's guards: with the global registration above, the first user's response to `GET /me` is served to every other user, and to anonymous clients on routes whose guard is optional or that have none. Register it globally only in an application whose `GET` routes return the same body for everyone; otherwise apply `#[use_interceptors(CacheInterceptor)]` to the routes that do. Tracked in #177.
+:::
+
 ## Options from another provider
 
 `CacheModule::register_async(is_global, factory)` takes the options from a factory that can resolve other providers, such as `ConfigService`. The manager is built once and `Arc<CacheManager>` and `CACHE_MANAGER` resolve to the same instance:
@@ -106,4 +110,4 @@ Values are stored as JSON. When `max` is exceeded, the oldest entry by insertion
 ## Limits
 
 - The store lives in the process memory: it is not shared between instances and does not survive a restart. There are no adapters for external stores such as Redis; if you need one, create your own provider with the store's client (see [Overview](/data/overview)).
-- The response cache does not tell users apart: do not apply it to routes whose content depends on who makes the request, unless you set a key that includes it.
+- The response cache does not tell users apart: do not apply it to routes whose content depends on who makes the request (the key is the URL, or the fixed key you set, and there is no way yet to make it depend on the user: #177).

@@ -35,6 +35,11 @@ macro_rules! fixed_strategy {
 }
 
 fixed_strategy!(OneStrategy, "one", StrategyOutcome::Success { user: AuthenticatedUser::new(Payload { id: 1 }).unwrap(), info: None });
+fixed_strategy!(
+    InfoStrategy,
+    "info",
+    StrategyOutcome::Success { user: AuthenticatedUser::new(Payload { id: 1 }).unwrap(), info: Some(json!("earlier guard")) }
+);
 fixed_strategy!(FailsStrategy, "fails", StrategyOutcome::Fail { challenge: None, status: None });
 fixed_strategy!(PassStrategy, "pass", StrategyOutcome::Pass);
 fixed_strategy!(RedirStrategy, "redir", StrategyOutcome::Redirect { url: "/login".into(), status: None });
@@ -140,6 +145,19 @@ impl HardeningController {
         json!({ "user": req.user() })
     }
 
+    /// The auth info of an earlier guard does not outlive a guard that passed: both the user and the info are cleared.
+    #[get("passed-info")]
+    #[use_guards(AuthGuard::new("info"), AuthGuard::new("pass"))]
+    fn passed_info(&self, req: Request) -> Value {
+        json!({ "user": req.user(), "info": req.auth_info() })
+    }
+
+    #[get("kept-info")]
+    #[use_guards(AuthGuard::new("info"))]
+    fn kept_info(&self, req: Request) -> Value {
+        json!({ "user": req.user(), "info": req.auth_info() })
+    }
+
     #[get("passed-typed")]
     #[use_guards(AuthGuard::new("one"), AuthGuard::new("pass"))]
     fn passed_typed(&self, user: User<Payload>) -> Value {
@@ -201,7 +219,7 @@ impl HardeningController {
 
 #[module(
     providers = [
-        Provider::strategy::<OneStrategy>(), Provider::strategy::<FailsStrategy>(), Provider::strategy::<PassStrategy>(),
+        Provider::strategy::<OneStrategy>(), Provider::strategy::<InfoStrategy>(), Provider::strategy::<FailsStrategy>(), Provider::strategy::<PassStrategy>(),
         Provider::strategy::<RedirStrategy>(), Provider::strategy::<BadStatusStrategy>(),
     ],
     controllers = [HardeningController]
@@ -279,6 +297,13 @@ async fn a_later_pass_clears_the_json_and_the_typed_user_alike() {
     let app = started().await;
     request(&app).get("/h/passed-json").send().await.expect_status(200).expect_json(json!({ "user": null }));
     request(&app).get("/h/passed-typed").send().await.expect_status(401).expect_json(UNAUTHORIZED());
+}
+
+#[corvis::test]
+async fn a_later_pass_clears_the_auth_info_of_an_earlier_guard_too() {
+    let app = started().await;
+    request(&app).get("/h/kept-info").send().await.expect_status(200).expect_json(json!({ "user": { "id": 1 }, "info": "earlier guard" }));
+    request(&app).get("/h/passed-info").send().await.expect_status(200).expect_json(json!({ "user": null, "info": null }));
 }
 
 #[corvis::test]

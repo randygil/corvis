@@ -39,6 +39,7 @@ mod options;
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -49,12 +50,15 @@ use serde_json::{Value, json};
 
 pub use extract::{ExtractJwt, JwtExtractor};
 pub use key::{JwtKey, JwtKeyProvider};
-pub use options::{DEFAULT_MAX_TOKEN_LENGTH, JwtStrategyOptions, MAX_CLOCK_TOLERANCE, MIN_SECRET_LENGTH, StringList};
+pub use options::{
+    DEFAULT_CALLBACK_TIMEOUT, DEFAULT_MAX_TOKEN_LENGTH, JwtStrategyOptions, MAX_CLOCK_TOLERANCE, MIN_SECRET_LENGTH, StringList,
+};
 
 pub use crate::jwt::JwtAlgorithm;
 
 use self::key::allowed_for;
 use self::options::{KeySource, Resolved, check_secret};
+use super::warn_limit::WarnLimiter;
 use super::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Hooks, Injectable, ResolveCtx};
@@ -89,6 +93,7 @@ pub trait JwtValidator: Injectable {
 pub struct JwtStrategy<V: JwtValidator> {
     validator: Arc<V>,
     resolved: Resolved,
+    warnings: WarnLimiter,
     _marker: PhantomData<fn() -> V>,
 }
 
@@ -107,7 +112,7 @@ impl<V: JwtValidator> Injectable for JwtStrategy<V> {
                 token: format!("JwtStrategy \"{}\" ({})", V::NAME, std::any::type_name::<V>()),
                 cause: Arc::new(anyhow::anyhow!("invalid JWT strategy options: {problem}")),
             })?;
-            Ok(JwtStrategy { validator, resolved, _marker: PhantomData })
+            Ok(JwtStrategy { validator, resolved, warnings: WarnLimiter::new(Duration::from_secs(60)), _marker: PhantomData })
         }
         .boxed()
     }
@@ -127,6 +132,24 @@ impl<V: JwtValidator> Injectable for JwtStrategy<V> {
             ..Hooks::default()
         }
     }
+}
+
+/// Why no payload came out of a token.
+enum Denied {
+    /// The token (or its key) was refused: a failure, the chain goes on.
+    Fail(&'static str),
+    /// A callback of the application missed its deadline: the 503 for every caller, with the reason of the warning.
+    Unavailable(&'static str, &'static str),
+}
+
+impl From<&'static str> for Denied {
+    fn from(reason: &'static str) -> Self {
+        Denied::Fail(reason)
+    }
+}
+
+fn unavailable() -> StrategyOutcome {
+    StrategyOutcome::Error(HttpException::new((), http::StatusCode::SERVICE_UNAVAILABLE))
 }
 
 fn fail(reason: &str) -> StrategyOutcome {
@@ -185,27 +208,45 @@ impl Resolved {
     }
 
     /// The payload of a verified token, with the key chosen by the options.
-    async fn payload(&self, req: &Request, token: &str, log: &Logger) -> Result<Value, &'static str> {
+    async fn payload(&self, req: &Request, token: &str, log: &Logger) -> Result<Value, Denied> {
         match &self.key {
-            KeySource::Static { key, allowed, .. } => self.verify(token, key, allowed.clone()),
+            KeySource::Static { key, allowed, .. } => Ok(self.verify(token, key, allowed.clone())?),
             KeySource::Provider(provider) => {
-                let jwt_key = match provider.key(req, token).await {
-                    Ok(k) => k,
-                    Err(e) => {
+                // The provider runs for every well-formed token, forged ones included: it gets a deadline, and the
+                // dropped future is cancelled.
+                let jwt_key = match tokio::time::timeout(self.key_provider_timeout, provider.key(req, token)).await {
+                    Ok(Ok(k)) => k,
+                    Ok(Err(e)) => {
                         log.debug(format!("the key provider failed: {e}"));
-                        return Err("key provider error");
+                        return Err(Denied::Fail("key provider error"));
+                    }
+                    Err(_) => {
+                        return Err(Denied::Unavailable(
+                            "key-provider-timeout",
+                            "the key provider did not answer within key_provider_timeout; answered 503",
+                        ));
                     }
                 };
                 if let Err(problem) = check_secret(&jwt_key) {
                     log.debug(format!("the key provider returned a key that is not accepted: {problem}"));
-                    return Err("key provider error");
+                    return Err(Denied::Fail("key provider error"));
                 }
                 let decoding = jwt_key.decoding_key().map_err(|problem| {
                     log.debug(format!("the key provider returned a key that is not accepted: {problem}"));
-                    "key provider error"
+                    Denied::Fail("key provider error")
                 })?;
-                self.verify(token, &decoding, allowed_for(jwt_key.family(), self.algorithms.as_deref()))
+                Ok(self.verify(token, &decoding, allowed_for(jwt_key.family(), self.algorithms.as_deref()))?)
             }
+        }
+    }
+}
+
+impl<V: JwtValidator> JwtStrategy<V> {
+    /// A warning a client can trigger: at most one per reason a minute, with no request data.
+    fn warn(&self, reason: &'static str, message: &str) {
+        if let Some(suppressed) = self.warnings.allow(reason, Instant::now()) {
+            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
+            Logger::new("JwtStrategy").warn(format!("strategy \"{}\": {message}{more}", V::NAME));
         }
     }
 }
@@ -237,9 +278,20 @@ impl<V: JwtValidator> Strategy for JwtStrategy<V> {
         let log = Logger::new("JwtStrategy");
         let payload = match self.resolved.payload(req, &token, &log).await {
             Ok(p) => p,
-            Err(reason) => return fail(reason),
+            Err(Denied::Fail(reason)) => return fail(reason),
+            Err(Denied::Unavailable(reason, message)) => {
+                self.warn(reason, message);
+                return unavailable();
+            }
         };
-        match self.validator.validate(req, payload).await {
+        let validated = match tokio::time::timeout(self.resolved.validator_timeout, self.validator.validate(req, payload)).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503");
+                return unavailable();
+            }
+        };
+        match validated {
             Err(e) => StrategyOutcome::Error(e),
             Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
             Ok(Some(user)) => {

@@ -205,6 +205,9 @@ ThrottlerModule::for_root_storage(
   así que un cliente que elige el tracker elige cuál de esos contadores golpea.
 
 ::: warning Trackers elegidos por el cliente
+Para las rutas de login usa `login_tracker` y la [receta de más abajo](#proteger-una-ruta-de-login) en lugar de escribir
+el tracker tú mismo: lee el usuario que lee la estrategia, así que el contador no se puede esquivar moviendo el campo.
+
 Un tracker que lee una cabecera o un campo del cuerpo deja que el cliente elija su contador, así que un cliente que rota
 el valor obtiene un límite nuevo cada vez. Cada valor rotado además crea un contador, así que un cliente que envía
 muchos valores llena `max_entries` y expulsa los contadores de otros clientes (lo que los reinicia). Mantén un throttler
@@ -297,6 +300,90 @@ Los handlers de gateway usan las mismas claves con `#[set_metadata(skip_throttle
 ::: warning Cambio de comportamiento
 Antes, `SKIP_THROTTLE` omitía todos los throttlers. Una app cuyos throttlers tienen todos otros nombres (`short`, `long`) y una ruta con `SKIP_THROTTLE` ahora limita esa ruta. El guard registra una advertencia por cada ruta así en su primera petición, con el nombre de la ruta; reemplaza la omisión por `skip_throttle(["short", "long"])` para conservar el comportamiento anterior.
 :::
+
+## Proteger una ruta de login
+
+Una ruta de login es donde ocurre la adivinación de contraseñas, y el trabajo que le pide al servidor (un hash de
+contraseña, una escritura en el almacén de sesiones, una petición a un proveedor OAuth2) es en lo que un atacante gasta
+tus recursos. Dos cosas la protegen: un límite por **cliente** y un límite por **cuenta**, y ambos deben ejecutarse
+**antes** de la autenticación.
+
+La receta de abajo limita el login de la estrategia local a 10 intentos por minuto por dirección de cliente y a 5
+intentos por cuenta cada cinco minutos, desde cualquier cantidad de direcciones. `login_tracker` devuelve el tracker del
+segundo límite: lee de la misma petición el usuario que leerá la estrategia local, con las mismas opciones (el nombre del
+campo, rutas del estilo `user[email]`, primero el body y después el query cuando la estrategia lo lee, el límite de
+longitud), así que mover el usuario a otro lugar no puede esquivar el contador.
+
+```rust
+use corvis::auth::local::{LocalStrategyOptions, login_tracker};
+use corvis::prelude::*;
+
+// Las opciones que devuelve la estrategia de `LocalAuth::options()`.
+fn local_options() -> LocalStrategyOptions {
+    LocalStrategyOptions::default()
+}
+
+#[module(
+    imports = [ThrottlerModule::for_root_storage(
+        ThrottlerStorage::new(vec![
+            // Por cliente. El ttl más corto: el guard comprueba los throttlers por ttl ascendente, así que un cliente que
+            // ya superó su límite se detiene aquí y no suma al contador por cuenta.
+            ThrottlerOptions::new(60_000, 100),
+            // Por cuenta, cinco minutos.
+            ThrottlerOptions { name: "login".into(), ttl: 300_000, limit: 100 },
+        ])
+        .with_named_tracker("login-account", login_tracker(local_options())),
+    )],
+    // Un guard global registrado mediante el contenedor se ejecuta antes que cualquier `AuthGuard`.
+    providers = [Provider::app_guard::<ThrottlerGuard>(), /* strategies */],
+    controllers = [AuthController],
+)]
+pub struct AppModule;
+
+#[controller("auth")]
+pub struct AuthController;
+
+#[routes]
+impl AuthController {
+    #[post("login")]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
+    #[use_guards(AuthGuard::new("local"))]
+    fn login(&self, user: User<PublicUser>) -> Value { /* ... */ }
+}
+```
+
+`crates/corvis/tests/auth_login_throttle.rs` ejecuta esta receta contra todo el módulo de autenticación.
+
+Lo que conviene saber:
+
+- **El orden importa.** Los guards se ejecutan globales, luego de controlador y luego de ruta, y un `ThrottlerGuard` que
+  se ejecuta después de un `AuthGuard` no limita nada: la contraseña ya se hasheó. Registra el throttler como guard
+  global con `Provider::app_guard` (esos se ejecutan antes que los guards de instancia de `use_global_guards`) o
+  ponlo primero en la lista. Cuando un `AuthGuard` se ejecuta antes de un `ThrottlerGuard` en una ruta, el arranque
+  registra una advertencia con el método y la ruta; es una advertencia porque limitar por cuenta a usuarios con sesión
+  iniciada después de autenticarlos es legítimo. Un guard que envuelve a ambos y no muestra ninguno mediante `as_any` o
+  `inner_guards` los oculta de la comprobación.
+- **Una petición limitada no cuesta nada.** Cuando el throttler rechaza, la respuesta es el `429` y no se ejecuta ninguna
+  estrategia: ni derivación de claves, ni llamada al validador, ni escritura en el almacén de sesiones, ni petición al
+  proveedor.
+- **Qué se cuenta.** Cada intento, exitoso o no, cuenta: el contador no conoce el resultado. Una petición sin un usuario
+  legible (ausente, que no es una cadena, o más largo que el límite de la estrategia) se cuenta para la dirección de
+  cliente normalizada, así que sigue limitada y se responde como la responde la estrategia. El valor del tracker es
+  `acct:` y el SHA-256 del usuario, así que los usuarios nunca llegan al almacenamiento y la clave tiene un tamaño fijo.
+  Las cuentas que existen y las desconocidas se cuentan igual, así que las cabeceras no las distinguen.
+- **Escritura.** El usuario se usa tal como se envió. Si tu aplicación trata `Ana@x.io` y `ana@x.io` como una sola cuenta,
+  envuelve el tracker y pasa a minúsculas primero.
+- **Un límite por cuenta es una herramienta de bloqueo para cualquiera.** Cualquiera puede enviar el usuario de una
+  víctima, así que con un límite de 5 un atacante mantiene esa cuenta bloqueada durante la duración del bloqueo (por
+  defecto, el ttl). Elige límites que molesten más a un atacante que al dueño, mantén el throttler por cliente junto a
+  este, y decide la política de bloqueo (un captcha, un segundo factor, un e-mail) en tu aplicación: el throttler cuenta,
+  no bloquea cuentas.
+- **Rutas OAuth2.** El inicio del login y el callback no tienen usuario: límitalos por cliente con el throttler
+  `default` (el `throttle("default").limit(5)` de la receta en ambas rutas). Con `state_in_session()` cada inicio de
+  login escribe un registro de sesión, así que una ruta de login sin límite permite que un cliente llene el almacén.
+
+Consulta el [modelo de amenazas de autenticación](/es/security/authentication-threat-model#control-de-intentos-de-login)
+para ver qué cubre cada límite y qué queda.
 
 ## Almacenamiento
 

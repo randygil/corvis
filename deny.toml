@@ -36,6 +36,36 @@ multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
+# Criptografía de la autenticación (docs/security/authentication-threat-model.md, sección Dependencies):
+# - ni OpenSSL ni TLS nativo: el cliente del proveedor OAuth2, la terminación TLS y la verificación de tokens
+#   usan una sola pila revisada (rustls con ring);
+# - una sola generación de cada crate que implementa una primitiva, un hash, un formato de token o TLS. Una
+#   segunda versión (por ejemplo dos `subtle`) haría que dos comparaciones en tiempo constante o dos
+#   implementaciones de SHA-2 convivieran en el mismo binario sin que nadie lo hubiera decidido. `rand_core` y
+#   `getrandom` no están en la lista porque ya tienen más de una generación en el grafo, por dependencias que no
+#   son de autenticación; el modelo de amenazas lo explica. `Cargo.lock` también trae `rand` 0.10, pero solo
+#   desde `proptest` (pruebas), y `cargo deny` no lo cuenta.
+deny = [
+    { crate = "openssl", reason = "una sola pila TLS y criptográfica revisada (rustls con ring)" },
+    { crate = "openssl-sys", reason = "una sola pila TLS y criptográfica revisada (rustls con ring)" },
+    { crate = "native-tls", reason = "una sola pila TLS y criptográfica revisada (rustls con ring)" },
+    { crate = "jsonwebtoken", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "ring", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "rustls", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "rustls-webpki", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "tokio-rustls", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "argon2", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "blake2", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "password-hash", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "bcrypt", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "blowfish", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "cipher", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "subtle", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "sha2", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "hmac", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "digest", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+    { crate = "rand", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
+]
 
 [sources]
 # Solo crates.io: ni registros ni repositorios git desconocidos.

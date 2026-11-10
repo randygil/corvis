@@ -15,7 +15,8 @@ OAuth2 provider, no validator call.
 
 #### Scenario: Password guessing over the limit
 - **WHEN** a login route limited to 5 attempts per minute receives a sixth attempt with a wrong password
-- **THEN** the response is `429` with `Retry-After`, and the key derivation counter of the hasher did not increase
+- **THEN** the response is `429` with `Retry-After` (`Retry-After-login` for a named throttler), and the key derivation
+  counter did not increase
 
 #### Scenario: OAuth2 login start over the limit
 - **WHEN** an OAuth2 login route with `state_in_session()` is over its limit
@@ -26,8 +27,9 @@ OAuth2 provider, no validator call.
 - **THEN** the response is `429` and the mock provider received no request
 
 ### Requirement: An AuthGuard that runs before the throttler is reported at startup
-When a route's guards contain an `AuthGuard` followed by a `ThrottlerGuard`, initialization SHALL log one warning
-that names the route and says the limit is checked after authentication. The warning MUST NOT stop the application.
+When a route's guards, flattened in order through `CanActivate::inner_guards`, contain an `AuthGuard` before a
+`ThrottlerGuard`, initialization SHALL log one warning that names the route and says the limit is checked after
+authentication. The warning MUST NOT stop the application.
 
 #### Scenario: Global AuthGuard, route-level throttler
 - **WHEN** an application registers a global `AuthGuard` and a controller adds `ThrottlerGuard` with
@@ -38,6 +40,10 @@ that names the route and says the limit is checked after authentication. The war
 - **WHEN** `ThrottlerGuard` is a global guard registered through `Provider::app_guard` and `AuthGuard` is global or
   route-level
 - **THEN** no warning is logged
+
+#### Scenario: Composite guard
+- **WHEN** one guard exposes `[AuthGuard, ThrottlerGuard]` through `inner_guards`
+- **THEN** startup logs the warning for its routes
 
 ### Requirement: Login attempts can be counted per account
 `corvis::auth::local::login_tracker(options)` SHALL return a throttler tracker that identifies the account by the

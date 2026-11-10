@@ -337,6 +337,8 @@ pub struct AuthModule;
 | `passReqToCallback` | | always on |
 | | `.max_token_length(bytes)` | 8192 by default, checked before decoding |
 | | `.allow_missing_exp()` | accept tokens without `exp`; logs a startup warning |
+| | `.key_provider_timeout(Duration)` | 5 s by default, 1 ms to 300 s: a key provider that takes longer is a `503` |
+| | `.validator_timeout(Duration)` | 5 s by default, 1 ms to 300 s: a validator that takes longer is a `503` |
 
 `maxAge`, `subject`, `jwtid`, `nonce`, `complete`, `clockTimestamp` and regular-expression audiences are not supported.
 
@@ -360,7 +362,9 @@ The first non-empty token is the only one tried: if it fails, the next extractor
 :::
 
 ::: warning A token in a cookie is an ambient credential
-The browser sends a cookie on its own, so a cookie token needs the protections of any cookie session: mitigate CSRF (a token or custom header on state-changing requests, or an `Origin` check) and set `SameSite=Lax` or `Strict`, `Secure` and `HttpOnly` when you issue it.
+The browser sends a cookie on its own, so a cookie token needs the protections of any cookie session: mitigate CSRF (a token or custom header on state-changing requests, or an `Origin` check) and set `SameSite=Lax` or `Strict`, `Secure` and `HttpOnly` when you issue it. A cookie issued without `SameSite` is sent on cross-site `POST`s by browsers that do not default to `Lax`.
+
+A page on a sibling subdomain can set a cookie for the whole domain, in front of your own. When the cookie name appears more than once in a request, `from_cookie` yields no token (the usual `401`), as the session cookie does, instead of trusting the first value. A cookie planted next to the user's own therefore logs that user out of the cookie login for as long as it lives; one that is the only cookie of that name still authenticates as its owner, so name the cookie with the `__Host-` prefix (`Secure`, `Path=/`, no `Domain`) so that a browser refuses one set from a sibling subdomain. The strategy logs a startup warning naming the strategy and the cookie when a cookie extractor's name has no `__Host-` prefix.
 :::
 
 ::: warning Tokens in URLs
@@ -382,7 +386,7 @@ With a fixed key, `.algorithms([..])` must be non-empty and belong to the key's 
 
 An HMAC secret must be at least 32 bytes (RFC 7518 section 3.2): a shorter one, or an empty one, stops startup, and a key provider that returns one fails that request (`JwtService` itself keeps accepting shorter secrets). Generate one with `openssl rand -hex 32`.
 
-A key provider receives the request and the raw token, which is **not verified yet**: use its `iss` or `kid` only to choose a key, never to trust a value. It runs for every request, so cache what it fetches; an error is a `401`, not a `500`. The error text is logged at debug level, so a provider must never put the raw token in its error. Before the provider runs, the strategy refuses a token longer than `max_token_length`, one with a `crit` header (RFC 7515 section 4.1.11; Corvis supports no critical extensions) and one that is not exactly three non-empty base64url segments.
+A key provider receives the request and the raw token, which is **not verified yet**: use its `iss` or `kid` only to choose a key, never to trust a value. It runs for every request, so cache what it fetches; an error is a `401`, not a `500`. The error text is logged at debug level, so a provider must never put the raw token in its error. The provider runs for any well-formed token, forged ones included, so it has a deadline: `key_provider_timeout` (5 s by default); one that takes longer is dropped (its future is cancelled) and the request is answered with a `503 Service Unavailable` that is the same for every token, with one warning a minute. A provider that fails, by contrast, is a failed attempt, so a chain goes on to the next strategy. Before the provider runs, the strategy refuses a token longer than `max_token_length`, one with a `crit` header (RFC 7515 section 4.1.11; Corvis supports no critical extensions) and one that is not exactly three non-empty base64url segments.
 
 ```rust
 struct ByIssuer {
@@ -411,6 +415,8 @@ Each one is on purpose, and the differential test marks it:
 - **The payload must be a JSON object.** The original passes a string payload to `validate`.
 - **Header names are case-insensitive** in `from_header`; the original only finds names written in lowercase.
 - **Tokens are limited to 8192 bytes** by default (`.max_token_length(..)`).
+- **A cookie token sent twice is no token.** `from_cookie` refuses a name that appears more than once in the request, instead of reading the first value (see the warning above).
+- **The callbacks have deadlines.** The key provider and the validator are cut off after `key_provider_timeout` and `validator_timeout` (5 s) with a `503`; the original waits for them forever.
 - **The configuration is checked at startup**: an HMAC secret under 32 bytes, an empty issuer or audience, a tolerance above 300 s and the other combinations above do not start.
 - **`ES512` is not available** (`jsonwebtoken` 9).
 - **A token with a `crit` header, or not made of three base64url segments, fails** before the key provider runs.
@@ -486,6 +492,7 @@ impl AuthController {
 | `passReqToCallback` | `validate` always receives the `Request` |
 | none | `.max_username_bytes(1024)`, `.max_password_bytes(1024)` |
 | reading the query string | `.allow_query_credentials()`, off by default |
+| none | `.validator_timeout(Duration)`, 5 s by default (1 ms to 300 s): a validator that takes longer is dropped and answered with a `503` that is the same for every caller, with one warning a minute |
 
 Credentials are read like `passport-local` does: each field is looked up in the parsed body (JSON or `application/x-www-form-urlencoded`). Unlike the original, the query string is read only with `.allow_query_credentials()`; then a field the body has no value for is looked up there too. A field name like `user[email]` is a path (`body.user.email`); a segment of an array is an index; a string met before the end of the path is the value; an object or array at the end gives no value. A value that is absent, empty, or not a string is missing, and when either credential is missing the strategy fails without calling `validate`. `AuthGuard` answers the same `401` for every failure; the failure itself (`{"message":"Missing credentials"}`, status `400`) is available to `.on_failure(..)`. An empty field name stops the application at startup.
 
@@ -497,7 +504,7 @@ Do not send credentials in the query string unless you have to: URLs end up in a
 - **Non-string credentials are missing.** The original passes a number or a boolean to `validate()`; Corvis treats them as missing, so a user lookup never sees a type it did not expect.
 - **Credentials are bounded.** A username or a password over 1024 bytes (configurable) fails without calling `validate`. The original has no limit besides the body size. Raise the limits with `.max_password_bytes(4096)` if your users need it; the hasher has its own `max_password_bytes`.
 - **Failures are uniform.** Missing credentials, wrong passwords and unknown users all give the same `401`, and the validator above spends one hash verification in every case. A stored hash the hasher refuses (an account without a password, an unsupported format) is a wrong password too, not a `500`. When the hasher is saturated (`PasswordError::Busy`) the answer is `503 Service Unavailable` for every user; see [a busy hasher](/security/encryption-and-hashing#a-busy-hasher).
-- **Login throttling is separate.** Pair the login route with the [throttler](/security/rate-limiting) (the cats example allows five attempts a minute per client); hashing is expensive on purpose, and a flood queues behind the hasher's `max_concurrent` slots.
+- **Login throttling is separate.** Pair the login route with the [throttler](/security/rate-limiting) (the cats example allows five attempts a minute per client); hashing is expensive on purpose, and a flood queues behind the hasher's `max_concurrent` slots. To count attempts per account as well, use `login_tracker` with the recipe in [Protecting a login route](/security/rate-limiting#protecting-a-login-route): the throttler must run before the `AuthGuard`, or the password is hashed before the limit is checked.
 
 ## API keys
 
@@ -731,6 +738,10 @@ impl AuthController {
 
 `validate` returns `Ok(Some(user))` for a success, `Ok(None)` for a 401 and `Err(exception)` to answer that exception, as every strategy does. Invalid options stop `init()` with an error that names the strategy and the option. The presets are `OAuth2Options::google(..)` and `OAuth2Options::github(..)`; `OAuth2Options::new(OAuth2Endpoints::new(authorization_url, token_url).userinfo_url(url), ..)` is any other provider (without a userinfo URL the grant has no profile). `OAuth2Options::endpoints(..)` replaces the URLs of a preset (GitHub Enterprise, a proxy, a test double). Register the redirect URI you configured with the provider. Google needs a scope; GitHub's `user:email` gives the verified e-mail addresses.
 
+::: warning Give OAuth2 its two routes
+An OAuth2 strategy starts a login (a redirect to the provider) for any request that is not a callback. In a chain it therefore ends the chain with that redirect: `AuthGuard::chain(["github", "api-key"])` never reaches the key, and in the last place it turns every anonymous request into a login start. Keep OAuth2 strategies out of chains, and rate limit both routes per client, see [Protecting a login route](/security/rate-limiting#protecting-a-login-route). The [threat model](/security/authentication-threat-model#combinations-of-strategies) lists what this and the other combinations of strategies do.
+:::
+
 ### What the validator receives
 
 `OAuth2Grant` has `access_token` and `refresh_token: Option<_>` (both `OAuth2Token`: no `Display`, no `Serialize`, `Debug` prints nothing; call `expose()` on purpose), `params` (the token response without the tokens: `get(key)`, `expires_in()`, `scope()`, `id_token()`) and `profile: Option<OAuth2Profile>`. The framework stores no token. If you keep one to call the provider later, store it encrypted at rest with the user record, never in a cookie or in the browser's session.
@@ -758,6 +769,10 @@ You **choose where the state of a login lives**; choosing nothing stops `init()`
 The state cookie is `__Host-oauth2.<name>`, `Path=/`, `HttpOnly`, `Secure`, `SameSite=Lax` (the callback is a top-level cross-site navigation, so `Strict` would never be sent), no `Domain`, and lives as long as the state (600 s by default). The `__Host-` prefix makes a browser refuse a cookie set by a sibling subdomain, which closes login CSRF by cookie tossing. `.state_cookie_secure(false)` (plain-HTTP development) drops `Secure` and the prefix and logs a startup warning. A `state_cookie_name(..)` without the `__Host-` prefix loses that protection and logs a startup warning naming the strategy and the cookie (it is not an error: plain-HTTP development and applications with no untrusted subdomain are legitimate). After a key rotation, a login that started before it fails once (the verifier is derived with the first key).
 
 With the session as the store, the same attack needs the session cookie to be set by someone else (a sibling subdomain, or a network attacker on plain HTTP): give the session cookie the `__Host-` prefix (`SessionOptions::name("__Host-sid")`) and keep it `Secure`. With the default name `connect.sid` the strategy logs a startup warning that says so.
+
+**A flow is bound to the session it started under.** With the state in a cookie, a browser can be shared: user A starts an account link, logs out, user B logs in, and A's pending callback arrives. The flow therefore records a keyed digest of the session identifier of the request that started it (or a mark that there was none), and the callback is refused with the uniform failure when the session it arrives with differs: another session, a session where there was none, or none where there was one. The digest is a SHA-256 of an HMAC made with a state cookie key, so the identifier cannot be recovered from the cookie. The check is skipped when no `SessionModule` runs, a session that the start request itself creates (anything written to it during that request, or `save_uninitialized(true)`) makes a flow that began without one fail, and a key rotation between the redirect and the callback fails that login once.
+
+**A flow is bound to the user that started it.** The session binding does not cover an identity that does not live in the session: a token or an API key. So the flow also records a keyed digest of the user the start request carried (or that there was none), with either state store, and a callback whose request carries a user completes only a flow that the same user started: another user's, or one that nobody started, gets the uniform failure. A callback that carries no user is a plain login and is not checked. For account linking this means: run the same guards on the route that starts the flow as on the callback (a link started on an unauthenticated route cannot be completed as a user), and link the provider account to `Request::user()` only after the guards have authenticated the request. The comparison is of the serialized user, so a user whose serialized form changes between the two requests (a field taken from the token's issue time, for example) makes its own flow fail and start again.
 
 **A `state` is redeemed once per instance.** With the cookie store, a client that ignores the clearing cookie can present the same record again and again. Each strategy instance therefore keeps a bounded set of the verified states it has presented to the token endpoint (for the state lifetime, `redeemed_states_max(..)` entries, 100000 by default; when it is full the oldest are forgotten). A callback whose state is in the set, or is being redeemed right now, gets the uniform 401 before any request to the provider, so concurrent replays of one flow cost one token request. Only states that matched the browser's record enter the set, so forged callbacks grow nothing. This is a cost control per instance, not a guarantee across instances: a load balancer sends the replay to an instance that has not seen the state, where only the provider's refusal of the used code stops it. The session store removes the record itself, which several instances need a shared session store to do consistently.
 

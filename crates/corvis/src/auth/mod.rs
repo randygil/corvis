@@ -160,12 +160,58 @@ fn auth_guards_in(guard: &dyn crate::common::guard::CanActivate, depth: usize) -
     Ok(found)
 }
 
+/// How many guards the walk for the guard-order warning visits for one route, at most.
+const MAX_GUARDS_WALKED: usize = 1024;
+
+/// Pushes, in execution order, a `true` for every `AuthGuard` and a `false` for every `ThrottlerGuard` among `guard`
+/// and the guards it delegates to through `CanActivate::inner_guards` (a composite is flattened where it stands).
+/// Stops below [`MAX_GUARD_DEPTH`].
+fn flatten_guard_kinds(guard: &dyn crate::common::guard::CanActivate, depth: usize, out: &mut Vec<bool>, budget: &mut usize) {
+    // The depth cap alone does not stop a guard that lists itself twice: the walk would visit 2^depth guards. The
+    // budget of visited guards does; a route with more guards than that gets no warning, which is all this is for.
+    if depth > MAX_GUARD_DEPTH || *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+    if auth_guard_of(guard).is_some() {
+        out.push(true);
+    }
+    if guard.as_any().is_some_and(|a| a.is::<crate::modules::throttler::ThrottlerGuard>()) {
+        out.push(false);
+    }
+    for inner in guard.inner_guards() {
+        flatten_guard_kinds(inner, depth + 1, out, budget);
+    }
+}
+
+/// Logs one warning for a route whose guards, flattened in order through `inner_guards`, run an `AuthGuard` before a
+/// `ThrottlerGuard`: the rate limit is checked after the password hash, the store read or the provider request it was
+/// meant to protect. A warning, not an error: limiting authenticated users after authenticating them is legitimate. A
+/// wrapper guard that does not expose the guards it holds through `as_any` or `inner_guards` hides both, and so the
+/// warning.
+fn warn_throttler_after_auth(route: &crate::router::CompiledRoute) {
+    let mut kinds = Vec::new();
+    let mut budget = MAX_GUARDS_WALKED;
+    for guard in &route.guards {
+        flatten_guard_kinds(guard.as_ref(), 0, &mut kinds, &mut budget);
+    }
+    let Some(first_auth) = kinds.iter().position(|&is_auth| is_auth) else { return };
+    if kinds[first_auth..].iter().any(|&is_auth| !is_auth) {
+        crate::logger::Logger::new("AuthGuard").warn(format!(
+            "AuthGuard runs before ThrottlerGuard on {} {}: the rate limit is checked after authentication. Register ThrottlerGuard as a global guard (Provider::app_guard) or list it first",
+            route.method.as_str(),
+            route.path
+        ));
+    }
+}
+
 /// Startup check of the strategy names of every compiled route guard (global, controller and route level). One
 /// error lists every problem with its route.
 pub(crate) fn check_routes(container: &Container, table: &RouterTable) -> crate::Result<()> {
     let Some(authenticator) = container.instances_of::<Authenticator>().first().cloned() else { return Ok(()) };
     let mut problems: Vec<String> = Vec::new();
     for route in &table.routes {
+        warn_throttler_after_auth(route);
         for guard in &route.guards {
             let Ok(auth_guards) = auth_guards_in(guard.as_ref(), 0) else {
                 let line = format!(
