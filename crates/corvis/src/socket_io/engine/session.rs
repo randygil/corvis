@@ -100,6 +100,11 @@ pub(crate) struct Heartbeat {
     /// Reading is paused by pressure the session did not cause: the pong deadline is held until this instant at the
     /// latest (see `suspend`).
     suspended_until: Option<Instant>,
+    /// When the current suspension began.
+    suspended_since: Option<Instant>,
+    /// How much suspension the session has used since its last pong. The allowance does not renew on a transition
+    /// between paused and not paused: only a pong the session sends renews it.
+    suspension_used: Duration,
     /// A pong is awaited but its deadline is held while `suspended_until` is set.
     held_pong: bool,
 }
@@ -123,6 +128,8 @@ impl Heartbeat {
             refreshed: false,
             delivered: false,
             suspended_until: None,
+            suspended_since: None,
+            suspension_used: Duration::ZERO,
             held_pong: false,
         }
     }
@@ -155,21 +162,34 @@ impl Heartbeat {
     }
 
     /// Reading is paused by pressure the session did not cause: the wait for a pong it cannot read stops, for at most
-    /// `grace`. Idempotent while suspended.
+    /// `grace` in total since the last pong: the allowance is per session and does not renew when the pause ends and
+    /// begins again, so oscillating pressure cannot keep a dead client alive. Once it is used the heartbeat applies
+    /// until a pong arrives. Idempotent while suspended.
     pub(crate) fn suspend(&mut self, now: Instant, grace: Duration) {
         if self.suspended_until.is_some() {
             return;
         }
-        self.suspended_until = Some(after(now, grace));
+        let left = grace.saturating_sub(self.suspension_used);
+        if left.is_zero() {
+            return;
+        }
+        self.suspended_until = Some(after(now, left));
+        self.suspended_since = Some(now);
         if self.pong_deadline.take().is_some() {
             self.held_pong = true;
         }
     }
 
-    /// Reading resumed (or the grace ended): a pong still awaited is awaited for a fresh `timeout`.
+    /// Reading resumed (or the grace ended): a pong still awaited is awaited for a fresh `timeout`. The time the
+    /// suspension lasted is spent from the allowance.
     pub(crate) fn resume(&mut self, now: Instant) {
-        if self.suspended_until.take().is_some() && std::mem::take(&mut self.held_pong) {
-            self.pong_deadline = Some(after(now, self.timeout));
+        if self.suspended_until.take().is_some() {
+            if let Some(since) = self.suspended_since.take() {
+                self.suspension_used = self.suspension_used.saturating_add(now.saturating_duration_since(since));
+            }
+            if std::mem::take(&mut self.held_pong) {
+                self.pong_deadline = Some(after(now, self.timeout));
+            }
         }
     }
 
@@ -193,6 +213,7 @@ impl Heartbeat {
         }
         self.pong_deadline = None;
         self.held_pong = false;
+        self.suspension_used = Duration::ZERO;
         self.next_ping = Some(after(now, self.interval));
     }
 
@@ -209,6 +230,7 @@ impl Heartbeat {
         self.next_ping = None;
         self.pong_deadline = None;
         self.suspended_until = None;
+        self.suspended_since = None;
         self.held_pong = false;
     }
 }
@@ -684,6 +706,11 @@ impl Session {
         }
     }
 
+    /// The server this session belongs to, while it exists.
+    pub(crate) fn server(&self) -> Option<Arc<ServerInner>> {
+        self.server.upgrade()
+    }
+
     // --------------------------------------------------------------------- timer
 
     /// The next instant the timer task has to act.
@@ -927,6 +954,35 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn the_allowance_is_per_session_since_the_last_pong_and_not_per_suspension() {
+        let start = t0();
+        let sec = Duration::from_secs;
+        let mut hb = Heartbeat::new(start, sec(25), sec(20));
+        assert_eq!(hb.due(start + sec(25)), Some(Due::Ping));
+        // 60 s of allowance: 40 s used, then 20 s more, then nothing.
+        hb.suspend(start + sec(26), sec(60));
+        hb.resume(start + sec(66));
+        assert_eq!(hb.deadline(), Some(start + sec(86)), "a fresh 20 s from the resume");
+        hb.suspend(start + sec(70), sec(60));
+        assert_eq!(hb.deadline(), Some(start + sec(90)), "only the 20 s that remain are held");
+        assert_eq!(hb.due(start + sec(90)), None);
+        // The allowance is used: the heartbeat applies, and a further pause holds nothing.
+        assert_eq!(hb.deadline(), Some(start + sec(110)));
+        hb.suspend(start + sec(95), sec(60));
+        assert_eq!(hb.deadline(), Some(start + sec(110)), "not suspended again");
+        assert_eq!(hb.due(start + sec(110)), Some(Due::Timeout));
+        // A pong renews it.
+        let mut hb = Heartbeat::new(start, sec(25), sec(20));
+        assert_eq!(hb.due(start + sec(25)), Some(Due::Ping));
+        hb.suspend(start + sec(26), sec(60));
+        hb.resume(start + sec(86));
+        hb.pong(start + sec(87));
+        assert_eq!(hb.due(start + sec(112)), Some(Due::Ping));
+        hb.suspend(start + sec(113), sec(60));
+        assert_eq!(hb.deadline(), Some(start + sec(173)));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn activity_without_a_pending_ping_changes_nothing() {
         let start = t0();
         let mut hb = Heartbeat::new(start, Duration::from_secs(25), Duration::from_secs(20));
@@ -1021,6 +1077,61 @@ mod session_tests {
         assert_eq!(session.close_reason(), None);
         advance(1).await;
         assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn oscillating_pressure_cannot_chain_the_suspension_and_a_pong_renews_the_allowance() {
+        let options = EngineOptions::new()
+            .ping_interval(Duration::from_millis(300))
+            .ping_timeout(Duration::from_millis(200))
+            .pressure_pause_timeout(Duration::from_millis(1_000));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        advance(300).await;
+        let _ = drain(&session);
+        // The pressure comes and goes: 400 ms paused, then a moment of relief, three times. The allowance is 1,000 ms
+        // in all, not per pause.
+        session.set_pressure_pause(true);
+        advance(400).await;
+        session.set_pressure_pause(false);
+        // The relief lasts less than the pong wait of 200 ms.
+        advance(50).await;
+        session.set_pressure_pause(true);
+        advance(400).await;
+        assert_eq!(session.close_reason(), None, "800 ms of the allowance used");
+        session.set_pressure_pause(false);
+        advance(50).await;
+        session.set_pressure_pause(true);
+        // 200 ms of allowance left, then the heartbeat applies: the pong is awaited for a fresh 200 ms from the end of
+        // the allowance and does not come.
+        advance(200).await;
+        assert_eq!(session.close_reason(), None);
+        advance(199).await;
+        assert_eq!(session.close_reason(), None);
+        advance(1).await;
+        assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout), "the chained suspension would still hold it");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pong_renews_the_suspension_allowance() {
+        let options = EngineOptions::new()
+            .ping_interval(Duration::from_millis(300))
+            .ping_timeout(Duration::from_millis(200))
+            .pressure_pause_timeout(Duration::from_millis(1_000));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        advance(300).await;
+        let _ = drain(&session);
+        session.set_pressure_pause(true);
+        advance(900).await;
+        session.set_pressure_pause(false);
+        session.on_packet(Packet::Pong(String::new()));
+        // Allowance renewed: a second pause may last its whole 1,000 ms again.
+        advance(300).await;
+        let _ = drain(&session);
+        session.set_pressure_pause(true);
+        advance(999).await;
+        assert_eq!(session.close_reason(), None);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1313,6 +1424,40 @@ mod review_round_two_tests {
         assert!(UnreadTicket::try_new_within_ancestors(&e, 1, 0).is_none(), "and the quota is long gone");
         drop((wire, more, share_c, share_d));
         assert_eq!((address.unread(), total.unread(), a.unread(), b.unread()), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn a_rolled_back_reservation_wakes_the_siblings_that_were_refused_meanwhile_and_not_its_own_asker() {
+        use futures::FutureExt;
+        // The interleaving, through the budget API: the asker's charge sits on the address level (taken, the level
+        // above has not answered yet) while a sibling is refused there; the rollback must wake that sibling, because
+        // nothing was released and nothing else would.
+        let address = Arc::new(UnreadGauge::new(300, None));
+        let sibling_waits = address.changed();
+        let seen = address.try_add_up_to(25, 300).expect("the asker's charge");
+        assert!(address.try_add_up_to(290, 300).is_none(), "the sibling is refused while the level is inflated");
+        address.roll_back(25, seen);
+        assert_eq!(address.unread(), 0);
+        assert!(sibling_waits.now_or_never().is_some(), "the rollback woke the sibling");
+
+        // A rollback nobody could have noticed wakes no one: the asker waits on these levels too, and waking it for
+        // its own rollback would make it retry in a loop while the level above stays full.
+        let total = Arc::new(UnreadGauge::new(1000, None).pooled().with_guarantee_cap(10));
+        let address = Arc::new(UnreadGauge::new(300, Some(total.clone())).with_guarantee_cap(350));
+        let asker = Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(25));
+        let own_wait = asker.changed();
+        assert!(UnreadTicket::try_new_within_share(&asker, 25, 0).is_none(), "the server-wide level refuses");
+        assert_eq!((asker.unread(), address.unread(), total.unread()), (0, 0, 0), "everything was undone");
+        assert!(own_wait.now_or_never().is_none(), "the asker is not woken by its own rollback");
+
+        // The same for the shared-budget path.
+        let total = Arc::new(UnreadGauge::new(100, None).pooled());
+        let address = Arc::new(UnreadGauge::new(300, Some(total.clone())));
+        let asker = Arc::new(UnreadGauge::new(10_000, Some(address.clone())));
+        let own_wait = asker.changed();
+        assert!(UnreadTicket::try_new_within_ancestors(&asker, 150, 0).is_none(), "the server-wide limit refuses");
+        assert_eq!((address.unread(), total.unread()), (0, 0));
+        assert!(own_wait.now_or_never().is_none());
     }
 
     #[test]

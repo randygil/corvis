@@ -113,6 +113,8 @@ pub struct EngineOptions {
     pub(crate) max_total_unread_bytes: usize,
     pub(crate) max_address_unread_bytes: Option<usize>,
     pub(crate) pressure_pause_timeout: Option<Duration>,
+    /// The most handlers of a layer on top that may outlive their connection, per client address (see `EngineSocket::linger`).
+    pub(crate) max_lingering_per_ip: Option<usize>,
     pub(crate) first_request_timeout: Option<Duration>,
     pub(crate) allow_request: Option<AllowRequestHook>,
     pub(crate) allow_request_timeout: Duration,
@@ -137,6 +139,7 @@ impl Default for EngineOptions {
             max_total_unread_bytes: DEFAULT_MAX_TOTAL_UNREAD_BYTES,
             max_address_unread_bytes: None,
             pressure_pause_timeout: None,
+            max_lingering_per_ip: None,
             first_request_timeout: None,
             allow_request: None,
             allow_request_timeout: DEFAULT_ALLOW_REQUEST_TIMEOUT,
@@ -252,6 +255,13 @@ impl EngineOptions {
     /// `admission_timeout`). Above zero and at most a day.
     pub fn pressure_pause_timeout(mut self, timeout: Duration) -> Self {
         self.pressure_pause_timeout = Some(timeout);
+        self
+    }
+
+    /// A layer on top (Socket.IO) reports the handlers that outlive their connection (`EngineSocket::linger`): while an
+    /// address has this many, new sessions from it are answered `503` like at `max_sessions_per_ip`. Not set by default.
+    pub(crate) fn max_lingering_per_ip(mut self, handlers: usize) -> Self {
+        self.max_lingering_per_ip = Some(handlers);
         self
     }
 

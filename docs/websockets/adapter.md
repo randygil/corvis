@@ -202,8 +202,32 @@ limiter or an authentication check into the handshake: it receives the handshake
 `set_trust_proxy`) and returns `Admission::Allow` or `Admission::Reject`. It runs for polling handshakes and
 WebSocket-first connections, not for requests of an existing session. `max_sessions_per_ip` counts clients behind one
 NAT or one CDN that is not a trusted proxy as a single address: raise it with `EngineOptions::max_sessions_per_ip(n)`
-for such deployments, or configure `set_trust_proxy` so the real client address is used. A session id handed out by a
-handshake the client never uses is released after `first_request_timeout`.
+for such deployments, or configure `set_trust_proxy` so the real client address is used. Clients behind one shared
+address (a mobile carrier's or a company's NAT) share one address quota, so they can delay each other (their sessions
+count together, and on the Socket.IO server so does everything they hold of the budget); `trust_proxy` only helps when
+the proxy in front is one you control. A session id handed out by a handshake the client never uses is released after
+`first_request_timeout`.
+
+#### Memory of the WebSocket transport outside the budget
+
+The WebSocket library holds two buffers per session that no unread budget counts: its read buffer, which grows to hold the
+largest frame the session ever received and is not shrunk afterwards, and, while a fragmented message is incomplete, the
+buffer of that message (it doubles as it grows). The library (tungstenite 0.24, and 0.30 when measured) has no setting that
+shrinks them, and the frame size cannot be lowered without refusing messages Node accepts, so this is measured, stated and
+bounded by the options below instead. With `M` = `max_http_buffer_size`, one session holds at most
+`1.25 x 2^ceil(log2(M + 4,110))` bytes after a large message, for as long as it lives, and at most
+`2 x 2^ceil(log2(M))` more than that while it has an incomplete message. At the default `M` of 1,000,000 the measurement is
+1.12 MiB and 3.14 MiB per session (1,169,504 and 3,294,439 bytes).
+
+| Default options | Per session | One address (`max_sessions_per_ip` 256) | The server (`max_sessions` 10,000) |
+|---|---|---|---|
+| After one message of nearly `M`, until the session ends | 1.12 MiB | 286 MiB | 10.9 GiB |
+| While a fragmented message is incomplete | 3.14 MiB | 804 MiB | 30.7 GiB |
+
+These figures are in addition to `max_total_unread_bytes` (256 MiB), which does not count them. Lower them with
+`max_http_buffer_size` (they fall in proportion, and 100,000 bytes gives 0.13 MiB and 0.32 MiB per session),
+`max_sessions_per_ip` and `max_sessions`. Charging these bytes to the session would need a wrapper around the socket and is
+left as a possible later change.
 
 The per-address cap does not stop an attacker who has many addresses: an IPv6 `/48` holds 65,536 `/64`s, and about 40
 addresses are enough to fill the default `max_sessions` of 10,000. Rate-limit handshakes at the edge (a reverse proxy
@@ -265,7 +289,20 @@ Reserved event names (`connect`, `connect_error`, `disconnect`, `disconnecting`,
 be emitted by the server, and a packet from a client that uses one is undecodable.
 
 A packet that cannot be decoded, a second CONNECT for a namespace the connection joined (or is joining), a packet for a
-namespace it has not joined and a CONNECT_ERROR from a client close the connection, as in Node.
+namespace it has not joined (or was refused) and a CONNECT_ERROR from a client close the connection. A packet for a
+namespace the connection did join and whose socket has since left (the server called `disconnect(false)` while the
+client's packet was already on its way) is dropped, as Node does, and the connection and its other namespaces go on: the
+packet is read, measured and charged like any other, its attachments are consumed, and then it is discarded; a new CONNECT
+for that namespace joins it again.
+
+Handlers and the client's connection: when the client drops the connection (the transport closes or fails, or it stops
+answering pings) the handlers that are still running are cancelled at once, so a handler must not assume it runs to
+completion after its client is gone (do the work that has to survive in a task the handler spawns, or release what it
+holds in a `Drop`). A client that reconnects in a loop therefore cannot leave a crowd of handlers behind. When the server
+closes the connection, or shuts down, the handlers get `close_timeout` to finish; `IoOptions::finish_handlers_after_client_close(true)`
+gives them that grace after a client drop too. Handlers that run on after their connection ended count against its
+client address, and an address that has `max_sessions_per_ip x max_inflight` of them (8,192 with the defaults) is refused
+new sessions with `503` until some end.
 
 #### Socket.IO bounds
 
@@ -290,6 +327,7 @@ value and names the option). Where Node has no bound, Corvis differs on purpose.
 | `middleware_timeout` | 10 s | none | CONNECT_ERROR `Internal server error` |
 | `connect_timeout` | 45 s | 45 s | the connection is closed |
 | `max_inflight` handlers per connection | 32, started in arrival order | none | the connection is not read until one finishes |
+| Handlers that outlive their connection, per client address (only after a server close, or when `finish_handlers_after_client_close` is set) | `max_sessions_per_ip x max_inflight`, 8,192 | none (Node runs them to completion) | new sessions from that address get `503` until some end |
 | `max_pending_acks` per socket | 1,000 | none | the call fails with `TooManyPending` and sends nothing |
 | `ack_timeout` (default deadline of `emit_with_ack`) | 30 s | none | `operation has timed out` |
 | Namespace name | 256 bytes, no `,`, no control characters | none | `of` returns an error |
@@ -306,11 +344,15 @@ client address and to the server-wide budget in one chain, whatever state it is 
 reading a session above its fair share while its address is above the share or the budget is exhausted, so at most one
 message of at most `max_http_buffer_size` has been read ahead, and one more is being received), and the server holds at most
 `max_total_unread_bytes` plus the same terms for every open session; within `max_unread_bytes` plus one packet for each
-session. A closed session's handlers keep their packets charged, to the server and to the client address, until they end (at
-most `close_timeout`), so reconnecting does not multiply what an address holds. A message is charged for the allocation
+session. When the client drops the connection its running handlers are cancelled and release their charges at once; when the
+server closes it (or shuts down) they keep their packets charged, to the server and to the client address, until they end (at
+most `close_timeout`), and count against the per-address cap above, so reconnecting does not multiply what an address holds. A message is charged for the allocation
 behind it, not only its length (a message the WebSocket library assembled from fragments is shrunk when its buffer holds more
 than an eighth of slack). Another address keeps the rest of the budget, until enough addresses at their share exhaust it
-(see the table; an application behind a reverse proxy must set `trust_proxy`, or every client is the proxy's one address).
+(see the table; an application behind a reverse proxy must set `trust_proxy`, or every client is the proxy's one address;
+clients behind a carrier or corporate NAT share one address and so one share, and can delay each other). The WebSocket
+library's own buffers are not in this accounting: the figures per session, address and server, and the options that lower
+them, are in "Memory of the WebSocket transport outside the budget" above.
 
 While the budget is exhausted by others a packet bigger than the session's fair share waits for room, and the session is
 not read meanwhile. That wait is not the session's doing, so its heartbeat is held (it is not closed with `ping timeout`
@@ -322,8 +364,11 @@ messages that wait behind a packet that cannot be admitted stay charged until it
 A packet whose JSON holds an object with a key `serde_json` reads as an instruction (`$serde_json::private::RawValue`) is
 delivered, but only as an `IoValue`: `args.get::<serde_json::Value>(i)` and `to_json()` refuse it, because `serde_json`
 would parse its value again with a fresh recursion budget when another crate of the build enables `raw_value`. Handlers
-that wait for the client's answers (`emit_with_ack`) while the connection is at `max_inflight` get the answer only once a
-slot frees, or fail with `operation has timed out`: keep the number of handlers that wait for answers below the limit.
+that wait for the client's answers (`emit_with_ack`) while the connection has `max_inflight` handlers running cannot receive
+the answer: the ACK sits behind the same read gate as every other packet and is taken only once a slot frees, so the call
+fails with `operation has timed out` at `ack_timeout`. Do not await acknowledgements from the same client inside many
+concurrent handlers (keep the handlers that wait for answers well below `max_inflight`, or send the question from a task
+the handler spawns and return).
 
 Differences the client can observe, each listed in the harness with the scenario that exercises it: a second CONNECT while
 the middleware of that namespace still runs closes the connection (Node starts another pending socket for each packet),

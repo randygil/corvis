@@ -86,6 +86,8 @@ pub(crate) struct ServerInner {
     /// sessions' gauges and the server-wide one, so everything an address holds counts here, in every state, and
     /// outlives its sessions for as long as anything charged through them does.
     addresses: Arc<AddressTable>,
+    /// Handlers of a layer on top that outlive their connection, per client address (`EngineSocket::linger`).
+    lingering: Mutex<HashMap<String, usize>>,
     on_connection: RwLock<Option<ConnectionCallback>>,
     /// Callbacks run at the start of `close()`, before any session is closed.
     on_closing: RwLock<Vec<ClosingCallback>>,
@@ -247,6 +249,7 @@ impl EngineServer {
                 sessions: RwLock::new(Store::default()),
                 total_unread,
                 addresses: Arc::new(Mutex::new(HashMap::new())),
+                lingering: Mutex::new(HashMap::new()),
                 on_connection: RwLock::new(None),
                 on_closing: RwLock::new(Vec::new()),
                 last_cap_warning: Mutex::new(None),
@@ -381,6 +384,11 @@ impl EngineServer {
         }
         let held = store.per_ip.get(key).copied().unwrap_or(0) + store.pending_ip.get(key).copied().unwrap_or(0);
         if held >= self.inner.options.max_sessions_per_ip {
+            return Err(OpenError::TooManyFromAddress);
+        }
+        if let Some(cap) = self.inner.options.max_lingering_per_ip
+            && self.inner.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(key).is_some_and(|n| *n >= cap)
+        {
             return Err(OpenError::TooManyFromAddress);
         }
         Ok(())
@@ -675,6 +683,41 @@ impl Query {
     }
 }
 
+/// Handlers that outlive their session, counted against its client address (`EngineSocket::linger`).
+pub(crate) struct Lingering {
+    server: Arc<ServerInner>,
+    key: String,
+    remaining: usize,
+}
+
+impl Lingering {
+    /// One of the handlers ended.
+    pub(crate) fn one_done(&mut self) {
+        self.give_back(1);
+    }
+
+    fn give_back(&mut self, count: usize) {
+        let count = count.min(self.remaining);
+        if count == 0 {
+            return;
+        }
+        self.remaining -= count;
+        let mut table = self.server.lingering.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = table.get_mut(&self.key) {
+            *n = n.saturating_sub(count);
+            if *n == 0 {
+                table.remove(&self.key);
+            }
+        }
+    }
+}
+
+impl Drop for Lingering {
+    fn drop(&mut self) {
+        self.give_back(self.remaining);
+    }
+}
+
 /// Bytes charged against a session's unread budget; they are released when this is dropped.
 pub struct Held(UnreadTicket);
 
@@ -740,6 +783,16 @@ impl EngineSocket {
     /// session with `transport error`, like [`send`](Self::send)). A Socket.IO binary packet is such a group.
     pub fn send_all(&self, messages: Vec<EngineMessage>) -> Result<(), SendError> {
         self.session.send_all(messages)
+    }
+
+    /// Counts `count` handlers that outlive this session against its client address, until the guard says they are
+    /// done or is dropped. At `max_lingering_per_ip` of them an address gets no new sessions (`503`). `None` when the
+    /// server is gone.
+    pub(crate) fn linger(&self, count: usize) -> Option<Lingering> {
+        let server = self.session.server()?;
+        let key = self.session.addr_key.clone();
+        *server.lingering.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += count;
+        Some(Lingering { server, key, remaining: count })
     }
 
     /// Charges `bytes` against this session's unread budget (and the server's) until the returned guard is
@@ -846,6 +899,18 @@ impl EngineServer {
         table.get(&key).and_then(Weak::upgrade).map_or(0, |gauge| gauge.unread())
     }
 
+    /// Handlers that outlive their connection and are counted against `address`.
+    pub(crate) fn lingering(&self, address: &str) -> usize {
+        let key = address_key(address, None);
+        self.inner.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(&key).copied().unwrap_or(0)
+    }
+
+    /// Whether a handshake from `address` would be answered `503` now.
+    pub(crate) fn refuses_new_sessions_from(&self, address: &str) -> bool {
+        let store = self.inner.sessions.read().unwrap_or_else(|e| e.into_inner());
+        self.caps_ok(&store, &address_key(address, None)).is_err()
+    }
+
     /// The same, as if the client connected from `address`.
     pub(crate) fn open_test_socket_from(&self, address: &str) -> EngineSocket {
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=websocket").body(()).unwrap().into_parts();
@@ -868,6 +933,11 @@ impl EngineSocket {
     /// The connection drops at once, as if the transport had closed under it.
     pub(crate) fn kill(&self) {
         self.session.close(session::CloseReason::TransportClose);
+    }
+
+    /// The server ends the connection at once, as a shutdown does.
+    pub(crate) fn force_close(&self) {
+        self.session.close(session::CloseReason::ForcedClose);
     }
 
     /// `true` once the session is closing or closed.

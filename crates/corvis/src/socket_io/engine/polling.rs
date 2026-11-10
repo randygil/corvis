@@ -139,6 +139,9 @@ pub(super) async fn post(
         }
     };
     drop(text);
+    // The decoded records are charged to the session; the request body is not, so it must not outlive the decoding
+    // while the answer is held for the budget below.
+    drop(bytes);
     for item in decoded {
         match item {
             Decoded::Packet(Packet::Close) => {

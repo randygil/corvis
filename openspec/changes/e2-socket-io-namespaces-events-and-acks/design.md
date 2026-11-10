@@ -807,3 +807,143 @@ process-wide).
 - The memory of the WebSocket library's buffer for an incomplete message (up to `2 x M` per open session) is not
   charged: it is not a message yet. It is the transit term of `W`, bounded by `max_sessions`.
 - A session whose own backlog is the whole of its address's share waits for the admission timeout (above).
+
+## Security review (round 3)
+
+The third review found one medium and six low items. Where this section differs from the earlier ones, this section
+wins.
+
+### Corrections to earlier rounds
+
+- **`W` in round 2 was wrong.** It named only `2 x M` for an incomplete message. The WebSocket library holds two buffers
+  per session outside every gauge: its read buffer, which grows to the largest frame ever received and is never shrunk,
+  and the buffer of an incomplete fragmented message. They are not part of `W`; they are the transit term `X` below, they
+  are not charged, and they exist already in the Engine.IO server merged as #32.
+- **"Handlers keep their charges until they end, for at most `close_timeout`" was stated for every close.** It is now
+  true of a close by the server and of a shutdown. When the client drops the connection the handlers are cancelled at
+  once (item E).
+- **The heartbeat suspension of round 2 was a per-pause allowance**, which a pressure, relief, pressure sequence renewed
+  (item D).
+
+### Item A (Medium): transit memory of the WebSocket transport
+
+Measured with default options (counting allocator, raw client that writes from the caller's buffers, 16 sessions of one
+address, `max_http_buffer_size` `M` = 1,000,000): a session that received one valid message of nearly `M` keeps
+**1,169,504 B** for the rest of its life (the library's read buffer), and a session with an incomplete fragmented
+message (a binary frame of `M - 1` bytes, a one byte continuation, a continuation that claims `M` and sends most of it)
+holds **3,294,439 B**: the read buffer, and the message buffer that doubled to 2^21 bytes. Neither is charged.
+
+*At the source.* tungstenite 0.24 (the version in the lock file) has no setting that bounds the read buffer: its
+`WebSocketConfig` has `max_message_size`, `max_frame_size`, `write_buffer_size`, `max_write_buffer_size` and
+`accept_unmasked_frames`, and the read buffer is a `Vec` that only grows. Lowering `max_frame_size` below
+`max_http_buffer_size` would refuse messages Node accepts. tungstenite 0.30 (the latest, with tokio-tungstenite 0.30)
+adds `read_buffer_size`, but it is the initial capacity: a scratch program outside the repository, same shapes, same
+raw client, measured 0.24 at 1,107,002 / 3,232,009 B per session and 0.30 at 1,058,392 / 4,183,349 B (the read buffer is
+kept at the size of the frame, and the incomplete message is kept as before and then copied again). The upgrade would
+have changed `Message` for the whole workspace (the default `ws` adapter, ports and examples) and fixed neither, so it
+was not made. Nothing in the transport code releases a completed message's buffer either: it is the library's own.
+
+*What remains, stated.* Per session, with `M` = `max_http_buffer_size`: after a large message at most
+`R(M) = 1.25 x 2^ceil(log2(M + 4,110))` bytes for the session's life, and while a fragmented message is incomplete at
+most `R(M) + 2 x 2^ceil(log2(M))`. The factor 1.25 is the excess the measurements show over the power of two
+(1,169,504 against 1,048,576 at the default, 133,224 against 131,072 at 100,000, 273,671 against 262,144 at 250,000);
+the library alone outside this server shows the same excess. The transit term is `X = S x (R + 2 x 2^ceil(log2 M))` for
+`S` sessions, apart from the budget `T`:
+
+| Default options | Per session | One address (`N` = 256) | The server (`max_sessions` 10,000) |
+|---|---|---|---|
+| after one large message | 1.12 MiB | 286 MiB | 10.9 GiB |
+| incomplete fragmented message | 3.14 MiB | 804 MiB | 30.7 GiB |
+
+The ceilings fall with `max_http_buffer_size` (about 0.13 MiB and 0.32 MiB per session at 100,000 bytes),
+`max_sessions_per_ip` and `max_sessions`; the limits pages say so (EN and ES, the Engine.IO section and the Socket.IO
+paragraph on bounds). The address bound of round 2 reads `A + N x (f + W) + N x (R + 2 x 2^ceil(log2 M))` with `W` the
+message in hand only.
+
+*Considered and left:* charging transit bytes to the session. It needs a byte-counting wrapper around the socket under
+the WebSocket library (the library reads in chunks and the buffer is internal), changes the stream type given to
+`from_raw_socket` and touches reads on every transport; the numbers above are what it would remove. A candidate
+follow-up, not done here.
+
+Regression tests, `tests/socket_io_transit.rs`:
+`the_transport_holds_at_most_the_documented_bytes_per_session_at_the_default_message_size` and
+`max_http_buffer_size_lowers_what_a_session_holds_in_proportion` (idle retention and incomplete message per session
+against `R` and `R + 2 x 2^ceil(log2 M)`, at 1,000,000, 250,000 and 100,000 bytes; they also fail if the measurement
+saw nothing, so a change that hides the buffer from the counter is caught).
+
+### Item B (Low): the body of a polling `POST` kept alive while the answer waits
+
+`polling::post` decoded the records (charged to the session) and kept the request body, uncharged, through the wait
+that holds the answer for the budget. The body is dropped right after decoding. Test:
+`socket_io_transit.rs::a_polling_post_body_is_released_while_its_answer_is_held_for_the_budget` (16 sessions, 600 KB of
+records each, held: 708,101 B live per session for 600,000 B of records; with the body alive it is about double).
+
+### Item C (Low): a rolled-back reservation did not wake its siblings
+
+A multi-level charge takes the session and address levels and may be refused by the level above; a sibling that looked
+while the lower levels were inflated registered for a change and nothing woke it, since nothing was released. A rollback
+now wakes the waiters of the level it undoes. **The first version of this fix woke unconditionally, and it livelocked**:
+the asker registers for changes before it tries, so its own rollback woke it, it retried, rolled back again and spun
+(the lib tests of the Socket.IO layer hung in `reconnecting_over_and_over_cannot_multiply_what_an_address_holds_...`,
+a real defect in the code and not a test problem). Two askers refused by the same level above would have woken each other
+the same way. A level now counts the charges it refused (`refusals`); a charge records the count when it is taken and its
+rollback wakes the waiters only if the count moved, that is, only if someone was refused while the level held a charge
+that did not stay. The asker's own rollback moves no count at the levels it took. Test (`engine/session.rs`):
+`a_rolled_back_reservation_wakes_the_siblings_that_were_refused_meanwhile_and_not_its_own_asker`, through the budget API
+with no timing: a sibling refused inside the window is woken, and the asker is not woken by its own rollback on either
+quota path.
+
+### Item D (Low): the heartbeat suspension could be chained
+
+The allowance is per session since its last received pong: `Heartbeat` keeps the suspension time used
+(`suspension_used`), a pause may hold the pong deadline only for what remains of `pressure_pause_timeout`, and only a
+pong renews it. Once it is used the heartbeat applies, however often the pressure comes and goes. Tests on the paused
+clock: `Heartbeat::the_allowance_is_per_session_since_the_last_pong_and_not_per_suspension` and, through a session,
+`oscillating_pressure_cannot_chain_the_suspension_and_a_pong_renews_the_allowance`.
+
+### Item E (Low): handlers that outlive their connection
+
+Eight churning connections from one address reached about 86,000 lingering futures and 50 MB for `close_timeout`.
+Now: when the client drops the connection (transport close or error, parse error, ping timeout, any reason except the
+server's own `forced close`) the handlers still running are dropped at once, which releases their charges, unless
+`IoOptions::finish_handlers_after_client_close(true)`. A close by the server, and a shutdown, keep the grace of
+`close_timeout`, and the handlers that linger are counted per client address (`EngineSocket::linger`, a guard that gives
+the count back as each ends or when dropped). An address at `max_sessions_per_ip x max_inflight` of them
+(`IoOptions::max_lingering_per_ip()`, 8,192 by default) is refused new sessions with the existing `503`
+(`EngineOptions::max_lingering_per_ip`, set by `IoServer`, unset for plain Engine.IO). Behaviour change visible to
+applications: a handler is cancelled when its client goes away, so work that must survive goes in a task the handler
+spawns (handler guidance in the page, EN and ES); Node runs handlers to completion. Nothing changes for plain Engine.IO
+or the default WebSocket adapter. Tests: `tests/socket_io_lingering.rs` (the churn PoC: 200 sessions, about 6,000
+handlers started, none left, heap +2 KB over the baseline; with the grace requested the lingering handlers peak at the
+cap of 32 and 32 of 40 sessions are refused) and unit tests
+(`handlers_are_cancelled_at_once_when_the_client_drops_the_connection_unless_the_application_opted_in`,
+`handlers_get_their_grace_when_the_server_closes_the_connection_and_count_against_the_address_meanwhile`,
+`an_address_with_too_many_lingering_handlers_is_refused_new_sessions_until_they_end`). The last two end the connection
+from the server with a test helper, `force_close`: the graceful `close()` of a socket with no transport in a unit test
+only completes at `close_timeout`, and a second CONNECT is not read while the connection is at `max_inflight`. An earlier
+attempt had swapped `close()` for a second CONNECT to get past the hang above; the hang was the livelock of item C and
+not the close path, which was checked.
+
+### Item F (Low): a packet for a namespace the server just left
+
+A namespace slot has a third state, `Left`: the connection joined and its socket left (by the server's `disconnect(false)`
+or by the client). A packet for it is dropped (`Flow::Continue`) after it was read, measured, charged and, for a binary
+event, its attachments consumed by the decoder, so no reassembly slot leaks; a new CONNECT replaces the slot. The set is
+bounded by the registered namespaces (one slot each). A packet for a namespace never joined or refused still closes the
+connection. Tests: `socket_io_lingering.rs::packets_that_race_the_servers_leave_of_a_namespace_are_dropped_and_the_connection_survives`
+(an ACK, an event and a binary event with a 100 KB attachment for the left namespace, then the main namespace answers,
+then a packet for a namespace never joined closes the connection) and
+`tests.rs::packets_for_a_namespace_the_server_just_left_are_dropped_and_the_other_namespaces_survive`.
+
+### Item G (docs)
+
+The acknowledgements section says a handler that awaits `emit_with_ack` while its connection has `max_inflight` handlers
+running cannot receive the answer (the ACK waits behind the same read gate) and fails at `ack_timeout`. The limits page
+says clients behind one shared address (carrier or corporate NAT) share one address quota and can delay each other, and
+that `trust_proxy` only helps behind a proxy the operator controls. EN and ES.
+
+### Not changed by this round
+
+- The transit bytes are not charged (item A, considered and left).
+- The harness `expected-differences.json` gains nothing: the dropped packet for a left namespace is now what Node does,
+  and the cancelled handlers are not observable by a client.

@@ -38,6 +38,10 @@ enum Slot {
     /// The CONNECT was accepted and the middleware is running.
     Pending,
     Joined(IoSocket),
+    /// The connection joined the namespace and the socket has left it (the server disconnected it, or the client
+    /// did): packets the client had in flight for it are dropped, as Node does, instead of closing the connection. A
+    /// new CONNECT replaces it. There is at most one entry per registered namespace, so the set is bounded by them.
+    Left,
 }
 
 /// What sockets and the connection task share about one Engine.IO connection.
@@ -92,12 +96,18 @@ impl ClientShared {
         }
     }
 
-    /// Removes a socket that left its namespace, so the client may join it again.
+    /// Frees the namespace of a socket that left it, so the client may join it again; packets that were already on
+    /// their way for it are dropped (`Slot::Left`).
     pub(crate) fn forget(&self, name: &str, socket: &IoSocket) {
         let mut nsps = self.nsps();
         if matches!(nsps.get(name), Some(Slot::Joined(s)) if s == socket) {
-            nsps.remove(name);
+            nsps.insert(name.to_string(), Slot::Left);
         }
+    }
+
+    /// Whether the connection joined the namespace and its socket has left it since.
+    fn has_left(&self, name: &str) -> bool {
+        matches!(self.nsps().get(name), Some(Slot::Left))
     }
 
     /// Ends the connection for every socket, once: each reports `reason` (with a DISCONNECT packet first when
@@ -110,7 +120,7 @@ impl ClientShared {
                 nsps.drain()
                     .filter_map(|(_, slot)| match slot {
                         Slot::Joined(socket) => Some(socket),
-                        Slot::Pending => None,
+                        Slot::Pending | Slot::Left => None,
                     })
                     .collect()
             };
@@ -199,6 +209,7 @@ pub(crate) async fn run(
     // When the parked message gives up waiting: set when it parks, cleared when it is admitted.
     let mut admission_deadline: Option<Instant> = None;
     let mut stream_done = false;
+    let mut client_dropped = false;
     let mut closed: Closed<'_> = Box::pin(engine.closed());
     loop {
         // Registered before anything below looks at the gauges, so a release in between wakes the select.
@@ -212,6 +223,7 @@ pub(crate) async fn run(
                     break;
                 }
                 Flow::Gone(reason) => {
+                    client_dropped = dropped_by_client(reason);
                     shared.terminate(reason.into(), false, false);
                     break;
                 }
@@ -231,6 +243,7 @@ pub(crate) async fn run(
         tokio::select! {
             biased;
             reason = &mut closed => {
+                client_dropped = dropped_by_client(reason);
                 shared.terminate(reason.into(), false, false);
                 break;
             }
@@ -266,6 +279,7 @@ pub(crate) async fn run(
                         break;
                     }
                     Flow::Gone(reason) => {
+                        client_dropped = dropped_by_client(reason);
                         shared.terminate(reason.into(), false, false);
                         break;
                     }
@@ -273,13 +287,35 @@ pub(crate) async fn run(
             }
         }
     }
-    // Handlers that already started get a grace period to finish; nothing can wait for them forever.
-    if !inflight.is_empty() {
-        let grace = options.engine.close_timeout;
-        tokio::spawn(async move {
-            let _ = tokio::time::timeout(grace, async move { while inflight.next().await.is_some() {} }).await;
-        });
+    if inflight.is_empty() {
+        return;
     }
+    // The client dropped the connection: nobody is left to answer, and a client that reconnects in a loop would leave
+    // a crowd of handlers behind, so they are cancelled (dropped, which releases their charges) unless the
+    // application asked for them to finish.
+    if client_dropped && !options.finish_handlers_after_client_close {
+        return;
+    }
+    // Otherwise (the server closed the connection, or is shutting down) handlers that already started get a grace
+    // period to finish; nothing can wait for them forever, and they count against the address while they run.
+    let grace = options.engine.close_timeout;
+    let mut lingering = engine.linger(inflight.len());
+    tokio::spawn(async move {
+        let _ = tokio::time::timeout(grace, async {
+            while inflight.next().await.is_some() {
+                if let Some(l) = lingering.as_mut() {
+                    l.one_done();
+                }
+            }
+        })
+        .await;
+    });
+}
+
+/// Whether the client ended the connection (the transport closed or failed, a packet could not be parsed, or the client
+/// stopped answering pings), as opposed to the server closing it.
+fn dropped_by_client(reason: CloseReason) -> bool {
+    !matches!(reason, CloseReason::ForcedClose)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -378,7 +414,13 @@ async fn handle_packet(
         // A client does not send these, and a packet for a namespace it has not joined is a violation.
         Body::ConnectError(_) => Flow::Close(DisconnectReason::ForcedServerClose),
         body => {
-            let Some(socket) = shared.joined(&nsp) else { return Flow::Close(DisconnectReason::ForcedServerClose) };
+            let Some(socket) = shared.joined(&nsp) else {
+                // A namespace the connection joined and whose socket has left since (the server just disconnected it):
+                // the client's packet was already on its way, and is dropped. The packet was read, measured and
+                // charged like any other, and its attachments consumed, before it got here. A namespace it never
+                // joined, or was refused, is a violation.
+                return if shared.has_left(&nsp) { Flow::Continue } else { Flow::Close(DisconnectReason::ForcedServerClose) };
+            };
             tokio::select! {
                 _ = socket.wait_ready() => {}
                 reason = &mut *closed => return Flow::Gone(reason),
@@ -443,7 +485,7 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
         if shared.done.load(Ordering::SeqCst) {
             return Ok(());
         }
-        if nsps.contains_key(&name) {
+        if matches!(nsps.get(&name), Some(Slot::Pending | Slot::Joined(_))) {
             return Err(());
         }
         nsps.insert(name, Slot::Pending);

@@ -106,9 +106,9 @@ and reject the connection with the message `Internal server error`.
 
 ### Requirement: One socket per namespace per connection
 A connection SHALL hold at most one socket per namespace, counting connection attempts whose middleware has not
-finished. A CONNECT for a namespace that is joined or pending, a packet other than CONNECT for a namespace that is not
-joined, and a CONNECT_ERROR from the client MUST close the Engine.IO connection; sockets still joined report
-`forced server close`.
+finished. A CONNECT for a namespace that is joined or pending, a packet other than CONNECT for a namespace the
+connection never joined or was refused, and a CONNECT_ERROR from the client MUST close the Engine.IO connection (sockets
+still joined report `forced server close`).
 
 #### Scenario: Duplicate CONNECT
 - **WHEN** a raw client that joined `/` sends `40` again
@@ -122,6 +122,17 @@ joined, and a CONNECT_ERROR from the client MUST close the Engine.IO connection;
 #### Scenario: Event before CONNECT
 - **WHEN** a raw client sends `2["echo",1]` without having joined `/`
 - **THEN** both servers close the connection
+
+### Requirement: Packets for a namespace that was left are dropped
+A packet from the client for a namespace its connection joined and whose socket has since left (the server called
+`disconnect(false)`, or the client left) MUST be dropped, as Node does, without closing the connection. It is read,
+measured and charged like any packet, its attachments are consumed, and a new CONNECT joins the namespace again.
+
+#### Scenario: Packets racing a server-side leave
+- **WHEN** the server calls `disconnect(false)` on a socket of `/b` and the raw client's ACK, event and binary event for
+  `/b` were already on their way
+- **THEN** all are dropped, nothing is delivered, the connection and `/` go on, and a packet for a namespace never joined
+  still closes the connection
 
 ### Requirement: Events match Node
 Events SHALL carry any number of arguments in both directions, delivered to the handler registered for the event name
@@ -298,10 +309,24 @@ attachments before and after delivery, handshake `auth`, and charges of handlers
   packet
 - **THEN** creation fails with an error naming `max_address_share`
 
+### Requirement: The transit memory of the WebSocket transport is stated and bounded
+The WebSocket library's read buffer (kept at the size of the largest frame received) and the buffer of an incomplete
+fragmented message are outside the unread budget. Their ceiling per session MUST be measured, bounded by a test, and
+documented per session, per address and server-wide with the defaults, apart from the budget, with the options that lower
+it (`max_http_buffer_size`, `max_sessions_per_ip`, `max_sessions`).
+
+#### Scenario: Idle retention and incomplete message
+- **WHEN** sessions each receive one message of nearly `max_http_buffer_size`, then an incomplete fragmented message
+- **THEN** the live heap per session stays within the documented ceilings, and falls in proportion at smaller sizes
+
 ### Requirement: Messages are charged for their allocation
 A message the engine hands up, text or binary, from either transport, SHALL be charged for the allocation behind it, not
 only its length: a buffer holding more than an eighth beyond the length MUST be shrunk, and the remaining capacity
 charged. A small slice MUST NOT keep a large buffer alive.
+
+#### Scenario: Polling body released while the answer waits
+- **WHEN** a polling `POST` carries more records than the session's unread limit and its answer is held for room
+- **THEN** the request body is not alive: the heap holds the records and not twice them
 
 #### Scenario: Fragmented binary message
 - **WHEN** a client sends a 524,289 byte binary message as frames of 524,288 and 1 byte, and as 513 frames of 1 KiB,
@@ -319,6 +344,11 @@ connection with the disconnect reason `admission timeout`. A waiting connection 
   session sends a packet that needs room
 - **THEN** the packet is handled promptly after the first handler returns, and the session is not closed
 
+#### Scenario: Oscillating pressure
+- **WHEN** the pressure on a session starts and stops repeatedly without a pong in between
+- **THEN** the allowance of `admission_timeout` is spent in total, not per pause, and the heartbeat applies once it is
+  used, until a pong renews it
+
 #### Scenario: Handlers never return
 - **WHEN** the same handlers never return
 - **THEN** the honest session is closed with `admission timeout` at `admission_timeout`, and not with `ping timeout`
@@ -335,12 +365,28 @@ session and the address for as long as the handshake lives.
 
 ### Requirement: Charges end with their handlers
 The charge of a decoded packet MUST stay on the server-wide gauge until its handler ends, including after its session
-closed (for at most `close_timeout`, after which the handler is dropped), and MUST count against the client address,
-so reconnecting does not multiply it and other addresses keep their guaranteed share and the room left.
+was closed by the server or by a shutdown (for at most `close_timeout`, after which the handler is dropped), and MUST
+count against the client address, so reconnecting does not multiply it and other addresses keep their share.
 
-#### Scenario: Handler running after the close
-- **WHEN** a session closes while its handler keeps a packet, and the address reconnects and sends the same packet
+#### Scenario: Handler running after a server close
+- **WHEN** the server closes a session while its handler keeps a packet, and the address reconnects and sends the same
+  packet
 - **THEN** the gauge still counts the first packet, the second waits, and it is admitted when the first handler ends
+
+### Requirement: Handlers do not outlive a client that left
+When the client drops the connection (transport close or error, parse error, ping timeout) the handlers still running
+MUST be cancelled at once, releasing their charges, unless `finish_handlers_after_client_close` is set. Handlers that
+outlive their connection MUST count per client address, and an address at `max_sessions_per_ip x max_inflight` of them
+MUST be refused new sessions with `503` until some end.
+
+#### Scenario: Reconnect churn
+- **WHEN** eight connections of one address each start 32 blocked handlers and drop, 25 times over
+- **THEN** no handler is left running and the live heap returns to its baseline within a few MiB
+
+#### Scenario: Opted-in grace
+- **WHEN** the same churn runs with the grace requested and a short `close_timeout`
+- **THEN** the handlers that linger stay at or below the cap, sessions over it are refused, and the address is served
+  again when they end
 
 ### Requirement: Lone surrogates are refused
 A string of a packet holding a lone UTF-16 surrogate escape (`"\ud800"`) SHALL make the packet undecodable and close the

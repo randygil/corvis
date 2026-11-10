@@ -241,3 +241,24 @@ impl Tx {
         Ok(())
     }
 }
+
+/// A frame header (client to server: zero mask key) with a claimed length, for frames that are never completed.
+pub fn frame_header(opcode: u8, fin: bool, len: usize) -> Vec<u8> {
+    header(opcode, fin, len)
+}
+
+impl Tx {
+    /// Writes raw bytes: a header of any claimed length, a partial payload.
+    pub async fn raw(&self, parts: &[&[u8]]) -> std::io::Result<()> {
+        let mut g = self.w.lock().await;
+        for p in parts {
+            g.write_all(p).await?;
+        }
+        Ok(())
+    }
+
+    /// Closes the write half (FIN) without a close frame.
+    pub async fn fin(&self) {
+        let _ = self.w.lock().await.shutdown().await;
+    }
+}

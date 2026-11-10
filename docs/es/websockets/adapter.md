@@ -206,8 +206,30 @@ para conectar un limitador de tasa o una comprobación de autenticación al hand
 polling y las conexiones WebSocket directas, no para las peticiones de una sesión existente. `max_sessions_per_ip` cuenta
 como una sola dirección a los clientes detrás de un mismo NAT o de un CDN que no es un proxy de confianza: súbelo con
 `EngineOptions::max_sessions_per_ip(n)` en esos despliegues, o configura `set_trust_proxy` para que se use la dirección
-real del cliente. Un id de sesión entregado por un handshake que el cliente nunca usa se libera tras
-`first_request_timeout`.
+real del cliente. Los clientes detrás de una misma dirección compartida (el NAT de un operador móvil o de una empresa)
+comparten una sola cuota de dirección y pueden retrasarse unos a otros (sus sesiones cuentan juntas, y en el servidor
+Socket.IO también todo lo que retienen del presupuesto); `trust_proxy` solo ayuda cuando el proxy que está delante es uno
+que controlas. Un id de sesión entregado por un handshake que el cliente nunca usa se libera tras `first_request_timeout`.
+
+#### Memoria del transporte WebSocket fuera del presupuesto
+
+La biblioteca de WebSocket retiene dos buffers por sesión que ningún presupuesto de lectura cuenta: su buffer de lectura, que
+crece hasta alojar el mayor fotograma que la sesión recibió y después no se reduce, y, mientras un mensaje fragmentado está
+incompleto, el buffer de ese mensaje (que se duplica al crecer). La biblioteca (tungstenite 0.24, y 0.30 al medirla) no tiene
+ningún ajuste que los reduzca, y el tamaño del fotograma no se puede bajar sin rechazar mensajes que Node acepta, así que se
+mide, se declara y se acota con las opciones de abajo. Con `M` = `max_http_buffer_size`, una sesión retiene como mucho
+`1,25 x 2^ceil(log2(M + 4.110))` bytes tras un mensaje grande, mientras viva, y como mucho `2 x 2^ceil(log2(M))` más que eso
+mientras tiene un mensaje incompleto. Con el `M` por defecto de 1.000.000 la medición es 1,12 MiB y 3,14 MiB por sesión
+(1.169.504 y 3.294.439 bytes).
+
+| Opciones por defecto | Por sesión | Una dirección (`max_sessions_per_ip` 256) | El servidor (`max_sessions` 10.000) |
+|---|---|---|---|
+| Tras un mensaje de casi `M`, hasta que la sesión termina | 1,12 MiB | 286 MiB | 10,9 GiB |
+| Mientras un mensaje fragmentado está incompleto | 3,14 MiB | 804 MiB | 30,7 GiB |
+
+Estas cifras se suman a `max_total_unread_bytes` (256 MiB), que no las cuenta. Redúcelas con `max_http_buffer_size` (bajan en
+proporción, y 100.000 bytes dan 0,13 MiB y 0,32 MiB por sesión), `max_sessions_per_ip` y `max_sessions`. Cargar estos bytes a
+la sesión exigiría envolver el socket y queda como posible cambio posterior.
 
 El límite por dirección no detiene a un atacante con muchas direcciones: un `/48` de IPv6 contiene 65.536 `/64` y unas
 40 direcciones bastan para llenar el `max_sessions` por defecto de 10.000. Limita la tasa de handshakes en el borde (un
@@ -271,7 +293,21 @@ esperó más de `admission_timeout` a que hubiera sitio en el presupuesto; Node 
 servidor, y un paquete de un cliente que use uno no se puede decodificar.
 
 Un paquete que no se puede decodificar, un segundo CONNECT a un espacio al que la conexión ya entró (o está entrando), un
-paquete para un espacio al que no entró y un CONNECT_ERROR de un cliente cierran la conexión, como en Node.
+paquete para un espacio al que no entró (o que se le rechazó) y un CONNECT_ERROR de un cliente cierran la conexión. Un
+paquete para un espacio al que la conexión sí entró y cuyo socket se fue desde entonces (el servidor llamó a
+`disconnect(false)` cuando el paquete del cliente ya iba de camino) se descarta, como hace Node, y la conexión y sus demás
+espacios siguen: el paquete se lee, se mide y se carga como cualquier otro, sus adjuntos se consumen y luego se descarta; un
+nuevo CONNECT a ese espacio vuelve a unirlo.
+
+Manejadores y la conexión del cliente: cuando el cliente cierra la conexión (el transporte se cierra o falla, o deja de
+responder a los pings) los manejadores que siguen en ejecución se cancelan de inmediato, así que un manejador no debe
+suponer que llega a terminar cuando su cliente ya no está (el trabajo que debe sobrevivir va en una tarea que el manejador
+lanza, o lo que retiene se libera en un `Drop`). Un cliente que reconecta en bucle no puede dejar así una multitud de
+manejadores. Cuando el servidor cierra la conexión, o se apaga, los manejadores tienen `close_timeout` para terminar;
+`IoOptions::finish_handlers_after_client_close(true)` les da esa gracia también tras un cierre del cliente. Los manejadores
+que siguen tras el fin de su conexión cuentan contra su dirección de cliente, y una dirección que tiene
+`max_sessions_per_ip x max_inflight` de ellos (8.192 con los valores por defecto) recibe `503` en las sesiones nuevas hasta
+que algunos terminen.
 
 #### Límites de Socket.IO
 
@@ -296,6 +332,7 @@ Todo lo que un cliente puede hacer que el servidor retenga tiene un valor por de
 | `middleware_timeout` | 10 s | ninguno | CONNECT_ERROR `Internal server error` |
 | `connect_timeout` | 45 s | 45 s | se cierra la conexión |
 | `max_inflight` manejadores por conexión | 32, iniciados en orden de llegada | ninguno | no se lee la conexión hasta que uno termina |
+| Manejadores que sobreviven a su conexión, por dirección de cliente (solo tras un cierre del servidor, o con `finish_handlers_after_client_close`) | `max_sessions_per_ip x max_inflight`, 8.192 | ninguno (Node los ejecuta hasta el final) | las sesiones nuevas de esa dirección reciben `503` hasta que algunos terminen |
 | `max_pending_acks` por socket | 1.000 | ninguno | la llamada falla con `TooManyPending` y no envía nada |
 | `ack_timeout` (plazo por defecto de `emit_with_ack`) | 30 s | ninguno | `operation has timed out` |
 | Nombre de espacio | 256 bytes, sin `,` ni caracteres de control | ninguno | `of` devuelve un error |
@@ -313,12 +350,17 @@ mensajes en la mano (el transporte deja de leer una sesión por encima de su par
 parte o el presupuesto está agotado, así que como mucho se ha leído por adelantado un mensaje de a lo sumo
 `max_http_buffer_size`, y otro se está recibiendo), y el servidor retiene como mucho `max_total_unread_bytes` más los mismos
 términos por cada sesión abierta; y dentro de `max_unread_bytes` más un paquete por sesión. Los manejadores de una sesión
-cerrada mantienen sus paquetes cargados, al servidor y a la dirección del cliente, hasta que terminan (como mucho
-`close_timeout`), así que reconectar no multiplica lo que retiene una dirección. Un mensaje se carga por la asignación que
+cerrada: cuando el cliente cierra la conexión, sus manejadores en ejecución se cancelan y liberan sus cargas de inmediato;
+cuando la cierra el servidor (o se apaga) mantienen sus paquetes cargados, al servidor y a la dirección del cliente, hasta
+que terminan (como mucho `close_timeout`), y cuentan para el tope por dirección de arriba, así que reconectar no multiplica
+lo que retiene una dirección. Un mensaje se carga por la asignación que
 hay detrás, no solo por su longitud (el mensaje que la biblioteca de WebSocket ensambló a partir de fragmentos se reduce
 cuando su buffer tiene más de un octavo de holgura). Otra dirección conserva el resto del presupuesto, hasta que bastan
 direcciones en su límite para agotarlo (véase la tabla; una aplicación detrás de un proxy inverso debe configurar
-`trust_proxy`, o todos los clientes son la única dirección del proxy).
+`trust_proxy`, o todos los clientes son la única dirección del proxy; los clientes detrás del NAT de un operador o de una
+empresa comparten una dirección y por tanto una parte, y pueden retrasarse unos a otros). Los buffers de la propia biblioteca
+de WebSocket no entran en esta contabilidad: las cifras por sesión, dirección y servidor, y las opciones que las reducen,
+están en «Memoria del transporte WebSocket fuera del presupuesto», arriba.
 
 Mientras otros agotan el presupuesto, un paquete mayor que la parte justa de la sesión espera sitio, y la sesión no se lee
 entretanto. Esa espera no es obra de la sesión, así que su latido se retiene (no se cierra con `ping timeout` por una memoria
@@ -331,8 +373,11 @@ Un paquete cuyo JSON tenga un objeto con una clave que `serde_json` lee como ins
 (`$serde_json::private::RawValue`) se entrega, pero solo como `IoValue`: `args.get::<serde_json::Value>(i)` y `to_json()` lo
 rechazan, porque `serde_json` volvería a parsear su valor con un presupuesto de recursión nuevo cuando otro crate de la
 compilación activa `raw_value`. Los manejadores que esperan respuestas del cliente (`emit_with_ack`) mientras la conexión
-está en `max_inflight` reciben la respuesta solo cuando se libera una plaza, o fallan con `operation has timed out`:
-mantén el número de manejadores que esperan respuestas por debajo del límite.
+tiene `max_inflight` manejadores en ejecución no pueden recibir la respuesta: la confirmación espera tras la misma puerta de
+lectura que cualquier otro paquete y solo se toma cuando se libera una plaza, así que la llamada falla con `operation has
+timed out` al llegar a `ack_timeout`. No esperes confirmaciones del mismo cliente dentro de muchos manejadores concurrentes
+(mantén los manejadores que esperan respuestas muy por debajo de `max_inflight`, o envía la pregunta desde una tarea que el
+manejador lanza y retorna).
 
 Diferencias que el cliente puede observar, cada una listada en el arnés con el escenario que la ejercita: un segundo
 CONNECT mientras el middleware de ese espacio sigue corriendo cierra la conexión (Node inicia otro socket pendiente por

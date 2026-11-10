@@ -180,6 +180,23 @@ the configured value, "within" bounds are generous, timer logic runs on Tokio's 
   reason, the default panic hook (do not `unwrap()` client data; install your own hook for silence); rustdoc of
   `IoSocket::on`; spec delta updated and `openspec validate e2-socket-io-namespaces-events-and-acks --strict` passes
 
+## 8c. Security review, round 3 (design.md "Security review (round 3)")
+
+- [x] 8c.1 Transit memory of the WebSocket transport: no library setting reduces it (tungstenite 0.24 and the 0.30
+  measured); the per-session ceilings are measured and stated, bounded by `tests/socket_io_transit.rs`, and documented
+  per session, address and server in the limits pages (EN and ES); charging them is recorded as a candidate follow-up
+- [x] 8c.2 A polling `POST` body is released before the answer waits for the budget; test with the counting allocator
+- [x] 8c.3 A rolled-back reservation wakes the siblings that were refused meanwhile and not its own asker (the first
+  version livelocked the lib tests); deterministic budget-API test
+- [x] 8c.4 The heartbeat suspension is a per-session allowance renewed only by a pong; tests on the paused clock
+- [x] 8c.5 Handlers are cancelled when the client drops the connection (`finish_handlers_after_client_close` opts into a
+  grace), handlers that linger count per address and an address at `max_sessions_per_ip x max_inflight` is refused with
+  `503`; churn test with the counting allocator; handler guidance in the docs
+- [x] 8c.6 A packet for a namespace the connection joined and left is dropped, attachments consumed, a new CONNECT
+  rejoins; a packet for a namespace never joined still closes the connection; tests
+- [x] 8c.7 Docs (EN and ES): acknowledgements at `max_inflight`, shared-address quota, handlers and the client's drop,
+  transit memory; spec delta updated and `openspec validate e2-socket-io-namespaces-events-and-acks --strict` passes
+
 ## 9. Definition of done
 
 - [x] 9.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`

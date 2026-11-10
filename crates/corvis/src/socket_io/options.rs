@@ -93,6 +93,7 @@ pub struct IoOptions {
     pub(crate) middleware_timeout: Duration,
     pub(crate) max_address_share: Option<usize>,
     pub(crate) admission_timeout: Duration,
+    pub(crate) finish_handlers_after_client_close: bool,
 }
 
 impl Default for IoOptions {
@@ -112,6 +113,7 @@ impl Default for IoOptions {
             middleware_timeout: DEFAULT_MIDDLEWARE_TIMEOUT,
             max_address_share: None,
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
+            finish_handlers_after_client_close: false,
         }
     }
 }
@@ -236,6 +238,18 @@ impl IoOptions {
         self
     }
 
+    /// What happens to the event handlers that are running when the client drops the connection (the transport closes
+    /// or fails, or the client stops answering pings). By default they are cancelled at once: a handler must not
+    /// assume it runs to completion after its client is gone, because a client that reconnects in a loop would
+    /// otherwise leave a crowd of handlers behind. With `true` they get `close_timeout` to finish, as they always do
+    /// when the server closes the connection or shuts down; the sessions of an address that has
+    /// `max_sessions_per_ip x max_inflight` such handlers still running are refused with `503` until some finish.
+    /// Node runs its handlers to completion.
+    pub fn finish_handlers_after_client_close(mut self, finish: bool) -> Self {
+        self.finish_handlers_after_client_close = finish;
+        self
+    }
+
     /// The least a session's address must be allowed to hold: one maximum packet, a decoded packet (`max_decoded_bytes`)
     /// next to the wire bytes of the largest packet (`max_attachments` attachments of `max_http_buffer_size`, or the one
     /// text message), each with its accounting overhead.
@@ -348,7 +362,18 @@ impl IoOptions {
     /// The Engine.IO options this layer runs on: the application's, with the address share and the pause grace this
     /// layer's limits define.
     pub(crate) fn effective_engine_options(&self) -> EngineOptions {
-        self.engine.clone().max_address_unread_bytes(self.address_share()).pressure_pause_timeout(self.admission_timeout)
+        self.engine
+            .clone()
+            .max_address_unread_bytes(self.address_share())
+            .pressure_pause_timeout(self.admission_timeout)
+            .max_lingering_per_ip(self.max_lingering_per_ip())
+    }
+
+    /// The most handlers that may outlive their connection for one client address: what the sessions an address may
+    /// have open can run (`max_sessions_per_ip x max_inflight`). New sessions from an address at it are refused with
+    /// `503` until some finish.
+    pub fn max_lingering_per_ip(&self) -> usize {
+        self.engine.max_sessions_per_ip.saturating_mul(self.max_inflight)
     }
 }
 

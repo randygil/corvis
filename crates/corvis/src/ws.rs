@@ -385,6 +385,9 @@ pub(crate) struct UnreadGauge {
     guarantee_cap: usize,
     /// Runs when the gauge is dropped (an address gauge forgets its entry).
     on_drop: Option<Box<dyn Fn() + Send + Sync>>,
+    /// How many charges this level has refused: a rollback compares it with the value seen when its charge was taken,
+    /// to know whether anyone was refused while this level held a charge that did not stay.
+    refusals: AtomicUsize,
 }
 
 /// Why a gauge says to stop reading.
@@ -411,6 +414,7 @@ impl UnreadGauge {
             blame: true,
             guarantee_cap: usize::MAX,
             on_drop: None,
+            refusals: AtomicUsize::new(0),
         }
     }
 
@@ -426,6 +430,7 @@ impl UnreadGauge {
             blame: true,
             guarantee_cap: usize::MAX,
             on_drop: None,
+            refusals: AtomicUsize::new(0),
         }
     }
 
@@ -516,38 +521,39 @@ impl UnreadGauge {
     /// A compare-and-swap at every level; `false` leaves everything unchanged.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     fn try_charge_share(&self, size: usize, credit: usize) -> bool {
-        if !self.try_add_up_to(size, self.fair.saturating_add(credit)) {
-            return false;
-        }
+        let Some(seen) = self.try_add_up_to(size, self.fair.saturating_add(credit)) else { return false };
         if let Some(parent) = &self.parent
             && !parent.try_charge_guaranteed(size, credit)
         {
-            self.bytes.fetch_sub(size, Ordering::SeqCst);
+            self.roll_back(size, seen);
             return false;
         }
         true
     }
 
     fn try_charge_guaranteed(&self, size: usize, credit: usize) -> bool {
-        if !self.try_add_up_to(size, self.guarantee_cap.saturating_add(credit)) {
-            return false;
-        }
+        let Some(seen) = self.try_add_up_to(size, self.guarantee_cap.saturating_add(credit)) else { return false };
         if let Some(parent) = &self.parent
             && !parent.try_charge_guaranteed(size, credit)
         {
-            self.bytes.fetch_sub(size, Ordering::SeqCst);
+            self.roll_back(size, seen);
             return false;
         }
         true
     }
 
-    /// Adds `size` here if the total then stays at or below `limit`.
-    fn try_add_up_to(&self, size: usize, limit: usize) -> bool {
+    /// Adds `size` here if the total then stays at or below `limit`. `Some` carries the count of refusals this level had
+    /// made when the charge was taken (for `roll_back`); a refusal is counted.
+    pub(crate) fn try_add_up_to(&self, size: usize, limit: usize) -> Option<usize> {
+        let seen = self.refusals.load(Ordering::SeqCst);
         let mut current = self.bytes.load(Ordering::SeqCst);
         loop {
-            let Some(next) = current.checked_add(size).filter(|n| *n <= limit) else { return false };
+            let Some(next) = current.checked_add(size).filter(|n| *n <= limit) else {
+                self.refusals.fetch_add(1, Ordering::SeqCst);
+                return None;
+            };
             match self.bytes.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => return true,
+                Ok(_) => return Some(seen),
                 Err(actual) => current = actual,
             }
         }
@@ -569,13 +575,11 @@ impl UnreadGauge {
 
     /// Adds `size` here and above only if this gauge and its ancestors stay at or below their limits.
     fn try_charge_within(&self, size: usize, credit: usize) -> bool {
-        if !self.try_add_up_to(size, self.limit.saturating_add(credit)) {
-            return false;
-        }
+        let Some(seen) = self.try_add_up_to(size, self.limit.saturating_add(credit)) else { return false };
         if let Some(parent) = &self.parent
             && !parent.try_charge_within(size, credit)
         {
-            self.bytes.fetch_sub(size, Ordering::SeqCst);
+            self.roll_back(size, seen);
             return false;
         }
         true
@@ -586,13 +590,29 @@ impl UnreadGauge {
         self.release(by);
     }
 
-    fn release(&self, size: usize) {
-        self.bytes.fetch_sub(size, Ordering::SeqCst);
+    fn wake(&self) {
         if self.wake_all {
             self.notify.notify_waiters();
         } else {
             self.notify.notify_one();
         }
+    }
+
+    /// Undoes a charge of this level that a failed charge higher up made void. For an instant this level was
+    /// higher than it ever stays, and a sibling that was refused then is waiting for it to drop, so the waiters are
+    /// woken when this level refused anything since the charge was taken (`seen` is the refusal count then). A
+    /// rollback that nobody could have noticed wakes no one: the asker itself waits on these levels too, and waking it
+    /// for its own rollback would make it retry in a loop for as long as a level above stays full.
+    pub(crate) fn roll_back(&self, size: usize, seen: usize) {
+        self.bytes.fetch_sub(size, Ordering::SeqCst);
+        if self.refusals.load(Ordering::SeqCst) != seen {
+            self.wake();
+        }
+    }
+
+    fn release(&self, size: usize) {
+        self.bytes.fetch_sub(size, Ordering::SeqCst);
+        self.wake();
         if let Some(parent) = &self.parent {
             parent.release(size);
         }

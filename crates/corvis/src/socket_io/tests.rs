@@ -1239,10 +1239,174 @@ async fn emits_after_the_disconnect_fail_and_send_nothing() {
     assert_eq!(socket.emit("x", ()), Err(EmitError::NotConnected));
     assert_eq!(socket.timeout(Duration::from_secs(1)).emit_with_ack("x", ()).await, Err(AckError::Emit(EmitError::NotConnected)));
     assert!(conn.sent().await.is_empty());
-    // An event that arrives after the DISCONNECT is a packet for a namespace that is no longer joined.
+    // An event that was already on its way when the namespace was left is dropped (Node does the same): the
+    // connection stays open, and so do the client's other namespaces.
     conn.text(r#"2["late"]"#);
+    conn.text("31[]");
+    settle().await;
+    assert!(!conn.socket.is_closing(), "a packet for a namespace the connection joined and left is dropped");
+    // A namespace it never joined is still a violation.
+    conn.text(r#"2/never,["x"]"#);
     settle().await;
     assert!(conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn packets_for_a_namespace_the_server_just_left_are_dropped_and_the_other_namespaces_survive() {
+    let io = server(options());
+    let chat = io.of("/chat").unwrap();
+    let held: Arc<Mutex<Vec<IoSocket>>> = Arc::new(Mutex::new(Vec::new()));
+    let events = log();
+    {
+        let (held, events) = (held.clone(), events.clone());
+        chat.on_connection(move |socket| {
+            held.lock().unwrap().push(socket.clone());
+            let events = events.clone();
+            socket.on("say", move |_s, _a, _k| {
+                let events = events.clone();
+                async move { events.lock().unwrap().push("chat:say".into()) }
+            });
+        });
+    }
+    {
+        let events = events.clone();
+        io.on_connection(move |socket| {
+            let events = events.clone();
+            socket.on("say", move |_s, _a, _k| {
+                let events = events.clone();
+                async move { events.lock().unwrap().push("main:say".into()) }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.join("0/chat,").await;
+    // The server leaves the namespace; the client's packets for it were already on their way.
+    let socket = held.lock().unwrap()[0].clone();
+    socket.disconnect(false);
+    settle().await;
+    let _ = conn.sent().await;
+    conn.text(r#"2/chat,["say"]"#);
+    conn.text(r#"3/chat,5[]"#);
+    conn.text(r#"1/chat,"#);
+    // A binary event: the packet and its attachment are consumed and dropped, delivered to nobody.
+    conn.text(r#"51-/chat,["say",{"_placeholder":true,"num":0}]"#);
+    conn.bin(b"attachment");
+    settle().await;
+    assert!(!conn.socket.is_closing(), "the connection survives");
+    assert_eq!(entries(&events), Vec::<String>::new(), "nothing is delivered for the namespace that was left");
+    assert_eq!(io.engine().total_unread_bytes(), 0, "the dropped packets released everything they held");
+    // The other namespace works, and the left one may be joined again (the entry is cleared by the CONNECT).
+    conn.text(r#"2["say"]"#);
+    settle().await;
+    assert_eq!(entries(&events), ["main:say"]);
+    conn.join("0/chat,").await;
+    conn.text(r#"2/chat,["say"]"#);
+    settle().await;
+    assert_eq!(entries(&events), ["main:say", "chat:say"]);
+    // A namespace the connection never joined is still a violation, with the same other state around it.
+    chat.on_connection(|_| {});
+    conn.text(r#"2/other,["say"]"#);
+    settle().await;
+    assert!(conn.socket.is_closing());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_connect_leaves_no_trace_so_its_packets_still_close_the_connection() {
+    let io = server(options());
+    io.of("/chat").unwrap().use_middleware(|_| async { Err(ConnectError::new("no")) });
+    let conn = io.conn();
+    conn.text("0/chat,");
+    let _ = conn.sent().await;
+    conn.text(r#"2/chat,["say"]"#);
+    settle().await;
+    assert!(conn.socket.is_closing(), "a namespace the connection was refused is not one it left");
+}
+
+/// A gate that holds the handler of `slow` until it is released.
+fn slow_handler(io: &IoServer, started: &Arc<AtomicUsize>, finished: &Arc<AtomicUsize>) {
+    let (started, finished) = (started.clone(), finished.clone());
+    io.on_connection(move |socket| {
+        let (started, finished) = (started.clone(), finished.clone());
+        socket.on("slow", move |_s, _a, _k| {
+            let (started, finished) = (started.clone(), finished.clone());
+            async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                finished.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+    });
+}
+
+#[tokio::test(start_paused = true)]
+async fn handlers_are_cancelled_at_once_when_the_client_drops_the_connection_unless_the_application_opted_in() {
+    for (opt_in, expected_finished) in [(false, 0usize), (true, 3)] {
+        let io = server(options().finish_handlers_after_client_close(opt_in));
+        let (started, finished) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        slow_handler(&io, &started, &finished);
+        let conn = io.conn();
+        conn.join("0").await;
+        for _ in 0..3 {
+            conn.text(r#"2["slow"]"#);
+        }
+        settle().await;
+        assert_eq!(started.load(Ordering::SeqCst), 3);
+        // The client's transport closes.
+        conn.socket.kill();
+        settle().await;
+        advance(5_000).await;
+        assert_eq!(finished.load(Ordering::SeqCst), expected_finished, "opted in: {opt_in}");
+        assert_eq!(io.engine().total_unread_bytes(), 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn handlers_get_their_grace_when_the_server_closes_the_connection_and_count_against_the_address_meanwhile() {
+    let engine = EngineOptions::new().ping_interval(DAY).ping_timeout(DAY).max_sessions_per_ip(2);
+    let io = server(IoOptions::new().engine(engine).max_inflight(4));
+    let (started, finished) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    slow_handler(&io, &started, &finished);
+    assert_eq!(io.inner.options.max_lingering_per_ip(), 8, "max_sessions_per_ip x max_inflight");
+    let conn = io.conn_from("203.0.113.40");
+    conn.join("0").await;
+    for _ in 0..3 {
+        conn.text(r#"2["slow"]"#);
+    }
+    settle().await;
+    assert_eq!(io.engine().lingering("203.0.113.40"), 0, "running handlers of an open connection do not linger");
+    // The server closes the connection (a graceful close, as a shutdown does): the handlers get `close_timeout`.
+    assert_eq!(started.load(Ordering::SeqCst), 3);
+    conn.text("0"); // a second CONNECT: a violation, the server closes the connection
+    settle().await;
+    assert!(conn.socket.is_closing());
+    assert_eq!(io.engine().lingering("203.0.113.40"), 3);
+    advance(5_000).await;
+    assert_eq!(finished.load(Ordering::SeqCst), 3, "they finished");
+    assert_eq!(io.engine().lingering("203.0.113.40"), 0, "and no longer count");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_address_with_too_many_lingering_handlers_is_refused_new_sessions_until_they_end() {
+    let engine = EngineOptions::new().ping_interval(DAY).ping_timeout(DAY).max_sessions_per_ip(1);
+    let io = server(IoOptions::new().engine(engine).max_inflight(2));
+    let (started, finished) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    slow_handler(&io, &started, &finished);
+    // The cap is 1 x 2 handlers. Two lingering handlers reach it.
+    let conn = io.conn_from("203.0.113.41");
+    conn.join("0").await;
+    conn.text(r#"2["slow"]"#);
+    conn.text(r#"2["slow"]"#);
+    settle().await;
+    // The connection is at `max_inflight`, so it reads nothing more: the server ends it (a shutdown does this).
+    conn.socket.force_close();
+    settle().await;
+    assert!(conn.socket.is_closing());
+    assert_eq!(io.engine().lingering("203.0.113.41"), 2);
+    assert!(io.engine().refuses_new_sessions_from("203.0.113.41"), "the address is at its cap");
+    assert!(!io.engine().refuses_new_sessions_from("203.0.113.42"), "another address is not");
+    advance(5_000).await;
+    assert!(!io.engine().refuses_new_sessions_from("203.0.113.41"), "served again when they end");
 }
 
 #[tokio::test(start_paused = true)]
@@ -1497,7 +1661,9 @@ async fn reconnecting_over_and_over_cannot_multiply_what_an_address_holds_even_i
         .max_unread_bytes(1024 * 1024)
         .max_total_unread_bytes(1024 * 1024)
         .max_sessions_per_ip(5);
-    let io = server(IoOptions::new().engine(engine).max_decoded_bytes(256 * 1024).max_attachments(1));
+    // The handlers outlive their client here (the application asked for it): the charges are what is measured.
+    let io =
+        server(IoOptions::new().engine(engine).max_decoded_bytes(256 * 1024).max_attachments(1).finish_handlers_after_client_close(true));
     let gate = gated(&io);
     // The share is the floor here (one maximum packet: the decoded packet and one 50 kB message), above 1/16.
     let cap = io.inner.options.address_share() + io.inner.options.engine.address_guarantee();
