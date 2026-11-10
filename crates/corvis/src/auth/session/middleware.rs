@@ -82,7 +82,9 @@ impl CorvisMiddleware for SessionMiddleware {
 
         let result = next.run(req).await;
 
-        let cookie = manager.commit(&session, result.is_ok()).await?;
+        // An error is a rejection (its status is 400 or more); the response of `Ok` has the status it carries.
+        let status = result.as_ref().ok().map(|response| response.status_code());
+        let cookie = manager.commit(&session, status).await?;
         guard.done = true;
         let mut response = result?;
         if let Some(cookie) = cookie {

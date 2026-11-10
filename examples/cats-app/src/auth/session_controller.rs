@@ -3,6 +3,7 @@ use corvis::prelude::*;
 use corvis_swagger::*;
 
 use super::local_auth::LoginUser;
+use super::same_origin::SameOriginGuard;
 use super::session_auth::Member;
 use super::sign_in_dto::SignInDto;
 
@@ -17,10 +18,13 @@ pub struct SessionController {
 #[routes]
 impl SessionController {
     /// Checks the credentials, then logs in to the session: the response sets a new session cookie.
+    ///
+    /// `SameOriginGuard` runs first: `SameSite=Lax` does not stop login CSRF (a cross-site form `POST` is answered and
+    /// its cookie stored), so a request that comes from another site is refused before the credentials are checked.
     #[post("login")]
     #[http_code(HttpStatus::OK)]
     #[public]
-    #[use_guards(PassportGuard::new("local").log_in())]
+    #[use_guards(SameOriginGuard::new(), PassportGuard::new("local").log_in())]
     // Every login creates a session in the store: the same limit as the token login.
     #[apply_decorators(throttle("default").limit(5).ttl(60_000))]
     fn login(&self, #[body] _dto: SignInDto, user: User<LoginUser>) -> Value {

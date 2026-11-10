@@ -83,6 +83,15 @@ secret.
 - **WHEN** `unsign` receives 5000 bytes that start with `s:`
 - **THEN** it returns nothing and a test counter of HMAC computations stays at zero
 
+### Requirement: The cookie name is not part of the signature
+The signature SHALL cover the value only, as in `cookie-signature`. The docs MUST tell applications to use `CookieKeys`
+separate from the session secrets for their own signed cookies, because a value signed for one cookie verifies under
+any other name signed with the same secret.
+
+#### Scenario: Value signed for another cookie
+- **WHEN** a value is signed with the session secret for a cookie named `prefs`
+- **THEN** it verifies with the same keys, whatever the name of the cookie it is sent in (documented, not prevented)
+
 ### Requirement: Signed cookies are read from the request
 `Request::signed_cookie(name, keys)` SHALL return the verified value of the cookie `name`, read with the parsing rules
 of `Request::cookie`, and nothing when the cookie is absent, unsigned or does not verify. The result MUST match

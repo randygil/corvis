@@ -23,8 +23,19 @@ pub(crate) fn is_empty_json(value: &Value) -> bool {
 impl Session {
     /// A login: a new identifier (the old record is destroyed when the request ends), the data of before dropped
     /// unless `keep`, and `passport.user` set to `stored`.
-    fn log_in(&self, stored: Value, keep: bool) {
+    fn log_in(&self, stored: Value, keep: bool, from_guard: bool) {
         let mut s = self.state();
+        if from_guard {
+            // Only the first login of the request is remembered: that is the state a rejection goes back to.
+            if s.before_guard_login.is_none() {
+                let mut before = s.clone();
+                before.before_guard_login = None;
+                s.before_guard_login = Some(Box::new(before));
+            }
+        } else {
+            // A login the handler made is the handler's decision: it stands whatever the status.
+            s.before_guard_login = None;
+        }
         let previous = std::mem::take(&mut s.data);
         s.regenerate(super::store::now_ms());
         if keep {
@@ -74,7 +85,20 @@ impl Authenticator {
     /// Fails with a 500 and a fixed message, storing nothing, when the request has no session, no `SessionStrategy`
     /// is registered, or the user is empty (JSON `null`, `false`, `0` or `""`: such a user can never authenticate).
     /// An `AuthGuard` with `.log_in()` calls it after a successful authentication.
+    ///
+    /// A login made here, by a handler, stands whatever the response is: the handler decides. A login made by an
+    /// `AuthGuard` with `.log_in()` is kept only when the response status is below 400; see
+    /// [`AuthGuard::log_in`](crate::auth::AuthGuard::log_in).
     pub async fn log_in(&self, req: &Request, user: &AuthenticatedUser) -> Result<(), HttpException> {
+        self.log_in_with(req, user, false).await
+    }
+
+    /// The login of an `AuthGuard`: like [`log_in`](Self::log_in), but undone at commit if the request is rejected.
+    pub(crate) async fn log_in_from_guard(&self, req: &Request, user: &AuthenticatedUser) -> Result<(), HttpException> {
+        self.log_in_with(req, user, true).await
+    }
+
+    async fn log_in_with(&self, req: &Request, user: &AuthenticatedUser, from_guard: bool) -> Result<(), HttpException> {
         let Some(session) = req.get::<Session>() else { return Err(unsupported("cannot log in")) };
         let manager = session.manager().clone();
         let Some(codec) = manager.codec() else { return Err(unsupported("cannot log in")) };
@@ -89,7 +113,7 @@ impl Authenticator {
         if is_empty_json(&stored) {
             return Err(internal("the session serializer returned an empty value (null, false, 0 or \"\") for the user"));
         }
-        session.log_in(stored, manager.options.keep_session_info_on_login);
+        session.log_in(stored, manager.options.keep_session_info_on_login, from_guard);
         user.install(req);
         req.insert(SessionUser(user.clone()));
         Ok(())

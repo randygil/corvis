@@ -132,7 +132,7 @@ se adopta: se genera uno nuevo.
 | Atributo | Por defecto | Por qué |
 |---|---|---|
 | `HttpOnly` | activo | un script (y por tanto un XSS) no puede leer el identificador |
-| `Secure` | activo | la cookie nunca viaja por una conexión sin cifrar |
+| `Secure` | activo | el navegador no envía la cookie por una conexión sin cifrar. El `Set-Cookie` de una respuesta emitida por HTTP plano sí viaja en claro, y con él su contenido |
 | `SameSite` | `Lax` | el navegador no envía la cookie en `POST` y `fetch` entre sitios. No es protección CSRF por sí sola, ver [CSRF](/es/security/csrf) |
 | `Path` | `/` | toda la aplicación. Una petición cuya ruta no empieza por el `Path` no tiene sesión |
 | `Domain` | ninguno | la cookie va solo al host que la emitió, no a los subdominios |
@@ -147,7 +147,23 @@ terminar TLS. Los navegadores difieren en si guardan una cookie `Secure` desde `
 
 Prefiere el prefijo `__Host-` (`.name("__Host-sid")`). Un navegador rechaza esa cookie salvo que sea `Secure`, tenga
 `Path=/` y no tenga `Domain`, y sobre todo impide que un subdominio hermano la plante. Corvis valida esas reglas al
-arrancar para `__Host-` y para `__Secure-`.
+arrancar para `__Host-` y para `__Secure-`, sin distinguir mayúsculas, como los comparan los navegadores (`__host-sid` con
+un `Domain` no arranca).
+
+::: warning Cookie tossing
+Sin el prefijo `__Host-`, un subdominio hermano (o cualquier sitio que pueda ejecutar código en uno) puede plantar para
+todo el dominio una cookie con el nombre de la sesión. Dos cookies con ese nombre no cargan ninguna sesión (ver abajo),
+así que la cookie plantada cierra la sesión de la víctima mientras viva, y desde ese navegador no podrá iniciar sesión
+de nuevo hasta que se elimine. Usa `__Host-`.
+:::
+
+::: warning El nombre de la cookie no forma parte de la firma
+Como en el original, la firma cubre el identificador y nada más. Un valor firmado con el mismo secreto para otra cookie
+se verifica como valor de la cookie de sesión, y la cookie de sesión reenviada con el nombre de otra cookie firmada que
+el código de la aplicación lee con `signed_cookie` entrega a ese código el identificador de sesión. Nunca firmes tus
+propias cookies con los secretos de la sesión: usa para la aplicación unos `CookieKeys` propios (ver
+[Cookies](/es/http/cookies)).
+:::
 
 ### Desarrollo en HTTP plano
 
@@ -220,6 +236,11 @@ restante de la cookie (al menos 1 s). Cada llamada al almacén está acotada por
 | `store_timeout` | 5 s | de 100 ms a 60 s |
 | `max_sessions` del almacén en memoria | 100 000 | al menos 1 |
 | `max_total_bytes` del almacén en memoria | 256 MiB | al menos 1 |
+| `max_sessions_per_user` del almacén en memoria | 16 | al menos 1 |
+
+Un registro guardado mayor que `max_session_bytes` (escrito por otro escritor de un almacén compartido) no es una sesión
+al leerlo: no se carga, su identificador no se adopta y el registro no se elimina. Un aviso, como máximo una vez por
+minuto y sin identificadores, lo reporta.
 
 Otras combinaciones que detienen el arranque: `SameSite=None` sin `Secure`, un nombre `__Host-` sin `Secure`, con
 `Domain` o con un `Path` distinto de `/`, un nombre `__Secure-` sin `Secure`, y un nombre, ruta o dominio de cookie
@@ -230,17 +251,26 @@ inválido.
 `MemorySessionStore` es el predeterminado. Es para un solo proceso y para desarrollo:
 
 ```rust
-.store(MemorySessionStore::new().max_sessions(100_000).max_total_bytes(256 << 20))
+.store(MemorySessionStore::new().max_sessions(100_000).max_total_bytes(256 << 20).max_sessions_per_user(16))
 ```
 
 - Las sesiones se pierden al reiniciar la aplicación y no se comparten entre instancias. El arranque registra un aviso.
-- Está acotado por número de sesiones y por bytes (identificador, registro serializado y sobrecarga).
+- Los registros se guardan serializados, y el límite de bytes cuenta la asignación de cada registro, su identificador, la
+  clave de su usuario y una sobrecarga fija por entrada (640 bytes), de modo que `max_total_bytes` acota la memoria que
+  usa el almacén, sea cual sea la forma de los datos (un arreglo de números pequeños cuesta lo que cuesta su texto). Una
+  prueba con un asignador contador lo comprueba.
 - Los registros vencidos se eliminan sin tarea en segundo plano: al cargar y unos pocos en cada escritura.
-- Cuando un registro nuevo no cabe, expulsa el menos usado recientemente, **las sesiones anónimas (sin `passport.user`)
-  antes que cualquier sesión con usuario**. Una avalancha de sesiones anónimas puede llenar el almacén con sus propios
-  registros, pero no puede cerrar la sesión de usuarios. Se registra un aviso limitado en frecuencia con el conteo, sin
+- **Por usuario:** como máximo `max_sessions_per_user` sesiones (16 por defecto), identificadas por el
+  `passport.user` serializado. Una sesión nueva de un usuario que está en el límite expulsa la sesión más antigua de ese
+  mismo usuario, nunca la de otro: una cuenta que inicia sesión una y otra vez no puede cerrar la sesión de las demás.
+- **Cuando el almacén está lleno** expulsa primero la sesión **anónima** (sin `passport.user`) menos usada recientemente
+  y después la sesión más antigua del usuario con más sesiones. Una avalancha de sesiones anónimas llena el almacén con
+  sus propios registros pero no cierra la sesión de nadie. Se registra un aviso limitado en frecuencia con el conteo, sin
   identificadores.
 - Un registro mayor que `max_total_bytes` es un error.
+
+Los demás almacenes necesitan su propia política: un almacén compartido debe acotar por sí mismo las sesiones de un
+usuario (el contrato de `SessionStore` no lo hace).
 
 Por defecto solo una ruta que escribe en la sesión crea una, así que una visita anónima no cuesta nada. Si una ruta
 escribe para visitantes anónimos, límitale la frecuencia con [`ThrottlerModule`](/es/security/rate-limiting). Limita
@@ -258,10 +288,13 @@ Implementa `SessionStore`, un trait asíncrono:
 | `load(id) -> Result<Option<Value>, _>` | el registro, o `None` |
 | `create(id, &record, ttl)` | debe fallar con `SessionStoreError::Exists`, dejando el registro, cuando el identificador existe |
 | `update(id, &record, ttl) -> Result<bool, _>` | `Ok(false)` sin escribir nada cuando el registro no existe |
-| `touch(id, &record, ttl) -> Result<bool, _>` | por defecto igual que `update`. El almacén en memoria renueva solo la expiración y las claves `cookie` y `__corvis`, de modo que una petición sin modificaciones no pueda sobrescribir datos que guardó otra |
-| `destroy(id)` | un registro inexistente no es un error |
+| `touch(id, &record, ttl) -> Result<bool, _>` | **obligatorio, sin implementación por defecto.** Debe renovar solo la expiración y las claves `cookie` y `__corvis`, nunca los datos: la copia de `record` se leyó al empezar la petición y puede estar desactualizada, así que una petición sin modificaciones no debe sobrescribir lo que guardó otra. `Ok(false)` sin escribir nada cuando el registro no existe |
+| `destroy(id) -> Result<bool, _>` | `Ok(true)` cuando se eliminó un registro, `Ok(false)` cuando ya no estaba (no es un error). El middleware lo usa para saber que otra petición terminó la sesión |
 | `in_process() -> bool` | `false` por defecto; `true` hace que el arranque registre el aviso de memoria |
 | `validate() -> Result<(), String>` | se comprueba al arrancar |
+
+`create` y `update` deben ser atómicos (`SET NX` y `SET XX` en Redis, una sentencia condicional en SQL): comprobar que el
+registro existe y escribir después en dos pasos reabre la ventana que permite a una petición lenta deshacer un logout.
 
 Los errores son `SessionStoreError::{Exists, Timeout, Backend(String)}`; construye el último con
 `SessionStoreError::backend(msg)` y mantén identificadores y datos fuera del mensaje.
@@ -303,9 +336,12 @@ almacén.
 
 Concurrencia: entre peticiones concurrentes de una misma sesión gana la última escritura, pero la destrucción es
 definitiva. `update` y `touch` nunca crean un registro, y `create` nunca sobrescribe (una colisión se reintenta una vez
-con un identificador nuevo). Una petición lenta que empezó antes de un logout no puede devolver la sesión a la vida. Si
-el cliente se desconecta a mitad de la petición, los identificadores en cola para destrucción (logout, `regenerate`,
-`destroy`) igualmente se destruyen.
+con un identificador nuevo). Una petición lenta que empezó antes de un logout (o de `destroy()`) no puede devolver la
+sesión a la vida: cuando la petición termina, una sesión que cargó y cuyo registro ya no existe (la destrucción que puso
+en cola no encontró nada, o `update` / `touch` no encontraron registro) se trata como destruida. No se crea ni se
+actualiza nada, haya hecho la petición lo que haya hecho con la sesión (`regenerate_keeping_data()`, `regenerate()`, un
+cambio de datos), y la cookie se borra. Si el cliente se desconecta a mitad de la petición, los identificadores en cola
+para destrucción (logout, `regenerate`, `destroy`) igualmente se destruyen.
 
 ## Login y logout
 
@@ -393,6 +429,16 @@ nada.
 Ambos fallan con un `500` y un mensaje fijo, sin guardar nada, cuando la petición no tiene sesión o no hay ningún
 `SessionStrategy` registrado. Un login fallido (`401`) deja la sesión y su identificador sin cambios.
 
+**Un login hecho por el guard solo se conserva cuando la respuesta no es un rechazo.** Si un guard posterior, un pipe o el
+handler rechazan la petición (el estado de la respuesta es 400 o más, o un error), el login se descarta: la sesión con la
+que llegó la petición, si la había, queda como estaba y no se emite ninguna cookie con la sesión iniciada.
+
+```rust
+#[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)] // un 403 del segundo guard no deja login
+```
+
+Un login hecho con `Authenticator::log_in` desde un handler es decisión del handler y se mantiene sea cual sea el estado.
+
 `AuthGuard::new("local").log_in()` es un error de arranque cuando no hay ningún `SessionStrategy` registrado (el error
 nombra la ruta) y cuando el guard nombra la estrategia `"session"` (`cannot be combined`). Sin `.log_in()` un `AuthGuard`
 nunca escribe en la sesión.
@@ -412,7 +458,19 @@ nunca escribe en la sesión.
   aceptar tokens.
 - Los guards con `.skip_public()` dejan en paz al usuario de la sesión en las rutas públicas.
 
-La cookie de sesión es una credencial ambiental: las rutas que cambian estado necesitan [protección CSRF](/es/security/csrf).
+::: warning El usuario de la sesión es visible en todas las rutas
+El middleware restaura el usuario también en las rutas sin `AuthGuard`. Un guard escrito a mano que lee `req.user()` (un
+guard de roles, por ejemplo) autentica entonces solo por la cookie en esas rutas, sin comprobar nada de la petición:
+
+```rust
+// Autenticado solo por la cookie de sesión en cualquier ruta a la que se asocie, incluido un POST de formulario entre sitios.
+ctx.request().user().and_then(|u| u.get("role").cloned()) == Some(json!("admin"))
+```
+
+Asocia también las rutas que cambian estado a `AuthGuard::new("session")`, y protégelas de las peticiones entre sitios:
+la cookie de sesión es una credencial ambiental. Ver [protección CSRF](/es/security/csrf), que cubre también el CSRF de
+login: `SameSite=Lax` no lo detiene.
+:::
 
 Los upgrades de WebSocket y los handshakes de Socket.IO se responden antes del middleware HTTP, así que
 `Request::session()` no existe ahí y una cookie de sesión no autentica un socket. Autentica en `handle_connection` de otra
@@ -446,6 +504,9 @@ fixtures grabados (`crates/corvis/tests/fixtures/auth/session.mjs` y `signed_coo
 | `express-session` | Corvis |
 |---|---|
 | sin `SameSite` ni `Secure` por defecto | `SameSite=Lax` y `Secure` |
+| un login por el guard se mantiene aunque un guard posterior o el handler rechacen la petición | se descarta cuando el estado de la respuesta es 400 o más (un login hecho por un handler se mantiene) |
+| una petición que sobrevive a un logout puede volver a guardar la sesión | una sesión cuyo registro ya no existe al terminar la petición se trata como destruida y la cookie se borra |
+| `MemoryStore` conserva todas las sesiones de una cuenta | como máximo `max_sessions_per_user` (16) en el almacén en memoria |
 | `resave` y `save_uninitialized` son `true` por defecto, con un aviso | ambos `false` |
 | sin claves extra | una clave `__corvis` con marcas de tiempo |
 | sin tiempo de inactividad ni absoluto | tiempos de inactividad (24 h) y absoluto (7 días) |

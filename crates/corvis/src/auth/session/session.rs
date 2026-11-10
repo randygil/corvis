@@ -51,6 +51,7 @@ pub(crate) fn valid_id(id: &str) -> bool {
 }
 
 /// What the middleware tracks about the session of one request.
+#[derive(Clone)]
 pub(crate) struct State {
     /// The current identifier.
     pub(crate) id: String,
@@ -73,6 +74,12 @@ pub(crate) struct State {
     pub(crate) resign: bool,
     /// The random generator failed: nothing may be written for this request.
     pub(crate) failed: bool,
+    /// The identifier of the record this request loaded, kept when the identifier is replaced: at commit the record
+    /// must still exist, or the session was ended by another request and nothing of it is written back.
+    pub(crate) origin: Option<String>,
+    /// The state before a login made by an `AuthGuard`: restored at commit when the response is a rejection (status 400
+    /// or more), so that a login followed by a failing guard or handler leaves the session as it was.
+    pub(crate) before_guard_login: Option<Box<State>>,
 }
 
 impl State {
@@ -92,6 +99,8 @@ impl State {
             clear_cookie: false,
             had_cookie: false,
             resign: false,
+            origin: None,
+            before_guard_login: None,
         }
     }
 
@@ -102,6 +111,7 @@ impl State {
     /// An existing record, loaded from the store under the identifier of the cookie.
     pub(crate) fn loaded(id: String, data: Map<String, Value>, created_at: i64, last_access: i64) -> State {
         State {
+            origin: Some(id.clone()),
             id,
             persisted: true,
             id_changed: false,
@@ -114,6 +124,7 @@ impl State {
             had_cookie: true,
             resign: false,
             failed: false,
+            before_guard_login: None,
         }
     }
 

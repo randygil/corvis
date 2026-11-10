@@ -135,7 +135,7 @@ whether new issues are created before this change starts.
   ports do not enable the feature and nothing else changed; verify the three port apps (consi, facten, houseplan)
   keep 0 apidiff differences when it runs
 - [x] 8.7 `cargo deny check` passes with `hmac` and `subtle` as direct dependencies
-- [ ] 8.8 Security review: run the security-reviewer agent over `corvis::http::signed_cookie`,
+- [x] 8.8 Security review (round 1 done and fixed, see 9; a second pass is the maintainer's call): run the security-reviewer agent over `corvis::http::signed_cookie`,
   `corvis::auth::session` and the example. Scope: signature forgery and comparison timing, secret handling and
   rotation, identifier entropy and the random source, adoption of client-chosen identifiers, fixation on login and
   logout, resurrection of destroyed sessions under concurrency, cookie attribute defaults and the startup checks,
@@ -144,6 +144,26 @@ whether new issues are created before this change starts.
   and session data in logs, errors and `Debug`, panics reachable from a cookie, the reserved keys, and
   cross-reading records written by the original. Verify every finding is fixed or recorded as a new issue, and list
   the findings in the archive notes
+
+## 9. Security review, round 1 (see design.md, "Security review (round 1)")
+
+- [x] 9.1 Item 1: `SessionStore::destroy` returns `Result<bool, _>`; the commit treats a loaded session whose record is
+  gone (destroy found nothing, `update` / `touch` found no record) as destroyed, clearing the cookie; race tests for
+  logout and `destroy()` against `regenerate_keeping_data()`, `regenerate()`, a data change and a touch, held with gates
+- [x] 9.2 Item 2: the memory store keeps serialized records, accounts the allocation and a per-entry overhead; counting
+  allocator test with adversarial shapes
+- [x] 9.3 Item 3: a login made by `AuthGuard::log_in()` is committed only when the response status is below 400; tests
+  for a second guard, a handler that answers 403, a presented anonymous session, and a handler's own `log_in`
+- [x] 9.4 Item 4: `max_sessions_per_user` (default 16, validated) and the eviction order (anonymous, then the user with
+  the most sessions, oldest first); unit and HTTP tests
+- [x] 9.5 Item 5: remove the default of `SessionStore::touch` and document the requirement on the trait
+- [x] 9.6 Item 6: `SameOriginGuard` in the cats-app example on the session login, with tests; docs EN and ES
+- [x] 9.7 Item 7: `__Host-` and `__Secure-` checked without regard to case, with tests
+- [x] 9.8 Item 8: a stored record over `max_session_bytes` is no session (not loaded, adopted or deleted), with a test
+- [x] 9.9 Item 9: docs EN and ES (cookie name not signed, session user visible on every route, cookie tossing, the
+  `Secure` sentence)
+- [x] 9.10 Specs updated (`auth/sessions`, `http/signed-cookies`); `openspec validate e3-sessions-and-signed-cookies
+  --strict` passes
 
 ## Workflow follow-up
 

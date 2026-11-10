@@ -1,6 +1,7 @@
 //! `MemorySessionStore`: sessions in this process, bounded.
 
-use std::collections::{BTreeMap, HashMap};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,20 +16,31 @@ use crate::auth::warn_limit::WarnLimiter;
 pub const DEFAULT_MAX_SESSIONS: usize = 100_000;
 /// The default bound on the bytes of serialized records, 256 MiB.
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 256 << 20;
+/// The default bound on the sessions of one user.
+pub const DEFAULT_MAX_SESSIONS_PER_USER: usize = 16;
 /// Records dropped for being expired at most per write, so that no request pays for a large purge.
 const PURGE_BATCH: usize = 64;
-/// What an entry costs besides its identifier and record (map slots, the order indexes).
-const ENTRY_OVERHEAD: usize = 160;
+/// What an entry costs besides its identifier, its serialized record and its user key: the map slots, the order
+/// indexes and the per-user list (measured at about 520 bytes for the cheapest logged-in record, one user each).
+/// It is counted against `max_total_bytes` for every entry, so the live heap of the store stays below the bound
+/// whatever the shape of the data (a test with a counting allocator checks it).
+pub(crate) const ENTRY_OVERHEAD: usize = 640;
+
+/// The place of a user in [`Inner::ranking`]: sessions held, the (reversed) tick of the oldest one, the user.
+type Rank = (usize, Reverse<u64>, Arc<str>);
 
 struct Entry {
-    record: Value,
-    /// Identifier plus serialized record plus overhead.
+    /// The record as the store serialized it: a `Value` tree costs many times its serialized size, a string costs
+    /// what it says.
+    record: Box<str>,
+    /// Identifier, serialized record, user key and overhead.
     size: usize,
     expires_ms: i64,
     /// Position in the recency order, unique.
     tick: u64,
-    /// `true` when the record holds a logged-in user: such a record is evicted after every anonymous one.
-    authenticated: bool,
+    /// The serialized `passport.user` of a logged-in record: such a record is evicted after every anonymous one, and
+    /// counts against the cap of its user.
+    user: Option<Arc<str>>,
 }
 
 #[derive(Default)]
@@ -36,8 +48,11 @@ struct Inner {
     entries: HashMap<Arc<str>, Entry>,
     /// Recency order of the anonymous records (`tick` to identifier), oldest first.
     anonymous: BTreeMap<u64, Arc<str>>,
-    /// Recency order of the records with a user, oldest first.
-    authenticated: BTreeMap<u64, Arc<str>>,
+    /// The identifiers of the records of each user, oldest first.
+    by_user: HashMap<Arc<str>, Vec<Arc<str>>>,
+    /// `(number of sessions, oldest session first, user)`, so that the last element is the user with the most
+    /// sessions, the one whose oldest session is the oldest among those.
+    ranking: BTreeSet<Rank>,
     /// Expiry order: `(expires_ms, tick)` to identifier.
     expiry: BTreeMap<(i64, u64), Arc<str>>,
     total_bytes: usize,
@@ -45,39 +60,101 @@ struct Inner {
 }
 
 impl Inner {
-    fn order(&mut self, authenticated: bool) -> &mut BTreeMap<u64, Arc<str>> {
-        if authenticated { &mut self.authenticated } else { &mut self.anonymous }
+    /// Where `user` stands in the ranking, from the state as it is now.
+    fn rank_of(&self, user: &Arc<str>) -> Option<Rank> {
+        let ids = self.by_user.get(user)?;
+        let oldest = self.entries.get(ids.first()?)?;
+        Some((ids.len(), Reverse(oldest.tick), user.clone()))
+    }
+
+    /// Takes `user` out of the ranking. Call it before the sessions of the user change, and [`rank`](Self::rank)
+    /// after.
+    fn unrank(&mut self, user: &Arc<str>) {
+        if let Some(rank) = self.rank_of(user) {
+            self.ranking.remove(&rank);
+        }
+    }
+
+    fn rank(&mut self, user: &Arc<str>) {
+        if let Some(rank) = self.rank_of(user) {
+            self.ranking.insert(rank);
+        }
     }
 
     fn remove(&mut self, id: &str) -> Option<Entry> {
+        let user = self.entries.get(id)?.user.clone();
+        if let Some(user) = &user {
+            self.unrank(user);
+        }
         let entry = self.entries.remove(id)?;
         self.total_bytes -= entry.size;
-        self.order(entry.authenticated).remove(&entry.tick);
+        match &user {
+            None => {
+                self.anonymous.remove(&entry.tick);
+            }
+            Some(user) => {
+                if let Some(ids) = self.by_user.get_mut(user) {
+                    ids.retain(|other| &**other != id);
+                    if ids.is_empty() {
+                        self.by_user.remove(user);
+                    }
+                }
+                self.rank(user);
+            }
+        }
         self.expiry.remove(&(entry.expires_ms, entry.tick));
         Some(entry)
     }
 
-    fn insert(&mut self, id: Arc<str>, record: Value, size: usize, expires_ms: i64) {
-        let authenticated = holds_user(&record);
+    fn insert(&mut self, id: Arc<str>, record: Box<str>, user: Option<Arc<str>>, size: usize, expires_ms: i64) {
         let tick = self.next_tick;
         self.next_tick += 1;
-        self.order(authenticated).insert(tick, id.clone());
+        if let Some(user) = &user {
+            self.unrank(user);
+        }
         self.expiry.insert((expires_ms, tick), id.clone());
         self.total_bytes += size;
-        self.entries.insert(id, Entry { record, size, expires_ms, tick, authenticated });
+        match &user {
+            None => {
+                self.anonymous.insert(tick, id.clone());
+                self.entries.insert(id, Entry { record, size, expires_ms, tick, user });
+            }
+            Some(user) => {
+                let user = user.clone();
+                self.by_user.entry(user.clone()).or_default().push(id.clone());
+                self.entries.insert(id, Entry { record, size, expires_ms, tick, user: Some(user.clone()) });
+                self.rank(&user);
+            }
+        }
     }
 
     /// Marks the entry as the most recently used and gives it the expiry `expires`.
     fn renew(&mut self, id: &str, expires: i64) {
         let tick = self.next_tick;
-        let Some(entry) = self.entries.get_mut(id) else { return };
+        let Some(user) = self.entries.get(id).map(|e| e.user.clone()) else { return };
+        if let Some(user) = &user {
+            self.unrank(user);
+        }
         self.next_tick += 1;
-        let (old_tick, old_expires, authenticated) = (entry.tick, entry.expires_ms, entry.authenticated);
+        let Some(entry) = self.entries.get_mut(id) else { return };
+        let (old_tick, old_expires) = (entry.tick, entry.expires_ms);
         entry.tick = tick;
         entry.expires_ms = expires;
-        let order = if authenticated { &mut self.authenticated } else { &mut self.anonymous };
-        if let Some(key) = order.remove(&old_tick) {
-            order.insert(tick, key);
+        match &user {
+            None => {
+                if let Some(key) = self.anonymous.remove(&old_tick) {
+                    self.anonymous.insert(tick, key);
+                }
+            }
+            Some(user) => {
+                if let Some(ids) = self.by_user.get_mut(user)
+                    && let Some(position) = ids.iter().position(|other| &**other == id)
+                {
+                    let moved = ids.remove(position);
+                    ids.push(moved);
+                }
+                self.rank(user);
+            }
         }
         if let Some(key) = self.expiry.remove(&(old_expires, old_tick)) {
             self.expiry.insert((expires, tick), key);
@@ -99,29 +176,55 @@ impl Inner {
         dropped
     }
 
-    /// Evicts the least recently used record, anonymous ones first. `false` when the store is empty.
+    /// Evicts one record to make room: the least recently used anonymous one, and when there is none the oldest
+    /// session of the user with the most sessions. `false` when the store is empty.
     fn evict_one(&mut self) -> bool {
-        let victim = self.anonymous.values().next().or_else(|| self.authenticated.values().next()).cloned();
+        let victim = match self.anonymous.values().next() {
+            Some(id) => Some(id.clone()),
+            None => self.ranking.iter().next_back().and_then(|(_, _, user)| self.by_user.get(user)).and_then(|ids| ids.first()).cloned(),
+        };
         match victim {
             Some(id) => self.remove(&id).is_some(),
             None => false,
         }
     }
+
+    /// Evicts the oldest session of `user`. `false` when it has none.
+    fn evict_oldest_of(&mut self, user: &Arc<str>) -> bool {
+        let victim = self.by_user.get(user).and_then(|ids| ids.first()).cloned();
+        match victim {
+            Some(id) => self.remove(&id).is_some(),
+            None => false,
+        }
+    }
+
+    fn sessions_of(&self, user: &Arc<str>) -> usize {
+        self.by_user.get(user).map_or(0, Vec::len)
+    }
 }
 
-/// `true` when the record has a non-null `passport.user`.
-fn holds_user(record: &Value) -> bool {
-    record.get("passport").and_then(|p| p.get("user")).is_some_and(|u| !u.is_null())
+/// The serialized `passport.user` of a record, `None` when it has no non-null one.
+fn stored_user(record: &Value) -> Option<Arc<str>> {
+    let user = record.get("passport")?.get("user")?;
+    if user.is_null() { None } else { Some(Arc::from(user.to_string())) }
 }
 
 /// Sessions kept in this process: lost on restart and not shared between instances, so it is for development and
 /// single-process deployments.
 ///
-/// It holds at most `max_sessions` records (default 100 000) and `max_total_bytes` of serialized data (default
-/// 256 MiB). Expired records are dropped without a background task: on `load`, and a few at a time on every write.
-/// When a new record does not fit, the least recently used one is evicted, anonymous sessions (no logged-in user)
-/// before any session with a user, so a flood of anonymous sessions cannot log users out while it can fill the store
-/// with its own; a warning, at most one a minute and without identifiers, reports the evictions.
+/// Records are kept serialized (a parsed JSON tree can cost thirty times its serialized size) and the bound counts
+/// the allocation of each one plus a fixed overhead per entry, so `max_total_bytes` bounds the memory the store uses,
+/// not just the text of the sessions.
+///
+/// It holds at most `max_sessions` records (default 100 000), `max_total_bytes` (default 256 MiB) and
+/// `max_sessions_per_user` sessions of one user (default 16, keyed by the serialized `passport.user`). Expired
+/// records are dropped without a background task: on `load`, and a few at a time on every write.
+///
+/// A new session of a user who is at the cap evicts that same user's oldest session, never another user's, so one
+/// account that logs in again and again cannot log the others out. When the store is full, the least recently used
+/// anonymous session (no logged-in user) is evicted first, then the oldest session of the user with the most
+/// sessions; a warning, at most one a minute and without identifiers, reports the evictions. Other stores need their
+/// own policy: a shared store has to bound the sessions of a user itself.
 ///
 /// ```ignore
 /// SessionOptions::new(keys).store(MemorySessionStore::new().max_sessions(10_000).max_total_bytes(64 << 20))
@@ -130,6 +233,7 @@ pub struct MemorySessionStore {
     inner: Mutex<Inner>,
     max_sessions: usize,
     max_total_bytes: usize,
+    max_sessions_per_user: usize,
     evicted: AtomicU64,
     warnings: WarnLimiter,
 }
@@ -145,6 +249,7 @@ impl std::fmt::Debug for MemorySessionStore {
         f.debug_struct("MemorySessionStore")
             .field("max_sessions", &self.max_sessions)
             .field("max_total_bytes", &self.max_total_bytes)
+            .field("max_sessions_per_user", &self.max_sessions_per_user)
             .finish_non_exhaustive()
     }
 }
@@ -155,6 +260,7 @@ impl MemorySessionStore {
             inner: Mutex::new(Inner::default()),
             max_sessions: DEFAULT_MAX_SESSIONS,
             max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            max_sessions_per_user: DEFAULT_MAX_SESSIONS_PER_USER,
             evicted: AtomicU64::new(0),
             warnings: WarnLimiter::new(Duration::from_secs(60)),
         }
@@ -166,9 +272,17 @@ impl MemorySessionStore {
         self
     }
 
-    /// The most bytes of serialized records held (at least 1; checked when the application starts).
+    /// The most bytes held, serialized records plus a fixed overhead per entry (at least 1; checked when the
+    /// application starts).
     pub fn max_total_bytes(mut self, max: usize) -> Self {
         self.max_total_bytes = max;
+        self
+    }
+
+    /// The most sessions of one user held (default 16, at least 1; checked when the application starts). A session
+    /// beyond it evicts the oldest session of the same user.
+    pub fn max_sessions_per_user(mut self, max: usize) -> Self {
+        self.max_sessions_per_user = max;
         self
     }
 
@@ -195,17 +309,17 @@ impl MemorySessionStore {
         if self.warnings.allow("evict", Instant::now()).is_some() {
             let total = self.evicted.swap(0, Ordering::Relaxed);
             crate::logger::Logger::new("MemorySessionStore").warn(format!(
-                "the memory session store is full: {total} least recently used session(s) were evicted since the last warning (max_sessions {}, max_total_bytes {}). Use a larger bound or a shared store",
-                self.max_sessions, self.max_total_bytes
+                "the memory session store is full: {total} session(s) were evicted since the last warning (max_sessions {}, max_total_bytes {}, max_sessions_per_user {}). Use a larger bound or a shared store",
+                self.max_sessions, self.max_total_bytes, self.max_sessions_per_user
             ));
         }
     }
 
+    /// The whole of a write is one step under the lock: the check that the record exists (or does not) and the write
+    /// cannot be separated by another request.
     fn write(&self, id: &str, record: &Value, ttl: Duration, mode: Mode) -> Result<bool, SessionStoreError> {
-        let size = id.len() + record.to_string().len() + ENTRY_OVERHEAD;
-        if size > self.max_total_bytes {
-            return Err(SessionStoreError::backend("the record is larger than the max_total_bytes of the memory store"));
-        }
+        // Serialized before the lock is taken; a touch serializes the merged record under it.
+        let prepared = (mode != Mode::Touch).then(|| (record.to_string().into_boxed_str(), stored_user(record)));
         let now = now_ms();
         let expires = now.saturating_add(ttl.as_millis().min(i64::MAX as u128 / 2) as i64);
         let mut evicted = 0u64;
@@ -224,30 +338,48 @@ impl MemorySessionStore {
                 None if mode != Mode::Create => return Ok(false),
                 _ => {}
             }
-            if mode == Mode::Create || mode == Mode::Update {
-                inner.remove(id);
-                // Room for the new record: expired ones first, then the least recently used.
-                while inner.entries.len() >= self.max_sessions || inner.total_bytes + size > self.max_total_bytes {
-                    if inner.purge(now, usize::MAX) > 0 {
-                        continue;
+            let (text, user) = match prepared {
+                Some(prepared) => prepared,
+                None => {
+                    // `touch`: the expiry and the timestamps only, so a request that changed nothing cannot overwrite
+                    // what another request saved.
+                    let Some(entry) = inner.entries.get(id) else { return Ok(false) };
+                    let mut stored: Value = serde_json::from_str(&entry.record).unwrap_or(Value::Null);
+                    if let Some(object) = stored.as_object_mut() {
+                        for key in ["cookie", "__corvis"] {
+                            if let Some(new) = record.get(key) {
+                                object.insert(key.to_string(), new.clone());
+                            }
+                        }
                     }
-                    if !inner.evict_one() {
+                    (stored.to_string().into_boxed_str(), entry.user.clone())
+                }
+            };
+            let size = id.len() + text.len() + user.as_ref().map_or(0, |u| u.len()) + ENTRY_OVERHEAD;
+            if size > self.max_total_bytes {
+                return Err(SessionStoreError::backend("the record is larger than the max_total_bytes of the memory store"));
+            }
+            inner.remove(id);
+            if let Some(user) = &user {
+                // The cap of the user: its oldest session goes, nobody else's.
+                while inner.sessions_of(user) >= self.max_sessions_per_user {
+                    if !inner.evict_oldest_of(user) {
                         break;
                     }
                     evicted += 1;
                 }
-                inner.insert(Arc::from(id), record.clone(), size, expires);
-            } else {
-                // `touch`: the expiry and the timestamps only, so a request that changed nothing cannot overwrite
-                // what another request saved.
-                let Some(entry) = inner.entries.get_mut(id) else { return Ok(false) };
-                for key in ["cookie", "__corvis"] {
-                    if let (Some(object), Some(new)) = (entry.record.as_object_mut(), record.get(key)) {
-                        object.insert(key.to_string(), new.clone());
-                    }
-                }
-                inner.renew(id, expires);
             }
+            // Room for the new record: expired ones first, then the anonymous ones, then the user with the most sessions.
+            while inner.entries.len() >= self.max_sessions || inner.total_bytes + size > self.max_total_bytes {
+                if inner.purge(now, usize::MAX) > 0 {
+                    continue;
+                }
+                if !inner.evict_one() {
+                    break;
+                }
+                evicted += 1;
+            }
+            inner.insert(Arc::from(id), text, user, size, expires);
         }
         if evicted > 0 {
             self.warn_evictions(evicted);
@@ -277,7 +409,8 @@ impl SessionStore for MemorySessionStore {
             Some(false) => {
                 let expires = inner.entries.get(id).map_or(0, |e| e.expires_ms);
                 inner.renew(id, expires);
-                Ok(inner.entries.get(id).map(|e| e.record.clone()))
+                // The text is what this store serialized, so it parses.
+                Ok(inner.entries.get(id).and_then(|e| serde_json::from_str(&e.record).ok()))
             }
         }
     }
@@ -294,9 +427,9 @@ impl SessionStore for MemorySessionStore {
         self.write(id, record, ttl, Mode::Touch)
     }
 
-    async fn destroy(&self, id: &str) -> Result<(), SessionStoreError> {
-        self.lock().remove(id);
-        Ok(())
+    async fn destroy(&self, id: &str) -> Result<bool, SessionStoreError> {
+        let now = now_ms();
+        Ok(self.lock().remove(id).is_some_and(|entry| entry.expires_ms > now))
     }
 
     fn in_process(&self) -> bool {
@@ -309,6 +442,9 @@ impl SessionStore for MemorySessionStore {
         }
         if self.max_total_bytes == 0 {
             return Err("the memory session store's max_total_bytes must be at least 1".to_string());
+        }
+        if self.max_sessions_per_user == 0 {
+            return Err("the memory session store's max_sessions_per_user must be at least 1".to_string());
         }
         Ok(())
     }

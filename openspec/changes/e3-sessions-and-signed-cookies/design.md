@@ -552,3 +552,65 @@ original packages, which were read when the generators were written.
     it that changed is `AuthGuard`'s optional field and `Request::cookies`, which now share `scan_cookies`), the
     security review, archiving, the CI run of the pull request (task 1.2's last verification), and the follow-up issues
     for the Redis and ORM stores.
+
+## Security review (round 1)
+
+The first review (proofs of concept `item1` to `item8`) found nine items. The maintainer decided each one; this is what
+was done and why.
+
+1. **A logout or `destroy()` racing `regenerate_keeping_data()` resurrected the login (Medium).** `commit` destroyed the
+   old identifier and created the new one from the loaded data without asking whether the old record still existed.
+   `SessionStore::destroy` now returns `Result<bool, _>` (`true`: a record was removed; an expired one counts as gone).
+   `State::origin` keeps the identifier of the record the request loaded, also after `regenerate`, `log_in`, `log_out` or
+   `destroy`. At commit, if the destroy of the origin reports `false`, or `update` / `touch` find no record, the session
+   is treated as destroyed: nothing is created or updated and the cookie is cleared (a `Set-Cookie` that clears it is sent
+   when the request can carry one). This applies to every way the request changed the session, `regenerate()`, a login and
+   a `destroy()` followed by new data included: a login on a cookie whose record another request just ended is dropped, a
+   deliberate trade (the user logs in again) against a rule with exceptions. The check and the write are one step in
+   `MemorySessionStore` (a single lock). Tests drive the race with named gates, for logout and `destroy()`, against
+   `regenerate_keeping_data()`, `regenerate()`, a data change and a touch. The sentence of the docs, "a slow request that
+   started before a logout cannot bring the session back", is now exactly true and was expanded to say how.
+2. **The memory store accounted serialized bytes but kept `Value` trees (Medium).** An array of small numbers costs about
+   35 times its text. Records are now stored as `Box<str>` and parsed on load (the store serialized them itself); a touch
+   merges the timestamps into the parsed record and serializes it again. The accounted size is the allocation (identifier
+   + record + user key + `ENTRY_OVERHEAD`). The overhead was measured with a counting allocator at about 520 bytes for the
+   cheapest logged-in record (one user each; maps, three order indexes, a per-user list) and set to 640, counted for
+   every entry. `tests/auth_session_memory_heap.rs` (its own binary, one test, because the allocator counts the process)
+   fills a store with arrays of `0`, of `{}`, of `[]`, of `null`, objects of 1500 short keys, 14 KB strings, records with
+   users and tiny records, at counts just past the growth of the hash tables, and asserts live heap at most accounted
+   bytes at most `max_total_bytes`.
+3. **A login guard followed by a failing guard stayed logged in (Low, fixed).** `AuthGuard::log_in()` now goes through
+   `Authenticator::log_in_from_guard`, which saves the state before the login in `State::before_guard_login`. The
+   middleware passes the response status to `commit` (`None` for an error, which is a rejection): below 400 the login is
+   kept, otherwise the saved state replaces the session, so the pre-login session stays as it was and no logged-in
+   cookie is issued. The saved state is the one before the first guard login; an explicit `Authenticator::log_in` by a
+   handler drops it (the handler decides, as before). **Deliberate divergence from the original**, which keeps the
+   login; listed in the docs divergence table (EN and ES) and in the fixtures' list of differences (this section: the
+   recorded fixture has no step for it, so it is asserted from the specification, in `auth_session_review.rs`).
+4. **A flood of authenticated sessions evicted other users' sessions (Low, fixed).** The memory store has
+   `max_sessions_per_user` (default 16, at least 1, validated at startup), keyed by the serialized stored user. A new
+   session beyond the cap evicts that same user's oldest session. Global order when the store is full: anonymous first,
+   then the oldest session of the user with the most sessions (a `BTreeSet` of `(count, oldest, user)`, so the choice is
+   not a scan). Recency counts loads, as everywhere. Other stores need their own policy; the docs say so.
+5. **The default `touch` was a full `update` (Low, fixed).** The default is removed: every store implements `touch`, and
+   the trait documents that it must change only the expiry and the timestamps.
+6. **Login CSRF in the example (Low, fixed).** `docs/security/csrf.md` only described a middleware recipe, so the example
+   gained `SameOriginGuard` (`examples/cats-app/src/auth/same_origin.rs`): a state-changing request is refused with 403
+   when `Sec-Fetch-Site` is `cross-site` or, without that header, when `Origin` is present and is neither the request's
+   host nor an allowed origin. It runs before the login guard. The docs (EN and ES) say `SameSite=Lax` does not stop login
+   CSRF and show the check. It stays in the example: a reusable framework facility belongs to the CSRF epic.
+7. **Cookie-name prefixes were matched case-sensitively (Info, fixed).** `__host-` and `__secure-` are matched ignoring
+   ASCII case at startup, as browsers do.
+8. **A stored record over `max_session_bytes` loaded and then failed every write (Info, fixed).** `load` checks the size
+   of the record the store returns (the same serialized length as the write check) and treats a larger one as no session:
+   not loaded, not adopted, not deleted, with a warning at most once a minute that names no identifier.
+9. **Docs only.** The cookie name is not part of the signature (parity with `cookie-signature`): use separate `CookieKeys`
+   for the application's own signed cookies (`docs/http/cookies.md`, `docs/http/session.md`, and a requirement in
+   `http/signed-cookies`). The session user is visible on routes without an `AuthGuard`: a prominent warning with the
+   hand-written roles guard as the example, pointing to the CSRF page. Cookie tossing: two cookies of the session name
+   load no session, so a planted one logs the victim out; use `__Host-`. The `Secure` sentence now says the browser will
+   not send the cookie over HTTP while a `Set-Cookie` issued in a response over plain HTTP still travels in clear.
+
+Test notes: `an_active_session_reaches_the_absolute_timeout` asserted the last request exactly on the absolute deadline,
+which the real milliseconds spent by the test decide (the store's expiry uses `<=`, the middleware's check `>`); it now
+stops one hour short and checks the expiry after two more.

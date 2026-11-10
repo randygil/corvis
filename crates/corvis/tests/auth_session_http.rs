@@ -302,11 +302,13 @@ async fn an_active_session_reaches_the_absolute_timeout() {
     // Rolling and used every hour: the idle timeout never fires, the absolute one does.
     let app = app(options().rolling(true)).await;
     let cookie = cookie_of(&post(&app, "/set?k=a&v=1", None).await);
-    for hour in 1..=168 {
+    // Up to the hour before the deadline: the deadline itself is a boundary that the real milliseconds spent by the
+    // test decide, so it is not asserted.
+    for hour in 1..=167 {
         tokio::time::advance(Duration::from_secs(3600)).await;
         assert_eq!(data_of(&get(&app, "/sess", Some(&cookie)).await), json!({ "a": "1" }), "hour {hour}");
     }
-    tokio::time::advance(Duration::from_secs(3600)).await;
+    tokio::time::advance(Duration::from_secs(2 * 3600)).await;
     assert_eq!(data_of(&get(&app, "/sess", Some(&cookie)).await), json!({}), "7 days and one hour");
 }
 
@@ -352,9 +354,18 @@ impl SessionStore for ForeverStore {
         let mut records = self.records.lock().unwrap();
         Ok(records.get_mut(id).map(|slot| *slot = record.clone()).is_some())
     }
-    async fn destroy(&self, id: &str) -> Result<(), SessionStoreError> {
-        self.records.lock().unwrap().remove(id);
-        Ok(())
+    async fn touch(&self, id: &str, record: &Value, _ttl: Duration) -> Result<bool, SessionStoreError> {
+        let mut records = self.records.lock().unwrap();
+        let Some(slot) = records.get_mut(id) else { return Ok(false) };
+        for key in ["cookie", "__corvis"] {
+            if let (Some(object), Some(new)) = (slot.as_object_mut(), record.get(key)) {
+                object.insert(key.to_string(), new.clone());
+            }
+        }
+        Ok(true)
+    }
+    async fn destroy(&self, id: &str) -> Result<bool, SessionStoreError> {
+        Ok(self.records.lock().unwrap().remove(id).is_some())
     }
 }
 
@@ -503,7 +514,7 @@ async fn a_destroyed_session_does_not_come_back() {
     gate().release.notify_one();
     let late = held.await.unwrap();
     assert_eq!(late.status, 200);
-    assert!(set_cookies(&late).is_empty(), "no cookie for a session that is gone");
+    assert!(set_cookies(&late).iter().all(|c| c.starts_with("connect.sid=;")), "no cookie for a session that is gone, only a clearing one");
     assert!(store.inner.load(&old).await.unwrap().is_none(), "the old identifier is still absent");
     assert_eq!(get(&app, "/me", Some(&cookie)).await.status, 401);
 }

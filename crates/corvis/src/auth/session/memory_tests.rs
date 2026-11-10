@@ -146,4 +146,120 @@ fn bounds_of_zero_are_refused_at_startup() {
     assert!(MemorySessionStore::new().max_sessions(0).validate().is_err());
     assert!(MemorySessionStore::new().max_total_bytes(0).validate().is_err());
     assert!(MemorySessionStore::new().validate().is_ok());
+    assert!(MemorySessionStore::new().max_sessions_per_user(0).validate().is_err());
+    assert!(MemorySessionStore::new().max_sessions_per_user(1).validate().is_ok());
+}
+
+#[tokio::test]
+async fn destroy_says_whether_there_was_a_record() {
+    let store = MemorySessionStore::new();
+    store.create("a", &record(None, 0), TTL).await.unwrap();
+    assert!(store.destroy("a").await.unwrap());
+    assert!(!store.destroy("a").await.unwrap());
+    assert!(!store.destroy("never").await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn destroy_does_not_count_an_expired_record_as_present() {
+    let store = MemorySessionStore::new();
+    store.create("a", &record(None, 0), Duration::from_secs(1)).await.unwrap();
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(!store.destroy("a").await.unwrap());
+}
+
+#[tokio::test]
+async fn a_record_comes_back_as_it_was_written() {
+    let store = MemorySessionStore::new();
+    let original = json!({ "cookie": { "originalMaxAge": 5 }, "n": [1, 2, { "k": "v" }], "passport": { "user": { "id": "7" } } });
+    store.create("a", &original, TTL).await.unwrap();
+    assert_eq!(store.load("a").await.unwrap().unwrap(), original);
+}
+
+#[tokio::test]
+async fn a_user_over_the_cap_evicts_its_own_oldest_session() {
+    let store = MemorySessionStore::new().max_sessions_per_user(3);
+    store.create("other", &record(Some("9"), 0), TTL).await.unwrap();
+    for i in 0..10 {
+        store.create(&format!("u{i}"), &record(Some("1"), 0), TTL).await.unwrap();
+    }
+    assert!(store.load("other").await.unwrap().is_some(), "another user's session is never evicted by the cap");
+    for i in 0..7 {
+        assert!(store.load(&format!("u{i}")).await.unwrap().is_none(), "u{i}");
+    }
+    for i in 7..10 {
+        assert!(store.load(&format!("u{i}")).await.unwrap().is_some(), "u{i}");
+    }
+    assert_eq!(store.len(), 4);
+}
+
+#[tokio::test]
+async fn the_cap_follows_use_not_creation() {
+    let store = MemorySessionStore::new().max_sessions_per_user(2);
+    store.create("a", &record(Some("1"), 0), TTL).await.unwrap();
+    store.create("b", &record(Some("1"), 0), TTL).await.unwrap();
+    store.load("a").await.unwrap();
+    store.create("c", &record(Some("1"), 0), TTL).await.unwrap();
+    assert!(store.load("b").await.unwrap().is_none(), "b was the least recently used");
+    assert!(store.load("a").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn an_update_does_not_count_twice_against_the_cap() {
+    let store = MemorySessionStore::new().max_sessions_per_user(2);
+    store.create("a", &record(Some("1"), 0), TTL).await.unwrap();
+    store.create("b", &record(Some("1"), 0), TTL).await.unwrap();
+    for _ in 0..5 {
+        assert!(store.update("a", &record(Some("1"), 5), TTL).await.unwrap());
+        assert!(store.touch("b", &record(Some("1"), 0), TTL).await.unwrap());
+    }
+    assert_eq!(store.len(), 2);
+}
+
+#[tokio::test]
+async fn a_full_store_evicts_anonymous_sessions_then_the_user_with_the_most_sessions() {
+    let store = MemorySessionStore::new().max_sessions(7);
+    store.create("anon", &record(None, 0), TTL).await.unwrap();
+    for (id, user) in [("a1", "1"), ("a2", "1"), ("a3", "1"), ("b1", "2"), ("b2", "2"), ("c1", "3")] {
+        store.create(id, &record(Some(user), 0), TTL).await.unwrap();
+    }
+    assert_eq!(store.len(), 7);
+    // Full: the anonymous session goes first.
+    store.create("c2", &record(Some("3"), 0), TTL).await.unwrap();
+    assert!(store.load("anon").await.unwrap().is_none());
+    assert_eq!(store.len(), 7);
+    // Then the oldest session of the user with the most sessions (user 1 has three).
+    store.create("d1", &record(Some("4"), 0), TTL).await.unwrap();
+    assert!(store.load("a1").await.unwrap().is_none());
+    for id in ["a2", "a3", "b1", "b2", "c1", "c2", "d1"] {
+        assert!(store.load(id).await.unwrap().is_some(), "{id}");
+    }
+    store.create("e1", &record(Some("5"), 0), TTL).await.unwrap();
+    assert_eq!(store.len(), 7);
+    assert!(store.load("e1").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn destroying_every_session_of_a_user_leaves_no_trace() {
+    let store = MemorySessionStore::new().max_sessions_per_user(2);
+    for i in 0..50 {
+        let id = format!("s{i}");
+        store.create(&id, &record(Some(&format!("{i}")), 0), TTL).await.unwrap();
+        assert!(store.destroy(&id).await.unwrap());
+    }
+    assert!(store.is_empty());
+    assert_eq!(store.total_bytes(), 0);
+    let inner = store.lock();
+    assert!(inner.by_user.is_empty() && inner.ranking.is_empty() && inner.anonymous.is_empty() && inner.expiry.is_empty());
+}
+
+#[tokio::test]
+async fn touch_changes_the_timestamps_and_the_bytes_stay_accounted() {
+    let store = MemorySessionStore::new();
+    store.create("a", &record(Some("1"), 100), TTL).await.unwrap();
+    let before = store.total_bytes();
+    let mut newer = record(Some("1"), 100);
+    newer["__corvis"]["lastAccess"] = json!(1_794_312_552_408_i64);
+    assert!(store.touch("a", &newer, TTL).await.unwrap());
+    assert!(store.total_bytes() >= before && store.total_bytes() <= before + 16);
+    assert_eq!(store.len(), 1);
 }

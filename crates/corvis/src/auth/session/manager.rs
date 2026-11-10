@@ -113,6 +113,17 @@ impl SessionManager {
         HttpException::internal(SessionFault("session failure")).already_logged()
     }
 
+    /// The warning for a stored record over `max_session_bytes`, at most one a minute, with no identifier.
+    fn warn_oversized(&self) {
+        if let Some(suppressed) = self.warnings.allow("oversized record", Instant::now()) {
+            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
+            Logger::new("SessionMiddleware").warn(format!(
+                "a stored session record is larger than max_session_bytes ({}) and was ignored: the request goes on without a session{more}",
+                self.options.max_session_bytes
+            ));
+        }
+    }
+
     /// The session of a request: the one the cookie names when it verifies and the store has it, a new one in every
     /// other case.
     ///
@@ -140,6 +151,13 @@ impl SessionManager {
             .await
             .map_err(|e| self.fault("the store failed while loading a session", Some(&e)))?;
         let Some(record) = record else { return Ok(session(state)) };
+        // The limit applies to what is read as well as to what is written: a record this large (put there by another
+        // writer of a shared store) could never be saved again, so it is no session. It is not deleted and its
+        // identifier is not adopted.
+        if serde_json::to_vec(&record).map_or(usize::MAX, |v| v.len()) > self.options.max_session_bytes {
+            self.warn_oversized();
+            return Ok(session(state));
+        }
         match read_record(record, &self.options, now) {
             Loaded::Invalid => Ok(session(state)),
             Loaded::Expired => {
@@ -202,21 +220,46 @@ impl SessionManager {
         serialize_cookie(&self.options.name, "", &options.expires(epoch))
     }
 
-    /// Writes what the request left in the session and decides on the cookie. `can_set_cookie` is `false` when the
-    /// response does not exist yet (the request ended in an error): a new session is then not stored, because its
-    /// cookie could not reach the client.
+    /// Writes what the request left in the session and decides on the cookie. `status` is the status of the response,
+    /// `None` when the request ended in an error (the response does not exist yet): a new session is then not stored,
+    /// because its cookie could not reach the client, and a login made by an `AuthGuard` is discarded, as it is for any
+    /// status of 400 or more.
     ///
     /// The order is: destroy the identifiers queued (a login or logout destroys the old one before the new one is
     /// created), then `create` for a new identifier, or `update` / `touch` for an existing one. `update` and `touch`
-    /// never create a record, so a session destroyed by another request stays destroyed.
+    /// never create a record, so a session destroyed by another request stays destroyed. A session that this request
+    /// loaded is also treated as destroyed when its record is gone at commit time (the queued `destroy` found nothing,
+    /// or `update` / `touch` found no record): nothing is created or updated and the cookie is cleared, so a logout
+    /// racing a slow request cannot be undone by it.
     ///
     /// Returns the `Set-Cookie` header value, if one has to be sent.
-    pub(crate) async fn commit(&self, session: &Session, can_set_cookie: bool) -> Result<Option<String>, HttpException> {
+    pub(crate) async fn commit(&self, session: &Session, status: Option<u16>) -> Result<Option<String>, HttpException> {
         let o = &self.options;
         let now = now_ms();
-        let queued = session.state().destroy.clone();
+        let can_set_cookie = status.is_some();
+        {
+            let mut s = session.state();
+            if let Some(before) = s.before_guard_login.take()
+                && !status.is_some_and(|code| code < 400)
+            {
+                *s = *before;
+            }
+        }
+        let (queued, origin) = {
+            let s = session.state();
+            (s.destroy.clone(), s.origin.clone())
+        };
+        let mut origin_gone = false;
         for old in &queued {
-            self.store_call(o.store.destroy(old)).await.map_err(|e| self.fault("the store failed while destroying a session", Some(&e)))?;
+            let existed = self
+                .store_call(o.store.destroy(old))
+                .await
+                .map_err(|e| self.fault("the store failed while destroying a session", Some(&e)))?;
+            origin_gone |= !existed && origin.as_deref() == Some(old.as_str());
+        }
+        if origin_gone {
+            // Another request ended the session while this one ran: it stays ended.
+            return Ok((can_set_cookie && session.state().had_cookie).then(|| self.clearing_header()));
         }
         // Everything decided from one view of the state; nothing is awaited while the lock is held.
         let (persisted, modified, clear, resign, had_cookie) = {
@@ -272,8 +315,8 @@ impl SessionManager {
         .map_err(|e| self.fault("the store failed while saving a session", Some(&e)))?;
         if !present {
             // The session was destroyed or expired in the store while this request ran: nothing is written and the
-            // client gets no cookie for it.
-            return Ok(None);
+            // cookie is cleared.
+            return Ok(can_set_cookie.then(|| self.clearing_header()));
         }
         let set_cookie = o.rolling || (o.cookie.max_age.is_some() && modified) || resign;
         Ok((set_cookie && can_set_cookie).then(|| self.cookie_header(&id, expires)))

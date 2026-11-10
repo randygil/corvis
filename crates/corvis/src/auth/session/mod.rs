@@ -30,7 +30,7 @@ mod store;
 mod strategy;
 
 pub use manager::SessionManager;
-pub use memory::{DEFAULT_MAX_SESSIONS, DEFAULT_MAX_TOTAL_BYTES, MemorySessionStore};
+pub use memory::{DEFAULT_MAX_SESSIONS, DEFAULT_MAX_SESSIONS_PER_USER, DEFAULT_MAX_TOTAL_BYTES, MemorySessionStore};
 pub use middleware::SessionMiddleware;
 pub use module::SessionModule;
 pub use options::{

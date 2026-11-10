@@ -140,6 +140,14 @@ Una entrada de más de 4096 bytes se rechaza antes de calcular ningún HMAC, y l
 rotar, pon el secreto nuevo primero y conserva el viejo hasta que expiren las cookies firmadas con él:
 `CookieKeys::new([nuevo, viejo])`. La salida `Debug` de `CookieKeys` está censurada y ningún error contiene el secreto.
 
+::: warning Usa un secreto distinto para tus propias cookies
+El nombre de la cookie no forma parte de la firma (como en `cookie-signature`). Un valor firmado para una cookie se
+verifica con cualquier otro nombre firmado con el mismo secreto. Si tus claves son los secretos de
+[`SessionModule`](/es/http/session), un valor firmado para otra cookie se verifica como valor de la cookie de sesión, y la
+cookie de sesión reenviada con el nombre de tu propia cookie firmada entrega el identificador de sesión al código que la
+lee. Usa para la aplicación unos `CookieKeys` propios, nunca los secretos de la sesión.
+:::
+
 Para una sesión completa (un identificador en una cookie firmada y los datos en el servidor) usa
 [Sesión](/es/http/session).
 

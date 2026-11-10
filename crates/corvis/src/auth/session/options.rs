@@ -316,12 +316,15 @@ impl SessionOptions {
                 "the session cookie has same_site(SameSite::None) and secure(false): browsers refuse SameSite=None without Secure; set secure(true) or another SameSite",
             ));
         }
-        if name.starts_with("__Host-") && (!c.secure || c.domain.is_some() || c.path != "/") {
+        // Browsers match the prefixes without regard to case, and then refuse a cookie that breaks the rules.
+        let has_prefix =
+            |prefix: &str| name.len() >= prefix.len() && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes());
+        if has_prefix("__Host-") && (!c.secure || c.domain.is_some() || c.path != "/") {
             return Err(err(
                 "the session cookie name starts with __Host-, which requires Secure, Path=/ and no Domain: the cookie has secure(false), a domain or another path",
             ));
         }
-        if name.starts_with("__Secure-") && !c.secure {
+        if has_prefix("__Secure-") && !c.secure {
             return Err(err("the session cookie name starts with __Secure-, which requires Secure: the cookie has secure(false)"));
         }
         let absolute_limit = self.absolute_timeout.unwrap_or(MAX_TIMEOUT);
@@ -437,6 +440,23 @@ mod tests {
         let secure = options().name("__Secure-sid");
         assert!(secure.clone().validate().is_ok());
         assert!(problem(secure.cookie(SessionCookie::default().secure(false))).contains("__Secure-"));
+    }
+
+    #[test]
+    fn cookie_prefixes_are_checked_without_regard_to_case() {
+        for name in ["__host-sid", "__HOST-sid", "__HoSt-sid"] {
+            assert!(problem(options().name(name).cookie(SessionCookie::default().domain("example.com"))).contains("__Host-"), "{name}");
+            assert!(problem(options().name(name).cookie(SessionCookie::default().path("/app"))).contains("__Host-"), "{name}");
+            assert!(problem(options().name(name).cookie(SessionCookie::default().secure(false))).contains("__Host-"), "{name}");
+            assert!(options().name(name).validate().is_ok(), "{name}");
+        }
+        for name in ["__secure-sid", "__SECURE-sid"] {
+            assert!(problem(options().name(name).cookie(SessionCookie::default().secure(false))).contains("__Secure-"), "{name}");
+            assert!(options().name(name).validate().is_ok(), "{name}");
+        }
+        // Shorter than a prefix, or only similar to one.
+        assert!(options().name("__h").cookie(SessionCookie::default().secure(false)).validate().is_ok());
+        assert!(options().name("_Host-sid").cookie(SessionCookie::default().secure(false)).validate().is_ok());
     }
 
     #[test]

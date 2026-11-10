@@ -138,6 +138,14 @@ An input over 4096 bytes is refused before any HMAC is computed, and the signatu
 rotate, put the new secret first and keep the old one until the cookies signed with it have expired: `CookieKeys::new([new,
 old])`. The `Debug` output of `CookieKeys` is redacted, and no error contains the secret.
 
+::: warning Use a separate secret for your own cookies
+The cookie name is not part of the signature (as in `cookie-signature`). A value signed for one cookie verifies under
+any other name signed with the same secret. If your keys are the secrets of [`SessionModule`](/http/session), a value
+signed for another cookie verifies as a session cookie value, and the session cookie replayed under the name of your own
+signed cookie hands the session identifier to the code that reads it. Give the application its own `CookieKeys`, never the
+session secrets.
+:::
+
 For a whole session (an identifier in a signed cookie and the data on the server), use [Session](/http/session).
 
 ## Testing

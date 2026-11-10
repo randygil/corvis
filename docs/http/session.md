@@ -132,7 +132,7 @@ adopted: a new one is generated.
 | Attribute | Default | Why |
 |---|---|---|
 | `HttpOnly` | on | a script (and so an XSS) cannot read the identifier |
-| `Secure` | on | the cookie is never sent over a clear-text connection |
+| `Secure` | on | the browser does not send the cookie over a clear-text connection. The `Set-Cookie` of a response issued over plain HTTP still travels in clear, and so does whatever is in it |
 | `SameSite` | `Lax` | the browser keeps the cookie off cross-site `POST` and `fetch` requests. It is not CSRF protection by itself, see [CSRF](/security/csrf) |
 | `Path` | `/` | the whole application. A request whose path does not start with the `Path` has no session |
 | `Domain` | none | the cookie goes only to the host that issued it, not to subdomains |
@@ -147,7 +147,21 @@ ends TLS. Browsers differ on whether they store a `Secure` cookie from `http://l
 
 Prefer the `__Host-` prefix (`.name("__Host-sid")`). A browser refuses to set such a cookie unless it is `Secure`, has
 `Path=/` and no `Domain`, and, above all, it stops a sibling subdomain from planting it. Corvis validates those rules at
-startup for `__Host-` and for `__Secure-`.
+startup for `__Host-` and for `__Secure-`, without regard to case, as browsers match them (`__host-sid` with a `Domain`
+does not start).
+
+::: warning Cookie tossing
+Without the `__Host-` prefix, a sibling subdomain (or any site that can run code on one) can set a cookie with the session
+name for the whole domain. Two cookies with that name load no session (see below), so the planted one logs the victim out
+for as long as it lives, and the victim cannot log in again from that browser until it is removed. Use `__Host-`.
+:::
+
+::: warning The cookie name is not part of the signature
+Like the original, the signature covers the identifier and nothing else. A value signed with the same secret for another
+cookie verifies as a session cookie value, and the session cookie sent back under another name that application code
+reads with `signed_cookie` hands that code the session identifier. Never sign your own cookies with the session secrets:
+give the application its own `CookieKeys` (see [Cookies](/http/cookies)).
+:::
 
 ### Plain-HTTP development
 
@@ -220,6 +234,11 @@ a store error.
 | `store_timeout` | 5 s | 100 ms to 60 s |
 | memory store `max_sessions` | 100 000 | at least 1 |
 | memory store `max_total_bytes` | 256 MiB | at least 1 |
+| memory store `max_sessions_per_user` | 16 | at least 1 |
+
+A stored record larger than `max_session_bytes` (written by another writer of a shared store) is no session when it is
+read: it is not loaded, its identifier is not adopted and the record is not deleted. A warning, at most once a minute and
+without identifiers, reports it.
 
 Other combinations that stop startup: `SameSite=None` without `Secure`, a `__Host-` name without `Secure`, with a `Domain`
 or with a `Path` other than `/`, a `__Secure-` name without `Secure`, and an invalid cookie name, path or domain.
@@ -229,16 +248,24 @@ or with a `Path` other than `/`, a `__Secure-` name without `Secure`, and an inv
 `MemorySessionStore` is the default. It is for one process and for development:
 
 ```rust
-.store(MemorySessionStore::new().max_sessions(100_000).max_total_bytes(256 << 20))
+.store(MemorySessionStore::new().max_sessions(100_000).max_total_bytes(256 << 20).max_sessions_per_user(16))
 ```
 
 - Sessions are lost when the application restarts and are not shared between instances. Startup logs a warning for it.
-- It is bounded by the number of sessions and by bytes (identifier, serialized record and overhead).
+- Records are kept serialized, and the byte bound counts each record's allocation, its identifier, its user key and a
+  fixed overhead per entry (640 bytes), so `max_total_bytes` bounds the memory the store uses, whatever the shape of the
+  data (an array of small numbers costs what its text costs). A test with a counting allocator checks it.
 - Expired records are dropped without a background task: on load and a few on each write.
-- When a new record does not fit it evicts the least recently used one, **anonymous sessions (no `passport.user`) before
-  any session with a user**. A flood of anonymous sessions can fill the store with its own records, but it cannot log
-  users out. One rate-limited warning is logged with the count, no identifiers.
+- **Per user:** at most `max_sessions_per_user` sessions (16 by default), keyed by the serialized `passport.user`. A new
+  session of a user at the cap evicts that same user's oldest session, never another user's: one account that logs in
+  over and over cannot log the others out.
+- **When the store is full** it evicts the least recently used **anonymous** session (no `passport.user`) first, then the
+  oldest session of the user with the most sessions. A flood of anonymous sessions fills the store with its own records
+  but logs nobody out. One rate-limited warning is logged with the count, no identifiers.
 - A record larger than `max_total_bytes` is an error.
+
+Other stores need their own policy: a shared store has to bound the sessions of one user itself (the contract of
+`SessionStore` does not).
 
 By default only a route that writes to the session creates one, so an anonymous visit costs nothing. If a route writes
 for anonymous visitors, rate limit it with [`ThrottlerModule`](/security/rate-limiting). Rate limit the login route too:
@@ -256,10 +283,13 @@ Implement `SessionStore`, an async trait:
 | `load(id) -> Result<Option<Value>, _>` | the record, or `None` |
 | `create(id, &record, ttl)` | must fail with `SessionStoreError::Exists`, leaving the record, when the identifier exists |
 | `update(id, &record, ttl) -> Result<bool, _>` | `Ok(false)` and nothing written when the record is missing |
-| `touch(id, &record, ttl) -> Result<bool, _>` | by default the same as `update`. The memory store renews only the expiry and the `cookie` and `__corvis` keys, so an unmodified request cannot overwrite data another request saved |
-| `destroy(id)` | a missing record is not an error |
+| `touch(id, &record, ttl) -> Result<bool, _>` | **required, no default.** It must renew the expiry and the `cookie` and `__corvis` keys only, never the data: the copy in `record` was read when the request began and may be stale, so an unmodified request must not overwrite what another request saved. `Ok(false)` and nothing written when the record is missing |
+| `destroy(id) -> Result<bool, _>` | `Ok(true)` when a record was removed, `Ok(false)` when it was already gone (not an error). The middleware uses it to learn that another request ended the session |
 | `in_process() -> bool` | `false` by default; `true` makes startup log the memory warning |
 | `validate() -> Result<(), String>` | checked at startup |
+
+`create` and `update` have to be atomic (`SET NX` and `SET XX` in Redis, a conditional statement in SQL): checking that the
+record exists and then writing in two steps reopens the window that lets a slow request undo a logout.
 
 Errors are `SessionStoreError::{Exists, Timeout, Backend(String)}`; build the last with `SessionStoreError::backend(msg)`
 and keep identifiers and data out of the message.
@@ -298,8 +328,11 @@ most once a minute per reason, without identifiers, cookie values, data or the s
 
 Concurrency: between concurrent requests of one session the last write wins, but destruction is final. `update` and
 `touch` never create a record, and `create` never overwrites (a collision is retried once with a new identifier). A slow
-request that started before a logout cannot bring the session back. If the client disconnects mid-request, identifiers
-queued for destruction (logout, `regenerate`, `destroy`) are still destroyed.
+request that started before a logout (or `destroy()`) cannot bring the session back: when the request ends, a session it
+loaded whose record is gone (the destruction it queued found nothing, or `update` / `touch` found no record) is treated
+as destroyed. Nothing is created or updated, whatever the request did to the session (`regenerate_keeping_data()`,
+`regenerate()`, a data change), and the cookie is cleared. If the client disconnects mid-request, identifiers queued for
+destruction (logout, `regenerate`, `destroy`) are still destroyed.
 
 ## Login and logout
 
@@ -386,6 +419,16 @@ session without a record yet is not regenerated: logging out anonymously creates
 Both fail with a `500` and a fixed message, storing nothing, when the request has no session or no `SessionStrategy` is
 registered. A failed login (`401`) leaves the session and its identifier unchanged.
 
+**A login made by the guard is kept only when the response is not a rejection.** If a later guard, a pipe or the handler
+rejects the request (the response status is 400 or more, or an error), the login is discarded: the session the request
+arrived with, if any, is left as it was, and no logged-in cookie is issued.
+
+```rust
+#[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)] // a 403 from the second guard leaves no login
+```
+
+A login made with `Authenticator::log_in` by a handler is the handler's decision and stands whatever the status.
+
 `AuthGuard::new("local").log_in()` is a startup error when no `SessionStrategy` is registered (the error names the route)
 and when the guard names the `"session"` strategy (`cannot be combined`). Without `.log_in()` an `AuthGuard` never writes
 the session.
@@ -403,7 +446,20 @@ the session.
   `AuthGuard::chain(["session", "jwt"]).optional()` (session first) to keep it and still accept tokens.
 - `.skip_public()` guards leave the session user alone on public routes.
 
-The session cookie is an ambient credential: state-changing routes need [CSRF protection](/security/csrf).
+::: warning The session user is visible on every route
+The middleware restores the user on routes without an `AuthGuard` too. A hand-written guard that reads
+`req.user()` (a roles guard, say) therefore authenticates by the cookie alone on those routes, with nothing checked
+about the request itself:
+
+```rust
+// Authenticated by the session cookie on any route it is attached to, including a cross-site form POST.
+ctx.request().user().and_then(|u| u.get("role").cloned()) == Some(json!("admin"))
+```
+
+Attach state-changing routes to `AuthGuard::new("session")` as well, and protect them against cross-site requests: the
+session cookie is an ambient credential. See [CSRF protection](/security/csrf), which also covers login CSRF:
+`SameSite=Lax` does not stop it.
+:::
 
 WebSocket upgrades and Socket.IO handshakes are answered before the HTTP middleware, so `Request::session()` does not
 exist there and a session cookie does not authenticate a socket. Authenticate in `handle_connection` some other way (see
@@ -442,6 +498,9 @@ recorded fixtures (`crates/corvis/tests/fixtures/auth/session.mjs` and `signed_c
 | no idle or absolute timeout | idle (24 h) and absolute (7 days) timeouts |
 | no size limit | 16 KiB per record |
 | `store.set` creates or overwrites | `update` and `touch` never re-create a record |
+| a login through the guard stays when a later guard or the handler rejects the request | discarded when the response status is 400 or more (a login made by a handler stands) |
+| a request that outlives a logout can save the session again | a session whose record is gone at the end of the request is treated as destroyed and the cookie is cleared |
+| `MemoryStore` keeps every session of an account | at most `max_sessions_per_user` (16) in the memory store |
 | the cookie keeps the signature it came with | re-signed with the new secret after a rotation |
 | a `Secure` cookie is not sent over plain HTTP | it is sent on every connection |
 | secrets of any length | under 32 bytes refused |

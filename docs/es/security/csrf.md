@@ -50,6 +50,36 @@ necesitas protección CSRF adicional, siempre que no guardes además el token en
    - Depende de que el navegador lo aplique.
    - No detiene el CSRF de inicio de sesión (un atacante inicia la sesión de la víctima en la cuenta del atacante).
 
+   **`SameSite=Lax` no detiene el CSRF de inicio de sesión.** Un `POST` de formulario entre sitios a la ruta de login es
+   una navegación de nivel superior: el servidor responde `200` con su `Set-Cookie`, el navegador la guarda y la víctima
+   queda con la sesión iniciada como el atacante. Rechaza esa petición antes de comprobar las credenciales: cuando
+   `Sec-Fetch-Site` es `cross-site` o, si esa cabecera no está, cuando `Origin` está presente y no es el host (ni un origen
+   permitido). El ejemplo `cats-app` lo hace con un guard, `SameOriginGuard`, delante del guard de login:
+
+   ```rust
+   #[post("login")]
+   #[use_guards(SameOriginGuard::new(), AuthGuard::new("local").log_in())]
+   fn login(&self, user: User<Account>) -> Account { user.0 }
+   ```
+
+   ```rust
+   // La comprobación completa (examples/cats-app/src/auth/same_origin.rs)
+   pub fn refuses(&self, method: &str, sec_fetch_site: Option<&str>, origin: Option<&str>, host: Option<&str>) -> bool {
+       if matches!(method, "GET" | "HEAD" | "OPTIONS") {
+           return false;
+       }
+       if let Some(site) = sec_fetch_site {
+           return site.eq_ignore_ascii_case("cross-site");
+       }
+       let Some(origin) = origin else { return false };
+       if self.allowed.iter().any(|allowed| allowed == origin) {
+           return false;
+       }
+       let authority = origin.split_once("://").map(|(_, rest)| rest);
+       !matches!((authority, host), (Some(authority), Some(host)) if authority.eq_ignore_ascii_case(host))
+   }
+   ```
+
    Mantén `Secure` y `HttpOnly`, y usa el prefijo de nombre `__Host-` (`.name("__Host-sid")` en `SessionOptions`), que
    impide que un subdominio hermano establezca la cookie.
 

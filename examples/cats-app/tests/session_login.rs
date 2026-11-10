@@ -71,3 +71,42 @@ async fn a_session_login_opens_the_protected_route_and_a_logout_closes_it() {
     assert_eq!(c.get("/api/v1/session/me").header("cookie", &second).send().await.status, 401);
     assert_eq!(c.get("/api/v1/session/me").header("cookie", &cookie_of(&out)).send().await.status, 401);
 }
+
+#[corvis::test]
+async fn a_login_from_another_site_is_refused_before_the_credentials_are_checked() {
+    let app = app().await;
+    let c = request(&app);
+    let form = [("username", "john"), ("password", "changeme")];
+
+    // The attack: a cross-site form POST. The browser says so with Sec-Fetch-Site, and sends Origin.
+    let by_fetch_metadata = c
+        .post("/api/v1/session/login")
+        .header("host", "cats.test")
+        .header("sec-fetch-site", "cross-site")
+        .header("origin", "https://evil.test")
+        .form(&form)
+        .send()
+        .await;
+    assert_eq!(by_fetch_metadata.status, 403, "{}", by_fetch_metadata.text());
+    assert!(by_fetch_metadata.headers.get("set-cookie").is_none(), "no session cookie reaches the victim");
+
+    // A browser without Sec-Fetch-Site: the Origin is not the host.
+    let by_origin =
+        c.post("/api/v1/session/login").header("host", "cats.test").header("origin", "https://evil.test").form(&form).send().await;
+    assert_eq!(by_origin.status, 403);
+    assert!(by_origin.headers.get("set-cookie").is_none());
+
+    // The same login from the site itself, and from a client that sends neither header.
+    let same_origin = c
+        .post("/api/v1/session/login")
+        .header("host", "cats.test")
+        .header("sec-fetch-site", "same-origin")
+        .header("origin", "http://cats.test")
+        .form(&form)
+        .send()
+        .await;
+    assert_eq!(same_origin.status, 200, "{}", same_origin.text());
+    assert!(same_origin.headers.get("set-cookie").is_some());
+    let plain = c.post("/api/v1/session/login").form(&form).send().await;
+    assert_eq!(plain.status, 200, "{}", plain.text());
+}

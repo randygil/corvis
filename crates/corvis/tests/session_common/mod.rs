@@ -52,6 +52,13 @@ pub fn gate() -> &'static Gate {
     GATE.get_or_init(|| Gate { started: Notify::new(), release: Notify::new() })
 }
 
+/// A gate by name, so that tests running at the same time do not share one.
+pub fn named_gate(name: &str) -> Arc<Gate> {
+    static GATES: OnceLock<Mutex<HashMap<String, Arc<Gate>>>> = OnceLock::new();
+    let mut gates = GATES.get_or_init(Default::default).lock().unwrap();
+    gates.entry(name.to_string()).or_insert_with(|| Arc::new(Gate { started: Notify::new(), release: Notify::new() })).clone()
+}
+
 pub fn cancel_gate() -> &'static Gate {
     static GATE: OnceLock<Gate> = OnceLock::new();
     GATE.get_or_init(|| Gate { started: Notify::new(), release: Notify::new() })
@@ -95,6 +102,17 @@ impl Strategy for HeaderStrategy {
             Some(Ok(user)) => StrategyOutcome::Success { user, info: None },
             _ => StrategyOutcome::Fail { challenge: None, status: None },
         }
+    }
+}
+
+/// A second guard that refuses (a second factor that was not passed).
+#[injectable]
+pub struct DenyGuard;
+
+#[async_trait]
+impl corvis::CanActivate for DenyGuard {
+    async fn can_activate(&self, _ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        Ok(false)
     }
 }
 
@@ -228,6 +246,52 @@ impl Routes {
         json!({ "ok": true })
     }
 
+    /// Holds the request at the gate named by `g`, then does what `mode` says to the session before it finishes:
+    /// `regenerate_keeping_data`, `regenerate`, `set` (a data change) or `touch` (nothing, so the session is only
+    /// touched).
+    #[post("held")]
+    #[http_code(200)]
+    async fn held(&self, req: Request) -> Value {
+        let gate = named_gate(req.query_param("g").unwrap());
+        gate.started.notify_one();
+        gate.release.notified().await;
+        let session = session_of(&req);
+        match req.query_param("mode").unwrap() {
+            "regenerate_keeping_data" => session.regenerate_keeping_data(),
+            "regenerate" => session.regenerate(),
+            "set" => session.set("late", true).unwrap(),
+            _ => {}
+        }
+        json!({ "ok": true })
+    }
+
+    /// A login that a second guard then refuses.
+    #[post("login-then-deny")]
+    #[http_code(200)]
+    #[use_guards(AuthGuard::new("header").log_in(), DenyGuard)]
+    fn login_then_deny(&self) -> Value {
+        json!({ "ok": true })
+    }
+
+    /// A login followed by a handler that answers 403.
+    #[post("login-then-403")]
+    #[http_code(200)]
+    #[use_guards(AuthGuard::new("header").log_in())]
+    fn login_then_403(&self) -> HttpResult<Value> {
+        Err(ForbiddenException::new("second factor needed"))
+    }
+
+    /// A login the handler makes itself, then a 403 answer: the handler decides, so the login stands.
+    #[post("handler-login-then-403")]
+    #[http_code(200)]
+    async fn handler_login_then_403(&self, req: Request) -> HttpResult<Response> {
+        let user = AuthenticatedUser::new(account("2").unwrap()).unwrap();
+        self.authenticator.log_in(&req, &user).await?;
+        let mut response = Response::json(json!({ "ok": false }));
+        response.set_status(403u16);
+        Ok(response)
+    }
+
     /// Destroys the session, then holds the request: the client goes away before the response exists.
     #[post("held-destroy")]
     #[http_code(200)]
@@ -347,7 +411,7 @@ impl SessionStore for RecordingStore {
         self.inner.touch(id, record, ttl).await
     }
 
-    async fn destroy(&self, id: &str) -> Result<(), SessionStoreError> {
+    async fn destroy(&self, id: &str) -> Result<bool, SessionStoreError> {
         let existed = self.inner.load(id).await.unwrap().is_some();
         self.note("destroy", id, existed);
         self.inner.destroy(id).await
@@ -381,7 +445,11 @@ pub async fn app_with(
     let builder = Test::create_testing_module()
         .with_logger(false)
         .import_dynamic(SessionModule::for_root(options))
-        .providers(vec![Provider::strategy::<HeaderStrategy>(), Provider::strategy::<SessionStrategy<Accounts>>()])
+        .providers(vec![
+            Provider::strategy::<HeaderStrategy>(),
+            Provider::strategy::<SessionStrategy<Accounts>>(),
+            Provider::class::<DenyGuard>(),
+        ])
         .controller::<Routes>();
     let module = extra(builder).compile().await.unwrap();
     let mut app = module.create_corvis_application();

@@ -43,13 +43,21 @@ impl SessionStoreError {
 /// Every call is bounded by the `store_timeout` of the options. Calls must be safe to repeat (`destroy` of a missing
 /// session is not an error).
 ///
+/// The guarantees above are what keep a slow request from undoing a logout, so a store must give them atomically
+/// (a compare-and-set, `SET ... XX`, a transaction): checking that the record exists and then writing it in two steps
+/// reopens the window. `destroy` reports whether a record was removed, which is how the middleware learns that the
+/// session was ended by another request while this one ran. `touch` changes the expiry and the timestamps only, never
+/// the data: a request that changed nothing must not overwrite what a concurrent request saved, so there is no default
+/// for it.
+///
 /// ```ignore
 /// #[async_trait]
 /// impl SessionStore for MyStore {
 ///     async fn load(&self, id: &str) -> Result<Option<Value>, SessionStoreError> { /* GET sess:<id> */ }
 ///     async fn create(&self, id: &str, record: &Value, ttl: Duration) -> Result<(), SessionStoreError> { /* SET NX */ }
 ///     async fn update(&self, id: &str, record: &Value, ttl: Duration) -> Result<bool, SessionStoreError> { /* SET XX */ }
-///     async fn destroy(&self, id: &str) -> Result<(), SessionStoreError> { /* DEL */ }
+///     async fn touch(&self, id: &str, record: &Value, ttl: Duration) -> Result<bool, SessionStoreError> { /* EXPIRE only */ }
+///     async fn destroy(&self, id: &str) -> Result<bool, SessionStoreError> { /* DEL > 0 */ }
 /// }
 /// ```
 #[async_trait]
@@ -65,14 +73,13 @@ pub trait SessionStore: Send + Sync + 'static {
     async fn update(&self, id: &str, record: &Value, ttl: Duration) -> Result<bool, SessionStoreError>;
 
     /// Renews the record of `id` after a request that did not change the session: the `ttl`, and the timestamps of
-    /// `record` (`cookie`, `__corvis`). A store that rewrites the whole record can use the default, which is
-    /// [`update`](Self::update). `Ok(false)` when there is no such session: nothing is written.
-    async fn touch(&self, id: &str, record: &Value, ttl: Duration) -> Result<bool, SessionStoreError> {
-        self.update(id, record, ttl).await
-    }
+    /// `record` (`cookie`, `__corvis`), and nothing else. It must not write the data of `record`: that copy was read
+    /// when the request began and may be stale. `Ok(false)` when there is no such session: nothing is written.
+    async fn touch(&self, id: &str, record: &Value, ttl: Duration) -> Result<bool, SessionStoreError>;
 
-    /// Removes the record of `id`. Not an error when it is already gone.
-    async fn destroy(&self, id: &str) -> Result<(), SessionStoreError>;
+    /// Removes the record of `id`: `Ok(true)` when there was one, `Ok(false)` when it was already gone or expired
+    /// (not an error).
+    async fn destroy(&self, id: &str) -> Result<bool, SessionStoreError>;
 
     /// `true` for a store that keeps sessions in this process (lost on restart, not shared between instances): the
     /// application logs a startup warning for it.
