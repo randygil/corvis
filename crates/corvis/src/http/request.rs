@@ -333,11 +333,7 @@ fn parse_cookies(s: &str) -> HashMap<String, String> {
 /// A cookie value as `cookie.parse` returns it: URI-decoded only when it contains `%`, the raw value when the escape
 /// is invalid.
 fn decode_cookie_value(raw: &str) -> String {
-    if raw.contains('%') {
-        super::body_parser::qs::decode_uri_component(raw).unwrap_or_else(|| raw.to_string())
-    } else {
-        raw.to_string()
-    }
+    if raw.contains('%') { super::body_parser::qs::decode_uri_component(raw).unwrap_or_else(|| raw.to_string()) } else { raw.to_string() }
 }
 
 /// Walks the pairs of a `Cookie` header like `cookie.parse` (cookie 0.7) and calls `f(name, raw_value)` for each one,
@@ -469,5 +465,39 @@ mod upgrade_tests {
         let disabled = Request::for_upgrade(parts("1.1.1.1"), remote, &options(QueryParser::Disabled, TrustProxy::default())).unwrap();
         assert!(disabled.query().is_empty());
         assert_eq!(disabled.uri().query(), Some("a=1&r[k]=2"));
+    }
+}
+
+#[cfg(test)]
+mod cookie_tests {
+    use super::*;
+
+    fn request(headers: &[&str]) -> Request {
+        let mut map = HeaderMap::new();
+        for h in headers {
+            map.append(http::header::COOKIE, http::HeaderValue::from_str(h).unwrap());
+        }
+        Request::new(Method::GET, Uri::from_static("/"), map, Bytes::new()).unwrap()
+    }
+
+    #[test]
+    fn the_first_cookie_of_a_name_wins() {
+        let req = request(&["a=1; b=2; a=3", "a=4"]);
+        assert_eq!(req.cookie("a").as_deref(), Some("1"));
+        assert_eq!(req.cookie("b").as_deref(), Some("2"));
+    }
+
+    #[cfg(feature = "auth-session")]
+    #[test]
+    fn every_value_of_a_name_is_listed_across_headers_and_bounded() {
+        let req = request(&["a=1; b=2; a=3", "a=%34"]);
+        assert_eq!(req.cookie_values("a", 10, 100), ["1", "3", "4"]);
+        assert_eq!(req.cookie_values("a", 2, 100), ["1", "3"], "at most `limit` values");
+        assert_eq!(req.cookie_values("b", 2, 100), ["2"]);
+        assert!(req.cookie_values("c", 2, 100).is_empty());
+        // A raw value past the bound is not decoded: it counts as an empty string.
+        let req = request(&["a=%61%61%61%61%61%61"]);
+        assert_eq!(req.cookie_values("a", 2, 5), [""]);
+        assert_eq!(req.cookie_values("a", 2, 100), ["aaaaaa"]);
     }
 }

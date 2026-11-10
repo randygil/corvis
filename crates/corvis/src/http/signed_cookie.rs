@@ -118,7 +118,7 @@ impl CookieKeys {
         }
         let rest = input.strip_prefix("s:")?;
         let dot = rest.rfind('.')?;
-        let (value, given) = (&rest[..dot], rest[dot + 1..].as_bytes());
+        let (value, given) = (&rest[..dot], &rest.as_bytes()[dot + 1..]);
         // The re-encoded signature has one fixed length: anything else cannot match, whatever the secret.
         if given.len() != SIGNATURE_LEN {
             return None;
@@ -150,10 +150,9 @@ mod tests {
 
     #[test]
     fn a_signature_computed_by_hand() {
-        // HMAC-SHA256("hello", A) as base64 without padding; computed with `node:crypto`.
+        // `cookie-signature` 1.0.7: sign('hello', A), computed with Node.
         let signed = keys(&[A]).sign("hello");
-        assert!(signed.starts_with("s:hello."));
-        assert_eq!(signed.len(), "s:hello.".len() + SIGNATURE_LEN);
+        assert_eq!(signed, "s:hello.22i0e2PCOX6seFAlscnCEDrgbCiZgjSng7PrZFPRrXA");
         assert_eq!(keys(&[A]).unsign(&signed).as_deref(), Some("hello"));
     }
 

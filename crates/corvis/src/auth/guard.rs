@@ -49,13 +49,23 @@ pub struct AuthGuard {
     skip_public: bool,
     on_failure: Option<Arc<FailureFn>>,
     options: AuthenticateOptions,
+    #[cfg(feature = "auth-session")]
+    log_in: bool,
 }
 
 impl Default for AuthGuard {
     /// A guard for the default strategy configured with `PassportModule::register` (`AuthGuard()` in the original).
     /// Initialization fails when none is configured.
     fn default() -> Self {
-        AuthGuard { names: Names::Default, optional: false, skip_public: false, on_failure: None, options: AuthenticateOptions::new() }
+        AuthGuard {
+            names: Names::Default,
+            optional: false,
+            skip_public: false,
+            on_failure: None,
+            options: AuthenticateOptions::new(),
+            #[cfg(feature = "auth-session")]
+            log_in: false,
+        }
     }
 }
 
@@ -100,6 +110,19 @@ impl AuthGuard {
         self
     }
 
+    /// After a successful authentication, logs the user in to the session before the handler runs (the login guard of
+    /// the original: `super.canActivate(context)` followed by `super.logIn(request)`): a new session identifier is
+    /// generated, the old session is destroyed and the user is stored for later requests. Use it on the login route
+    /// with a credential strategy (`AuthGuard::new("local").log_in()`). Without it a guard never touches the session.
+    ///
+    /// The application must register a `SessionStrategy`, and the guard cannot name the `"session"` strategy itself
+    /// (it would log in again on every request); both stop `init()`.
+    #[cfg(feature = "auth-session")]
+    pub fn log_in(mut self) -> Self {
+        self.log_in = true;
+        self
+    }
+
     /// Options handed to every strategy this guard runs (`AuthenticateOptions::get`), the options object of
     /// `AuthGuard('x')` subclasses. Anything but a JSON object is ignored.
     pub fn with_options(mut self, options: Value) -> Self {
@@ -128,6 +151,20 @@ impl AuthGuard {
             Err(problem) => return Some(problem),
         };
         let missing: Vec<String> = names.iter().filter(|n| !authenticator.has_strategy(n)).map(|n| format!("\"{n}\"")).collect();
+        #[cfg(feature = "auth-session")]
+        if self.log_in {
+            if names.iter().any(|n| n == super::session::SESSION_STRATEGY) {
+                return Some(
+                    "log_in() cannot be combined with the \"session\" strategy: it would log in again on every request".to_string(),
+                );
+            }
+            if !authenticator.has_strategy(super::session::SESSION_STRATEGY) {
+                return Some(
+                    "log_in() needs a registered session strategy: add Provider::strategy::<SessionStrategy<YourSerializer>>() and import SessionModule"
+                        .to_string(),
+                );
+            }
+        }
         if missing.is_empty() {
             return None;
         }
@@ -171,6 +208,12 @@ impl CanActivate for AuthGuard {
             // failure, and this refuses it again for a result built by other means.
             result @ AuthResult::Success { .. } => {
                 if result.store_user(req) {
+                    #[cfg(feature = "auth-session")]
+                    if self.log_in
+                        && let AuthResult::Success { user, .. } = &result
+                    {
+                        authenticator.log_in(req, user).await?;
+                    }
                     return Ok(true);
                 }
                 Vec::new()
