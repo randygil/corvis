@@ -430,9 +430,36 @@ Each is on the threat model page or in the strategy docs; none is a way in.
 - A strategy that appends a cookie with `append_response_header` has it sent on a later `4xx`/`5xx`: no built-in strategy
   does; a custom one must log in through the session.
 
-### Re-review
+### Re-review (round 3, over the fixes only)
 
-Task 7.5 (a third `security-reviewer` run over the fixes only) is left to the maintainer's session.
+The third pass confirmed the five fixes with the original proofs of concept and new ones (the duplicated JWT cookie in
+eleven forms; the guard-order warning across global, controller and route guards; the session binding of an OAuth2 flow
+in ten variants; the deadlines, with the same 503 for a valid and a forged token and no future left alive after a
+flood; `Pass`), and that an application with no auth feature compiles and behaves as before. It found two low issues,
+fixed here:
+
+- **The OAuth2 binding did not cover an identity outside the session.** With a callback route guarded by
+  `[AuthGuard("jwt"), AuthGuard(<oauth2>)]` on a shared browser, A starts an account link and logs out (her token is
+  dropped), B arrives with his token, and A's pending callback completes with `req.user() == B`: the session is
+  anonymous at both ends, so the session binding matches, and `state_in_session()` does not help either. The flow now
+  also records a digest of the user the start request carried (keyed with the state cookie secret in the cookie store,
+  plain in the session store, whose record stays on the server), and a callback whose request carries a user completes
+  only a flow that the same user started; a callback with no user is a plain login and is not checked. A flow started
+  by nobody and completed as a user is refused too: on a shared browser it cannot be told apart from someone else's,
+  so the route that starts an account link must run the same guards as the callback. Tests:
+  `a_flow_is_bound_to_the_user_that_started_it`,
+  `the_user_binding_travels_with_the_record_and_a_malformed_one_drops_the_flow` (`auth/oauth2/state.rs`); the docs'
+  advice ("use `state_in_session()` or rely on the binding"), which was wrong for tokens and API keys, is replaced.
+- **The guard walk of the order warning could run away.** It stopped at the depth cap but visited every branch, so a
+  guard that lists itself twice in `inner_guards` made startup walk 2^33 guards before the existing depth error could
+  be reported. The walk has a budget of 1,024 guards per route. Test: the `Loop` guard of `tests/auth_guard.rs` lists
+  itself twice and startup still fails at once, with a bounded number of `inner_guards` calls.
+
+Also corrected in the docs: the inverted parenthesis about `save_uninitialized`, and that a cookie planted next to the
+user's own JWT cookie logs that user out of the cookie login while it lives. Noted and left: the order warning cannot
+see a composite that declares `[throttler, auth]` and runs them in the other order, and is noisy with an optional
+global `AuthGuard`; there is no cap on concurrent calls to a JWT key provider (finite now, by the deadline); a
+validator can be cancelled at any await by its deadline.
 
 ## Implementation notes
 

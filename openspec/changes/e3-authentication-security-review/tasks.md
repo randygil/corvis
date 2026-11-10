@@ -108,7 +108,7 @@ reviews what they shipped, so nothing below starts before that.
 - [x] 7.4 (filed as #177 and #178, with #173 and #174 already open) Write the text of each issue to file (title, severity, labels `area:security`, description, interim
   guidance) in the findings register and hand the list to the maintainer's session; verify the issue numbers are
   written back, and that any deferred high or critical finding was reported before continuing
-- [ ] 7.5 Re-review: run the `security-reviewer` agent once more over the fixes only; verify no fix opened a new
+- [x] 7.5 Re-review: run the `security-reviewer` agent once more over the fixes only; verify no fix opened a new
   path and record the result in the register
 
 ## 8. Threat model and documentation

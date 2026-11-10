@@ -211,6 +211,19 @@ session module runs.
 - **WHEN** the callback arrives under the session the flow started under, or with no session when it started with none
 - **THEN** the login completes; a session where there was none, or none where there was one, is refused
 
+### Requirement: An OAuth2 flow completes only for the user that started it
+With either state store, the flow SHALL record a digest of the user the request that starts it carries, or a mark that
+there was none (keyed when the record is kept in a cookie). A callback whose request carries a user MUST complete only
+a flow that the same user started; a callback with no user is not checked. The digest MUST NOT reveal the user.
+
+#### Scenario: A token of another user at the callback
+- **WHEN** ana starts a flow on a route guarded by a token strategy, and the callback arrives with bob's token
+- **THEN** the response is the uniform `401`, the provider is not contacted and the validator does not run
+
+#### Scenario: A flow nobody started, completed as a user
+- **WHEN** a flow starts on a route with no user and its callback arrives with a user
+- **THEN** it is refused; with no user at the callback either, the login completes
+
 ### Requirement: The application's callbacks have a deadline
 The JWT key provider, the JWT validator and the local validator SHALL each have a deadline, 5 seconds by default and
 between 1 ms and 300 s (`key_provider_timeout`, `validator_timeout`), like the API key validator. A callback that

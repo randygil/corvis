@@ -373,7 +373,9 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
                 // Tied to the session the browser has now (or to having none): the callback must arrive under the
                 // same one, so a logout and another user's login in between cancel the flow.
                 let binding = state::session_binding(&cookie.keys, V::NAME, &state, req.session().as_ref());
-                set.push(Flow { state: state.clone(), verifier: None, issued, return_to, binding });
+                // And to the user this request carries, whatever authenticated it (see `state::user_binding`).
+                let user = Some(state::user_binding(Some(&cookie.keys), V::NAME, &state, req.user().as_ref()));
+                set.push(Flow { state: state.clone(), verifier: None, issued, return_to, binding, user });
                 (verifier, Some(cookie.write(&set, V::NAME)))
             }
             Storage::Session => {
@@ -382,7 +384,8 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
                 };
                 let mut set = state::read_session(&session, V::NAME);
                 set.prune(issued, self.ttl());
-                set.push(Flow { state: state.clone(), verifier: Some(random_verifier.clone()), issued, return_to, binding: None });
+                let user = Some(state::user_binding(None, V::NAME, &state, req.user().as_ref()));
+                set.push(Flow { state: state.clone(), verifier: Some(random_verifier.clone()), issued, return_to, binding: None, user });
                 if !state::write_session(&session, V::NAME, &set) {
                     return self.internal("the session refused the state record", String::new());
                 }
@@ -497,6 +500,17 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             if !state::binding_matches(&flow, current.as_deref()) {
                 return self.fail("state mismatch", None, true);
             }
+        }
+        // And for the user it was started by, when the callback carries one: a token or an API key does not live in
+        // the session, so the session binding alone lets another user's callback route finish a pending flow and link
+        // the first user's provider account to the second.
+        let keys = match &self.storage {
+            Storage::Cookie(cookie) => Some(&cookie.keys),
+            Storage::Session => None,
+        };
+        let current_user = state::user_binding(keys, V::NAME, &flow.state, req.user().as_ref());
+        if !state::user_matches(&flow, &current_user) {
+            return self.fail("state mismatch", None, true);
         }
         if let Some(error) = error {
             let code = super::client::sanitize_error_code(error);

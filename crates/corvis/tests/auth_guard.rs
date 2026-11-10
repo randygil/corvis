@@ -246,7 +246,10 @@ impl WrappedController {
     }
 }
 
-/// A guard that lists itself as its inner guard.
+/// How many times `Loop::inner_guards` was asked.
+static LOOP_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A guard that lists itself as its inner guards, twice: a walk bounded only by its depth would visit 2^depth guards.
 #[injectable]
 pub struct Loop;
 
@@ -257,7 +260,8 @@ impl CanActivate for Loop {
     }
 
     fn inner_guards(&self) -> Vec<&dyn CanActivate> {
-        vec![self]
+        LOOP_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        vec![self, self]
     }
 }
 
@@ -539,6 +543,10 @@ async fn a_wrapper_that_lists_its_inner_guard_is_checked_at_startup() {
 async fn a_guard_that_returns_itself_stops_startup_naming_the_route() {
     let error = init_error::<LoopingModule>().await;
     assert!(error.contains("GET /looping/x") && error.contains("32 levels"), "{error}");
+    // The startup checks give up after a bounded number of guards instead of walking the whole tree of a guard that
+    // lists itself twice (2^33 visits).
+    let calls = LOOP_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(calls < 100_000, "{calls} calls of inner_guards");
 }
 
 #[corvis::test]

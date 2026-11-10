@@ -160,13 +160,19 @@ fn auth_guards_in(guard: &dyn crate::common::guard::CanActivate, depth: usize) -
     Ok(found)
 }
 
+/// How many guards the walk for the guard-order warning visits for one route, at most.
+const MAX_GUARDS_WALKED: usize = 1024;
+
 /// Pushes, in execution order, a `true` for every `AuthGuard` and a `false` for every `ThrottlerGuard` among `guard`
 /// and the guards it delegates to through `CanActivate::inner_guards` (a composite is flattened where it stands).
 /// Stops below [`MAX_GUARD_DEPTH`].
-fn flatten_guard_kinds(guard: &dyn crate::common::guard::CanActivate, depth: usize, out: &mut Vec<bool>) {
-    if depth > MAX_GUARD_DEPTH {
+fn flatten_guard_kinds(guard: &dyn crate::common::guard::CanActivate, depth: usize, out: &mut Vec<bool>, budget: &mut usize) {
+    // The depth cap alone does not stop a guard that lists itself twice: the walk would visit 2^depth guards. The
+    // budget of visited guards does; a route with more guards than that gets no warning, which is all this is for.
+    if depth > MAX_GUARD_DEPTH || *budget == 0 {
         return;
     }
+    *budget -= 1;
     if auth_guard_of(guard).is_some() {
         out.push(true);
     }
@@ -174,7 +180,7 @@ fn flatten_guard_kinds(guard: &dyn crate::common::guard::CanActivate, depth: usi
         out.push(false);
     }
     for inner in guard.inner_guards() {
-        flatten_guard_kinds(inner, depth + 1, out);
+        flatten_guard_kinds(inner, depth + 1, out, budget);
     }
 }
 
@@ -185,13 +191,14 @@ fn flatten_guard_kinds(guard: &dyn crate::common::guard::CanActivate, depth: usi
 /// warning.
 fn warn_throttler_after_auth(route: &crate::router::CompiledRoute) {
     let mut kinds = Vec::new();
+    let mut budget = MAX_GUARDS_WALKED;
     for guard in &route.guards {
-        flatten_guard_kinds(guard.as_ref(), 0, &mut kinds);
+        flatten_guard_kinds(guard.as_ref(), 0, &mut kinds, &mut budget);
     }
     let Some(first_auth) = kinds.iter().position(|&is_auth| is_auth) else { return };
     if kinds[first_auth..].iter().any(|&is_auth| !is_auth) {
         crate::logger::Logger::new("AuthGuard").warn(format!(
-            "AuthGuard runs before ThrottlerGuard on {} {}: the rate limit is checked after authentication.              Register ThrottlerGuard as a global guard (Provider::app_guard) or list it first",
+            "AuthGuard runs before ThrottlerGuard on {} {}: the rate limit is checked after authentication. Register ThrottlerGuard as a global guard (Provider::app_guard) or list it first",
             route.method.as_str(),
             route.path
         ));

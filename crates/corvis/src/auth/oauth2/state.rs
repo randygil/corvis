@@ -67,6 +67,9 @@ pub(crate) struct Flow {
     /// The session the flow started under (see [`session_binding`]): `None` when no session is in use for the
     /// application, so the callback does not check one.
     pub(crate) binding: Option<String>,
+    /// The user the request that started the flow carried (see [`user_binding`]): `None` in a record written before
+    /// this field existed, which counts as a flow started by nobody.
+    pub(crate) user: Option<String>,
 }
 
 /// The binding of a flow that started without a session.
@@ -101,6 +104,40 @@ pub(crate) fn binding_matches(flow: &Flow, current: Option<&str>) -> bool {
         (Some(started), Some(now)) => ct_eq(started.as_bytes(), now.as_bytes()),
         _ => true,
     }
+}
+
+/// The binding of a flow that started with no user on the request.
+const NO_USER: &str = "-";
+
+/// What ties a flow to the user the request that started it carried, whatever authenticated that user (a token, an
+/// API key, the session strategy): a digest of the serialized user, of the state and of the strategy, or [`NO_USER`].
+/// The session binding does not cover an identity that does not live in the session: a logout that only drops a token
+/// and another user's login with theirs leave the session untouched. With `keys` (the cookie storage, whose record the
+/// browser can read) the digest is keyed, so it is no oracle for guesses of the user; the session storage keeps its
+/// record on the server and uses a plain digest.
+pub(crate) fn user_binding(keys: Option<&CookieKeys>, strategy: &str, state: &str, user: Option<&Value>) -> String {
+    let Some(user) = user else { return NO_USER.to_string() };
+    let input = format!("corvis-oauth2-user-v1|{strategy}|{state}|{user}");
+    let digest = match keys {
+        Some(keys) => {
+            let signed = keys.sign(&input);
+            Sha256::digest(signed.rsplit('.').next().unwrap_or("").as_bytes())
+        }
+        None => Sha256::digest(input.as_bytes()),
+    };
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+/// `true` when the callback may complete the flow for the user its request carries. A callback with no user has
+/// nobody to attach the provider's identity to, so it is a plain login and passes. A callback WITH a user must be the
+/// user the flow was started by: a flow started by someone else, or by nobody (which cannot be told apart from
+/// someone else's on a shared browser), is refused, so the provider account of one user is never linked to another.
+pub(crate) fn user_matches(flow: &Flow, current: &str) -> bool {
+    if current == NO_USER {
+        return true;
+    }
+    let started = flow.user.as_deref().unwrap_or(NO_USER);
+    ct_eq(started.as_bytes(), current.as_bytes())
 }
 
 /// Prints nothing: a flow holds a state and a verifier.
@@ -175,6 +212,9 @@ impl FlowSet {
                 if let Some(b) = &f.binding {
                     m.insert("b".into(), json!(b));
                 }
+                if let Some(u) = &f.user {
+                    m.insert("u".into(), json!(u));
+                }
                 Value::Object(m)
             })
             .collect();
@@ -207,7 +247,12 @@ impl FlowSet {
                 Some(Value::String(b)) if b == NO_SESSION || is_state_shape(b) => Some(b.clone()),
                 Some(_) => continue,
             };
-            set.flows.push(Flow { state: state.to_string(), verifier, issued, return_to, binding });
+            let user = match entry.get("u") {
+                None => None,
+                Some(Value::String(u)) if u == NO_USER || is_state_shape(u) => Some(u.clone()),
+                Some(_) => continue,
+            };
+            set.flows.push(Flow { state: state.to_string(), verifier, issued, return_to, binding, user });
         }
         set
     }
@@ -302,7 +347,14 @@ mod tests {
     }
 
     fn flow(n: u8, issued: i64) -> Flow {
-        Flow { state: format!("{:0>43}", n), verifier: Some(format!("{:0>43}", n + 100)), issued, return_to: None, binding: None }
+        Flow {
+            state: format!("{:0>43}", n),
+            verifier: Some(format!("{:0>43}", n + 100)),
+            issued,
+            return_to: None,
+            binding: None,
+            user: None,
+        }
     }
 
     #[test]
@@ -512,5 +564,49 @@ mod tests {
         let kept = FlowSet::decode(&record, "google", false);
         assert!(!kept.is_empty() && kept.flows.len() < 4);
         assert_eq!(kept.flows.last().unwrap().state, flow(3, 0).state, "the newest flow is kept");
+    }
+
+    #[test]
+    fn a_flow_is_bound_to_the_user_that_started_it() {
+        let (ana, bob) = (json!({ "id": 1 }), json!({ "id": 2 }));
+        let state = flow(1, 0).state;
+        let by_ana = user_binding(Some(&keys()), "link", &state, Some(&ana));
+        let by_bob = user_binding(Some(&keys()), "link", &state, Some(&bob));
+        let by_nobody = user_binding(Some(&keys()), "link", &state, None);
+        assert_eq!(by_nobody, NO_USER);
+        assert!(is_state_shape(&by_ana), "a digest survives the record's own check: {by_ana}");
+        assert_ne!(by_ana, by_bob);
+        assert_eq!(by_ana, user_binding(Some(&keys()), "link", &state, Some(&ana)), "the same user gives the same digest");
+        // Useless for another flow, another strategy or without the key.
+        assert_ne!(by_ana, user_binding(Some(&keys()), "link", &flow(2, 0).state, Some(&ana)));
+        assert_ne!(by_ana, user_binding(Some(&keys()), "other", &state, Some(&ana)));
+        assert_ne!(by_ana, user_binding(None, "link", &state, Some(&ana)));
+
+        let started_by = |user: Option<&str>| Flow { user: user.map(str::to_string), ..flow(1, 0) };
+        // The user that started it completes it; another user, or a user on a flow nobody started, does not.
+        assert!(user_matches(&started_by(Some(&by_ana)), &by_ana));
+        assert!(!user_matches(&started_by(Some(&by_ana)), &by_bob));
+        assert!(!user_matches(&started_by(Some(NO_USER)), &by_bob));
+        assert!(!user_matches(&started_by(None), &by_bob), "a record without the field was started by nobody");
+        // A callback that carries no user is a plain login: nobody to link the provider's identity to.
+        assert!(user_matches(&started_by(Some(&by_ana)), NO_USER));
+        assert!(user_matches(&started_by(Some(NO_USER)), NO_USER));
+        assert!(user_matches(&started_by(None), NO_USER));
+    }
+
+    #[test]
+    fn the_user_binding_travels_with_the_record_and_a_malformed_one_drops_the_flow() {
+        let mut set = FlowSet::default();
+        let bound = user_binding(Some(&keys()), "google", &flow(1, 1000).state, Some(&json!({ "id": 1 })));
+        set.push(Flow { user: Some(bound.clone()), ..flow(1, 1000) });
+        set.push(Flow { user: Some(NO_USER.to_string()), ..flow(2, 1000) });
+        let record = set.encode("google", false);
+        let back = FlowSet::decode(&record, "google", false);
+        assert_eq!(back.flows.len(), 2);
+        assert_eq!(back.flows[0].user.as_deref(), Some(bound.as_str()));
+        assert_eq!(back.flows[1].user.as_deref(), Some(NO_USER));
+        let mut tampered = record.clone();
+        tampered["f"][0]["u"] = json!("not a digest!");
+        assert_eq!(FlowSet::decode(&tampered, "google", false).flows.len(), 1, "the entry with a malformed binding is no flow");
     }
 }
