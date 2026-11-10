@@ -6,7 +6,7 @@ status: partial
 
 Corvis tiene el **modelo de estrategias** de Passport y de su integración con el framework original: estrategias registradas por nombre, un `AuthGuard` que las ejecuta, el usuario en la request y el `401` que responde el original cuando todas las estrategias fallan. Su comportamiento se comprueba contra la integración original de passport (12.0.1) sobre `passport` 0.7.0 con respuestas grabadas.
 
-Lo que hay ahora es el núcleo: el trait `Strategy` que implementas para tus propias estrategias, `AuthGuard`, `PassportModule` y el parámetro `User<T>`, la [estrategia JWT](#la-estrategia-jwt), la [estrategia local](#estrategia-local-usuario-y-contrasena) (usuario y contraseña, con la feature `auth-local`) y las [API keys](#api-keys) (con la feature `auth-api-key`), además de la guía para [escribir una estrategia](#escribir-una-estrategia) propia. Las demás estrategias llegan una a una: sesiones y OAuth2 tienen su propio issue (#44 y #43). Un [guard propio sobre `JwtModule`](#alternativa-jwtmodule-guards) sigue disponible.
+Lo que hay ahora es el núcleo: el trait `Strategy` que implementas para tus propias estrategias, `AuthGuard`, `PassportModule` y el parámetro `User<T>`, la [estrategia JWT](#la-estrategia-jwt), la [estrategia local](#estrategia-local-usuario-y-contrasena) (usuario y contraseña, con la feature `auth-local`) y las [API keys](#api-keys) (con la feature `auth-api-key`), además de la guía para [escribir una estrategia](#escribir-una-estrategia) propia. Las [sesiones](#sesiones) (la feature `auth-session`) inician sesión de un usuario y lo restauran en las peticiones siguientes. OAuth2 llega con su propio issue (#43). Un [guard propio sobre `JwtModule`](#alternativa-jwtmodule-guards) sigue disponible.
 
 ## El modelo
 
@@ -187,8 +187,98 @@ Cuando todas las estrategias fallan, la respuesta es `401 {"message":"Unauthoriz
 - **Errores al arrancar.** El original responde `500 Internal server error` en cada petición cuando un guard nombra una estrategia desconocida, y solo registra un error cuando `AuthGuard()` no tiene estrategia por defecto. Corvis detiene `init()` antes de `configure` del middleware y de los hooks de inicio, con un único error que lista todas las rutas (método y ruta) y el nombre que falta. Cubre también un `AuthGuard::chain` vacío, un valor por defecto no registrado y dos llamadas a `PassportModule::register` con valores por defecto distintos. Un guard propio que llama al `Authenticator` con un nombre desconocido sigue recibiendo el `500` del original en tiempo de petición. Un guard que envuelve un `AuthGuard` (un guard compuesto) lo lista en `CanActivate::inner_guards`, que la comprobación recorre a cualquier profundidad, así que un error de escritura en el nombre envuelto también detiene `init()`: `fn inner_guards(&self) -> Vec<&dyn CanActivate> { vec![&self.jwt] }`. No devuelvas el guard interno desde `as_any`: ese método es para el guard mismo, y haría saltar el aviso de gateways de abajo en un wrapper que deja pasar los destinos públicos.
 - **Sin `AuthGuard` en gateways de WebSocket.** Un `AuthGuard` global también llega a los mensajes de los gateways por defecto, donde el original tampoco funciona. Deniega el mensaje con `Forbidden resource` sin ejecutar una estrategia, y la aplicación registra un aviso por gateway al arrancar. Autentica los sockets en `handle_connection`, o llama a `apply_global_enhancers_to_gateways(false)`, que quita todos los enhancers globales de los gateways, no solo el `AuthGuard`.
 - **El usuario tipado vive en su propio espacio.** `User<T>` refleja solo lo que guardó un `AuthGuard`, nunca otra extensión de la petición de tipo `T`, y `Request::set_user` lo elimina, así que si un guard posterior fija su propio usuario `User<T>` responde `401`. Cuando una estrategia hace pass, o un guard opcional no encuentra credenciales, se eliminan tanto el usuario JSON como el tipado (`req.user` es `undefined` o `null` en el original).
-- **Sin login de sesión.** `AuthGuard` nunca inicia sesión por sí solo; las sesiones llegan con su propio issue.
+- **El login de sesión es opcional.** `AuthGuard` nunca escribe en una sesión salvo que se construya con `.log_in()`; ver [Sesiones](#sesiones).
 - **Sin `property`, `failureRedirect` ni mensajes flash.** El usuario siempre se guarda para `User<T>` y `request.user()`.
+
+## Sesiones
+
+La feature `auth-session` añade la parte de sesión de Passport sobre las [sesiones de servidor](/es/http/session): el
+usuario se guarda en la sesión al iniciar sesión y se restaura en las peticiones siguientes.
+
+| Original | Corvis |
+|---|---|
+| `passport.serializeUser` y `passport.deserializeUser` | `SessionSerializer::serialize_user` y `deserialize_user` |
+| `app.use(passport.session())` | `SessionModule` (su middleware) y `SessionStrategy<S>`, la estrategia llamada `"session"` |
+| `req.logIn(user)` | `AuthGuard::new("local").log_in()`, o `Authenticator::log_in(&req, &authenticated_user).await?` |
+| `req.logout()` | `Authenticator::log_out(&req).await?` |
+| un guard sobre `req.isAuthenticated()` | `AuthGuard::new("session")`: `401 {"message":"Unauthorized","statusCode":401}` si es anónimo. La estrategia de sesión del original siempre pasa |
+| `keepSessionInfo` | `SessionOptions::keep_session_info_on_login(true)` (una opción del módulo, no de cada llamada) |
+
+Un ejemplo completo, con la [estrategia local](#estrategia-local-usuario-y-contrasena) para el login:
+
+```rust
+use corvis::auth::session::{SessionModule, SessionSerializer, SessionStrategy};
+use corvis::auth::{AuthGuard, Authenticator, User};
+
+#[injectable]
+pub struct UserSerializer {
+    users: Arc<UsersService>,
+}
+
+#[async_trait]
+impl SessionSerializer for UserSerializer {
+    type User = Account;
+
+    // lo que va en `passport.user`: un objeto, nunca un `0` o `""` suelto
+    async fn serialize_user(&self, user: &Account) -> Result<Value, HttpException> {
+        Ok(json!({ "id": user.id }))
+    }
+
+    // `None` cuando el usuario ya no existe: la petición es anónima y se descarta el usuario obsoleto
+    async fn deserialize_user(&self, _req: &Request, stored: Value) -> Result<Option<Account>, HttpException> {
+        let Some(id) = stored.get("id").and_then(Value::as_u64) else { return Ok(None) };
+        Ok(self.users.find(id).await)
+    }
+}
+
+#[module(
+    imports = [SessionModule::for_root(session_options())],
+    providers = [
+        UsersService,
+        Provider::class::<PasswordHasher>(),
+        Provider::class::<LocalAuth>(),
+        Provider::strategy::<LocalStrategy<LocalAuth>>(),
+        Provider::strategy::<SessionStrategy<UserSerializer>>(),
+        UserSerializer,
+    ],
+    controllers = [AuthController],
+)]
+pub struct AuthModule;
+
+#[controller("auth")]
+pub struct AuthController {
+    authenticator: Arc<Authenticator>,
+}
+
+#[routes]
+impl AuthController {
+    #[post("login")]
+    #[use_guards(AuthGuard::new("local").log_in())]
+    fn login(&self, user: User<Account>) -> Account {
+        user.0
+    }
+
+    #[get("me")]
+    #[use_guards(AuthGuard::new("session"))]
+    fn me(&self, user: User<Account>) -> Account {
+        user.0
+    }
+
+    #[post("logout")]
+    #[http_code(204)]
+    async fn logout(&self, #[req] req: Request) -> HttpResult<()> {
+        self.authenticator.log_out(&req).await
+    }
+}
+```
+
+`session_options()` construye las `SessionOptions`, ver [Sesión](/es/http/session#configuracion). `Authenticator::log_in`
+recibe un `AuthenticatedUser` (`AuthenticatedUser::new(user)?`). Iniciar sesión genera un identificador de sesión nuevo y
+destruye el anterior, lo que evita la fijación de sesión. El middleware restaura el usuario en todas las rutas, también
+las públicas, antes de que se ejecuten los guards. `AuthGuard::new("local").log_in()` es un error de arranque cuando no
+hay ningún `SessionStrategy` registrado, y cuando se combina con la estrategia `"session"`. El resto de las reglas (qué
+hace un guard opcional con el usuario de la sesión, `AuthGuard::chain(["session", "jwt"])`, el `500` de un guardado
+fallido) están en [Sesión](/es/http/session#guards-y-el-usuario-de-la-sesion).
 
 ## La estrategia JWT
 

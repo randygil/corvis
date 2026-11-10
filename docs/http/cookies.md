@@ -29,8 +29,7 @@ Parsing rules:
 - The double quotes wrapping the value are removed.
 - Only values that contain `%` are decoded; if the escape is not valid, the original value is kept. An escape needs two hexadecimal digits (`%+A` is not valid).
 
-There are no signed cookies (`signedCookies`): if you need the client not to be able to alter the value,
-store a JWT signed with `JwtService` or an opaque identifier.
+Signed cookies (the `signedCookies` of `cookie-parser`) are covered in [Signed cookies](#signed-cookies).
 
 ## Writing cookies with `#[res(passthrough)]`
 
@@ -101,6 +100,45 @@ the `cookie` 0.7 package (which fixes CVE-2024-47764): a value taken from the re
 attributes. If something is not valid, the call `panic`s with the package's `TypeError` and the
 client receives a generic `500` without the cookie. To check without a `panic`, use
 `Cookie::try_to_string()`.
+
+## Signed cookies
+
+With the `auth-session` cargo feature, `CookieKeys` signs a value so the client cannot alter it (the `signedCookies` of
+`cookie-parser`). The signature is an HMAC-SHA256 of the value with a secret, in the `cookie-signature` format:
+
+```rust
+use corvis::http::CookieKeys;
+
+let keys = CookieKeys::new([std::env::var("COOKIE_SECRET").unwrap_or_default()])?;
+
+let signed = keys.sign("dark");                    // "s:dark.<43 base64 characters>"
+let value: Option<String> = keys.unsign(&signed);  // Some("dark")
+let current: bool = keys.verified_with_current(&signed);
+```
+
+- `CookieKeys::new([..])` takes 1 to 8 secrets, each at least 32 bytes; anything else is an error. The first one signs and
+  all of them verify. The error names the position and the length of the secret, never the secret.
+- `keys.unsign(&input)` returns the value, or `None` when the input is not `s:`-prefixed or the signature does not match.
+- `keys.verified_with_current(&input)` is true only when the first secret verifies. Use it to tell a cookie that still
+  needs to be signed again after a rotation.
+- A request reads one with `req.signed_cookie("prefs", &keys)`. It gives `None` when the cookie is absent, unsigned or
+  invalid. `j:` JSON cookies are not decoded.
+- Write it with the usual options:
+
+```rust
+#[post("theme")]
+#[http_code(204)]
+fn theme(&self, #[res(passthrough)] res: Res) {
+    let keys = &self.keys;
+    res.cookie("prefs", &keys.sign("dark"), CookieOptions::new().http_only(true));
+}
+```
+
+An input over 4096 bytes is refused before any HMAC is computed, and the signature is compared in constant time. To
+rotate, put the new secret first and keep the old one until the cookies signed with it have expired: `CookieKeys::new([new,
+old])`. The `Debug` output of `CookieKeys` is redacted, and no error contains the secret.
+
+For a whole session (an identifier in a signed cookie and the data on the server), use [Session](/http/session).
 
 ## Testing
 

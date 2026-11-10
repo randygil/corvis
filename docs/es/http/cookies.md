@@ -30,8 +30,7 @@ Reglas del parseo:
 - Solo se decodifican los valores que contienen `%`; si el escape no es válido se conserva el valor
   original. Un escape exige dos dígitos hexadecimales (`%+A` no es válido).
 
-No hay cookies firmadas (`signedCookies`): si necesitas que el cliente no pueda alterar el valor,
-guarda un JWT firmado con `JwtService` o un identificador opaco.
+Las cookies firmadas (las `signedCookies` de `cookie-parser`) se explican en [Cookies firmadas](#cookies-firmadas).
 
 ## Escribir cookies con `#[res(passthrough)]`
 
@@ -102,6 +101,47 @@ el paquete `cookie` 0.7 (corrige CVE-2024-47764): un valor tomado de la petició
 atributos. Si algo no es válido, la llamada entra en `panic` con el `TypeError` del paquete y el
 cliente recibe un `500` genérico sin la cookie. Para comprobarlo sin `panic`, usa
 `Cookie::try_to_string()`.
+
+## Cookies firmadas
+
+Con la feature de cargo `auth-session`, `CookieKeys` firma un valor para que el cliente no pueda alterarlo (las
+`signedCookies` de `cookie-parser`). La firma es un HMAC-SHA256 del valor con un secreto, en el formato de
+`cookie-signature`:
+
+```rust
+use corvis::http::CookieKeys;
+
+let keys = CookieKeys::new([std::env::var("COOKIE_SECRET").unwrap_or_default()])?;
+
+let signed = keys.sign("dark");                    // "s:dark.<43 caracteres base64>"
+let value: Option<String> = keys.unsign(&signed);  // Some("dark")
+let current: bool = keys.verified_with_current(&signed);
+```
+
+- `CookieKeys::new([..])` recibe de 1 a 8 secretos, cada uno de al menos 32 bytes; cualquier otra cosa es un error. El
+  primero firma y todos verifican. El error nombra la posición y la longitud del secreto, nunca el secreto.
+- `keys.unsign(&input)` devuelve el valor, o `None` cuando la entrada no empieza por `s:` o la firma no coincide.
+- `keys.verified_with_current(&input)` es verdadero solo cuando verifica el primer secreto. Úsalo para saber qué cookie
+  todavía debe firmarse de nuevo tras una rotación.
+- Una petición lee una con `req.signed_cookie("prefs", &keys)`. Da `None` cuando la cookie está ausente, sin firmar o es
+  inválida. Las cookies JSON con `j:` no se decodifican.
+- Se escribe con las opciones habituales:
+
+```rust
+#[post("theme")]
+#[http_code(204)]
+fn theme(&self, #[res(passthrough)] res: Res) {
+    let keys = &self.keys;
+    res.cookie("prefs", &keys.sign("dark"), CookieOptions::new().http_only(true));
+}
+```
+
+Una entrada de más de 4096 bytes se rechaza antes de calcular ningún HMAC, y la firma se compara en tiempo constante. Para
+rotar, pon el secreto nuevo primero y conserva el viejo hasta que expiren las cookies firmadas con él:
+`CookieKeys::new([nuevo, viejo])`. La salida `Debug` de `CookieKeys` está censurada y ningún error contiene el secreto.
+
+Para una sesión completa (un identificador en una cookie firmada y los datos en el servidor) usa
+[Sesión](/es/http/session).
 
 ## Pruebas
 

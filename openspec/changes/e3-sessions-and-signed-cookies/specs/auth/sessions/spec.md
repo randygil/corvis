@@ -388,3 +388,70 @@ marked in the fixture with its reason and asserted from this specification.
 - **WHEN** a property test sends random `Cookie` headers, including mutations of valid session cookies
 - **THEN** the middleware never panics, never answers with an error because of the cookie, and loads a session only
   for a correctly signed identifier that is in the store
+
+### Requirement: Repeated session cookies are not believed
+A request with more than one cookie of the session name, in one `Cookie` header or several, MUST be treated as having
+no session cookie, so a cookie planted from a sibling subdomain cannot pick the session. Documented divergence:
+`Request::cookie` and the original take the first one.
+
+#### Scenario: Two valid cookies
+- **WHEN** a request carries two validly signed session cookies, of two different sessions or of the same one
+- **THEN** no session is loaded and the store is not read
+
+### Requirement: Ended sessions clear the cookie
+When the session that a verified cookie named is destroyed with `Session::destroy` or found expired, and no new session
+is saved in the same request, the response SHALL clear the cookie. Documented divergence: the original sends nothing
+after `destroy()`.
+
+#### Scenario: Idle session in a store that keeps records
+- **WHEN** an idle session's cookie arrives and the store still holds the record
+- **THEN** the record is destroyed and the response expires the cookie
+
+### Requirement: Destruction survives a cancelled request
+Identifiers queued for destruction by a login, a logout, `regenerate` or `destroy` MUST still be destroyed in the store
+when the request is cancelled (the client went away) before the session is committed.
+
+#### Scenario: Client disconnects after destroy
+- **WHEN** a handler destroys the session and the request future is dropped before it returns
+- **THEN** the record is gone from the store
+
+### Requirement: Store calls are bounded in time
+Every call to the store MUST be bounded by `store_timeout` (default 5 seconds, allowed 100 milliseconds to 60 seconds,
+other values stop the application at startup). A call that takes longer fails like a store error, as a 500.
+
+#### Scenario: Slow store
+- **WHEN** a store takes longer than `store_timeout` to load a session
+- **THEN** the response is the 500 of any store failure
+
+### Requirement: Anonymous sessions are evicted first
+The memory store MUST evict sessions without a logged-in user (`passport.user`) before any session with one, so a flood
+of anonymous sessions cannot evict logged-in users.
+
+#### Scenario: Flood of anonymous sessions
+- **WHEN** 10 000 anonymous sessions are created in a store with room for 10 that holds 5 logged-in sessions
+- **THEN** the 5 logged-in sessions are still there
+
+### Requirement: An empty user is never restored or stored
+A stored user, or a user the serializer returns, that is JSON `null`, `false`, `0` or `""` MUST NOT authenticate a
+request: it is removed from the session. `Authenticator::log_in` MUST refuse such a user, or a serialized value of
+that kind, with a 500 and store nothing.
+
+#### Scenario: Stored empty user
+- **WHEN** a session record holds `passport.user` equal to `null`, `false`, `0` or `""`
+- **THEN** the request is anonymous and `passport.user` is removed from the session
+
+### Requirement: Regenerate matches the original, with a variant that keeps data
+`Session::regenerate()` SHALL start a new empty session with a new identifier, as `req.session.regenerate()` does.
+`Session::regenerate_keeping_data()` SHALL replace the identifier and keep the data. Both destroy the old record when
+the request ends.
+
+#### Scenario: Regenerate drops the data
+- **WHEN** a handler regenerates a session that holds a value
+- **THEN** the new session is empty, matching the recorded original, and the old record is gone
+
+### Requirement: The session applies to its cookie path
+A request whose path does not start with the cookie `Path` MUST run without a session, as in the original.
+
+#### Scenario: Request outside the path
+- **WHEN** the cookie path is `/app` and the request path is `/other`
+- **THEN** `Request::session()` returns nothing

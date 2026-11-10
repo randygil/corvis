@@ -4,8 +4,9 @@ status: unavailable
 
 # CSRF protection
 
-Corvis does not include an anti-CSRF middleware (synchronized tokens or *double submit cookie*). It also does not
-have server-side sessions, which is where those tokens are usually stored.
+Corvis does not include an anti-CSRF middleware (synchronized tokens or *double submit cookie*). It does have
+[server-side sessions](/http/session), where such tokens could be kept, but nothing generates or checks them for you:
+the `SameSite=Lax` default of the session cookie is a layer, not a replacement.
 
 A CSRF attack needs the browser to attach credentials automatically, that is, cookies.
 Depending on how you authenticate, these are the real alternatives:
@@ -18,8 +19,9 @@ do not need additional CSRF protection, as long as you do not also store the tok
 
 ## If you authenticate with cookies
 
-1. **`SameSite`**: issue the cookie with `same_site("lax")` or `same_site("strict")`. The browser does not
-   send it on `POST` requests from other sites.
+1. **`SameSite`**: issue the cookie with `same_site("lax")` or `same_site("strict")`. The session cookie of
+   [`SessionModule`](/http/session) is `SameSite=Lax` by default. In current browsers it is not sent on cross-site
+   `POST`, `PUT` and `DELETE` requests or on `fetch` and XHR requests.
 
    ```rust
    #[post("login")]
@@ -38,7 +40,21 @@ do not need additional CSRF protection, as long as you do not also store the tok
    `Res` and `CookieOptions` are imported from `corvis` (`use corvis::{CookieOptions, Res};`). See
    [Cookies](/http/cookies).
 
-2. **Check `Origin`** on requests that change state. A global middleware is enough:
+   What `SameSite=Lax` does **not** cover:
+
+   - It sends the cookie on top-level cross-site `GET` navigations (a link, a redirect). A `GET` route must never change
+     state.
+   - It does not stop requests from sibling subdomains or other origins of the same site: `https://a.example.com` and
+     `https://b.example.com` are the same site.
+   - It does not apply when you configure `SameSite=None`.
+   - It depends on the browser enforcing it.
+   - It does not stop login CSRF (an attacker logs the victim in to the attacker's account).
+
+   Keep `Secure` and `HttpOnly`, and use the `__Host-` name prefix (`.name("__Host-sid")` in `SessionOptions`), which
+   stops a sibling subdomain from setting the cookie.
+
+2. **Check `Origin`** (or `Referer`, or require a custom header such as `X-Requested-With`, or a token) on requests that
+   change state. A global middleware is enough:
 
    ```rust
    app.use_fn(|req, next| async move {

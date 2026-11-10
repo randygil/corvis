@@ -4,8 +4,9 @@ status: unavailable
 
 # Protección CSRF
 
-Corvis no incluye un middleware anti-CSRF (tokens sincronizados o *double submit cookie*). Tampoco
-tiene sesiones de servidor, que es donde esos tokens suelen guardarse.
+Corvis no incluye un middleware anti-CSRF (tokens sincronizados o *double submit cookie*). Sí tiene
+[sesiones de servidor](/es/http/session), donde podrían guardarse esos tokens, pero nada los genera ni los comprueba por
+ti: el `SameSite=Lax` por defecto de la cookie de sesión es una capa, no un reemplazo.
 
 Un ataque CSRF necesita que el navegador adjunte credenciales automáticamente, es decir, cookies.
 Según cómo autentiques, estas son las alternativas reales:
@@ -18,8 +19,9 @@ necesitas protección CSRF adicional, siempre que no guardes además el token en
 
 ## Si autenticas con cookies
 
-1. **`SameSite`**: emite la cookie con `same_site("lax")` o `same_site("strict")`. El navegador no la
-   envía en peticiones `POST` desde otros sitios.
+1. **`SameSite`**: emite la cookie con `same_site("lax")` o `same_site("strict")`. La cookie de sesión de
+   [`SessionModule`](/es/http/session) es `SameSite=Lax` por defecto. En los navegadores actuales no se envía en
+   peticiones `POST`, `PUT` y `DELETE` entre sitios ni en peticiones `fetch` y XHR.
 
    ```rust
    #[post("login")]
@@ -38,7 +40,21 @@ necesitas protección CSRF adicional, siempre que no guardes además el token en
    `Res` y `CookieOptions` se importan de `corvis` (`use corvis::{CookieOptions, Res};`). Ver
    [Cookies](/es/http/cookies).
 
-2. **Comprobar `Origin`** en las peticiones que cambian estado. Un middleware global basta:
+   Lo que `SameSite=Lax` **no** cubre:
+
+   - Envía la cookie en las navegaciones `GET` de nivel superior entre sitios (un enlace, una redirección). Una ruta
+     `GET` nunca debe cambiar estado.
+   - No detiene peticiones de subdominios hermanos ni de otros orígenes del mismo sitio: `https://a.example.com` y
+     `https://b.example.com` son el mismo sitio.
+   - No se aplica cuando configuras `SameSite=None`.
+   - Depende de que el navegador lo aplique.
+   - No detiene el CSRF de inicio de sesión (un atacante inicia la sesión de la víctima en la cuenta del atacante).
+
+   Mantén `Secure` y `HttpOnly`, y usa el prefijo de nombre `__Host-` (`.name("__Host-sid")` en `SessionOptions`), que
+   impide que un subdominio hermano establezca la cookie.
+
+2. **Comprobar `Origin`** (o `Referer`, o exigir una cabecera propia como `X-Requested-With`, o un token) en las
+   peticiones que cambian estado. Un middleware global basta:
 
    ```rust
    app.use_fn(|req, next| async move {
