@@ -1,8 +1,10 @@
 //! Options of the Socket.IO server: Node's `socket.io` defaults where there is a Node default, and a bounded default
 //! for everything a client can make the server hold.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use super::adapter::{Adapter, AdapterFactory, LocalNamespace};
 use super::engine::options::{EngineOptions, EngineOptionsError, MAX_DURATION};
 
 /// `connectTimeout` of Node's `socket.io`.
@@ -34,6 +36,16 @@ pub const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
 /// The default share of the server-wide unread budget one client address may hold: one in this many (see
 /// [`IoOptions::max_address_share`]).
 pub const DEFAULT_ADDRESS_SHARE_DIVISOR: usize = 16;
+
+/// Rooms one socket may be in, its own id's room included (Node has no bound).
+pub const DEFAULT_MAX_ROOMS_PER_SOCKET: usize = 1_000;
+/// Longest room name, in bytes (Node accepts any value).
+pub const DEFAULT_MAX_ROOM_NAME_LENGTH: usize = 256;
+/// What the answers collected by one broadcast with acknowledgements may cost (Node has no bound): 16 MiB.
+pub const DEFAULT_MAX_BROADCAST_ACK_BYTES: usize = 16 * 1024 * 1024;
+/// The shortest `max_room_name_length` accepted: a socket id (20 characters) must fit, because every socket is in the
+/// room named after its id.
+pub const MIN_ROOM_NAME_LENGTH: usize = 20;
 
 /// Why a set of [`IoOptions`] was refused when creating the server.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -70,6 +82,9 @@ pub enum IoOptionsError {
 /// | [`middleware_timeout`](Self::middleware_timeout) | 10 s | none |
 /// | [`max_address_share`](Self::max_address_share) | 1/16 of the engine's `max_total_unread_bytes`, at least one maximum packet | none |
 /// | [`admission_timeout`](Self::admission_timeout) | 30 s | none |
+/// | [`max_rooms_per_socket`](Self::max_rooms_per_socket) | 1,000 (own id's room included) | none |
+/// | [`max_room_name_length`](Self::max_room_name_length) | 256 bytes | none |
+/// | [`max_broadcast_ack_bytes`](Self::max_broadcast_ack_bytes) | 16 MiB per broadcast | none |
 ///
 /// Other differences, fixed rather than configurable: JSON nested deeper than 127 levels is refused; a client
 /// acknowledgement id has at most 16 digits and is at most 2^53 - 1; a connection holds at most one socket per
@@ -94,6 +109,10 @@ pub struct IoOptions {
     pub(crate) max_address_share: Option<usize>,
     pub(crate) admission_timeout: Duration,
     pub(crate) finish_handlers_after_client_close: bool,
+    pub(crate) max_rooms_per_socket: usize,
+    pub(crate) max_room_name_length: usize,
+    pub(crate) max_broadcast_ack_bytes: usize,
+    pub(crate) adapter: AdapterFactory,
 }
 
 impl Default for IoOptions {
@@ -114,6 +133,10 @@ impl Default for IoOptions {
             max_address_share: None,
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
             finish_handlers_after_client_close: false,
+            max_rooms_per_socket: DEFAULT_MAX_ROOMS_PER_SOCKET,
+            max_room_name_length: DEFAULT_MAX_ROOM_NAME_LENGTH,
+            max_broadcast_ack_bytes: DEFAULT_MAX_BROADCAST_ACK_BYTES,
+            adapter: AdapterFactory::in_memory(),
         }
     }
 }
@@ -250,6 +273,45 @@ impl IoOptions {
         self
     }
 
+    /// The most rooms one socket may be in, the room named after its own id included. A join that would pass it
+    /// fails with `RoomError::TooManyRooms` and joins none of its rooms. Default 1,000, above zero. Node has no limit.
+    pub fn max_rooms_per_socket(mut self, rooms: usize) -> Self {
+        self.max_rooms_per_socket = rooms;
+        self
+    }
+
+    /// The longest room name, in bytes, in `join`, `to`, `within` and `except`. A join with a longer name fails, and
+    /// a broadcast operator given one fails every operation without sending anything (the name is never dropped:
+    /// dropping it could widen the broadcast). Default 256, at least 20 (a socket id must fit). Node accepts any
+    /// value.
+    pub fn max_room_name_length(mut self, bytes: usize) -> Self {
+        self.max_room_name_length = bytes;
+        self
+    }
+
+    /// What the answers collected by one broadcast with acknowledgements may cost, in the decoded-size model of
+    /// [`max_decoded_bytes`](Self::max_decoded_bytes). Once an answer would pass it the answers that arrived are
+    /// kept, the rest are dropped and the call fails with `BroadcastAckErrorKind::ResponsesTooLarge`. Default 16
+    /// MiB, above zero. Node has no limit.
+    pub fn max_broadcast_ack_bytes(mut self, bytes: usize) -> Self {
+        self.max_broadcast_ack_bytes = bytes;
+        self
+    }
+
+    /// The adapter of every namespace: `factory` is called once per namespace, when it is registered, with a handle to
+    /// the namespace's local sockets (Node's `io.adapter(Adapter)`). The default is the in-memory adapter.
+    ///
+    /// Unstable and hidden until the Redis adapter (#36) implements the trait once.
+    #[doc(hidden)]
+    pub fn adapter<A, F>(mut self, factory: F) -> Self
+    where
+        A: Adapter,
+        F: Fn(LocalNamespace) -> A + Send + Sync + 'static,
+    {
+        self.adapter = AdapterFactory::new(move |local| Arc::new(factory(local)) as Arc<dyn Adapter>);
+        self
+    }
+
     /// The least a session's address must be allowed to hold: one maximum packet, a decoded packet (`max_decoded_bytes`)
     /// next to the wire bytes of the largest packet (`max_attachments` attachments of `max_http_buffer_size`, or the one
     /// text message), each with its accounting overhead.
@@ -291,11 +353,20 @@ impl IoOptions {
             ("max_auth_bytes", self.max_auth_bytes),
             ("max_event_name_len", self.max_event_name_len),
             ("max_args", self.max_args),
+            ("max_rooms_per_socket", self.max_rooms_per_socket),
+            ("max_room_name_length", self.max_room_name_length),
+            ("max_broadcast_ack_bytes", self.max_broadcast_ack_bytes),
         ];
         for (option, value) in sizes {
             if value == 0 {
                 return Err(IoOptionsError::Zero { option });
             }
+        }
+        if self.max_room_name_length < MIN_ROOM_NAME_LENGTH {
+            return Err(IoOptionsError::Range {
+                option: "max_room_name_length",
+                reason: format!("must be at least {MIN_ROOM_NAME_LENGTH} (a socket id must fit), got {}", self.max_room_name_length),
+            });
         }
         // One maximal binary packet (a header and `max_attachments` attachments) must fit in the unread budget, or
         // a reassembly could pause the reads it needs to complete.
@@ -395,7 +466,18 @@ mod tests {
         assert_eq!(o.max_args, 128);
         assert_eq!(o.attachment_timeout, Duration::from_secs(30));
         assert_eq!(o.middleware_timeout, Duration::from_secs(10));
+        assert_eq!(o.max_rooms_per_socket, 1_000);
+        assert_eq!(o.max_room_name_length, 256);
+        assert_eq!(o.max_broadcast_ack_bytes, 16 * 1024 * 1024);
         assert!(o.validate().is_ok());
+    }
+
+    #[test]
+    fn a_room_name_length_shorter_than_a_socket_id_is_refused() {
+        let err = IoOptions::new().max_room_name_length(19).validate().unwrap_err();
+        assert!(matches!(err, IoOptionsError::Range { option: "max_room_name_length", .. }), "{err}");
+        assert!(IoOptions::new().max_room_name_length(20).validate().is_ok());
+        assert!(IoOptions::new().max_rooms_per_socket(1).validate().is_ok());
     }
 
     #[test]
@@ -412,6 +494,9 @@ mod tests {
             ("max_auth_bytes", IoOptions::new().max_auth_bytes(0)),
             ("max_event_name_len", IoOptions::new().max_event_name_len(0)),
             ("max_args", IoOptions::new().max_args(0)),
+            ("max_rooms_per_socket", IoOptions::new().max_rooms_per_socket(0)),
+            ("max_room_name_length", IoOptions::new().max_room_name_length(0)),
+            ("max_broadcast_ack_bytes", IoOptions::new().max_broadcast_ack_bytes(0)),
         ];
         for (name, options) in cases {
             let err = options.validate().unwrap_err();

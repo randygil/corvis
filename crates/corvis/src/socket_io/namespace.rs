@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 use futures::future::BoxFuture;
 use serde::Serialize;
 
+use super::adapter::{Adapter, LocalNamespace};
 use super::options::IoOptions;
 use super::socket::IoSocket;
 use super::value::IoValue;
@@ -76,6 +77,9 @@ pub struct IoNamespace {
 pub(crate) struct NamespaceInner {
     pub(crate) name: String,
     pub(crate) options: Arc<IoOptions>,
+    pub(crate) adapter: Arc<dyn Adapter>,
+    /// `Adapter::init` ran (it runs before the first cluster operation).
+    initialized: tokio::sync::OnceCell<()>,
     middleware: RwLock<Vec<Middleware>>,
     connection: RwLock<Vec<ConnectionHandler>>,
     sockets: RwLock<HashMap<String, IoSocket>>,
@@ -91,16 +95,30 @@ impl std::fmt::Debug for IoNamespace {
 
 impl IoNamespace {
     pub(crate) fn new(name: String, options: Arc<IoOptions>) -> IoNamespace {
-        IoNamespace {
-            inner: Arc::new(NamespaceInner {
-                name,
-                options,
-                middleware: RwLock::new(Vec::new()),
-                connection: RwLock::new(Vec::new()),
-                sockets: RwLock::new(HashMap::new()),
-                next_ack_id: AtomicU64::new(0),
-            }),
-        }
+        let inner = Arc::new_cyclic(|weak| NamespaceInner {
+            name,
+            // The factory gets a handle that does not keep the namespace alive, so an adapter cannot make a cycle.
+            adapter: options.adapter.build(LocalNamespace::new(weak.clone())),
+            options,
+            initialized: tokio::sync::OnceCell::new(),
+            middleware: RwLock::new(Vec::new()),
+            connection: RwLock::new(Vec::new()),
+            sockets: RwLock::new(HashMap::new()),
+            next_ack_id: AtomicU64::new(0),
+        });
+        IoNamespace { inner }
+    }
+
+    /// The adapter of this namespace. Unstable and hidden: for tests and for the layers built on this one.
+    #[doc(hidden)]
+    pub fn adapter(&self) -> &Arc<dyn Adapter> {
+        &self.inner.adapter
+    }
+
+    /// The adapter, after its `init` ran (once, before the first cluster operation).
+    pub(crate) async fn ready_adapter(&self) -> Result<&Arc<dyn Adapter>, super::adapter::AdapterError> {
+        self.inner.initialized.get_or_try_init(|| self.inner.adapter.init()).await?;
+        Ok(&self.inner.adapter)
     }
 
     /// The namespace name, with its leading `/`.
@@ -180,5 +198,21 @@ impl IoNamespace {
 
     pub(crate) fn options(&self) -> &Arc<IoOptions> {
         &self.inner.options
+    }
+}
+
+impl NamespaceInner {
+    pub(crate) fn socket(&self, id: &str) -> Option<IoSocket> {
+        self.sockets.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
+    }
+
+    /// The sockets with these ids under one read lock.
+    pub(crate) fn sockets_by_ids<'a>(&self, ids: impl IntoIterator<Item = &'a str>) -> Vec<IoSocket> {
+        let sockets = self.sockets.read().unwrap_or_else(|e| e.into_inner());
+        ids.into_iter().filter_map(|id| sockets.get(id).cloned()).collect()
+    }
+
+    pub(crate) fn next_ack_id(&self) -> u64 {
+        self.next_ack_id.fetch_add(1, Ordering::Relaxed)
     }
 }

@@ -12,6 +12,7 @@
 
 use std::cell::Cell;
 use std::io::Write as _;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use indexmap::IndexMap;
@@ -38,9 +39,10 @@ pub(crate) fn is_reserved(name: &str) -> bool {
     RESERVED_EVENTS.contains(&name)
 }
 
-/// One Socket.IO packet, binary attachments already restored in place of their placeholders.
+/// One Socket.IO packet, binary attachments already restored in place of their placeholders. Opaque: an adapter
+/// receives it before it is encoded and passes it on.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Packet {
+pub struct Packet {
     pub(crate) nsp: String,
     pub(crate) body: Body,
 }
@@ -156,6 +158,21 @@ impl Limits {
 pub(crate) struct Encoded {
     pub(crate) text: String,
     pub(crate) attachments: Vec<Binary>,
+}
+
+impl Encoded {
+    /// Moves the text into a buffer that many queues can share: one copy of the packet for a whole broadcast.
+    pub(crate) fn share(self) -> SharedEncoded {
+        SharedEncoded { text: Arc::from(self.text), attachments: self.attachments.iter().map(Binary::bytes).collect() }
+    }
+}
+
+/// An encoded packet whose text and attachments are reference counted, so every recipient of a broadcast queues the
+/// same bytes.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedEncoded {
+    pub(crate) text: Arc<str>,
+    pub(crate) attachments: Vec<Bytes>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -61,6 +61,7 @@ impl Conn {
             .map(|m| match m {
                 EngineMessage::Text(s) => Out::T(s),
                 EngineMessage::Binary(b) => Out::B(b.to_vec()),
+                EngineMessage::Shared(s) => Out::T(s.to_string()),
             })
             .collect()
     }

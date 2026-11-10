@@ -28,7 +28,7 @@ use super::engine::session::{CloseReason, after};
 use super::engine::{EngineMessage, EngineSocket, Held, SendError};
 use super::namespace::{ConnectError, IoNamespace};
 use super::options::IoOptions;
-use super::parser::{self, Body, Decoder, Encoded, Limits, Packet, Prepared};
+use super::parser::{self, Body, Decoder, Encoded, Limits, Packet, Prepared, SharedEncoded};
 use super::server::ServerInner;
 use super::socket::{AckSender, DisconnectReason, EmitError, Handshake, IoSocket, Phase};
 use super::value::{Args, IoValue, json_cost};
@@ -79,6 +79,19 @@ impl ClientShared {
         let mut messages = Vec::with_capacity(1 + encoded.attachments.len());
         messages.push(EngineMessage::Text(encoded.text.clone()));
         messages.extend(encoded.attachments.iter().map(|a| EngineMessage::Binary(a.bytes())));
+        self.send_messages(messages)
+    }
+
+    /// Queues an encoding shared with other recipients (a broadcast): the text is a reference to the one buffer, and
+    /// so are the attachments.
+    pub(crate) fn send_shared(&self, encoded: &SharedEncoded) -> Result<(), EmitError> {
+        let mut messages = Vec::with_capacity(1 + encoded.attachments.len());
+        messages.push(EngineMessage::Shared(encoded.text.clone()));
+        messages.extend(encoded.attachments.iter().cloned().map(EngineMessage::Binary));
+        self.send_messages(messages)
+    }
+
+    fn send_messages(&self, messages: Vec<EngineMessage>) -> Result<(), EmitError> {
         self.engine.send_all(messages).map_err(|e| match e {
             SendError::Closed => EmitError::NotConnected,
             SendError::Full => EmitError::BufferFull,
@@ -343,6 +356,8 @@ async fn handle_message(
             Err(_) => Flow::Close(DisconnectReason::ForcedClose),
             Ok(prepared) => admit(server, shared, decoder, reassembly, parked, inflight, closed, Parked { prepared, wire: held }).await,
         },
+        // Only the server sends shared text; a received message is never one.
+        EngineMessage::Shared(_) => Flow::Close(DisconnectReason::ForcedClose),
         EngineMessage::Binary(data) => match decoder.add_binary(data) {
             Err(_) => Flow::Close(DisconnectReason::ForcedClose),
             Ok(None) => {
@@ -544,6 +559,9 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
         guard.armed = false;
         socket.mark_connected();
         namespace.add_socket(&socket);
+        // The room of its own id, before any handler runs (Node's `_onconnect`). It cannot be refused: the options
+        // guarantee room for at least one.
+        socket.join_own_room();
     }
     shared.joined_once.store(true, Ordering::SeqCst);
     if socket.is_phase(Phase::Connected) {
