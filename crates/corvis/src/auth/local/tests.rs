@@ -694,6 +694,31 @@ async fn an_argon2_hash_with_a_short_salt_is_refused_before_any_slot_is_taken() 
     assert_eq!(derivations(&h) - base, 1);
 }
 
+/// The argon2 crate multiplies `p` by 8 while it builds its parameters; unit tests run with overflow checks, so a
+/// planted `p` of 2^29 or more panicked before the limits were compared.
+#[tokio::test]
+async fn an_argon2_hash_with_a_huge_parallelism_is_refused_without_a_panic_or_a_derivation() {
+    let h = small_argon();
+    let salt_and_digest = "c2FsdHNhbHRzYWx0c2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let planted = [
+        format!("$argon2id$v=19$m=8,t=1,p=536870912${salt_and_digest}"),
+        format!("$argon2id$v=19$m=8,t=1,p=4294967295${salt_and_digest}"),
+        "$argon2i$v=19$p=4294967295,t=3,m=160".to_string(),
+    ];
+    for stored in &planted {
+        let base = derivations(&h);
+        assert_eq!(h.verify("secret", stored).await, Err(PasswordError::OverLimit { what: "argon2 parallelism" }), "{stored}");
+        assert!(h.needs_rehash(stored));
+        assert_eq!(derivations(&h), base, "no derivation for {stored}");
+        // A login with it costs exactly the dummy verification and answers like a wrong password.
+        assert_eq!(h.verify_or_dummy("secret", Some(stored)).await, Ok(false));
+        assert_eq!(derivations(&h) - base, 1);
+    }
+    // The limit itself cannot be configured into the range where the multiplication overflows.
+    let too_wide = PasswordHasherOptions::default().verify_limits(VerifyLimits::default().max_argon2_parallelism(u32::MAX));
+    assert!(matches!(PasswordHasher::new(too_wide), Err(PasswordError::Config(_))));
+}
+
 #[test]
 fn the_default_max_concurrent_is_capped_so_the_defaults_never_warn() {
     let h = PasswordHasher::new(PasswordHasherOptions::default()).unwrap();

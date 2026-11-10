@@ -356,3 +356,17 @@ The second security review found five items. The maintainer decided the followin
 5. **bcrypt cap stays at 14.** Lowering it would lock out migrated users with cost 13 or 14 hashes. The limits table
    (EN and ES) says a cost-14 hash costs about 60 times the default dummy verification and that an application whose
    stored hashes are all cost 12 or less can lower `VerifyLimits` accordingly.
+
+## Security review (round 3)
+
+The third pass confirmed the four fixes of round 2 (blocking variants, refusal warning, argon2 parser, default
+`max_concurrent`) and found one low issue, in code older than round 2:
+
+1. A planted argon2 hash with `p` of 2^29 or more reached `argon2::Params::try_from` before the limits were compared.
+   The crate multiplies `p` by 8 while it builds its parameters: with overflow checks on (debug builds, or a release
+   profile that enables them) that is a panic, which answered such an account with a 500 and no dummy verification;
+   in a default release build the multiplication wraps and the hash is refused as malformed. The parser now compares
+   the raw `m`, `t` and `p` of the stored string with the limits first, every occurrence included, and
+   `max_argon2_parallelism` has an upper bound of 16,777,215 (the crate's own maximum), so the limit cannot be
+   configured into the overflowing range. Regression test:
+   `an_argon2_hash_with_a_huge_parallelism_is_refused_without_a_panic_or_a_derivation`.

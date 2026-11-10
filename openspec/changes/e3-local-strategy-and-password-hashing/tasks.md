@@ -120,6 +120,12 @@ fixture package) and update the artifacts if it differs.
 - [x] 8.5 Docs (EN, ES): blocking methods outside a runtime only, default cap, bcrypt cap note, warning rate limit
 - [x] 8.6 Spec deltas updated; `openspec validate e3-local-strategy-and-password-hashing --strict` has no warnings
 
+## 9. Security review (round 3)
+
+- [x] 9.1 Compare the raw argon2 `m`, `t`, `p` of a stored hash with the limits before the crate builds its
+  parameters; bound `max_argon2_parallelism`; verify with
+  `an_argon2_hash_with_a_huge_parallelism_is_refused_without_a_panic_or_a_derivation`
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

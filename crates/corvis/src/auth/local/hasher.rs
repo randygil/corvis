@@ -496,6 +496,9 @@ fn check_limit_bounds(limits: &VerifyLimits) -> Result<(), PasswordError> {
     if limits.max_argon2_iterations > MAX_VERIFY_ARGON2_ITERATIONS {
         return Err(PasswordError::Config("max_argon2_iterations is above the upper bound of 64"));
     }
+    if limits.max_argon2_parallelism > argon2::Params::MAX_P_COST {
+        return Err(PasswordError::Config("max_argon2_parallelism is above the upper bound of 16777215"));
+    }
     if limits.max_bcrypt_cost > MAX_VERIFY_BCRYPT_COST {
         return Err(PasswordError::Config("max_bcrypt_cost is above the upper bound of 20"));
     }
@@ -951,6 +954,20 @@ impl Inner {
             None => argon2::Version::default(),
             Some(v) => argon2::Version::try_from(v).map_err(|_| PasswordError::Unsupported)?,
         };
+        // The raw numbers are checked first: the argon2 crate multiplies the parallelism while it builds its
+        // parameters, which overflows on a planted `p` of 2^29 or more (a panic where overflow checks are on).
+        // Every occurrence is checked, since a repeated parameter is legal in the string.
+        for (name, value) in hash.params.iter() {
+            let (limit, what) = match name.as_str() {
+                "m" => (self.limits.max_argon2_memory_kib, "argon2 memory"),
+                "t" => (self.limits.max_argon2_iterations, "argon2 iterations"),
+                "p" => (self.limits.max_argon2_parallelism, "argon2 parallelism"),
+                _ => continue,
+            };
+            if value.decimal().map_err(|_| PasswordError::Malformed)? > limit {
+                return Err(PasswordError::OverLimit { what });
+            }
+        }
         let params = argon2::Params::try_from(&hash).map_err(|_| PasswordError::Malformed)?;
         if params.m_cost() > self.limits.max_argon2_memory_kib {
             return Err(PasswordError::OverLimit { what: "argon2 memory" });
