@@ -2,7 +2,7 @@ use corvis::prelude::*;
 
 use crate::app_controller::AppController;
 use crate::app_service::AppService;
-use crate::auth::{AuthGuard, AuthModule, session_module};
+use crate::auth::{AuthGuard, AuthModule, github_module, session_module};
 use crate::cats::CatsModule;
 use crate::chat::ChatGateway;
 use crate::common::guards::RolesGuard;
@@ -20,6 +20,7 @@ use crate::users::UsersModule;
         TerminusModule,
         session_module(),
         AuthModule,
+        github_module(),
         UsersModule,
         CatsModule,
     ],
