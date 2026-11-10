@@ -303,3 +303,41 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(config(512))]
+
+    /// `redacted_url` never prints the value of a pair the query parser files under a marked parameter, whatever the
+    /// name is spelled like (percent escapes in either case, brackets for the extended parser) and whatever
+    /// surrounds it; the path stays and an unmarked request is unchanged.
+    #[test]
+    fn redacted_urls_never_hold_a_marked_value(
+        pairs in prop::collection::vec(
+            (
+                prop::sample::select(vec!["api_key", "api%5Fkey", "api%5fkey", "%61pi_key", "[api_key]", "api_key[x]", "api_key%5B0%5D", "other", "x"]),
+                "[A-Za-z0-9_.-]{0,12}",
+            ),
+            0..8,
+        ),
+        extended in any::<bool>(),
+    ) {
+        use crate::http::body_parser::QueryParser;
+        use crate::http::request::parse_query_with;
+        let mode = if extended { QueryParser::Extended } else { QueryParser::Simple };
+        let texts: Vec<String> = pairs.iter().enumerate().map(|(i, (name, junk))| format!("{name}=SECRET{i}END{junk}")).collect();
+        let query = texts.join("&");
+        let parser = BodyParserOptions { query_parser: mode, ..BodyParserOptions::default() };
+        let build = || crate::http::Request::with_parser(http::Method::GET, format!("/d?{query}").parse().unwrap(), HeaderMap::new(), Bytes::new(), &parser);
+        let unmarked = build();
+        prop_assert_eq!(unmarked.redacted_url(), unmarked.url());
+        let req = build();
+        req.redact_query_param("api_key");
+        let redacted = req.redacted_url();
+        prop_assert!(redacted.starts_with("/d?"));
+        for (i, text) in texts.iter().enumerate() {
+            if parse_query_with(text, mode).contains_key("api_key") {
+                prop_assert!(!redacted.contains(&format!("SECRET{i}END")), "{redacted} (from {query})");
+            }
+        }
+    }
+}

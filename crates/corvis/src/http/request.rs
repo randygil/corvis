@@ -29,6 +29,8 @@ pub struct Request {
     pub(crate) client_aborted: bool,
     pub(crate) params: HashMap<String, String>,
     pub(crate) query: Map<String, Value>,
+    /// The `query parser` setting `query` was built with (`redacted_url` splits the query string the same way).
+    pub(crate) query_parser: super::body_parser::QueryParser,
     pub(crate) remote_addr: Option<SocketAddr>,
     /// `trust proxy` setting used by `ip()`, `ips()` and `hostname()`.
     pub(crate) trust_proxy: super::proxy_addr::TrustProxy,
@@ -101,6 +103,7 @@ impl Request {
             client_aborted: false,
             params: HashMap::new(),
             query,
+            query_parser: parser.query_parser,
             remote_addr: None,
             trust_proxy: parser.trust_proxy.clone(),
             extensions: Arc::new(RwLock::new(http::Extensions::new())),

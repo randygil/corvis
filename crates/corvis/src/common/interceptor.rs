@@ -87,7 +87,8 @@ impl CorvisInterceptor for LoggingInterceptor {
         // the handler instead.
         let line = if context.get_type() == super::context::ContextType::Http {
             let req = context.request();
-            format!("{} {}", req.method(), req.url())
+            // The URL with the values of the parameters a strategy marked as credentials hidden.
+            format!("{} {}", req.method(), req.redacted_url())
         } else {
             format!("WS {}.{}", context.get_class().name, context.get_handler().name)
         };
