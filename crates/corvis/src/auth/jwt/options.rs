@@ -15,6 +15,13 @@ pub const MAX_CLOCK_TOLERANCE: Duration = Duration::from_secs(300);
 /// The default of [`max_token_length`](JwtStrategyOptions::max_token_length).
 pub const DEFAULT_MAX_TOKEN_LENGTH: usize = 8192;
 
+/// The default of [`key_provider_timeout`](JwtStrategyOptions::key_provider_timeout) and of
+/// [`validator_timeout`](JwtStrategyOptions::validator_timeout).
+pub const DEFAULT_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+const MIN_CALLBACK_TIMEOUT: Duration = Duration::from_millis(1);
+const MAX_CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Shortest HMAC secret the strategy starts with (RFC 7518 section 3.2 asks for at least the size of the hash).
 pub const MIN_SECRET_LENGTH: usize = 32;
 
@@ -75,6 +82,8 @@ pub struct JwtStrategyOptions {
     pub(crate) allow_missing_exp: bool,
     pub(crate) clock_tolerance: Duration,
     pub(crate) max_token_length: usize,
+    pub(crate) key_provider_timeout: Duration,
+    pub(crate) validator_timeout: Duration,
 }
 
 impl Default for JwtStrategyOptions {
@@ -90,6 +99,8 @@ impl Default for JwtStrategyOptions {
             allow_missing_exp: false,
             clock_tolerance: Duration::ZERO,
             max_token_length: DEFAULT_MAX_TOKEN_LENGTH,
+            key_provider_timeout: DEFAULT_CALLBACK_TIMEOUT,
+            validator_timeout: DEFAULT_CALLBACK_TIMEOUT,
         }
     }
 }
@@ -108,6 +119,8 @@ impl std::fmt::Debug for JwtStrategyOptions {
             .field("allow_missing_exp", &self.allow_missing_exp)
             .field("clock_tolerance", &self.clock_tolerance)
             .field("max_token_length", &self.max_token_length)
+            .field("key_provider_timeout", &self.key_provider_timeout)
+            .field("validator_timeout", &self.validator_timeout)
             .finish()
     }
 }
@@ -180,6 +193,21 @@ impl JwtStrategyOptions {
         self.max_token_length = bytes;
         self
     }
+
+    /// How long the key provider may run for one request, 5 seconds by default, 1 ms to 300 s. The provider runs for
+    /// every well-formed token, forged ones included. One that takes longer is dropped (its future is cancelled) and
+    /// the request is answered with a `503 Service Unavailable` that is the same for every token.
+    pub fn key_provider_timeout(mut self, timeout: Duration) -> Self {
+        self.key_provider_timeout = timeout;
+        self
+    }
+
+    /// How long the validator may run, 5 seconds by default, 1 ms to 300 s. A validator that takes longer is dropped
+    /// and the request is answered with the same `503 Service Unavailable`.
+    pub fn validator_timeout(mut self, timeout: Duration) -> Self {
+        self.validator_timeout = timeout;
+        self
+    }
 }
 
 /// How the strategy gets its key.
@@ -198,6 +226,8 @@ pub(crate) struct Resolved {
     pub(crate) audience: Option<Vec<String>>,
     pub(crate) rules: TimeRules,
     pub(crate) max_token_length: usize,
+    pub(crate) key_provider_timeout: Duration,
+    pub(crate) validator_timeout: Duration,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -230,6 +260,11 @@ impl JwtStrategyOptions {
             .ok_or("no token extractor: set jwt_from_request (tokens are read only from the places you configure)")?;
         if self.max_token_length == 0 {
             return Err("max_token_length is 0".into());
+        }
+        for (name, timeout) in [("key_provider_timeout", self.key_provider_timeout), ("validator_timeout", self.validator_timeout)] {
+            if !(MIN_CALLBACK_TIMEOUT..=MAX_CALLBACK_TIMEOUT).contains(&timeout) {
+                return Err(format!("{name} must be between 1 ms and 300 s"));
+            }
         }
         if self.clock_tolerance > MAX_CLOCK_TOLERANCE {
             return Err(format!(
@@ -302,6 +337,8 @@ impl JwtStrategyOptions {
                 require_exp: !self.allow_missing_exp,
             },
             max_token_length: self.max_token_length,
+            key_provider_timeout: self.key_provider_timeout,
+            validator_timeout: self.validator_timeout,
             warnings,
         })
     }

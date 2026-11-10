@@ -100,7 +100,9 @@ pub struct Composite {
 
 impl Injectable for Composite {
     fn construct(ctx: ResolveCtx) -> futures::future::BoxFuture<'static, Result<Self, DiError>> {
-        Box::pin(async move { Ok(Composite { auth: AuthGuard::new("open").optional(), throttler: ctx.get_or_construct::<ThrottlerGuard>().await? }) })
+        Box::pin(async move {
+            Ok(Composite { auth: AuthGuard::new("open").optional(), throttler: ctx.get_or_construct::<ThrottlerGuard>().await? })
+        })
     }
 }
 

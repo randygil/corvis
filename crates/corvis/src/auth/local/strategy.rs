@@ -2,6 +2,7 @@
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -9,6 +10,7 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::auth::warn_limit::WarnLimiter;
 use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Injectable, ResolveCtx};
@@ -17,6 +19,12 @@ use crate::logger::Logger;
 
 /// The default of `max_username_bytes` and `max_password_bytes`.
 pub const DEFAULT_MAX_CREDENTIAL_BYTES: usize = 1024;
+
+/// The default of [`validator_timeout`](LocalStrategyOptions::validator_timeout).
+pub const DEFAULT_VALIDATOR_TIMEOUT: Duration = Duration::from_secs(5);
+
+const MIN_VALIDATOR_TIMEOUT: Duration = Duration::from_millis(1);
+const MAX_VALIDATOR_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The options of the local strategy, the `usernameField` and `passwordField` of `passport-local` plus the length
 /// limits.
@@ -27,6 +35,7 @@ pub struct LocalStrategyOptions {
     max_username_bytes: usize,
     max_password_bytes: usize,
     allow_query_credentials: bool,
+    validator_timeout: Duration,
 }
 
 impl Default for LocalStrategyOptions {
@@ -37,6 +46,7 @@ impl Default for LocalStrategyOptions {
             max_username_bytes: DEFAULT_MAX_CREDENTIAL_BYTES,
             max_password_bytes: DEFAULT_MAX_CREDENTIAL_BYTES,
             allow_query_credentials: false,
+            validator_timeout: DEFAULT_VALIDATOR_TIMEOUT,
         }
     }
 }
@@ -49,6 +59,14 @@ impl LocalStrategyOptions {
     /// The field that holds the username (`usernameField`), `username` by default. `a[b]` reads `body.a.b`.
     pub fn username_field(mut self, field: impl Into<String>) -> Self {
         self.username_field = field.into();
+        self
+    }
+
+    /// How long the validator may run, 5 seconds by default, 1 ms to 300 s. A validator that takes longer is dropped
+    /// (its future is cancelled) and the request is answered with a `503 Service Unavailable` that is the same for
+    /// every caller.
+    pub fn validator_timeout(mut self, timeout: Duration) -> Self {
+        self.validator_timeout = timeout;
         self
     }
 
@@ -127,6 +145,7 @@ struct Resolved {
     max_username_bytes: usize,
     max_password_bytes: usize,
     allow_query: bool,
+    validator_timeout: Duration,
 }
 
 /// `field.split(']').join('').split('[')` of `utils.lookup`.
@@ -145,12 +164,16 @@ impl Resolved {
         if options.max_username_bytes == 0 || options.max_password_bytes == 0 {
             return Err("max_username_bytes and max_password_bytes must be at least 1".to_string());
         }
+        if !(MIN_VALIDATOR_TIMEOUT..=MAX_VALIDATOR_TIMEOUT).contains(&options.validator_timeout) {
+            return Err("validator_timeout must be between 1 ms and 300 s".to_string());
+        }
         Ok(Resolved {
             username: split_path(&options.username_field),
             password: split_path(&options.password_field),
             max_username_bytes: options.max_username_bytes,
             max_password_bytes: options.max_password_bytes,
             allow_query: options.allow_query_credentials,
+            validator_timeout: options.validator_timeout,
         })
     }
 
@@ -266,6 +289,7 @@ fn credential<'a>(body: &'a Value, query: &'a Value, path: &[String]) -> Option<
 pub struct LocalStrategy<V: LocalValidator> {
     validator: Arc<V>,
     resolved: Resolved,
+    warnings: WarnLimiter,
     _marker: PhantomData<fn() -> V>,
 }
 
@@ -291,7 +315,7 @@ impl<V: LocalValidator> Injectable for LocalStrategy<V> {
                 token: format!("LocalStrategy \"{}\" ({})", V::NAME, std::any::type_name::<V>()),
                 cause: Arc::new(anyhow::anyhow!("invalid local strategy options: {problem}")),
             })?;
-            Ok(LocalStrategy { validator, resolved, _marker: PhantomData })
+            Ok(LocalStrategy { validator, resolved, warnings: WarnLimiter::new(Duration::from_secs(60)), _marker: PhantomData })
         }
         .boxed()
     }
@@ -327,7 +351,21 @@ impl<V: LocalValidator> Strategy for LocalStrategy<V> {
         if username.len() > self.resolved.max_username_bytes || password.len() > self.resolved.max_password_bytes {
             return fail("Credentials too long");
         }
-        match self.validator.validate(req, username, password).await {
+        let validated = match tokio::time::timeout(self.resolved.validator_timeout, self.validator.validate(req, username, password)).await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                if let Some(suppressed) = self.warnings.allow("validator-timeout", Instant::now()) {
+                    let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
+                    Logger::new("LocalStrategy").warn(format!(
+                        "strategy \"{}\": the validator did not answer within validator_timeout; answered 503{more}",
+                        V::NAME
+                    ));
+                }
+                return StrategyOutcome::Error(HttpException::new((), http::StatusCode::SERVICE_UNAVAILABLE));
+            }
+        };
+        match validated {
             Err(e) => StrategyOutcome::Error(e),
             Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
             Ok(Some(user)) => {
