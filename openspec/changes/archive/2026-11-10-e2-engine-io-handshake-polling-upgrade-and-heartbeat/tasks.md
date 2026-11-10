@@ -115,9 +115,9 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
   `CORVIS_NODE_DIFF=1` the `socket_io_diff` and `engine_io_conformance` tests pass
 - [x] 9.4 Regression tests: one per spec scenario (unit, integration, security or wire), as listed in groups 1-8
 - [x] 9.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
-- [ ] 9.6 Framework runtime code changed (`ws.rs`, `websockets.rs`, `server.rs`, `http_adapter.rs`,
+- [x] 9.6 Framework runtime code changed (`ws.rs`, `websockets.rs`, `server.rs`, `http_adapter.rs`,
   `application.rs`): run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences
-- [ ] 9.7 Security review of the change (`security-reviewer`) before archiving, with its findings fixed or recorded in
+- [x] 9.7 Security review of the change (`security-reviewer`) before archiving, with its findings fixed or recorded in
   design.md
 
 ## 10. Security review fixes (round 1)
@@ -160,6 +160,26 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
 - [x] 11.5 R3: `listen_until_in_background` closes the application even when `serve` fails
 - [x] 11.6 R4: docs (English and Spanish) for the many-address limit, `TrustProxy::All`, the fair share and its bound;
   spec delta and design notes updated; full definition of done rerun after rebasing on `origin/dev`
+
+## Verification
+
+Checked on `dev` at 2e6c4b5 (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test -p corvis --features socket-io` | 323 unit, `engine_io` 23, `engine_io_conformance` 2, `engine_io_security` 29, `engine_io_ws` 18; 0 failed |
+| Security review, first round | 8 findings (2 high), all fixed (group 10) |
+| Security review, second round | findings fixed (group 11): fair share of the unread budget, address keys, hook after the caps, unsolicited pongs |
+| Security review, third round | 1 medium (blind pongs over polling), 1 low (hook past a cap under concurrency), 1 docs note; all fixed |
+| Security review, fourth round | both fixes hold, no new findings |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; databases equivalent |
+| Parity, houseplan | 598 checks equal (quiet hours), 0 different; databases equivalent |
+
+The first CI run of the merge failed one test on Linux (`a_peer_that_never_reads_is_dropped_after_the_send_timeout`):
+its feeder filled `max_buffered_amount` before the send timeout where timers are precise. The test was slowed
+(2e6c4b5); the server was not changed.
 
 ## Workflow follow-up
 
