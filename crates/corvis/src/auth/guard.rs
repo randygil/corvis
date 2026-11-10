@@ -228,7 +228,9 @@ impl CanActivate for AuthGuard {
                 Vec::new()
             }
             AuthResult::Pass => {
+                // Nothing of an earlier guard survives a guard that passed: not the user, not the info either.
                 req.clear_user();
+                req.remove::<super::AuthInfo>();
                 return Ok(true);
             }
             AuthResult::Redirected => return Ok(true),
