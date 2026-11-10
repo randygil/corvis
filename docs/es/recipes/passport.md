@@ -6,7 +6,7 @@ status: partial
 
 Corvis tiene el **modelo de estrategias** de Passport y de su integración con el framework original: estrategias registradas por nombre, un `AuthGuard` que las ejecuta, el usuario en la request y el `401` que responde el original cuando todas las estrategias fallan. Su comportamiento se comprueba contra la integración original de passport (12.0.1) sobre `passport` 0.7.0 con respuestas grabadas.
 
-Lo que hay ahora es el núcleo: el trait `Strategy` que implementas para tus propias estrategias, `AuthGuard`, `PassportModule` y el parámetro `User<T>`, la [estrategia JWT](#la-estrategia-jwt), la [estrategia local](#estrategia-local-usuario-y-contrasena) (usuario y contraseña, con la feature `auth-local`) y las [API keys](#api-keys) (con la feature `auth-api-key`), además de la guía para [escribir una estrategia](#escribir-una-estrategia) propia. Las [sesiones](#sesiones) (la feature `auth-session`) inician sesión de un usuario y lo restauran en las peticiones siguientes. OAuth2 llega con su propio issue (#43). Un [guard propio sobre `JwtModule`](#alternativa-jwtmodule-guards) sigue disponible.
+Lo que hay ahora es el núcleo: el trait `Strategy` que implementas para tus propias estrategias, `AuthGuard`, `PassportModule` y el parámetro `User<T>`, la [estrategia JWT](#la-estrategia-jwt), la [estrategia local](#estrategia-local-usuario-y-contrasena) (usuario y contraseña, con la feature `auth-local`) y las [API keys](#api-keys) (con la feature `auth-api-key`), además de la guía para [escribir una estrategia](#escribir-una-estrategia) propia. Las [sesiones](#sesiones) (la feature `auth-session`) inician sesión de un usuario y lo restauran en las peticiones siguientes. El [login OAuth2](#oauth2-google-github-y-otros) (Google, GitHub y cualquier proveedor, con la feature `auth-oauth2`) hace el flujo de código de autorización. Un [guard propio sobre `JwtModule`](#alternativa-jwtmodule-guards) sigue disponible.
 
 ## El modelo
 
@@ -659,6 +659,176 @@ El `404` de una ruta que no existe es `Cannot GET /x?api_key=...` con la URL tal
 ### Pruebas contra el original
 
 `crates/corvis/tests/fixtures/auth/api_key.mjs` ejecuta `passport-headerapikey` 1.2.2, y estrategias `passport-custom` 1.2.1 para las variantes de query y bearer, detrás del guard original y graba 55 casos (`api_key.json`): nombres de cabecera, prefijos, valores repetidos, claves incorrectas, ausentes y vacías, el validador devolviendo ningún usuario, una excepción y un error simple, cadenas. `crates/corvis/tests/auth_api_key.rs` los reproduce contra las mismas rutas sin necesitar Node al ejecutar los tests; las cinco divergencias marcadas (una clave sobredimensionada dos veces, un carácter de control, claves en conflicto, el prefijo literal) se comprueban a partir de la especificación.
+
+## OAuth2 (Google, GitHub y otros)
+
+La estrategia OAuth2 es el port de `passport-oauth2` 1.8.0 con los perfiles de Google y GitHub de `passport-google-oauth20` 2.0.0 y `passport-github2` 0.1.12, y la petición de refresh de `passport-oauth2-refresh` 2.2.0. Hace solo el flujo de código de autorización y necesita la feature de cargo `auth-oauth2` (trae `auth-session`; el cliente del proveedor usa `tokio-rustls` y las raíces web PKI incluidas, ningún otro crate):
+
+```toml
+corvis = { version = "0.1", features = ["auth-oauth2"] }
+```
+
+Tú escribes el validador (el callback `verify` del original, que recibe todo lo que entregó el proveedor como un `OAuth2Grant`) y registras `OAuth2Strategy<TuValidador>`. Dos rutas llevan el mismo guard: la ruta de login, que redirige al proveedor, y la ruta de callback, cuyo handler se ejecuta con el usuario que devolvió tu validador.
+
+```rust
+use corvis::auth::oauth2::{OAuth2Grant, OAuth2Options, OAuth2Strategy, OAuth2Validator, return_to};
+use corvis::auth::{AuthGuard, User};
+use corvis::prelude::*;
+
+#[injectable]
+pub struct GoogleAuth {
+    users: Arc<UsersService>,
+    config: Arc<ConfigService>,
+}
+
+#[async_trait]
+impl OAuth2Validator for GoogleAuth {
+    const NAME: &'static str = "google";
+    type User = SessionUser;
+
+    fn options(&self) -> OAuth2Options {
+        let get = |name: &str| self.config.get::<String>(name).unwrap_or_default();
+        OAuth2Options::google(get("GOOGLE_CLIENT_ID"), get("GOOGLE_CLIENT_SECRET"), "https://app.example/auth/google/callback")
+            .scope(["openid", "email", "profile"])
+            .state_cookie_secrets([get("OAUTH_STATE_SECRET")])
+            .return_to_param("return_to")
+            .failure_redirect("/login?error=oauth")
+    }
+
+    async fn validate(&self, _req: &Request, grant: OAuth2Grant) -> Result<Option<SessionUser>, HttpException> {
+        let Some(profile) = grant.profile else { return Ok(None) };
+        // Identifica al usuario por (provider, id). Vincula una cuenta existente por e-mail solo mediante verified_email().
+        let user = self.users.find_or_create(&profile.provider, &profile.id, profile.verified_email()).await?;
+        Ok(Some(user))
+    }
+}
+
+#[module(
+    providers = [GoogleAuth, Provider::strategy::<OAuth2Strategy<GoogleAuth>>()],
+    controllers = [AuthController],
+)]
+pub struct AuthModule;
+
+#[controller("auth/google")]
+pub struct AuthController;
+
+#[routes]
+impl AuthController {
+    #[get("login")]
+    #[public]
+    #[use_guards(AuthGuard::new("google"))] // redirige a Google
+    fn login(&self) {}
+
+    #[get("callback")]
+    #[public]
+    #[use_guards(AuthGuard::new("google"))] // el handler se ejecuta con el usuario que devolvió `validate`
+    fn callback(&self, req: Request, user: User<SessionUser>) -> Value {
+        json!({ "user": user.0, "return_to": return_to(&req) })
+    }
+}
+```
+
+`validate` devuelve `Ok(Some(user))` para un éxito, `Ok(None)` para un 401 y `Err(exception)` para responder esa excepción, como hace toda estrategia. Unas opciones inválidas detienen `init()` con un error que nombra la estrategia y la opción. Los presets son `OAuth2Options::google(..)` y `OAuth2Options::github(..)`; `OAuth2Options::new(OAuth2Endpoints::new(authorization_url, token_url).userinfo_url(url), ..)` es cualquier otro proveedor (sin una URL de userinfo, el grant no tiene perfil). `OAuth2Options::endpoints(..)` reemplaza las URL de un preset (GitHub Enterprise, un proxy, un doble de pruebas). Registra en el proveedor el redirect URI que configuraste. Google necesita un scope; el `user:email` de GitHub da las direcciones de e-mail verificadas.
+
+### Qué recibe el validador
+
+`OAuth2Grant` tiene `access_token` y `refresh_token: Option<_>` (ambos `OAuth2Token`: sin `Display`, sin `Serialize`, `Debug` no imprime nada; llama a `expose()` a propósito), `params` (la respuesta del token sin los tokens: `get(key)`, `expires_in()`, `scope()`, `id_token()`) y `profile: Option<OAuth2Profile>`. El framework no guarda ningún token. Si conservas uno para llamar al proveedor más tarde, guárdalo cifrado en reposo junto al registro del usuario, nunca en una cookie ni en la sesión del navegador.
+
+`OAuth2Profile` se serializa con las claves del original (`provider`, `id`, `displayName`, `username`, `name`, `emails`, `photos`, `profileUrl`, `_json`) y añade una marca `verified` a cada e-mail (y `primary` para GitHub). **Identifica a un usuario por `(provider, id)`**: el `sub` de Google, el id numérico de GitHub como cadena. **Vincula una cuenta por e-mail solo mediante `verified_email()`**: la dirección principal que el proveedor informa como verificada (Google: `email_verified: true`; GitHub: la entrada de `/user/emails` que es a la vez `primary` y `verified`). Vincular por una dirección sin verificar permite que cualquiera que la registre en el proveedor tome la cuenta.
+
+::: warning El `id_token` no se verifica
+Con el scope `openid`, Google devuelve un ID token. `grant.params.id_token()` lo entrega tal como llegó: su firma, emisor, audiencia, vencimiento y nonce **no** se comprueban, así que no leas ningún claim de él. El perfil viene del endpoint de userinfo sobre TLS, autenticado por el token que el servidor obtuvo con su client secret y su verificador PKCE; usa ese.
+:::
+
+### `state`, PKCE y dónde viven
+
+Cada login genera un `state` y un verificador PKCE, de 32 bytes cada uno del generador del sistema operativo (43 caracteres base64url), y envía `code_challenge` con `code_challenge_method=S256` (`plain` no se puede expresar). `state` no se puede desactivar. `.pkce(false)` desactiva el challenge para un proveedor que rechaza parámetros desconocidos y registra una advertencia al arrancar.
+
+Tú **eliges dónde vive el estado de un login**; no elegir nada detiene `init()`:
+
+| | `state_cookie_secrets(..)` / `state_cookie(keys)` | `state_in_session()` |
+|---|---|---|
+| Se guarda en | una cookie firmada con `CookieKeys` (secretos de al menos 32 bytes; usa uno propio, no el de la sesión) | la sesión de la petición |
+| Estado en el servidor | ninguno: un visitante que inicia un login no crea nada | un registro de sesión por cada inicio de login (limita la tasa de la ruta de login) |
+| Necesita | nada más | `SessionModule` instalado, cookie de sesión que no sea `SameSite=Strict` (de lo contrario, error al arrancar) |
+| Un solo uso | la cookie se borra y vence; un cliente que la conserva puede reproducir su propio callback dentro de la vigencia, y el proveedor rechaza entonces el código reutilizado | el registro se elimina antes de cualquier petición al proveedor: una repetición falla sea lo que sea que envíe el cliente |
+| Verificador PKCE | se deriva en el servidor a partir del `state` y de la primera clave de la cookie: nunca está en la cookie | se guarda en el registro de sesión |
+
+La cookie de estado es `__Host-oauth2.<name>`, `Path=/`, `HttpOnly`, `Secure`, `SameSite=Lax` (el callback es una navegación de nivel superior entre sitios, así que `Strict` nunca se enviaría), sin `Domain`, y vive tanto como el estado (600 s por defecto). El prefijo `__Host-` hace que un navegador rechace una cookie puesta por un subdominio hermano, lo que cierra el CSRF de login por cookie tossing. `.state_cookie_secure(false)` (desarrollo en HTTP plano) quita `Secure` y el prefijo y registra una advertencia al arrancar. Tras una rotación de claves, un login iniciado antes falla una vez (el verificador se deriva con la primera clave).
+
+Con la sesión como almacén, el mismo ataque necesita que la cookie de sesión la ponga otra persona (un subdominio hermano, o un atacante de red en HTTP plano): asigna a la cookie de sesión el prefijo `__Host-` (`SessionOptions::name("__Host-sid")`) y mantenla `Secure`.
+
+Un callback se comprueba en este orden, y nada llega al proveedor hasta que pasa la última comprobación: `code`, `state` y `error` están cada uno ausente o son una sola cadena dentro de sus límites (`code` y `error` juntos fallan); el flujo de ese `state` se saca del almacén (un state falsificado no gasta nada de los otros flujos del navegador); el flujo debe existir para esta estrategia y estar dentro de su vigencia; su `state` es igual al de la query (en tiempo constante). Un navegador puede tener hasta cuatro logins en curso por estrategia (dos pestañas no se rompen entre sí); el más antiguo se descarta cuando empieza un quinto, y un flujo sin reclamar vence con su vigencia.
+
+### El redirect URI
+
+`redirect_uri` es un argumento obligatorio: una URL absoluta (`https`, o `http` para un host de loopback), sin fragmento ni información de usuario. La misma cadena va en la petición de autorización y en la del token. **No se construye nada a partir de la petición**: el original resuelve una URL de callback relativa contra la cabecera `Host`, así que una cabecera falsificada decide adónde envía el proveedor el código. Corvis rechaza un URI relativo al arrancar y no tiene un redirect URI por petición; una aplicación con varios dominios ejecuta una estrategia por dominio.
+
+### `return_to` y `failure_redirect`
+
+`.return_to_param("return_to")` hace que el **inicio del login** lea ese parámetro de query y lo conserve solo cuando es una sola cadena de a lo sumo 1024 bytes que empieza con una sola `/` (el segundo carácter no es `/` ni `\`), sin barra invertida, carácter de control ni byte no ASCII (la regla de [las URL de redirección de una estrategia](#escribir-una-estrategia); `is_safe_relative_path` es público). Cualquier otra cosa se descarta y el login continúa. El valor viaja en el registro de estado, no en ninguna URL que vea el proveedor, y `oauth2::return_to(&req)` lo devuelve en el handler del callback de un login exitoso (nunca desde la query del propio callback). `.failure_redirect(url)` responde cada callback fallido con un 302 a una URL fija (una ruta relativa bajo la misma regla, o una URL `https` absoluta), sin añadir nada de la petición; los errores del proveedor o de la configuración (500, 503) no se redirigen.
+
+### Fallos
+
+| El callback | Respuesta |
+|---|---|
+| no es un `GET`; parámetros repetidos, sobredimensionados o mal formados; `code` con `error` | 401 |
+| sin registro de estado, registro de otra estrategia, vencido, `state` distinto | 401 |
+| `error=access_denied` | 401 |
+| cualquier otro `error` | 401 (el original: 500) |
+| el endpoint del token responde 400 o 401 (`invalid_grant`, un código reutilizado), o 200 con un `error` | 401 (el original: 500) |
+| límite de concurrencia alcanzado | 503 `Service Unavailable` |
+| timeout, fallo de conexión o de TLS, redirección, 5xx u otro estado, respuesta sobredimensionada o que no se puede interpretar, sin `access_token`, `token_type` desconocido, fallo de la petición del perfil | 500 `Internal server error` |
+| `validate` devuelve `None` / una excepción | 401 / esa excepción |
+
+El texto del proveedor nunca llega a una respuesta: el challenge de un fallo (`Request::auth_info()`, `AuthGuard::on_failure`) es `{"message": <motivo fijo>}` con uno de `state mismatch`, `access denied`, `provider error`, `code rejected`, `invalid callback`, más `"error": <code>` solo cuando el código del proveedor tiene de 1 a 64 caracteres de `[A-Za-z0-9_.-]`. `error_description` y `error_uri` se descartan sin leerse. La respuesta del callback lleva `Cache-Control: no-store` y `Referrer-Policy: no-referrer`; redirige desde el handler para que el `code` salga de la barra de direcciones.
+
+### El cliente del proveedor y sus límites
+
+Las peticiones de token, refresh y perfil pasan por un cliente privado sobre `hyper` y `tokio-rustls`: TLS 1.2 y 1.3 con las raíces web PKI incluidas (más `OAuth2HttpOptions::extra_root_certificate(der)` para una CA privada), nombre de host verificado, **sin forma de desactivar la verificación**. `http` se acepta solo para un host de loopback cuyas direcciones resueltas son todas de loopback (un proveedor simulado en `127.0.0.1`). Una redirección es una petición fallida y nunca se sigue, las variables de proxy se ignoran, las respuestas nunca se descomprimen, y un error nunca contiene texto del proveedor.
+
+| Ajuste | Por defecto | Límites |
+|---|---|---|
+| `state_ttl` | 600 s | de 60 s a 3600 s |
+| PKCE | `S256`, activo | `.pkce(false)` avisa |
+| `max_code_bytes` (`code` del callback) | 2048 | de 16 a 8192 |
+| `state` del callback | 43 caracteres base64url | fijo |
+| timeout de conexión (TCP y TLS) | 5 s | de 1 s a 30 s |
+| timeout total por petición | 10 s | de 1 s a 60 s |
+| respuesta del token | 64 KiB | de 1 KiB a 1 MiB |
+| cada respuesta de perfil | 256 KiB | de 1 KiB a 4 MiB |
+| bloque de cabeceras de la respuesta | 16 KiB | fijo |
+| un access, refresh o ID token | 16 KiB | fijo |
+| peticiones al proveedor en curso, por estrategia | 32 | de 1 a 1024 (por encima: 503 de inmediato) |
+| scope | ninguno (Google: obligatorio) | 64 valores de 1 a 128 caracteres ASCII visibles sin espacio, `"` ni `\` (GitHub: tampoco `,`) |
+| parámetros de autorización adicionales | ninguno | 16, nombres y valores de a lo sumo 256 bytes; `response_type`, `client_id`, `redirect_uri`, `scope`, `state`, `code_challenge`, `code_challenge_method` rechazados |
+| autenticación del cliente | cuerpo de la petición | `ClientAuth::Basic` (id y secret codificados como formulario, nada en el cuerpo) |
+| flujos en curso por navegador y estrategia | 4 | fijo |
+
+Una opción fuera de su límite detiene `init()` con un error que nombra la estrategia y la opción y nunca contiene el client secret.
+
+### Refresh
+
+`OAuth2Client::new(options)?` valida las opciones como la estrategia y ofrece `refresh(refresh_token)`: `grant_type=refresh_token` con las credenciales del cliente (y `refresh_scope(..)` si está definido) a través del mismo cliente y de los mismos límites, y devuelve un `OAuth2TokenSet`. Constrúyelo con las mismas `options()` que tu validador. No se guarda nada y nada se refresca por sí solo. Un refresh rechazado es un error cuyo texto contiene solo el código saneado del proveedor (`invalid_grant`).
+
+### Logs, proxies y límites de tasa
+
+El callback registra `code` y `state` como parámetros de query de credenciales, así que `LoggingInterceptor` y `Request::redacted_url()` los ocultan (un middleware que registra `Request::url()` no: usa `redacted_url()`). El log de acceso de un proxy inverso sigue registrando la URL del callback; el `code` es de un solo uso y está ligado al verificador PKCE. Las líneas de log contienen el nombre de la estrategia, el host del proveedor, el estado y el tipo de error, como máximo una vez por minuto por motivo, nunca una query, cuerpo, cabecera, token ni secreto. **Limita la tasa de la ruta de login** (ver [limitación de tasa](/es/security/rate-limiting)): cada inicio de login es una petición que cualquiera puede hacer, y con la sesión como almacén cada uno crea un registro de sesión.
+
+### Diferencias con `passport-oauth2`
+
+- `state` y PKCE siempre están activos; el original no envía ninguno a menos que se configuren `state: true` y `pkce: true` con una sesión.
+- El redirect URI es absoluto y está configurado; el original resuelve uno relativo a partir de `Host`.
+- Un `error` del proveedor distinto de `access_denied`, y un endpoint del token que rechaza el código, responden 401 (el original 500).
+- Las peticiones de perfil envían el token en una cabecera `Authorization: Bearer`; el original envía el de Google en la URL. También envían `Accept: application/json` y el `User-Agent` propio del cliente.
+- El scope de GitHub se une con comas, como hace `passport-github2`; los e-mails conservan todas las direcciones de `/user/emails` como `{ value, primary, verified }` (el original: solo la principal como `{ value }`, o todas con `allRawEmails`, añadiendo `visibility`). Una petición de e-mails fallida hace fallar el login, y una lista vacía también.
+- Todo e-mail tiene una marca `verified` y existe `verified_email()`; el original omite la marca para GitHub.
+- La respuesta del token se entrega sin `access_token`, `refresh_token` ni `id_token` en `params` (son valores tipados propios); el ID token no está verificado.
+- Un callback con un state que no es de este navegador responde 401 a través de `AuthGuard` (el original responde el 403 que dio la estrategia, a través de `passport` simple).
+
+### Pruebas contra el original
+
+`crates/corvis/tests/fixtures/auth/oauth2.mjs` ejecuta los cuatro paquetes contra un proveedor falso y graba las redirecciones de autorización, las peticiones de token y de perfil, los perfiles entregados a `validate()`, 14 resultados de callback y la petición de refresh (`oauth2.json`); `crates/corvis/tests/auth_oauth2_original.rs` los reproduce contra un proveedor simulado en `127.0.0.1` sin Node ni red, y comprueba las divergencias marcadas a partir de la especificación. `examples/cats-app` tiene un login con GitHub cuyos endpoints vienen de la configuración, probado contra un proveedor simulado local.
 
 ## Pruebas diferenciales
 

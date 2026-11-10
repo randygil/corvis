@@ -326,8 +326,9 @@ Tertulia's same `AuthGuard` works for HTTP and for WebSocket: it checks `ctx.get
 
 ## What Corvis does not include
 
-- Besides JWT, local and API key strategies, there are no OAuth or OpenID Connect strategies yet. See
-  [Passport](/recipes/passport).
+- Besides JWT, local and API key strategies there is an [OAuth2 login](/recipes/passport#oauth2-google-github-and-others)
+  (Google, GitHub and any provider, the `auth-oauth2` feature) with `state` and PKCE always on. There is no OpenID
+  Connect strategy: the ID token is handed over unverified. See [Passport](/recipes/passport).
 - For cookie-based authentication there are [server-side sessions](/http/session) (the `auth-session` feature), with
   login and logout through `Authenticator`, and [signed cookies](/http/cookies#signed-cookies) for small values the
   client must not alter. A session cookie is an ambient credential: see [CSRF](/security/csrf).

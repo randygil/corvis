@@ -6,7 +6,7 @@ status: partial
 
 Corvis has the **strategy model** of Passport and its integration for the original framework: strategies registered by name, an `AuthGuard` that runs them, the user on the request and the `401` the original answers when every strategy fails. Its behavior is checked against the original passport integration (12.0.1) over `passport` 0.7.0 with recorded responses.
 
-What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy), the [local strategy](#local-strategy-username-and-password) (username and password, with the `auth-local` feature) and [API keys](#api-keys) (the `auth-api-key` feature), plus the guide to [writing a strategy](#writing-a-strategy) of your own. [Sessions](#sessions) (the `auth-session` feature) log a user in and restore it on later requests. OAuth2 arrives with its own issue (#43). A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
+What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy), the [local strategy](#local-strategy-username-and-password) (username and password, with the `auth-local` feature) and [API keys](#api-keys) (the `auth-api-key` feature), plus the guide to [writing a strategy](#writing-a-strategy) of your own. [Sessions](#sessions) (the `auth-session` feature) log a user in and restore it on later requests. [OAuth2 login](#oauth2-google-github-and-others) (Google, GitHub and any provider, with the `auth-oauth2` feature) does the authorization code flow. A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
 
 ## The model
 
@@ -659,6 +659,176 @@ The `404` for a route that does not exist is `Cannot GET /x?api_key=...` with th
 
 `crates/corvis/tests/fixtures/auth/api_key.mjs` runs `passport-headerapikey` 1.2.2, and `passport-custom` 1.2.1 strategies for the query and bearer variants, behind the original guard and records 55 cases (`api_key.json`): header names, prefixes, repeated values, wrong, missing and empty keys, the validator returning no user, an exception and a plain error, chains. `crates/corvis/tests/auth_api_key.rs` replays them against the same routes with no Node needed at test time; the five marked divergences (an oversized key twice, a control character, conflicting keys, the literal prefix) are asserted from the specification.
 
+
+## OAuth2 (Google, GitHub and others)
+
+The OAuth2 strategy is the port of `passport-oauth2` 1.8.0 with the Google and GitHub profiles of `passport-google-oauth20` 2.0.0 and `passport-github2` 0.1.12, and the refresh request of `passport-oauth2-refresh` 2.2.0. It does the authorization code flow only, and needs the `auth-oauth2` cargo feature (it brings `auth-session`; the provider client uses `tokio-rustls` and the bundled web PKI roots, no other crate):
+
+```toml
+corvis = { version = "0.1", features = ["auth-oauth2"] }
+```
+
+You write the validator (the `verify` callback of the original, receiving everything the provider gave as one `OAuth2Grant`) and register `OAuth2Strategy<YourValidator>`. Two routes carry the same guard: the login route, which redirects to the provider, and the callback route, whose handler runs with the user your validator returned.
+
+```rust
+use corvis::auth::oauth2::{OAuth2Grant, OAuth2Options, OAuth2Strategy, OAuth2Validator, return_to};
+use corvis::auth::{AuthGuard, User};
+use corvis::prelude::*;
+
+#[injectable]
+pub struct GoogleAuth {
+    users: Arc<UsersService>,
+    config: Arc<ConfigService>,
+}
+
+#[async_trait]
+impl OAuth2Validator for GoogleAuth {
+    const NAME: &'static str = "google";
+    type User = SessionUser;
+
+    fn options(&self) -> OAuth2Options {
+        let get = |name: &str| self.config.get::<String>(name).unwrap_or_default();
+        OAuth2Options::google(get("GOOGLE_CLIENT_ID"), get("GOOGLE_CLIENT_SECRET"), "https://app.example/auth/google/callback")
+            .scope(["openid", "email", "profile"])
+            .state_cookie_secrets([get("OAUTH_STATE_SECRET")])
+            .return_to_param("return_to")
+            .failure_redirect("/login?error=oauth")
+    }
+
+    async fn validate(&self, _req: &Request, grant: OAuth2Grant) -> Result<Option<SessionUser>, HttpException> {
+        let Some(profile) = grant.profile else { return Ok(None) };
+        // Identify the user by (provider, id). Link an existing account by e-mail only through verified_email().
+        let user = self.users.find_or_create(&profile.provider, &profile.id, profile.verified_email()).await?;
+        Ok(Some(user))
+    }
+}
+
+#[module(
+    providers = [GoogleAuth, Provider::strategy::<OAuth2Strategy<GoogleAuth>>()],
+    controllers = [AuthController],
+)]
+pub struct AuthModule;
+
+#[controller("auth/google")]
+pub struct AuthController;
+
+#[routes]
+impl AuthController {
+    #[get("login")]
+    #[public]
+    #[use_guards(AuthGuard::new("google"))] // redirects to Google
+    fn login(&self) {}
+
+    #[get("callback")]
+    #[public]
+    #[use_guards(AuthGuard::new("google"))] // the handler runs with the user `validate` returned
+    fn callback(&self, req: Request, user: User<SessionUser>) -> Value {
+        json!({ "user": user.0, "return_to": return_to(&req) })
+    }
+}
+```
+
+`validate` returns `Ok(Some(user))` for a success, `Ok(None)` for a 401 and `Err(exception)` to answer that exception, as every strategy does. Invalid options stop `init()` with an error that names the strategy and the option. The presets are `OAuth2Options::google(..)` and `OAuth2Options::github(..)`; `OAuth2Options::new(OAuth2Endpoints::new(authorization_url, token_url).userinfo_url(url), ..)` is any other provider (without a userinfo URL the grant has no profile). `OAuth2Options::endpoints(..)` replaces the URLs of a preset (GitHub Enterprise, a proxy, a test double). Register the redirect URI you configured with the provider. Google needs a scope; GitHub's `user:email` gives the verified e-mail addresses.
+
+### What the validator receives
+
+`OAuth2Grant` has `access_token` and `refresh_token: Option<_>` (both `OAuth2Token`: no `Display`, no `Serialize`, `Debug` prints nothing; call `expose()` on purpose), `params` (the token response without the tokens: `get(key)`, `expires_in()`, `scope()`, `id_token()`) and `profile: Option<OAuth2Profile>`. The framework stores no token. If you keep one to call the provider later, store it encrypted at rest with the user record, never in a cookie or in the browser's session.
+
+`OAuth2Profile` serializes with the keys of the original (`provider`, `id`, `displayName`, `username`, `name`, `emails`, `photos`, `profileUrl`, `_json`) and adds a `verified` flag to every e-mail (and `primary` for GitHub). **Identify a user by `(provider, id)`**: Google's `sub`, GitHub's numeric id as a string. **Link an account by e-mail only through `verified_email()`**: the primary address the provider reports as verified (Google: `email_verified: true`; GitHub: the `/user/emails` entry that is both `primary` and `verified`). Linking by an unverified address lets anyone who registers it at the provider take over the account.
+
+::: warning The `id_token` is not verified
+With the `openid` scope Google returns an ID token. `grant.params.id_token()` hands it over as it came: its signature, issuer, audience, expiry and nonce are **not** checked, so read no claim from it. The profile comes from the userinfo endpoint over TLS, authenticated by the token the server obtained with its client secret and PKCE verifier; use that.
+:::
+
+### `state`, PKCE and where they live
+
+Each login generates a `state` and a PKCE verifier, 32 bytes each from the operating system's generator (43 base64url characters), and sends `code_challenge` with `code_challenge_method=S256` (`plain` cannot be expressed). `state` cannot be turned off. `.pkce(false)` turns the challenge off for a provider that refuses unknown parameters and logs a warning at startup.
+
+You **choose where the state of a login lives**; choosing nothing stops `init()`:
+
+| | `state_cookie_secrets(..)` / `state_cookie(keys)` | `state_in_session()` |
+|---|---|---|
+| Stored in | a cookie signed with `CookieKeys` (secrets of at least 32 bytes; use one of your own, not the session's) | the session of the request |
+| Server state | none: a visitor who starts a login creates nothing | a session record per login start (rate limit the login route) |
+| Needs | nothing else | `SessionModule` installed, session cookie not `SameSite=Strict` (startup error otherwise) |
+| Single use | the cookie is deleted and expires; a client that keeps it can replay its own callback within the lifetime, and the provider then rejects the reused code | the record is removed before any request to the provider: a replay fails whatever the client sends |
+| PKCE verifier | derived on the server from the `state` and the first cookie key: it is never in the cookie | stored in the session record |
+
+The state cookie is `__Host-oauth2.<name>`, `Path=/`, `HttpOnly`, `Secure`, `SameSite=Lax` (the callback is a top-level cross-site navigation, so `Strict` would never be sent), no `Domain`, and lives as long as the state (600 s by default). The `__Host-` prefix makes a browser refuse a cookie set by a sibling subdomain, which closes login CSRF by cookie tossing. `.state_cookie_secure(false)` (plain-HTTP development) drops `Secure` and the prefix and logs a startup warning. After a key rotation, a login that started before it fails once (the verifier is derived with the first key).
+
+With the session as the store, the same attack needs the session cookie to be set by someone else (a sibling subdomain, or a network attacker on plain HTTP): give the session cookie the `__Host-` prefix (`SessionOptions::name("__Host-sid")`) and keep it `Secure`.
+
+A callback is checked in this order, and nothing reaches the provider until the last check passes: `code`, `state` and `error` are each absent or one string within their limits (`code` and `error` together fail); the flow of that `state` is taken out of the store (a forged state spends nothing of the browser's other flows); the flow must exist for this strategy and be inside its lifetime; its `state` equals the query's (constant time). A browser can have up to four logins in progress for a strategy (two tabs do not break each other); the oldest is dropped when a fifth starts, and an unclaimed flow expires with its lifetime.
+
+### The redirect URI
+
+`redirect_uri` is a required argument: an absolute URL (`https`, or `http` for a loopback host), without fragment or user information. The same string goes in the authorization and the token request. **Nothing is built from the request**: the original resolves a relative callback URL against the `Host` header, so a forged header decides where the provider sends the code. Corvis refuses a relative URI at startup and has no per-request redirect URI; a multi-domain application runs one strategy per domain.
+
+### `return_to` and `failure_redirect`
+
+`.return_to_param("return_to")` makes the **login start** read that query parameter and keep it only when it is one string of at most 1024 bytes that starts with a single `/` (the second character is not `/` or `\`) with no backslash, control character or non-ASCII byte (the rule of [the redirect URLs of a strategy](#writing-a-strategy); `is_safe_relative_path` is public). Anything else is dropped and the login goes on. The value travels in the state record, not in any URL the provider sees, and `oauth2::return_to(&req)` returns it in the callback handler of a successful login (never from the callback's own query). `.failure_redirect(url)` answers every failed callback with a 302 to a fixed URL (a relative path under the same rule, or an absolute `https` URL), nothing added from the request; errors of the provider or the configuration (500, 503) are not redirected.
+
+### Failures
+
+| The callback | Answer |
+|---|---|
+| not a `GET`; repeated, oversized or malformed parameters; `code` with `error` | 401 |
+| no state record, another strategy's record, expired, `state` different | 401 |
+| `error=access_denied` | 401 |
+| any other `error` | 401 (the original: 500) |
+| the token endpoint answers 400 or 401 (`invalid_grant`, a reused code), or 200 with an `error` | 401 (the original: 500) |
+| concurrency limit reached | 503 `Service Unavailable` |
+| timeout, connect or TLS failure, redirect, 5xx or other status, oversized or unparseable answer, no `access_token`, unknown `token_type`, profile request failure | 500 `Internal server error` |
+| `validate` returns `None` / an exception | 401 / that exception |
+
+Provider text never reaches a response: a failure's challenge (`Request::auth_info()`, `AuthGuard::on_failure`) is `{"message": <fixed reason>}` with one of `state mismatch`, `access denied`, `provider error`, `code rejected`, `invalid callback`, plus `"error": <code>` only when the provider's code is 1 to 64 characters of `[A-Za-z0-9_.-]`. `error_description` and `error_uri` are dropped unread. The callback response has `Cache-Control: no-store` and `Referrer-Policy: no-referrer`; redirect from the handler so the `code` leaves the address bar.
+
+### The provider client and its limits
+
+Token, refresh and profile requests go through a private client over `hyper` and `tokio-rustls`: TLS 1.2 and 1.3 with the bundled web PKI roots (plus `OAuth2HttpOptions::extra_root_certificate(der)` for a private CA), host name verified, **no way to turn verification off**. `http` is accepted only for a loopback host whose resolved addresses are all loopback (a mock provider on `127.0.0.1`). A redirect is a failed request and is never followed, proxy variables are ignored, responses are never decompressed, and an error never holds text from the provider.
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `state_ttl` | 600 s | 60 s to 3600 s |
+| PKCE | `S256`, on | `.pkce(false)` warns |
+| `max_code_bytes` (callback `code`) | 2048 | 16 to 8192 |
+| callback `state` | 43 base64url characters | fixed |
+| connect timeout (TCP and TLS) | 5 s | 1 s to 30 s |
+| total timeout per request | 10 s | 1 s to 60 s |
+| token response | 64 KiB | 1 KiB to 1 MiB |
+| each profile response | 256 KiB | 1 KiB to 4 MiB |
+| response header block | 16 KiB | fixed |
+| an access, refresh or ID token | 16 KiB | fixed |
+| requests to the provider in flight, per strategy | 32 | 1 to 1024 (over: 503 at once) |
+| scope | none (Google: required) | 64 values of 1 to 128 visible ASCII characters without space, `"` or `\` (GitHub: no `,` either) |
+| extra authorization parameters | none | 16, names and values at most 256 bytes; `response_type`, `client_id`, `redirect_uri`, `scope`, `state`, `code_challenge`, `code_challenge_method` refused |
+| client authentication | request body | `ClientAuth::Basic` (form-encoded id and secret, nothing in the body) |
+| flows in progress per browser and strategy | 4 | fixed |
+
+An option outside its bound stops `init()` with an error that names the strategy and the option and never holds the client secret.
+
+### Refresh
+
+`OAuth2Client::new(options)?` validates the options like the strategy and gives `refresh(refresh_token)`: `grant_type=refresh_token` with the client credentials (and `refresh_scope(..)` if set) through the same client and limits, returning an `OAuth2TokenSet`. Build it from the same `options()` as your validator. Nothing is stored and nothing refreshes by itself. A rejected refresh is an error whose text holds only the provider's sanitized code (`invalid_grant`).
+
+### Logs, proxies and rate limits
+
+The callback registers `code` and `state` as credential query parameters, so `LoggingInterceptor` and `Request::redacted_url()` hide them (a middleware that logs `Request::url()` does not: use `redacted_url()`). A reverse proxy's access log still records the callback URL; the `code` is single use and bound to the PKCE verifier. Log lines hold the strategy name, the provider's host, the status and the error kind, at most once a minute per reason, never a query, body, header, token or secret. **Rate limit the login route** (see [rate limiting](/security/rate-limiting)): every login start is a request anyone can make, and with the session as the store each one creates a session record.
+
+### Differences from `passport-oauth2`
+
+- `state` and PKCE are always on; the original sends neither unless `state: true` and `pkce: true` are set with a session.
+- The redirect URI is absolute and configured; the original resolves a relative one from `Host`.
+- A provider `error` other than `access_denied`, and a token endpoint that rejects the code, answer 401 (the original 500).
+- Profile requests send the token in an `Authorization: Bearer` header; the original sends Google's in the URL. They also send `Accept: application/json` and the client's own `User-Agent`.
+- GitHub's scope is joined with commas, as `passport-github2` does; the e-mails keep every address of `/user/emails` as `{ value, primary, verified }` (the original: only the primary one as `{ value }`, or all with `allRawEmails`, adding `visibility`). A failed e-mail request fails the login, an empty list too.
+- Every e-mail has a `verified` flag and `verified_email()` exists; the original omits the flag for GitHub.
+- The token response is handed over without `access_token`, `refresh_token` and `id_token` in `params` (they are typed values of their own); the ID token is unverified.
+- A callback with a state that is not this browser's answers 401 through `AuthGuard` (the original answers the 403 the strategy gave, through plain `passport`).
+
+### Testing against the original
+
+`crates/corvis/tests/fixtures/auth/oauth2.mjs` runs the four packages against a fake provider and records the authorization redirects, the token and profile requests, the profiles handed to `validate()`, 14 callback outcomes and the refresh request (`oauth2.json`); `crates/corvis/tests/auth_oauth2_original.rs` replays them against a mock provider on `127.0.0.1` with no Node and no network, and asserts the marked divergences from the specification. `examples/cats-app` has a GitHub login whose endpoints come from configuration, tested against a local mock provider.
 
 ## Differential testing
 

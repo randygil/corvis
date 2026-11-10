@@ -570,3 +570,44 @@ These settle the open questions and override the design where they differ.
     adjustments in Implementation notes. The ID token is handed over unverified and the docs say so in a warning.
 11. The security review is mandatory before the merge (state binding, PKCE, the HTTP client's TLS and limits,
     redirect handling, secrets in logs).
+
+## Implementation notes
+
+### Design against the merged code (task 1.1)
+
+The design's line references are not repeated: the files moved. These are the APIs the code was written against.
+
+| Design says | Merged code |
+|---|---|
+| `Request::redact_query_param("code")` in the callback | Replaced by the core: `Strategy::credential_query_params()` (`crates/corvis/src/auth/strategy.rs`), collected once at startup by `auth::credential_query_params` and applied to every request of the application. `OAuth2Strategy` returns `["code", "state"]`; `LoggingInterceptor` and `Request::redacted_url()` hide them. A middleware that logs `Request::url()` does not (the cats example's now logs `redacted_url()`). |
+| `GuardPhase::is_active` is `pub(crate)` | It was private to `common/context.rs`: made `pub(crate)` (no behavior change). |
+| `CookieKeys` (`sign`, `unsign`) | `crates/corvis/src/http/signed_cookie.rs`, `corvis::http::CookieKeys`: `sign` gives `s:<value>.<signature>`, `unsign` verifies against every key and refuses more than 4096 bytes, `CookieKeysError` for a short secret; `Debug` prints the number of secrets only. |
+| `Request::session()`, `Session::set` / `get` / `remove` | `request.rs` (`session()`), `auth/session/session.rs` (`get_value`, `set`, `remove`). A guard that stores a redirect is not a rejected request: the record written at login start is committed (tested). |
+| "the session cookie's `SameSite` accessor" | `SessionManager::options.cookie.same_site` (crate-private fields); the strategy resolves `SessionManager` through the DI context, which also gives the "SessionModule is not imported" error. |
+| a crate-private clock "as in #44" | `session::store::now_ms()`, re-exported `pub(crate)` for the feature: it follows tokio's paused clock, so the expiry tests move time with `tokio::time::advance`. |
+| `serde_json::Value` for the provider's JSON | `PlainJson` lives in `crate::jwt`, which needs the `jwt` feature; `oauth2/json.rs` has its own visitor (no `$serde_json::private::RawValue` key handling, so the parser's depth limit is the only budget even with `raw_value` on). |
+| empty users | `AuthenticatedUser::is_empty`: a validator returning a user that serializes to `null`, `false`, `0` or `""` is a 401 (tested); the strategy never sets `return_to` for such a user. |
+| strategy panics, names, `inner_guards`, `WarnLimiter` | Used as merged: the callback's log lines go through a `WarnLimiter` (one line a minute per reason). |
+| Open questions | Settled by the Review notes above. |
+
+### Decisions and deviations
+
+1. **Several logins in progress per browser.** The design keeps one record per strategy, so a second tab breaks the first. The record is a list of at most four flows (`state`, issue time, `return_to`, plus the verifier in the session form). A callback takes out the flow of its own `state`, comparing every stored state in constant time, and writes the others back. A forged or unknown state spends nothing: the cookie is rewritten with the flows it had. So scenario "State cookie deleted" holds for every callback that matches a flow, and a callback that matches none leaves the others alone instead of deleting them (a cross-site link could otherwise abort a user's login in progress). The fifth login drops the oldest. Two tabs that start at the same instant can still overwrite each other's `Set-Cookie`: the browser keeps the last one, a limit of cookie storage.
+2. **The PKCE verifier is not in the cookie.** Cookie storage derives it: base64url SHA-256 of the signature (first cookie key) of `corvis-oauth2-pkce-v1|name|state|issued`. The browser knows the `state` but not the key, so the verifier never leaves the server. Cost: a key rotation between the redirect and the callback fails that one login. Session storage keeps a random verifier in the session record. Scenario "Record contents" holds for the session form; the cookie form holds the name, state, issue time and `return_to`.
+3. **GitHub joins its scope with commas** (`scopeSeparator: ','` in `passport-github2`), where the design said a space. The separator belongs to the preset and a scope value cannot contain it.
+4. **Parameter order and form field order come from the recording.** Authorization: the URL's own parameters, the extra ones, `response_type`, `redirect_uri`, `scope`, `code_challenge`, `code_challenge_method`, `state`, `client_id` (the design listed `client_id` second). Token request: `grant_type`, `redirect_uri`, `code_verifier`, `client_id`, `client_secret`, `code`; refresh: `grant_type`, `client_id`, `client_secret`, `refresh_token`.
+5. **A 200 token answer with an `error` and no `access_token` is a rejection (401)**, GitHub's way to refuse a code (the original answers 500). A token endpoint answering 400 or 401 is a rejection too, as designed.
+6. **`OAuth2TokenResponse` holds no token**: `access_token`, `refresh_token` and `id_token` are removed from the members and typed (`OAuth2Token`), so no serializer reaches them through `get()`. The original keeps `access_token` and `id_token` in `params`. Each token is limited to 16 KiB.
+7. **`OAuth2Options::state_cookie_secrets(..)`** (not in the design) builds the keys from raw secrets and reports a missing or short one as a startup error that names the option, because `options()` cannot return an error. `state_cookie(keys)` stays.
+8. **GitHub e-mails.** With `user:email` the profile keeps every `/user/emails` entry as `{ value, primary, verified }` (the recorded original with `allRawEmails: true`, minus `visibility`); the original's default keeps only the primary one as `{ value }`. An empty list or no usable entry fails the login, as in the original. `id` accepts a number or a string of digits only.
+9. **`return_to_param` cannot be `code`, `state` or `error`** (the callback's own parameters). A request that is not a `GET` is a plain 401 and is not redirected to the failure page (it is not a callback).
+10. **Provider answers are strict about content types**: JSON (`application/json`, `+json`) or form / `text/plain` for the token response, JSON for profiles; a `Content-Encoding` other than identity is refused; a form body with a repeated key is refused.
+11. **Verified e-mail is a JSON boolean.** Google's `email_verified` as a string, a number or `null` is not verified.
+12. **Session storage and cookie tossing.** With the session as the store, login CSRF needs the victim's browser to carry a session cookie planted by the attacker (a sibling subdomain, or a network attacker over plain HTTP); the cookie store, with its `__Host-` cookie, has no such exposure. The docs recommend the `__Host-` prefix and `Secure` for the session cookie when `state_in_session()` is used; the framework cannot enforce it.
+13. **Example.** `examples/cats-app` mounts the GitHub login only when `GITHUB_CLIENT_ID` is set (its other tests and its startup are unchanged), answers the callback with the application's JWT as JSON instead of a redirect (a token in a redirect URL ends up in logs and history), and its request-log middleware now logs `redacted_url()`. Endpoints come from `GITHUB_ENDPOINTS_BASE`, which only tests set.
+14. **"Loopback name resolving elsewhere"** is covered by a unit test of the address rule (`addresses_allowed`), not by an integration test: a name cannot be made to resolve to a non-loopback address without touching the resolver.
+15. **Tests**: `crates/corvis/tests/auth_oauth2.rs` (behavior), `auth_oauth2_original.rs` (the recorded cases), `auth_oauth2_log.rs` (own binary, process-wide logger), the unit tests of `auth/oauth2/*`, and `examples/cats-app/tests/github_login.rs`. The mock provider (`tests/oauth2_common/mod.rs`) is raw HTTP/1.1 over TCP on `127.0.0.1`, with TLS from `rcgen` for the certificate cases.
+
+### Left to the maintainer's session
+
+Task 1.3 (the CI run in a pull request), 9.6 (parity: the only core change is a visibility, `GuardPhase::is_active`, plus a feature-gated re-export), 9.8 (the security review), the archive, the follow-up issues and the `ROADMAP.md` name.
