@@ -71,6 +71,31 @@ async fn session_strategy_in_the_chain() {
     assert_eq!(user_id(&r), Some("2".into()));
 }
 
+/// Review finding: a token cookie sent twice (one planted from a sibling subdomain in front of the victim's own) yields
+/// no token instead of the first value, so the attacker's token cannot replace the victim's identity.
+#[tokio::test]
+async fn a_jwt_cookie_sent_twice_is_no_token() {
+    let h = Harness::new().await;
+    let (attacker, victim) = (token("2"), token("1"));
+    // One cookie: the token is read.
+    let r = h.get("/jwt", &[("cookie", &format!("jwt={victim}"))]).await;
+    assert_eq!((r.status, user_id(&r)), (200, Some("1".into())), "{}", r.text());
+    // Two, in either order, even with the same value: the uniform 401 and no validator call.
+    let before = h.probe.jwt.load(std::sync::atomic::Ordering::SeqCst);
+    for pair in [format!("jwt={attacker}; jwt={victim}"), format!("jwt={victim}; jwt={attacker}"), format!("jwt={victim}; jwt={victim}")] {
+        let r = h.get("/jwt", &[("cookie", &pair)]).await;
+        assert_eq!((r.status, r.json_value()), (401, unauthorized()), "{pair}");
+    }
+    assert_eq!(h.probe.jwt.load(std::sync::atomic::Ordering::SeqCst), before, "the validator never ran");
+    // In a chain the session of the victim answers instead of the planted token.
+    let session = h.login("ana").await;
+    let r = h.get("/chain-jwt-session", &[("cookie", &format!("jwt={attacker}; jwt={attacker}; {session}"))]).await;
+    assert_eq!((r.status, user_id(&r)), (200, Some("1".into())), "{}", r.text());
+    // A bearer header is still read next to a repeated cookie.
+    let r = h.get("/jwt", &[("cookie", &format!("jwt={attacker}; jwt={victim}")), ("authorization", &bearer(&victim))]).await;
+    assert_eq!((r.status, user_id(&r)), (200, Some("1".into())), "{}", r.text());
+}
+
 #[tokio::test]
 async fn token_only_route_with_only_a_session_cookie() {
     let h = Harness::new().await;

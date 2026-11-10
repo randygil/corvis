@@ -283,6 +283,13 @@ impl JwtStrategyOptions {
             warnings
                 .push("the token is read from the URL query: URLs end up in access logs, browser history and Referer headers".to_string());
         }
+        for name in extractor.cookie_names() {
+            if !name.starts_with("__Host-") {
+                warnings.push(format!(
+                    "the token is read from the cookie \"{name}\", which has no __Host- prefix: a page on a sibling subdomain can plant a cookie of that name (a request that carries it twice is refused, but a planted one can still be the only one); name it __Host-... on a Secure HTTPS host with Path=/ and no Domain"
+                ));
+            }
+        }
         Ok(Resolved {
             extractor,
             key,

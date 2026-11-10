@@ -55,7 +55,7 @@ pub struct ApiController;
 #[routes]
 impl ApiController {
     #[get("me")]
-    #[use_guards(AuthGuard::chain(["clean", "ignoring", "lenient", "url", "failing"]))]
+    #[use_guards(AuthGuard::chain(["clean", "ignoring", "lenient", "url", "failing", "cookie", "hostcookie"]))]
     fn me(&self, user: User<Claims>) -> Value {
         json!({ "sub": user.sub })
     }
@@ -85,6 +85,18 @@ jwt_app!(
     "failing",
     JwtStrategyOptions::new().jwt_from_request(ExtractJwt::from_auth_header_as_bearer_token()).secret_or_key_provider(FailingKeys)
 );
+jwt_app!(
+    Plain,
+    PlainModule,
+    "cookie",
+    JwtStrategyOptions::new().jwt_from_request(ExtractJwt::from_cookie("jwt")).secret_or_key(JwtKey::secret(SECRET))
+);
+jwt_app!(
+    Prefixed,
+    PrefixedModule,
+    "hostcookie",
+    JwtStrategyOptions::new().jwt_from_request(ExtractJwt::from_cookie("__Host-jwt")).secret_or_key(JwtKey::secret(SECRET))
+);
 
 #[module(
     providers = [
@@ -93,6 +105,8 @@ jwt_app!(
         Provider::strategy::<JwtStrategy<Lenient>>(),
         Provider::strategy::<JwtStrategy<Url>>(),
         Provider::strategy::<JwtStrategy<Failing>>(),
+        Provider::strategy::<JwtStrategy<Plain>>(),
+        Provider::strategy::<JwtStrategy<Prefixed>>(),
     ],
     controllers = [ApiController],
 )]
@@ -135,11 +149,14 @@ async fn risky_options_log_one_warning_each_naming_the_strategy() {
     app.silence_route_logs();
     app.init().await.unwrap();
     let found = warnings(&captured);
-    assert_eq!(found.len(), 3, "{found:?}");
+    assert_eq!(found.len(), 4, "{found:?}");
     let has = |name: &str, what: &str| found.iter().any(|w| w.contains(&format!("\"{name}\"")) && w.contains(what));
     assert!(has("ignoring", "ignore_expiration"), "{found:?}");
     assert!(has("lenient", "allow_missing_exp"), "{found:?}");
     assert!(has("url", "URL query"), "{found:?}");
+    // A cookie extractor whose name has no `__Host-` prefix warns, naming the strategy and the cookie; one with it does not.
+    assert!(has("cookie", "the cookie \"jwt\", which has no __Host- prefix"), "{found:?}");
+    assert!(!found.iter().any(|w| w.contains("\"hostcookie\"")), "{found:?}");
     assert!(!found.iter().any(|w| w.contains("\"clean\"")), "{found:?}");
 }
 

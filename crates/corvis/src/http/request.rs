@@ -244,7 +244,7 @@ impl Request {
 
     /// Every value sent under `name` (`cookies()` keeps the first one only), in header order, at most `limit` of
     /// them. A value whose raw form is longer than `max_raw` bytes is not decoded and counts as an empty string.
-    #[cfg(feature = "auth-session")]
+    #[cfg(any(feature = "auth-session", feature = "jwt"))]
     pub(crate) fn cookie_values(&self, name: &str, limit: usize, max_raw: usize) -> Vec<String> {
         let mut out = Vec::new();
         scan_cookies(&self.cookie_header(), |key, raw| {
@@ -487,7 +487,7 @@ mod cookie_tests {
         assert_eq!(req.cookie("b").as_deref(), Some("2"));
     }
 
-    #[cfg(feature = "auth-session")]
+    #[cfg(any(feature = "auth-session", feature = "jwt"))]
     #[test]
     fn every_value_of_a_name_is_listed_across_headers_and_bounded() {
         let req = request(&["a=1; b=2; a=3", "a=%34"]);

@@ -83,7 +83,10 @@ impl ExtractJwt {
         JwtExtractor(Kind::Body { name: name.into() })
     }
 
-    /// The cookie `name`, parsed like `cookie-parser` (the equivalent of `req => req.cookies?.[name]`).
+    /// The cookie `name`, parsed like `cookie-parser` (the equivalent of `req => req.cookies?.[name]`), with one
+    /// difference on purpose: a name that appears more than once in the request yields no token (the uniform 401)
+    /// instead of the first value, since a cookie planted from a sibling subdomain would otherwise win. The strategy
+    /// warns at startup when the name has no `__Host-` prefix.
     pub fn from_cookie(name: impl Into<String>) -> JwtExtractor {
         JwtExtractor(Kind::Cookie { name: name.into() })
     }
@@ -107,7 +110,12 @@ impl JwtExtractor {
             Kind::Header { name } => header_value(req.headers(), name),
             Kind::Query { name } => req.query().get(name).and_then(|v| v.as_str()).map(str::to_string),
             Kind::Body { name } => req.body().get(name).and_then(|v| v.as_str()).map(str::to_string),
-            Kind::Cookie { name } => req.cookie(name),
+            // A name sent twice means a cookie planted from somewhere else (a sibling subdomain can set cookies for the
+            // whole domain, in front of the victim's own): no token, as the session cookie does.
+            Kind::Cookie { name } => {
+                let mut values = req.cookie_values(name, 2, usize::MAX);
+                if values.len() == 1 { values.pop() } else { None }
+            }
             Kind::First(list) => list.iter().find_map(|e| e.extract(req)),
             Kind::Custom(f) => f(req),
         };
@@ -120,6 +128,15 @@ impl JwtExtractor {
             Kind::Query { .. } => true,
             Kind::First(list) => list.iter().any(JwtExtractor::reads_query),
             _ => false,
+        }
+    }
+
+    /// The names of the cookies this extractor, or one it combines, reads (a custom function is opaque).
+    pub(crate) fn cookie_names(&self) -> Vec<String> {
+        match &self.0 {
+            Kind::Cookie { name } => vec![name.clone()],
+            Kind::First(list) => list.iter().flat_map(JwtExtractor::cookie_names).collect(),
+            _ => Vec::new(),
         }
     }
 
