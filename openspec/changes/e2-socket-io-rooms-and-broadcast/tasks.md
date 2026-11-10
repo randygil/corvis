@@ -104,15 +104,15 @@ clock; no retries.
 
 ## 7. Definition of done
 
-- [ ] 7.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`
+- [x] 7.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`
   with no warnings
-- [ ] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
+- [x] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
   `cargo clippy -p corvis --no-default-features --features socket-io -- -D warnings`
-- [ ] 7.3 `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
+- [x] 7.3 `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
   `CORVIS_NODE_DIFF=1` the `socket_io_diff` and `socket_io_conformance` tests pass
-- [ ] 7.4 Regression tests: one per spec scenario (unit, integration, security or harness scenario), as listed in
+- [x] 7.4 Regression tests: one per spec scenario (unit, integration, security or harness scenario), as listed in
   groups 1-5
-- [ ] 7.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
+- [x] 7.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 7.6 Framework runtime code changed (`crates/corvis/src/socket_io/`): run the `corvis-parity` check and verify
   the three port apps keep 0 apidiff differences
 - [ ] 7.7 The security review of 6.3 is closed before archiving
