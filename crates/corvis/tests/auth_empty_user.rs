@@ -3,6 +3,9 @@
 //! for a missing one (`tests/fixtures/auth/custom.json` records it for `passport-custom`). A validator written as
 //! `type User = bool; Ok(Some(expected.matches(key)))` is the case this protects.
 
+// Each strategy kind is behind its own feature, so a build with only some of them leaves shared helpers unused.
+#![cfg_attr(not(all(feature = "auth-api-key", feature = "auth-local", feature = "jwt")), allow(unused_imports, dead_code))]
+
 use corvis::auth::{AuthGuard, User};
 use corvis::prelude::*;
 use corvis::testing::request;
