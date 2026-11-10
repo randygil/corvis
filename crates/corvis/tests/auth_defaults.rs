@@ -32,7 +32,9 @@ const PAGE: &str = include_str!("../../../docs/security/authentication-threat-mo
 
 /// The `key = value` lines of the first fenced block after the "Defaults" heading.
 fn documented() -> BTreeMap<String, String> {
-    let section = PAGE.split("\n## Defaults").nth(1).expect("the page has a Defaults section");
+    // A checkout that converts line endings (`core.autocrlf`) hands this file over with CRLF.
+    let page = PAGE.replace("\r\n", "\n");
+    let section = page.split("\n## Defaults").nth(1).expect("the page has a Defaults section");
     let block = section.split("```ini\n").nth(1).expect("the Defaults section has an ini block").split("```").next().unwrap();
     let mut rows = BTreeMap::new();
     for line in block.lines().filter(|l| !l.trim().is_empty()) {

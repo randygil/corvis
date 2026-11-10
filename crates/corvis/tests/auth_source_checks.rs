@@ -11,7 +11,8 @@ fn root() -> PathBuf {
 }
 
 fn read(path: &str) -> String {
-    std::fs::read_to_string(root().join(path)).unwrap_or_else(|e| panic!("{path}: {e}"))
+    // Line endings are normalized: a checkout that converts them (`core.autocrlf`) hands the files over with CRLF.
+    std::fs::read_to_string(root().join(path)).unwrap_or_else(|e| panic!("{path}: {e}")).replace("\r\n", "\n")
 }
 
 const PAGE: &str = "docs/security/authentication-threat-model.md";
@@ -195,7 +196,7 @@ fn authentication_sources() -> Vec<(String, String)> {
         })
         .map(|p| {
             let relative = p.strip_prefix(root()).unwrap().to_string_lossy().replace('\\', "/");
-            (relative, std::fs::read_to_string(&p).unwrap())
+            (relative, std::fs::read_to_string(&p).unwrap().replace("\r\n", "\n"))
         })
         .collect()
 }
