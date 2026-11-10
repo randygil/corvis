@@ -79,6 +79,8 @@ pub struct Probe {
     pub jwt_raw: Mutex<Vec<String>>,
     /// The keys the API key validator received.
     pub key_raw: Mutex<Vec<String>>,
+    /// `{:?}` of every OAuth2 grant a validator received.
+    pub grants: Mutex<Vec<String>>,
     hits: Mutex<Vec<Hit>>,
 }
 
@@ -240,6 +242,7 @@ macro_rules! oauth_validator {
 
             async fn validate(&self, _req: &Request, grant: OAuth2Grant) -> Result<Option<Account>, HttpException> {
                 self.probe.0.oauth.fetch_add(1, Ordering::SeqCst);
+                self.probe.0.grants.lock().unwrap().push(format!("{grant:?}"));
                 Ok(provider_user(&grant))
             }
         }
@@ -386,6 +389,14 @@ impl Routes {
         self.hit("login-session", &req)
     }
 
+    /// Gives the browser a session with some data, without logging anybody in.
+    #[post("touch")]
+    #[http_code(200)]
+    fn touch(&self, req: Request) -> Value {
+        req.session().expect("the session module runs for every route").set("seen", true).unwrap();
+        self.hit("touch", &req)
+    }
+
     #[post("logout")]
     #[http_code(200)]
     async fn logout(&self, req: Request) -> Result<Value, HttpException> {
@@ -409,6 +420,24 @@ impl Routes {
     #[use_guards(AuthGuard::new("oauth-s").log_in())]
     fn oauth_session_login(&self, req: Request) -> Value {
         self.hit("oauth-s-login", &req)
+    }
+}
+
+/// A gateway that says what its handshake request carries.
+#[corvis::websocket_gateway(path = "/ws")]
+pub struct Gateway {
+    #[websocket_server]
+    server: corvis::WsServer,
+    probe: Arc<ProbeRef>,
+}
+
+#[corvis::handlers]
+impl Gateway {
+    #[subscribe_message("who")]
+    fn who(&self, #[connected_socket] client: corvis::WsClient) -> Value {
+        let handshake = client.handshake();
+        self.probe.0.hits.lock().unwrap().push(Hit { route: "ws-who".into(), user: handshake.user() });
+        json!({ "user": handshake.user(), "session": handshake.session().is_some() })
     }
 }
 
@@ -452,11 +481,15 @@ pub struct Config {
     pub session: Box<dyn FnOnce(SessionOptions) -> SessionOptions>,
     pub provider: Box<dyn Fn(&oauth2_common::Recorded) -> oauth2_common::Reply + Send + Sync>,
     pub trust_proxy: bool,
+    /// `require_route_posture()`: the application does not start with an unprotected route.
+    pub posture: bool,
+    /// A global `AuthGuard::new("jwt").optional()`.
+    pub global_guard: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { session: Box::new(|o| o), provider: Box::new(oauth2_common::standard), trust_proxy: false }
+        Config { session: Box::new(|o| o), provider: Box::new(oauth2_common::standard), trust_proxy: false, posture: false, global_guard: false }
     }
 }
 
@@ -478,6 +511,11 @@ impl Harness {
     }
 
     pub async fn with(config: Config) -> Harness {
+        Self::try_with(config).await.unwrap_or_else(|e| panic!("the application did not start: {e}"))
+    }
+
+    /// The application, or the text of the error that stopped it.
+    pub async fn try_with(config: Config) -> Result<Harness, String> {
         let mock = Mock::start(config.provider).await;
         let store = RecordingStore::new();
         let probe = Arc::new(Probe::default());
@@ -497,6 +535,7 @@ impl Harness {
                 Provider::class::<OauthAuth>(),
                 Provider::class::<OauthSessionAuth>(),
                 Provider::class::<RolesGuard>(),
+                Provider::class::<Gateway>(),
                 Provider::strategy::<JwtStrategy<JwtAuth>>(),
                 Provider::strategy::<ApiKeyStrategy<KeyAuth>>(),
                 Provider::strategy::<LocalStrategy<LocalAuth>>(),
@@ -508,13 +547,19 @@ impl Harness {
             .controller::<PublicRoutes>()
             .compile()
             .await
-            .unwrap();
+            .map_err(|e| format!("{e:#}"))?;
         let mut app = module.create_corvis_application();
         if config.trust_proxy {
             app.set_trust_proxy(true);
         }
-        app.init().await.unwrap();
-        Harness { app, probe, mock, store }
+        if config.posture {
+            app.require_route_posture();
+        }
+        if config.global_guard {
+            app.use_global_guards(AuthGuard::new("jwt").optional());
+        }
+        app.init().await.map_err(|e| format!("{e:#}"))?;
+        Ok(Harness { app, probe, mock, store })
     }
 
     pub async fn get(&self, path: &str, headers: &[(&str, &str)]) -> TestResponse {

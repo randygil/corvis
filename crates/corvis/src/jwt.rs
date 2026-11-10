@@ -21,8 +21,8 @@ use crate::http::{HttpException, UnauthorizedException};
 
 pub use jsonwebtoken::Algorithm as JwtAlgorithm;
 
-/// Options for `JwtModule::register`.
-#[derive(Debug, Clone)]
+/// Options for `JwtModule::register`. `Debug` shows whether a secret or key is set, never its value.
+#[derive(Clone)]
 pub struct JwtModuleOptions {
     /// HMAC secret (`HS256`/`HS384`/`HS512`). A non-empty `secret` takes
     /// precedence over `private_key`/`public_key`: leave it empty (`JwtModuleOptions::new("")`)
@@ -87,13 +87,42 @@ impl JwtModuleOptions {
     }
 }
 
-/// Per-call sign options (`jwtService.sign(payload, { expiresIn, secret, privateKey })`).
-#[derive(Debug, Clone, Default)]
+impl std::fmt::Debug for JwtModuleOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let set = |present: bool| if present { "<set>" } else { "<unset>" };
+        f.debug_struct("JwtModuleOptions")
+            .field("secret", &set(!self.secret.is_empty()))
+            .field("expires_in", &self.expires_in)
+            .field("algorithm", &self.algorithm)
+            .field("issuer", &self.issuer)
+            .field("audience", &self.audience)
+            .field("global", &self.global)
+            .field("private_key", &set(self.private_key.is_some()))
+            .field("public_key", &set(self.public_key.is_some()))
+            .finish()
+    }
+}
+
+/// Per-call sign options (`jwtService.sign(payload, { expiresIn, secret, privateKey })`). `Debug` shows whether a
+/// secret or key is set, never its value.
+#[derive(Clone, Default)]
 pub struct JwtSignOptions {
     pub expires_in: Option<String>,
     pub secret: Option<String>,
     pub subject: Option<String>,
     pub private_key: Option<String>,
+}
+
+impl std::fmt::Debug for JwtSignOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let set = |present: bool| if present { "<set>" } else { "<unset>" };
+        f.debug_struct("JwtSignOptions")
+            .field("expires_in", &self.expires_in)
+            .field("secret", &set(self.secret.is_some()))
+            .field("subject", &self.subject)
+            .field("private_key", &set(self.private_key.is_some()))
+            .finish()
+    }
 }
 
 /// Parses a timespan with the grammar of the `ms` package and returns milliseconds:
