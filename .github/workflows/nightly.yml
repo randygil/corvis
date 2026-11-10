@@ -61,6 +61,9 @@ jobs:
       - name: API key extraction
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test -p corvis --features auth-api-key --lib fuzz
+      - name: Signed cookies and sessions
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis --features auth-session --lib fuzz
       - name: Static file serving
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test -p corvis --test fuzz_static

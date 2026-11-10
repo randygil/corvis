@@ -1,0 +1,427 @@
+{
+  "versions": {
+    "cookie-signature": "1.0.7",
+    "cookie-parser": "1.4.7",
+    "express": "5.3.0",
+    "cookie": "0.7.2"
+  },
+  "secrets": {
+    "a": "corvis-fixture-secret-A-0123456789-abcdef",
+    "b": "corvis-fixture-secret-B-9876543210-fedcba"
+  },
+  "sign": [
+    {
+      "value": "hello",
+      "secret": "a",
+      "signed": "s:hello.s3TQ50+/amzKNC80GzmuMrWipLlb2kearjOLtVglNB8"
+    },
+    {
+      "value": "hello",
+      "secret": "b",
+      "signed": "s:hello.iFpHPzxzI611A9iOvciNXzmEZQq7sxjQuUZ9xNBMkKw"
+    },
+    {
+      "value": "",
+      "secret": "a",
+      "signed": "s:.74qkn9OEpl8cwG5YctAgBeXxtBLCflPTRelL1L91vng"
+    },
+    {
+      "value": "",
+      "secret": "b",
+      "signed": "s:.ONoPr5CpIYqAlUlemETetOYR10GOFEJ0RsMNnljwkaY"
+    },
+    {
+      "value": "a.b.c",
+      "secret": "a",
+      "signed": "s:a.b.c.W2qgvXFIGXKxJagr9lja/GwHK8YhsY5H0/HRaRG2BwI"
+    },
+    {
+      "value": "a.b.c",
+      "secret": "b",
+      "signed": "s:a.b.c.RVBnJTFUZGyuvNvZCMlvqAPHrstcpwZuPidXtl2ZuZA"
+    },
+    {
+      "value": "café",
+      "secret": "a",
+      "signed": "s:café.ctmxstzZSvVz5oFQEN26/7AjRF35MGswmfnov1nve7k"
+    },
+    {
+      "value": "café",
+      "secret": "b",
+      "signed": "s:café.5BZH9nuyt0jbCTp7CB8livHP0tPNZP71b1QPbxDvdqE"
+    },
+    {
+      "value": "with space",
+      "secret": "a",
+      "signed": "s:with space.V6/2ysDbo3xMJKdXFdj/w2x+eCU5asQcaCpqVny+JSA"
+    },
+    {
+      "value": "with space",
+      "secret": "b",
+      "signed": "s:with space.uuT57c9m3ck8Hc7Old9oAirKCySoOpMhX0oJdZSao4A"
+    },
+    {
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "secret": "a",
+      "signed": "s:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.iwYw8e5xX6InsTl357dO7oYla0BQWzUsribR49SsHME"
+    },
+    {
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "secret": "b",
+      "signed": "s:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.jVSMfeLvHGQbAymYZ8FiYGW8rtJXbwRBEmit6/sXAk8"
+    },
+    {
+      "value": "j:{\"a\":1}",
+      "secret": "a",
+      "signed": "s:j:{\"a\":1}.zc7JZqrEWuGe92MWHvkkL9W25YuEN2K6jXZLFjRBgSc"
+    },
+    {
+      "value": "j:{\"a\":1}",
+      "secret": "b",
+      "signed": "s:j:{\"a\":1}.1oEoPIwTUzCwanSwMHNcUMuV1pbA0FEU8fCoklNmlCI"
+    },
+    {
+      "value": "s:nested",
+      "secret": "a",
+      "signed": "s:s:nested.ytPmlyZ3A81zPA0f3d2t/ZWnhOUeDl7U3MIGaRu3yu4"
+    },
+    {
+      "value": "s:nested",
+      "secret": "b",
+      "signed": "s:s:nested.BM58IeyYzWXXKDeFd1a6VuWU5MNIkNocM3xQKcQCgFk"
+    },
+    {
+      "value": "😀",
+      "secret": "a",
+      "signed": "s:😀.MAvefuzXLwvfTPX1A9Rtl7IoBdOVDiTP7fd1p0mZGvE"
+    },
+    {
+      "value": "😀",
+      "secret": "b",
+      "signed": "s:😀.h3xewtFGEXFxASlFzXXCJdaivGHgmJjkQiTQD43tGh0"
+    },
+    {
+      "value": "%41",
+      "secret": "a",
+      "signed": "s:%41.lH07oq27Sg+EITuBJqVEd6HPpTlimp2O0BZQAXHCx+4"
+    },
+    {
+      "value": "%41",
+      "secret": "b",
+      "signed": "s:%41.9PMtv9Jq4b3LpBrMqHuHYX+SaLJ8OL2dBj1JW2wQp44"
+    }
+  ],
+  "read": [
+    {
+      "name": "valid",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": "dark",
+      "other": null
+    },
+    {
+      "name": "valid, quoted value",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=\"s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw\"",
+      "status": 200,
+      "signed": "dark",
+      "other": null
+    },
+    {
+      "name": "valid, raw colon",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s:dark.bwBY5w4RAmdWnMlq6/7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": "dark",
+      "other": null
+    },
+    {
+      "name": "valid among other cookies",
+      "secrets": [
+        "a"
+      ],
+      "header": "x=1; prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw; y=2",
+      "status": 200,
+      "signed": "dark",
+      "other": null
+    },
+    {
+      "name": "valid for the second name",
+      "secrets": [
+        "a"
+      ],
+      "header": "other=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": null,
+      "other": "dark"
+    },
+    {
+      "name": "first occurrence wins",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw; prefs=s%3Alight.z9gDnunF4AHLXIIK4%2FyR9o9SFAh2hcyPjfdeVZwnAKE",
+      "status": 200,
+      "signed": "dark",
+      "other": null
+    },
+    {
+      "name": "first occurrence invalid, second valid",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAA; prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "tampered signature",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAA",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "tampered value",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adarl.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "truncated signature",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EA",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "extra signature byte",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAwA",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "padded signature",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw%3D",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "no prefix",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=dark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": null,
+      "other": null
+    },
+    {
+      "name": "prefix only",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3A",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "no dot",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "unsigned",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=dark",
+      "status": 200,
+      "signed": null,
+      "other": null
+    },
+    {
+      "name": "empty cookie",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=",
+      "status": 200,
+      "signed": null,
+      "other": null
+    },
+    {
+      "name": "signed with the other secret",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Adark.t6oMTRxcSccLcUitoRtWMjKp2Lx%2Fx40NRwqQbxAPBRQ",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "retired secret accepted by the rotated keys",
+      "secrets": [
+        "b",
+        "a"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": "dark",
+      "other": null
+    },
+    {
+      "name": "current secret accepted by the rotated keys",
+      "secrets": [
+        "b",
+        "a"
+      ],
+      "header": "prefs=s%3Adark.t6oMTRxcSccLcUitoRtWMjKp2Lx%2Fx40NRwqQbxAPBRQ",
+      "status": 200,
+      "signed": "dark",
+      "other": null
+    },
+    {
+      "name": "removed secret refused",
+      "secrets": [
+        "b"
+      ],
+      "header": "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": false,
+      "other": null
+    },
+    {
+      "name": "empty signed value",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3A.74qkn9OEpl8cwG5YctAgBeXxtBLCflPTRelL1L91vng",
+      "status": 200,
+      "signed": "",
+      "other": null
+    },
+    {
+      "name": "utf-8 value",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Acaf%C3%A9.ctmxstzZSvVz5oFQEN26%2F7AjRF35MGswmfnov1nve7k",
+      "status": 200,
+      "signed": "café",
+      "other": null
+    },
+    {
+      "name": "value with dots",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Aa.b.c.W2qgvXFIGXKxJagr9lja%2FGwHK8YhsY5H0%2FHRaRG2BwI",
+      "status": 200,
+      "signed": "a.b.c",
+      "other": null
+    },
+    {
+      "name": "invalid percent escape",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%zzdark.bwBY5w4RAmdWnMlq6/7uCAwLQ8HOX6ZDYnZEfuH0EAw",
+      "status": 200,
+      "signed": null,
+      "other": null
+    },
+    {
+      "name": "oversized value",
+      "secrets": [
+        "a"
+      ],
+      "header": "prefs=s%3Avvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv.CdwS0ynG5Tux1KLxThalWdvu50hoNwM4Lt1IuZYAthk",
+      "status": 200,
+      "signed": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+      "other": null,
+      "divergence": "the original verifies any length; Corvis refuses a signed input over 4096 bytes before computing a signature"
+    }
+  ],
+  "set": [
+    {
+      "name": "defaults",
+      "query": {},
+      "setCookie": [
+        "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw; Path=/"
+      ]
+    },
+    {
+      "name": "value with space and colon",
+      "query": {
+        "value": "a b:c"
+      },
+      "setCookie": [
+        "prefs=s%3Aa%20b%3Ac.%2FANo%2FGmEGT8SAkOQ4Wk3Q%2FpRESY2JXEV5dofKzcF1Io; Path=/"
+      ]
+    },
+    {
+      "name": "http only, secure, lax",
+      "query": {
+        "httpOnly": "1",
+        "secure": "1",
+        "sameSite": "lax"
+      },
+      "setCookie": [
+        "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw; Path=/; HttpOnly; Secure; SameSite=Lax"
+      ]
+    },
+    {
+      "name": "path and strict",
+      "query": {
+        "path": "/app",
+        "sameSite": "strict"
+      },
+      "setCookie": [
+        "prefs=s%3Adark.bwBY5w4RAmdWnMlq6%2F7uCAwLQ8HOX6ZDYnZEfuH0EAw; Path=/app; SameSite=Strict"
+      ]
+    },
+    {
+      "name": "utf-8 value",
+      "query": {
+        "value": "café"
+      },
+      "setCookie": [
+        "prefs=s%3Acaf%C3%A9.ctmxstzZSvVz5oFQEN26%2F7AjRF35MGswmfnov1nve7k; Path=/"
+      ]
+    }
+  ]
+}

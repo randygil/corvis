@@ -229,12 +229,45 @@ impl Request {
     /// occurrence of a name wins, surrounding double quotes are removed and a value is
     /// URI-decoded only when it contains `%` (an invalid escape keeps the raw value).
     pub fn cookies(&self) -> HashMap<String, String> {
-        let header: Vec<String> =
-            self.headers.get_all(http::header::COOKIE).iter().map(|v| super::body_parser::latin1(v.as_bytes())).collect();
-        parse_cookies(&header.join("; "))
+        parse_cookies(&self.cookie_header())
     }
     pub fn cookie(&self, name: &str) -> Option<String> {
         self.cookies().remove(name)
+    }
+
+    /// The `Cookie` headers joined as `cookies()` reads them.
+    fn cookie_header(&self) -> String {
+        let header: Vec<String> =
+            self.headers.get_all(http::header::COOKIE).iter().map(|v| super::body_parser::latin1(v.as_bytes())).collect();
+        header.join("; ")
+    }
+
+    /// Every value sent under `name` (`cookies()` keeps the first one only), in header order, at most `limit` of
+    /// them. A value whose raw form is longer than `max_raw` bytes is not decoded and counts as an empty string.
+    #[cfg(feature = "auth-session")]
+    pub(crate) fn cookie_values(&self, name: &str, limit: usize, max_raw: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        scan_cookies(&self.cookie_header(), |key, raw| {
+            if key == name {
+                out.push(if raw.len() > max_raw { String::new() } else { decode_cookie_value(raw) });
+            }
+            out.len() < limit
+        });
+        out
+    }
+
+    /// The session of this request, `None` when no `SessionModule` runs for it (see [`crate::auth::session`]).
+    #[cfg(feature = "auth-session")]
+    pub fn session(&self) -> Option<crate::auth::session::Session> {
+        self.get()
+    }
+
+    /// The value of the signed cookie `name` (see [`CookieKeys`](super::signed_cookie::CookieKeys)): what
+    /// cookie-parser's `req.signedCookies[name]` holds for a string value. `None` when the cookie is absent, unsigned
+    /// or does not verify with any of the keys.
+    #[cfg(feature = "auth-session")]
+    pub fn signed_cookie(&self, name: &str, keys: &super::signed_cookie::CookieKeys) -> Option<String> {
+        self.cookie(name).and_then(|v| keys.unsign(&v))
     }
 
     /// Attaches a value to the request (like `req.user = user`). Shared by all clones.
@@ -288,10 +321,32 @@ struct RequestUser(Value);
 /// `cookie.parse(str)` (cookie 0.7).
 fn parse_cookies(s: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
+    scan_cookies(s, |key, raw| {
+        if !out.contains_key(key) {
+            out.insert(key.to_string(), decode_cookie_value(raw));
+        }
+        true
+    });
+    out
+}
+
+/// A cookie value as `cookie.parse` returns it: URI-decoded only when it contains `%`, the raw value when the escape
+/// is invalid.
+fn decode_cookie_value(raw: &str) -> String {
+    if raw.contains('%') {
+        super::body_parser::qs::decode_uri_component(raw).unwrap_or_else(|| raw.to_string())
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Walks the pairs of a `Cookie` header like `cookie.parse` (cookie 0.7) and calls `f(name, raw_value)` for each one,
+/// repeats included, with the surrounding quotes of the value removed. `f` returns `false` to stop.
+fn scan_cookies(s: &str, mut f: impl FnMut(&str, &str) -> bool) {
     let b = s.as_bytes();
     let len = b.len();
     if len < 2 {
-        return out;
+        return;
     }
     let is_ws = |c: u8| c == b' ' || c == b'\t';
     // `startIndex` / `endIndex`: skip spaces and tabs inside `[start, end)`.
@@ -318,24 +373,16 @@ fn parse_cookies(s: &str) -> HashMap<String, String> {
             Some(semi) => semi,
         };
         let (ks, ke) = trim(index, eq);
-        let key = &s[ks..ke];
-        if !out.contains_key(key) {
-            let (mut vs, mut ve) = trim(eq + 1, end);
-            if ve > vs && b[vs] == b'"' && b[ve - 1] == b'"' {
-                vs += 1;
-                ve = ve.saturating_sub(1).max(vs);
-            }
-            let raw = &s[vs..ve];
-            let value = if raw.contains('%') {
-                super::body_parser::qs::decode_uri_component(raw).unwrap_or_else(|| raw.to_string())
-            } else {
-                raw.to_string()
-            };
-            out.insert(key.to_string(), value);
+        let (mut vs, mut ve) = trim(eq + 1, end);
+        if ve > vs && b[vs] == b'"' && b[ve - 1] == b'"' {
+            vs += 1;
+            ve = ve.saturating_sub(1).max(vs);
+        }
+        if !f(&s[ks..ke], &s[vs..ve]) {
+            return;
         }
         index = end + 1;
     }
-    out
 }
 
 /// `req.query` as Express 5 computes it (`query parser` setting).

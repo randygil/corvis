@@ -52,6 +52,7 @@ brotli = { version = "9", optional = true }
 argon2 = { version = "0.5", optional = true }
 bcrypt = { version = "0.17", optional = true }
 subtle = { version = "2", optional = true }
+hmac = { version = "0.12", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 socket2 = { version = "0.6", features = ["all"] }
@@ -66,6 +67,7 @@ health-tls = ["dep:tokio-rustls", "dep:webpki-roots"]
 compression = ["dep:flate2", "dep:brotli"]
 auth-local = ["dep:argon2", "dep:bcrypt"]
 auth-api-key = ["dep:subtle"]
+auth-session = ["dep:hmac", "dep:subtle"]
 
 [dev-dependencies]
 proptest = "1"

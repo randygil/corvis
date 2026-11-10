@@ -13,6 +13,8 @@ pub mod request;
 pub mod res;
 pub mod response;
 pub mod serve_static;
+#[cfg(feature = "auth-session")]
+pub mod signed_cookie;
 pub mod sse;
 pub mod status;
 
@@ -24,6 +26,8 @@ pub use res::{CookieOptions, Res, ResMode, SendBody};
 pub use response::StreamableFileOptions;
 pub use response::{Body, ByteStream, Cookie, HandlerResult, Html, IntoResponse, Json, Redirect, Response, StreamableFile};
 pub use serve_static::{Dotfiles, ServeStatic, serve_static};
+#[cfg(feature = "auth-session")]
+pub use signed_cookie::{CookieKeys, CookieKeysError};
 pub use sse::{MessageEvent, Sse};
 pub use status::HttpStatus;
 
