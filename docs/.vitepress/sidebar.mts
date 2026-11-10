@@ -80,6 +80,7 @@ const tree: Entry[] = [
     ['Authentication', 'Autenticación', '/security/authentication'],
     ['Authorization', 'Autorización', '/security/authorization'],
     ['Route posture', 'Postura de rutas', '/security/route-posture'],
+    ['Authentication threat model', 'Modelo de amenazas de autenticación', '/security/authentication-threat-model'],
     ['Encryption and hashing', 'Cifrado y hashing', '/security/encryption-and-hashing'],
     ['Security headers', 'Cabeceras de seguridad', '/security/helmet'],
     ['CORS', 'CORS', '/security/cors'],

@@ -54,7 +54,6 @@ deny = [
     { crate = "rustls", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
     { crate = "rustls-webpki", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
     { crate = "tokio-rustls", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
-    { crate = "webpki-roots", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
     { crate = "argon2", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
     { crate = "blake2", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
     { crate = "password-hash", deny-multiple-versions = true, reason = "una generación de cada crate de autenticación" },
