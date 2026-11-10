@@ -38,5 +38,7 @@ pub use options::{
     SameSite, SessionCookie, SessionOptions, SessionOptionsError,
 };
 pub use session::{Session, SessionError};
+#[cfg(feature = "auth-oauth2")]
+pub(crate) use store::now_ms;
 pub use store::{SessionStore, SessionStoreError};
 pub use strategy::{SESSION_STRATEGY, SessionSerializer, SessionStrategy};

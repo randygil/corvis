@@ -33,6 +33,8 @@ mod guard;
 #[cfg(feature = "auth-local")]
 pub mod local;
 mod module;
+#[cfg(feature = "auth-oauth2")]
+pub mod oauth2;
 #[cfg(feature = "auth-session")]
 pub mod session;
 mod strategy;
