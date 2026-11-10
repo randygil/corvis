@@ -497,7 +497,7 @@ Do not send credentials in the query string unless you have to: URLs end up in a
 - **Non-string credentials are missing.** The original passes a number or a boolean to `validate()`; Corvis treats them as missing, so a user lookup never sees a type it did not expect.
 - **Credentials are bounded.** A username or a password over 1024 bytes (configurable) fails without calling `validate`. The original has no limit besides the body size. Raise the limits with `.max_password_bytes(4096)` if your users need it; the hasher has its own `max_password_bytes`.
 - **Failures are uniform.** Missing credentials, wrong passwords and unknown users all give the same `401`, and the validator above spends one hash verification in every case. A stored hash the hasher refuses (an account without a password, an unsupported format) is a wrong password too, not a `500`. When the hasher is saturated (`PasswordError::Busy`) the answer is `503 Service Unavailable` for every user; see [a busy hasher](/security/encryption-and-hashing#a-busy-hasher).
-- **Login throttling is separate.** Pair the login route with the [throttler](/security/rate-limiting) (the cats example allows five attempts a minute per client); hashing is expensive on purpose, and a flood queues behind the hasher's `max_concurrent` slots.
+- **Login throttling is separate.** Pair the login route with the [throttler](/security/rate-limiting) (the cats example allows five attempts a minute per client); hashing is expensive on purpose, and a flood queues behind the hasher's `max_concurrent` slots. To count attempts per account as well, use `login_tracker` with the recipe in [Protecting a login route](/security/rate-limiting#protecting-a-login-route): the throttler must run before the `AuthGuard`, or the password is hashed before the limit is checked.
 
 ## API keys
 
@@ -730,6 +730,10 @@ impl AuthController {
 ```
 
 `validate` returns `Ok(Some(user))` for a success, `Ok(None)` for a 401 and `Err(exception)` to answer that exception, as every strategy does. Invalid options stop `init()` with an error that names the strategy and the option. The presets are `OAuth2Options::google(..)` and `OAuth2Options::github(..)`; `OAuth2Options::new(OAuth2Endpoints::new(authorization_url, token_url).userinfo_url(url), ..)` is any other provider (without a userinfo URL the grant has no profile). `OAuth2Options::endpoints(..)` replaces the URLs of a preset (GitHub Enterprise, a proxy, a test double). Register the redirect URI you configured with the provider. Google needs a scope; GitHub's `user:email` gives the verified e-mail addresses.
+
+::: warning Give OAuth2 its two routes
+An OAuth2 strategy starts a login (a redirect to the provider) for any request that is not a callback. In a chain it therefore ends the chain with that redirect: `AuthGuard::chain(["github", "api-key"])` never reaches the key, and in the last place it turns every anonymous request into a login start. Keep OAuth2 strategies out of chains, and rate limit both routes per client, see [Protecting a login route](/security/rate-limiting#protecting-a-login-route). The [threat model](/security/authentication-threat-model#combinations-of-strategies) lists what this and the other combinations of strategies do.
+:::
 
 ### What the validator receives
 
