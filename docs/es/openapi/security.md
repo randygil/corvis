@@ -11,7 +11,7 @@ La seguridad se describe en dos partes, como en cualquier documento OpenAPI:
 
 Swagger UI usa ambas cosas para mostrar el botón *Authorize* y enviar las credenciales en cada prueba.
 
-Documentar la seguridad no protege nada: para exigir un token usa un [guard](/es/guards).
+Documentar la seguridad no protege nada: para exigir un token usa un [guard](/es/guards). Para una API key, la [estrategia `api-key`](/es/recipes/passport#api-keys) (la feature `auth-api-key`) lee y comprueba la clave que documenta `add_api_key()`.
 
 ## Esquemas
 

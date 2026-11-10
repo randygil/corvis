@@ -12,12 +12,12 @@ keys in constant time and keep key material out of logs and errors. Every limit 
 ### Requirement: API key strategy registration and validator
 The framework SHALL provide `ApiKeyStrategy<V>`, registered with `Provider::strategy::<ApiKeyStrategy<V>>()` under the
 `auth-api-key` cargo feature, whose validator `V` receives its dependencies through dependency injection and
-implements `validate(request, key)`. The strategy name SHALL be `"headerapikey"` unless the validator sets another
+implements `validate(request, key)`. The strategy name SHALL be `"api-key"` unless the validator sets another
 one. The validator's result SHALL map to the outcomes of `auth/strategies`: a user is a success, no user is a
 failure, an exception is an error.
 
 #### Scenario: Valid key
-- **WHEN** a route uses `AuthGuard::new("headerapikey")`, the request has `X-Api-Key: <key>` and the validator
+- **WHEN** a route uses `AuthGuard::new("api-key")`, the request has `X-Api-Key: <key>` and the validator
   accepts that key
 - **THEN** the handler runs with the validator's user and the response matches the recorded original
 
@@ -30,7 +30,7 @@ failure, an exception is an error.
 - **THEN** the response is the recorded original 403
 
 #### Scenario: Chained after another strategy
-- **WHEN** a route uses `AuthGuard::chain(["jwt", "headerapikey"])`, the request has no bearer token and a valid API
+- **WHEN** a route uses `AuthGuard::chain(["jwt", "api-key"])`, the request has no bearer token and a valid API
   key
 - **THEN** the handler runs with the API key validator's user, as in the recorded original
 
@@ -68,9 +68,9 @@ regular expression from the prefix.
 - **THEN** the validator is not called and the response is the 401
 
 #### Scenario: Prefix with a regular expression character
-- **WHEN** the prefix is `"Key+"` and the header value is `Keyyabc`
-- **THEN** the strategy fails without calling the validator (the original accepts it; the fixture marks the
-  divergence), and the value `Key+abc` gives the validator `abc`
+- **WHEN** the prefix is `"Key+"` and the header value is `Key+abc`, and in another request `Keyyabc`
+- **THEN** the validator receives `abc` for the first (the original's `verify` receives `+abc`; the fixture marks the
+  divergence) and the second fails without calling the validator, as in the original
 
 ### Requirement: Bearer source
 When configured with the bearer source, the strategy SHALL read the key from the first `Authorization` header value
@@ -87,10 +87,10 @@ MUST match a `passport-custom` 1.2.1 strategy that extracts the key with that ru
 
 ### Requirement: Query source only when configured
 The strategy SHALL read a key from the query string only when a query source is configured, and SHALL log a startup
-warning naming the strategy and the parameter when one is. The value MUST be a single string: a repeated or bracketed
-parameter yields no key. The behavior for a single string MUST match a `passport-custom` 1.2.1 strategy that reads
-`req.query[name]`. The documentation MUST warn that keys in URLs end up in proxy logs, access logs and browser
-history.
+warning naming the strategy and the parameter when one is. The value MUST be a single string: a repeated parameter (or
+a bracketed one, with the extended query parser) fails the strategy. A single string MUST behave as in a
+`passport-custom` 1.2.1 strategy reading `req.query[name]`. The documentation MUST warn that keys in URLs end up in
+proxy and access logs and browser history.
 
 #### Scenario: Query key
 - **WHEN** the strategy is configured with the query parameter `api_key` and the request is
@@ -102,8 +102,8 @@ history.
 - **THEN** the validator is not called and the response is the 401
 
 #### Scenario: Repeated parameter
-- **WHEN** the request is `GET /data?api_key=a&api_key=b`
-- **THEN** the query source yields no key
+- **WHEN** the request is `GET /data?api_key=a&api_key=b`, with or without a valid key in a header source
+- **THEN** the validator is not called and the response is the 401
 
 #### Scenario: Startup warning
 - **WHEN** an application with a query source is initialized
@@ -123,8 +123,9 @@ never be sources. Options without any source MUST stop the application at startu
 
 ### Requirement: Conflicting keys fail
 When more than one configured source yields a key in the same request, the keys MUST be equal, compared in constant
-time; otherwise the strategy MUST fail without calling the validator. Documented divergence: the original has a
-single source.
+time; otherwise the strategy MUST fail without calling the validator. A source whose value is present but unusable
+(too long, a control character, a repeated query parameter) MUST fail it too, so no other source decides. Documented
+divergence: the original has a single source.
 
 #### Scenario: Different keys in the header and the query
 - **WHEN** header and query sources are configured and the request has `X-Api-Key: <key A>` and `?api_key=<key B>`
@@ -133,6 +134,10 @@ single source.
 #### Scenario: The same key twice
 - **WHEN** both places carry `<key A>`
 - **THEN** the validator is called once with `<key A>`
+
+#### Scenario: One place unusable
+- **WHEN** the header carries a key of 600 bytes and the query a valid key
+- **THEN** the validator is not called and the response is the 401
 
 ### Requirement: Constant-time comparison helpers
 The framework SHALL provide `constant_time_eq`, `ApiKey::ct_eq`, `ExpectedApiKey::matches` and `ApiKeySet::lookup`.
@@ -189,12 +194,35 @@ stop the application at startup. Documented divergence: the original has no limi
 
 ### Requirement: Invalid options stop the application
 An empty header name, a header name that is not a valid HTTP header name, an empty query parameter name, an empty
-prefix and more than 8 sources MUST each stop the application at startup with an error that names the strategy and
-the option.
+prefix, more than 8 sources, a `Cookie` header source and a `validator_timeout` outside 1 ms to 300 s MUST each stop
+the application at startup with an error that names the strategy and the option.
 
 #### Scenario: Empty header name
 - **WHEN** the options contain `ApiKeySource::header("")`
 - **THEN** `init()` fails with an error that names the strategy and the header source
+
+### Requirement: Validator failures are uniform and bounded
+An exception of the validator with a 4xx status SHALL be passed on unchanged. One with a status of 500 or above, or
+below 400, SHALL be replaced by the plain exception of that status, whose body no key can influence. A validator that
+runs longer than `validator_timeout` (default 5 s) SHALL be answered with a 503, and a panic in it with a 500, for
+every key and also behind an optional guard. Warnings about these are rate limited and never contain the message.
+
+#### Scenario: Infrastructure failure
+- **WHEN** the validator fails with a 503 whose message contains the key, for two different keys
+- **THEN** both responses are the same `{"statusCode":503,"message":"Service Unavailable"}` without the key
+
+#### Scenario: Slow or panicking validator behind an optional guard
+- **WHEN** the validator never answers within `validator_timeout`, or panics
+- **THEN** the response is a 503, or a 500, and the route handler does not run
+
+### Requirement: Lookups by id cost the same for unknown keys
+`ApiKey::id(delimiter)` SHALL return the public id of a key written `<id><delimiter><secret>` only when it is 1 to 64
+characters of `A-Z a-z 0-9 _ -`. `ExpectedApiKey::matches_or_dummy` SHALL compare the key with a fixed digest and return
+`false` when there is no stored record, so an unknown id costs the same comparison as a wrong key.
+
+#### Scenario: No record
+- **WHEN** `matches_or_dummy` receives `None` and any key
+- **THEN** it returns `false`, and it returns `true` only for the key of a given record
 
 ### Requirement: No key material in logs, errors or debug output
 The framework MUST NOT write an API key, or any part of one, to a log line, an exception message, a response body or
@@ -206,8 +234,8 @@ output that does not contain key material, and MUST NOT implement `Display` or `
 - **THEN** the output contains `<redacted>` and no substring of `<key>` longer than three characters
 
 #### Scenario: Failure reasons
-- **WHEN** the strategy fails for a missing key, a wrong prefix, conflicting keys, an oversized key and a refused
-  character, behind an optional `AuthGuard` so the auth info can be read
+- **WHEN** the strategy fails for a missing key, a wrong prefix, conflicting keys, an oversized key, a refused
+  character and a repeated query parameter, behind an optional `AuthGuard` so the auth info can be read
 - **THEN** each auth info message is one of the fixed strings of the design and contains no request data
 
 #### Scenario: Captured logs
@@ -229,6 +257,10 @@ every configured query parameter before it reads the request, whatever the outco
 #### Scenario: Encoded name and repeated parameter
 - **WHEN** the marked parameter is `api_key` and the URL is `/data?api%5Fkey=a&api_key=b`
 - **THEN** `redacted_url()` hides both values
+
+#### Scenario: More names than the limit
+- **WHEN** a seventeenth name is marked
+- **THEN** `redacted_url()` hides the value of every parameter rather than leave a marked one visible
 
 #### Scenario: Nothing marked
 - **WHEN** no parameter was marked

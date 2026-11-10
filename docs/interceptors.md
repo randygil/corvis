@@ -114,7 +114,7 @@ Corvis already includes a complete `CacheInterceptor` with per-route TTL (see [C
 | Interceptor | Use |
 |---|---|
 | `TimeoutInterceptor::new(Duration)` / `TimeoutInterceptor::millis(ms)` | Responds `408 Request Timeout` if the handler takes longer; `Default` is 5 s |
-| `LoggingInterceptor` | Logs `GET /cats 200 - 3ms` with the `LoggingInterceptor` context |
+| `LoggingInterceptor` | Logs `GET /cats 200 - 3ms` with the `LoggingInterceptor` context. The query parameters a guard marked as credentials are hidden: `GET /data?page=2&api_key=REDACTED 200 - 3ms` (see below) |
 | `CacheInterceptor` | Caches `GET` responses (requires `CacheModule`) |
 | `z::ZodSerializerInterceptor` | Validates and shapes the output with a schema (see [Serialization](/application/serialization)) |
 | `FileInterceptor`, `FilesInterceptor`, ... | Read `multipart` bodies (see [File upload](/http/file-upload)) |
@@ -122,6 +122,12 @@ Corvis already includes a complete `CacheInterceptor` with per-route TTL (see [C
 ```rust
 app.use_global_interceptors(TimeoutInterceptor::millis(10_000));
 ```
+
+### Hiding credentials in the logged URL
+
+`LoggingInterceptor` logs `request.redacted_url()`, not `request.url()`. A guard or strategy that reads a credential from the query string marks the parameter with `request.redact_query_param("api_key")`, and the value of every occurrence of it is replaced by `REDACTED` (percent-encoded spellings and, with the extended query parser, `api_key[x]=` too). The [API key strategy](/recipes/passport#api-keys) does it for its query sources. With nothing marked, `redacted_url()` is exactly `url()`, so the line does not change. At most 16 names are kept per request; past that every value of the query is hidden.
+
+Only this log line is covered. `request.url()` itself is unchanged (your handlers, the `404` message for an unmatched route and a middleware that logs the URL before the guards run still see the key), and so does everything in front of the application. Prefer a header for credentials.
 
 ## Applying interceptors
 

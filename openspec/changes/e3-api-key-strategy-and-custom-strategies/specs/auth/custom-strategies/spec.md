@@ -49,13 +49,40 @@ is the 500. The redirect and pass outcomes, which `passport-custom` cannot reach
 - **THEN** the handler runs with the device, as in the recorded original
 
 ### Requirement: A strategy can be replaced in tests
-A testing module SHALL be able to replace a registered strategy with another implementation under the same name, so
-that an application's routes can be tested without the real credentials check.
+A testing module SHALL be able to replace a registered strategy with another implementation under the same name
+(`override_strategy`), so that an application's routes can be tested without the real credentials check.
 
 #### Scenario: Override in a testing module
-- **WHEN** a test overrides the provider of `DeviceStrategy` with a stub strategy named `"device"` that always
+- **WHEN** a test calls `override_strategy::<DeviceStrategy>(..)` with a stub strategy named `"device"` that always
   succeeds
 - **THEN** a request to a route with `AuthGuard::new("device")` runs the handler with the stub's user
+
+### Requirement: A strategy never lets a request through by failing
+An error returned by a strategy SHALL end the request with that error, also behind an optional guard. A panic inside
+a strategy SHALL be contained and answered as the plain 500 `{"statusCode":500,"message":"Internal server error"}`,
+also behind an optional guard, without running later strategies of a chain and without reading the panic payload.
+The warning about a panic SHALL be rate limited per strategy.
+
+#### Scenario: Error behind an optional guard
+- **WHEN** a strategy returns an error and the route uses `AuthGuard::new(..).optional()`
+- **THEN** the response is the error's response and the handler does not run
+
+#### Scenario: Panic in a chain
+- **WHEN** the first strategy of `AuthGuard::chain(["panicking", "succeeding"])` panics with a credential in its message
+- **THEN** the response is the plain 500 without the credential and the second strategy does not run
+
+### Requirement: Strategy names are checked at startup
+A strategy with an empty name, a name over 128 bytes or a name with a control character MUST stop the application at
+startup, and a guard that names a strategy nobody registered MUST stop it too, also when the guard is listed in
+`CanActivate::inner_guards` of another guard.
+
+#### Scenario: Empty name
+- **WHEN** a registered strategy reports the name `""`
+- **THEN** `init()` fails with an error that says the name is invalid
+
+#### Scenario: Name checked through a wrapper guard
+- **WHEN** a guard lists `AuthGuard::new("devise")` in `CanActivate::inner_guards` and no strategy has that name
+- **THEN** `init()` fails with an error that names the strategy
 
 ### Requirement: The guide states the security rules for strategies
 The documentation SHALL include a guide to writing a strategy with the mapping from the original's outcomes and a

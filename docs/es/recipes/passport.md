@@ -6,7 +6,7 @@ status: partial
 
 Corvis tiene el **modelo de estrategias** de Passport y de su integración con el framework original: estrategias registradas por nombre, un `AuthGuard` que las ejecuta, el usuario en la request y el `401` que responde el original cuando todas las estrategias fallan. Su comportamiento se comprueba contra la integración original de passport (12.0.1) sobre `passport` 0.7.0 con respuestas grabadas.
 
-Lo que hay ahora es el núcleo: el trait `Strategy` que implementas para tus propias estrategias, `AuthGuard`, `PassportModule` y el parámetro `User<T>`, y la [estrategia JWT](#la-estrategia-jwt) y la [estrategia local](#estrategia-local-usuario-y-contrasena) (usuario y contraseña, con la feature `auth-local`). Las demás estrategias llegan una a una: API keys, sesiones y OAuth2 tienen su propio issue (#45, #44 y #43). Un [guard propio sobre `JwtModule`](#alternativa-jwtmodule-guards) sigue disponible.
+Lo que hay ahora es el núcleo: el trait `Strategy` que implementas para tus propias estrategias, `AuthGuard`, `PassportModule` y el parámetro `User<T>`, la [estrategia JWT](#la-estrategia-jwt), la [estrategia local](#estrategia-local-usuario-y-contrasena) (usuario y contraseña, con la feature `auth-local`) y las [API keys](#api-keys) (con la feature `auth-api-key`), además de la guía para [escribir una estrategia](#escribir-una-estrategia) propia. Las demás estrategias llegan una a una: sesiones y OAuth2 tienen su propio issue (#44 y #43). Un [guard propio sobre `JwtModule`](#alternativa-jwtmodule-guards) sigue disponible.
 
 ## El modelo
 
@@ -31,36 +31,48 @@ Una estrategia convierte las credenciales de una request en un usuario. Es un pr
 
 ```rust
 #[injectable]
-pub struct HeaderStrategy {
-    users: Arc<UsersService>,
+pub struct DeviceStrategy {
+    devices: Arc<DevicesService>,
 }
 
 #[async_trait]
-impl Strategy for HeaderStrategy {
+impl Strategy for DeviceStrategy {
     fn name(&self) -> &str {
-        "header"
+        "device"
     }
 
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
-        let Some(user) = ctx.request().header("x-user").and_then(|id| self.users.find(id)) else {
+        // Lee la credencial, con límite, de los lugares que esta estrategia acepta y de ningún otro.
+        let Some(id) = ctx.request().header("x-device-id").filter(|id| !id.is_empty() && id.len() <= 64) else {
             return StrategyOutcome::Fail { challenge: None, status: None };
         };
-        match AuthenticatedUser::new(user) {
-            Ok(user) => StrategyOutcome::Success { user, info: None },
-            Err(error) => StrategyOutcome::Error(error),
+        match self.devices.find(id).await {
+            Ok(Some(device)) => {
+                let info = (id == "dev-info").then(|| json!({ "scope": "telemetry" }));
+                match AuthenticatedUser::new(device) {
+                    Ok(user) => StrategyOutcome::Success { user, info },
+                    Err(e) => StrategyOutcome::Error(e),
+                }
+            }
+            Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
+            // Un error termina la petición: nunca es una forma de entrar.
+            Err(DevicesError::Blocked) => StrategyOutcome::Error(ForbiddenException::new("Device blocked")),
+            Err(e) => StrategyOutcome::Error(HttpException::internal(e)),
         }
     }
 }
 
 #[module(
-    imports = [PassportModule::register(PassportModuleOptions::new().default_strategy("header"))],
-    providers = [Provider::strategy::<HeaderStrategy>()],
-    controllers = [CatsController],
+    imports = [PassportModule::register(PassportModuleOptions::new().default_strategy("device"))],
+    providers = [Provider::class::<DevicesService>(), Provider::strategy::<DeviceStrategy>()],
+    controllers = [DevicesController],
 )]
 pub struct AppModule;
 ```
 
-`Provider::strategy::<S>()` registra la estrategia con el nombre `S::name()`. La aplicación recoge todas las estrategias al inicializarse; dos estrategias con el mismo nombre detienen el arranque con un error que nombra los dos tipos (el original se queda con la última en silencio).
+Este es el código de `crates/corvis/tests/auth_custom.rs`, que un test reproduce contra una estrategia `passport-custom` del original. No hace falta ninguna feature de cargo.
+
+`Provider::strategy::<S>()` registra la estrategia con el nombre `S::name()`. La aplicación recoge todas las estrategias al inicializarse; dos estrategias con el mismo nombre detienen el arranque con un error que nombra los dos tipos (el original se queda con la última en silencio), y lo mismo ocurre con un nombre vacío, de más de 128 bytes o con un carácter de control.
 
 Una estrategia termina un intento de cinco maneras, las llamadas que puede hacer una estrategia de Passport:
 
@@ -79,6 +91,52 @@ Una estrategia termina un intento de cinco maneras, las llamadas que puede hacer
 Las cabeceras que una estrategia o un guard añadió con `append_response_header` se envían en cada respuesta de esa petición, también en un `401` o `403` posterior de la misma cadena o de otro guard. Añade una cookie solo cuando el intento tuvo éxito.
 
 Una estrategia también puede poner cookies o terminar la petición con `ctx.switch_to_http().append_response_header(..)` y `respond_with(..)`, ver [Guards](/es/guards#terminar-la-peticion-y-anadir-cabeceras).
+
+### Si vienes de `passport-custom` y `passport-strategy`
+
+| Original | Corvis |
+|---|---|
+| `done(null, user, info)` en un callback de `passport-custom` | `StrategyOutcome::Success { user, info }` |
+| `done(null, false)` | `StrategyOutcome::Fail { challenge: None, status: None }`: el `401` |
+| `done(err)` con una `ForbiddenException` | `StrategyOutcome::Error(ForbiddenException::new(..))`: la respuesta de esa excepción |
+| `done(err)` con cualquier otro error, o un callback que lanza una excepción | `StrategyOutcome::Error(HttpException::internal(err))`: el `500`, con el mismo cuerpo para toda petición |
+| `this.redirect(url, status)` de una subclase de `passport-strategy` | `StrategyOutcome::Redirect { url, status }` (`passport-custom` no puede llegar a él) |
+| `this.pass()` | `StrategyOutcome::Pass` (`passport-custom` no puede llegar a él) |
+| una clase `PassportStrategy(CustomStrategy, 'device')` con servicios inyectados | un tipo que implementa `Strategy`, con los servicios como campos |
+
+Las respuestas se comprueban contra `passport-custom` 1.2.1 detrás del guard original (`crates/corvis/tests/fixtures/auth/custom.mjs`, 15 casos: éxito con info, sin usuario, `ForbiddenException`, un `Error` simple, solo y en segundo lugar de una cadena).
+
+### Qué garantiza el framework alrededor de una estrategia
+
+- **Un error nunca deja pasar una petición.** `Error(..)` termina la cadena y es la respuesta, también detrás de `.optional()`: un guard opcional deja pasar una petición solo cuando todas las estrategias *fallaron*.
+- **Un pánico es un error.** Un pánico dentro de `authenticate` se captura y se responde como un `500 {"statusCode":500,"message":"Internal server error"}`, igual para toda petición, también detrás de un guard opcional y sin ejecutar las estrategias siguientes de la cadena. El contenido del pánico nunca se lee, así que el framework no copia en ningún sitio una credencial que aparezca en su mensaje. La aplicación registra una advertencia por minuto y por estrategia (con la cantidad de las omitidas), nunca el mensaje.
+- **Los nombres se comprueban al arrancar.** `AuthGuard::new("devise")` para una estrategia llamada `device` detiene `init()`, también dentro de un guard que lista sus guards internos en `CanActivate::inner_guards`.
+- **Respuestas durante la fase de guards.** Una estrategia termina una petición por sí misma solo con `Redirect` (solo estados 3xx) y, para cookies, con `append_response_header`. `respond_with` guarda una respuesta que prevalece sobre todo lo demás que haga la cadena: no lo llames desde una estrategia para decir "no".
+- **No hay timeout alrededor de una estrategia.** Una estrategia que espera a una base de datos o a un servicio debe acotar la espera ella misma (`tokio::time::timeout`), o una dependencia lenta retiene todas las peticiones. La [estrategia de API key](#api-keys) lo hace con su validador.
+
+### Probar una ruta que usa una estrategia
+
+`override_strategy` reemplaza una estrategia registrada en un módulo de testing. Pon al stub el nombre de la estrategia que reemplaza, para que las rutas y las comprobaciones de arranque sigan igual:
+
+```rust
+let module = Test::create_testing_module()
+    .import::<DevicesModule>()
+    .override_strategy::<DeviceStrategy>(StubDevice) // StubDevice::name() es "device"
+    .compile()
+    .await?;
+let mut app = module.create_corvis_application();
+app.init().await?;
+```
+
+### Lista de seguridad para una estrategia
+
+- **Falla, nunca dejes pasar.** Devuelve `Fail` (o `Error`) cuando las credenciales faltan, están mal formadas o son incorrectas. `Pass` deja pasar la petición sin usuario: úsalo solo en una estrategia pensada para omitir la autenticación.
+- **Compara los secretos en tiempo constante.** `==` se detiene en el primer byte distinto. Con la feature `auth-api-key`, `corvis::auth::api_key::constant_time_eq(a, b)` compara digests SHA-256 con una primitiva de tiempo constante; guarda los secretos con hash.
+- **Mantén los datos de la petición fuera de errores y logs.** El mensaje de un `Error`, un challenge de `Fail` y una línea de log acaban en algún sitio. Solo cadenas fijas, y nunca una credencial ni parte de ella.
+- **Acota lo que lees.** Comprueba la longitud de una credencial antes de aplicarle un hash, compararla o enviarla a una base de datos, y lee solo las cabeceras, parámetros o cookies que documentas. Lee un solo lugar, o define cuál prevalece y falla cuando dos discrepan.
+- **Marca las credenciales leídas de la URL** con `request.redact_query_param("name")` antes de leerlas, para que `LoggingInterceptor` las oculte (ver [API keys](#api-keys)). Prefiere una cabecera: una URL se escribe en los logs de proxies y de acceso.
+- **Nunca construyas el destino de una redirección con datos de la petición** (ver la advertencia de arriba).
+- **Trata una dependencia lenta o que falla como un error**, con la misma respuesta para toda credencial: el cliente no debe saber por el estado ni por el cuerpo cuál clave o usuario era.
 
 ## `AuthGuard`
 
@@ -339,6 +397,162 @@ No envíes credenciales en el query string salvo que no haya otra opción: las U
 - **Los fallos son uniformes.** Credenciales ausentes, contraseñas incorrectas y usuarios desconocidos dan el mismo `401`, y el validador de arriba gasta una verificación de hash en todos los casos. Un hash guardado que el hasher rechaza (una cuenta sin contraseña, un formato no compatible) también es una contraseña incorrecta, no un `500`. Cuando el hasher está saturado (`PasswordError::Busy`) la respuesta es `503 Service Unavailable` para todos los usuarios; ver [un hasher ocupado](/es/security/encryption-and-hashing#un-hasher-ocupado).
 - **El límite de intentos de login es aparte.** Combina la ruta de login con el [throttler](/es/security/rate-limiting) (el ejemplo de gatos permite cinco intentos por minuto y cliente); el hashing es caro a propósito, y una avalancha hace cola en los huecos `max_concurrent` del hasher.
 
+
+## API keys
+
+La estrategia de API key es el port de `passport-headerapikey` 1.2.2 para clientes máquina (webhooks, servicios internos, integraciones de socios). Necesita la feature de cargo `auth-api-key` (una dependencia extra, `subtle`). Tú escribes el validador, el callback `verify` del original, y registras `ApiKeyStrategy<TuValidador>`:
+
+```toml
+corvis = { version = "0.1", features = ["auth-api-key"] }
+```
+
+```rust
+use corvis::auth::api_key::{ApiKey, ApiKeySet, ApiKeyStrategy, ApiKeyValidator, ExpectedApiKey};
+use corvis::auth::{AuthGuard, User};
+use corvis::prelude::*;
+
+/// Las claves de los servicios que llaman a esta aplicación, desde la configuración.
+pub struct ServiceKeys(ApiKeySet<Service>);
+
+#[injectable]
+pub struct ServiceKeyAuth {
+    keys: Arc<ServiceKeys>,
+}
+
+#[async_trait]
+impl ApiKeyValidator for ServiceKeyAuth {
+    type User = Service; // Serialize + Clone; deja la clave fuera
+
+    async fn validate(&self, _req: &Request, key: &ApiKey) -> Result<Option<Service>, HttpException> {
+        Ok(self.keys.0.lookup(key).cloned()) // None responde 401
+    }
+}
+
+#[module(
+    providers = [
+        // una clave de menos de 32 bytes es un error aquí, y la aplicación no arranca
+        Provider::use_factory(Token::of::<ServiceKeys>(), |ctx| async move {
+            let config = ctx.get_or_construct::<ConfigService>().await?;
+            let mut keys = ApiKeySet::new();
+            keys.insert(ExpectedApiKey::new(config.get::<String>("BILLING_API_KEY").unwrap_or_default())?, Service::billing());
+            Ok(ServiceKeys(keys))
+        }),
+        Provider::strategy::<ApiKeyStrategy<ServiceKeyAuth>>(),
+    ],
+    controllers = [DataController],
+)]
+pub struct MachineModule;
+
+#[get("data")]
+#[use_guards(AuthGuard::new("api-key"))]
+fn data(&self, service: User<Service>) -> Value { /* .. */ }
+```
+
+La estrategia se llama `"api-key"` (el original la llama `headerapikey`: define `const NAME: &'static str = "headerapikey";` en el validador para portar una configuración sin cambios, u otro nombre para tener varias estrategias de API key). `validate` solo se ejecuta para una clave que se encontró en los lugares configurados y está dentro de los límites. Devuelve el usuario (`Some`), ningún usuario (`None`, un `401`) o una excepción (se pasa tal cual, ver [fallos](#fallos-del-validador)). `fn info(&self, user)` puede devolver la info de auth de un éxito: nunca pongas la clave en ella.
+
+Una ruta para personas y máquinas prueba primero la estrategia de usuario: `AuthGuard::chain(["jwt", "api-key"])`.
+
+### De dónde se lee la clave
+
+`ApiKeyStrategyOptions::default()` lee la cabecera `X-Api-Key` y nada más. Añade los lugares que aceptas con `fn options(&self)`:
+
+```rust
+fn options(&self) -> ApiKeyStrategyOptions {
+    ApiKeyStrategyOptions::new()
+        .source(ApiKeySource::header("X-Api-Key"))
+        .source(ApiKeySource::header("Authorization").prefix("Api-Key "))
+}
+```
+
+| Fuente | Lee | Equivale a |
+|---|---|---|
+| `ApiKeySource::header(name)` | todos los valores de la cabecera, leídos como latin1 y unidos con `", "` como hace Node; el nombre no distingue mayúsculas | `passport-headerapikey` (`header`) |
+| `.prefix("Api-Key ")` en una fuente de cabecera | el valor debe empezar con el prefijo (comparado literalmente, distinguiendo mayúsculas), que se quita | `passport-headerapikey` (`prefix`), pero literal |
+| `ApiKeySource::bearer()` | el primer valor de `Authorization`, analizado como el extractor bearer de `passport-jwt`: `(\S+)\s+(\S+)`, con el esquema comparado sin distinguir mayúsculas | una estrategia `passport-custom` con `ExtractJwt.fromAuthHeaderAsBearerToken()` |
+| `ApiKeySource::query(name)` | el parámetro del query, cuando es una sola cadena | una estrategia `passport-custom` que lee `req.query[name]` |
+
+No hay valor por defecto para las fuentes bearer y query, y el body y las cookies nunca son una fuente (una cookie es una credencial ambiental, y con ella viene CSRF; escribe una [estrategia propia](#escribir-una-estrategia) si necesitas una). Otros lugares no se leen aunque la clave esté allí: una clave en el query se ignora salvo que se configure una fuente query.
+
+Se lee cada fuente configurada. Una fuente cuyo valor está **presente pero es inutilizable** (demasiado largo, con un carácter de control, un parámetro de query repetido, o con corchetes cuando la aplicación usa el parser de query extendido) hace fallar el intento, y **dos fuentes que llevan claves distintas lo hacen fallar también**, sin llamar al validador. Eso cierra el caso en que un proxy o un firewall autentica o limita por un lugar y la aplicación confía en otro. Una fuente que no encuentra nada (sin cabecera, un valor vacío, otro esquema, un valor sin el prefijo) se omite, y la misma clave en dos lugares es una sola clave. Como máximo 8 fuentes.
+
+::: warning Claves en URLs
+`ApiKeySource::query("api_key")` escribe las claves en logs de proxy, logs de acceso, el historial del navegador y cabeceras `Referer`, que Corvis no controla. Está desactivado por defecto y la estrategia registra una advertencia al arrancar por cada parámetro de query. Corvis oculta el valor en la URL que registra `LoggingInterceptor` (`GET /data?page=2&api_key=REDACTED 200`), pero un middleware que registre `request.url()` antes de los guards, tu reverse proxy y tu CDN siguen viéndolo. Prefiere una cabecera.
+:::
+
+### Límites
+
+| Límite | Por defecto | Notas |
+|---|---|---|
+| `max_key_bytes` | 512 | De 1 a 4096, de lo contrario el arranque falla. Una clave más larga falla antes de aplicarle un hash, compararla o dársela al validador. El prefijo de una fuente de cabecera no cuenta |
+| Caracteres | ningún byte `0x00` a `0x1F` ni `0x7F` | una clave con alguno falla; un tabulador en una cabecera cuenta |
+| Fuentes | como máximo 8, ninguna por defecto en `ApiKeyStrategyOptions::new()` | una lista vacía detiene el arranque |
+| `validator_timeout` | 5 s | De 1 ms a 300 s. Un validador que tarda más es un `503` |
+| Nombres de fuente y prefijos | no vacíos; nombres de cabecera válidos; `Cookie` rechazada; prefijos de 1 a 64 caracteres ASCII imprimibles | cada problema detiene el arranque con un error que nombra la estrategia y la opción |
+
+Los valores repetidos de una cabecera no se copian más allá del límite (una petición con miles de cabeceras `X-Api-Key` se detiene en la primera que lo cruza), y la fuente bearer lee como máximo `max_key_bytes + 128` bytes de espacio inicial, esquema y separador antes de la clave.
+
+### Guardar las claves
+
+Una API key es un secreto bearer de larga vida, así que guarda solo un digest de ella y compara digests:
+
+1. **Genera** al menos 32 bytes aleatorios por clave: `openssl rand -hex 32`, con un id público delante si tienes muchas claves (`ck_live_3f9a.<secret>`). `ExpectedApiKey::new` rechaza un secreto de menos de 32 bytes; una clave que generas tú mismo es responsabilidad tuya, así que haz el generador lo bastante largo.
+2. **Guarda** `ApiKey::sha256_hex()` de la clave, no la clave. Un digest de un secreto aleatorio de 32 bytes no se puede convertir de vuelta en la clave, y no necesita un hash lento (argon2 y bcrypt son para contraseñas). Muestra la clave a su dueño una sola vez.
+3. **Compara** con los helpers, nunca con `==`:
+
+| Helper | Uso |
+|---|---|
+| `ExpectedApiKey::new(secret)` | una clave desde la configuración; en memoria solo se conserva su digest |
+| `ExpectedApiKey::from_sha256_hex(hex)` | una clave desde un digest guardado |
+| `ExpectedApiKey::matches(&key)` | una comparación |
+| `ApiKeySet::lookup(&key)` | un puñado de claves con sus dueños; compara cada entrada sin salida anticipada, así que el tiempo depende de cuántas claves hay, no de cuál coincidió |
+| `ApiKey::ct_eq(bytes)` y `constant_time_eq(a, b)` | cualquier otro secreto: ambos lados se pasan por SHA-256 y los digests se comparan con `subtle`, de modo que ni la posición del primer byte distinto ni la longitud del secreto guardado se notan en el tiempo |
+
+Para **muchas claves** en una base de datos, busca la clave por un id público y luego compara el digest. Un id desconocido cuesta una búsqueda y una comparación ficticia, así que las claves desconocidas y las incorrectas tardan lo mismo:
+
+```rust
+async fn validate(&self, _req: &Request, key: &ApiKey) -> Result<Option<Service>, HttpException> {
+    let Some(id) = key.id('.') else { return Ok(None) }; // `<id>.<secret>`, id de 1 a 64 de A-Za-z0-9_-, público
+    let record = self.keys.find(id).await.map_err(|_| ServiceUnavailableException::empty())?;
+    let stored = record.as_ref().map(|r| &r.expected); // ExpectedApiKey::from_sha256_hex(&row.digest)
+    Ok(ExpectedApiKey::matches_or_dummy(stored, key).then(|| record.map(|r| r.service)).flatten())
+}
+```
+
+Sin un id, guarda el digest en una columna indexada y busca el digest de la clave presentada: `self.keys.find_by_digest(&key.sha256_hex())`. Esa búsqueda no es de tiempo constante, pero lo que puede filtrar es un prefijo del digest de un secreto aleatorio, que no ayuda a encontrar la clave.
+
+`ApiKey`, `ExpectedApiKey` y `ApiKeySet` muestran `<redacted>` con `{:?}`, así que un `Debug` derivado en un struct que los contenga no puede escribir una clave en un log; no tienen `Display`, `Serialize`, `Clone` ni `PartialEq` (un `==` entre claves es la comparación que filtra). Llama a `key.expose()` solo para pasar la clave a algo que necesite el texto, y nunca la registres, ni la pongas en un mensaje de error, una respuesta o la info de auth.
+
+### Fallos
+
+Las claves ausentes, mal formadas, desconocidas, revocadas y vencidas responden todas el mismo `401 {"message":"Unauthorized","statusCode":401}` a través de `AuthGuard`, sin cabecera `WWW-Authenticate`. Devuelve `Ok(None)` desde el validador para toda clave que no sea válida, sea cual sea el motivo. El motivo se conserva como `request.auth_info()` y nunca se envía: `Missing API Key`, `Conflicting API keys`, `API key too long`, `Invalid API key characters` o `Ambiguous API key` (un parámetro de query repetido o con corchetes). Una clave que el validador rechazó no tiene motivo. Ninguno repite datos de la petición.
+
+#### Fallos del validador
+
+- Una excepción con estado **4xx** se pasa tal cual, como `done(err)` en el original (`ForbiddenException::new("Key suspended")` da el `403`). Úsala solo para una respuesta que quieras que el cliente vea; le dice algo sobre la clave.
+- Una excepción con estado **500 o superior** (o inferior a 400) se reemplaza por la excepción simple de ese estado: `{"statusCode":503,"message":"Service Unavailable"}`, `{"statusCode":500,"message":"Internal server error"}`. Un error de base de datos que cita la clave en su texto, o un mensaje que difiere según la clave, nunca llega al cliente. La aplicación registra una advertencia por minuto con el estado, nunca el mensaje.
+- Un validador que se ejecuta más que `validator_timeout` es un `503` con ese mismo cuerpo, y un **pánico** en el validador es un `500`: ambos para toda clave, también detrás de `.optional()`. Ninguno es una forma de entrar.
+
+Un fallo de infraestructura (la base de datos está caída) debe ser un error, no `Ok(None)`: un `401` le dice al cliente máquina que su clave es incorrecta, un `503` le dice que reintente.
+
+### Diferencias con passport-headerapikey
+
+Cada una es a propósito y el test diferencial la marca:
+
+- **El nombre es `"api-key"`**, no `headerapikey`, y la clave puede venir de más lugares que una cabecera.
+- **Por defecto lee una cabecera y nada más.** El query es una fuente solo cuando se configura, con una advertencia.
+- **Un prefijo es una cadena literal.** El original construye con él una expresión regular sin escapar: con el prefijo `Key+`, `Key+<key>` llega a su `verify` como `+<key>`.
+- **Claves distintas en dos fuentes, o un valor inutilizable en una, fallan** (el original tiene una sola fuente).
+- **Las claves de más de `max_key_bytes` (512) o con caracteres de control fallan** antes del validador (el original no tiene más límite que el tamaño de la cabecera).
+- **Una clave vacía, o un prefijo sin nada detrás, nunca llega al validador.**
+- **Un fallo del validador con estado 500 o superior tiene un cuerpo fijo, y un validador lento es un `503`.**
+
+`passport-headerapikey` responde a una cabecera ausente con un challenge `BadRequestError('Missing API Key')`; a través del guard original eso es el mismo `401`, que es lo que está grabado.
+
+El `404` de una ruta que no existe es `Cannot GET /x?api_key=...` con la URL tal como se envió, como en el original; ninguna estrategia se ejecuta para él y va solo al remitente.
+
+### Pruebas contra el original
+
+`crates/corvis/tests/fixtures/auth/api_key.mjs` ejecuta `passport-headerapikey` 1.2.2, y estrategias `passport-custom` 1.2.1 para las variantes de query y bearer, detrás del guard original y graba 55 casos (`api_key.json`): nombres de cabecera, prefijos, valores repetidos, claves incorrectas, ausentes y vacías, el validador devolviendo ningún usuario, una excepción y un error simple, cadenas. `crates/corvis/tests/auth_api_key.rs` los reproduce contra las mismas rutas sin necesitar Node al ejecutar los tests; las cinco divergencias marcadas (una clave sobredimensionada dos veces, un carácter de control, claves en conflicto, el prefijo literal) se comprueban a partir de la especificación.
 
 ## Pruebas diferenciales
 

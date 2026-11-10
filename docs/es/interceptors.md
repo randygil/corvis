@@ -114,7 +114,7 @@ Corvis ya incluye un `CacheInterceptor` completo con TTL por ruta (ver [Caché](
 | Interceptor | Uso |
 |---|---|
 | `TimeoutInterceptor::new(Duration)` / `TimeoutInterceptor::millis(ms)` | Responde `408 Request Timeout` si el handler tarda más; `Default` es 5 s |
-| `LoggingInterceptor` | Registra `GET /cats 200 - 3ms` con el contexto `LoggingInterceptor` |
+| `LoggingInterceptor` | Registra `GET /cats 200 - 3ms` con el contexto `LoggingInterceptor`. Los parámetros de query que un guard marcó como credenciales se ocultan: `GET /data?page=2&api_key=REDACTED 200 - 3ms` (ver abajo) |
 | `CacheInterceptor` | Cachea respuestas `GET` (requiere `CacheModule`) |
 | `z::ZodSerializerInterceptor` | Valida y da forma a la salida con un schema (ver [Serialización](/es/application/serialization)) |
 | `FileInterceptor`, `FilesInterceptor`, ... | Leen cuerpos `multipart` (ver [Subida de archivos](/es/http/file-upload)) |
@@ -122,6 +122,12 @@ Corvis ya incluye un `CacheInterceptor` completo con TTL por ruta (ver [Caché](
 ```rust
 app.use_global_interceptors(TimeoutInterceptor::millis(10_000));
 ```
+
+### Ocultar credenciales en la URL registrada
+
+`LoggingInterceptor` registra `request.redacted_url()`, no `request.url()`. Un guard o una estrategia que lee una credencial del query string marca el parámetro con `request.redact_query_param("api_key")`, y el valor de cada aparición se reemplaza por `REDACTED` (también las grafías con percent-encoding y, con el parser de query extendido, `api_key[x]=`). La [estrategia de API key](/es/recipes/passport#api-keys) lo hace para sus fuentes de query. Si no hay nada marcado, `redacted_url()` es exactamente `url()`, así que la línea no cambia. Se conservan como máximo 16 nombres por petición; pasado ese límite se ocultan todos los valores del query.
+
+Solo se cubre esta línea de log. `request.url()` no cambia (tus handlers, el mensaje del `404` de una ruta sin coincidencia y un middleware que registre la URL antes de los guards siguen viendo la clave), y lo mismo ocurre con todo lo que está delante de la aplicación. Prefiere una cabecera para las credenciales.
 
 ## Aplicar interceptors
 
