@@ -2,6 +2,8 @@ mod auth_controller;
 mod auth_guard;
 mod auth_module;
 mod auth_service;
+mod github_auth;
+mod github_controller;
 mod jwt_auth;
 mod local_auth;
 mod same_origin;
@@ -12,6 +14,7 @@ mod sign_in_dto;
 
 pub use auth_guard::AuthGuard;
 pub use auth_module::AuthModule;
+pub use github_auth::github_module;
 pub use jwt_auth::JwtAuth;
 pub use same_origin::SameOriginGuard;
 pub use session_auth::{Member, MemberSerializer, session_module};

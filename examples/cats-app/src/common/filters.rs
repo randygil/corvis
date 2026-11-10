@@ -19,7 +19,8 @@ impl ExceptionFilter for HttpExceptionFilter {
             "statusCode": status,
             "message": message,
             "timestamp": unix_timestamp(),
-            "path": request.url(),
+            // The redacted form: a callback's `code` and `state` (and any marked credential) never come back in a body.
+            "path": request.redacted_url(),
         }))
         .with_status(status)
     }

@@ -327,8 +327,9 @@ El mismo `AuthGuard` de tertulia sirve para HTTP y para WebSocket: consulta `ctx
 
 ## Lo que no incluye Corvis
 
-- Además de JWT y de las estrategias local y de API key, todavía no hay estrategias OAuth ni OpenID Connect. Ver
-  [Passport](/es/recipes/passport).
+- Además de JWT y de las estrategias local y de API key hay un [login OAuth2](/es/recipes/passport#oauth2-google-github-y-otros)
+  (Google, GitHub y cualquier proveedor, la feature `auth-oauth2`) con `state` y PKCE siempre activos. No hay una
+  estrategia OpenID Connect: el ID token se entrega sin verificar. Ver [Passport](/es/recipes/passport).
 - Para autenticación basada en cookies hay [sesiones de servidor](/es/http/session) (la feature `auth-session`), con
   login y logout mediante `Authenticator`, y [cookies firmadas](/es/http/cookies#cookies-firmadas) para valores pequeños
   que el cliente no debe alterar. Una cookie de sesión es una credencial ambiental: ver [CSRF](/es/security/csrf).

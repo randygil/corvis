@@ -247,7 +247,7 @@ impl GuardPhase {
         GuardPhaseScope(self.clone())
     }
 
-    fn is_active(request: &Request) -> bool {
+    pub(crate) fn is_active(request: &Request) -> bool {
         request.get::<GuardPhase>().is_some_and(|p| p.0.load(std::sync::atomic::Ordering::SeqCst))
     }
 }

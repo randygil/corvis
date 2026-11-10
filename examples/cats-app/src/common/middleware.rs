@@ -13,7 +13,8 @@ pub struct LoggerMiddleware {
 impl CorvisMiddleware for LoggerMiddleware {
     async fn use_(&self, req: Request, next: Next) -> HandlerResult {
         let start = Instant::now();
-        let line = format!("{} {}", req.method(), req.url());
+        // `redacted_url` hides the query parameters a strategy reads credentials from (the OAuth callback's `code` and `state`).
+        let line = format!("{} {}", req.method(), req.redacted_url());
         let res = next.run(req).await;
         let status = match &res {
             Ok(r) => r.status_code(),

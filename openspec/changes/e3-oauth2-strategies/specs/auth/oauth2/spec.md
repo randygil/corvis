@@ -151,6 +151,19 @@ explicit option that removes the `__Host-` prefix and logs a warning at startup.
 - **WHEN** the options set a cookie name starting with `__Host-` or `__Secure-` and turn `Secure` off
 - **THEN** `init()` fails
 
+### Requirement: Cookies without the host prefix warn at startup
+A strategy whose state cookie, or whose session cookie when the state lives in the session, has a name without the
+`__Host-` prefix MUST log one startup warning naming the strategy and the cookie, saying that a sibling subdomain can
+plant a cookie and cause login CSRF, and how to fix it. It is a warning, not an error.
+
+#### Scenario: Custom state cookie name
+- **WHEN** the options set `state_cookie_name("oauth_state")`
+- **THEN** one warning names the strategy and `oauth_state`, and the application starts
+
+#### Scenario: Session cookie named connect.sid
+- **WHEN** a strategy keeps the state in a session whose cookie is `connect.sid`
+- **THEN** one warning names the strategy and `connect.sid`; a session cookie named `__Host-sid` logs nothing
+
 ### Requirement: Session storage of the state needs a usable session
 A strategy that keeps the state record in the session MUST stop startup when sessions are not installed or when the
 session cookie is `SameSite=Strict`.
@@ -228,9 +241,41 @@ the provider.
 - **THEN** the second response is the 401 and the mock provider receives no second token request
 
 #### Scenario: Replay with cookie storage
-- **WHEN** a client keeps the state cookie and repeats a successful callback, and the mock provider rejects the reused
-  code with 400 `invalid_grant`
-- **THEN** the second response is the 401
+- **WHEN** a client keeps the state cookie and repeats a successful callback
+- **THEN** the second response is the 401 and the mock provider receives no second token request (see "A state is
+  redeemed once per instance")
+
+### Requirement: A state is redeemed once per instance
+Each strategy instance MUST remember, for the state lifetime and in a bounded set (default 100000 entries, an option;
+the oldest are dropped when full), the verified states it has presented to the token endpoint, and MUST refuse a
+callback with a remembered state, including one being redeemed now, before any token request. A state that does not
+verify MUST NOT enter the set. This is a cost control per instance, not a guarantee across instances.
+
+#### Scenario: Concurrent replays of one flow
+- **WHEN** one flow's callback is waiting on the token endpoint and sixty more callbacks with the same state arrive
+- **THEN** all sixty get the 401 and the mock receives one token request
+
+#### Scenario: Forged states do not enter the set
+- **WHEN** two hundred callbacks with states that do not verify arrive before the real one
+- **THEN** they send no token request and the real callback still succeeds
+
+#### Scenario: The set is bounded
+- **WHEN** the set holds 16 entries and 20 flows have completed
+- **THEN** the newest state is still refused locally and the oldest is forgotten
+
+### Requirement: One client address cannot hold every in-flight slot
+A strategy MUST bound the callbacks one client address (the address the application resolves, honouring trust proxy,
+IPv6 by its prefix) can have waiting on the provider to a share of the in-flight limit, a quarter by default and at
+least 1, an option. A client over its share MUST be answered 503 without contacting the provider and without
+consuming its flow.
+
+#### Scenario: Share reached
+- **WHEN** one address holds its share of the slots and sends another callback, while another address sends one
+- **THEN** the first is answered 503 with no token request and the second succeeds
+
+#### Scenario: Slots are given back
+- **WHEN** the held callbacks finish
+- **THEN** the refused flow's callback succeeds
 
 ### Requirement: The redirect URI is configured and exact
 The redirect URI MUST be a configured absolute URL, and the same string MUST be sent in the authorization request and
@@ -409,14 +454,18 @@ when it is 1 to 64 characters of `[A-Za-z0-9_.-]`.
 - **THEN** the 500 response does not contain the provider's body
 
 ### Requirement: Failure redirect
-When a failure redirect is configured, every failure of a callback SHALL be answered with a 302 to that URL, sent as
-configured with nothing added from the request. The URL MUST be a relative path that satisfies the return-to rule or
+When a failure redirect is configured, every failure of a callback, including the validator's refusal (no user or an
+empty one), SHALL be answered with a 302 to that URL, sent as configured with nothing added from the request. The URL MUST be a relative path that satisfies the return-to rule or
 an absolute `https` URL; any other value MUST stop startup.
 
 #### Scenario: Denied consent with a failure page
 - **WHEN** the strategy has `failure_redirect("/login?error=oauth")` and the callback receives
   `?error=access_denied&state=<valid>`
 - **THEN** the response is a 302 with `Location: /login?error=oauth`
+
+#### Scenario: Validator refusal
+- **WHEN** a failure redirect is configured and `validate` returns no user or an empty one
+- **THEN** the response is the 302, and without a failure redirect it is the 401
 
 #### Scenario: Errors are not redirected
 - **WHEN** a failure redirect is configured and the token endpoint is down
@@ -498,6 +547,28 @@ the original passes to `validate()`, apart from `_raw` and the added e-mail flag
 #### Scenario: Generic userinfo
 - **WHEN** a generic strategy has a userinfo URL and the mock returns an OpenID userinfo document
 - **THEN** the profile uses the Google mapping with `provider` set to the strategy name
+
+### Requirement: A profile's provider namespaces its id
+The profile's `provider` MUST be the preset's name only when the strategy uses that preset's own endpoints
+unchanged; when any endpoint was replaced, and for a generic strategy, it MUST be the strategy's name, or `name@issuer` when that name is a preset's. The profile
+SHALL also carry `issuer`, the host of the authorization endpoint. Strategy names are unique in the application.
+
+#### Scenario: Three namespaces for one subject
+- **WHEN** the same subject id is returned through the GitHub preset with its own endpoints, the GitHub preset with
+  replaced endpoints in a strategy named `corp`, and a generic strategy named `sso`
+- **THEN** `provider` is `github`, `corp` and `sso`
+
+#### Scenario: Issuer
+- **WHEN** a profile is built
+- **THEN** `issuer` is the host of the authorization endpoint, with its port when the URL has one
+
+### Requirement: A record with an impossible timestamp is invalid
+A state record whose issue time cannot be compared with the clock without overflow MUST be treated as an invalid
+flow, never accepted and never a panic.
+
+#### Scenario: Extreme timestamps
+- **WHEN** a record signed with the server's key has an issue time of the smallest or largest integer
+- **THEN** the callback answers the 401 and sends no token request
 
 ### Requirement: Profile requests carry the token in a header
 The access token MUST be sent in the `Authorization: Bearer` header of profile requests and never in a URL.

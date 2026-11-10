@@ -68,6 +68,7 @@ compression = ["dep:flate2", "dep:brotli"]
 auth-local = ["dep:argon2", "dep:bcrypt"]
 auth-api-key = ["dep:subtle"]
 auth-session = ["dep:hmac", "dep:subtle"]
+auth-oauth2 = ["auth-session", "dep:tokio-rustls", "dep:webpki-roots"]
 
 [dev-dependencies]
 proptest = "1"

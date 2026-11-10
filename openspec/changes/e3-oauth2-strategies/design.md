@@ -570,3 +570,128 @@ These settle the open questions and override the design where they differ.
     adjustments in Implementation notes. The ID token is handed over unverified and the docs say so in a warning.
 11. The security review is mandatory before the merge (state binding, PKCE, the HTTP client's TLS and limits,
     redirect handling, secrets in logs).
+
+## Implementation notes
+
+### Design against the merged code (task 1.1)
+
+The design's line references are not repeated: the files moved. These are the APIs the code was written against.
+
+| Design says | Merged code |
+|---|---|
+| `Request::redact_query_param("code")` in the callback | Replaced by the core: `Strategy::credential_query_params()` (`crates/corvis/src/auth/strategy.rs`), collected once at startup by `auth::credential_query_params` and applied to every request of the application. `OAuth2Strategy` returns `["code", "state"]`; `LoggingInterceptor` and `Request::redacted_url()` hide them. A middleware that logs `Request::url()` does not (the cats example's now logs `redacted_url()`). |
+| `GuardPhase::is_active` is `pub(crate)` | It was private to `common/context.rs`: made `pub(crate)` (no behavior change). |
+| `CookieKeys` (`sign`, `unsign`) | `crates/corvis/src/http/signed_cookie.rs`, `corvis::http::CookieKeys`: `sign` gives `s:<value>.<signature>`, `unsign` verifies against every key and refuses more than 4096 bytes, `CookieKeysError` for a short secret; `Debug` prints the number of secrets only. |
+| `Request::session()`, `Session::set` / `get` / `remove` | `request.rs` (`session()`), `auth/session/session.rs` (`get_value`, `set`, `remove`). A guard that stores a redirect is not a rejected request: the record written at login start is committed (tested). |
+| "the session cookie's `SameSite` accessor" | `SessionManager::options.cookie.same_site` (crate-private fields); the strategy resolves `SessionManager` through the DI context, which also gives the "SessionModule is not imported" error. |
+| a crate-private clock "as in #44" | `session::store::now_ms()`, re-exported `pub(crate)` for the feature: it follows tokio's paused clock, so the expiry tests move time with `tokio::time::advance`. |
+| `serde_json::Value` for the provider's JSON | `PlainJson` lives in `crate::jwt`, which needs the `jwt` feature; `oauth2/json.rs` has its own visitor (no `$serde_json::private::RawValue` key handling, so the parser's depth limit is the only budget even with `raw_value` on). |
+| empty users | `AuthenticatedUser::is_empty`: a validator returning a user that serializes to `null`, `false`, `0` or `""` is a 401 (tested); the strategy never sets `return_to` for such a user. |
+| strategy panics, names, `inner_guards`, `WarnLimiter` | Used as merged: the callback's log lines go through a `WarnLimiter` (one line a minute per reason). |
+| Open questions | Settled by the Review notes above. |
+
+### Decisions and deviations
+
+1. **Several logins in progress per browser.** The design keeps one record per strategy, so a second tab breaks the first. The record is a list of at most four flows (`state`, issue time, `return_to`, plus the verifier in the session form). A callback takes out the flow of its own `state`, comparing every stored state in constant time, and writes the others back. A forged or unknown state spends nothing: the cookie is rewritten with the flows it had. So scenario "State cookie deleted" holds for every callback that matches a flow, and a callback that matches none leaves the others alone instead of deleting them (a cross-site link could otherwise abort a user's login in progress). The fifth login drops the oldest. Two tabs that start at the same instant can still overwrite each other's `Set-Cookie`: the browser keeps the last one, a limit of cookie storage.
+2. **The PKCE verifier is not in the cookie.** Cookie storage derives it: base64url SHA-256 of the signature (first cookie key) of `corvis-oauth2-pkce-v1|name|state|issued`. The browser knows the `state` but not the key, so the verifier never leaves the server. Cost: a key rotation between the redirect and the callback fails that one login. Session storage keeps a random verifier in the session record. Scenario "Record contents" holds for the session form; the cookie form holds the name, state, issue time and `return_to`.
+3. **GitHub joins its scope with commas** (`scopeSeparator: ','` in `passport-github2`), where the design said a space. The separator belongs to the preset and a scope value cannot contain it.
+4. **Parameter order and form field order come from the recording.** Authorization: the URL's own parameters, the extra ones, `response_type`, `redirect_uri`, `scope`, `code_challenge`, `code_challenge_method`, `state`, `client_id` (the design listed `client_id` second). Token request: `grant_type`, `redirect_uri`, `code_verifier`, `client_id`, `client_secret`, `code`; refresh: `grant_type`, `client_id`, `client_secret`, `refresh_token`.
+5. **A 200 token answer with an `error` and no `access_token` is a rejection (401)**, GitHub's way to refuse a code (the original answers 500). A token endpoint answering 400 or 401 is a rejection too, as designed.
+6. **`OAuth2TokenResponse` holds no token**: `access_token`, `refresh_token` and `id_token` are removed from the members and typed (`OAuth2Token`), so no serializer reaches them through `get()`. The original keeps `access_token` and `id_token` in `params`. Each token is limited to 16 KiB.
+7. **`OAuth2Options::state_cookie_secrets(..)`** (not in the design) builds the keys from raw secrets and reports a missing or short one as a startup error that names the option, because `options()` cannot return an error. `state_cookie(keys)` stays.
+8. **GitHub e-mails.** With `user:email` the profile keeps every `/user/emails` entry as `{ value, primary, verified }` (the recorded original with `allRawEmails: true`, minus `visibility`); the original's default keeps only the primary one as `{ value }`. An empty list or no usable entry fails the login, as in the original. `id` accepts a number or a string of digits only.
+9. **`return_to_param` cannot be `code`, `state` or `error`** (the callback's own parameters). A request that is not a `GET` is a plain 401 and is not redirected to the failure page (it is not a callback).
+10. **Provider answers are strict about content types**: JSON (`application/json`, `+json`) or form / `text/plain` for the token response, JSON for profiles; a `Content-Encoding` other than identity is refused; a form body with a repeated key is refused.
+11. **Verified e-mail is a JSON boolean.** Google's `email_verified` as a string, a number or `null` is not verified.
+12. **Session storage and cookie tossing.** With the session as the store, login CSRF needs the victim's browser to carry a session cookie planted by the attacker (a sibling subdomain, or a network attacker over plain HTTP); the cookie store, with its `__Host-` cookie, has no such exposure. The docs recommend the `__Host-` prefix and `Secure` for the session cookie when `state_in_session()` is used; the framework cannot enforce it.
+13. **Example.** `examples/cats-app` mounts the GitHub login only when `GITHUB_CLIENT_ID` is set (its other tests and its startup are unchanged), answers the callback with the application's JWT as JSON instead of a redirect (a token in a redirect URL ends up in logs and history), and its request-log middleware now logs `redacted_url()`. Endpoints come from `GITHUB_ENDPOINTS_BASE`, which only tests set.
+14. **"Loopback name resolving elsewhere"** is covered by a unit test of the address rule (`addresses_allowed`), not by an integration test: a name cannot be made to resolve to a non-loopback address without touching the resolver.
+15. **Tests**: `crates/corvis/tests/auth_oauth2.rs` (behavior), `auth_oauth2_original.rs` (the recorded cases), `auth_oauth2_log.rs` (own binary, process-wide logger), the unit tests of `auth/oauth2/*`, and `examples/cats-app/tests/github_login.rs`. The mock provider (`tests/oauth2_common/mod.rs`) is raw HTTP/1.1 over TCP on `127.0.0.1`, with TLS from `rcgen` for the certificate cases.
+
+### Left to the maintainer's session
+
+Task 1.3 (the CI run in a pull request), 9.6 (parity: the only core change is a visibility, `GuardPhase::is_active`, plus a feature-gated re-export), 9.8 (the security review), the archive, the follow-up issues and the `ROADMAP.md` name.
+
+## Security review (round 1)
+
+The review ran a proof of concept for all eight areas. `state`, PKCE, `redirect_uri`, return-to, the HTTPS client, JSON
+parsing, logs and the session interaction held. The maintainer decided these fixes.
+
+- **M1 (Medium), one client exhausting the in-flight slots.** In cookie mode a flow record stays valid in the browser
+  if it ignores the clearing cookie, so one `state` could be presented again and again, each copy taking a slot (and
+  spending the application's quota at the provider): more than 32 concurrent copies made every login answer 503.
+  Fixed three ways. (a) Each strategy instance keeps a bounded set of the verified states it presented to the token
+  endpoint (SHA-256 of the state, a hash set and an insertion-ordered queue, retained for `state_ttl` plus the accepted
+  clock skew, `redeemed_states_max` entries, default 100000, 16 to 10 million; the oldest are dropped when full; O(1)
+  amortized per callback). A callback whose state is in the set, including one being redeemed now, gets the uniform
+  "state mismatch" failure before any token request. Only states that matched the flow record enter the set, so
+  callbacks with forged states grow nothing. This is a cost control per instance: a second instance behind a load
+  balancer has its own set, session storage already removes the record, and a deployment with several instances
+  that needs a guarantee needs session storage with a shared store. (b) The slots one client address can hold at once
+  are bounded to a share of `max_in_flight` (`max_in_flight_per_client`, default a quarter, at least 1, 1 to 1024),
+  keyed by the address the framework resolves for the request (`Request::ip`, so `trust proxy` is honoured), normalized
+  as the throttler does (IPv6 to its /64, IPv4-mapped to IPv4; a value that is not an address falls back to the
+  socket peer). The slot is taken before the state is claimed and held through the token and profile requests, so a
+  refusal burns nothing of the flow and a released slot leaves no entry. An address over its share gets the 503
+  while others proceed. (c) The docs ask to throttle the callback route per client as well as the login route and
+  explain both caps.
+- **M2 (Medium), `provider` collided across instances.** `provider` was fixed to `"github"` or `"google"` even when
+  `endpoints()` pointed the preset at another instance (GitHub Enterprise), so `(provider, id)` was shared between
+  github.com and the enterprise server. Now `provider` is the preset's name only when all of the preset's endpoints are
+  unchanged; for any replaced endpoint and for a generic strategy it is the strategy's name, unique in the application
+  (checked at startup). `OAuth2Profile::issuer` is the host (and port) of the authorization endpoint. The `issuer`
+  is not part of the JSON form, which keeps the original's keys. A strategy named like its preset (`github`) with
+  replaced endpoints therefore still gets `github`: name strategies of other instances differently. The docs and the
+  cats example key accounts by `(provider, id)` with that rule and warn against keying by e-mail alone.
+- **L1 (Low), cookie tossing.** A state cookie without the `__Host-` prefix, and a session cookie without it under
+  `state_in_session()`, now log one startup warning each, naming the strategy and the cookie, saying a sibling
+  subdomain can plant a cookie (login CSRF) and how to fix it. Not an error: plain-HTTP development and shared
+  domains are legitimate.
+- **L2 (Low, example).** The cats example's exception filter answered `request.url()` and echoed the callback's `code`
+  and `state`; it now answers `redacted_url()` (tested). The strategies also declare `error_description` and
+  `error_uri` as query parameters to hide: they are no credentials, but they are text the other side of the redirect
+  chose, and a log line or an error body that prints the redacted URL must not reflect them.
+- **I1.** Flow expiry used unchecked arithmetic and overflowed for a timestamp of `i64::MIN`. It now uses checked
+  arithmetic and treats an impossible timestamp as an invalid flow.
+- **I2.** A validator returning `None` or an empty user answered 401 even with `failure_redirect`. With a failure
+  page every refusal of the callback goes there; without one it stays a 401. The reason is not shown to the client.
+- **I5 (docs).** The profile `id` is the provider's value as a string, compared exactly (`"00012"` and `"12"` differ);
+  the docs recommend storing it as given.
+
+Tests: `crates/corvis/tests/auth_oauth2_review.rs` (M1, M2, I1, I2), the unit tests of `redeem.rs`, `options.rs` and
+`state.rs`, `auth_oauth2_log.rs` (L1) and `examples/cats-app/tests/github_login.rs` (L2). `auth_oauth2.rs`: the
+cookie-mode replay test now expects no second token request.
+
+## Security review (round 2)
+
+The second pass could not get around the round 1 fixes (200 concurrent callbacks of one flow cost one token request
+and no 503; a third party with a victim's `state` but not the cookie cannot burn it; spoofed forwarding headers do not
+multiply the per-address share; the slot counters return to zero after thousands of cycles over every exit path) and
+judged the change ready to merge. What it noted, and what was done:
+
+- **Low: a 404 answered the callback's query string.** The router builds the message of its `NotFoundException` from
+  the URL (`Cannot GET /path?...`); a callback URL that misses its route (a typo in the path, a `POST`) got its `code`,
+  `state` and error text back in the body. The router now uses `redacted_url()` there, which is the same text when the
+  application registered no credential parameter.
+- **Low: a strategy named like a preset that is not the preset shared the preset's id space.** A generic strategy (or a
+  preset pointed at another server) named `github` produced `provider = "github"`, the pair github.com itself yields
+  for the same number. Such a strategy now gets `name@issuer` (`provider_namespace` in `options.rs`), with a warning at
+  startup that names the value. Refusing to start was considered and not chosen: the cats example and the tests of
+  this change name their strategy `github` and put a test double behind it. Round 1's sentence "`(provider, id)` never
+  collides" held only for strategies with names of their own; the docs, the option's rustdoc and the example's comment
+  now state the rule.
+- **Retention boundary of the redeemed set.** An entry was dropped in the second it expired in while a flow is still
+  accepted at exactly that age, so a state could pass once more at that instant. Entries are kept through that second.
+- **Prefix check of the state cookie name** compared `__Host-` / `__Secure-` with case; browsers do not. It ignores
+  case now, like the warning.
+- Documented, not changed: the global in-flight 503 happens after the state was claimed, so that flow must be started
+  again, while the per-address 503 claims nothing on the server (both clear the browser's state cookie); with
+  `trust_proxy(true)` a client chooses its own address key through `X-Forwarded-For`, as for the throttler, so a hop
+  count is the setting to use; four addresses at their share fill the default cap of 32, which is inherent to a
+  global cap; `issuer` is the host of the authorization endpoint, from configuration.
+
+Tests: `a_strategy_named_like_a_preset_that_is_not_the_preset_warns_and_names_its_provider` (`auth_oauth2_log.rs`),
+the provider assertions of `auth_oauth2.rs`, `auth_oauth2_original.rs` and `auth_oauth2_review.rs`, the unit tests of
+`redeem.rs` and `options.rs`, and `a_callback_url_that_misses_its_route_does_not_answer_its_query_back`
+(`auth_oauth2_review.rs`).
+
