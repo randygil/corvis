@@ -94,6 +94,13 @@
   appended headers and redirect URLs, short-circuit bypassing guards, fail-closed paths); verify every finding is fixed
   or recorded as a new issue
 
+## 7. Security review fixes
+
+- [x] 7.1 `respond_with` valid only in the guard phase (B1); tests: `AuthGuard` run from an interceptor with a redirecting strategy answers 500 and skips the handler, `respond_with` from an interceptor returns false
+- [x] 7.2 Typed user in a private slot read only by `User<T>`, cleared with the JSON user (B2); tests: foreign extension answers 401, typed and JSON user agree after an optional failure and after a pass
+- [x] 7.3 Redirect status limited to 3xx (B3); test: status 200 and other values answer 500
+- [x] 7.4 Docs: open-redirect warning, appended headers on a later 401/403, gateway warning wording, no public `Authenticator` constructor, redacted `Debug` (I1 to I5); English and Spanish
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

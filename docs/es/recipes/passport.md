@@ -21,7 +21,7 @@ Lo que hay ahora es el núcleo: el trait `Strategy` que implementas para tus pro
 | `handleRequest` devolviendo `user \|\| null` | `.optional()` |
 | `handleRequest` lanzando otra excepción | `.on_failure(\|failures\| UnauthorizedException::new("Token required"))` |
 | `if (isPublic) return true` antes de `super.canActivate` | `.skip_public()` (lee `#[public]`) |
-| `req.user` | `request.user()` (JSON) o el valor tipado: `request.get::<T>()` |
+| `req.user` | `request.user()` (JSON) o el valor tipado: un parámetro `User<T>` |
 | `req.authInfo` | `request.auth_info()` |
 | un decorador de parámetro `@User()` | el parámetro `User<T>` |
 
@@ -68,11 +68,15 @@ Una estrategia termina un intento de cinco maneras, las llamadas que puede hacer
 |---|---|
 | `Success { user, info }` | el usuario se guarda para el handler, `info` pasa a ser `request.auth_info()` |
 | `Fail { challenge, status }` | no autenticado; corre la siguiente estrategia de una cadena. Si todas fallan, la respuesta es el `401` de abajo |
-| `Redirect { url, status }` | la petición termina con una redirección (302 salvo que se dé `status`): la URL se envía tal cual, con `Content-Length: 0` y sin cuerpo |
+| `Redirect { url, status }` | la petición termina con una redirección (302 salvo que se dé `status`): la URL se envía tal cual, con `Content-Length: 0` y sin cuerpo; un `status` fuera de `3xx` es un error interno (`500`) |
 | `Pass` | la ruta corre sin usuario |
 | `Error(exception)` | la cadena se detiene y la excepción es la respuesta, sin cambios |
 
 `AuthenticatedUser::new(user)` serializa el usuario a JSON una vez y conserva el valor tipado. Un usuario que no se puede serializar es un error interno (un `500`): la petición no continúa con un usuario tipado y sin usuario JSON.
+
+**Las URL de redirección se envían tal cual.** Construye la URL con datos de confianza (la dirección configurada del proveedor de identidad, una ruta fija). Si el destino de la redirección viene de la petición (un parámetro `return_to` o `next`), valídalo contra una lista de permitidos, o acepta solo una ruta relativa que empiece por una sola `/`, antes de ponerlo en `Redirect`: de lo contrario el login se convierte en una redirección abierta.
+
+Las cabeceras que una estrategia o un guard añadió con `append_response_header` se envían en cada respuesta de esa petición, también en un `401` o `403` posterior de la misma cadena o de otro guard. Añade una cookie solo cuando el intento tuvo éxito.
 
 Una estrategia también puede poner cookies o terminar la petición con `ctx.switch_to_http().append_response_header(..)` y `respond_with(..)`, ver [Guards](/es/guards#terminar-la-peticion-y-anadir-cabeceras).
 
@@ -111,8 +115,8 @@ Cuando todas las estrategias fallan, la respuesta es `401 {"message":"Unauthoriz
 ### Diferencias con el original
 
 - **Errores al arrancar.** El original responde `500 Internal server error` en cada petición cuando un guard nombra una estrategia desconocida, y solo registra un error cuando `AuthGuard()` no tiene estrategia por defecto. Corvis detiene `init()` antes de `configure` del middleware y de los hooks de inicio, con un único error que lista todas las rutas (método y ruta) y el nombre que falta. Cubre también un `AuthGuard::chain` vacío, un valor por defecto no registrado y dos llamadas a `PassportModule::register` con valores por defecto distintos. Un guard propio que llama al `Authenticator` con un nombre desconocido sigue recibiendo el `500` del original en tiempo de petición. Un guard que envuelve un `AuthGuard` puede devolverlo desde `CanActivate::as_any` para que también se compruebe.
-- **Sin `AuthGuard` en gateways de WebSocket.** Un `AuthGuard` global también llega a los mensajes de los gateways por defecto, donde el original tampoco funciona. Deniega el mensaje con `Forbidden resource` sin ejecutar una estrategia, y la aplicación registra un aviso por gateway al arrancar. Autentica los sockets en `handle_connection`, o llama a `apply_global_enhancers_to_gateways(false)`.
-- **El usuario tipado no se elimina.** Cuando una estrategia hace pass, o un guard opcional no encuentra credenciales, se elimina el usuario JSON (`req.user` es `undefined` o `null` en el original). Un valor tipado guardado por otro código se deja como está: el guard no conoce su tipo.
+- **Sin `AuthGuard` en gateways de WebSocket.** Un `AuthGuard` global también llega a los mensajes de los gateways por defecto, donde el original tampoco funciona. Deniega el mensaje con `Forbidden resource` sin ejecutar una estrategia, y la aplicación registra un aviso por gateway al arrancar. Autentica los sockets en `handle_connection`, o llama a `apply_global_enhancers_to_gateways(false)`, que quita todos los enhancers globales de los gateways, no solo el `AuthGuard`.
+- **El usuario tipado vive en su propio espacio.** `User<T>` lee solo lo que guardó un `AuthGuard`, nunca otra extensión de la petición de tipo `T`. Cuando una estrategia hace pass, o un guard opcional no encuentra credenciales, se eliminan tanto el usuario JSON como el tipado (`req.user` es `undefined` o `null` en el original).
 - **Sin login de sesión.** `AuthGuard` nunca inicia sesión por sí solo; las sesiones llegan con su propio issue.
 - **Sin `property`, `failureRedirect` ni mensajes flash.** El usuario siempre se guarda para `User<T>` y `request.user()`.
 

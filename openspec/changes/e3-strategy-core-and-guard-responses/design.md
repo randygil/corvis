@@ -195,14 +195,15 @@ remove the JSON user, `Ok(true)`; `on_failure`: `Err(f(&failures))`; otherwise `
 for `.optional()`; `guard_name()` stays the type name (it returns `&'static str`). `AuthGuard` is in `corvis::auth`,
 not in the prelude.
 
-`User<T>`: `FromContext` reading `request.get::<T>()`, else `Err(UnauthorizedException::empty())`.
+`User<T>`: `FromContext` reading the private typed-user slot (see Implementation notes 11), else
+`Err(UnauthorizedException::empty())`.
 `Request::auth_info() -> Option<Value>` reads a private `AuthInfo(Value)` extension.
 
 ### 6. Typed user removal
 
 The original assigns `req.user = undefined` (pass) or `null` (optional failure). Corvis removes the JSON user, which
-is what `Request::user()` reads. A typed value inserted by other code is left alone: the guard does not know its type.
-Documented in the docs page.
+is what `Request::user()` reads. (Superseded by the security review fixes: the typed user is kept in a private slot
+and removed with the JSON one; see Implementation notes 11.)
 
 ### 7. Guard responses on `HttpArgumentsHost`
 
@@ -353,3 +354,20 @@ the router, `context.rs` and `application.rs` had moved by a few lines only).
    process-wide.
 10. **Left to the maintainer's session:** the corvis-parity check (tasks 1.5 and 6.6) and the `security-reviewer`
     round (6.7), as the implementation brief says.
+11. **Security review fixes.** The review found nothing above low; each point is fixed with a regression test
+    (`tests/auth_hardening.rs` and unit tests):
+    - `respond_with` is valid only in the guard phase. The router installs a private `GuardPhase` flag on the request
+      and turns it on around each `can_activate`; outside it (interceptor, handler, hand-made context) the call stores
+      nothing and returns `false`, which the `Authenticator` turns into a 500 for a redirecting strategy, so an
+      `AuthGuard` run from an interceptor can no longer let the handler run anonymously.
+    - The typed user is kept in a private `AuthUserSlot` and read only by `User<T>`; `clear_user()` removes it with
+      the JSON user. A foreign request extension of type `T` no longer satisfies `User<T>`, and the typed and JSON
+      users agree after a `Pass` or an optional failure. This removes the divergence of decision 6 and means
+      `Request::get::<T>()` no longer returns the typed user (use `User<T>`).
+    - A redirect status must be 3xx; anything else is the 500 path.
+    - `Authenticator` lost its public `Default` (construction is crate-private). The gateway warning now says that
+      `apply_global_enhancers_to_gateways(false)` removes every global enhancer from gateways. `Debug` of
+      `AuthenticatedUser`, `AuthResult` and `StrategyOutcome` prints the variant only, never the user, info or
+      challenge.
+    - Docs (English and Spanish): open-redirect warning, a line that appended headers are also sent on a later
+      401/403, and the guard-phase rule of `respond_with`.

@@ -21,7 +21,7 @@ What is available now is the core: the `Strategy` trait you implement for your o
 | `handleRequest` returning `user \|\| null` | `.optional()` |
 | `handleRequest` throwing another exception | `.on_failure(\|failures\| UnauthorizedException::new("Token required"))` |
 | `if (isPublic) return true` before `super.canActivate` | `.skip_public()` (reads `#[public]`) |
-| `req.user` | `request.user()` (JSON) or the typed value: `request.get::<T>()` |
+| `req.user` | `request.user()` (JSON) or the typed value: a `User<T>` parameter |
 | `req.authInfo` | `request.auth_info()` |
 | a `@User()` parameter decorator | the `User<T>` parameter |
 
@@ -68,11 +68,15 @@ A strategy ends an attempt in one of five ways, the calls a Passport strategy ca
 |---|---|
 | `Success { user, info }` | the user is stored for the handler, `info` becomes `request.auth_info()` |
 | `Fail { challenge, status }` | not authenticated; the next strategy of a chain runs. If all fail, the answer is the `401` below |
-| `Redirect { url, status }` | the request ends with a redirect (302 unless `status` is set): the URL is sent as given, with `Content-Length: 0` and no body |
+| `Redirect { url, status }` | the request ends with a redirect (302 unless `status` is set): the URL is sent as given, with `Content-Length: 0` and no body; a `status` outside `3xx` is an internal error (`500`) |
 | `Pass` | the route runs without a user |
 | `Error(exception)` | the chain stops and the exception is the answer, unchanged |
 
 `AuthenticatedUser::new(user)` serializes the user to JSON once and keeps the typed value. A user that cannot be serialized is an internal error (a `500`): the request does not continue with a typed user and no JSON one.
+
+**Redirect URLs are sent as given.** Build the URL from trusted data (a configured identity provider address, a fixed path). If a redirect target comes from the request (a `return_to` or `next` parameter), validate it against an allowlist, or accept only a relative path that starts with a single `/`, before you put it in `Redirect`: otherwise the login becomes an open redirect.
+
+Headers a strategy or guard appended with `append_response_header` are sent on every response of that request, including a later `401` or `403` from the same chain or another guard. Append a cookie only once the attempt succeeded.
 
 A strategy can also set cookies or end the request itself with `ctx.switch_to_http().append_response_header(..)` and `respond_with(..)`, see [Guards](/guards#ending-the-request-and-appending-headers).
 
@@ -111,8 +115,8 @@ When every strategy fails, the answer is `401 {"message":"Unauthorized","statusC
 ### Differences from the original
 
 - **Startup errors.** The original answers `500 Internal server error` on each request when a guard names an unknown strategy, and only logs an error when `AuthGuard()` has no default. Corvis stops `init()` before middleware `configure` and the init hooks, with one error that lists every route (method and path) and the missing name. This also covers an empty `AuthGuard::chain`, a default that is not registered, and two `PassportModule::register` calls with different defaults. A guard of your own that calls the `Authenticator` with an unknown name still gets the original's `500` at request time. A guard that wraps an `AuthGuard` can return it from `CanActivate::as_any` to be checked too.
-- **No `AuthGuard` on WebSocket gateways.** A global `AuthGuard` also reaches gateway messages by default, where the original does not work either. It denies the message with `Forbidden resource` without running a strategy, and the application logs one warning per gateway at startup. Authenticate sockets in `handle_connection`, or call `apply_global_enhancers_to_gateways(false)`.
-- **The typed user is not removed.** When a strategy passes, or an optional guard finds no credentials, the JSON user is removed (`req.user` is `undefined` or `null` in the original). A typed value stored by other code is left alone: the guard does not know its type.
+- **No `AuthGuard` on WebSocket gateways.** A global `AuthGuard` also reaches gateway messages by default, where the original does not work either. It denies the message with `Forbidden resource` without running a strategy, and the application logs one warning per gateway at startup. Authenticate sockets in `handle_connection`, or call `apply_global_enhancers_to_gateways(false)`, which removes every global enhancer from gateways, not only the `AuthGuard`.
+- **The typed user lives in its own slot.** `User<T>` reads only what an `AuthGuard` stored, never another request extension of type `T`. When a strategy passes, or an optional guard finds no credentials, both the JSON user and the typed user are removed (`req.user` is `undefined` or `null` in the original).
 - **No session login.** `AuthGuard` never logs in to a session by itself; sessions come with their own issue.
 - **No `property`, `failureRedirect` or flash messages.** The user is always stored for `User<T>` and `request.user()`.
 
