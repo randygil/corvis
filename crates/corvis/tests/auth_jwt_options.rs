@@ -119,6 +119,25 @@ jwt_app!(EmptyIssuerList, EmptyIssuerListModule, base().issuer(Vec::<String>::ne
 jwt_app!(ToleranceTooLarge, ToleranceTooLargeModule, base().clock_tolerance(Duration::from_secs(301)));
 jwt_app!(ZeroLength, ZeroLengthModule, base().max_token_length(0));
 
+static COUNTED_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct Counted;
+
+#[async_trait]
+impl JwtKeyProvider for Counted {
+    async fn key(&self, _req: &Request, _raw_token: &str) -> anyhow::Result<JwtKey> {
+        COUNTED_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(JwtKey::secret(SECRET))
+    }
+}
+
+jwt_app!(
+    Counting,
+    CountingModule,
+    JwtStrategyOptions::new().jwt_from_request(ExtractJwt::from_auth_header_as_bearer_token()).secret_or_key_provider(Counted)
+);
+jwt_app!(AudIss, AudIssModule, base().audience("web").issuer("https://auth.example"));
+
 struct Always;
 
 #[async_trait]
@@ -245,6 +264,51 @@ async fn the_answer_of_a_failed_token_does_not_say_why() {
         assert_eq!(r.status, 401, "{bearer}");
         assert_eq!(r.json_value(), json!({ "statusCode": 401, "message": "Unauthorized" }));
         assert_eq!(r.header("www-authenticate"), None);
+    }
+}
+
+fn sign_header(header: &str, claims: &Value) -> String {
+    let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+    let message = format!("{}.{}", b64(header.as_bytes()), b64(claims.to_string().as_bytes()));
+    let signature = jsonwebtoken::crypto::sign(message.as_bytes(), &EncodingKey::from_secret(SECRET.as_bytes()), Algorithm::HS256).unwrap();
+    format!("{message}.{signature}")
+}
+
+#[corvis::test]
+async fn a_token_with_a_crit_header_or_the_wrong_shape_never_reaches_the_key_provider() {
+    use std::sync::atomic::Ordering;
+    let app = start::<CountingModule>().await;
+    COUNTED_CALLS.store(0, Ordering::SeqCst);
+    let claims = json!({ "sub": "7", "exp": now() + 3600 });
+    let mut bad =
+        vec![sign_header(r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true}"#, &claims), sign_header(r#"{"alg":"HS256","crit":5}"#, &claims)];
+    let good = sign(&claims);
+    bad.extend(["abc".into(), "a.b".into(), "a.b.".into(), ".b.c".into(), "a.b.c.d".into(), format!("{good}=")]);
+    for token in &bad {
+        let r = request(&app).get("/me").bearer(token).send().await;
+        assert_eq!(r.status, 401, "{token}");
+        assert_eq!(r.json_value(), json!({ "statusCode": 401, "message": "Unauthorized" }));
+    }
+    assert_eq!(COUNTED_CALLS.load(Ordering::SeqCst), 0, "the key provider was not called");
+    assert_eq!(request(&app).get("/me").bearer(&good).send().await.status, 200);
+    assert_eq!(COUNTED_CALLS.load(Ordering::SeqCst), 1);
+}
+
+#[corvis::test]
+async fn issuer_and_audience_with_missing_or_wrongly_typed_claims_are_refused() {
+    let app = start::<AudIssModule>().await;
+    let f = now() + 3600;
+    let cases = [
+        (json!({"sub": "7", "exp": f, "aud": "web", "iss": "https://auth.example"}), 200),
+        (json!({"sub": "7", "exp": f, "aud": ["x", "web"], "iss": "https://auth.example"}), 200),
+        (json!({"sub": "7", "exp": f, "iss": "https://auth.example"}), 401),
+        (json!({"sub": "7", "exp": f, "aud": 5, "iss": "https://auth.example"}), 401),
+        (json!({"sub": "7", "exp": f, "aud": "web"}), 401),
+        (json!({"sub": "7", "exp": f, "aud": "web", "iss": ["https://auth.example"]}), 401),
+        (json!({"sub": "7", "exp": f, "aud": "web", "iss": 5}), 401),
+    ];
+    for (claims, status) in cases {
+        assert_eq!(request(&app).get("/me").bearer(&sign(&claims)).send().await.status, status, "{claims}");
     }
 }
 

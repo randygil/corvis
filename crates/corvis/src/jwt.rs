@@ -243,9 +243,47 @@ pub(crate) fn check_time_claims(claims: &Value, rules: &TimeRules, now: i64) -> 
 /// Decodes `token` with `validation` (algorithms, and `iss`/`aud` when set on it) and checks its time claims against
 /// the clock. Shared by [`JwtService::verify`] and the JWT strategy.
 pub(crate) fn verify_claims(token: &str, key: &DecodingKey, validation: &Validation, rules: &TimeRules) -> Result<Value, VerifyError> {
+    if header_has_crit(token) {
+        return Err(VerifyError::Claim("critical header parameters are not supported"));
+    }
     let claims = jsonwebtoken::decode::<Value>(token, key, validation).map_err(VerifyError::Decode)?.claims;
     check_time_claims(&claims, rules, chrono::Utc::now().timestamp())?;
     Ok(claims)
+}
+
+/// node-jsonwebtoken's audience rule: one of the token's `aud` values (a string or a list of strings) equals one of
+/// the allowed. A missing claim or any other type does not match.
+pub(crate) fn audience_matches(claim: Option<&Value>, allowed: &[String]) -> bool {
+    match claim {
+        Some(Value::String(aud)) => allowed.contains(aud),
+        Some(Value::Array(list)) => list.iter().any(|v| v.as_str().is_some_and(|aud| allowed.iter().any(|a| a == aud))),
+        _ => false,
+    }
+}
+
+/// node-jsonwebtoken's issuer rule: the token's `iss` must be a string equal to one of the allowed.
+pub(crate) fn issuer_matches(claim: Option<&Value>, allowed: &[String]) -> bool {
+    claim.and_then(Value::as_str).is_some_and(|iss| allowed.iter().any(|a| a == iss))
+}
+
+fn base64url_segment(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// A cheap syntactic check: exactly three non-empty base64url segments (no padding).
+pub(crate) fn has_three_segments(token: &str) -> bool {
+    let mut parts = token.split('.');
+    matches!((parts.next(), parts.next(), parts.next(), parts.next()), (Some(a), Some(b), Some(c), None)
+        if base64url_segment(a) && base64url_segment(b) && base64url_segment(c))
+}
+
+/// Whether the protected header has a `crit` member (RFC 7515 section 4.1.11). Corvis supports no critical
+/// extensions, so such a token must be refused. A header that cannot be read is left to the decoder.
+pub(crate) fn header_has_crit(token: &str) -> bool {
+    use base64::Engine as _;
+    let Some(header) = token.split('.').next() else { return false };
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(header.trim_end_matches('=')) else { return false };
+    serde_json::from_slice::<Value>(&bytes).is_ok_and(|h| h.get("crit").is_some())
 }
 
 /// Signs and verifies JSON Web Tokens.
@@ -329,14 +367,25 @@ impl JwtService {
         // `exp` and `nbf` are checked below with node-jsonwebtoken's rules.
         validation.validate_exp = false;
         validation.validate_nbf = false;
-        if let Some(iss) = &self.options.issuer {
-            validation.set_issuer(&[iss]);
+        // `iss` and `aud` are checked below with the same rules as the JWT strategy: the crate accepts a token
+        // whose claim is missing, has another type or (`iss`) is a list that merely intersects.
+        validation.validate_aud = false;
+        let claims = match verify_claims(token, &decoding_key(alg, key)?, &validation, &TimeRules::default()) {
+            Ok(claims) => claims,
+            // Callers can still downcast to `jsonwebtoken::errors::Error` for what that crate refused.
+            Err(VerifyError::Decode(e)) => return Err(e.into()),
+            Err(e @ VerifyError::Claim(_)) => return Err(e.into()),
+        };
+        if let Some(iss) = &self.options.issuer
+            && !issuer_matches(claims.get("iss"), std::slice::from_ref(iss))
+        {
+            return Err(jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidIssuer).into());
         }
-        match &self.options.audience {
-            Some(aud) => validation.set_audience(&[aud]),
-            None => validation.validate_aud = false,
+        if let Some(aud) = &self.options.audience
+            && !audience_matches(claims.get("aud"), std::slice::from_ref(aud))
+        {
+            return Err(jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidAudience).into());
         }
-        let claims = verify_claims(token, &decoding_key(alg, key)?, &validation, &TimeRules::default())?;
         Ok(serde_json::from_value(claims)?)
     }
 

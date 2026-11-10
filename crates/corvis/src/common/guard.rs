@@ -39,10 +39,21 @@ pub trait CanActivate: Send + Sync + 'static {
     }
 
     /// The guard as [`Any`](std::any::Any), so startup checks can look inside it. Only guards that opt in return
-    /// `Some(self)`: [`AuthGuard`](crate::auth::AuthGuard) does, so the application can verify its strategy names
-    /// when it initializes. A guard that wraps an `AuthGuard` can return the inner guard to get the same check.
+    /// `Some(self)`: [`AuthGuard`](crate::auth::AuthGuard) does, so the application can verify its strategy
+    /// names when it initializes.
+    ///
+    /// A guard that wraps another one should not return the inner guard here (that would also make the
+    /// [`AuthGuard`](crate::auth::AuthGuard) gateway warning fire for a wrapper that skips public targets); it
+    /// lists it in [`inner_guards`](CanActivate::inner_guards) instead.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
+    }
+
+    /// The guards this one delegates to. The startup check of strategy names looks inside them, so a composite
+    /// guard that wraps a [`corvis::auth::AuthGuard`](crate::auth::AuthGuard) fails at startup on a name that no
+    /// strategy has, instead of answering 500 on every request. Default: none.
+    fn inner_guards(&self) -> Vec<&dyn CanActivate> {
+        Vec::new()
     }
 }
 

@@ -222,7 +222,7 @@ impl CanActivate for AuthGuard {
 ```
 
 - `verify::<T>(token)` checks the signature (only with the configured algorithm), `nbf`, `exp`
-  (expired when `now >= exp`), `iss`/`aud` if you configured them, and deserializes the *claims* into
+  (expired when `now >= exp`), `iss`/`aud` if you configured them (strictly: with an issuer configured, a token whose `iss` is missing, is not a string or is a list fails; with an audience configured, `aud` must be a string or a list of strings that contains it; a token with a `crit` header always fails), and deserializes the *claims* into
   `T`. It returns a `corvis::Result<T>`.
 - `sign` and `verify` fail with `secretOrPrivateKey must have a value` when there is no key. `verify` also rejects a token that is not yet valid (`jwt not active`, from `nbf`) and one whose `exp`, `nbf` or `iat` is not a number.
 - `verify_or_unauthorized::<T>(token)` does the same and turns any failure into a `401`.

@@ -92,6 +92,15 @@ fn auth_guard_of(guard: &dyn crate::common::guard::CanActivate) -> Option<&AuthG
     guard.as_any().and_then(|a| a.downcast_ref::<AuthGuard>())
 }
 
+/// The `AuthGuard`s of a guard and, through `CanActivate::inner_guards`, of the guards it delegates to.
+fn auth_guards_in(guard: &dyn crate::common::guard::CanActivate) -> Vec<&AuthGuard> {
+    let mut found: Vec<&AuthGuard> = auth_guard_of(guard).into_iter().collect();
+    for inner in guard.inner_guards() {
+        found.extend(auth_guards_in(inner));
+    }
+    found
+}
+
 /// Startup check of the strategy names of every compiled route guard (global, controller and route level). One
 /// error lists every problem with its route.
 pub(crate) fn check_routes(container: &Container, table: &RouterTable) -> crate::Result<()> {
@@ -99,11 +108,12 @@ pub(crate) fn check_routes(container: &Container, table: &RouterTable) -> crate:
     let mut problems: Vec<String> = Vec::new();
     for route in &table.routes {
         for guard in &route.guards {
-            let Some(auth_guard) = auth_guard_of(guard.as_ref()) else { continue };
-            if let Some(problem) = auth_guard.startup_problem(&authenticator) {
-                let line = format!("{} {}: {problem}", route.method.as_str(), route.path);
-                if !problems.contains(&line) {
-                    problems.push(line);
+            for auth_guard in auth_guards_in(guard.as_ref()) {
+                if let Some(problem) = auth_guard.startup_problem(&authenticator) {
+                    let line = format!("{} {}: {problem}", route.method.as_str(), route.path);
+                    if !problems.contains(&line) {
+                        problems.push(line);
+                    }
                 }
             }
         }

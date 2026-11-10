@@ -59,7 +59,7 @@ use super::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Hooks, Injectable, ResolveCtx};
 use crate::http::{HttpException, Request};
-use crate::jwt::{VerifyError, verify_claims};
+use crate::jwt::{VerifyError, audience_matches, has_three_segments, header_has_crit, issuer_matches, verify_claims};
 use crate::logger::Logger;
 
 /// The class a `PassportStrategy(Strategy)` of `passport-jwt` is written as: the options and `validate`.
@@ -158,20 +158,6 @@ fn validation_for(algorithms: Vec<Algorithm>) -> Validation {
     validation
 }
 
-/// node-jsonwebtoken's audience rule: one of the token's `aud` values (a string or a list) equals one of the allowed.
-fn audience_matches(claim: Option<&Value>, allowed: &[String]) -> bool {
-    match claim {
-        Some(Value::String(aud)) => allowed.contains(aud),
-        Some(Value::Array(list)) => list.iter().any(|v| v.as_str().is_some_and(|aud| allowed.iter().any(|a| a == aud))),
-        _ => false,
-    }
-}
-
-/// node-jsonwebtoken's issuer rule: the token's `iss`, a string, equals one of the allowed.
-fn issuer_matches(claim: Option<&Value>, allowed: &[String]) -> bool {
-    claim.and_then(Value::as_str).is_some_and(|iss| allowed.iter().any(|a| a == iss))
-}
-
 impl Resolved {
     /// Verifies a token and returns its payload, or the reason it was refused.
     fn verify(&self, token: &str, key: &DecodingKey, allowed: Vec<Algorithm>) -> Result<Value, &'static str> {
@@ -235,6 +221,12 @@ impl<V: JwtValidator> Strategy for JwtStrategy<V> {
         let Some(token) = self.resolved.extractor.extract(req) else { return fail("No auth token") };
         if token.len() > self.resolved.max_token_length {
             return fail("token too long");
+        }
+        if header_has_crit(&token) {
+            return fail("unsupported critical header");
+        }
+        if !has_three_segments(&token) {
+            return fail("jwt malformed");
         }
         let log = Logger::new("JwtStrategy");
         let payload = match self.resolved.payload(req, &token, &log).await {

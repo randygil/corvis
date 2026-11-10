@@ -114,7 +114,7 @@ When every strategy fails, the answer is `401 {"message":"Unauthorized","statusC
 
 ### Differences from the original
 
-- **Startup errors.** The original answers `500 Internal server error` on each request when a guard names an unknown strategy, and only logs an error when `AuthGuard()` has no default. Corvis stops `init()` before middleware `configure` and the init hooks, with one error that lists every route (method and path) and the missing name. This also covers an empty `AuthGuard::chain`, a default that is not registered, and two `PassportModule::register` calls with different defaults. A guard of your own that calls the `Authenticator` with an unknown name still gets the original's `500` at request time. A guard that wraps an `AuthGuard` can return it from `CanActivate::as_any` to be checked too.
+- **Startup errors.** The original answers `500 Internal server error` on each request when a guard names an unknown strategy, and only logs an error when `AuthGuard()` has no default. Corvis stops `init()` before middleware `configure` and the init hooks, with one error that lists every route (method and path) and the missing name. This also covers an empty `AuthGuard::chain`, a default that is not registered, and two `PassportModule::register` calls with different defaults. A guard of your own that calls the `Authenticator` with an unknown name still gets the original's `500` at request time. A guard that wraps an `AuthGuard` (a composite guard) lists it in `CanActivate::inner_guards`, which the check follows at any depth, so a typo in the wrapped name also stops `init()`: `fn inner_guards(&self) -> Vec<&dyn CanActivate> { vec![&self.jwt] }`. Do not return the inner guard from `as_any`: that one is for the guard itself, and it would make the gateway warning below fire for a wrapper that lets public targets through.
 - **No `AuthGuard` on WebSocket gateways.** A global `AuthGuard` also reaches gateway messages by default, where the original does not work either. It denies the message with `Forbidden resource` without running a strategy, and the application logs one warning per gateway at startup. Authenticate sockets in `handle_connection`, or call `apply_global_enhancers_to_gateways(false)`, which removes every global enhancer from gateways, not only the `AuthGuard`.
 - **The typed user lives in its own slot.** `User<T>` reflects only what an `AuthGuard` stored, never another request extension of type `T`, and `Request::set_user` drops it, so a later guard that sets its own user makes `User<T>` answer `401`. When a strategy passes, or an optional guard finds no credentials, both the JSON user and the typed user are removed (`req.user` is `undefined` or `null` in the original).
 - **No session login.** `AuthGuard` never logs in to a session by itself; sessions come with their own issue.
@@ -189,11 +189,19 @@ pub struct AuthModule;
 | `fromHeader(name)` | `ExtractJwt::from_header(name)` |
 | `fromUrlQueryParameter(name)` | `ExtractJwt::from_url_query_parameter(name)` |
 | `fromBodyField(name)` | `ExtractJwt::from_body_field(name)` |
-| `fromExtractors([..])` | `ExtractJwt::from_extractors([..])`: the first non-empty token wins |
+| `fromExtractors([..])` | `ExtractJwt::from_extractors([..])`: the first non-empty token wins, with no fallback to the next one |
 | `req => req.cookies?.[name]` | `ExtractJwt::from_cookie(name)` |
 | any function | `ExtractJwt::custom(\|req\| ..)` |
 
 The `Authorization` header is parsed exactly as `passport-jwt` does: the first `Authorization` value is matched with `(\S+)\s+(\S+)` (so a tab can separate the scheme and the token, and words after the token are ignored) and the scheme is compared ignoring case. `extract_bearer_token` keeps its own, stricter behavior. An empty value, or a value that is not a string (a number in a JSON body), is no token. Tokens are read only from the places you configure: a valid token in the query or in a cookie does nothing unless an extractor reads it.
+
+::: warning Order matters in `from_extractors`
+The first non-empty token is the only one tried: if it fails, the next extractors are not consulted. With a cookie extractor placed before the header one, an attacker who can plant a cookie (from a sibling subdomain, for example) overrides the `Authorization` header of the user. Put the most trusted place first, and read only the places you need.
+:::
+
+::: warning A token in a cookie is an ambient credential
+The browser sends a cookie on its own, so a cookie token needs the protections of any cookie session: mitigate CSRF (a token or custom header on state-changing requests, or an `Origin` check) and set `SameSite=Lax` or `Strict`, `Secure` and `HttpOnly` when you issue it.
+:::
 
 ::: warning Tokens in URLs
 A token in the query string ends up in access logs, browser history and `Referer` headers. The strategy logs a warning at startup when `from_url_query_parameter` is configured; prefer the `Authorization` header or a cookie.
@@ -214,7 +222,7 @@ With a fixed key, `.algorithms([..])` must be non-empty and belong to the key's 
 
 An HMAC secret must be at least 32 bytes (RFC 7518 section 3.2): a shorter one, or an empty one, stops startup, and a key provider that returns one fails that request (`JwtService` itself keeps accepting shorter secrets). Generate one with `openssl rand -hex 32`.
 
-A key provider receives the request and the raw token, which is **not verified yet**: use its `iss` or `kid` only to choose a key, never to trust a value. It runs for every request, so cache what it fetches; an error is a `401`, not a `500`.
+A key provider receives the request and the raw token, which is **not verified yet**: use its `iss` or `kid` only to choose a key, never to trust a value. It runs for every request, so cache what it fetches; an error is a `401`, not a `500`. The error text is logged at debug level, so a provider must never put the raw token in its error. Before the provider runs, the strategy refuses a token longer than `max_token_length`, one with a `crit` header (RFC 7515 section 4.1.11; Corvis supports no critical extensions) and one that is not exactly three non-empty base64url segments.
 
 ```rust
 struct ByIssuer {
@@ -245,6 +253,9 @@ Each one is on purpose, and the differential test marks it:
 - **Tokens are limited to 8192 bytes** by default (`.max_token_length(..)`).
 - **The configuration is checked at startup**: an HMAC secret under 32 bytes, an empty issuer or audience, a tolerance above 300 s and the other combinations above do not start.
 - **`ES512` is not available** (`jsonwebtoken` 9).
+- **A token with a `crit` header, or not made of three base64url segments, fails** before the key provider runs.
+
+`typ` is not validated, and the strategy has no option for it. Do not sign other kinds of token (refresh tokens, e-mail verification, password reset) with the same key and audience as the access tokens: one would be accepted as the other. Use a different key or `aud` for each kind. A `typ` check could come later as an option.
 
 A failed attempt keeps its reason as `request.auth_info()` (`{"message": "jwt expired"}`, `invalid signature`, `invalid algorithm`, `jwt malformed`, `No auth token`, `token too long`, ..), never in the response, which is the usual `401`. The reasons never repeat anything from the token.
 

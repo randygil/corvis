@@ -86,6 +86,18 @@ artifacts if it differs.
   confusion, `none`, oversized and malformed tokens, header parsing, key provider errors); verify every finding is
   fixed or recorded as a new issue
 
+## 8. Security review (round 1)
+
+- [x] 8.1 `JwtService::verify`: apply `issuer_matches` and `audience_matches` and keep `jsonwebtoken` errors downcastable;
+  verify the unit tests (missing, numeric and list `iss`; missing and numeric `aud`; correct; unconfigured)
+- [x] 8.2 `CanActivate::inner_guards`, `check_routes` follows it, cats-app wrapper implements it; verify a wrapper with an
+  unknown name refuses to start
+- [x] 8.3 `crit` header and three-segment checks in the strategy (before the key provider) and `crit` in `verify_claims`;
+  verify the key provider is not called
+- [x] 8.4 Docs EN/ES (provider errors, extractor order, cookie CSRF, `typ`, `JwtService` strictness, composite guards) and
+  spec deltas; verify `openspec validate e3-jwt-strategy --strict` and `npm run docs:check`
+- [ ] 8.5 Run the corvis-parity check and a new security review round (maintainer's session)
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

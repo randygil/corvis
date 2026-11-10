@@ -22,4 +22,10 @@ impl CanActivate for AuthGuard {
         // The strategy stores the payload as the request's user, so that route handlers can read it.
         self.jwt.can_activate(ctx).await
     }
+
+    /// Exposes the inner guard to the startup check: a strategy name that nobody registered stops `init()` instead
+    /// of answering 500 on every request. Do not return it from `as_any`: that is for the guard itself.
+    fn inner_guards(&self) -> Vec<&dyn CanActivate> {
+        vec![&self.jwt]
+    }
 }

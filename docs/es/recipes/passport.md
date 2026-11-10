@@ -114,7 +114,7 @@ Cuando todas las estrategias fallan, la respuesta es `401 {"message":"Unauthoriz
 
 ### Diferencias con el original
 
-- **Errores al arrancar.** El original responde `500 Internal server error` en cada petición cuando un guard nombra una estrategia desconocida, y solo registra un error cuando `AuthGuard()` no tiene estrategia por defecto. Corvis detiene `init()` antes de `configure` del middleware y de los hooks de inicio, con un único error que lista todas las rutas (método y ruta) y el nombre que falta. Cubre también un `AuthGuard::chain` vacío, un valor por defecto no registrado y dos llamadas a `PassportModule::register` con valores por defecto distintos. Un guard propio que llama al `Authenticator` con un nombre desconocido sigue recibiendo el `500` del original en tiempo de petición. Un guard que envuelve un `AuthGuard` puede devolverlo desde `CanActivate::as_any` para que también se compruebe.
+- **Errores al arrancar.** El original responde `500 Internal server error` en cada petición cuando un guard nombra una estrategia desconocida, y solo registra un error cuando `AuthGuard()` no tiene estrategia por defecto. Corvis detiene `init()` antes de `configure` del middleware y de los hooks de inicio, con un único error que lista todas las rutas (método y ruta) y el nombre que falta. Cubre también un `AuthGuard::chain` vacío, un valor por defecto no registrado y dos llamadas a `PassportModule::register` con valores por defecto distintos. Un guard propio que llama al `Authenticator` con un nombre desconocido sigue recibiendo el `500` del original en tiempo de petición. Un guard que envuelve un `AuthGuard` (un guard compuesto) lo lista en `CanActivate::inner_guards`, que la comprobación recorre a cualquier profundidad, así que un error de escritura en el nombre envuelto también detiene `init()`: `fn inner_guards(&self) -> Vec<&dyn CanActivate> { vec![&self.jwt] }`. No devuelvas el guard interno desde `as_any`: ese método es para el guard mismo, y haría saltar el aviso de gateways de abajo en un wrapper que deja pasar los destinos públicos.
 - **Sin `AuthGuard` en gateways de WebSocket.** Un `AuthGuard` global también llega a los mensajes de los gateways por defecto, donde el original tampoco funciona. Deniega el mensaje con `Forbidden resource` sin ejecutar una estrategia, y la aplicación registra un aviso por gateway al arrancar. Autentica los sockets en `handle_connection`, o llama a `apply_global_enhancers_to_gateways(false)`, que quita todos los enhancers globales de los gateways, no solo el `AuthGuard`.
 - **El usuario tipado vive en su propio espacio.** `User<T>` refleja solo lo que guardó un `AuthGuard`, nunca otra extensión de la petición de tipo `T`, y `Request::set_user` lo elimina, así que si un guard posterior fija su propio usuario `User<T>` responde `401`. Cuando una estrategia hace pass, o un guard opcional no encuentra credenciales, se eliminan tanto el usuario JSON como el tipado (`req.user` es `undefined` o `null` en el original).
 - **Sin login de sesión.** `AuthGuard` nunca inicia sesión por sí solo; las sesiones llegan con su propio issue.
@@ -189,11 +189,19 @@ pub struct AuthModule;
 | `fromHeader(name)` | `ExtractJwt::from_header(name)` |
 | `fromUrlQueryParameter(name)` | `ExtractJwt::from_url_query_parameter(name)` |
 | `fromBodyField(name)` | `ExtractJwt::from_body_field(name)` |
-| `fromExtractors([..])` | `ExtractJwt::from_extractors([..])`: gana el primer token no vacío |
+| `fromExtractors([..])` | `ExtractJwt::from_extractors([..])`: gana el primer token no vacío, sin recurrir al siguiente |
 | `req => req.cookies?.[name]` | `ExtractJwt::from_cookie(name)` |
 | cualquier función | `ExtractJwt::custom(\|req\| ..)` |
 
 La cabecera `Authorization` se interpreta exactamente como lo hace `passport-jwt`: el primer valor de `Authorization` se compara con `(\S+)\s+(\S+)` (así que un tabulador puede separar el esquema y el token, y las palabras después del token se ignoran) y el esquema se compara sin distinguir mayúsculas. `extract_bearer_token` conserva su propio comportamiento, más estricto. Un valor vacío, o que no es una cadena (un número en un cuerpo JSON), no es un token. Los tokens se leen solo de los lugares que configuras: un token válido en el query o en una cookie no hace nada si ningún extractor lo lee.
+
+::: warning El orden importa en `from_extractors`
+Solo se prueba el primer token no vacío: si falla, no se consultan los extractores siguientes. Con un extractor de cookie antes del de cabecera, un atacante que pueda plantar una cookie (desde un subdominio hermano, por ejemplo) anula la cabecera `Authorization` del usuario. Pon primero el lugar más confiable y lee solo los lugares que necesites.
+:::
+
+::: warning Un token en una cookie es una credencial ambiental
+El navegador envía la cookie por sí solo, así que un token en cookie necesita las protecciones de cualquier sesión por cookie: mitiga CSRF (un token o una cabecera propia en las peticiones que cambian estado, o una comprobación de `Origin`) y usa `SameSite=Lax` o `Strict`, `Secure` y `HttpOnly` al emitirla.
+:::
 
 ::: warning Tokens en URLs
 Un token en el query string acaba en los logs de acceso, el historial del navegador y las cabeceras `Referer`. La estrategia registra un aviso al arrancar cuando se configura `from_url_query_parameter`; prefiere la cabecera `Authorization` o una cookie.
@@ -214,7 +222,7 @@ Con una clave fija, `.algorithms([..])` no puede estar vacía y debe pertenecer 
 
 Un secreto HMAC debe tener al menos 32 bytes (RFC 7518, sección 3.2): uno más corto, o vacío, detiene el arranque, y un provider de claves que devuelve uno hace fallar esa request (`JwtService` sigue aceptando secretos más cortos). Genera uno con `openssl rand -hex 32`.
 
-Un provider de claves recibe la request y el token en bruto, que **todavía no está verificado**: usa su `iss` o su `kid` solo para elegir una clave, nunca para confiar en un valor. Se ejecuta en cada request, así que guarda en caché lo que obtengas; un error es un `401`, no un `500`.
+Un provider de claves recibe la request y el token en bruto, que **todavía no está verificado**: usa su `iss` o su `kid` solo para elegir una clave, nunca para confiar en un valor. Se ejecuta en cada request, así que guarda en caché lo que obtengas; un error es un `401`, no un `500`. El texto del error se registra en nivel debug, así que un provider nunca debe poner el token en bruto en su error. Antes de que el provider se ejecute, la estrategia rechaza un token más largo que `max_token_length`, uno con cabecera `crit` (RFC 7515, sección 4.1.11; Corvis no soporta extensiones críticas) y uno que no sean exactamente tres segmentos base64url no vacíos.
 
 ```rust
 struct ByIssuer {
@@ -245,6 +253,9 @@ Cada una es a propósito, y el test diferencial la marca:
 - **Los tokens están limitados a 8192 bytes** por defecto (`.max_token_length(..)`).
 - **La configuración se comprueba al arrancar**: un secreto HMAC de menos de 32 bytes, un issuer o una audience vacíos, una tolerancia superior a 300 s y las demás combinaciones de arriba no arrancan.
 - **`ES512` no está disponible** (`jsonwebtoken` 9).
+- **Un token con cabecera `crit`, o que no sean tres segmentos base64url, falla** antes de que se ejecute el provider de claves.
+
+`typ` no se valida, y la estrategia no tiene opción para ello. No firmes otros tipos de token (refresh, verificación de correo, restablecimiento de contraseña) con la misma clave y audience que los tokens de acceso: uno se aceptaría como el otro. Usa una clave o un `aud` distintos para cada tipo. Una comprobación de `typ` podría llegar después como opción.
 
 Un intento fallido conserva su motivo como `request.auth_info()` (`{"message": "jwt expired"}`, `invalid signature`, `invalid algorithm`, `jwt malformed`, `No auth token`, `token too long`, ..), nunca en la respuesta, que es el `401` habitual. Los motivos nunca repiten nada del token.
 

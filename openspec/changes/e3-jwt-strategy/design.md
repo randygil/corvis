@@ -295,8 +295,36 @@ Written while implementing, after comparing the design with what #136 shipped (`
     of random credentials through HTTP) and `tests/auth_jwt_log.rs` (its own binary: the logger is process-wide).
 17. **Example.** `examples/cats-app` keeps a global guard named `AuthGuard` that skips `#[public]` targets and delegates
     to `corvis::auth::AuthGuard::new("jwt")`: the framework's guard denies every WebSocket message, even with
-    `skip_public`, and the chat gateway is public. The wrapper does not override `CanActivate::as_any`, so its strategy
-    name is not checked at startup (and the gateway warning of `corvis::auth` does not fire for a guard that lets
-    public targets through). `JwtAuth` reads `JWT_SECRET` like `JwtModule` does; the existing startup tests still see
+    `skip_public`, and the chat gateway is public. The wrapper lists its inner guard in `CanActivate::inner_guards` (see Security review, item 2), so its strategy name is checked at startup, and it does not return it from `as_any`, so the gateway warning of `corvis::auth` does not fire for a guard that lets public targets through. `JwtAuth` reads `JWT_SECRET` like `JwtModule` does; the existing startup tests still see
     the `JWT_SECRET` error first because `JwtService` resolves before the strategy. A new `tests/jwt_auth.rs` covers
     login, profile, bad tokens and a public route.
+
+## Security review (round 1)
+
+The first security review found the points below. The maintainer's decisions override the design where it said
+`JwtService` is untouched.
+
+1. **`JwtService::verify` checks `iss` and `aud` itself** (Medium, pre-existing). The crate's validation accepted a
+   token whose `iss` or `aud` was missing or not a string, and an `iss` list that merely intersected. `verify` now
+   turns the crate's audience validation off and applies `issuer_matches` and `audience_matches` (moved to
+   `crates/corvis/src/jwt.rs` and shared with the strategy): a missing or wrongly typed claim does not match, `aud` is a
+   string or a list of strings, `iss` must be a string. With nothing configured nothing changes. Errors for the cases
+   the crate already refused are unchanged.
+2. **Composite guards are checked at startup** (Low). New `CanActivate::inner_guards(&self) -> Vec<&dyn CanActivate>`
+   (default empty), followed at any depth by `check_routes`. Chosen over returning the inner guard from `as_any`
+   because `warn_gateways` also reads `as_any` and would warn for a wrapper that skips public targets. The cats-app
+   guard implements it, a test in `tests/auth_guard.rs` covers a wrapper with an unknown name and one with a valid
+   name, and the auth docs describe the pattern.
+3. **`crit` is refused** (Low): after `max_token_length` and before the key provider in the strategy (401, uniform body,
+   reason `unsupported critical header`), and at the start of `verify_claims`, so `JwtService::verify` refuses it too.
+4. **Syntactic check before the key provider**: exactly three non-empty base64url segments without padding (`jwt
+   malformed`), after the length limit and the `crit` check.
+5. **Error type of `JwtService::verify`**: the errors that come from `jsonwebtoken` (decoding, signature, algorithm and
+   the new issuer and audience refusals, built as `ErrorKind::InvalidIssuer` / `InvalidAudience`) are returned as
+   `jsonwebtoken::errors::Error` again, so `downcast_ref::<jsonwebtoken::errors::Error>()` works as before. Claim errors
+   (time claims, `crit`) are `pub(crate)` `VerifyError` values, which nobody could downcast to before either, since the
+   time checks used to be plain messages.
+6. **Docs** (EN and ES): provider errors are logged at debug level, so never put the raw token in one; with
+   `from_extractors` the first non-empty token wins, so order matters (a cookie first lets a cookie-planting attacker
+   override the header); a cookie token is an ambient credential (CSRF, `SameSite`); `typ` is not validated, so do not
+   sign other kinds of token with the same key and audience. A `typ` option is out of scope and a possible follow-up.

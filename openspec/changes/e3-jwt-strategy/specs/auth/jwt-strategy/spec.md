@@ -291,3 +291,14 @@ reason.
 #### Scenario: Fixture replay
 - **WHEN** `cargo test --workspace` runs
 - **THEN** every case of `jwt.json` passes without Node
+
+### Requirement: Critical headers and malformed tokens are refused early
+After the length limit and before the key provider or any verification, the strategy MUST fail a token whose header has `crit` (RFC 7515 section 4.1.11: no critical extension is supported) and a token that is not exactly three non-empty base64url segments. The key provider is not called.
+
+#### Scenario: Critical header
+- **WHEN** a validly signed token has the header member `"crit": ["urn:x"]`
+- **THEN** the response is the 401 and the key provider is not called
+
+#### Scenario: Wrong shape
+- **WHEN** the token is `a.b`, `a.b.`, `.b.c`, `a.b.c.d` or has padding
+- **THEN** the response is the 401 and the key provider is not called
