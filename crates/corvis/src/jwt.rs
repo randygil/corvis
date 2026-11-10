@@ -243,8 +243,10 @@ pub(crate) fn check_time_claims(claims: &Value, rules: &TimeRules, now: i64) -> 
 /// Decodes `token` with `validation` (algorithms, and `iss`/`aud` when set on it) and checks its time claims against
 /// the clock. Shared by [`JwtService::verify`] and the JWT strategy.
 pub(crate) fn verify_claims(token: &str, key: &DecodingKey, validation: &Validation, rules: &TimeRules) -> Result<Value, VerifyError> {
-    if header_has_crit(token) {
-        return Err(VerifyError::Claim("critical header parameters are not supported"));
+    match check_header(token) {
+        Some(HeaderProblem::Crit) => return Err(VerifyError::Claim("critical header parameters are not supported")),
+        Some(HeaderProblem::Malformed) => return Err(VerifyError::Claim("jwt malformed")),
+        None => {}
     }
     let claims = jsonwebtoken::decode::<Value>(token, key, validation).map_err(VerifyError::Decode)?.claims;
     check_time_claims(&claims, rules, chrono::Utc::now().timestamp())?;
@@ -277,13 +279,26 @@ pub(crate) fn has_three_segments(token: &str) -> bool {
         if base64url_segment(a) && base64url_segment(b) && base64url_segment(c))
 }
 
-/// Whether the protected header has a `crit` member (RFC 7515 section 4.1.11). Corvis supports no critical
-/// extensions, so such a token must be refused. A header that cannot be read is left to the decoder.
-pub(crate) fn header_has_crit(token: &str) -> bool {
+/// What is wrong with the protected header of a token, found before any key is looked up.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum HeaderProblem {
+    /// The first segment is not base64url of a JSON object that `serde_json::Value` parses.
+    Malformed,
+    /// The header has a `crit` member (RFC 7515 section 4.1.11); Corvis supports no critical extensions.
+    Crit,
+}
+
+/// Checks the protected header and fails closed: a header that is not a JSON object readable as a `serde_json::Value`
+/// is refused, because the decoder skips unknown members without validating them and would let such a header
+/// carry a `crit` member unseen. Only the exact member name `crit` counts.
+pub(crate) fn check_header(token: &str) -> Option<HeaderProblem> {
     use base64::Engine as _;
-    let Some(header) = token.split('.').next() else { return false };
-    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(header.trim_end_matches('=')) else { return false };
-    serde_json::from_slice::<Value>(&bytes).is_ok_and(|h| h.get("crit").is_some())
+    let header = token.split('.').next().unwrap_or("");
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(header) else { return Some(HeaderProblem::Malformed) };
+    match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(map)) => map.contains_key("crit").then_some(HeaderProblem::Crit),
+        _ => Some(HeaderProblem::Malformed),
+    }
 }
 
 /// Signs and verifies JSON Web Tokens.
@@ -482,6 +497,37 @@ mod tests {
         format!("{message}.{sig}")
     }
     const HS256: &str = r#"{"alg":"HS256","typ":"JWT"}"#;
+
+    /// A header the decoder skips over but `serde_json::Value` refuses must not hide a `crit` member.
+    #[test]
+    fn a_header_that_is_not_plain_json_is_refused_before_the_decoder() {
+        use base64::Engine as _;
+        let jwt = JwtService::new(JwtModuleOptions::new("s"));
+        let claims = serde_json::json!({ "sub": 1 });
+        let nested = format!(r#"{{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":{}{}}}"#, "[".repeat(200), "]".repeat(200));
+        let headers = [
+            r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":1e400}"#,
+            r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":"\ud800"}"#,
+            nested.as_str(),
+            r#"{"alg":"HS256","b64":false,"crit":["b64"],"z":1e999}"#,
+            r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true}"#,
+            "[1]",
+        ];
+        for header in headers {
+            assert!(jwt.verify::<Value>(&forge(header, &claims, b"s")).is_err(), "{header}");
+        }
+        // Raw invalid UTF-8 cannot go through a `&str`: build that token by hand.
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let mut bytes = br#"{"alg":"HS256","crit":["urn:x"],"z":""#.to_vec();
+        bytes.extend([0xFF, 0xFE]);
+        bytes.extend(br#""}"#);
+        let message = format!("{}.{}", b64(&bytes), b64(claims.to_string().as_bytes()));
+        let sig = jsonwebtoken::crypto::sign(message.as_bytes(), &EncodingKey::from_secret(b"s"), Algorithm::HS256).unwrap();
+        assert!(jwt.verify::<Value>(&format!("{message}.{sig}")).is_err());
+        assert!(jwt.verify::<Value>("a.a.a").is_err());
+        // Another case of the name is not `crit`.
+        assert!(jwt.verify::<Value>(&forge(r#"{"alg":"HS256","CRIT":["x"]}"#, &claims, b"s")).is_ok());
+    }
 
     /// node-jsonwebtoken: `secretOrPrivateKey must have a value` / `secret or public key must be provided`.
     #[test]

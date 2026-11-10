@@ -268,8 +268,12 @@ async fn the_answer_of_a_failed_token_does_not_say_why() {
 }
 
 fn sign_header(header: &str, claims: &Value) -> String {
+    sign_header_bytes(header.as_bytes(), claims)
+}
+
+fn sign_header_bytes(header: &[u8], claims: &Value) -> String {
     let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
-    let message = format!("{}.{}", b64(header.as_bytes()), b64(claims.to_string().as_bytes()));
+    let message = format!("{}.{}", b64(header), b64(claims.to_string().as_bytes()));
     let signature = jsonwebtoken::crypto::sign(message.as_bytes(), &EncodingKey::from_secret(SECRET.as_bytes()), Algorithm::HS256).unwrap();
     format!("{message}.{signature}")
 }
@@ -282,7 +286,24 @@ async fn a_token_with_a_crit_header_or_the_wrong_shape_never_reaches_the_key_pro
     let claims = json!({ "sub": "7", "exp": now() + 3600 });
     let mut bad =
         vec![sign_header(r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true}"#, &claims), sign_header(r#"{"alg":"HS256","crit":5}"#, &claims)];
+    let nested = format!(r#"{{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":{}{}}}"#, "[".repeat(200), "]".repeat(200));
+    let mut raw_bytes = br#"{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":""#.to_vec();
+    raw_bytes.extend([0xFF, 0xFE]);
+    raw_bytes.extend(br#""}"#);
+    bad.extend([
+        sign_header(r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":1e400}"#, &claims),
+        sign_header(r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":"\ud800"}"#, &claims),
+        sign_header(&nested, &claims),
+        sign_header_bytes(&raw_bytes, &claims),
+        sign_header(r#"{"alg":"HS256","b64":false,"crit":["b64"],"z":1e999}"#, &claims),
+        sign_header("[1]", &claims),
+        sign_header("not json", &claims),
+        "a.a.a".into(),
+    ]);
     let good = sign(&claims);
+    // Another case of the name, and `crit` in the payload, are not the header member.
+    let ok_headers =
+        [sign_header(r#"{"alg":"HS256","CRIT":["x"]}"#, &claims), sign(&json!({ "sub": "7", "exp": now() + 3600, "crit": ["x"] }))];
     bad.extend(["abc".into(), "a.b".into(), "a.b.".into(), ".b.c".into(), "a.b.c.d".into(), format!("{good}=")]);
     for token in &bad {
         let r = request(&app).get("/me").bearer(token).send().await;
@@ -292,6 +313,9 @@ async fn a_token_with_a_crit_header_or_the_wrong_shape_never_reaches_the_key_pro
     assert_eq!(COUNTED_CALLS.load(Ordering::SeqCst), 0, "the key provider was not called");
     assert_eq!(request(&app).get("/me").bearer(&good).send().await.status, 200);
     assert_eq!(COUNTED_CALLS.load(Ordering::SeqCst), 1);
+    for token in &ok_headers {
+        assert_eq!(request(&app).get("/me").bearer(token).send().await.status, 200, "{token}");
+    }
 }
 
 #[corvis::test]

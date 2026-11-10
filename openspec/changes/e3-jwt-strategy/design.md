@@ -328,3 +328,22 @@ The first security review found the points below. The maintainer's decisions ove
    `from_extractors` the first non-empty token wins, so order matters (a cookie first lets a cookie-planting attacker
    override the header); a cookie token is an ambient credential (CSRF, `SameSite`); `typ` is not validated, so do not
    sign other kinds of token with the same key and audience. A `typ` option is out of scope and a possible follow-up.
+
+## Security review (round 2)
+
+1. **`crit` check fails closed** (Low). `header_has_crit` returned `false` when `serde_json::Value` could not parse the
+   header, leaving it to `jsonwebtoken`, whose `Header` struct skips unknown members without validating them: a
+   correctly signed header with `crit` plus a member `Value` refuses (`1e400`, a lone surrogate, 200 levels of nesting,
+   raw bytes 0xFF 0xFE, `b64` with `1e999`) was accepted. It is now `check_header`, which returns `Malformed` unless the
+   first segment is base64url of a JSON object that `Value` parses, and `Crit` when the exact member `crit` is present.
+   The strategy answers the uniform 401 (reason `jwt malformed` in `auth_info`) before the key provider; `verify_claims`
+   returns an error, so `JwtService::verify` refuses too. This also stops a non-JSON header such as `a.a.a` from reaching
+   the key provider. In the strategy the check runs after the three-segment check. `CRIT` and a `crit` claim in the
+   payload stay accepted. Tests: the five headers (and a few more) in
+   `a_token_with_a_crit_header_or_the_wrong_shape_never_reaches_the_key_provider` and a unit test for `verify`.
+2. **Bounded guard nesting** (Info). `auth_guards_in` stops at depth 32; startup fails with an error that names the
+   route (a guard that returns itself no longer overflows the stack). Test in `tests/auth_guard.rs`.
+3. **Docs, `aud`** (Info): the wording says the claim must be a string equal to the audience or a list with a string
+   element equal to it; non-string elements are ignored, as in the Node library (EN and ES).
+4. **Docs, error text** (Info): the `Display` text of a verification error can quote parts of the token, never key
+   material, so it should not be returned to clients verbatim (EN and ES).

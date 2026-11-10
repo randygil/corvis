@@ -94,6 +94,11 @@ impl AuthService {
 }
 ```
 
+::: warning Texto del error
+El texto `Display` de un error de verificación puede citar partes del token (por ejemplo el valor de una cabecera o
+de un claim), nunca material de claves. Puedes registrarlo, pero no lo devuelvas a los clientes tal cual.
+:::
+
 ::: warning Contraseñas
 El ejemplo compara contraseñas en texto plano para no distraer del flujo. En una aplicación real
 guarda un hash y compáralo con una función de derivación lenta; ver
@@ -223,7 +228,7 @@ impl CanActivate for AuthGuard {
 ```
 
 - `verify::<T>(token)` comprueba la firma (solo con el algoritmo configurado), `nbf`, `exp`
-  (caducado cuando `ahora >= exp`), `iss`/`aud` si los configuraste (de forma estricta: con un issuer configurado, falla un token cuyo `iss` falta, no es una cadena o es una lista; con una audience configurada, `aud` debe ser una cadena o una lista de cadenas que la contenga; un token con cabecera `crit` siempre falla), y deserializa los *claims* en
+  (caducado cuando `ahora >= exp`), `iss`/`aud` si los configuraste (de forma estricta: con un issuer configurado, falla un token cuyo `iss` falta, no es una cadena o es una lista; con una audience configurada, `aud` debe ser una cadena igual a ella o una lista con un elemento de tipo cadena igual a ella (los elementos de la lista que no son cadenas se ignoran); un token con cabecera `crit` siempre falla), y deserializa los *claims* en
   `T`. Devuelve un `corvis::Result<T>`.
 - `sign` y `verify` fallan con `secretOrPrivateKey must have a value` si no hay clave. `verify` también rechaza un token que aún no es válido (`jwt not active`, por `nbf`) y uno cuyo `exp`, `nbf` o `iat` no sea un número.
 - `verify_or_unauthorized::<T>(token)` hace lo mismo y convierte cualquier fallo en un `401`.

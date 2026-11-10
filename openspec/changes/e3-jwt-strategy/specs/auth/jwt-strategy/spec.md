@@ -293,10 +293,14 @@ reason.
 - **THEN** every case of `jwt.json` passes without Node
 
 ### Requirement: Critical headers and malformed tokens are refused early
-After the length limit and before the key provider or any verification, the strategy MUST fail a token whose header has `crit` (RFC 7515 section 4.1.11: no critical extension is supported) and a token that is not exactly three non-empty base64url segments. The key provider is not called.
+After the length limit and before the key provider or any verification, the strategy MUST fail a token whose header has `crit` (RFC 7515 section 4.1.11), a header that is not a JSON object readable by `serde_json::Value`, and a token that is not exactly three non-empty base64url segments. The key provider is not called.
 
 #### Scenario: Critical header
 - **WHEN** a validly signed token has the header member `"crit": ["urn:x"]`
+- **THEN** the response is the 401 and the key provider is not called
+
+#### Scenario: Header the decoder accepts but a strict parser refuses
+- **WHEN** a validly signed header has `crit` and a member such as `1e400`, a lone surrogate, 200 nested arrays or raw bytes 0xFF 0xFE
 - **THEN** the response is the 401 and the key provider is not called
 
 #### Scenario: Wrong shape

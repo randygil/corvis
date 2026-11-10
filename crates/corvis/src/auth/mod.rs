@@ -92,13 +92,21 @@ fn auth_guard_of(guard: &dyn crate::common::guard::CanActivate) -> Option<&AuthG
     guard.as_any().and_then(|a| a.downcast_ref::<AuthGuard>())
 }
 
-/// The `AuthGuard`s of a guard and, through `CanActivate::inner_guards`, of the guards it delegates to.
-fn auth_guards_in(guard: &dyn crate::common::guard::CanActivate) -> Vec<&AuthGuard> {
+/// How deep guards may nest through `inner_guards` before startup fails (a guard that returns itself would otherwise
+/// recurse until the stack overflows).
+const MAX_GUARD_DEPTH: usize = 32;
+
+/// The `AuthGuard`s of a guard and, through `CanActivate::inner_guards`, of the guards it delegates to. `Err` when
+/// the nesting is deeper than [`MAX_GUARD_DEPTH`].
+fn auth_guards_in(guard: &dyn crate::common::guard::CanActivate, depth: usize) -> Result<Vec<&AuthGuard>, ()> {
+    if depth > MAX_GUARD_DEPTH {
+        return Err(());
+    }
     let mut found: Vec<&AuthGuard> = auth_guard_of(guard).into_iter().collect();
     for inner in guard.inner_guards() {
-        found.extend(auth_guards_in(inner));
+        found.extend(auth_guards_in(inner, depth + 1)?);
     }
-    found
+    Ok(found)
 }
 
 /// Startup check of the strategy names of every compiled route guard (global, controller and route level). One
@@ -108,7 +116,18 @@ pub(crate) fn check_routes(container: &Container, table: &RouterTable) -> crate:
     let mut problems: Vec<String> = Vec::new();
     for route in &table.routes {
         for guard in &route.guards {
-            for auth_guard in auth_guards_in(guard.as_ref()) {
+            let Ok(auth_guards) = auth_guards_in(guard.as_ref(), 0) else {
+                let line = format!(
+                    "{} {}: guards are nested more than {MAX_GUARD_DEPTH} levels deep through inner_guards (does a guard return itself?)",
+                    route.method.as_str(),
+                    route.path
+                );
+                if !problems.contains(&line) {
+                    problems.push(line);
+                }
+                continue;
+            };
+            for auth_guard in auth_guards {
                 if let Some(problem) = auth_guard.startup_problem(&authenticator) {
                     let line = format!("{} {}: {problem}", route.method.as_str(), route.path);
                     if !problems.contains(&line) {

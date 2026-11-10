@@ -59,7 +59,7 @@ use super::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Hooks, Injectable, ResolveCtx};
 use crate::http::{HttpException, Request};
-use crate::jwt::{VerifyError, audience_matches, has_three_segments, header_has_crit, issuer_matches, verify_claims};
+use crate::jwt::{HeaderProblem, VerifyError, audience_matches, check_header, has_three_segments, issuer_matches, verify_claims};
 use crate::logger::Logger;
 
 /// The class a `PassportStrategy(Strategy)` of `passport-jwt` is written as: the options and `validate`.
@@ -222,11 +222,13 @@ impl<V: JwtValidator> Strategy for JwtStrategy<V> {
         if token.len() > self.resolved.max_token_length {
             return fail("token too long");
         }
-        if header_has_crit(&token) {
-            return fail("unsupported critical header");
-        }
         if !has_three_segments(&token) {
             return fail("jwt malformed");
+        }
+        match check_header(&token) {
+            Some(HeaderProblem::Crit) => return fail("unsupported critical header"),
+            Some(HeaderProblem::Malformed) => return fail("jwt malformed"),
+            None => {}
         }
         let log = Logger::new("JwtStrategy");
         let payload = match self.resolved.payload(req, &token, &log).await {

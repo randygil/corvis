@@ -246,6 +246,33 @@ impl WrappedController {
     }
 }
 
+/// A guard that lists itself as its inner guard.
+#[injectable]
+pub struct Loop;
+
+#[async_trait]
+impl CanActivate for Loop {
+    async fn can_activate(&self, _ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        Ok(true)
+    }
+
+    fn inner_guards(&self) -> Vec<&dyn CanActivate> {
+        vec![self]
+    }
+}
+
+#[controller("looping")]
+pub struct LoopingController;
+
+#[routes]
+impl LoopingController {
+    #[get("x")]
+    #[use_guards(Loop)]
+    fn x(&self) -> Value {
+        json!({ "ok": true })
+    }
+}
+
 #[controller("wrapped-ok")]
 pub struct WrappedOkController;
 
@@ -403,6 +430,9 @@ pub struct WrappedTypoModule;
 #[module(providers = [Provider::strategy::<HeaderStrategy>(), UsersService], controllers = [WrappedOkController])]
 pub struct WrappedOkModule;
 
+#[module(providers = [Provider::strategy::<StrategyOne>()], controllers = [LoopingController])]
+pub struct LoopingModule;
+
 #[module(providers = [Provider::strategy::<StrategyOne>()], controllers = [EmptyChainController])]
 pub struct EmptyChainModule;
 
@@ -503,6 +533,12 @@ async fn a_wrapper_that_lists_its_inner_guard_is_checked_at_startup() {
     let error = init_error::<WrappedTypoModule>().await;
     assert!(error.contains("GET /wrapped/x") && error.contains("\"headr\""), "{error}");
     started::<WrappedOkModule>().await;
+}
+
+#[corvis::test]
+async fn a_guard_that_returns_itself_stops_startup_naming_the_route() {
+    let error = init_error::<LoopingModule>().await;
+    assert!(error.contains("GET /looping/x") && error.contains("32 levels"), "{error}");
 }
 
 #[corvis::test]

@@ -97,6 +97,10 @@ artifacts if it differs.
 - [x] 8.4 Docs EN/ES (provider errors, extractor order, cookie CSRF, `typ`, `JwtService` strictness, composite guards) and
   spec deltas; verify `openspec validate e3-jwt-strategy --strict` and `npm run docs:check`
 - [ ] 8.5 Run the corvis-parity check and a new security review round (maintainer's session)
+- [x] 8.6 Round 2: `check_header` fails closed (malformed header and `crit`) in the strategy and `verify_claims`, with the
+  five bypass headers tested; verify the key provider is not called
+- [x] 8.7 Round 2: cap guard nesting at 32 in `auth_guards_in` with a startup error naming the route, and a test
+- [x] 8.8 Round 2: docs EN/ES (`aud` wording, `Display` of verification errors) and spec deltas
 
 ## Workflow follow-up
 
