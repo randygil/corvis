@@ -148,6 +148,54 @@ do not, and a connection with nothing to send is never closed by it, so use a he
 `ServerOptions::send_timeout(None)` turns it off. The `ws` package has no such limit. See
 [gateways](/websockets/gateways#peers-that-stop-reading).
 
+## Socket.IO (preview)
+
+The `socket-io` Cargo feature (off by default, it enables `websockets`) adds an Engine.IO v4 server, the transport layer
+of Socket.IO, written for Corvis and checked against Node's `engine.io` 6.6.x with a differential harness and the
+official protocol test suite. It is a preview: there is no Socket.IO server yet and it cannot be used from gateways, so
+the Engine.IO API is hidden from the documentation and may change. `corvis::socket_io::EngineOptions` is the part you
+can rely on; Socket.IO servers will take it as their engine options.
+
+```toml
+corvis = { version = "0.1", features = ["socket-io"] }
+```
+
+An Engine.IO server is attached to the application's HTTP server, like Node's `engine.attach(httpServer)`. Every request
+whose path equals the engine path (`/socket.io/` by default) or starts with it is served by the engine, for every method
+and for WebSocket upgrades, before routes, gateways and `upgrade` listeners: the engine path takes precedence over
+anything registered on the same path, as in Node. Other paths behave as without the feature. The application's
+`enable_cors` does not apply to the engine path; use `EngineOptions::cors`, which has the options of the `cors` package.
+
+The server speaks HTTP long-polling and WebSocket, upgrades from polling to WebSocket without losing or reordering
+packets, pings every 25 s and closes a session whose pong takes more than 20 s. A shutdown (`listen` stopping on
+SIGINT, or `CorvisApplication::close`) closes every session with the reason `forced close` and answers pending polls
+with a close packet, so the server drains quickly; new handshakes get `503` meanwhile. The session id is a bearer
+credential: 120 random bits, checked for its shape before any lookup, never written to logs, and not bound to the client
+address. WebSocket over HTTP/2 is not supported, so over TLS with ALPN `h2` only polling works.
+
+### Bounds
+
+Every resource a client can make the server hold has a bounded default, and a zero value is refused when the server is
+created. Where Node has no bound, Corvis differs on purpose; each difference is listed with its reason in the harness.
+
+| Bound | Default | Node `engine.io` | When exceeded |
+|---|---|---|---|
+| `max_http_buffer_size` (`POST` body, WebSocket message) | 1,000,000 bytes | same | `413` (session kept) or close code `1009` and `transport error` |
+| `max_payload_packets` (packets in one `POST`) | 10,000 | none | `400`, session closed with `parse error` |
+| Bytes in one polling response | `max_http_buffer_size` (at least one packet) | the whole buffer | the rest goes out with the next poll |
+| Pending requests per session | one `GET` and one `POST` | same | `400` and `transport error` |
+| `ping_interval` / `ping_timeout` | 25 s / 20 s | same | `ping timeout` |
+| `upgrade_timeout`, upgrades in progress | 10 s, one per session | same | the candidate is closed, the session stays |
+| `max_buffered_amount` (queued for the client) | 8 MiB | none | the send fails, the queue is discarded, `transport error` |
+| `max_unread_bytes` (received, not yet read) | 16 MiB | none | WebSocket reads pause; the `POST` answer waits |
+| `max_sessions` | 10,000 | none | handshake answered `503` with `{"code":3,"message":"Too many sessions"}` |
+| `close_timeout` | 30 s | 30 s | the connection is closed |
+| `cors`, `allowed_origins` | off | off (`allowed_origins` does not exist) | no CORS headers, or `403` with code 4 |
+
+Polling responses are not compressed (Node compresses above 1 KiB when the client accepts gzip). Engine.IO v3, cookies and
+WebTransport are not supported. The server's [`send_timeout`](/http/performance#clients-that-stop-reading-send-timeout)
+applies to the WebSocket transport like to any other upgraded connection.
+
 ## Security
 
 Global guards and gateway guards do not protect `upgrade` listeners: validate access inside the listener, as the example does with the moderator token. The same goes for static files and the Swagger/Scalar routes; see [Guards](/websockets/guards).

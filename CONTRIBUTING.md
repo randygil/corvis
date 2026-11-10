@@ -77,6 +77,7 @@ Hostile input is checked with property-based tests (`proptest`, stable Rust, run
 
 - `crates/corvis/src/fuzz_tests.rs` and `crates/corvis/src/multer/fuzz.rs`: the JSON, query string, body and
   multipart parsers, JWT verification, route paths and trust proxy.
+- `crates/corvis/src/socket_io/engine/fuzz.rs` (feature `socket-io`): the Engine.IO packet and payload codec.
 - `crates/corvis/tests/fuzz_static.rs`: static file serving end to end, with generated request paths against a
   served folder that has a secret file next to it.
 - `crates/corvis-orm/tests/fuzz_filters.rs`: `where` filters on in-memory SQLite.
@@ -85,6 +86,7 @@ Each property runs 2,000 cases by default. Run more with `PROPTEST_CASES`:
 
 ```sh
 PROPTEST_CASES=100000 cargo test -p corvis --lib fuzz
+PROPTEST_CASES=100000 cargo test -p corvis --features socket-io --lib fuzz
 PROPTEST_CASES=100000 cargo test -p corvis --test fuzz_static
 PROPTEST_CASES=100000 cargo test -p corvis-orm --test fuzz_filters
 ```
@@ -131,7 +133,7 @@ command in the table (on PowerShell, set environment variables first, for exampl
 | `fmt` | Linux | `cargo fmt --all --check` |
 | `clippy` | Linux, Windows | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | Linux (Postgres 16 service, `CORVIS_ORM_PG_REQUIRED=1`), Windows (no Postgres) | `RUSTFLAGS="-D warnings" cargo build --workspace --all-targets`, then `RUSTFLAGS="-D warnings" cargo test --workspace` |
-| `fuzz` | Linux | the three commands of [Fuzzing](#fuzzing) with `PROPTEST_CASES=20000` |
+| `fuzz` | Linux | the four commands of [Fuzzing](#fuzzing) with `PROPTEST_CASES=20000` |
 | `deny` | Linux | `cargo deny check` |
 | `audit` | Linux | `cargo audit` |
 | `docs` | Linux | `node scripts/check-naming.mjs`, then `npm ci` and `npm run docs:check` in `docs/` |
@@ -197,8 +199,10 @@ crate, then the crate that uses it. `rust-version` in `[workspace.package]` is t
 
 `parity/socket-io/` runs the same scenarios against a Node `socket.io` server (the reference) and, once Corvis
 implements Engine.IO and Socket.IO, against Corvis, records what each client observes and fails on any difference. It
-is Node tooling outside every crate and is not published. Until there is a Corvis target, the runner compares two
-independent Node reference servers, which checks the scenarios and the normalizer on real transcripts.
+is Node tooling outside every crate and is not published. The Corvis target is the Engine.IO server of
+`crates/corvis/tests/engine_support/harness_app.rs`, started in-process when the test is built with `--features
+socket-io`; without the feature, or for scenarios that need Socket.IO, the runner compares Node with itself, which
+checks the scenarios and the normalizer on real transcripts.
 
 Prerequisites: Node 22 or later and git. Packages are installed only by an explicit `npm ci` (install scripts are
 disabled by the harness's `.npmrc`; `cargo test` never installs anything):
@@ -212,9 +216,15 @@ Run it, from the repository root (the test skips with a notice unless `CORVIS_NO
 when Node 22+ or the install is missing):
 
 ```sh
-CORVIS_NODE_DIFF=1 cargo test -p corvis --test socket_io_diff     # Bash
-$env:CORVIS_NODE_DIFF = "1"; cargo test -p corvis --test socket_io_diff     # PowerShell
+CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_diff     # Bash
+$env:CORVIS_NODE_DIFF = "1"; cargo test -p corvis --features socket-io --test socket_io_diff     # PowerShell
 ```
+
+The upstream `engine.io-protocol` suite runs against the Corvis Engine.IO server, and against the Node reference as a
+control, with `node scripts/fetch-suites.mjs` run once and then
+`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test engine_io_conformance`. One test of that suite
+("forcefully closes the session", HTTP long-polling) sends a `GET` and a `POST` of the close packet at the same
+time and expects the `GET` to arrive first; it fails in about one run in twenty when the `POST` wins the race.
 
 or directly, in `parity/socket-io/`:
 

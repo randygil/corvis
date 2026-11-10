@@ -148,6 +148,59 @@ tramas recibidas (incluidos los pings) no, y una conexión sin nada que enviar n
 heartbeat para pares inactivos muertos. `ServerOptions::send_timeout(None)` lo desactiva. El paquete `ws` no tiene este
 límite. Ver [gateways](/es/websockets/gateways#pares-que-dejan-de-leer).
 
+## Socket.IO (vista previa)
+
+La feature de Cargo `socket-io` (desactivada por defecto, activa `websockets`) añade un servidor Engine.IO v4, la capa de
+transporte de Socket.IO, escrito para Corvis y comprobado contra `engine.io` 6.6.x de Node con un arnés diferencial y la
+suite oficial de pruebas del protocolo. Es una vista previa: todavía no hay servidor Socket.IO y no se puede usar desde
+los gateways, así que la API de Engine.IO está oculta en la documentación y puede cambiar.
+`corvis::socket_io::EngineOptions` es la parte en la que puedes confiar; los servidores Socket.IO la tomarán como sus
+opciones de motor.
+
+```toml
+corvis = { version = "0.1", features = ["socket-io"] }
+```
+
+Un servidor Engine.IO se adjunta al servidor HTTP de la aplicación, como `engine.attach(httpServer)` de Node. Toda
+petición cuya ruta sea igual a la ruta del motor (`/socket.io/` por defecto) o empiece con ella la atiende el motor, con
+cualquier método y para los upgrades de WebSocket, antes que las rutas, los gateways y los listeners `upgrade`: la ruta
+del motor tiene precedencia sobre cualquier cosa registrada en la misma ruta, como en Node. Las demás rutas se comportan
+como sin la feature. El `enable_cors` de la aplicación no se aplica a la ruta del motor; usa `EngineOptions::cors`, que
+tiene las opciones del paquete `cors`.
+
+El servidor habla HTTP long-polling y WebSocket, pasa de polling a WebSocket sin perder ni reordenar paquetes, envía ping
+cada 25 s y cierra una sesión cuyo pong tarda más de 20 s. Un apagado (`listen` al detenerse por SIGINT, o
+`CorvisApplication::close`) cierra todas las sesiones con el motivo `forced close` y responde los polls pendientes con un
+paquete de cierre, de modo que el servidor drena rápido; mientras tanto los nuevos handshakes reciben `503`. El id de
+sesión es una credencial al portador: 120 bits aleatorios, con la forma comprobada antes de cualquier búsqueda, nunca se
+escribe en los logs y no se liga a la dirección del cliente. WebSocket sobre HTTP/2 no está soportado, así que con TLS y
+ALPN `h2` solo funciona polling.
+
+### Límites
+
+Cada recurso que un cliente puede hacer que el servidor retenga tiene un valor por defecto acotado, y un valor cero se
+rechaza al crear el servidor. Donde Node no tiene límite, Corvis difiere a propósito; cada diferencia está listada con su
+motivo en el arnés.
+
+| Límite | Por defecto | `engine.io` de Node | Al excederlo |
+|---|---|---|---|
+| `max_http_buffer_size` (cuerpo del `POST`, mensaje WebSocket) | 1.000.000 bytes | igual | `413` (la sesión se mantiene) o cierre con código `1009` y `transport error` |
+| `max_payload_packets` (paquetes en un `POST`) | 10.000 | ninguno | `400`, sesión cerrada con `parse error` |
+| Bytes en una respuesta de polling | `max_http_buffer_size` (al menos un paquete) | todo el búfer | el resto sale con el siguiente poll |
+| Peticiones pendientes por sesión | un `GET` y un `POST` | igual | `400` y `transport error` |
+| `ping_interval` / `ping_timeout` | 25 s / 20 s | igual | `ping timeout` |
+| `upgrade_timeout`, upgrades en curso | 10 s, uno por sesión | igual | se cierra el candidato, la sesión sigue |
+| `max_buffered_amount` (en cola para el cliente) | 8 MiB | ninguno | el envío falla, se descarta la cola, `transport error` |
+| `max_unread_bytes` (recibido, aún sin leer) | 16 MiB | ninguno | se pausa la lectura del WebSocket; la respuesta del `POST` espera |
+| `max_sessions` | 10.000 | ninguno | handshake con `503` y `{"code":3,"message":"Too many sessions"}` |
+| `close_timeout` | 30 s | 30 s | se cierra la conexión |
+| `cors`, `allowed_origins` | desactivado | desactivado (`allowed_origins` no existe) | sin cabeceras CORS, o `403` con código 4 |
+
+Las respuestas de polling no se comprimen (Node comprime por encima de 1 KiB cuando el cliente acepta gzip). Engine.IO
+v3, las cookies y WebTransport no están soportados. El
+[`send_timeout`](/es/http/performance#clientes-que-dejan-de-leer-send-timeout) del servidor se aplica al transporte
+WebSocket como a cualquier otra conexión actualizada.
+
 ## Seguridad
 
 Los guards globales y los de los gateways no protegen los listeners `upgrade`: valida el acceso dentro del listener, como hace el ejemplo con el token de moderador. Lo mismo vale para los archivos estáticos y las rutas de Swagger/Scalar; ver [Guards](/es/websockets/guards).
