@@ -1,8 +1,11 @@
 //! `Authenticator`: runs named strategies in order, the port of `passport.authenticate(names, options, callback)`.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
+use futures::FutureExt;
 use serde_json::Value;
 
 use super::strategy::{AuthInfo, AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
@@ -89,11 +92,23 @@ pub(crate) fn internal(message: impl Into<String>) -> HttpException {
 /// It has no public constructor, so a module cannot shadow the core provider with an empty one.
 pub struct Authenticator {
     registry: OnceLock<StrategyRegistry>,
+    /// Limits the warning about a strategy that panics: a client can trigger it on every request.
+    panics: super::warn_limit::WarnLimiter,
 }
 
 impl Authenticator {
     pub(crate) fn new() -> Self {
-        Authenticator { registry: OnceLock::new() }
+        Authenticator { registry: OnceLock::new(), panics: super::warn_limit::WarnLimiter::new(Duration::from_secs(60)) }
+    }
+
+    /// Logs (at most once a minute per strategy) that a strategy panicked. The panic payload is never read: it can
+    /// hold request data.
+    fn warn_panic(&self, name: &str) {
+        if let Some(suppressed) = self.panics.allow(name, Instant::now()) {
+            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
+            crate::logger::Logger::new("Authenticator")
+                .warn(format!("the strategy \"{name}\" panicked; the request was answered with a 500{more}"));
+        }
     }
 
     pub(crate) fn set_registry(&self, registry: StrategyRegistry) {
@@ -140,7 +155,17 @@ impl Authenticator {
             let Some(strategy) = registry.by_name.get(name) else {
                 return Err(internal(format!("Unknown authentication strategy \"{name}\"")));
             };
-            match strategy.authenticate(ctx, options).await {
+            // A panic inside a strategy is an error, never a failure: an optional guard lets a failed attempt
+            // through, and a panic must not. The router would also answer a 500, but only for the whole request;
+            // here it ends the chain too.
+            let outcome = match AssertUnwindSafe(strategy.authenticate(ctx, options)).catch_unwind().await {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    self.warn_panic(name);
+                    return Err(internal(format!("the authentication strategy \"{name}\" panicked")));
+                }
+            };
+            match outcome {
                 StrategyOutcome::Success { user, info } => {
                     AuthInfo::store(ctx.request(), info.clone());
                     return Ok(AuthResult::Success { user, info });
@@ -385,6 +410,37 @@ mod tests {
         // Reached only after "a" succeeded: never looked up.
         let (a, _) = authenticator(vec![("a", success(None))]);
         assert!(matches!(run(&a, &ctx(), &["a", "typo"]).await.unwrap(), AuthResult::Success { .. }));
+    }
+
+    struct Panics;
+
+    #[async_trait]
+    impl Strategy for Panics {
+        fn name(&self) -> &str {
+            "panics"
+        }
+        async fn authenticate(&self, _: &ExecutionContext, _: &AuthenticateOptions) -> StrategyOutcome {
+            panic!("secret-credential-in-a-panic-message")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_strategy_is_a_500_that_ends_the_chain() {
+        let calls = [Arc::new(AtomicUsize::new(0))];
+        let mut registry = StrategyRegistry::default();
+        registry.by_name.insert("panics".into(), Arc::new(Panics));
+        registry
+            .by_name
+            .insert("after".into(), Arc::new(Fake { name: "after", outcome: Mutex::new(Some(success(None))), calls: calls[0].clone() }));
+        let a = Authenticator::new();
+        a.set_registry(registry);
+        let c = ctx();
+        let e = run(&a, &c, &["panics", "after"]).await.unwrap_err();
+        assert!(e.is_internal());
+        assert_eq!(e.get_response(), &json!({ "statusCode": 500, "message": "Internal server error" }));
+        assert!(!e.message().contains("secret-credential"), "{}", e.message());
+        assert_eq!(calls[0].load(Ordering::SeqCst), 0, "the chain stops at the panic");
+        assert!(c.request().user().is_none());
     }
 
     #[tokio::test]
