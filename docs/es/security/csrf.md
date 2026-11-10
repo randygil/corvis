@@ -52,33 +52,50 @@ necesitas protección CSRF adicional, siempre que no guardes además el token en
 
    **`SameSite=Lax` no detiene el CSRF de inicio de sesión.** Un `POST` de formulario entre sitios a la ruta de login es
    una navegación de nivel superior: el servidor responde `200` con su `Set-Cookie`, el navegador la guarda y la víctima
-   queda con la sesión iniciada como el atacante. Rechaza esa petición antes de comprobar las credenciales: cuando
-   `Sec-Fetch-Site` es `cross-site` o, si esa cabecera no está, cuando `Origin` está presente y no es el host (ni un origen
-   permitido). El ejemplo `cats-app` lo hace con un guard, `SameOriginGuard`, delante del guard de login:
+   queda con la sesión iniciada como el atacante. Rechaza esa petición antes de comprobar las credenciales, con una lista de
+   permitidos: una petición que cambia estado pasa solo cuando `Sec-Fetch-Site` es `same-origin` (o `none`, una
+   navegación que escribió el usuario) o, si esa cabecera no está, cuando `Origin` es el host al que se envió la
+   petición; una lista explícita de orígenes permitidos también pasa. Todo lo demás se rechaza: `cross-site`,
+   **`same-site`** (un subdominio hermano puede servir páginas que controla un atacante), un valor que nadie definió, una
+   cabecera repetida. El ejemplo `cats-app` lo hace con un guard, `SameOriginGuard`, delante del guard de login:
 
    ```rust
    #[post("login")]
-   #[use_guards(SameOriginGuard::new(), AuthGuard::new("local").log_in())]
+   #[use_guards(SameOriginGuard::new().allow_origin("https://app.example.com"), AuthGuard::new("local").log_in())]
    fn login(&self, user: User<Account>) -> Account { user.0 }
    ```
 
    ```rust
    // La comprobación completa (examples/cats-app/src/auth/same_origin.rs)
-   pub fn refuses(&self, method: &str, sec_fetch_site: Option<&str>, origin: Option<&str>, host: Option<&str>) -> bool {
+   pub fn refuses(&self, method: &str, sec_fetch_site: &[&str], origins: &[&str], host: Option<&str>) -> bool {
        if matches!(method, "GET" | "HEAD" | "OPTIONS") {
            return false;
        }
-       if let Some(site) = sec_fetch_site {
-           return site.eq_ignore_ascii_case("cross-site");
+       let allowed_origin = match origins {
+           [origin] => self.allowed.iter().any(|allowed| allowed == origin),
+           _ => false,
+       };
+       match sec_fetch_site {
+           [] => {}
+           [site] => return !(site.eq_ignore_ascii_case("same-origin") || site.eq_ignore_ascii_case("none") || allowed_origin),
+           _ => return true,
        }
-       let Some(origin) = origin else { return false };
-       if self.allowed.iter().any(|allowed| allowed == origin) {
-           return false;
+       match origins {
+           [] => false,
+           [origin] => {
+               if allowed_origin {
+                   return false;
+               }
+               let authority = origin.split_once("://").map(|(_, rest)| rest);
+               !matches!((authority, host), (Some(authority), Some(host)) if authority.eq_ignore_ascii_case(host))
+           }
+           _ => true,
        }
-       let authority = origin.split_once("://").map(|(_, rest)| rest);
-       !matches!((authority, host), (Some(authority), Some(host)) if authority.eq_ignore_ascii_case(host))
    }
    ```
+
+   La comparación del host usa la cabecera `Host` que recibió la aplicación. Detrás de un proxy que reescribe `Host`, el
+   `Origin` del navegador ya no coincide: enumera los orígenes públicos con `allow_origin`.
 
    Mantén `Secure` y `HttpOnly`, y usa el prefijo de nombre `__Host-` (`.name("__Host-sid")` en `SessionOptions`), que
    impide que un subdominio hermano establezca la cookie.

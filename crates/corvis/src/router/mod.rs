@@ -701,12 +701,17 @@ pub(crate) async fn execute_route(route: Arc<CompiledRoute>, mut req: Request, p
     let result = match AssertUnwindSafe(run_pipeline(route.clone(), ctx.clone())).catch_unwind().await {
         Ok(Pipeline::Stored(mut resp)) => {
             // A guard ended the request: no `finalize`, filters or `#[res]` merge, only the recorded headers.
+            crate::common::context::RequestRejected::mark(ctx.request());
             apply_enhancer_headers(&ctx, &mut resp, true);
             return resp;
         }
         Ok(Pipeline::Done(r)) => r,
         Err(panic) => Err(panic_exception(panic)),
     };
+    // Recorded before any filter runs: what a filter answers does not change that the pipeline failed.
+    if result.is_err() {
+        crate::common::context::RequestRejected::mark(ctx.request());
+    }
     let res = route.response_mode.and_then(|_| ctx.request().get::<Res>());
     let Some(res) = res else {
         let mut resp = match result {
@@ -938,9 +943,17 @@ async fn invoke_handler(route: Arc<CompiledRoute>, ctx: ExecutionContext) -> Han
         args.push(value);
     }
     if let Some((_, e)) = failure {
+        crate::common::context::RequestRejected::mark(ctx.request());
         return Err(e);
     }
-    (route.handler)(ctx, args).await
+    // An interceptor can turn the handler's error into a normal response: the failure is recorded here, where it
+    // happens.
+    let request = ctx.clone();
+    let result = (route.handler)(ctx, args).await;
+    if result.is_err() {
+        crate::common::context::RequestRejected::mark(request.request());
+    }
+    result
 }
 
 fn finalize(mut resp: Response, route: &CompiledRoute) -> Response {

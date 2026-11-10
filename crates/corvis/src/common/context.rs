@@ -150,6 +150,24 @@ pub struct HttpArgumentsHost<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RouteStatus(pub(crate) http::StatusCode);
 
+/// Set on a request when its pipeline produced an exception (a guard denied, a pipe or validation failed, the handler
+/// returned `Err`, something panicked) or a guard ended the request, at the moment it happened: before any interceptor
+/// or exception filter can turn the failure into another response. Middleware that must not act on a request the
+/// application rejected (the session middleware, for a login a guard made) reads it instead of the final status.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RequestRejected;
+
+impl RequestRejected {
+    pub(crate) fn mark(req: &Request) {
+        req.insert(RequestRejected);
+    }
+
+    #[cfg(feature = "auth-session")]
+    pub(crate) fn is_marked(extensions: &std::sync::RwLock<http::Extensions>) -> bool {
+        extensions.read().is_ok_and(|e| e.get::<RequestRejected>().is_some())
+    }
+}
+
 /// Headers that frame the response or the connection; `set_response_header` refuses them.
 const RESERVED_RESPONSE_HEADERS: [&str; 8] =
     ["content-length", "transfer-encoding", "connection", "keep-alive", "proxy-connection", "te", "trailer", "upgrade"];

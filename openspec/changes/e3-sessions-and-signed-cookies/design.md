@@ -614,3 +614,81 @@ was done and why.
 Test notes: `an_active_session_reaches_the_absolute_timeout` asserted the last request exactly on the absolute deadline,
 which the real milliseconds spent by the test decide (the store's expiry uses `<=`, the middleware's check `>`); it now
 stops one hour short and checks the expiry after two more.
+
+## Security review (round 2)
+
+The second review (proofs of concept `r2_item1` to `r2_item5`) confirmed that the fixes of round 1 held (no resurrection
+in 16 interleavings and 100 000-request stress runs, counters exact) and found five items plus documentation points. The
+maintainer decided each one.
+
+1. **An exception filter decided whether a guard login was kept (Medium).** Round 1 passed the status of the final
+   response to `commit` and discarded the login when it was 400 or more. Route filters run before that, so with
+   `#[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)]` and a filter that turns the denial into a
+   redirect to `/mfa` (or into an "access denied" page with status 200) the response was a 302 or 200 with a logged-in
+   cookie: a second-factor bypass. The decision no longer depends on the status. The router sets the marker
+   `RequestRejected` (in `common/context.rs`, stored in the request's shared extensions) at the moment of failure: in
+   `execute_route` when the pipeline result is an `Err`, a panic is caught, or a guard ended the request with a stored
+   response, and in `invoke_handler` when a pipe fails or the handler returns `Err` (so an interceptor that maps the
+   error to a normal response cannot hide it). The middleware reads the marker through a clone of the request's
+   extensions (a reference count, not a copy of the request) and passes `rejected` to `commit`, which restores the state
+   before the login when `rejected` is set or no response exists. A handler that returns normally keeps the login
+   whatever status it sets, including a redirect it issues itself: the docs say that a handler implementing a second step
+   must not use `.log_in()` on the first step's guard but call `Authenticator::log_in` after the last step. A response
+   that is never produced (client disconnect, timeout) discards the login too: the future is dropped, the `CommitGuard`
+   destroys the identifiers queued (the one the login replaced), and `create` is never reached, so nothing logged in is
+   stored. The previous session is destroyed rather than restored, the safe direction. Always-compiled files touched:
+   `common/context.rs` (the marker; `is_marked` exists only with `auth-session`) and `router/mod.rs` (three marking
+   calls, executed only on failure paths); an application that does not enable the feature pays one extension insert per
+   failed request. The docs example was rewritten (EN and ES) and no longer suggests a filter can recover a login.
+2. **The memory store parsed and serialized records under its global lock (Medium, availability).** `load` parsed under
+   the lock and `touch` parsed, merged and serialized under it on every unchanged request, so 16 tasks using one 15 KiB
+   session made another user's p99 14 to 16 ms (0.32 ms alone) and cut its throughput from 9 368 to 1 600 requests a
+   second. An entry now holds `record: Arc<str>` (the text of the last create or update) and `touch: Option<Arc<str>>` (a
+   small JSON object with `cookie` and `__corvis`, the only things a touch changes). `load` clones both references under
+   the lock and parses outside it, laying the fragment over the record; `create` and `update` build the `Arc<str>`
+   before the lock; `touch` serializes the fragment before the lock and under it replaces only that field (the removal
+   and reinsertion of the entry is the same work as for any write: O(log n), nothing proportional to the record). The
+   fragment is accounted in the entry's size, so the bound still holds; the stored text keeps the documented record
+   shape because the composition happens on load. Measured with `tests/auth_session_contention.rs` (debug build, 8
+   workers, 16 attackers, 1.5 s per run): before, the victim's p99 went from 0.82 ms (attackers on a tiny session, 2 600
+   requests a second) to 28.7 ms (attackers on a 15 KiB session, 51 requests a second); after, 0.20 ms and 10 400 requests
+   a second against 0.19 ms and 10 560. Sharding was not needed: no contention shows after the change. The test compares
+   the same victim under two loads (tiny against 15 KiB attackers), takes the median of three rounds and asserts a ratio of
+   at most 2 on p99 and on throughput; it asserts no absolute time and failed on the old code.
+3. **Records the store wrote and could not read (Low).** The body parser accepts JSON nested 127 to 128 levels; inside a
+   session record that exceeds the 128 levels `serde_json` reads, so `load` returned `None` (the user was silently logged
+   out), the record stayed until its time to live, and `touch` could overwrite it with `"null"`. Now: `commit` refuses to
+   write a record nested deeper than `MAX_RECORD_DEPTH` (100, the object of the record counting as level 1, so a value
+   nests 99 levels) with the same 500 as an oversized session, through `check_writable`, which checks size and depth with a
+   walk that stops at the limit; the limit is in the limits table of the docs. A stored record deeper than the limit (it
+   could never be saved again) is no session when read, with a warning, like an oversized one. The memory store destroys a
+   record whose text does not parse and answers `None`, with the rate-limited warning. Every fallback that could write a
+   corrupted record is gone: `touch` no longer parses at all.
+4. **The maps never shrank (Low).** `Inner::shrink` runs after every removal: when a hash table (`entries`, `by_user`)
+   holds less than a quarter of its capacity it is rebuilt at twice its length (floor 256), amortized because at least
+   three quarters of the entries must be removed first (the ordered maps free their nodes). The counting-allocator test now
+   creates 100 000 minimal sessions, destroys them all (live heap goes from 30.1 MB to 46 KB; it was 14.6 MiB before) and
+   refills with 14 KB records past a 128 MiB bound (live heap 131.1 MB, accounted 134.2 MB, under the bound).
+5. **A third party could make a victim's login fail (Low).** Flooding the store until the victim's pre-login anonymous
+   session was evicted made the login answer 200 and clear the cookie ("the origin record is gone" rule of round 1). A
+   login that keeps nothing of the previous session now sets `State::fresh_login`, and `commit` skips that rule for it: the
+   new session is created, the old identifier is still destroyed. Everything else keeps the rule: a login with
+   `keep_session_info_on_login(true)`, `regenerate_keeping_data()`, `regenerate()`, plain saves and touches. Case to think
+   about: request A (logged in, cookie C0) logs out while request B on C0 performs a **new** login with credentials
+   presented again. B's new session being valid is correct: it authenticated afresh and carries nothing of C0; the
+   logged-out C0 stays dead. With data kept, B only clears the cookie, as in round 1. Tests cover both.
+6. **`SameOriginGuard` accepted `same-site` and unknown values (Low, example).** It is now an allow-list: a state-changing
+   request passes with `Sec-Fetch-Site` `same-origin` or `none`, with its single `Origin` in the list given to
+   `allow_origin`, or, when the header is absent, with `Origin` equal to the request's `Host` (or no `Origin`). `same-site`,
+   `garbage`, `" cross-site"` and repeated headers are refused. `refuses` takes the values of both headers as slices. EN and
+   ES docs and the doc comment of the guard say that the host comparison uses the `Host` the application received and that
+   behind a proxy that rewrites it the origins must be listed.
+7. **Documented behavior (EN and ES), with the reason:** a logout that loaded X does not end a successor Y that another
+   request created by regenerating X (parity with the original; closing it would need a moved-to marker, a candidate
+   follow-up); the per-user cap is keyed by the serialized user, so `serialize_user` must be stable across logins; under a
+   flood by many accounts users with several sessions lose their oldest first; if the client disconnects during a guard
+   login the previous session is destroyed, not restored.
+
+Round 1, item 3 said the login was kept "below 400" and that a handler answering 403 discarded it: that is replaced by item
+1 above. A handler that returns `Ok` with a 403 keeps the login (the handler decided); the test of round 1 that exercised
+a handler `Err` still holds.

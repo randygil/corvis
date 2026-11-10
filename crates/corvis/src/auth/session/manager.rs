@@ -21,6 +21,12 @@ use crate::logger::Logger;
 /// most three times that.
 const MAX_RAW_COOKIE_BYTES: usize = 3 * MAX_SIGNED_BYTES;
 
+/// The deepest nesting a saved record may have, counting the object that holds the session as level 1 (so a value of
+/// the session may nest 99 levels). `serde_json` refuses to read more than 128, and the body parser accepts values
+/// nested almost that deep: the limit leaves room for the record's own levels and is checked when the session is
+/// written, where the application can still see the failure.
+pub(crate) const MAX_RECORD_DEPTH: usize = 100;
+
 /// The error of every session fault that reaches the client as a 500. The text is fixed and holds nothing about the
 /// request, the session or the store.
 #[derive(Debug)]
@@ -158,6 +164,16 @@ impl SessionManager {
             self.warn_oversized();
             return Ok(session(state));
         }
+        // Likewise a record nested deeper than a write is allowed to nest: it could never be saved again.
+        if super::session::too_deep(&record, MAX_RECORD_DEPTH) {
+            if let Some(suppressed) = self.warnings.allow("too deep record", Instant::now()) {
+                let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
+                Logger::new("SessionMiddleware").warn(format!(
+                    "a stored session record is nested deeper than {MAX_RECORD_DEPTH} levels and was ignored: the request goes on without a session{more}"
+                ));
+            }
+            return Ok(session(state));
+        }
         match read_record(record, &self.options, now) {
             Loaded::Invalid => Ok(session(state)),
             Loaded::Expired => {
@@ -173,6 +189,18 @@ impl SessionManager {
                 Ok(session(loaded))
             }
         }
+    }
+
+    /// The limits of a record the store is asked to keep: its serialized size, and its nesting depth, which must stay
+    /// readable (a record deeper than the parser's own limit would be saved and then never loaded).
+    fn check_writable(&self, record: &Value) -> Result<(), HttpException> {
+        if serde_json::to_vec(record).map_or(usize::MAX, |v| v.len()) > self.options.max_session_bytes {
+            return Err(self.fault("a session is larger than max_session_bytes and was not saved", None));
+        }
+        if super::session::too_deep(record, MAX_RECORD_DEPTH) {
+            return Err(self.fault("a session is nested deeper than the limit and was not saved", None));
+        }
+        Ok(())
     }
 
     /// The time the store is asked to keep a record: the smallest of the idle timeout, what is left of the absolute
@@ -222,8 +250,10 @@ impl SessionManager {
 
     /// Writes what the request left in the session and decides on the cookie. `status` is the status of the response,
     /// `None` when the request ended in an error (the response does not exist yet): a new session is then not stored,
-    /// because its cookie could not reach the client, and a login made by an `AuthGuard` is discarded, as it is for any
-    /// status of 400 or more.
+    /// because its cookie could not reach the client. `rejected` is set by the router when the pipeline produced an
+    /// exception or a guard ended the request, before any filter or interceptor could change the response. A login made
+    /// by an `AuthGuard` is discarded when `rejected` is set or there is no response, and kept otherwise, whatever the
+    /// status of the response is.
     ///
     /// The order is: destroy the identifiers queued (a login or logout destroys the old one before the new one is
     /// created), then `create` for a new identifier, or `update` / `touch` for an existing one. `update` and `touch`
@@ -233,21 +263,22 @@ impl SessionManager {
     /// racing a slow request cannot be undone by it.
     ///
     /// Returns the `Set-Cookie` header value, if one has to be sent.
-    pub(crate) async fn commit(&self, session: &Session, status: Option<u16>) -> Result<Option<String>, HttpException> {
+    pub(crate) async fn commit(&self, session: &Session, status: Option<u16>, rejected: bool) -> Result<Option<String>, HttpException> {
         let o = &self.options;
         let now = now_ms();
         let can_set_cookie = status.is_some();
         {
             let mut s = session.state();
+            // Whether a guard login stands depends on what the pipeline did, never on the status of the response.
             if let Some(before) = s.before_guard_login.take()
-                && !status.is_some_and(|code| code < 400)
+                && (rejected || status.is_none())
             {
                 *s = *before;
             }
         }
-        let (queued, origin) = {
+        let (queued, origin, fresh_login) = {
             let s = session.state();
-            (s.destroy.clone(), s.origin.clone())
+            (s.destroy.clone(), s.origin.clone(), s.fresh_login)
         };
         let mut origin_gone = false;
         for old in &queued {
@@ -257,7 +288,10 @@ impl SessionManager {
                 .map_err(|e| self.fault("the store failed while destroying a session", Some(&e)))?;
             origin_gone |= !existed && origin.as_deref() == Some(old.as_str());
         }
-        if origin_gone {
+        // A login that kept nothing of the previous session has nothing to bring back from it, so the previous record
+        // being gone (a logout in another request, or an eviction by a flood of other sessions) does not stop it: the
+        // user just proved who they are. The old identifier was destroyed above all the same.
+        if origin_gone && !fresh_login {
             // Another request ended the session while this one ran: it stays ended.
             return Ok((can_set_cookie && session.state().had_cookie).then(|| self.clearing_header()));
         }
@@ -282,9 +316,7 @@ impl SessionManager {
                 if failed {
                     return Err(self.fault("the random generator failed", None));
                 }
-                if serde_json::to_vec(&record).map_or(usize::MAX, |v| v.len()) > o.max_session_bytes {
-                    return Err(self.fault("a session is larger than max_session_bytes and was not saved", None));
-                }
+                self.check_writable(&record)?;
                 match self.store_call(o.store.create(&id, &record, ttl)).await {
                     Ok(()) => return Ok(Some(self.cookie_header(&id, expires))),
                     Err(SessionStoreError::Exists) if attempt == 0 => {
@@ -305,9 +337,7 @@ impl SessionManager {
             (s.id.clone(), s.record(o, now), self.ttl(&s, now), s.cookie_expires(o, now))
         };
         let present = if write_full {
-            if serde_json::to_vec(&record).map_or(usize::MAX, |v| v.len()) > o.max_session_bytes {
-                return Err(self.fault("a session is larger than max_session_bytes and was not saved", None));
-            }
+            self.check_writable(&record)?;
             self.store_call(o.store.update(&id, &record, ttl)).await
         } else {
             self.store_call(o.store.touch(&id, &record, ttl)).await

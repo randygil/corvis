@@ -171,3 +171,24 @@ whether new issues are created before this change starts.
 - Close issue #44, tick it in epic #39, and move its card to Done (see the `corvis-task` skill).
 - If Open question 1 was answered with the split, create the issues for the Redis store and the ORM store under epic
   #39 (maintainer session) and link them from the archive notes.
+
+## 10. Security review, round 2 (see design.md, "Security review (round 2)")
+
+- [x] 10.1 Item 1: `RequestRejected` marked by the router on a failing pipeline, a stored guard response, a panic, a
+  pipe failure and a handler error (before filters and interceptors); `commit` discards a guard login when it is set or
+  no response exists, whatever the status; docs example EN and ES; tests for route and global filters (redirect, 200
+  page), an interceptor that maps the error, handler `Err`, panic, failing pipe, disconnect, and a handler's own redirect
+- [x] 10.2 Item 2: the memory store keeps `Arc<str>` records and a separate touch fragment; nothing proportional to a
+  record under the lock; contention test with a ratio assertion; the measurement recorded in design.md
+- [x] 10.3 Item 3: nesting depth bounded at write time (`MAX_RECORD_DEPTH`), a deeper stored record is no session, an
+  unparsable record is destroyed on load, no fallback writes a null record; limits table EN and ES; tests
+- [x] 10.4 Item 4: the hash tables of the memory store shrink; the counting-allocator test covers create, destroy and
+  refill
+- [x] 10.5 Item 5: a login that keeps nothing creates its session even when the previous record is gone; tests for the
+  eviction during login and the logout racing a login (default and keeping data)
+- [x] 10.6 Item 6: `SameOriginGuard` is an allow-list (`same-origin`, `none`, listed origins); unit tests and the example's
+  HTTP test; docs EN and ES
+- [x] 10.7 Item 7: docs EN and ES (logout and successor sessions, the stable `serialize_user`, flood by many accounts,
+  disconnect during a guard login)
+- [x] 10.8 Specs updated (`auth/sessions`); `openspec validate e3-sessions-and-signed-cookies --strict` passes; the
+  definition of done (fmt, clippy with the feature loop, tests, docs check, naming, deny) passes

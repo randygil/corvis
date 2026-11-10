@@ -80,11 +80,15 @@ impl CorvisMiddleware for SessionMiddleware {
         let mut guard = CommitGuard { session: session.clone(), done: false };
         restore_user(manager, &session, &req).await?;
 
+        let extensions = req.extensions.clone();
         let result = next.run(req).await;
 
-        // An error is a rejection (its status is 400 or more); the response of `Ok` has the status it carries.
+        // A guard login is kept or discarded by what the pipeline did, not by the status of the response: a filter can
+        // turn a denial into a redirect or a page with any status. An `Err` that reaches this point never became a
+        // response, so it is a rejection too.
         let status = result.as_ref().ok().map(|response| response.status_code());
-        let cookie = manager.commit(&session, status).await?;
+        let rejected = result.is_err() || crate::common::context::RequestRejected::is_marked(&extensions);
+        let cookie = manager.commit(&session, status, rejected).await?;
         guard.done = true;
         let mut response = result?;
         if let Some(cookie) = cookie {

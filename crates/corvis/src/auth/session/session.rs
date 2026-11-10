@@ -77,9 +77,13 @@ pub(crate) struct State {
     /// The identifier of the record this request loaded, kept when the identifier is replaced: at commit the record
     /// must still exist, or the session was ended by another request and nothing of it is written back.
     pub(crate) origin: Option<String>,
-    /// The state before a login made by an `AuthGuard`: restored at commit when the response is a rejection (status 400
-    /// or more), so that a login followed by a failing guard or handler leaves the session as it was.
+    /// The state before a login made by an `AuthGuard`: restored at commit when the pipeline rejected the request (see
+    /// `RequestRejected`) or no response was produced, so that a login followed by a failing guard or handler leaves the session as it was.
     pub(crate) before_guard_login: Option<Box<State>>,
+    /// A login that kept nothing of the previous session was made: the new session is created even when the record
+    /// of the previous one is gone (an attacker who flooded the store cannot make the login fail), since there is
+    /// nothing of it to resurrect.
+    pub(crate) fresh_login: bool,
 }
 
 impl State {
@@ -101,6 +105,7 @@ impl State {
             resign: false,
             origin: None,
             before_guard_login: None,
+            fresh_login: false,
         }
     }
 
@@ -125,6 +130,7 @@ impl State {
             resign: false,
             failed: false,
             before_guard_login: None,
+            fresh_login: false,
         }
     }
 
@@ -182,6 +188,19 @@ impl State {
         }
         Value::Object(cookie)
     }
+}
+
+/// `true` when `value` nests arrays or objects more than `limit` levels (a scalar is level 0, the outermost array or
+/// object level 1). The walk stops at the limit, so it is bounded whatever the value.
+pub(crate) fn too_deep(value: &Value, limit: usize) -> bool {
+    fn deeper(value: &Value, level: usize, limit: usize) -> bool {
+        match value {
+            Value::Array(items) => level > limit || items.iter().any(|child| deeper(child, level + 1, limit)),
+            Value::Object(map) => level > limit || map.values().any(|child| deeper(child, level + 1, limit)),
+            _ => false,
+        }
+    }
+    deeper(value, 1, limit)
 }
 
 /// `Date.prototype.toJSON`: ISO 8601 with milliseconds and a `Z`.
@@ -405,6 +424,21 @@ mod tests {
         for bad in ["a b", "a\tb", "a\u{e9}", "a\0b", "a\r\nb", "a\u{7f}"] {
             assert!(!valid_id(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn nesting_is_counted_in_levels_of_arrays_and_objects() {
+        let nested = |levels: usize| {
+            let mut value = json!(1);
+            for level in 0..levels {
+                value = if level % 2 == 0 { json!([value]) } else { json!({ "k": value }) };
+            }
+            value
+        };
+        assert!(!too_deep(&json!(1), 0));
+        assert!(!too_deep(&nested(100), 100));
+        assert!(too_deep(&nested(101), 100));
+        assert!(too_deep(&nested(5000), 100), "the walk stops at the limit whatever the depth");
     }
 
     #[test]

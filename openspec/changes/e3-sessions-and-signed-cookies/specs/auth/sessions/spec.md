@@ -218,6 +218,16 @@ cookie SHALL be sent.
 - **WHEN** a handler stores a 20 KiB string in the session with the default limit
 - **THEN** the response is a 500, the store has no such record, and there is no `Set-Cookie` for the session
 
+### Requirement: Session nesting depth is bounded when written
+A record nested deeper than 100 levels, the object that holds the session counting as level 1, MUST NOT be written: the
+response SHALL be the 500 of an oversized session and no cookie SHALL be sent. A stored record deeper than that is no
+session when read. No write may fall back to a null or empty record when a stored one cannot be read. The limit leaves
+room under the 128 levels a JSON parser reads.
+
+#### Scenario: Deeply nested value
+- **WHEN** a handler stores a value nested 127 levels, which the body parser accepts
+- **THEN** the response is a 500 and nothing is written, and a logged-in session stays logged in
+
 ### Requirement: A stored record over the size limit is not a session
 A record that the store returns larger than `max_session_bytes` MUST be treated as no session: it is not loaded, its
 identifier is not adopted and the record is not deleted. A warning, at most one a minute, SHALL report it without
@@ -291,12 +301,32 @@ that sessions are lost on restart and not shared between instances.
 ### Requirement: The memory store accounts for the memory it uses
 `MemorySessionStore` MUST keep each record serialized and count against `max_total_bytes` the allocation of the
 record, its identifier, its user key and a fixed overhead per entry, so that the live heap of the store never exceeds
-the bytes it accounts for, whatever the shape of the data.
+the bytes it accounts for, whatever the shape of the data. Its tables MUST give back their room when they hold less
+than a quarter of it.
 
 #### Scenario: Adversarial shapes
 - **WHEN** records made of arrays of `0`, arrays of `{}`, objects with many short keys, or long strings fill a store
   with a counting allocator
 - **THEN** the live heap of the store is at most the bytes it accounts for, and those are at most `max_total_bytes`
+
+#### Scenario: Create, destroy, refill
+- **WHEN** 100 000 minimal sessions are created and destroyed, and the store is then refilled with large records
+- **THEN** almost nothing stays live after the destruction, and the live heap of the refill is at most the bound
+
+### Requirement: The memory store does no work proportional to a record under its lock
+`MemorySessionStore` MUST NOT parse, serialize or copy a record while holding its lock: a load clones a reference to
+the record and parses it afterwards, a create or update serializes before the lock, and a touch replaces only a small
+fragment (`cookie`, `__corvis`) kept apart from the record text. A record that does not parse MUST be destroyed on
+load and be no session, with a warning at most once a minute.
+
+#### Scenario: Large sessions beside small ones
+- **WHEN** 16 tasks keep loading and touching one 15 KiB session while another user makes requests
+- **THEN** the other user's p99 latency and throughput stay within a small factor of a run where the 16 tasks use a
+  tiny session
+
+#### Scenario: Unreadable record
+- **WHEN** the store holds text that is not JSON under an identifier and it is loaded
+- **THEN** the load finds no session and the record is gone
 
 ### Requirement: The memory store caps the sessions of one user
 `MemorySessionStore` SHALL hold at most `max_sessions_per_user` sessions of one user (default 16, at least 1, checked
@@ -409,18 +439,45 @@ a registered session strategy MUST stop the application at startup.
 - **THEN** `init()` fails with an error that names the route and the missing session strategy
 
 ### Requirement: A login made by the guard is discarded when the request is rejected
-A login made by `AuthGuard::log_in()` MUST be committed only when the response status is below 400. When a later guard,
-a pipe or the handler rejects the request, the login is discarded: the session the request arrived with, if any, stays
-as it was, and no logged-in cookie is issued. A login made by a handler with `Authenticator::log_in` stands whatever the
-status. Documented divergence: the original keeps the login.
+A login made by `AuthGuard::log_in()` MUST be discarded when the pipeline rejects the request: a later guard denies or
+ends it, a pipe or validation fails, the handler returns an error or panics, an interceptor fails. The router marks the
+rejection when it happens, before any exception filter or interceptor can rewrite the response, so the final status
+never decides. A handler that returns normally keeps the login. Documented divergence: the original keeps it.
 
 #### Scenario: Second guard refuses
 - **WHEN** a route has `AuthGuard::new("header").log_in()` followed by a guard that refuses
 - **THEN** the response is 403 with no `Set-Cookie`, and a presented anonymous session is unchanged
 
+#### Scenario: A filter rewrites the failure
+- **WHEN** a global or route filter turns the denial, the handler error, a panic or a failing pipe into a redirect or a
+  200 page, or an interceptor turns the handler error into a normal response
+- **THEN** the response has no logged-in cookie and a presented anonymous session is unchanged
+
 #### Scenario: Handler decides
-- **WHEN** a handler logs in with `Authenticator::log_in` and answers 403
+- **WHEN** a handler logs in with `Authenticator::log_in` and answers 403, or returns normally with a redirect after
+  the login guard
 - **THEN** the response carries the logged-in session cookie
+
+### Requirement: A cancelled request keeps no guard login
+When the response is never produced (the client disconnects, a timeout) a login made by the guard MUST NOT be stored.
+The identifier the login replaced is destroyed, not restored.
+
+#### Scenario: Disconnect during a guard login
+- **WHEN** the request future is dropped after the login guard ran
+- **THEN** no record holds the user, and the old cookie is anonymous
+
+### Requirement: A login that keeps nothing cannot be made to fail
+A login that carries nothing of the previous session (`keep_session_info_on_login` off) MUST create the new session even
+when the previous record is gone, still destroying the old identifier. The rule of `A destroyed session cannot be
+re-created` stays for logins that keep data, `regenerate_keeping_data()`, saves and touches.
+
+#### Scenario: Previous session evicted during login
+- **WHEN** the anonymous session a login arrived with is evicted while the login runs
+- **THEN** the response sets a logged-in cookie and the next request is logged in
+
+#### Scenario: Logout racing a login that keeps data
+- **WHEN** request A logs out a session while request B logs in on it with `keep_session_info_on_login(true)`
+- **THEN** B writes nothing and its cookie is only a clearing one
 
 ### Requirement: Invalid session options stop the application
 `SessionModule` MUST stop the application at startup when its options are invalid: cookie keys that `http/signed-cookies`

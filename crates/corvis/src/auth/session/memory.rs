@@ -32,8 +32,11 @@ type Rank = (usize, Reverse<u64>, Arc<str>);
 struct Entry {
     /// The record as the store serialized it: a `Value` tree costs many times its serialized size, a string costs
     /// what it says.
-    record: Box<str>,
-    /// Identifier, serialized record, user key and overhead.
+    record: Arc<str>,
+    /// What the last `touch` changed (`cookie` and `__corvis`, a small JSON object), laid over `record` when it is
+    /// loaded. A touch replaces this and never reads, parses or copies `record`.
+    touch: Option<Arc<str>>,
+    /// Identifier, serialized record, touch, user key and overhead.
     size: usize,
     expires_ms: i64,
     /// Position in the recency order, unique.
@@ -103,10 +106,26 @@ impl Inner {
             }
         }
         self.expiry.remove(&(entry.expires_ms, entry.tick));
+        self.shrink();
         Some(entry)
     }
 
-    fn insert(&mut self, id: Arc<str>, record: Box<str>, user: Option<Arc<str>>, size: usize, expires_ms: i64) {
+    /// Gives back the room of the hash tables once they hold less than a quarter of it: a table never shrinks by
+    /// itself, so without this the room a flood of sessions needed would stay for good, unaccounted. The rebuild costs
+    /// one pass over the entries and happens after at least three quarters of them were removed, so it is amortized.
+    fn shrink(&mut self) {
+        const FLOOR: usize = 256;
+        let capacity = self.entries.capacity();
+        if capacity > FLOOR && self.entries.len() < capacity / 4 {
+            self.entries.shrink_to((self.entries.len() * 2).max(FLOOR));
+        }
+        let capacity = self.by_user.capacity();
+        if capacity > FLOOR && self.by_user.len() < capacity / 4 {
+            self.by_user.shrink_to((self.by_user.len() * 2).max(FLOOR));
+        }
+    }
+
+    fn insert(&mut self, id: Arc<str>, record: Arc<str>, touch: Option<Arc<str>>, user: Option<Arc<str>>, size: usize, expires_ms: i64) {
         let tick = self.next_tick;
         self.next_tick += 1;
         if let Some(user) = &user {
@@ -117,12 +136,12 @@ impl Inner {
         match &user {
             None => {
                 self.anonymous.insert(tick, id.clone());
-                self.entries.insert(id, Entry { record, size, expires_ms, tick, user });
+                self.entries.insert(id, Entry { record, touch, size, expires_ms, tick, user });
             }
             Some(user) => {
                 let user = user.clone();
                 self.by_user.entry(user.clone()).or_default().push(id.clone());
-                self.entries.insert(id, Entry { record, size, expires_ms, tick, user: Some(user.clone()) });
+                self.entries.insert(id, Entry { record, touch, size, expires_ms, tick, user: Some(user.clone()) });
                 self.rank(&user);
             }
         }
@@ -316,10 +335,14 @@ impl MemorySessionStore {
     }
 
     /// The whole of a write is one step under the lock: the check that the record exists (or does not) and the write
-    /// cannot be separated by another request.
+    /// cannot be separated by another request. Nothing proportional to the size of a record happens under the lock: a
+    /// create or an update serializes before it, and a touch only replaces the small `touch` fragment of the entry.
     fn write(&self, id: &str, record: &Value, ttl: Duration, mode: Mode) -> Result<bool, SessionStoreError> {
-        // Serialized before the lock is taken; a touch serializes the merged record under it.
-        let prepared = (mode != Mode::Touch).then(|| (record.to_string().into_boxed_str(), stored_user(record)));
+        // Everything that depends on the record is prepared before the lock is taken.
+        let (new_text, new_touch, new_user) = match mode {
+            Mode::Touch => (None, touch_fragment(record), None),
+            _ => (Some(Arc::<str>::from(record.to_string())), None, stored_user(record)),
+        };
         let now = now_ms();
         let expires = now.saturating_add(ttl.as_millis().min(i64::MAX as u128 / 2) as i64);
         let mut evicted = 0u64;
@@ -338,24 +361,17 @@ impl MemorySessionStore {
                 None if mode != Mode::Create => return Ok(false),
                 _ => {}
             }
-            let (text, user) = match prepared {
-                Some(prepared) => prepared,
+            let (text, touch, user) = match new_text {
+                Some(text) => (text, None, new_user),
                 None => {
                     // `touch`: the expiry and the timestamps only, so a request that changed nothing cannot overwrite
-                    // what another request saved.
+                    // what another request saved. The text of the record is shared, not copied.
                     let Some(entry) = inner.entries.get(id) else { return Ok(false) };
-                    let mut stored: Value = serde_json::from_str(&entry.record).unwrap_or(Value::Null);
-                    if let Some(object) = stored.as_object_mut() {
-                        for key in ["cookie", "__corvis"] {
-                            if let Some(new) = record.get(key) {
-                                object.insert(key.to_string(), new.clone());
-                            }
-                        }
-                    }
-                    (stored.to_string().into_boxed_str(), entry.user.clone())
+                    (entry.record.clone(), new_touch.or_else(|| entry.touch.clone()), entry.user.clone())
                 }
             };
-            let size = id.len() + text.len() + user.as_ref().map_or(0, |u| u.len()) + ENTRY_OVERHEAD;
+            let size =
+                id.len() + text.len() + touch.as_ref().map_or(0, |t| t.len()) + user.as_ref().map_or(0, |u| u.len()) + ENTRY_OVERHEAD;
             if size > self.max_total_bytes {
                 return Err(SessionStoreError::backend("the record is larger than the max_total_bytes of the memory store"));
             }
@@ -379,13 +395,42 @@ impl MemorySessionStore {
                 }
                 evicted += 1;
             }
-            inner.insert(Arc::from(id), text, user, size, expires);
+            inner.insert(Arc::from(id), text, touch, user, size, expires);
         }
         if evicted > 0 {
             self.warn_evictions(evicted);
         }
         Ok(true)
     }
+
+    /// A record that does not parse (it cannot come from this store's own writes unless the nesting limit was
+    /// bypassed): destroyed, so that it neither lingers until its time to live nor is read again, with a warning at
+    /// most once a minute and no identifier.
+    fn drop_unreadable(&self, id: &str, text: &Arc<str>) {
+        {
+            let mut inner = self.lock();
+            if inner.entries.get(id).is_some_and(|e| Arc::ptr_eq(&e.record, text)) {
+                inner.remove(id);
+            }
+        }
+        if let Some(suppressed) = self.warnings.allow("unreadable", Instant::now()) {
+            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
+            crate::logger::Logger::new("MemorySessionStore")
+                .warn(format!("a stored session record could not be read and was destroyed{more}"));
+        }
+    }
+}
+
+/// The part of a record a touch changes, serialized: `cookie` and `__corvis` as a JSON object, `None` when the record
+/// has neither.
+fn touch_fragment(record: &Value) -> Option<Arc<str>> {
+    let mut fragment = serde_json::Map::new();
+    for key in ["cookie", "__corvis"] {
+        if let Some(value) = record.get(key) {
+            fragment.insert(key.to_string(), value.clone());
+        }
+    }
+    if fragment.is_empty() { None } else { Some(Arc::from(Value::Object(fragment).to_string())) }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -399,20 +444,42 @@ enum Mode {
 impl SessionStore for MemorySessionStore {
     async fn load(&self, id: &str) -> Result<Option<Value>, SessionStoreError> {
         let now = now_ms();
-        let mut inner = self.lock();
-        match inner.entries.get(id).map(|e| e.expires_ms <= now) {
-            None => Ok(None),
-            Some(true) => {
-                inner.remove(id);
-                Ok(None)
+        // Under the lock: the lookup and the renewal, and two reference counts. The text is parsed after it is
+        // released.
+        let (record, touch) = {
+            let mut inner = self.lock();
+            match inner.entries.get(id).map(|e| e.expires_ms <= now) {
+                None => return Ok(None),
+                Some(true) => {
+                    inner.remove(id);
+                    return Ok(None);
+                }
+                Some(false) => {
+                    let expires = inner.entries.get(id).map_or(0, |e| e.expires_ms);
+                    inner.renew(id, expires);
+                    match inner.entries.get(id) {
+                        Some(entry) => (entry.record.clone(), entry.touch.clone()),
+                        None => return Ok(None),
+                    }
+                }
             }
-            Some(false) => {
-                let expires = inner.entries.get(id).map_or(0, |e| e.expires_ms);
-                inner.renew(id, expires);
-                // The text is what this store serialized, so it parses.
-                Ok(inner.entries.get(id).and_then(|e| serde_json::from_str(&e.record).ok()))
+        };
+        let Ok(mut value) = serde_json::from_str::<Value>(&record) else {
+            self.drop_unreadable(id, &record);
+            return Ok(None);
+        };
+        if let Some(touch) = touch {
+            let Ok(Value::Object(fragment)) = serde_json::from_str::<Value>(&touch) else {
+                self.drop_unreadable(id, &record);
+                return Ok(None);
+            };
+            if let Some(object) = value.as_object_mut() {
+                for (key, new) in fragment {
+                    object.insert(key, new);
+                }
             }
         }
+        Ok(Some(value))
     }
 
     async fn create(&self, id: &str, record: &Value, ttl: Duration) -> Result<(), SessionStoreError> {

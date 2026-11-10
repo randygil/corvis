@@ -91,11 +91,44 @@ fn the_overhead_covers_the_tables_just_after_they_grow() {
     }
 }
 
+/// A flood of minimal sessions that are then destroyed leaves no room of the tables behind, and a refill with large
+/// records stays within the bound: the tables shrink when they hold less than a quarter of their room.
+fn the_tables_give_back_their_room() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let ttl = Duration::from_secs(3600);
+    let bound = 128usize << 20;
+    let baseline = live();
+    let store = MemorySessionStore::new().max_total_bytes(bound);
+    for i in 0..100_000 {
+        runtime.block_on(store.create(&format!("{i:032}"), &json!({}), ttl)).unwrap();
+    }
+    let full = live().saturating_sub(baseline);
+    for i in 0..100_000 {
+        assert!(runtime.block_on(store.destroy(&format!("{i:032}"))).unwrap());
+    }
+    assert_eq!(store.len(), 0);
+    let emptied = live().saturating_sub(baseline);
+    eprintln!("100000 minimal sessions: heap {full}; destroyed: heap {emptied}, accounted {}", store.total_bytes());
+    assert!(emptied < 256 * 1024, "{emptied} bytes stay live after every session was destroyed");
+    // The refill: records of 14 KB until the bound makes the store evict.
+    for i in 0..10_000 {
+        runtime.block_on(store.create(&format!("{i:032}"), &json!({ "a": "x".repeat(14_000) }), ttl)).unwrap();
+    }
+    let refilled = live().saturating_sub(baseline);
+    let accounted = store.total_bytes();
+    eprintln!("refilled: {} sessions, heap {refilled}, accounted {accounted}", store.len());
+    assert!(accounted <= bound);
+    assert!(refilled <= bound, "the refill holds {refilled} bytes against a bound of {bound}");
+    drop(store);
+    assert!(live().saturating_sub(baseline) < 64 * 1024, "the heap is given back");
+}
+
 /// One test function: the allocator counts the whole process, so nothing may run beside it.
 #[test]
 fn the_live_heap_of_the_store_stays_within_what_it_accounts_for() {
     the_overhead_covers_the_tables_just_after_they_grow();
     adversarial_shapes_stay_within_the_bound();
+    the_tables_give_back_their_room();
 }
 
 fn adversarial_shapes_stay_within_the_bound() {

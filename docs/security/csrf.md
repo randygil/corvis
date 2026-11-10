@@ -52,33 +52,49 @@ do not need additional CSRF protection, as long as you do not also store the tok
 
    **`SameSite=Lax` does not stop login CSRF.** A cross-site form `POST` to the login route is a top-level navigation:
    the server answers `200` with its `Set-Cookie`, the browser stores it, and the victim is logged in as the attacker.
-   Refuse such a request before the credentials are checked: when `Sec-Fetch-Site` is `cross-site` or, if that header is
-   absent, when `Origin` is present and is not the host (or an allowed origin). The `cats-app` example does it with a
-   guard, `SameOriginGuard`, in front of the login guard:
+   Refuse such a request before the credentials are checked, with an allow-list: a state-changing request passes only
+   when `Sec-Fetch-Site` is `same-origin` (or `none`, a navigation the user typed), or, when that header is absent, when
+   `Origin` is the host the request was sent to; an explicit list of allowed origins passes too. Anything else is refused:
+   `cross-site`, **`same-site`** (a sibling subdomain can run pages an attacker controls), a value nobody defined, a
+   repeated header. The `cats-app` example does it with a guard, `SameOriginGuard`, in front of the login guard:
 
    ```rust
    #[post("login")]
-   #[use_guards(SameOriginGuard::new(), AuthGuard::new("local").log_in())]
+   #[use_guards(SameOriginGuard::new().allow_origin("https://app.example.com"), AuthGuard::new("local").log_in())]
    fn login(&self, user: User<Account>) -> Account { user.0 }
    ```
 
    ```rust
    // The whole check (examples/cats-app/src/auth/same_origin.rs)
-   pub fn refuses(&self, method: &str, sec_fetch_site: Option<&str>, origin: Option<&str>, host: Option<&str>) -> bool {
+   pub fn refuses(&self, method: &str, sec_fetch_site: &[&str], origins: &[&str], host: Option<&str>) -> bool {
        if matches!(method, "GET" | "HEAD" | "OPTIONS") {
            return false;
        }
-       if let Some(site) = sec_fetch_site {
-           return site.eq_ignore_ascii_case("cross-site");
+       let allowed_origin = match origins {
+           [origin] => self.allowed.iter().any(|allowed| allowed == origin),
+           _ => false,
+       };
+       match sec_fetch_site {
+           [] => {}
+           [site] => return !(site.eq_ignore_ascii_case("same-origin") || site.eq_ignore_ascii_case("none") || allowed_origin),
+           _ => return true,
        }
-       let Some(origin) = origin else { return false };
-       if self.allowed.iter().any(|allowed| allowed == origin) {
-           return false;
+       match origins {
+           [] => false,
+           [origin] => {
+               if allowed_origin {
+                   return false;
+               }
+               let authority = origin.split_once("://").map(|(_, rest)| rest);
+               !matches!((authority, host), (Some(authority), Some(host)) if authority.eq_ignore_ascii_case(host))
+           }
+           _ => true,
        }
-       let authority = origin.split_once("://").map(|(_, rest)| rest);
-       !matches!((authority, host), (Some(authority), Some(host)) if authority.eq_ignore_ascii_case(host))
    }
    ```
+
+   The host comparison uses the `Host` header the application received. Behind a proxy that rewrites `Host`, the browser's
+   `Origin` no longer matches it: list the public origins with `allow_origin`.
 
    Keep `Secure` and `HttpOnly`, and use the `__Host-` name prefix (`.name("__Host-sid")` in `SessionOptions`), which
    stops a sibling subdomain from setting the cookie.

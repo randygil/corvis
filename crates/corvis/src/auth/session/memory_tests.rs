@@ -260,6 +260,55 @@ async fn touch_changes_the_timestamps_and_the_bytes_stay_accounted() {
     let mut newer = record(Some("1"), 100);
     newer["__corvis"]["lastAccess"] = json!(1_794_312_552_408_i64);
     assert!(store.touch("a", &newer, TTL).await.unwrap());
-    assert!(store.total_bytes() >= before && store.total_bytes() <= before + 16);
+    // The first touch adds its small fragment to what is accounted; the next ones replace it.
+    let first = store.total_bytes();
+    assert!(first >= before && first <= before + 512, "{before} -> {first}");
+    assert!(store.touch("a", &newer, TTL).await.unwrap());
+    assert!(store.total_bytes().abs_diff(first) <= 16);
     assert_eq!(store.len(), 1);
+}
+
+#[tokio::test]
+async fn a_touch_never_reads_or_copies_the_record() {
+    let store = MemorySessionStore::new();
+    store.create("a", &record(Some("1"), 5000), TTL).await.unwrap();
+    let text = store.lock().entries.get("a").unwrap().record.clone();
+    let mut newer = record(Some("1"), 5000);
+    newer["__corvis"]["lastAccess"] = json!(1_794_312_552_408_i64);
+    assert!(store.touch("a", &newer, TTL).await.unwrap());
+    assert!(Arc::ptr_eq(&text, &store.lock().entries.get("a").unwrap().record), "the text of the record was replaced");
+    // The loaded record composes the text with what the touch changed.
+    let loaded = store.load("a").await.unwrap().unwrap();
+    assert_eq!(loaded["__corvis"]["lastAccess"], json!(1_794_312_552_408_i64));
+    assert_eq!(loaded["pad"], json!("x".repeat(5000)));
+}
+
+#[tokio::test]
+async fn a_record_that_does_not_parse_is_destroyed_and_is_no_session() {
+    let store = MemorySessionStore::new();
+    store.lock().insert(Arc::from("broken"), Arc::from("{\"cookie\":"), None, None, 700, now_ms() + 60_000);
+    assert_eq!(store.len(), 1);
+    assert!(store.load("broken").await.unwrap().is_none());
+    assert_eq!(store.len(), 0, "the record is gone, not kept until its time to live");
+    assert_eq!(store.total_bytes(), 0);
+    // A touch can never overwrite anything with a null record: it has nothing to parse.
+    store.create("ok", &record(None, 0), TTL).await.unwrap();
+    assert!(store.touch("ok", &record(None, 0), TTL).await.unwrap());
+    assert!(store.load("ok").await.unwrap().unwrap().is_object());
+}
+
+#[tokio::test]
+async fn the_tables_shrink_after_a_flood_is_destroyed() {
+    let store = MemorySessionStore::new();
+    for i in 0..5000 {
+        store.create(&format!("id-{i}"), &record(Some(&format!("u{i}")), 0), TTL).await.unwrap();
+    }
+    let grown = store.lock().entries.capacity();
+    assert!(grown >= 5000);
+    for i in 0..5000 {
+        assert!(store.destroy(&format!("id-{i}")).await.unwrap());
+    }
+    let inner = store.lock();
+    assert!(inner.entries.capacity() < grown / 4, "{} of {grown} kept", inner.entries.capacity());
+    assert!(inner.by_user.capacity() < grown / 4);
 }

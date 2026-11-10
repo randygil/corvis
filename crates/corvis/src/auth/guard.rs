@@ -118,9 +118,13 @@ impl AuthGuard {
     /// The application must register a `SessionStrategy`, and the guard cannot name the `"session"` strategy itself
     /// (it would log in again on every request); both stop `init()`.
     ///
-    /// Deliberate difference from the original: the login is kept only when the response status is below 400. If a
-    /// later guard, a pipe or the handler rejects the request, the login is discarded: the session the request arrived
-    /// with (if any) is left as it was and no logged-in cookie is issued. A login made by a handler with
+    /// Deliberate difference from the original: the login is kept only when the request is not rejected. If a later
+    /// guard denies, a pipe fails, or the handler returns an error or panics, the login is discarded: the session the
+    /// request arrived with (if any) is left as it was and no logged-in cookie is issued. The rejection is noted
+    /// before any exception filter or interceptor can change the response, so what a filter answers (a redirect to a
+    /// second step, a page with status 200) does not matter. A handler that returns normally keeps the login whatever
+    /// status it sets: a handler that implements a second step must call [`Authenticator::log_in`] after the last
+    /// step instead of using `.log_in()` on the first step's guard. A login made by a handler with
     /// [`Authenticator::log_in`] stands whatever the response is.
     #[cfg(feature = "auth-session")]
     pub fn log_in(mut self) -> Self {

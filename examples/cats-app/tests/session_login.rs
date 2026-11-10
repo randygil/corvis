@@ -96,6 +96,20 @@ async fn a_login_from_another_site_is_refused_before_the_credentials_are_checked
     assert_eq!(by_origin.status, 403);
     assert!(by_origin.headers.get("set-cookie").is_none());
 
+    // A sibling subdomain is `same-site`: still another site for a login (the login route is throttled to 5 a minute, so unknown values are covered by the unit tests).
+    for site in ["same-site"] {
+        let r = c
+            .post("/api/v1/session/login")
+            .header("host", "cats.test")
+            .header("sec-fetch-site", site)
+            .header("origin", "https://evil.cats.test")
+            .form(&form)
+            .send()
+            .await;
+        assert_eq!(r.status, 403, "{site}: {}", r.text());
+        assert!(r.headers.get("set-cookie").is_none(), "{site}");
+    }
+
     // The same login from the site itself, and from a client that sends neither header.
     let same_origin = c
         .post("/api/v1/session/login")

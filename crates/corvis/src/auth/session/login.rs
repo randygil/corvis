@@ -41,6 +41,8 @@ impl Session {
         if keep {
             // `passport` merges the previous session into the new one, then sets its own key.
             s.data = previous;
+        } else {
+            s.fresh_login = true;
         }
         let mut passport = match s.data.shift_remove(PASSPORT_KEY) {
             Some(Value::Object(map)) => map,
@@ -87,7 +89,7 @@ impl Authenticator {
     /// An `AuthGuard` with `.log_in()` calls it after a successful authentication.
     ///
     /// A login made here, by a handler, stands whatever the response is: the handler decides. A login made by an
-    /// `AuthGuard` with `.log_in()` is kept only when the response status is below 400; see
+    /// `AuthGuard` with `.log_in()` is kept only when the pipeline does not reject the request; see
     /// [`AuthGuard::log_in`](crate::auth::AuthGuard::log_in).
     pub async fn log_in(&self, req: &Request, user: &AuthenticatedUser) -> Result<(), HttpException> {
         self.log_in_with(req, user, false).await

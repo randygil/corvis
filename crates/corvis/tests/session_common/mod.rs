@@ -149,6 +149,16 @@ impl Routes {
         json!({ "ok": true })
     }
 
+    /// An object of `?n=` keys: about 8 bytes of record per key.
+    #[post("fill")]
+    #[http_code(200)]
+    fn fill(&self, req: Request) -> Value {
+        let n: usize = req.query_param("n").unwrap().parse().unwrap();
+        let object: serde_json::Map<String, Value> = (0..n).map(|k| (format!("{k:x}"), json!(1))).collect();
+        session_of(&req).set("blob", object).unwrap();
+        json!({ "ok": true })
+    }
+
     #[post("big")]
     #[http_code(200)]
     fn big(&self, req: Request) -> Value {
@@ -251,7 +261,7 @@ impl Routes {
     /// touched).
     #[post("held")]
     #[http_code(200)]
-    async fn held(&self, req: Request) -> Value {
+    async fn held(&self, req: Request) -> HttpResult<Value> {
         let gate = named_gate(req.query_param("g").unwrap());
         gate.started.notify_one();
         gate.release.notified().await;
@@ -259,10 +269,14 @@ impl Routes {
         match req.query_param("mode").unwrap() {
             "regenerate_keeping_data" => session.regenerate_keeping_data(),
             "regenerate" => session.regenerate(),
+            "login" => {
+                let user = AuthenticatedUser::new(account("2").unwrap()).unwrap();
+                self.authenticator.log_in(&req, &user).await?;
+            }
             "set" => session.set("late", true).unwrap(),
             _ => {}
         }
-        json!({ "ok": true })
+        Ok(json!({ "ok": true }))
     }
 
     /// A login that a second guard then refuses.

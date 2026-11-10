@@ -231,6 +231,7 @@ a store error.
 | `absolute_timeout` | 7 days | at most 400 days |
 | cookie `max_age` | none | at most the absolute timeout |
 | `max_session_bytes` | 16 KiB | 1 KiB to 1 MiB |
+| nesting depth of a record | 100 levels | the record is level 1, so a value nests 99 levels |
 | `store_timeout` | 5 s | 100 ms to 60 s |
 | memory store `max_sessions` | 100 000 | at least 1 |
 | memory store `max_total_bytes` | 256 MiB | at least 1 |
@@ -239,6 +240,12 @@ a store error.
 A stored record larger than `max_session_bytes` (written by another writer of a shared store) is no session when it is
 read: it is not loaded, its identifier is not adopted and the record is not deleted. A warning, at most once a minute and
 without identifiers, reports it.
+
+A record nested deeper than 100 levels (counting the object that holds the session) is refused when it is saved, with the
+[same 500](#failure-behavior) as a session over `max_session_bytes`, so the handler's change is not silently lost later: a
+parser reads at most 128 levels, so a deeper record could be written and never read back. A stored record deeper than the
+limit is no session when it is read, like an oversized one. A record that cannot be parsed at all is destroyed by the
+memory store and is no session, with a warning at most once a minute.
 
 Other combinations that stop startup: `SameSite=None` without `Secure`, a `__Host-` name without `Secure`, with a `Domain`
 or with a `Path` other than `/`, a `__Secure-` name without `Secure`, and an invalid cookie name, path or domain.
@@ -254,14 +261,19 @@ or with a `Path` other than `/`, a `__Secure-` name without `Secure`, and an inv
 - Sessions are lost when the application restarts and are not shared between instances. Startup logs a warning for it.
 - Records are kept serialized, and the byte bound counts each record's allocation, its identifier, its user key and a
   fixed overhead per entry (640 bytes), so `max_total_bytes` bounds the memory the store uses, whatever the shape of the
-  data (an array of small numbers costs what its text costs). A test with a counting allocator checks it.
+  data (an array of small numbers costs what its text costs). A test with a counting allocator checks it. The hash tables
+  give back their room when they hold less than a quarter of it, so a burst of sessions that is over leaves nothing behind.
+- Nothing proportional to the size of a record happens while the store's lock is held: a load clones a reference and
+  parses outside the lock, and a request that changed nothing only replaces a small fragment (`cookie` and `__corvis`) of
+  the entry. Large sessions of one user do not slow other users down.
 - Expired records are dropped without a background task: on load and a few on each write.
 - **Per user:** at most `max_sessions_per_user` sessions (16 by default), keyed by the serialized `passport.user`. A new
   session of a user at the cap evicts that same user's oldest session, never another user's: one account that logs in
   over and over cannot log the others out.
 - **When the store is full** it evicts the least recently used **anonymous** session (no `passport.user`) first, then the
   oldest session of the user with the most sessions. A flood of anonymous sessions fills the store with its own records
-  but logs nobody out. One rate-limited warning is logged with the count, no identifiers.
+  but logs nobody out. One rate-limited warning is logged with the count, no identifiers. Under a flood by many
+  accounts the users who hold several sessions lose their oldest first.
 - A record larger than `max_total_bytes` is an error.
 
 Other stores need their own policy: a shared store has to bound the sessions of one user itself (the contract of
@@ -334,6 +346,20 @@ as destroyed. Nothing is created or updated, whatever the request did to the ses
 `regenerate()`, a data change), and the cookie is cleared. If the client disconnects mid-request, identifiers queued for
 destruction (logout, `regenerate`, `destroy`) are still destroyed.
 
+Three cases are decided on purpose:
+
+- **A login that keeps nothing of the previous session** (the default: the data of before the login is dropped) creates
+  the new session even when the previous record is gone. Otherwise someone who floods the store until the victim's
+  anonymous session is evicted could make the login answer `200` and set no cookie. The user just proved who they are and
+  nothing of the old session is brought back; the old identifier is destroyed all the same. With
+  `keep_session_info_on_login(true)`, `regenerate_keeping_data()` and plain saves the rule above applies. So if request A
+  logs out cookie C0 while request B on C0 logs in afresh (credentials presented again), B's new session is valid.
+- **A logout does not end a successor.** A logout that loaded session X does not end a session Y that another concurrent
+  request created by regenerating X. This is the behavior of the original; closing it would need a "moved to" marker in
+  the record (a candidate follow-up).
+- **A client that disconnects during a login made by the guard** gets the previous session destroyed, not restored: the
+  login is discarded and so is the identifier it replaced, the safe direction.
+
 ## Login and logout
 
 Logging in through a session needs a `SessionSerializer`, that decides what is stored for the user and how to get it back,
@@ -363,6 +389,10 @@ impl SessionSerializer for UserSerializer {
 
 // providers = [UsersService, Provider::strategy::<SessionStrategy<UserSerializer>>()]
 ```
+
+**`serialize_user` must be stable across logins.** The memory store keys its per-user cap (`max_sessions_per_user`) by the
+serialized user. If the value holds a timestamp, a random token or anything else that differs from one login to the next,
+every login looks like a new user and the cap never applies. Store the identifier of the user and nothing that changes.
 
 A second `SessionStrategy` stops startup. On every request whose session has `passport.user`, the middleware calls
 `deserialize_user` before the guards:
@@ -419,15 +449,25 @@ session without a record yet is not regenerated: logging out anonymously creates
 Both fail with a `500` and a fixed message, storing nothing, when the request has no session or no `SessionStrategy` is
 registered. A failed login (`401`) leaves the session and its identifier unchanged.
 
-**A login made by the guard is kept only when the response is not a rejection.** If a later guard, a pipe or the handler
-rejects the request (the response status is 400 or more, or an error), the login is discarded: the session the request
-arrived with, if any, is left as it was, and no logged-in cookie is issued.
+**A login made by the guard is kept only when the request is not rejected.** If a later guard denies, a pipe or the
+validation fails, the handler returns an `Err` or panics, or an interceptor fails, the login is discarded: the session the
+request arrived with, if any, is left as it was, and no logged-in cookie is issued. The router notes the rejection at the
+moment it happens, before any [exception filter](/exception-filters) or interceptor can change the response, so what
+a filter answers does not matter: a filter that turns the `403` into a redirect to `/mfa`, or into an "access denied" page
+with status `200`, does not keep the login.
 
 ```rust
-#[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)] // a 403 from the second guard leaves no login
+#[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)] // a denial by the second guard leaves no login,
+                                                                   // whatever a filter then answers
 ```
 
-A login made with `Authenticator::log_in` by a handler is the handler's decision and stands whatever the status.
+A request that is cancelled before its response exists (the client disconnects, a timeout) discards the login too: the
+previous session is destroyed rather than restored, the safe direction.
+
+A handler that **returns normally** keeps the login, whatever status it sets, including a redirect it issues itself.
+So a handler that implements a second step must not use `.log_in()` on the guard of the first step: authenticate with
+`AuthGuard::new("local")` (no `.log_in()`), then call `Authenticator::log_in` after the last step has passed. A login made
+with `Authenticator::log_in` by a handler is the handler's decision and stands whatever the status.
 
 `AuthGuard::new("local").log_in()` is a startup error when no `SessionStrategy` is registered (the error names the route)
 and when the guard names the `"session"` strategy (`cannot be combined`). Without `.log_in()` an `AuthGuard` never writes
@@ -498,7 +538,7 @@ recorded fixtures (`crates/corvis/tests/fixtures/auth/session.mjs` and `signed_c
 | no idle or absolute timeout | idle (24 h) and absolute (7 days) timeouts |
 | no size limit | 16 KiB per record |
 | `store.set` creates or overwrites | `update` and `touch` never re-create a record |
-| a login through the guard stays when a later guard or the handler rejects the request | discarded when the response status is 400 or more (a login made by a handler stands) |
+| a login through the guard stays when a later guard or the handler rejects the request | discarded when the pipeline rejects the request (a denying guard, a failing pipe, an error or panic of the handler), whatever a filter answers; a handler that returns normally keeps it |
 | a request that outlives a logout can save the session again | a session whose record is gone at the end of the request is treated as destroyed and the cookie is cleared |
 | `MemoryStore` keeps every session of an account | at most `max_sessions_per_user` (16) in the memory store |
 | the cookie keeps the signature it came with | re-signed with the new secret after a rotation |

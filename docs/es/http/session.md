@@ -233,6 +233,7 @@ restante de la cookie (al menos 1 s). Cada llamada al almacén está acotada por
 | `absolute_timeout` | 7 días | como máximo 400 días |
 | `max_age` de la cookie | ninguno | como máximo el tiempo absoluto |
 | `max_session_bytes` | 16 KiB | de 1 KiB a 1 MiB |
+| profundidad de anidamiento de un registro | 100 niveles | el registro es el nivel 1, así que un valor anida 99 niveles |
 | `store_timeout` | 5 s | de 100 ms a 60 s |
 | `max_sessions` del almacén en memoria | 100 000 | al menos 1 |
 | `max_total_bytes` del almacén en memoria | 256 MiB | al menos 1 |
@@ -241,6 +242,13 @@ restante de la cookie (al menos 1 s). Cada llamada al almacén está acotada por
 Un registro guardado mayor que `max_session_bytes` (escrito por otro escritor de un almacén compartido) no es una sesión
 al leerlo: no se carga, su identificador no se adopta y el registro no se elimina. Un aviso, como máximo una vez por
 minuto y sin identificadores, lo reporta.
+
+Un registro anidado a más de 100 niveles (contando el objeto que contiene la sesión) se rechaza al guardarlo, con el
+[mismo 500](#comportamiento-ante-fallos) que una sesión mayor que `max_session_bytes`, de modo que el cambio del handler
+no se pierda en silencio más tarde: un parser lee como máximo 128 niveles, así que un registro más profundo se podría
+escribir y no volver a leer. Un registro guardado más profundo que el límite no es una sesión al leerlo, igual que uno
+demasiado grande. Un registro que no se puede interpretar en absoluto lo destruye el almacén en memoria y no es una
+sesión, con un aviso como máximo una vez por minuto.
 
 Otras combinaciones que detienen el arranque: `SameSite=None` sin `Secure`, un nombre `__Host-` sin `Secure`, con
 `Domain` o con un `Path` distinto de `/`, un nombre `__Secure-` sin `Secure`, y un nombre, ruta o dominio de cookie
@@ -258,7 +266,11 @@ inválido.
 - Los registros se guardan serializados, y el límite de bytes cuenta la asignación de cada registro, su identificador, la
   clave de su usuario y una sobrecarga fija por entrada (640 bytes), de modo que `max_total_bytes` acota la memoria que
   usa el almacén, sea cual sea la forma de los datos (un arreglo de números pequeños cuesta lo que cuesta su texto). Una
-  prueba con un asignador contador lo comprueba.
+  prueba con un asignador contador lo comprueba. Las tablas hash devuelven su espacio cuando contienen menos de la cuarta
+  parte, de modo que una ráfaga de sesiones que ya terminó no deja nada atrás.
+- Nada proporcional al tamaño de un registro ocurre mientras se mantiene el bloqueo del almacén: una carga clona una
+  referencia e interpreta el texto fuera del bloqueo, y una petición que no cambió nada solo reemplaza un fragmento
+  pequeño (`cookie` y `__corvis`) de la entrada. Las sesiones grandes de un usuario no ralentizan a los demás.
 - Los registros vencidos se eliminan sin tarea en segundo plano: al cargar y unos pocos en cada escritura.
 - **Por usuario:** como máximo `max_sessions_per_user` sesiones (16 por defecto), identificadas por el
   `passport.user` serializado. Una sesión nueva de un usuario que está en el límite expulsa la sesión más antigua de ese
@@ -266,7 +278,8 @@ inválido.
 - **Cuando el almacén está lleno** expulsa primero la sesión **anónima** (sin `passport.user`) menos usada recientemente
   y después la sesión más antigua del usuario con más sesiones. Una avalancha de sesiones anónimas llena el almacén con
   sus propios registros pero no cierra la sesión de nadie. Se registra un aviso limitado en frecuencia con el conteo, sin
-  identificadores.
+  identificadores. Ante una avalancha de muchas cuentas, los usuarios que tienen varias sesiones pierden primero las más
+  antiguas.
 - Un registro mayor que `max_total_bytes` es un error.
 
 Los demás almacenes necesitan su propia política: un almacén compartido debe acotar por sí mismo las sesiones de un
@@ -343,6 +356,21 @@ actualiza nada, haya hecho la petición lo que haya hecho con la sesión (`regen
 cambio de datos), y la cookie se borra. Si el cliente se desconecta a mitad de la petición, los identificadores en cola
 para destrucción (logout, `regenerate`, `destroy`) igualmente se destruyen.
 
+Tres casos están decididos a propósito:
+
+- **Un login que no conserva nada de la sesión anterior** (el valor por defecto: los datos de antes del login se
+  descartan) crea la sesión nueva aunque el registro anterior ya no exista. De lo contrario, quien inunde el almacén hasta
+  expulsar la sesión anónima de la víctima podría hacer que el login responda `200` sin poner cookie. El usuario acaba de
+  demostrar quién es y no se recupera nada de la sesión vieja; el identificador viejo se destruye igualmente. Con
+  `keep_session_info_on_login(true)`, `regenerate_keeping_data()` y los guardados simples se aplica la regla anterior. Si
+  la petición A cierra sesión con la cookie C0 mientras la petición B, con C0, inicia sesión de nuevo (presentando otra
+  vez las credenciales), la sesión nueva de B es válida.
+- **Un logout no termina a un sucesor.** Un logout que cargó la sesión X no termina una sesión Y que otra petición
+  concurrente creó regenerando X. Es el comportamiento del original; cerrarlo exigiría una marca "movida a" en el
+  registro (una posible tarea futura).
+- **Un cliente que se desconecta durante un login hecho por el guard** hace que la sesión anterior se destruya y no se
+  restaure: el login se descarta y también el identificador al que reemplazaba, la dirección segura.
+
 ## Login y logout
 
 Iniciar sesión mediante una sesión necesita un `SessionSerializer`, que decide qué se guarda del usuario y cómo
@@ -372,6 +400,11 @@ impl SessionSerializer for UserSerializer {
 
 // providers = [UsersService, Provider::strategy::<SessionStrategy<UserSerializer>>()]
 ```
+
+**`serialize_user` debe ser estable entre logins.** El almacén en memoria identifica su límite por usuario
+(`max_sessions_per_user`) por el usuario serializado. Si el valor incluye una marca de tiempo, un token aleatorio o
+cualquier cosa que cambie de un login al siguiente, cada login parece un usuario nuevo y el límite nunca se aplica.
+Guarda el identificador del usuario y nada que cambie.
 
 Un segundo `SessionStrategy` detiene el arranque. En cada petición cuya sesión tiene `passport.user`, el middleware llama
 a `deserialize_user` antes de los guards:
@@ -429,15 +462,26 @@ nada.
 Ambos fallan con un `500` y un mensaje fijo, sin guardar nada, cuando la petición no tiene sesión o no hay ningún
 `SessionStrategy` registrado. Un login fallido (`401`) deja la sesión y su identificador sin cambios.
 
-**Un login hecho por el guard solo se conserva cuando la respuesta no es un rechazo.** Si un guard posterior, un pipe o el
-handler rechazan la petición (el estado de la respuesta es 400 o más, o un error), el login se descarta: la sesión con la
-que llegó la petición, si la había, queda como estaba y no se emite ninguna cookie con la sesión iniciada.
+**Un login hecho por el guard solo se conserva cuando la petición no es rechazada.** Si un guard posterior deniega, un pipe
+o la validación fallan, el handler devuelve un `Err` o entra en pánico, o falla un interceptor, el login se descarta: la
+sesión con la que llegó la petición, si la había, queda como estaba y no se emite ninguna cookie con la sesión iniciada.
+El router anota el rechazo en el momento en que ocurre, antes de que un [filtro de excepciones](/es/exception-filters) o
+un interceptor puedan cambiar la respuesta, así que lo que responda un filtro no importa: un filtro que convierte el
+`403` en una redirección a `/mfa`, o en una página de "acceso denegado" con estado `200`, no conserva el login.
 
 ```rust
-#[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)] // un 403 del segundo guard no deja login
+#[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)] // si el segundo guard deniega no queda login,
+                                                                   // responda lo que responda un filtro
 ```
 
-Un login hecho con `Authenticator::log_in` desde un handler es decisión del handler y se mantiene sea cual sea el estado.
+Una petición cancelada antes de que exista su respuesta (el cliente se desconecta, un timeout) también descarta el
+login: la sesión anterior se destruye en lugar de restaurarse, la dirección segura.
+
+Un handler que **devuelve con normalidad** conserva el login, sea cual sea el estado que fije, incluida una redirección
+que emita él mismo. Por eso un handler que implementa un segundo paso no debe usar `.log_in()` en el guard del primer
+paso: autentica con `AuthGuard::new("local")` (sin `.log_in()`) y llama a `Authenticator::log_in` cuando el último paso
+haya pasado. Un login hecho con `Authenticator::log_in` desde un handler es decisión del handler y se mantiene sea cual
+sea el estado.
 
 `AuthGuard::new("local").log_in()` es un error de arranque cuando no hay ningún `SessionStrategy` registrado (el error
 nombra la ruta) y cuando el guard nombra la estrategia `"session"` (`cannot be combined`). Sin `.log_in()` un `AuthGuard`
@@ -504,7 +548,7 @@ fixtures grabados (`crates/corvis/tests/fixtures/auth/session.mjs` y `signed_coo
 | `express-session` | Corvis |
 |---|---|
 | sin `SameSite` ni `Secure` por defecto | `SameSite=Lax` y `Secure` |
-| un login por el guard se mantiene aunque un guard posterior o el handler rechacen la petición | se descarta cuando el estado de la respuesta es 400 o más (un login hecho por un handler se mantiene) |
+| un login por el guard se mantiene aunque un guard posterior o el handler rechacen la petición | se descarta cuando el pipeline rechaza la petición (un guard que deniega, un pipe que falla, un error o pánico del handler), responda lo que responda un filtro; un handler que devuelve con normalidad lo conserva |
 | una petición que sobrevive a un logout puede volver a guardar la sesión | una sesión cuyo registro ya no existe al terminar la petición se trata como destruida y la cookie se borra |
 | `MemoryStore` conserva todas las sesiones de una cuenta | como máximo `max_sessions_per_user` (16) en el almacén en memoria |
 | `resave` y `save_uninitialized` son `true` por defecto, con un aviso | ambos `false` |
