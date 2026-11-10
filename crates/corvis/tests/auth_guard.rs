@@ -391,7 +391,7 @@ async fn a_strategy_is_found_by_name_from_another_module_with_its_injected_servi
     let r = request(&app).get("/me/typed").header("x-user", "7").send().await;
     r.expect_status(200);
     let user = json!({ "id": 7, "role": "admin" });
-    r.expect_json(json!({ "typed": user, "json": user, "info": { "scope": "read" }, "viaGet": user }));
+    r.expect_json(json!({ "typed": user, "json": user, "info": { "scope": "read" }, "viaGet": null }));
 }
 
 #[corvis::test]

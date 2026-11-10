@@ -39,6 +39,7 @@ pub use strategy::{AuthInfo, AuthenticateOptions, AuthenticatedUser, Strategy, S
 pub use user::User;
 
 pub(crate) use authenticator::StrategyRegistry;
+pub(crate) use strategy::AuthUserSlot;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -119,7 +120,8 @@ pub(crate) fn warn_gateways(gateways: &[crate::posture::GatewayPosture]) {
         if let Some(guard) = found {
             log.warn(format!(
                 "Gateway {} ({}) runs an AuthGuard ({}): it denies every WebSocket message. Authenticate in handle_connection, \
-                 or call apply_global_enhancers_to_gateways(false) if the guard is global",
+                 or call apply_global_enhancers_to_gateways(false) if the guard is global \
+                 (that removes every global enhancer from gateways, not only this guard)",
                 gateway.name,
                 gateway.path,
                 guard.describe()

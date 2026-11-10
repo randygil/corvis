@@ -254,6 +254,7 @@ impl Request {
     /// Removes the user stored with [`Request::set_user`].
     pub(crate) fn clear_user(&self) {
         self.remove::<RequestUser>();
+        self.remove::<crate::auth::AuthUserSlot>();
     }
     pub fn user(&self) -> Option<Value> {
         self.get::<RequestUser>().map(|u| u.0)

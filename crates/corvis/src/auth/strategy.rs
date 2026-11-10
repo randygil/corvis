@@ -1,5 +1,6 @@
 //! The strategy contract: what a strategy receives and the five ways an attempt can end.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -43,7 +44,6 @@ pub trait Strategy: Send + Sync + 'static {
 }
 
 /// How an authentication attempt ended, the five calls a passport strategy can make.
-#[derive(Debug)]
 pub enum StrategyOutcome {
     /// `this.success(user, info)`.
     Success { user: AuthenticatedUser, info: Option<Value> },
@@ -56,6 +56,19 @@ pub enum StrategyOutcome {
     Pass,
     /// `this.error(err)`: stop and answer with the exception.
     Error(HttpException),
+}
+
+/// Prints the variant only: a user, a challenge or an exception can hold credentials or personal data.
+impl std::fmt::Debug for StrategyOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            StrategyOutcome::Success { .. } => "StrategyOutcome::Success { .. }",
+            StrategyOutcome::Fail { .. } => "StrategyOutcome::Fail { .. }",
+            StrategyOutcome::Redirect { .. } => "StrategyOutcome::Redirect { .. }",
+            StrategyOutcome::Pass => "StrategyOutcome::Pass",
+            StrategyOutcome::Error(_) => "StrategyOutcome::Error(..)",
+        })
+    }
 }
 
 /// Strategy specific options of one guard, the options object `passport.authenticate(name, options)` hands to
@@ -79,16 +92,28 @@ impl AuthenticateOptions {
 }
 
 /// The user a strategy authenticated. Its JSON form is serialized once, when the strategy builds it, and the typed
-/// value is kept so a handler can read it back with `Request::get::<T>()` or a [`User<T>`](super::User) parameter.
+/// value is kept so a handler can read it back with a [`User<T>`](super::User) parameter. The typed value lives in a
+/// slot of its own on the request, so no other extension of the same type can pass for a user.
 #[derive(Clone)]
 pub struct AuthenticatedUser {
     json: Value,
-    install: Arc<dyn Fn(&Request) + Send + Sync>,
+    typed: Arc<dyn Any + Send + Sync>,
 }
 
+/// Does not print the user: it is personal data and `Debug` output ends up in logs.
 impl std::fmt::Debug for AuthenticatedUser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuthenticatedUser").field("json", &self.json).finish()
+        f.write_str("AuthenticatedUser { .. }")
+    }
+}
+
+/// The typed user of the request, set by `AuthGuard` and read only by `User<T>`.
+#[derive(Clone)]
+pub(crate) struct AuthUserSlot(pub(crate) Arc<dyn Any + Send + Sync>);
+
+impl AuthUserSlot {
+    pub(crate) fn read<T: Clone + 'static>(req: &Request) -> Option<T> {
+        req.get::<AuthUserSlot>().and_then(|slot| slot.0.downcast_ref::<T>().cloned())
     }
 }
 
@@ -97,8 +122,7 @@ impl AuthenticatedUser {
     /// the request must not continue with a typed user and no JSON one.
     pub fn new<T: Serialize + Clone + Send + Sync + 'static>(user: T) -> Result<Self, HttpException> {
         let json = serde_json::to_value(&user).map_err(HttpException::internal)?;
-        let install = Arc::new(move |req: &Request| req.insert(user.clone()));
-        Ok(AuthenticatedUser { json, install })
+        Ok(AuthenticatedUser { json, typed: Arc::new(user) })
     }
 
     /// The JSON form of the user (`Request::user`).
@@ -108,7 +132,7 @@ impl AuthenticatedUser {
 
     /// Stores the user on the request: the typed value and the JSON user.
     pub(crate) fn install(&self, req: &Request) {
-        (self.install)(req);
+        req.insert(AuthUserSlot(self.typed.clone()));
         req.set_user_value(self.json.clone());
     }
 }
@@ -155,7 +179,8 @@ mod tests {
         let user = AuthenticatedUser::new(Payload { id: 7 }).unwrap();
         assert_eq!(user.json(), &serde_json::json!({ "id": 7 }));
         user.install(&req);
-        assert_eq!(req.get::<Payload>(), Some(Payload { id: 7 }));
+        assert_eq!(AuthUserSlot::read::<Payload>(&req), Some(Payload { id: 7 }));
+        assert_eq!(req.get::<Payload>(), None, "the typed user is not a plain request extension");
         assert_eq!(req.user(), Some(serde_json::json!({ "id": 7 })));
     }
 
@@ -177,6 +202,17 @@ mod tests {
             StrategyOutcome::Error(crate::http::UnauthorizedException::empty()),
         ];
         assert_eq!(outcomes.len(), 5);
+    }
+
+    #[test]
+    fn debug_output_does_not_print_the_user() {
+        let user = AuthenticatedUser::new(Payload { id: 424242 }).unwrap();
+        assert!(!format!("{user:?}").contains("424242"));
+        let outcome = StrategyOutcome::Success { user, info: Some(serde_json::json!("secret-info")) };
+        let printed = format!("{outcome:?}");
+        assert!(!printed.contains("424242") && !printed.contains("secret-info"), "{printed}");
+        let fail = StrategyOutcome::Fail { challenge: Some(serde_json::json!("secret-challenge")), status: None };
+        assert!(!format!("{fail:?}").contains("secret-challenge"));
     }
 
     #[test]

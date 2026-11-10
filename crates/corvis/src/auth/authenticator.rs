@@ -27,7 +27,6 @@ pub struct AuthFailure {
 }
 
 /// How [`Authenticator::authenticate`] ended, without an error.
-#[derive(Debug)]
 pub enum AuthResult {
     /// A strategy succeeded. The user is not stored on the request: see [`AuthResult::store_user`].
     Success { user: AuthenticatedUser, info: Option<Value> },
@@ -37,6 +36,18 @@ pub enum AuthResult {
     Pass,
     /// A strategy redirected: the response is stored with `respond_with` and the router sends it.
     Redirected,
+}
+
+/// Prints the variant only (a user and an info value can hold personal data).
+impl std::fmt::Debug for AuthResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AuthResult::Success { .. } => "AuthResult::Success { .. }",
+            AuthResult::Failed { failures } => return write!(f, "AuthResult::Failed {{ failures: {} }}", failures.len()),
+            AuthResult::Pass => "AuthResult::Pass",
+            AuthResult::Redirected => "AuthResult::Redirected",
+        })
+    }
 }
 
 impl AuthResult {
@@ -74,14 +85,15 @@ pub(crate) fn internal(message: impl Into<String>) -> HttpException {
 /// It never stores the user of a successful attempt: the original integration assigns `req.user` in the guard, after
 /// `handleRequest`, and so does [`AuthGuard`](super::AuthGuard). A guard of your own does what it wants with the
 /// [`AuthResult`] ([`AuthResult::store_user`] stores the user).
-#[derive(Default)]
+///
+/// It has no public constructor, so a module cannot shadow the core provider with an empty one.
 pub struct Authenticator {
     registry: OnceLock<StrategyRegistry>,
 }
 
 impl Authenticator {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Authenticator { registry: OnceLock::new() }
     }
 
     pub(crate) fn set_registry(&self, registry: StrategyRegistry) {
@@ -165,8 +177,8 @@ fn redirect_response(url: &str, status: Option<u16>) -> Result<Response, HttpExc
         return Err(internal("a strategy redirected to a URL that is not a valid header value"));
     };
     let status = status.unwrap_or(302);
-    if !(100..=999).contains(&status) || http::StatusCode::from_u16(status).is_err() {
-        return Err(internal(format!("a strategy redirected with the invalid status code {status}")));
+    if !(300..=399).contains(&status) {
+        return Err(internal(format!("a strategy redirected with the status code {status}, which is not a redirect (3xx)")));
     }
     let mut response = Response::new().with_status(status);
     response.headers_mut().insert(http::header::LOCATION, location);
@@ -217,7 +229,14 @@ mod tests {
         (a, counters)
     }
 
+    /// A context as the router builds it while a guard runs (the guard phase is on).
     fn ctx() -> ExecutionContext {
+        let c = bare_ctx();
+        crate::common::context::GuardPhase::install(c.request()).set(true);
+        c
+    }
+
+    fn bare_ctx() -> ExecutionContext {
         ExecutionContext::new(Request::empty(), Arc::new(Target::new("C")), Arc::new(Target::new("h")), None)
     }
 
@@ -290,6 +309,34 @@ mod tests {
         assert_eq!(stored.headers().get("location").unwrap(), "https://idp.example/authorize?x=1");
         assert_eq!(stored.headers().get("content-length").unwrap(), "0");
         assert!(matches!(stored.body(), crate::http::response::Body::Empty));
+    }
+
+    #[tokio::test]
+    async fn a_redirect_status_outside_3xx_is_an_internal_error() {
+        for status in [200u16, 401, 500, 299, 400, 0, 1000] {
+            let (a, _) = authenticator(vec![("a", StrategyOutcome::Redirect { url: "/x".into(), status: Some(status) })]);
+            let c = ctx();
+            let e = run(&a, &c, &["a"]).await.unwrap_err();
+            assert!(e.is_internal(), "{status}");
+            assert!(crate::common::context::PendingResponse::take(c.request()).is_none(), "{status}");
+        }
+    }
+
+    #[test]
+    fn results_debug_does_not_print_the_user() {
+        let user = AuthenticatedUser::new(json!({ "ssn": "424242" })).unwrap();
+        let r = AuthResult::Success { user, info: Some(json!("secret-info")) };
+        let printed = format!("{r:?}");
+        assert!(!printed.contains("424242") && !printed.contains("secret-info"), "{printed}");
+    }
+
+    #[tokio::test]
+    async fn a_redirect_outside_the_guard_phase_is_an_internal_error() {
+        let (a, _) = authenticator(vec![("a", StrategyOutcome::Redirect { url: "/x".into(), status: None })]);
+        let c = bare_ctx();
+        let e = run(&a, &c, &["a"]).await.unwrap_err();
+        assert!(e.is_internal());
+        assert!(crate::common::context::PendingResponse::take(c.request()).is_none());
     }
 
     #[tokio::test]

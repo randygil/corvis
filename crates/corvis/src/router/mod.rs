@@ -804,8 +804,11 @@ enum Pipeline {
 }
 
 async fn run_pipeline(route: Arc<CompiledRoute>, ctx: ExecutionContext) -> Pipeline {
+    let phase = crate::common::context::GuardPhase::install(ctx.request());
     for g in &route.guards {
+        phase.set(true);
         let verdict = g.can_activate(&ctx).await;
+        phase.set(false);
         if let Some(resp) = crate::common::context::PendingResponse::take(ctx.request()) {
             if !matches!(verdict, Ok(true)) {
                 crate::logger::Logger::new("ExceptionsHandler")

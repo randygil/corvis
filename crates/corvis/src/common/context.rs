@@ -206,6 +206,28 @@ impl PendingResponse {
     }
 }
 
+/// Marks that the guards of the route are running: [`HttpArgumentsHost::respond_with`] is valid only then. The router
+/// creates it before the first guard and sets the flag around each `can_activate` call.
+#[derive(Clone, Default)]
+pub(crate) struct GuardPhase(pub(crate) Arc<std::sync::atomic::AtomicBool>);
+
+impl GuardPhase {
+    /// Creates the marker (flag off) on the request, replacing an earlier one.
+    pub(crate) fn install(request: &Request) -> GuardPhase {
+        let phase = GuardPhase::default();
+        request.insert(phase.clone());
+        phase
+    }
+
+    pub(crate) fn set(&self, active: bool) {
+        self.0.store(active, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn is_active(request: &Request) -> bool {
+        request.get::<GuardPhase>().is_some_and(|p| p.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
 impl<'a> HttpArgumentsHost<'a> {
     /// Records a header for the response of the current HTTP request. It is added to the final response (success,
     /// error and filter responses) only when the response has no header with that name, and written to the `Res` of
@@ -295,15 +317,16 @@ impl<'a> HttpArgumentsHost<'a> {
         true
     }
 
-    /// Ends the request with `response`: the router sends it right after the current guard returns, without running
+    /// Ends the request with `response` from a guard: the router sends it right after the current guard returns, without running
     /// later guards, interceptors, pipes or the handler, and without exception filters, `#[header]` or route
     /// redirect settings. It still receives the headers recorded with `set_response_header` and
     /// `append_response_header`. The stored response wins whatever the guard returns (a discarded `Ok(false)` or
     /// error is logged); a second call replaces the first.
     ///
-    /// Returns `false`, storing nothing, in a WebSocket context.
+    /// Valid only while a guard runs: called from an interceptor, a handler or a hand-made context it stores nothing
+    /// and returns `false`, because nothing would send the response. It returns `false` too in a WebSocket context.
     pub fn respond_with(&self, response: Response) -> bool {
-        if self.ctx.inner.context_type != ContextType::Http {
+        if self.ctx.inner.context_type != ContextType::Http || !GuardPhase::is_active(&self.ctx.inner.request) {
             return false;
         }
         let req = &self.ctx.inner.request;
@@ -392,6 +415,7 @@ mod tests {
         let ctx = ws_ctx();
         let http = ctx.switch_to_http();
         assert!(!http.append_response_header("Set-Cookie", "a=1"));
+        GuardPhase::install(ctx.request()).set(true);
         assert!(!http.respond_with(Response::new()));
         assert!(AppendedHeaders::of(ctx.request()).is_none());
         assert!(PendingResponse::take(ctx.request()).is_none());
@@ -401,9 +425,24 @@ mod tests {
     fn respond_with_replaces_the_stored_response() {
         let ctx = http_ctx();
         let http = ctx.switch_to_http();
+        GuardPhase::install(ctx.request()).set(true);
         assert!(http.respond_with(Response::new().with_status(302u16)));
         assert!(http.respond_with(Response::new().with_status(301u16)));
         assert_eq!(PendingResponse::take(ctx.request()).unwrap().status_code(), 301);
         assert!(PendingResponse::take(ctx.request()).is_none());
+    }
+
+    #[test]
+    fn respond_with_is_refused_outside_the_guard_phase() {
+        let ctx = http_ctx();
+        let http = ctx.switch_to_http();
+        assert!(!http.respond_with(Response::new().with_status(302u16)), "no phase at all");
+        let phase = GuardPhase::install(ctx.request());
+        assert!(!http.respond_with(Response::new().with_status(302u16)), "phase off");
+        phase.set(true);
+        assert!(http.respond_with(Response::new().with_status(302u16)));
+        phase.set(false);
+        assert!(!http.respond_with(Response::new().with_status(301u16)));
+        assert_eq!(PendingResponse::take(ctx.request()).unwrap().status_code(), 302);
     }
 }
