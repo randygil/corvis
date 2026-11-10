@@ -218,6 +218,73 @@ impl LateController {
     }
 }
 
+/// A composite guard around an `AuthGuard` that lists it in `inner_guards`.
+pub struct Wrapper {
+    inner: AuthGuard,
+}
+
+#[async_trait]
+impl CanActivate for Wrapper {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        self.inner.can_activate(ctx).await
+    }
+
+    fn inner_guards(&self) -> Vec<&dyn CanActivate> {
+        vec![&self.inner]
+    }
+}
+
+#[controller("wrapped")]
+pub struct WrappedController;
+
+#[routes]
+impl WrappedController {
+    #[get("x")]
+    #[use_guards(Wrapper { inner: AuthGuard::new("headr") })]
+    fn x(&self) -> Value {
+        json!({ "ok": true })
+    }
+}
+
+/// A guard that lists itself as its inner guard.
+#[injectable]
+pub struct Loop;
+
+#[async_trait]
+impl CanActivate for Loop {
+    async fn can_activate(&self, _ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        Ok(true)
+    }
+
+    fn inner_guards(&self) -> Vec<&dyn CanActivate> {
+        vec![self]
+    }
+}
+
+#[controller("looping")]
+pub struct LoopingController;
+
+#[routes]
+impl LoopingController {
+    #[get("x")]
+    #[use_guards(Loop)]
+    fn x(&self) -> Value {
+        json!({ "ok": true })
+    }
+}
+
+#[controller("wrapped-ok")]
+pub struct WrappedOkController;
+
+#[routes]
+impl WrappedOkController {
+    #[get("x")]
+    #[use_guards(Wrapper { inner: AuthGuard::new("header") })]
+    fn x(&self) -> Value {
+        json!({ "ok": true })
+    }
+}
+
 #[injectable]
 pub struct InitProbe;
 
@@ -357,6 +424,15 @@ pub struct TypoModule;
 #[module(providers = [Provider::strategy::<StrategyOne>()], controllers = [DefaultController])]
 pub struct NoDefaultModule;
 
+#[module(providers = [Provider::strategy::<HeaderStrategy>(), UsersService], controllers = [WrappedController])]
+pub struct WrappedTypoModule;
+
+#[module(providers = [Provider::strategy::<HeaderStrategy>(), UsersService], controllers = [WrappedOkController])]
+pub struct WrappedOkModule;
+
+#[module(providers = [Provider::strategy::<StrategyOne>()], controllers = [LoopingController])]
+pub struct LoopingModule;
+
 #[module(providers = [Provider::strategy::<StrategyOne>()], controllers = [EmptyChainController])]
 pub struct EmptyChainModule;
 
@@ -450,6 +526,19 @@ async fn a_typo_in_a_guard_stops_startup_before_any_init_hook() {
     assert!(error.contains("GET /typo/cats") && error.contains("\"jtw\""), "{error}");
     assert!(error.contains("POST /typo/cats") && error.contains("\"nope\""), "every problem is listed: {error}");
     assert!(!INIT_RAN.load(Ordering::SeqCst), "no init hook ran");
+}
+
+#[corvis::test]
+async fn a_wrapper_that_lists_its_inner_guard_is_checked_at_startup() {
+    let error = init_error::<WrappedTypoModule>().await;
+    assert!(error.contains("GET /wrapped/x") && error.contains("\"headr\""), "{error}");
+    started::<WrappedOkModule>().await;
+}
+
+#[corvis::test]
+async fn a_guard_that_returns_itself_stops_startup_naming_the_route() {
+    let error = init_error::<LoopingModule>().await;
+    assert!(error.contains("GET /looping/x") && error.contains("32 levels"), "{error}");
 }
 
 #[corvis::test]

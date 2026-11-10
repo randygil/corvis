@@ -227,3 +227,167 @@ wrapper, whichever keeps the example's tests unchanged); its `posture.rs` and `s
 3. `max_token_length` 8192 bytes is confirmed.
 4. Implemented after #136 lands: start by comparing the design with the API #136 shipped, and record the adjustments
    in Implementation notes.
+
+## Implementation notes
+
+Written while implementing, after comparing the design with what #136 shipped (`corvis::auth`, archived change
+`2026-11-10-e3-strategy-core-and-guard-responses`).
+
+### Adjustments to the API of #136
+
+1. **`Strategy::name` is a method, not a constant.** `JwtStrategy<V>` returns `V::NAME` from it, so a validator still
+   chooses the name with `const NAME`. `Strategy::authenticate(&ExecutionContext, &AuthenticateOptions)` is as the
+   design assumed, `AuthenticatedUser::new` returns a `Result` (a user that does not serialize is an `Error` outcome)
+   and `Provider::strategy::<S>()` needs `S: Injectable + Strategy`, which `JwtStrategy<V>` implements by hand
+   (`ResolveCtx::get_or_construct::<V>()`).
+2. **The typed user lives in a private slot** read only by `User<T>`: the validator's `User` type needs no
+   registration, and handlers read it with `User<T>` (or `request.user_as::<T>()` for the JSON form), never with
+   `Request::get::<T>()`.
+3. **Failures carry the reason as the challenge** (`{"message": ..}`), which `AuthGuard` keeps as `request.auth_info()`
+   and never sends; no `Fail` carries a status.
+4. **No `auth-jwt` feature** (decision 1 of the design stands): the module is `#[cfg(feature = "jwt")]`, so the CI
+   feature loop needed no change. The three new integration test files are `#![cfg(feature = "jwt")]`.
+5. **Warnings run in `on_module_init`**, not in the constructor, so a logger installed with `use_logger` after
+   `CorvisFactory::create` sees them. Startup errors are `DiError::Factory` errors raised by the constructor
+   (`Error while instantiating JwtStrategy "jwt" (<validator type>): invalid JWT strategy options: <problem>`), so
+   they surface from `CorvisFactory::create`.
+
+### Decisions
+
+6. **HMAC secrets under 32 bytes are a startup error** (Review note 2), also for a secret a key provider returns: that
+   request fails with `key provider error` and the reason goes to the debug log. The spec requirements were rewritten
+   accordingly (the warning scenario became "Short secret" under the startup checks; the warnings requirement keeps
+   `ignore_expiration`, `allow_missing_exp` and the query extractor).
+7. **Shape of the verification core** (tasks 1.1 and 1.2): `verify_claims(token, &DecodingKey, &Validation,
+   &TimeRules)` returns `VerifyError` (`Decode(jsonwebtoken::errors::Error)` or `Claim(&'static str)`) so the strategy
+   maps reasons without parsing text; the time rules are the pure function `check_time_claims(&Value, &TimeRules,
+   now)`, which unit tests call with a fixed `now`. `JwtService::verify` passes `TimeRules::default()` (tolerance 0,
+   `exp` optional, not ignored) and keeps its messages unchanged.
+8. **`JwtKey` keeps the key material and parses it on demand.** A static key is parsed once, when the strategy is
+   built; a key a provider returns is parsed per request. The `Debug` of `JwtKey`, `JwtStrategyOptions` and
+   `JwtExtractor` prints kinds and sizes, never values, and parse errors never include key text.
+9. **`issuer` and `audience` take one value or a list** through `StringList` (`From<&str>`, `String`, `[&str; N]`,
+   `Vec<String>`, `Vec<&str>`).
+10. **`from_header` mirrors Node beyond `", "`**: the headers Node keeps once (`authorization`, `user-agent`, ...) give
+    their first value and `cookie` joins with `"; "`. `from_cookie` uses `Request::cookie`, which parses like
+    cookie-parser.
+11. **The `Authorization` header parser** takes the first two runs of non-space characters, which is what
+    `/(\S+)\s+(\S+)/` yields at its first match; JavaScript whitespace in the latin1 range is `\t \n \v \f \r`, space
+    and `\xa0` (the design list omitted the line breaks, which a header cannot contain anyway).
+12. **Token and key never reach a log or a message.** Failure reasons are fixed strings; `jwt audience invalid` and
+    `jwt issuer invalid` do not repeat the configured values (node's do), and the key provider's own error text is
+    logged at debug level only. `tests/auth_jwt_log.rs` captures every log level while bad tokens are sent.
+
+### Fixture and tests
+
+13. **Fixture shape.** Cases carry a token spec instead of fixed tokens (`{alg, key, claims}`, `{payloadText}`, `{pad}`
+    or `{raw}`; a claim `{"$now": n}` is `now + n`), signed by `jws` in the generator and again by `jsonwebtoken` in
+    the Rust test. Every case, time-dependent or not, is replayed this way. `jwt.json` has 65 cases and two runs of
+    `jwt.mjs` give identical files. The time cases keep at least 20 s between the claim and the boundary that
+    would flip the result (offsets of 10, 60 and 3600 s against a tolerance of 0 or 30 s); no assertion measures
+    elapsed time.
+14. **Repeated custom header** is recorded as one header `x-token: <t>, <t>` (what Node's `fetch` sends and Node's
+    server joins); two real headers, the no-break space and non-UTF-8 bytes are unit tests of the extractor, because
+    `TestRequest` sends neither.
+15. **Divergent cases (5):** uppercase `from_header` name, oversized token, token without `exp`, string `iat`, string
+    payload. Each records the status Corvis answers (`divergence.status`); the replay asserts it.
+16. **Extra test files:** `tests/auth_jwt_options.rs` (startup errors, opt-outs, limits, validator results, a proptest
+    of random credentials through HTTP) and `tests/auth_jwt_log.rs` (its own binary: the logger is process-wide).
+17. **Example.** `examples/cats-app` keeps a global guard named `AuthGuard` that skips `#[public]` targets and delegates
+    to `corvis::auth::AuthGuard::new("jwt")`: the framework's guard denies every WebSocket message, even with
+    `skip_public`, and the chat gateway is public. The wrapper lists its inner guard in `CanActivate::inner_guards` (see Security review, item 2), so its strategy name is checked at startup, and it does not return it from `as_any`, so the gateway warning of `corvis::auth` does not fire for a guard that lets public targets through. `JwtAuth` reads `JWT_SECRET` like `JwtModule` does; the existing startup tests still see
+    the `JWT_SECRET` error first because `JwtService` resolves before the strategy. A new `tests/jwt_auth.rs` covers
+    login, profile, bad tokens and a public route.
+
+## Security review (round 1)
+
+The first security review found the points below. The maintainer's decisions override the design where it said
+`JwtService` is untouched.
+
+1. **`JwtService::verify` checks `iss` and `aud` itself** (Medium, pre-existing). The crate's validation accepted a
+   token whose `iss` or `aud` was missing or not a string, and an `iss` list that merely intersected. `verify` now
+   turns the crate's audience validation off and applies `issuer_matches` and `audience_matches` (moved to
+   `crates/corvis/src/jwt.rs` and shared with the strategy): a missing or wrongly typed claim does not match, `aud` is a
+   string or a list of strings, `iss` must be a string. With nothing configured nothing changes. Errors for the cases
+   the crate already refused are unchanged.
+2. **Composite guards are checked at startup** (Low). New `CanActivate::inner_guards(&self) -> Vec<&dyn CanActivate>`
+   (default empty), followed at any depth by `check_routes`. Chosen over returning the inner guard from `as_any`
+   because `warn_gateways` also reads `as_any` and would warn for a wrapper that skips public targets. The cats-app
+   guard implements it, a test in `tests/auth_guard.rs` covers a wrapper with an unknown name and one with a valid
+   name, and the auth docs describe the pattern.
+3. **`crit` is refused** (Low): after `max_token_length` and before the key provider in the strategy (401, uniform body,
+   reason `unsupported critical header`), and at the start of `verify_claims`, so `JwtService::verify` refuses it too.
+4. **Syntactic check before the key provider**: exactly three non-empty base64url segments without padding (`jwt
+   malformed`), after the length limit and the `crit` check.
+5. **Error type of `JwtService::verify`**: the errors that come from `jsonwebtoken` (decoding, signature, algorithm and
+   the new issuer and audience refusals, built as `ErrorKind::InvalidIssuer` / `InvalidAudience`) are returned as
+   `jsonwebtoken::errors::Error` again, so `downcast_ref::<jsonwebtoken::errors::Error>()` works as before. Claim errors
+   (time claims, `crit`) are `pub(crate)` `VerifyError` values, which nobody could downcast to before either, since the
+   time checks used to be plain messages.
+6. **Docs** (EN and ES): provider errors are logged at debug level, so never put the raw token in one; with
+   `from_extractors` the first non-empty token wins, so order matters (a cookie first lets a cookie-planting attacker
+   override the header); a cookie token is an ambient credential (CSRF, `SameSite`); `typ` is not validated, so do not
+   sign other kinds of token with the same key and audience. A `typ` option is out of scope and a possible follow-up.
+
+## Security review (round 2)
+
+1. **`crit` check fails closed** (Low). `header_has_crit` returned `false` when `serde_json::Value` could not parse the
+   header, leaving it to `jsonwebtoken`, whose `Header` struct skips unknown members without validating them: a
+   correctly signed header with `crit` plus a member `Value` refuses (`1e400`, a lone surrogate, 200 levels of nesting,
+   raw bytes 0xFF 0xFE, `b64` with `1e999`) was accepted. It is now `check_header`, which returns `Malformed` unless the
+   first segment is base64url of a JSON object that `Value` parses, and `Crit` when the exact member `crit` is present.
+   The strategy answers the uniform 401 (reason `jwt malformed` in `auth_info`) before the key provider; `verify_claims`
+   returns an error, so `JwtService::verify` refuses too. This also stops a non-JSON header such as `a.a.a` from reaching
+   the key provider. In the strategy the check runs after the three-segment check. `CRIT` and a `crit` claim in the
+   payload stay accepted. Tests: the five headers (and a few more) in
+   `a_token_with_a_crit_header_or_the_wrong_shape_never_reaches_the_key_provider` and a unit test for `verify`.
+2. **Bounded guard nesting** (Info). `auth_guards_in` stops at depth 32; startup fails with an error that names the
+   route (a guard that returns itself no longer overflows the stack). Test in `tests/auth_guard.rs`.
+3. **Docs, `aud`** (Info): the wording says the claim must be a string equal to the audience or a list with a string
+   element equal to it; non-string elements are ignored, as in the Node library (EN and ES).
+4. **Docs, error text** (Info): the `Display` text of a verification error can quote parts of the token, never key
+   material, so it should not be returned to clients verbatim (EN and ES).
+
+## Security review (round 3)
+
+1. **No `serde_json::Value` on unverified bytes** (Low). `check_header` parsed the header with `Value`, before the key
+   provider and the signature. With `serde_json/raw_value` enabled by any crate of the build (sqlx does, so any app with
+   the ORM on Postgres), `Value` treats `{"$serde_json::private::RawValue":"<json>"}` specially and parses the inner
+   string again with a fresh recursion budget of 128: eight nested levels of 125 `[` (about 4.5 KB, under the default
+   `max_token_length`) overflow a 2 MiB stack in an unoptimized build, and the acceptance of a header varied with the
+   feature. `check_header` and `JwtService::decode` (which is unverified by contract) now deserialize into
+   `PlainJson`, a private type with a hand-written visitor that builds a `Value` itself: no special keys, no re-entrant
+   parsing, so the text parser's limit of 128 is the only depth budget and the result does not depend on features.
+   Numbers, escapes, surrogates and UTF-8 are still validated by the text parser, so the round 2 headers stay refused.
+   A header that used the magic key is now an ordinary object with that key (accepted unless it has `crit`).
+   Tests in `tests/auth_jwt_header.rs`, which turns `raw_value` on through a dev-dependency of `corvis` (dev builds
+   only; resolver 2 keeps it out of normal builds). The nested token of the finding is now a valid, signed header
+   (about 126 levels, under the limit), so its test asserts it is handled on a 2 MiB stack without a crash (accepted
+   by both paths), and a second test asserts that 200 levels are refused.
+2. **Audit of the rest.** `verify_claims` parses the payload into `Value` through `jsonwebtoken::decode`, which does so
+   only after the signature verified; that is fine. The key provider receives the raw token and does its own parsing.
+   Nothing else in `jwt.rs` or `auth/jwt/` deserializes unverified bytes.
+
+## Security review (round 4)
+
+1. **The header check keeps nothing** (Low). `check_header` built a full `Value` of the unverified header to learn two
+   facts, so a header such as `{"alg":"HS256","z":[[0],[0],...]}` cost about 97 times its size in transient heap before
+   the signature was checked. It now deserializes into `HeaderShape`, a visitor that reports whether the top level is an
+   object and whether any top-level key equals `crit` exactly (after unescaping, duplicates in any order included), and
+   discards every value through `Discard`. `Discard` is not `serde::de::IgnoredAny`: that type makes `serde_json` take
+   its fast `ignore_value` path, which does not validate numbers, surrogates or UTF-8 (the round 2 bypass). `Discard`
+   goes through `deserialize_any`, so the text parser validates the whole document as before (strings, escapes,
+   numbers, UTF-8, the depth limit of 128, trailing characters). Heap is O(longest key or string), not O(document); the
+   reviewer's memory probe reports 1.0x the decoded header.
+2. **Claims are decoded through `PlainJson`** (Info). After the signature, `verify_claims` decoded the payload with
+   `jsonwebtoken::decode::<Value>`, whose visitor re-parses the `RawValue` magic key when `serde_json/raw_value` is on,
+   so a signed, nested payload could overflow a 2 MiB stack in a debug build. It now uses
+   `decode::<PlainJson>(...).claims.0`. The generic `T` that `JwtService::verify::<T>` finally returns is the caller's
+   own type: a caller that asks for `Value` gets that type's own deserializer.
+3. **Feature independence** (Info). The claim that results do not depend on `serde_json` features holds for the features
+   in the lock file (`preserve_order`, `raw_value`). `arbitrary_precision` is not supported: with it, numbers reach a
+   visitor as a one-member map keyed `$serde_json::private::Number`, which `PlainJson` would keep as an object.
+   Tests: `tests/auth_jwt_header.rs` (the round 2 headers and the `crit` forms unchanged, a signed nested magic-key
+   payload on a 2 MiB stack through `verify` and the strategy, a wide header accepted when signed and refused with
+   `crit`). The reviewer's proofs of concept (`crit` matrices, 40000-header grammar fuzz with 0 bypasses, decode
+   parity) give the same results with and without `raw_value`.

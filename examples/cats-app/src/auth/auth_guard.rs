@@ -1,13 +1,15 @@
+use corvis::auth::AuthGuard as JwtGuard;
 use corvis::prelude::*;
-use corvis::{JwtService, extract_bearer_token};
 
-use crate::common::decorators::JwtPayload;
-
-/// Global JWT guard; routes marked with `#[public]` are skipped.
+/// Global guard: authenticates with the `jwt` strategy ([`super::JwtAuth`]) and lets `#[public]` routes through.
+///
+/// It wraps `corvis::auth::AuthGuard` to keep the chat gateway public: the framework's guard denies every WebSocket
+/// message, while this one skips public targets (gateway handlers included) before anything else.
 #[injectable]
 pub struct AuthGuard {
-    jwt_service: Arc<JwtService>,
     reflector: Arc<Reflector>,
+    #[init(JwtGuard::new("jwt"))]
+    jwt: JwtGuard,
 }
 
 #[async_trait]
@@ -17,12 +19,13 @@ impl CanActivate for AuthGuard {
         if is_public {
             return Ok(true);
         }
-        let request = ctx.switch_to_http().get_request();
-        let token = extract_bearer_token(request).ok_or(UnauthorizedException)?;
-        let payload: JwtPayload = self.jwt_service.verify_or_unauthorized(&token)?;
-        // 💡 We're assigning the payload to the request object here
-        // so that we can access it in our route handlers.
-        request.set_user(&payload);
-        Ok(true)
+        // The strategy stores the payload as the request's user, so that route handlers can read it.
+        self.jwt.can_activate(ctx).await
+    }
+
+    /// Exposes the inner guard to the startup check: a strategy name that nobody registered stops `init()` instead
+    /// of answering 500 on every request. Do not return it from `as_any`: that is for the guard itself.
+    fn inner_guards(&self) -> Vec<&dyn CanActivate> {
+        vec![&self.jwt]
     }
 }

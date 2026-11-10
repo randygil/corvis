@@ -10,8 +10,8 @@
 //! [`HttpArgumentsHost::respond_with`](crate::common::context::HttpArgumentsHost::respond_with) and
 //! [`append_response_header`](crate::common::context::HttpArgumentsHost::append_response_header).
 //!
-//! The module is always compiled and has no dependencies of its own; the strategy kinds that need crates (JWT,
-//! password hashing, ...) come with their own features.
+//! The module is always compiled and has no dependencies of its own; the strategy kinds that need crates (password
+//! hashing, ...) come with their own features. The JWT strategy, `corvis::auth::jwt`, comes with the `jwt` feature (a default one).
 //!
 //! ```ignore
 //! #[module(
@@ -31,6 +31,9 @@ mod guard;
 mod module;
 mod strategy;
 mod user;
+
+#[cfg(feature = "jwt")]
+pub mod jwt;
 
 pub use authenticator::{AuthFailure, AuthResult, Authenticator};
 pub use guard::AuthGuard;
@@ -89,6 +92,23 @@ fn auth_guard_of(guard: &dyn crate::common::guard::CanActivate) -> Option<&AuthG
     guard.as_any().and_then(|a| a.downcast_ref::<AuthGuard>())
 }
 
+/// How deep guards may nest through `inner_guards` before startup fails (a guard that returns itself would otherwise
+/// recurse until the stack overflows).
+const MAX_GUARD_DEPTH: usize = 32;
+
+/// The `AuthGuard`s of a guard and, through `CanActivate::inner_guards`, of the guards it delegates to. `Err` when
+/// the nesting is deeper than [`MAX_GUARD_DEPTH`].
+fn auth_guards_in(guard: &dyn crate::common::guard::CanActivate, depth: usize) -> Result<Vec<&AuthGuard>, ()> {
+    if depth > MAX_GUARD_DEPTH {
+        return Err(());
+    }
+    let mut found: Vec<&AuthGuard> = auth_guard_of(guard).into_iter().collect();
+    for inner in guard.inner_guards() {
+        found.extend(auth_guards_in(inner, depth + 1)?);
+    }
+    Ok(found)
+}
+
 /// Startup check of the strategy names of every compiled route guard (global, controller and route level). One
 /// error lists every problem with its route.
 pub(crate) fn check_routes(container: &Container, table: &RouterTable) -> crate::Result<()> {
@@ -96,11 +116,23 @@ pub(crate) fn check_routes(container: &Container, table: &RouterTable) -> crate:
     let mut problems: Vec<String> = Vec::new();
     for route in &table.routes {
         for guard in &route.guards {
-            let Some(auth_guard) = auth_guard_of(guard.as_ref()) else { continue };
-            if let Some(problem) = auth_guard.startup_problem(&authenticator) {
-                let line = format!("{} {}: {problem}", route.method.as_str(), route.path);
+            let Ok(auth_guards) = auth_guards_in(guard.as_ref(), 0) else {
+                let line = format!(
+                    "{} {}: guards are nested more than {MAX_GUARD_DEPTH} levels deep through inner_guards (does a guard return itself?)",
+                    route.method.as_str(),
+                    route.path
+                );
                 if !problems.contains(&line) {
                     problems.push(line);
+                }
+                continue;
+            };
+            for auth_guard in auth_guards {
+                if let Some(problem) = auth_guard.startup_problem(&authenticator) {
+                    let line = format!("{} {}: {problem}", route.method.as_str(), route.path);
+                    if !problems.contains(&line) {
+                        problems.push(line);
+                    }
                 }
             }
         }

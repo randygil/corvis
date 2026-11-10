@@ -181,6 +181,302 @@ fn decoding_key(alg: Algorithm, key: &str) -> crate::Result<DecodingKey> {
     })
 }
 
+/// How the time claims of a verified token are checked (see [`check_time_claims`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TimeRules {
+    /// Seconds of clock skew allowed on `exp` and `nbf`.
+    pub tolerance: u64,
+    /// Skip `exp` altogether (`ignoreExpiration`).
+    pub ignore_expiration: bool,
+    /// A token without `exp` fails.
+    pub require_exp: bool,
+}
+
+/// Why [`verify_claims`] refused a token.
+#[derive(Debug)]
+pub(crate) enum VerifyError {
+    /// The header, the algorithm, the key or the signature did not pass.
+    Decode(jsonwebtoken::errors::Error),
+    /// A claim did not pass; the text is node-jsonwebtoken's message where one exists.
+    Claim(&'static str),
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::Decode(e) => e.fmt(f),
+            VerifyError::Claim(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
+
+/// The time rules of node-jsonwebtoken's `verify`, with `now` in whole seconds: `iat`, `nbf` and `exp` must be numbers
+/// when present (`exp` is not looked at with `ignore_expiration`), `nbf > now + tolerance` is not active yet and
+/// `now >= exp + tolerance` is expired. A missing `exp` fails when `require_exp` is set.
+pub(crate) fn check_time_claims(claims: &Value, rules: &TimeRules, now: i64) -> Result<(), VerifyError> {
+    let now = now as f64;
+    let tolerance = rules.tolerance as f64;
+    let number = |name: &str, message: &'static str| -> Result<Option<f64>, VerifyError> {
+        match claims.get(name) {
+            None => Ok(None),
+            Some(v) => v.as_f64().map(Some).ok_or(VerifyError::Claim(message)),
+        }
+    };
+    number("iat", "invalid iat value")?;
+    if let Some(nbf) = number("nbf", "invalid nbf value")?
+        && nbf > now + tolerance
+    {
+        return Err(VerifyError::Claim("jwt not active"));
+    }
+    if !rules.ignore_expiration {
+        match number("exp", "invalid exp value")? {
+            Some(exp) if now >= exp + tolerance => return Err(VerifyError::Claim("jwt expired")),
+            None if rules.require_exp => return Err(VerifyError::Claim("exp claim required")),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Decodes `token` with `validation` (algorithms, and `iss`/`aud` when set on it) and checks its time claims against
+/// the clock. Shared by [`JwtService::verify`] and the JWT strategy.
+pub(crate) fn verify_claims(token: &str, key: &DecodingKey, validation: &Validation, rules: &TimeRules) -> Result<Value, VerifyError> {
+    match check_header(token) {
+        Some(HeaderProblem::Crit) => return Err(VerifyError::Claim("critical header parameters are not supported")),
+        Some(HeaderProblem::Malformed) => return Err(VerifyError::Claim("jwt malformed")),
+        None => {}
+    }
+    let claims = jsonwebtoken::decode::<PlainJson>(token, key, validation).map_err(VerifyError::Decode)?.claims.0;
+    check_time_claims(&claims, rules, chrono::Utc::now().timestamp())?;
+    Ok(claims)
+}
+
+/// node-jsonwebtoken's audience rule: one of the token's `aud` values (a string or a list of strings) equals one of
+/// the allowed. A missing claim or any other type does not match.
+pub(crate) fn audience_matches(claim: Option<&Value>, allowed: &[String]) -> bool {
+    match claim {
+        Some(Value::String(aud)) => allowed.contains(aud),
+        Some(Value::Array(list)) => list.iter().any(|v| v.as_str().is_some_and(|aud| allowed.iter().any(|a| a == aud))),
+        _ => false,
+    }
+}
+
+/// node-jsonwebtoken's issuer rule: the token's `iss` must be a string equal to one of the allowed.
+pub(crate) fn issuer_matches(claim: Option<&Value>, allowed: &[String]) -> bool {
+    claim.and_then(Value::as_str).is_some_and(|iss| allowed.iter().any(|a| a == iss))
+}
+
+fn base64url_segment(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// A cheap syntactic check: exactly three non-empty base64url segments (no padding).
+pub(crate) fn has_three_segments(token: &str) -> bool {
+    let mut parts = token.split('.');
+    matches!((parts.next(), parts.next(), parts.next(), parts.next()), (Some(a), Some(b), Some(c), None)
+        if base64url_segment(a) && base64url_segment(b) && base64url_segment(c))
+}
+
+/// What is wrong with the protected header of a token, found before any key is looked up.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum HeaderProblem {
+    /// The first segment is not base64url of a JSON object that the strict text parser accepts.
+    Malformed,
+    /// The header has a `crit` member (RFC 7515 section 4.1.11); Corvis supports no critical extensions.
+    Crit,
+}
+
+/// A JSON value built by the text parser alone. `serde_json::Value`'s own deserializer is not used on bytes an
+/// attacker controls: with the `raw_value` feature (which another crate of the build may enable) it treats the key
+/// `$serde_json::private::RawValue` specially and parses the inner string again with a fresh recursion budget, so
+/// nested keys could exhaust the stack. This visitor has no special keys and no re-entrant parsing: the parser's
+/// recursion limit of 128 is the only depth budget, whatever features are enabled.
+pub(crate) struct PlainJson(pub(crate) Value);
+
+impl<'de> serde::Deserialize<'de> for PlainJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        struct Plain;
+        impl<'de> Visitor<'de> for Plain {
+            type Value = Value;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+                Ok(Value::Bool(v))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+                Ok(Value::from(v))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+                Ok(Value::from(v))
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+                Ok(Value::from(v))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+                Ok(Value::String(v.to_owned()))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Value, E> {
+                Ok(Value::String(v))
+            }
+            fn visit_unit<E>(self) -> Result<Value, E> {
+                Ok(Value::Null)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+                let mut items = Vec::new();
+                while let Some(PlainJson(item)) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(Value::Array(items))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+                let mut out = serde_json::Map::new();
+                while let Some((key, PlainJson(value))) = map.next_entry::<String, PlainJson>()? {
+                    out.insert(key, value);
+                }
+                Ok(Value::Object(out))
+            }
+        }
+        deserializer.deserialize_any(Plain).map(PlainJson)
+    }
+}
+
+/// Parses untrusted JSON bytes with [`PlainJson`].
+pub(crate) fn parse_untrusted(bytes: &[u8]) -> Option<Value> {
+    serde_json::from_slice::<PlainJson>(bytes).ok().map(|p| p.0)
+}
+
+/// What the header check needs to know about a document, found without keeping any of it.
+struct HeaderShape {
+    object: bool,
+    crit: bool,
+}
+
+/// Deserializes and discards a value. Unlike `serde::de::IgnoredAny` it goes through `deserialize_any`, so the text
+/// parser validates everything (numbers, escapes, surrogates, UTF-8, the depth limit) as for a value that is kept.
+struct Discard;
+
+impl<'de> serde::Deserialize<'de> for Discard {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Discard;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_str<E>(self, _: &str) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_unit<E>(self) -> Result<Discard, E> {
+                Ok(Discard)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Discard, A::Error> {
+                while seq.next_element::<Discard>()?.is_some() {}
+                Ok(Discard)
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Discard, A::Error> {
+                while map.next_entry::<Discard, Discard>()?.is_some() {}
+                Ok(Discard)
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+/// A member name reduced to whether it is exactly `crit` (after unescaping).
+struct IsCrit(bool);
+
+impl<'de> serde::Deserialize<'de> for IsCrit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = IsCrit;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a member name")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<IsCrit, E> {
+                Ok(IsCrit(v == "crit"))
+            }
+        }
+        deserializer.deserialize_str(V)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HeaderShape {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        struct V;
+        const OTHER: HeaderShape = HeaderShape { object: false, crit: false };
+        impl<'de> Visitor<'de> for V {
+            type Value = HeaderShape;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_str<E>(self, _: &str) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_unit<E>(self) -> Result<HeaderShape, E> {
+                Ok(OTHER)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<HeaderShape, A::Error> {
+                while seq.next_element::<Discard>()?.is_some() {}
+                Ok(OTHER)
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<HeaderShape, A::Error> {
+                let mut crit = false;
+                while let Some(IsCrit(is_crit)) = map.next_key::<IsCrit>()? {
+                    crit |= is_crit;
+                    map.next_value::<Discard>()?;
+                }
+                Ok(HeaderShape { object: true, crit })
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
+/// Checks the protected header and fails closed: a header that is not a JSON object accepted by the strict text
+/// parser is refused, because the decoder skips unknown members without validating them and would let such a header
+/// carry a `crit` member unseen. Only the exact member name `crit` counts. The header is validated while it is read
+/// and nothing of it is kept, so the memory used does not grow with the document.
+pub(crate) fn check_header(token: &str) -> Option<HeaderProblem> {
+    use base64::Engine as _;
+    let header = token.split('.').next().unwrap_or("");
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(header) else { return Some(HeaderProblem::Malformed) };
+    match serde_json::from_slice::<HeaderShape>(&bytes) {
+        Ok(HeaderShape { object: true, crit }) => crit.then_some(HeaderProblem::Crit),
+        _ => Some(HeaderProblem::Malformed),
+    }
+}
+
 /// Signs and verifies JSON Web Tokens.
 #[derive(Clone)]
 pub struct JwtService {
@@ -262,32 +558,24 @@ impl JwtService {
         // `exp` and `nbf` are checked below with node-jsonwebtoken's rules.
         validation.validate_exp = false;
         validation.validate_nbf = false;
-        if let Some(iss) = &self.options.issuer {
-            validation.set_issuer(&[iss]);
-        }
-        match &self.options.audience {
-            Some(aud) => validation.set_audience(&[aud]),
-            None => validation.validate_aud = false,
-        }
-        let data = jsonwebtoken::decode::<Value>(token, &decoding_key(alg, key)?, &validation)?;
-        let claims = data.claims;
-        let now = chrono::Utc::now().timestamp() as f64;
-        let number = |name: &str| -> crate::Result<Option<f64>> {
-            match claims.get(name) {
-                None => Ok(None),
-                Some(v) => v.as_f64().map(Some).ok_or_else(|| anyhow::anyhow!("invalid {name} value")),
-            }
+        // `iss` and `aud` are checked below with the same rules as the JWT strategy: the crate accepts a token
+        // whose claim is missing, has another type or (`iss`) is a list that merely intersects.
+        validation.validate_aud = false;
+        let claims = match verify_claims(token, &decoding_key(alg, key)?, &validation, &TimeRules::default()) {
+            Ok(claims) => claims,
+            // Callers can still downcast to `jsonwebtoken::errors::Error` for what that crate refused.
+            Err(VerifyError::Decode(e)) => return Err(e.into()),
+            Err(e @ VerifyError::Claim(_)) => return Err(e.into()),
         };
-        number("iat")?;
-        if let Some(nbf) = number("nbf")?
-            && nbf > now
+        if let Some(iss) = &self.options.issuer
+            && !issuer_matches(claims.get("iss"), std::slice::from_ref(iss))
         {
-            anyhow::bail!("jwt not active");
+            return Err(jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidIssuer).into());
         }
-        if let Some(exp) = number("exp")?
-            && now >= exp
+        if let Some(aud) = &self.options.audience
+            && !audience_matches(claims.get("aud"), std::slice::from_ref(aud))
         {
-            anyhow::bail!("jwt expired");
+            return Err(jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidAudience).into());
         }
         Ok(serde_json::from_value(claims)?)
     }
@@ -307,7 +595,7 @@ impl JwtService {
         let payload = token.split('.').nth(1)?;
         use base64::Engine;
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        parse_untrusted(&bytes)
     }
 }
 
@@ -385,6 +673,37 @@ mod tests {
         format!("{message}.{sig}")
     }
     const HS256: &str = r#"{"alg":"HS256","typ":"JWT"}"#;
+
+    /// A header the decoder skips over but `serde_json::Value` refuses must not hide a `crit` member.
+    #[test]
+    fn a_header_that_is_not_plain_json_is_refused_before_the_decoder() {
+        use base64::Engine as _;
+        let jwt = JwtService::new(JwtModuleOptions::new("s"));
+        let claims = serde_json::json!({ "sub": 1 });
+        let nested = format!(r#"{{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":{}{}}}"#, "[".repeat(200), "]".repeat(200));
+        let headers = [
+            r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":1e400}"#,
+            r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true,"z":"\ud800"}"#,
+            nested.as_str(),
+            r#"{"alg":"HS256","b64":false,"crit":["b64"],"z":1e999}"#,
+            r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true}"#,
+            "[1]",
+        ];
+        for header in headers {
+            assert!(jwt.verify::<Value>(&forge(header, &claims, b"s")).is_err(), "{header}");
+        }
+        // Raw invalid UTF-8 cannot go through a `&str`: build that token by hand.
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let mut bytes = br#"{"alg":"HS256","crit":["urn:x"],"z":""#.to_vec();
+        bytes.extend([0xFF, 0xFE]);
+        bytes.extend(br#""}"#);
+        let message = format!("{}.{}", b64(&bytes), b64(claims.to_string().as_bytes()));
+        let sig = jsonwebtoken::crypto::sign(message.as_bytes(), &EncodingKey::from_secret(b"s"), Algorithm::HS256).unwrap();
+        assert!(jwt.verify::<Value>(&format!("{message}.{sig}")).is_err());
+        assert!(jwt.verify::<Value>("a.a.a").is_err());
+        // Another case of the name is not `crit`.
+        assert!(jwt.verify::<Value>(&forge(r#"{"alg":"HS256","CRIT":["x"]}"#, &claims, b"s")).is_ok());
+    }
 
     /// node-jsonwebtoken: `secretOrPrivateKey must have a value` / `secret or public key must be provided`.
     #[test]
@@ -464,6 +783,34 @@ mod tests {
         // An HS256 token "signed" with the public key is not accepted (no algorithm confusion).
         let confused = forge(HS256, &serde_json::json!({ "sub": 7 }), TEST_RSA_PUBLIC.as_bytes());
         assert!(jwt.verify::<Value>(&confused).is_err());
+    }
+
+    #[test]
+    fn time_claims_follow_the_boundaries_of_node_jsonwebtoken() {
+        let rules = TimeRules { tolerance: 30, ..Default::default() };
+        let check = |claims: Value, rules: &TimeRules| check_time_claims(&claims, rules, 1000).map_err(|e| e.to_string());
+        // exp: `now >= exp + tolerance` fails, one second before passes.
+        assert_eq!(check(serde_json::json!({ "exp": 970 }), &rules), Err("jwt expired".into()));
+        assert_eq!(check(serde_json::json!({ "exp": 971 }), &rules), Ok(()));
+        assert_eq!(check(serde_json::json!({ "exp": 1000 }), &TimeRules::default()), Err("jwt expired".into()));
+        assert_eq!(check(serde_json::json!({ "exp": 1001 }), &TimeRules::default()), Ok(()));
+        // nbf: `nbf > now + tolerance` fails, equal passes.
+        assert_eq!(check(serde_json::json!({ "nbf": 1030 }), &rules), Ok(()));
+        assert_eq!(check(serde_json::json!({ "nbf": 1031 }), &rules), Err("jwt not active".into()));
+        assert_eq!(check(serde_json::json!({ "nbf": 1000 }), &TimeRules::default()), Ok(()));
+        assert_eq!(check(serde_json::json!({ "nbf": 1001 }), &TimeRules::default()), Err("jwt not active".into()));
+        // Types.
+        assert_eq!(check(serde_json::json!({ "exp": "2099" }), &rules), Err("invalid exp value".into()));
+        assert_eq!(check(serde_json::json!({ "nbf": null }), &rules), Err("invalid nbf value".into()));
+        assert_eq!(check(serde_json::json!({ "iat": "x" }), &rules), Err("invalid iat value".into()));
+        // require_exp and ignore_expiration.
+        let strict = TimeRules { require_exp: true, ..Default::default() };
+        assert_eq!(check(serde_json::json!({}), &strict), Err("exp claim required".into()));
+        assert_eq!(check(serde_json::json!({ "exp": 2000 }), &strict), Ok(()));
+        let ignore = TimeRules { require_exp: true, ignore_expiration: true, ..Default::default() };
+        assert_eq!(check(serde_json::json!({}), &ignore), Ok(()));
+        assert_eq!(check(serde_json::json!({ "exp": 1 }), &ignore), Ok(()));
+        assert_eq!(check(serde_json::json!({ "exp": "junk" }), &ignore), Ok(()));
     }
 
     const TEST_RSA_PRIVATE: &str = include_str!("../tests/fixtures/jwt_rsa_private.pem");

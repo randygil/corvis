@@ -66,6 +66,8 @@ compression = ["dep:flate2", "dep:brotli"]
 proptest = "1"
 tokio = { workspace = true, features = ["test-util"] }
 serde = { workspace = true }
+# `raw_value` is what sqlx turns on in an app with the ORM; the JWT header tests need it on (dev builds only).
+serde_json = { workspace = true, features = ["raw_value"] }
 tokio-tungstenite = "0.24"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
 flate2 = "1"
