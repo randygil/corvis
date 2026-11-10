@@ -133,7 +133,9 @@ async fn a_broadcast_is_the_packet_of_a_direct_emit_and_reserved_names_are_refus
     assert_eq!(a.sent().await, direct);
     for name in ["connect", "connect_error", "disconnect", "disconnecting", "newListener", "removeListener"] {
         assert_eq!(io.emit(name, ()).await, Err(EmitError::ReservedEvent(name.to_string())));
-        assert!(matches!(io.emit_with_ack(name, ()).await, Err(e) if *e.kind() == BroadcastAckErrorKind::Emit(EmitError::ReservedEvent(name.to_string()))));
+        assert!(
+            matches!(io.emit_with_ack(name, ()).await, Err(e) if *e.kind() == BroadcastAckErrorKind::Emit(EmitError::ReservedEvent(name.to_string())))
+        );
     }
     assert!(a.sent().await.is_empty());
 }
@@ -247,7 +249,13 @@ async fn a_long_room_name_in_an_operator_fails_every_operation_and_never_widens_
     let (a, _) = connect(&io, "/").await;
     let long = "x".repeat(31);
     let expected = EmitError::InvalidRoom(RoomError::NameTooLong { len: 31, max: 30 });
-    for op in [io.to(long.as_str()), io.to(["ok", long.as_str()]), io.except(long.as_str()), io.within(long.as_str()).local(), io.to("ok").to(long.as_str()).timeout(Duration::from_secs(1))] {
+    for op in [
+        io.to(long.as_str()),
+        io.to(["ok", long.as_str()]),
+        io.except(long.as_str()),
+        io.within(long.as_str()).local(),
+        io.to("ok").to(long.as_str()).timeout(Duration::from_secs(1)),
+    ] {
         assert_eq!(op.emit("e", ()).await, Err(expected.clone()));
         assert!(matches!(op.emit_with_ack("e", ()).await, Err(e) if *e.kind() == BroadcastAckErrorKind::Emit(expected.clone())));
         assert_eq!(op.sockets_join("r").await, Err(expected.clone()));

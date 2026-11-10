@@ -131,9 +131,16 @@ fn register(namespace: &IoNamespace, io: &IoServer) {
                 async move {
                     let arg = arg(&args);
                     let event = arg.get("event").and_then(Value::as_str).unwrap_or("event").to_string();
-                    let values: Vec<IoValue> =
-                        arg.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| IoValue::from_serialize(v).ok()).collect()).unwrap_or_default();
-                    let base = if arg.get("from").and_then(Value::as_str) == Some("socket") { socket.broadcast() } else { socket.namespace().operator() };
+                    let values: Vec<IoValue> = arg
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(|v| IoValue::from_serialize(v).ok()).collect())
+                        .unwrap_or_default();
+                    let base = if arg.get("from").and_then(Value::as_str) == Some("socket") {
+                        socket.broadcast()
+                    } else {
+                        socket.namespace().operator()
+                    };
                     let _ = selection(base, &arg).emit(&event, values).await;
                     mark_done(&io).await;
                     if let Some(ack) = ack {
@@ -145,7 +152,10 @@ fn register(namespace: &IoNamespace, io: &IoServer) {
         socket.on("broadcast-ack", |socket, args, ack| async move {
             // Node keeps the first value of each client's answer.
             let first = |responses: &[Args]| -> Vec<String> {
-                let mut out: Vec<String> = responses.iter().map(|r| r.to_json().ok().and_then(|v| v.into_iter().next()).unwrap_or(Value::Null).to_string()).collect();
+                let mut out: Vec<String> = responses
+                    .iter()
+                    .map(|r| r.to_json().ok().and_then(|v| v.into_iter().next()).unwrap_or(Value::Null).to_string())
+                    .collect();
                 out.sort();
                 out
             };

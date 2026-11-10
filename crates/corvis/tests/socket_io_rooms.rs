@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use corvis::socket_io::adapter::{AckSink, Adapter, AdapterError, BroadcastOptions, InMemoryAdapter, LocalNamespace, MembershipSize, Packet, Room, SocketId, SocketInfo};
+use corvis::socket_io::adapter::{
+    AckSink, Adapter, AdapterError, BroadcastOptions, InMemoryAdapter, LocalNamespace, MembershipSize, Packet, Room, SocketId, SocketInfo,
+};
 use corvis::socket_io::{Args, Binary, BroadcastAckErrorKind, EmitError, IoOptions, IoServer, IoValue};
 use engine_support::io_client::{IoFixture, Msg, Raw, start};
 use engine_support::{open_polling, poll, post};
@@ -130,7 +132,8 @@ impl Variant {
             Variant::InMemory => IoOptions::new(),
             Variant::Replaced => {
                 let knobs = knobs.clone();
-                IoOptions::new().adapter(move |local: LocalNamespace| TestAdapter { inner: InMemoryAdapter::new(local), knobs: knobs.clone() })
+                IoOptions::new()
+                    .adapter(move |local: LocalNamespace| TestAdapter { inner: InMemoryAdapter::new(local), knobs: knobs.clone() })
             }
         }
     }

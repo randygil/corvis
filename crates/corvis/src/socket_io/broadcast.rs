@@ -268,7 +268,9 @@ impl BroadcastOperator {
         drop(collection);
         match outcome {
             Ok(Ok(super::adapter::AckProgress::Complete)) => Ok(responses),
-            Ok(Ok(super::adapter::AckProgress::TooLarge)) => Err(BroadcastAckError::new(BroadcastAckErrorKind::ResponsesTooLarge, responses)),
+            Ok(Ok(super::adapter::AckProgress::TooLarge)) => {
+                Err(BroadcastAckError::new(BroadcastAckErrorKind::ResponsesTooLarge, responses))
+            }
             Ok(Err(error)) => Err(BroadcastAckError::new(BroadcastAckErrorKind::Emit(error.into()), responses)),
             Err(_) => Err(BroadcastAckError::new(BroadcastAckErrorKind::Timeout, responses)),
         }

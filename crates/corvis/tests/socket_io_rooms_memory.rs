@@ -100,11 +100,6 @@ async fn a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reac
         assert!(fx.io.main().socket(id).unwrap().buffered_amount() > PAYLOAD, "the packet is queued on every recipient");
     }
     assert!(few < (PAYLOAD as isize) * 3 / 2 + 10 * PER_RECIPIENT, "one copy for 10 recipients, held {few}");
-    assert!(
-        all < few + 90 * PER_RECIPIENT,
-        "ninety more recipients cost {} bytes: a copy each would be {}",
-        all - few,
-        90 * PAYLOAD
-    );
+    assert!(all < few + 90 * PER_RECIPIENT, "ninety more recipients cost {} bytes: a copy each would be {}", all - few, 90 * PAYLOAD);
     assert!(all < (PAYLOAD as isize) * 3 / 2 + 100 * PER_RECIPIENT, "one copy for 100 recipients, held {all}");
 }

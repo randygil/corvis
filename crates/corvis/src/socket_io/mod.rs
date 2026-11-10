@@ -32,7 +32,7 @@
 //! ```
 //!
 //! Rooms and broadcast: `socket.join(room)`, `io.to(room).except(other).emit(...)`, `socket.broadcast().emit(...)`
-//! (see [`BroadcastOperator`]); the rooms of a namespace live in an adapter, in memory by default.
+//! (see [`BroadcastOperator`](crate::socket_io::BroadcastOperator)); the rooms of a namespace live in an adapter, in memory by default.
 //!
 //! Not supported (yet): gateways over Socket.IO, a Redis adapter, dynamic namespaces,
 //! connection state recovery, `volatile` and `compress` flags, catch-all listeners, custom parsers, Engine.IO v3

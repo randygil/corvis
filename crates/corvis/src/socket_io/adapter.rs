@@ -784,7 +784,10 @@ impl Adapter for InMemoryAdapter {
             }
             if let Err(error) = self.add_all(socket.id(), &rooms) {
                 // One socket at its cap must not block a bulk operation: it is skipped and logged.
-                socket.warn("a socket skipped by sockets_join", &format!("a socket of the namespace {} was not joined: {error}", self.local.name()));
+                socket.warn(
+                    "a socket skipped by sockets_join",
+                    &format!("a socket of the namespace {} was not joined: {error}", self.local.name()),
+                );
             }
         }
         Ok(())

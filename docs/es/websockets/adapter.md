@@ -401,9 +401,129 @@ error. Una aplicación que quiera silencio instala su propio gancho con `std::pa
 ninguno, porque un gancho es global al proceso). Los argumentos que un manejador saca de `Args` (`into_vec`) o mueve a una tarea que lanza dejan de
 cargarse cuando el manejador termina: desde entonces son memoria de la aplicación.
 
-No soportado: salas y broadcast, gateways sobre Socket.IO, un adaptador de Redis (cambios posteriores); espacios dinámicos,
+No soportado: gateways sobre Socket.IO, un adaptador de Redis (cambios posteriores); espacios dinámicos,
 recuperación del estado de la conexión, las banderas `volatile` y `compress`, oyentes globales, parsers personalizados,
 clientes de Engine.IO v3 y servir el bundle del cliente.
+
+### Salas y broadcast
+
+Un socket entra en salas con `socket.join(...)` y sale con `socket.leave(sala)`; `socket.rooms()` las lista. Las salas
+pertenecen a un espacio de nombres (`r` en `/` y `r` en `/admin` son dos salas), y todo socket está en la sala que lleva el
+nombre de su propio id desde que se conecta, antes de que corran sus manejadores de conexión, así que emitir a un id llega a
+ese socket. Una sala se elimina cuando sale su último socket. Un socket que se desconecta sigue en sus salas mientras corren
+los manejadores `on_disconnecting` (un manejador puede leer `socket.rooms()` y despedirse de quienes están en ellas) y en
+ninguna en `on_disconnect`; unir a una sala un socket que ya se desconectó no hace nada.
+
+Los broadcasts parten de un servidor, un espacio de nombres o un socket y encadenan `to`, `within` (el `in` de Node, una
+palabra clave en Rust), `except`, `local` y `timeout`. Cada llamada devuelve un operador nuevo, así que un operador base se
+puede reutilizar. Seleccionan los sockets que selecciona el adaptador en memoria de Node: `to` recibe una o más salas y llega
+a la unión, cada socket una vez; `except` recibe salas, ids de socket incluidos, y quita a sus miembros; sin `to`, un
+broadcast llega a todos los sockets del espacio de nombres; una sala en la que no hay nadie no selecciona a nadie. Un
+broadcast que parte de un socket (`socket.broadcast()`, `socket.to(...)`, `socket.within(...)`, `socket.except(...)`) excluye a
+ese socket.
+
+```rust
+use corvis::socket_io::{IoOptions, IoServer};
+
+let io = IoServer::new(IoOptions::new())?;
+io.main().on_connection(|socket| {
+    // Un nombre de sala que viene del cliente se comprueba: uno de más de 256 bytes falla, nunca se descarta en silencio.
+    socket.on("join", |socket, args, _ack| async move {
+        if let Ok(room) = args.get::<String>(0) {
+            let _ = socket.join(room);
+        }
+    });
+    socket.on("say", |socket, args, _ack| async move {
+        let (Ok(room), Ok(text)) = (args.get::<String>(0), args.get::<String>(1)) else { return };
+        // Todos los de la sala menos este socket.
+        let _ = socket.to(room).emit("said", (text,)).await;
+    });
+});
+
+// Desde cualquier sitio que tenga el servidor:
+io.emit("tick", (1,)).await?;                                       // todos los sockets de `/`
+io.to(["lobby", "news"]).except("muted").emit("notice", ("hi",)).await?;
+io.of("/admin")?.to("ops").emit("alert", ("disk",)).await?;
+```
+
+Las operaciones terminales (`emit`, `emit_with_ack`, `fetch_sockets`, `sockets_join`, `sockets_leave`,
+`disconnect_sockets`) son `async` y devuelven un `Result`, porque el adaptador que hay detrás puede ser uno de clúster: el
+mismo código funciona cuando se cambia el adaptador. Con el adaptador en memoria por defecto terminan sin esperar a ningún
+cliente. Un nombre de sala por encima del límite nunca provoca un pánico y nunca se descarta (quitarlo de `to` podría dejar
+la lista vacía, que significa todos): el operador guarda el error y toda operación terminal devuelve `EmitError::InvalidRoom`
+sin enviar ni cambiar nada. Los nombres de evento reservados se rechazan, igual que en un emit directo.
+
+#### Qué cuesta un broadcast
+
+Un broadcast codifica su paquete una vez y encola los mismos bytes en cada destinatario (una referencia a un único búfer
+compartido, adjuntos binarios incluidos), así que mientras se entrega el proceso retiene la codificación `E` una vez, más unas
+pocas decenas de bytes por destinatario (una referencia y una entrada de cola, y la instantánea de destinatarios: unos 24
+bytes cada uno), no `N x E`. Nunca espera a un destinatario: la cola de cada destinatario está acotada por
+`max_buffered_amount` (8 MiB por defecto), y un destinatario que la rebasa se cierra con `transport error` mientras el emisor
+y los demás destinatarios siguen (el broadcast devuelve `Ok`; no dice qué destinatarios se cerraron). Aún no hay un
+presupuesto de salida para todo el servidor (issue #176), así que un broadcast a `S` clientes que no leen puede dejar
+`S x max_buffered_amount` en cola, más un marco en vuelo por sesión como en cualquier emit; dimensiona
+`max_buffered_amount` y `max_sessions` con ese producto en mente. Los transportes copian el texto compartido a un marco
+cuando lo escriben, una sesión a la vez.
+
+La pertenencia a salas no se bloquea mientras se entregan los paquetes: un broadcast selecciona a sus destinatarios con un
+bloqueo de lectura, lo suelta y después entrega, así que un manejador puede entrar, salir y hacer broadcast durante un
+broadcast y un abanico grande no bloquea las entradas. La selección es el momento del broadcast: un socket que salió de una
+sala antes de que empezara no lo recibe, uno que se desconectó nunca recibe un paquete, y un socket que entra o sale mientras
+se entrega un broadcast puede recibir ese o no. Los paquetes que una tarea emite a un socket, por broadcast o directamente,
+llegan en el orden en que se emitieron. Un abanico muy grande cede el turno al runtime cada 512 destinatarios.
+
+#### Confirmaciones
+
+`io.timeout(Duration::from_secs(5)).to("room").emit_with_ack("question", ()).await` envía un paquete con un id a los
+destinatarios y se resuelve con la respuesta de cada uno, en el orden en que llegan, cuando todos han respondido. Falla con
+`BroadcastAckError`, cuyo mensaje es `operation has timed out` y cuyo `responses()` contiene las respuestas que llegaron, al
+llegar el plazo (el `timeout`, o si no `ack_timeout`, 30 s: Node sin `timeout()` falla de inmediato, una diferencia
+declarada), y con `ResponsesTooLarge` cuando las respuestas pasarían de `max_broadcast_ack_bytes` (se conservan las que
+llegaron). Un destinatario que se desconecta nunca responde, y la llamada termina en el plazo con lo que llegó; uno que ya
+espera `max_pending_acks` respuestas recibe el evento pero no se le espera. En el plazo, o cuando se abandona la llamada,
+ningún destinatario conserva una confirmación pendiente de ella. La respuesta de cada destinatario cuenta una vez y solo
+responden los destinatarios del broadcast. Node conserva solo el primer valor de cada respuesta; Corvis devuelve todos
+(`Args`). Mientras espera, un broadcast con confirmaciones retiene como mucho `max_broadcast_ack_bytes` (16 MiB) de
+respuestas más una entrada pendiente (una referencia y un id) por destinatario.
+
+#### Operaciones en bloque
+
+`sockets_join(salas)`, `sockets_leave(salas)` y `disconnect_sockets(close)` actúan sobre los sockets que selecciona un
+operador: `io.to("r1").sockets_join("r2").await?` hace que todos los sockets de `r1` entren en `r2`, y
+`io.to("r").disconnect_sockets(false)` hace que salgan del espacio de nombres (reciben `io server disconnect`) sin cerrar sus
+conexiones. Un socket en su tope de salas se omite y se registra un aviso; los demás entran. `fetch_sockets()` devuelve
+`RemoteSocket` con `id()`, `handshake()`, `rooms()` y `data()`, y `emit`, `join`, `leave` y `disconnect` que funcionan esté o
+no el socket conectado a este proceso (pasan por el adaptador); `local()` da el `IoSocket` cuando lo está. El resultado es
+una instantánea y su coste es proporcional a la selección, no al servidor.
+
+#### Límites de las salas
+
+| Límite | Valor por defecto | Node `socket.io` 4.8.4 | Al excederlo |
+|---|---|---|---|
+| `max_rooms_per_socket` (la sala de su propio id incluida) | 1.000 | ninguno | `RoomError::TooManyRooms`; la llamada no une ninguna de sus salas |
+| `max_room_name_length` (en `join`, `to`, `within`, `except`) | 256 bytes, al menos 20 | cualquier valor | `RoomError::NameTooLong`; en un operador, `EmitError::InvalidRoom` y no se envía nada |
+| Salas de un espacio de nombres | como mucho sockets x `max_rooms_per_socket`; las salas vacías se eliminan, y un socket que sale o se desconecta no deja pertenencia atrás | sin límite | derivado |
+| Salas nombradas en una cadena `to` / `except` | sin tope: la lista es de la propia aplicación y el coste es lineal en ella | sin tope | n/a |
+| Codificaciones por broadcast | una, compartida por todos los destinatarios | una | n/a |
+| Búfer de envío por destinatario | `max_buffered_amount`, 8 MiB | ninguno | esa sesión se cierra con `transport error`; el emisor y los demás no se ven afectados |
+| El emisor esperando a los destinatarios | nunca | nunca | n/a |
+| Plazo de la confirmación de un broadcast | `timeout()`, o si no `ack_timeout`, 30 s | `timeout()`; sin él la llamada falla de inmediato | `operation has timed out` con las respuestas hasta entonces |
+| `max_broadcast_ack_bytes` (respuestas reunidas por un broadcast) | 16 MiB | ninguno | se descartan las respuestas siguientes; `ResponsesTooLarge` |
+
+Diferencias que un cliente puede ver, cada una declarada en el arnés con el escenario que la ejercita: la sala 1.001 de un
+socket y un nombre de sala de 257 bytes se rechazan (Node los acepta), y una confirmación de broadcast sin `timeout()` espera
+`ack_timeout` (Node falla antes de que ningún cliente responda). Las demás filas son iguales a Node o solo las ve el código
+del servidor.
+
+#### El adaptador
+
+Las salas y los broadcasts pasan por un adaptador, uno por espacio de nombres: `IoOptions::adapter(fábrica)` reemplaza el
+adaptador en memoria por defecto (el `io.adapter(...)` de Node). Su trait tiene pertenencia síncrona de los sockets locales
+y operaciones `async` y falibles para todo lo que abarca un clúster (broadcast, broadcast con confirmaciones, sockets de
+salas, fetch, añadir y quitar sockets, desconectar, número de servidores), el paquete le llega antes de codificarse, y las
+opciones de broadcast llevan las salas, las salas excluidas y las banderas, como los mensajes de `@socket.io/redis-adapter`.
+Está oculto e inestable hasta que el adaptador de Redis (issue #36) lo implemente por primera vez.
 
 ## Seguridad
 

@@ -45,6 +45,15 @@ impl ServerInner {
     /// callback no longer holds the server.
     pub(crate) fn release(&self) {
         self.engine.on_connection(|socket| socket.close());
+        // The adapters release what they hold; without a runtime there is nothing to wait for (the in-memory adapter
+        // has already seen every socket leave).
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let namespaces: Vec<IoNamespace> = self.namespaces.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+            for namespace in namespaces {
+                let adapter = namespace.adapter().clone();
+                runtime.spawn(async move { adapter.close().await });
+            }
+        }
     }
 
     /// Reports `reason` to every connected socket (without a DISCONNECT packet) and removes them from their
