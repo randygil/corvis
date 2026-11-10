@@ -41,3 +41,14 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Password hashing with real parameters is memory-hard: without optimization the few tests that use the defaults take
+# seconds instead of milliseconds.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.bcrypt]
+opt-level = 3
+[profile.dev.package.blowfish]
+opt-level = 3

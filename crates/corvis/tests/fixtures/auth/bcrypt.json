@@ -1,0 +1,560 @@
+{
+  "bcryptjs": "3.0.3",
+  "fromOriginal": [
+    {
+      "name": "empty",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuubyCG3zY1GIXMyxfivm.ClDiInHzxjiq",
+      "password": "",
+      "checks": [
+        {
+          "what": "password",
+          "password": "",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "x",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": true
+        }
+      ]
+    },
+    {
+      "name": "ascii",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuu2r9OfJnfCsdneAXAGHnS4UpFFP8WIrW",
+      "password": "secret",
+      "checks": [
+        {
+          "what": "password",
+          "password": "secret",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "secrez",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "latin",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuum174eFeoTj0DHmtuueFaS3Wde4P7wHG",
+      "password": "pässword",
+      "checks": [
+        {
+          "what": "password",
+          "password": "pässword",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "pässworz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "emoji",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuv/f9W4XgEKV4Af/PpL9lhEoigsUQyIu",
+      "password": "🔑secret",
+      "checks": [
+        {
+          "what": "password",
+          "password": "🔑secret",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "🔑secrez",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "nul-middle",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuu1XXjbjD7ZfXxmr5GJxwjyi56IwyctvO",
+      "password": "pass\u0000word",
+      "checks": [
+        {
+          "what": "password",
+          "password": "pass\u0000word",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "pass\u0000worz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "nul-end",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuTC6J5n/B5D26/GUDlcsDwZ58ojbMo8q",
+      "password": "pass\u0000",
+      "checks": [
+        {
+          "what": "password",
+          "password": "pass\u0000",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "passz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "nul-start",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuu0KrEds0Gnc42IqenA9hlK45bZSJlES",
+      "password": "\u0000pass",
+      "checks": [
+        {
+          "what": "password",
+          "password": "\u0000pass",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "\u0000pasz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "bytes-71",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuMCu.k1vM/ywQwiONaEn3oEMlZoCVBd6",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "checks": [
+        {
+          "what": "password",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "bytes-72",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuBzzIgyKkz7xMWYSzkIjUSnxEQFQ0WNe",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "checks": [
+        {
+          "what": "password",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "bytes-73",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuBzzIgyKkz7xMWYSzkIjUSnxEQFQ0WNe",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "checks": [
+        {
+          "what": "password",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "first-72-bytes",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+          "expected": true
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "bytes-73-differs-at-end",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuBzzIgyKkz7xMWYSzkIjUSnxEQFQ0WNe",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+      "checks": [
+        {
+          "what": "password",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+          "expected": true
+        },
+        {
+          "what": "first-72-bytes",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+          "expected": true
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "bytes-100",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuBzzIgyKkz7xMWYSzkIjUSnxEQFQ0WNe",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "checks": [
+        {
+          "what": "password",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "first-72-bytes",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+          "expected": true
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "multibyte-boundary",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuoVx8RufeJl2sf6nnK3ltb8OHjZZZsny",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaé",
+      "checks": [
+        {
+          "what": "password",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaé",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "space",
+      "cost": 4,
+      "hash": "$2b$04$abcdefghijklmnopqrstuuK.pyI8U/wK00DF1q5BFcbCCNWo1QCj2",
+      "password": " leading and trailing ",
+      "checks": [
+        {
+          "what": "password",
+          "password": " leading and trailing ",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": " leading and trailingz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "ascii-cost-10",
+      "cost": 10,
+      "hash": "$2b$10$abcdefghijklmnopqrstuuqflPDzB6gcMhKa1rZqKiun2YGL5sa2u",
+      "password": "secret",
+      "checks": [
+        {
+          "what": "password",
+          "password": "secret",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "secrez",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "latin-cost-10",
+      "cost": 10,
+      "hash": "$2b$10$abcdefghijklmnopqrstuu0y2UE7X5UDNypUhfmasP3PbPMQuqr7C",
+      "password": "pässword",
+      "checks": [
+        {
+          "what": "password",
+          "password": "pässword",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "pässworz",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "bytes-73-cost-10",
+      "cost": 10,
+      "hash": "$2b$10$abcdefghijklmnopqrstuuiYfj.JCH/8Hff5KmeyaPABzfEqwvS.a",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "checks": [
+        {
+          "what": "password",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "first-72-bytes",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+          "expected": true
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "ascii-2a",
+      "cost": 4,
+      "hash": "$2a$04$abcdefghijklmnopqrstuu2r9OfJnfCsdneAXAGHnS4UpFFP8WIrW",
+      "password": "secret",
+      "checks": [
+        {
+          "what": "password",
+          "password": "secret",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "secrez",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    },
+    {
+      "name": "ascii-2y",
+      "cost": 4,
+      "hash": "$2y$04$abcdefghijklmnopqrstuu2r9OfJnfCsdneAXAGHnS4UpFFP8WIrW",
+      "password": "secret",
+      "checks": [
+        {
+          "what": "password",
+          "password": "secret",
+          "expected": true
+        },
+        {
+          "what": "changed",
+          "password": "secrez",
+          "expected": false
+        },
+        {
+          "what": "empty",
+          "password": "",
+          "expected": false
+        }
+      ]
+    }
+  ],
+  "fromCorvis": [
+    {
+      "name": "empty",
+      "password": "",
+      "hash": "$2b$04$/gbmzMPMPAA.Yt0q2hvf1.hOS0u4TolCjJQPLK5q2C9G6LdfsU4M.",
+      "expected": true,
+      "wrongPassword": "x",
+      "wrongExpected": false
+    },
+    {
+      "name": "ascii",
+      "password": "secret",
+      "hash": "$2b$04$jnBKVcsamLD7YdLdR3HzMu3aIlPlzTGRH0cNhhZmfBqJ4x3jk0hqa",
+      "expected": true,
+      "wrongPassword": "secrez",
+      "wrongExpected": false
+    },
+    {
+      "name": "latin",
+      "password": "pässword",
+      "hash": "$2b$04$8P9ZknVZ0F2OxdNBbjmsNeHyMiL6eyo5BZ3exv96kxIMxJEQJj3pK",
+      "expected": true,
+      "wrongPassword": "pässworz",
+      "wrongExpected": false
+    },
+    {
+      "name": "emoji",
+      "password": "🔑secret",
+      "hash": "$2b$04$sqw1.dbIdl3laGrqx0w02.OkgG6jTItRTzRpy3A2bsObg68RXoDn2",
+      "expected": true,
+      "wrongPassword": "🔑secrez",
+      "wrongExpected": false
+    },
+    {
+      "name": "nul-middle",
+      "password": "pass\u0000word",
+      "hash": "$2b$04$Zjy9xesmR7Qu/VQcOXWZae3DeVeE1Zsyd8z/7aZsYVN6CeAfBDy5K",
+      "expected": true,
+      "wrongPassword": "pass\u0000worz",
+      "wrongExpected": false
+    },
+    {
+      "name": "nul-end",
+      "password": "pass\u0000",
+      "hash": "$2b$04$vjZfo1fb4sCkO/Syhk3bCer1mp0kKo48zNE2etywdiljYiji8TTKq",
+      "expected": true,
+      "wrongPassword": "passz",
+      "wrongExpected": false
+    },
+    {
+      "name": "nul-start",
+      "password": "\u0000pass",
+      "hash": "$2b$04$VHDUlvyq43uF83xl4pvdIO0DIteqIiLDxe9waT1ARBwfPwrjiMKU2",
+      "expected": true,
+      "wrongPassword": "\u0000pasz",
+      "wrongExpected": false
+    },
+    {
+      "name": "bytes-71",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hash": "$2b$04$HioofMoqSVNNySvyFJu0xOHCIXEBqoe0aXmXj3pCBvQih5THZ.sGW",
+      "expected": true,
+      "wrongPassword": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+      "wrongExpected": false
+    },
+    {
+      "name": "bytes-72",
+      "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hash": "$2b$04$5ILLguKdIdwaVyfw7sGewuEPqEZ5sPlMMiBtFzQmvnKo3DmS53a06",
+      "expected": true,
+      "wrongPassword": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+      "wrongExpected": false
+    },
+    {
+      "name": "space",
+      "password": " leading and trailing ",
+      "hash": "$2b$04$8aI57/snpuhWFKXC1eOilOlqUcGWmUrRZnD/4kCsW9JXYhKPcS8Ne",
+      "expected": true,
+      "wrongPassword": " leading and trailingz",
+      "wrongExpected": false
+    },
+    {
+      "name": "ascii-cost-10",
+      "password": "secret",
+      "hash": "$2b$10$SPPH0Se8ifD1.JD0hx6N6eSTAD1sK49C2CWBNc71U06YOyrEPCwAC",
+      "expected": true,
+      "wrongPassword": "secrez",
+      "wrongExpected": false
+    },
+    {
+      "name": "latin-cost-10",
+      "password": "pässword",
+      "hash": "$2b$10$jDPEkltcXKBD6zCQ4T7L..AIAohUcmJgPYTcvGL43zHIqs0Gfdzu.",
+      "expected": true,
+      "wrongPassword": "pässworz",
+      "wrongExpected": false
+    }
+  ]
+}

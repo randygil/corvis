@@ -69,7 +69,7 @@ jobs:
         shell: bash
         run: |
           cargo clippy -p corvis --no-default-features -- -D warnings
-          for f in jwt websockets health-tls compression tls socket-io; do
+          for f in jwt websockets health-tls compression tls socket-io auth-local; do
             cargo clippy -p corvis --no-default-features --features "$f" -- -D warnings
           done
 
@@ -112,6 +112,8 @@ jobs:
         run: cargo test --workspace --no-fail-fast
       - name: Test the compression feature
         run: cargo test -p corvis --features compression --no-fail-fast
+      - name: Test the auth-local feature
+        run: cargo test -p corvis --features auth-local --no-fail-fast
       - name: Test the socket-io feature
         run: cargo test -p corvis --features socket-io --no-fail-fast
       - name: Test the tls feature

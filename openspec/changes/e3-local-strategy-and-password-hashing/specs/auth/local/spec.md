@@ -31,12 +31,16 @@ exception is an error.
 
 ### Requirement: Credentials are read like passport-local
 The local strategy SHALL read the username and the password from the fields `username` and `password` by default,
-with configurable field names, in the parsed body (JSON or `application/x-www-form-urlencoded`) and then, when the
-body gives no credential, in the query string, as `passport-local` 1.0.0 does. A field name that is empty MUST stop
-the application at startup.
+with configurable field names, in the parsed body (JSON or `application/x-www-form-urlencoded`) as `passport-local`
+1.0.0 does. The query string SHALL be read only when `allow_query_credentials()` is set (off by default, a startup
+warning when on). An empty field name MUST stop the application at startup.
 
 #### Scenario: Credentials in the query string
-- **WHEN** the body is empty and the request is `POST /auth/login?username=ana&password=secret`
+- **WHEN** the request is `POST /auth/login?username=ana&password=secret` with no body and the option is not set
+- **THEN** the credentials are missing and the response is the 401, with a divergence recorded in the fixture
+
+#### Scenario: Credentials in the query string, opted in
+- **WHEN** the same request reaches a strategy with `allow_query_credentials()`
 - **THEN** the validator receives `ana` and `secret`, as in the original
 
 #### Scenario: Form body
@@ -44,7 +48,7 @@ the application at startup.
 - **THEN** the validator receives `ana` and `secret`
 
 #### Scenario: Body value wins over the query
-- **WHEN** the body is `{"username":"ana","password":"secret"}` and the query is `?username=eve`
+- **WHEN** `allow_query_credentials()` is set and the body is `{"username":"ana","password":"secret"}` and the query is `?username=eve`
 - **THEN** the validator receives `ana`
 
 ### Requirement: Field paths follow passport-local lookup
@@ -101,12 +105,17 @@ has no limit besides the body size.
 ### Requirement: New hashes use argon2id with documented parameters
 The password hasher SHALL create argon2id hashes (version 19) in PHC string format with, by default, 19456 KiB of
 memory, 2 iterations, parallelism 1, a 16-byte random salt from the operating system's generator and a 32-byte
-output. The parameters SHALL be configurable; configured values weaker than these defaults in memory or iterations
-SHALL log a warning when the hasher is created.
+output. The parameters SHALL be configurable, but values below the floor (argon2id 19456 KiB with 2 iterations, or
+47104 KiB with 1; bcrypt cost 10) MUST fail creation unless weak parameters are explicitly allowed, which logs a
+warning.
 
 #### Scenario: Default hash format
 - **WHEN** a hasher with default options hashes `"secret"`
 - **THEN** the result starts with `$argon2id$v=19$m=19456,t=2,p=1$` and verifies with `"secret"`
+
+#### Scenario: Parameters below the floor
+- **WHEN** a hasher is created with argon2id at 8 KiB and 1 iteration, or with bcrypt cost 4
+- **THEN** creation fails, unless the options explicitly allow weak parameters, and then it succeeds and logs a warning
 
 #### Scenario: Two hashes of the same password
 - **WHEN** the same password is hashed twice
@@ -166,10 +175,10 @@ lower bcrypt cost), or cannot be parsed.
 - **THEN** `needs_rehash` reports `true`; for a hash made with the configured parameters it reports `false`
 
 ### Requirement: Stored hashes cannot exhaust resources
-Before running any key derivation, verification MUST refuse with an error a hash longer than 512 bytes, a bcrypt hash
-with a cost above `max_bcrypt_cost` (14 by default), and an argon2 hash with memory above 262144 KiB, more than 16
-iterations or parallelism above 16 (each configurable). A hasher configured with parameters above these verification
-limits MUST fail to be created, since it could not verify its own hashes.
+Before any slot is taken or any key derivation, verification MUST refuse a hash longer than 512 bytes, a bcrypt hash
+with cost above `max_bcrypt_cost` (14), an argon2 hash with memory above 65536 KiB, more than 8 iterations or
+parallelism above 16, and an argon2 hash with a salt under 8 bytes. Each limit is overridable with `VerifyLimits` and raised to the hasher's own hashing parameters when those are
+higher.
 
 #### Scenario: Planted high-cost bcrypt hash
 - **WHEN** a password is verified against a well-formed `$2b$31$...` hash
@@ -179,38 +188,122 @@ limits MUST fail to be created, since it could not verify its own hashes.
 - **WHEN** a password is verified against `$argon2id$v=19$m=4194304,t=1,p=1$...`
 - **THEN** an error is returned and no key derivation ran
 
+#### Scenario: Short argon2 salt
+- **WHEN** a password is verified against an argon2 hash whose salt is 7 bytes
+- **THEN** the hash is malformed, and neither a slot nor a key derivation was used
+
+#### Scenario: Own parameters above the default limits
+- **WHEN** a hasher is configured with 100000 KiB and 9 iterations and verifies its own hash
+- **THEN** the result is `true`, while a default hasher refuses that hash without any derivation
+
+### Requirement: Verification limits have upper bounds
+A `VerifyLimits` above 1048576 KiB of argon2 memory, 64 argon2 iterations or bcrypt cost 20 MUST fail construction,
+as MUST hashing parameters above them. A startup warning SHALL be logged when `max_concurrent` times the argon2
+memory limit exceeds 1 GiB.
+
+#### Scenario: Limits above the upper bounds
+- **WHEN** `VerifyLimits` has `max_bcrypt_cost(21)`, 1048577 KiB of memory or 65 iterations
+- **THEN** creating the hasher fails
+
+### Requirement: Non-canonical bcrypt hashes are refused
+A bcrypt hash whose last salt character or last digest character has non-zero unused trailing bits MUST be refused as
+malformed before any key derivation: no bcrypt implementation writes such a hash.
+
+#### Scenario: Altered trailing bits
+- **WHEN** the last salt character or the last digest character of a valid `$2b$` hash is changed to a character with
+  non-zero trailing bits
+- **THEN** the hash is malformed and no key derivation ran
+
 ### Requirement: Hash computations are bounded and off the async workers
-The hasher SHALL run key derivations on blocking threads, never on the async workers, and SHALL run at most
-`max_concurrent` of them at a time, `std::thread::available_parallelism()` by default; further calls wait for a slot.
-Blocking variants of `hash` and `verify` SHALL exist for code outside an async context.
+The hasher SHALL run key derivations on blocking threads, never on the async workers, and at most `max_concurrent`
+at a time, `std::thread::available_parallelism()` capped at 16 by default (an explicit value is honoured up to
+1024, so the defaults never reach the memory warning). Further calls wait for a slot.
 
 #### Scenario: Concurrency limit
 - **WHEN** the hasher has `max_concurrent(2)` and five verifications start together
 - **THEN** at no point more than two key derivations run, and all five complete with correct results
 
+### Requirement: The wait for a slot is bounded
+At most `max_waiting` calls (default 32 times `max_concurrent`, at least 1) SHALL wait for a slot, each for at most
+`acquire_timeout` (default 10 s). A call that finds the queue full or waits too long MUST fail with
+`PasswordError::Busy` without any key derivation; a cancelled waiter frees its place. A login validator answers it
+`503 Service Unavailable`, the same for every user.
+
+#### Scenario: Full queue
+- **WHEN** `max_concurrent(1)` and `max_waiting(2)` are configured, the slot is held and two calls wait
+- **THEN** the next call fails at once with `Busy` and no key derivation ran for it
+
+#### Scenario: Cancelled waiter
+- **WHEN** one of the two waiting calls is cancelled
+- **THEN** the next call is accepted into the queue
+
+#### Scenario: Busy over HTTP
+- **WHEN** the only slot is held and a known and an unknown user log in through the documented validator
+- **THEN** both get the same 503 response
+
+### Requirement: Blocking variants are for code outside a runtime
+`hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking` and `verify_dummy_blocking` MUST return
+`PasswordError::InsideRuntime` at once, without waiting or deriving, inside any Tokio runtime context. Outside one they
+wait for a slot without a Tokio timer, honouring `acquire_timeout` and `max_waiting` (`Busy`), and derive on the
+calling thread.
+
+#### Scenario: Inside a runtime
+- **WHEN** a blocking variant is called on a multi-thread or current-thread runtime, a `spawn_blocking` thread or a
+  `LocalSet`
+- **THEN** it returns `InsideRuntime` at once, nothing panics and no key derivation ran
+
+#### Scenario: Contention outside a runtime
+- **WHEN** the only slot is held and a blocking variant is called on a plain thread
+- **THEN** it returns `Busy` after `acquire_timeout`, and succeeds when the slot frees earlier
+
+#### Scenario: Mixed async load
+- **WHEN** hundreds of async `verify` and `hash` calls run at once and the queue overflows
+- **THEN** every call ends with `Ok` or `Busy`, and a timer on the same runtime keeps firing
+
 ### Requirement: Unknown users cost a real verification
-The hasher SHALL provide `verify_dummy(password)`, which runs one verification with the configured algorithm and
-parameters against a hash created when the hasher was built and always returns `false`, and
-`verify_or_dummy(password, stored_hash)`, which verifies against the stored hash when there is one and runs
-`verify_dummy` otherwise. The dummy algorithm SHALL be configurable (for example bcrypt with the cost of most stored
-hashes during a migration).
+The hasher SHALL provide `verify_dummy(password)`, one verification against a hash created at construction with the
+configured algorithm (or `dummy_algorithm`), always `Ok(false)`, and `verify_or_dummy(password, stored)`, which
+verifies against the stored hash when there is one and runs `verify_dummy` otherwise.
 
 #### Scenario: Unknown user
 - **WHEN** a validator calls `verify_or_dummy(password, None)` for an unknown username
-- **THEN** the result is `false` and exactly one key derivation ran with the configured algorithm and parameters, the
-  same count as for a known user with a hash made by this hasher
+- **THEN** the result is `Ok(false)` and exactly one key derivation ran, as for a known user with a hash made by this
+  hasher
 
 #### Scenario: Dummy never matches
 - **WHEN** `verify_dummy` is called with any password, including an empty one
-- **THEN** the result is `false`
+- **THEN** the result is `Ok(false)`
 
-### Requirement: A refused stored hash costs a real verification
-When a stored hash is refused (malformed, unsupported or over a limit), `verify_or_dummy` MUST run the dummy
-verification before returning the error, so a broken stored hash does not answer faster than an unknown user.
+### Requirement: A refused stored hash answers like an unknown user
+When a stored hash is malformed, unsupported or over a limit, `verify_or_dummy` MUST run the dummy verification and
+return `Ok(false)`. The warning naming the reason (never the hash or the user input) MUST be logged only after the
+dummy ran (not on `Busy`), at most once a minute per reason with the count of those suppressed. A refusal found only
+inside the task is answered with the dummy in the same slot. `verify` keeps returning the error.
 
 #### Scenario: Malformed stored hash
 - **WHEN** `verify_or_dummy(password, Some("not-a-hash"))` is called
-- **THEN** an error is returned and exactly one key derivation ran
+- **THEN** `Ok(false)` is returned and exactly one key derivation ran
+
+#### Scenario: Saturated hasher
+- **WHEN** the only slot is held and `verify_or_dummy` gets a refused hash
+- **THEN** `Busy` is returned and no warning was logged
+
+#### Scenario: Warning rate limit
+- **WHEN** the same refusal reason happens repeatedly within a minute
+- **THEN** one warning is logged, and the next one after the minute states how many were not logged
+
+#### Scenario: Refused hashes over HTTP
+- **WHEN** users with an empty hash, a `$2b$15$` hash, a `$2x$` hash and a `$scrypt$` hash log in through the documented
+  validator
+- **THEN** the status and body equal those of an unknown user and of a wrong password
+
+### Requirement: A dummy hash that differs from the stored hashes is reported
+When a stored hash that parses differs in algorithm or cost parameters from the dummy hash, the hasher SHALL log one
+warning, once, pointing to `dummy_algorithm`, since the response time then tells known users from unknown ones.
+
+#### Scenario: Migration without a matching dummy
+- **WHEN** a hasher with an argon2id dummy verifies a bcrypt hash
+- **THEN** one warning is logged, and none when the dummy is bcrypt of the same cost
 
 ### Requirement: Verification never panics and compares in constant time
 Verifying any password against any string, including malformed, truncated or unknown-format hashes, MUST return
