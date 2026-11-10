@@ -50,10 +50,22 @@ function hookCleanup() {
   }
 }
 
+export const MODES = ["socket-io", "engine-io"];
+
+/**
+ * The reference server a scenario runs against. A scenario that needs `socket-io` runs against the `socket.io` server
+ * (`reference/socket-server.mjs`); one that only needs `engine-io` runs against `engine.io` attached to a plain HTTP
+ * server (`reference/engine-server.mjs`), the Engine.IO reference mode.
+ */
+export function modeOf(scenario) {
+  return (scenario.requires ?? []).includes("socket-io") ? "socket-io" : "engine-io";
+}
+
 /** Starts a Node reference server and resolves once it has reported its port. */
-export function startNodeTarget(name, { ackDelay = 0, root = ROOT } = {}) {
+export function startNodeTarget(name, { ackDelay = 0, root = ROOT, mode = "socket-io" } = {}) {
   hookCleanup();
-  const args = [join(root, "reference", "socket-server.mjs")];
+  const script = mode === "engine-io" ? "engine-server.mjs" : "socket-server.mjs";
+  const args = [join(root, "reference", script)];
   if (ackDelay > 0) args.push("--ack-delay", String(ackDelay));
   const child = spawn(process.execPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   children.add(child);

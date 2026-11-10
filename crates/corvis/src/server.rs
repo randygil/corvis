@@ -532,7 +532,7 @@ pub(crate) async fn from_hyper(
 /// client that already sent it still reads the response and the connection can be reused
 /// (Node drains unread bodies too). Past the cap or the deadline the body is dropped and hyper
 /// closes the connection: the rest is never read nor kept in memory.
-async fn drain(pending: PendingBody, cap: u64) {
+pub(crate) async fn drain(pending: PendingBody, cap: u64) {
     let PendingBody { mut body, deadline } = pending;
     let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(30));
     let mut read: u64 = 0;
@@ -555,6 +555,13 @@ async fn handle(
     options: &ServerOptions,
     client_aborted: &mut bool,
 ) -> Result<hyper::Response<ResBody>, crate::http_adapter::SocketDestroyed> {
+    // An attached Engine.IO server takes every request under its path first, upgrades included.
+    #[cfg(feature = "socket-io")]
+    {
+        if let Some(engine) = shared.http_server.engine_for(req.uri().path()) {
+            return Ok(engine.handle(req, remote, &shared.http_settings.body_parser, options.request_timeout).await);
+        }
+    }
     #[cfg(feature = "websockets")]
     {
         if let Some(gw) = crate::websockets::match_upgrade(&shared, req.headers(), req.uri().path()) {
@@ -2334,6 +2341,9 @@ pub(crate) async fn serve(
         }
     }
     drop(listener);
+    // Pending long-polls would hold the drain below: answer them now.
+    #[cfg(feature = "socket-io")]
+    shared.http_server.close_engines();
     tokio::select! {
         _ = async {
             let _ = stop_tx.send(());

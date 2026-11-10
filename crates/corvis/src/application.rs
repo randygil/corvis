@@ -720,6 +720,8 @@ impl CorvisApplication {
             return Ok(());
         }
         self.closed = true;
+        #[cfg(feature = "socket-io")]
+        self.get_http_server().close_engines();
         self.container.call_hook(HookKind::OnModuleDestroy, None).await?;
         crate::modules::stop_scheduler(&self.container);
         self.container.call_hook(HookKind::BeforeApplicationShutdown, signal.clone()).await?;

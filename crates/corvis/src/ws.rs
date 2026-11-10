@@ -161,11 +161,6 @@ impl<M: QueueItem> OutQueue<M> {
         s.closed && s.items.is_empty()
     }
 
-    /// Number of queued items (not counting the one being written).
-    pub(crate) fn len(&self) -> usize {
-        self.lock().items.len()
-    }
-
     /// Takes queued items in order while `cost` of the taken ones stays within `budget`; always at least one
     /// when any is queued. Taken items no longer count against the limit.
     pub(crate) fn take_batch(&self, budget: usize, mut cost: impl FnMut(&M) -> usize) -> Vec<M> {
@@ -280,12 +275,13 @@ pub(crate) async fn write_loop<S>(sink: S, queue: Arc<OutQueue>) -> WriteEnd
 where
     S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
-    write_loop_with(sink, queue, |m| m).await
+    write_loop_with(sink, queue, |m| m).await.0
 }
 
 /// [`write_loop`] for a queue of any item, with `encode` turning each item into the frame to write. A queue that
-/// ends (sealed and drained) ends the loop with [`WriteEnd::Closed`], like a written close frame.
-pub(crate) async fn write_loop_with<S, M, F>(mut sink: S, queue: Arc<OutQueue<M>>, encode: F) -> WriteEnd
+/// ends (sealed and drained) ends the loop with [`WriteEnd::Closed`], like a written close frame. The sink is
+/// handed back so the caller can still write a close frame after a queue that carries no close item.
+pub(crate) async fn write_loop_with<S, M, F>(mut sink: S, queue: Arc<OutQueue<M>>, encode: F) -> (WriteEnd, S)
 where
     S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
     M: QueueItem,
@@ -306,16 +302,16 @@ where
             let _ = a.send(result.map_err(|e| WsError::new(e.to_string(), None)));
         }
         if let Some(kind) = kind {
-            return WriteEnd::Failed(kind);
+            return (WriteEnd::Failed(kind), sink);
         }
         if refused {
-            return WriteEnd::Refused;
+            return (WriteEnd::Refused, sink);
         }
         if close {
             break;
         }
     }
-    WriteEnd::Closed
+    (WriteEnd::Closed, sink)
 }
 
 /// Runs a listener or hook, turning a panic into an error log. Returns `false` if it panicked.

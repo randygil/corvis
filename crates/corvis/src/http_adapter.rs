@@ -96,6 +96,8 @@ impl HttpAdapter {
 struct ServerInner {
     upgrade: RwLock<Vec<UpgradeListener>>,
     address: RwLock<Option<SocketAddr>>,
+    #[cfg(feature = "socket-io")]
+    engines: RwLock<Vec<crate::socket_io::engine::EngineServer>>,
 }
 
 /// The application's HTTP server (Node's `http.Server` as seen by `getHttpServer()`).
@@ -132,6 +134,40 @@ impl HttpServer {
     }
     fn listeners(&self) -> Vec<UpgradeListener> {
         self.inner.upgrade.read().unwrap().clone()
+    }
+
+    /// Registers an Engine.IO server (`engine.attach(httpServer)`). Fails when its path overlaps the path of one
+    /// already attached.
+    #[cfg(feature = "socket-io")]
+    pub(crate) fn attach_engine(
+        &self,
+        engine: &crate::socket_io::engine::EngineServer,
+    ) -> Result<(), crate::socket_io::engine::EngineOptionsError> {
+        let mut engines = self.inner.engines.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(other) = engines.iter().find(|e| e.overlaps(engine)) {
+            return Err(crate::socket_io::engine::EngineOptionsError::Overlap {
+                path: engine.path().to_string(),
+                other: other.path().to_string(),
+            });
+        }
+        engines.push(engine.clone());
+        Ok(())
+    }
+
+    /// The attached Engine.IO server that takes this request path, if any.
+    #[cfg(feature = "socket-io")]
+    pub(crate) fn engine_for(&self, path: &str) -> Option<crate::socket_io::engine::EngineServer> {
+        self.inner.engines.read().unwrap_or_else(|e| e.into_inner()).iter().find(|e| e.matches(path)).cloned()
+    }
+
+    /// Closes every attached Engine.IO server: their sessions end with `forced close` and pending polls are
+    /// answered. Called when the HTTP server stops accepting and on application close.
+    #[cfg(feature = "socket-io")]
+    pub(crate) fn close_engines(&self) {
+        let engines: Vec<_> = self.inner.engines.read().unwrap_or_else(|e| e.into_inner()).clone();
+        for engine in engines {
+            engine.close();
+        }
     }
 }
 

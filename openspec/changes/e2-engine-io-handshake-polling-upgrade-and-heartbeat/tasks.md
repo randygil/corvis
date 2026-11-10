@@ -31,11 +31,11 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
 
 ## 3. Server, entry point and handshake
 
-- [ ] 3.1 `EngineServer` with the session store and `attach(&HttpServer)` (engines list in `http_adapter.rs`, overlap
+- [x] 3.1 `EngineServer` with the session store and `attach(&HttpServer)` (engines list in `http_adapter.rs`, overlap
   check); the entry in `handle` (`crates/corvis/src/server.rs:551`) before the `websockets` block (design.md
   Decision 2); first tests in `crates/corvis/tests/engine_io.rs` for spec "Polling request is not routed" and "Other
   paths are unchanged"; verify them and `cargo test -p corvis --test websockets --test http_adapter`
-- [ ] 3.2 Handshake and errors: `EIO`/`transport`/`sid` validation in Node's order, duplicate parameters, codes 0-5
+- [x] 3.2 Handshake and errors: `EIO`/`transport`/`sid` validation in Node's order, duplicate parameters, codes 0-5
   with status and JSON body, open packet, handshake request through `Request::for_upgrade` with `ip()` resolved once;
   tests for "Polling handshake", "Oversized sid", "Address behind a trusted proxy" and each error code; verify
   `cargo test -p corvis --features socket-io --test engine_io`
