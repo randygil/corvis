@@ -57,7 +57,9 @@ necesitas protección CSRF adicional, siempre que no guardes además el token en
    navegación que escribió el usuario) o, si esa cabecera no está, cuando `Origin` es el host al que se envió la
    petición; una lista explícita de orígenes permitidos también pasa. Todo lo demás se rechaza: `cross-site`,
    **`same-site`** (un subdominio hermano puede servir páginas que controla un atacante), un valor que nadie definió, una
-   cabecera repetida. El ejemplo `cats-app` lo hace con un guard, `SameOriginGuard`, delante del guard de login:
+   cabecera repetida. Una petición que no trae ninguna de las dos cabeceras se acepta (un cliente que no es un
+   navegador, o un navegador muy viejo), así que esta comprobación es una capa sobre `SameSite`, no un reemplazo. El
+   ejemplo `cats-app` lo hace con un guard, `SameOriginGuard`, delante del guard de login:
 
    ```rust
    #[post("login")]

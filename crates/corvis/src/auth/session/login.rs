@@ -37,11 +37,14 @@ impl Session {
             s.before_guard_login = None;
         }
         let previous = std::mem::take(&mut s.data);
+        // A login over a session that already had a user is not a fresh proof of identity (a handler calling
+        // `log_in` with the user the session restored): if that session was ended meanwhile, it stays ended.
+        let had_user = matches!(previous.get(PASSPORT_KEY), Some(Value::Object(p)) if p.get(USER_KEY).is_some_and(|u| !u.is_null()));
         s.regenerate(super::store::now_ms());
         if keep {
             // `passport` merges the previous session into the new one, then sets its own key.
             s.data = previous;
-        } else {
+        } else if !had_user {
             s.fresh_login = true;
         }
         let mut passport = match s.data.shift_remove(PASSPORT_KEY) {

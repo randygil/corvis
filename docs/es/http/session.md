@@ -358,13 +358,15 @@ para destrucción (logout, `regenerate`, `destroy`) igualmente se destruyen.
 
 Tres casos están decididos a propósito:
 
-- **Un login que no conserva nada de la sesión anterior** (el valor por defecto: los datos de antes del login se
-  descartan) crea la sesión nueva aunque el registro anterior ya no exista. De lo contrario, quien inunde el almacén hasta
-  expulsar la sesión anónima de la víctima podría hacer que el login responda `200` sin poner cookie. El usuario acaba de
-  demostrar quién es y no se recupera nada de la sesión vieja; el identificador viejo se destruye igualmente. Con
-  `keep_session_info_on_login(true)`, `regenerate_keeping_data()` y los guardados simples se aplica la regla anterior. Si
-  la petición A cierra sesión con la cookie C0 mientras la petición B, con C0, inicia sesión de nuevo (presentando otra
-  vez las credenciales), la sesión nueva de B es válida.
+- **Un login sobre una sesión anónima que no conserva nada de ella** (el valor por defecto: los datos de antes del
+  login se descartan) crea la sesión nueva aunque el registro anterior ya no exista. De lo contrario, quien inunde el
+  almacén hasta expulsar la sesión anónima de la víctima podría hacer que el login responda `200` sin poner cookie. El
+  usuario acaba de demostrar quién es y no se recupera nada de la sesión vieja; el identificador viejo se destruye
+  igualmente. Con `keep_session_info_on_login(true)`, `regenerate_keeping_data()` y los guardados simples se aplica la
+  regla anterior. También se aplica a un login sobre una sesión que **ya tenía usuario**: ese login no es una prueba
+  nueva de identidad (un handler puede llamar a `log_in` con el mismo usuario que la sesión restauró), así que si la
+  petición A cierra sesión con la cookie C0 mientras la petición B, con C0, inicia sesión otra vez, la sesión queda
+  cerrada y el usuario vuelve a iniciar sesión.
 - **Un logout no termina a un sucesor.** Un logout que cargó la sesión X no termina una sesión Y que otra petición
   concurrente creó regenerando X. Es el comportamiento del original; cerrarlo exigiría una marca "movida a" en el
   registro (una posible tarea futura).
@@ -467,7 +469,10 @@ o la validación fallan, el handler devuelve un `Err` o entra en pánico, o fall
 sesión con la que llegó la petición, si la había, queda como estaba y no se emite ninguna cookie con la sesión iniciada.
 El router anota el rechazo en el momento en que ocurre, antes de que un [filtro de excepciones](/es/exception-filters) o
 un interceptor puedan cambiar la respuesta, así que lo que responda un filtro no importa: un filtro que convierte el
-`403` en una redirección a `/mfa`, o en una página de "acceso denegado" con estado `200`, no conserva el login.
+`403` en una redirección a `/mfa`, o en una página de "acceso denegado" con estado `200`, no conserva el login. Lo mismo
+vale cuando un interceptor externo recupera el fallo de uno interno y cuando el handler se descarta antes de terminar
+(un interceptor de timeout). Un interceptor que responde por sí mismo **sin** llamar al handler y retorna con normalidad
+ocupa el lugar del handler: su login se conserva.
 
 ```rust
 #[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)] // si el segundo guard deniega no queda login,

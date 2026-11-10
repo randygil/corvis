@@ -192,3 +192,13 @@ whether new issues are created before this change starts.
   disconnect during a guard login)
 - [x] 10.8 Specs updated (`auth/sessions`); `openspec validate e3-sessions-and-signed-cookies --strict` passes; the
   definition of done (fmt, clippy with the feature loop, tests, docs check, naming, deny) passes
+
+## 11. Security review, round 3 (see design.md, "Security review (round 3)")
+
+- [x] 11.1 Mark the request as rejected when an interceptor fails and when the handler does not end with `Ok` (panic,
+  drop); verify with the two new tests of `auth_session_review2.rs`
+- [x] 11.2 The origin-gone exception only for a login over a session without a user; verify with
+  `a_login_over_a_logged_in_session_that_was_logged_out_meanwhile_stays_logged_out` and the eviction test
+- [x] 11.3 Depth-walk unit test without a deep drop; docs (EN, ES) for interceptors, the login race and the
+  header-less request
+

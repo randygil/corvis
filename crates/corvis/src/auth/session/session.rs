@@ -438,7 +438,8 @@ mod tests {
         assert!(!too_deep(&json!(1), 0));
         assert!(!too_deep(&nested(100), 100));
         assert!(too_deep(&nested(101), 100));
-        assert!(too_deep(&nested(5000), 100), "the walk stops at the limit whatever the depth");
+        // Not thousands of levels: dropping such a value recurses, and the test would overflow a small stack.
+        assert!(too_deep(&nested(300), 100), "the walk stops at the limit whatever the depth");
     }
 
     #[test]

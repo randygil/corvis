@@ -467,13 +467,18 @@ The identifier the login replaced is destroyed, not restored.
 - **THEN** no record holds the user, and the old cookie is anonymous
 
 ### Requirement: A login that keeps nothing cannot be made to fail
-A login that carries nothing of the previous session (`keep_session_info_on_login` off) MUST create the new session even
-when the previous record is gone, still destroying the old identifier. The rule of `A destroyed session cannot be
-re-created` stays for logins that keep data, `regenerate_keeping_data()`, saves and touches.
+A login over a session that had no user and that carries nothing of it (`keep_session_info_on_login` off) MUST create
+the new session even when the previous record is gone, still destroying the old identifier. The rule of `A destroyed
+session cannot be re-created` stays for logins over a session that already had a user, logins that keep data,
+`regenerate_keeping_data()`, saves and touches.
 
 #### Scenario: Previous session evicted during login
 - **WHEN** the anonymous session a login arrived with is evicted while the login runs
 - **THEN** the response sets a logged-in cookie and the next request is logged in
+
+#### Scenario: Logout racing a login over a logged-in session
+- **WHEN** request A logs out a logged-in session while request B logs in again on the same cookie
+- **THEN** B writes nothing, its cookie is only a clearing one, and no record holds a user
 
 #### Scenario: Logout racing a login that keeps data
 - **WHEN** request A logs out a session while request B logs in on it with `keep_session_info_on_login(true)`

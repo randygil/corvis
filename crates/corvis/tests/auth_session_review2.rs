@@ -53,6 +53,31 @@ impl CorvisInterceptor for MapErrorInterceptor {
     }
 }
 
+/// Refuses the request without calling the handler, as a second-factor check written as an interceptor would.
+#[injectable]
+pub struct DenyInterceptor;
+
+#[async_trait]
+impl CorvisInterceptor for DenyInterceptor {
+    async fn intercept(&self, _ctx: &ExecutionContext, _next: CallHandler) -> HandlerResult {
+        Err(ForbiddenException::new("second factor needed"))
+    }
+}
+
+/// Gives the handler ten milliseconds, then drops it and answers normally.
+#[injectable]
+pub struct GiveUpInterceptor;
+
+#[async_trait]
+impl CorvisInterceptor for GiveUpInterceptor {
+    async fn intercept(&self, _ctx: &ExecutionContext, next: CallHandler) -> HandlerResult {
+        match tokio::time::timeout(std::time::Duration::from_millis(10), next.handle()).await {
+            Ok(result) => result,
+            Err(_) => Ok(Response::json(json!({ "gave_up": true }))),
+        }
+    }
+}
+
 #[controller("r2")]
 pub struct R2Routes {
     authenticator: Arc<Authenticator>,
@@ -110,6 +135,25 @@ impl R2Routes {
     #[use_interceptors(MapErrorInterceptor)]
     fn mapped(&self) -> HttpResult<Value> {
         Err(ForbiddenException::new("second factor needed"))
+    }
+
+    /// An outer interceptor recovers the refusal of an inner one.
+    #[post("recovered-deny")]
+    #[http_code(200)]
+    #[use_guards(AuthGuard::new("header").log_in())]
+    #[use_interceptors(MapErrorInterceptor, DenyInterceptor)]
+    fn recovered_deny(&self) -> Value {
+        json!({ "ok": true })
+    }
+
+    /// The handler never ends: the interceptor drops it and answers in its place.
+    #[post("dropped")]
+    #[http_code(200)]
+    #[use_guards(AuthGuard::new("header").log_in())]
+    #[use_interceptors(GiveUpInterceptor)]
+    async fn dropped(&self) -> Value {
+        std::future::pending::<()>().await;
+        json!({ "ok": true })
     }
 
     /// The handler ends the exchange with a redirect of its own: it returned normally, so the login stands.
@@ -266,6 +310,20 @@ async fn an_interceptor_that_maps_the_error_leaves_no_login() {
 }
 
 #[tokio::test]
+async fn an_interceptor_that_refuses_leaves_no_login_even_when_another_recovers_it() {
+    let store = RecordingStore::new();
+    let app = app_r2(options().store_arc(store.clone()), None).await;
+    assert_no_login(&app, &store, "/r2/recovered-deny", 200, "recovered refusal of an interceptor").await;
+}
+
+#[tokio::test]
+async fn a_handler_that_is_dropped_before_it_ends_leaves_no_login() {
+    let store = RecordingStore::new();
+    let app = app_r2(options().store_arc(store.clone()), None).await;
+    assert_no_login(&app, &store, "/r2/dropped", 200, "handler dropped by an interceptor").await;
+}
+
+#[tokio::test]
 async fn a_handler_error_a_panic_and_a_failing_pipe_leave_no_login() {
     let store = RecordingStore::new();
     let app = app_r2(options().store_arc(store.clone()), None).await;
@@ -335,9 +393,10 @@ async fn a_login_made_while_the_previous_session_is_evicted_logs_in() {
 }
 
 #[tokio::test]
-async fn a_login_that_races_a_logout_starts_a_session_of_its_own() {
-    // Request A logs out the session C0 while request B, on C0, logs in afresh. B presented credentials, so its new
-    // session is valid: nothing of C0 is brought back (the data is not kept across a login).
+async fn a_login_over_a_logged_in_session_that_was_logged_out_meanwhile_stays_logged_out() {
+    // Request A logs out the session C0 while request B, on C0, logs in again from a handler. C0 already had a user, so
+    // B's login is no fresh proof of identity (a handler may log in the very user the session restored): the session
+    // that A ended stays ended. A login over an anonymous session is the case that goes through (the eviction test).
     let store = RecordingStore::new();
     let app = Arc::new(app_r2(options().store_arc(store.clone()), None).await);
     let c0 = {
@@ -353,8 +412,10 @@ async fn a_login_that_races_a_logout_starts_a_session_of_its_own() {
     assert_eq!(post(&app, "/logout", Some(&c0)).await.status, 200);
     gate.release.notify_one();
     let b = held.await.unwrap();
-    let c1 = pair(&set_cookies(&b)[0]);
-    assert_eq!(get(&app, "/me", Some(&c1)).await.status, 200);
+    assert!(only_clears(&b), "{:?}", set_cookies(&b));
+    for (id, record) in store.records().await {
+        assert!(record["passport"]["user"].is_null(), "{id} holds a user");
+    }
     assert_eq!(get(&app, "/me", Some(&c0)).await.status, 401, "the logged-out identifier stays dead");
 }
 

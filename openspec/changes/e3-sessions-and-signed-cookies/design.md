@@ -692,3 +692,27 @@ maintainer decided each one.
 Round 1, item 3 said the login was kept "below 400" and that a handler answering 403 discarded it: that is replaced by item
 1 above. A handler that returns `Ok` with a 403 keeps the login (the handler decided); the test of round 1 that exercised
 a handler `Err` still holds.
+
+## Security review (round 3)
+
+The third pass confirmed the round 2 fixes (no cross-request leak of the rejection mark over a pipelined connection;
+the store does nothing proportional to a record under its lock, victim p99 65 microseconds against 14 to 16 ms; depth
+limits exact at 99/100/101; `SameOriginGuard` holds) and found two low issues and a test that overflowed the stack:
+
+1. The rejection mark missed two paths: an interceptor that fails while an OUTER interceptor recovers the failure, and
+   a handler that panics or is dropped (a timeout interceptor) while an interceptor then answers normally. A guard
+   login was kept there, which also contradicted the docs. `call_interceptors` now marks the request when an
+   interceptor returns `Err`, and `invoke_handler` holds a drop guard that marks it unless the handler ends with `Ok`.
+   An interceptor that answers without calling the handler and returns `Ok` stands in for the handler and keeps the
+   login; documented. Tests: `an_interceptor_that_refuses_leaves_no_login_even_when_another_recovers_it`,
+   `a_handler_that_is_dropped_before_it_ends_leaves_no_login`.
+2. Round 2's rule "a login that keeps nothing is created even if the origin record is gone" also covered a login made
+   over a session that already had a user, so a handler calling `log_in` with the user the session restored could
+   bring back a session that another request had just logged out. The exception now applies only when the loaded
+   session had no user (the case it was made for: the eviction of a victim's anonymous pre-login session). This
+   overrides the round 2 statement that a new login racing a logout of the same cookie is valid: it is dropped, and the
+   user logs in again. Test: `a_login_over_a_logged_in_session_that_was_logged_out_meanwhile_stays_logged_out`.
+3. The unit test of the depth walk built a value 5,000 levels deep, whose drop overflowed the default stack on Windows
+   and took the other unit tests of the binary with it; it uses 300 levels.
+4. Documented: a request with neither `Sec-Fetch-Site` nor `Origin` passes `SameOriginGuard`.
+

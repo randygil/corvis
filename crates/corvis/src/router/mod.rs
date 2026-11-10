@@ -872,7 +872,16 @@ fn call_interceptors(
     if let Some(interceptor) = list.get(index).cloned() {
         let ctx2 = ctx.clone();
         let next = CallHandler::new(move || call_interceptors(list, index + 1, ctx2, route));
-        async move { interceptor.intercept(&ctx, next).await }.boxed()
+        async move {
+            // An interceptor that refuses the request rejects it, even when an outer interceptor turns that failure
+            // into a normal response.
+            let result = interceptor.intercept(&ctx, next).await;
+            if result.is_err() {
+                crate::common::context::RequestRejected::mark(ctx.request());
+            }
+            result
+        }
+        .boxed()
     } else {
         invoke_handler(route, ctx).boxed()
     }
@@ -948,12 +957,25 @@ async fn invoke_handler(route: Arc<CompiledRoute>, ctx: ExecutionContext) -> Han
     }
     // An interceptor can turn the handler's error into a normal response: the failure is recorded here, where it
     // happens.
-    let request = ctx.clone();
+    // The guard marks the request unless the handler ends with `Ok`, so a panic in the handler or its cancellation
+    // (a timeout interceptor dropping it) counts as a failure too, whatever an interceptor returns afterwards.
+    let mut unfinished = RejectUnlessDone(Some(ctx.clone()));
     let result = (route.handler)(ctx, args).await;
-    if result.is_err() {
-        crate::common::context::RequestRejected::mark(request.request());
+    if result.is_ok() {
+        unfinished.0 = None;
     }
     result
+}
+
+/// Marks the request as rejected when dropped, unless disarmed.
+struct RejectUnlessDone(Option<ExecutionContext>);
+
+impl Drop for RejectUnlessDone {
+    fn drop(&mut self) {
+        if let Some(ctx) = self.0.take() {
+            crate::common::context::RequestRejected::mark(ctx.request());
+        }
+    }
 }
 
 fn finalize(mut resp: Response, route: &CompiledRoute) -> Response {

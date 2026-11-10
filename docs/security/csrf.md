@@ -56,7 +56,8 @@ do not need additional CSRF protection, as long as you do not also store the tok
    when `Sec-Fetch-Site` is `same-origin` (or `none`, a navigation the user typed), or, when that header is absent, when
    `Origin` is the host the request was sent to; an explicit list of allowed origins passes too. Anything else is refused:
    `cross-site`, **`same-site`** (a sibling subdomain can run pages an attacker controls), a value nobody defined, a
-   repeated header. The `cats-app` example does it with a guard, `SameOriginGuard`, in front of the login guard:
+   repeated header. A request that carries neither header is accepted (a client that is not a browser, or a very old
+   browser), so this check is a layer on top of `SameSite`, not a replacement. The `cats-app` example does it with a guard, `SameOriginGuard`, in front of the login guard:
 
    ```rust
    #[post("login")]

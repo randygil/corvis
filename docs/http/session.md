@@ -348,12 +348,14 @@ destruction (logout, `regenerate`, `destroy`) are still destroyed.
 
 Three cases are decided on purpose:
 
-- **A login that keeps nothing of the previous session** (the default: the data of before the login is dropped) creates
-  the new session even when the previous record is gone. Otherwise someone who floods the store until the victim's
-  anonymous session is evicted could make the login answer `200` and set no cookie. The user just proved who they are and
-  nothing of the old session is brought back; the old identifier is destroyed all the same. With
-  `keep_session_info_on_login(true)`, `regenerate_keeping_data()` and plain saves the rule above applies. So if request A
-  logs out cookie C0 while request B on C0 logs in afresh (credentials presented again), B's new session is valid.
+- **A login over an anonymous session that keeps nothing of it** (the default: the data of before the login is dropped)
+  creates the new session even when the previous record is gone. Otherwise someone who floods the store until the
+  victim's anonymous session is evicted could make the login answer `200` and set no cookie. The user just proved who
+  they are and nothing of the old session is brought back; the old identifier is destroyed all the same. With
+  `keep_session_info_on_login(true)`, `regenerate_keeping_data()` and plain saves the rule above applies. It also applies
+  to a login over a session that **already had a user**: such a login is not a fresh proof of identity (a handler may
+  call `log_in` with the very user the session restored), so if request A logs out cookie C0 while request B on C0 logs
+  in again, the session stays ended and the user logs in once more.
 - **A logout does not end a successor.** A logout that loaded session X does not end a session Y that another concurrent
   request created by regenerating X. This is the behavior of the original; closing it would need a "moved to" marker in
   the record (a candidate follow-up).
@@ -454,7 +456,9 @@ validation fails, the handler returns an `Err` or panics, or an interceptor fail
 request arrived with, if any, is left as it was, and no logged-in cookie is issued. The router notes the rejection at the
 moment it happens, before any [exception filter](/exception-filters) or interceptor can change the response, so what
 a filter answers does not matter: a filter that turns the `403` into a redirect to `/mfa`, or into an "access denied" page
-with status `200`, does not keep the login.
+with status `200`, does not keep the login. The same holds when an outer interceptor recovers the failure of an inner
+one, and when the handler is dropped before it ends (a timeout interceptor). An interceptor that answers by itself
+**without** calling the handler and returns normally stands in for the handler: its login is kept.
 
 ```rust
 #[use_guards(AuthGuard::new("local").log_in(), SecondFactorGuard)] // a denial by the second guard leaves no login,
