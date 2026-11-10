@@ -209,7 +209,8 @@ pub(crate) async fn run(
     // When the parked message gives up waiting: set when it parks, cleared when it is admitted.
     let mut admission_deadline: Option<Instant> = None;
     let mut stream_done = false;
-    let mut client_dropped = false;
+    // Set on every way out of the loop: whether the end of the connection is the client's doing.
+    let client_dropped: bool;
     let mut closed: Closed<'_> = Box::pin(engine.closed());
     loop {
         // Registered before anything below looks at the gauges, so a release in between wakes the select.

@@ -1377,7 +1377,7 @@ async fn handlers_get_their_grace_when_the_server_closes_the_connection_and_coun
     assert_eq!(io.engine().lingering("203.0.113.40"), 0, "running handlers of an open connection do not linger");
     // The server closes the connection (a graceful close, as a shutdown does): the handlers get `close_timeout`.
     assert_eq!(started.load(Ordering::SeqCst), 3);
-    conn.text("0"); // a second CONNECT: a violation, the server closes the connection
+    conn.socket.force_close();
     settle().await;
     assert!(conn.socket.is_closing());
     assert_eq!(io.engine().lingering("203.0.113.40"), 3);
@@ -1430,12 +1430,42 @@ async fn an_event_that_runs_when_the_connection_ends_gets_a_grace_period() {
     conn.join("0").await;
     conn.text(r#"2["slow"]"#);
     settle().await;
-    conn.text("1");
-    conn.text("0");
-    conn.text("0");
+    // The server ends the connection, as a shutdown does: the handler keeps its grace period.
+    conn.socket.force_close();
     settle().await;
     advance(5_000).await;
-    assert!(done.load(Ordering::SeqCst), "a handler already running is not cancelled by the end of the connection");
+    assert!(done.load(Ordering::SeqCst), "a handler already running is not cancelled when the server closes the connection");
+}
+
+/// A connection the server closes because the client broke the protocol is the client's doing: nobody is left to answer,
+/// so its handlers are cancelled at once, like those of a client that dropped the connection.
+#[tokio::test(start_paused = true)]
+async fn an_event_that_runs_when_the_client_breaks_the_protocol_is_cancelled() {
+    let io = server(options());
+    let done = Arc::new(AtomicBool::new(false));
+    {
+        let done = done.clone();
+        io.on_connection(move |socket| {
+            let done = done.clone();
+            socket.on("slow", move |_s, _a, _k| {
+                let done = done.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    done.store(true, Ordering::SeqCst);
+                }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    conn.text(r#"2["slow"]"#);
+    settle().await;
+    conn.text("0"); // a second CONNECT to a namespace already joined: a violation
+    settle().await;
+    assert!(conn.socket.is_closing());
+    advance(5_000).await;
+    assert!(!done.load(Ordering::SeqCst), "the handler was dropped with the connection");
+    assert_eq!(io.engine().total_unread_bytes(), 0);
 }
 
 // -------------------------------------------------------------------------------- the decoded-packet budget

@@ -502,7 +502,7 @@ async fn a_client_that_goes_away_while_its_packet_waits_for_room_loses_its_handl
     let p = pressure(admission);
     let handlers = Handlers::new(None);
     let siege = lay_siege(&p, &handlers).await;
-    let mut honest = honest_joins(&siege).await;
+    let honest = honest_joins(&siege).await;
     // Two handlers of the honest session are in flight, then a packet that needs room the attackers hold parks.
     honest.msg_str(r#"2/honest,["block"]"#).await.unwrap();
     honest.msg_str(r#"2/honest,["block"]"#).await.unwrap();
@@ -541,6 +541,17 @@ fn the_stored_auth_is_charged_at_its_real_size_across_many_sockets_and_namespace
     let strings = format!(r#"0/n,{{"a":[{}]}}"#, vec![r#""abcdefgh""#; 200].join(","));
     let arrays = format!(r#"0/n,{{"a":[{}]}}"#, vec!["[1]"; 120].join(","));
     println!("{:<22}{:>12}{:>14}{:>14}", "shape", "per socket", "charged", "live heap");
+    // The test before this one may still be freeing what its runtime held (its threads end after it gave the lock
+    // back), which would be subtracted from the first measurement: wait until the heap is quiet.
+    let mut quiet = live();
+    for _ in 0..200 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let now = live();
+        if now == quiet {
+            break;
+        }
+        quiet = now;
+    }
     let mut kept = Vec::new();
     let (mut total_charged, mut total_live) = (0usize, 0isize);
     for (name, text) in [
