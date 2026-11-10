@@ -150,12 +150,12 @@ límite. Ver [gateways](/es/websockets/gateways#pares-que-dejan-de-leer).
 
 ## Socket.IO (vista previa)
 
-La feature de Cargo `socket-io` (desactivada por defecto, activa `websockets`) añade un servidor Engine.IO v4, la capa de
-transporte de Socket.IO, escrito para Corvis y comprobado contra `engine.io` 6.6.x de Node con un arnés diferencial y la
-suite oficial de pruebas del protocolo. Es una vista previa: todavía no hay servidor Socket.IO y no se puede usar desde
-los gateways, así que la API de Engine.IO está oculta en la documentación y puede cambiar.
-`corvis::socket_io::EngineOptions` es la parte en la que puedes confiar; los servidores Socket.IO la tomarán como sus
-opciones de motor.
+La feature de Cargo `socket-io` (desactivada por defecto, activa `websockets`) añade un servidor Socket.IO v5 y, debajo,
+el servidor Engine.IO v4, escritos para Corvis y comprobados contra `socket.io` 4.8.4 y `engine.io` 6.6.x de Node con un
+arnés diferencial y la suite oficial de pruebas del protocolo. Es una vista previa con una API de bajo nivel (`IoServer`,
+`IoNamespace`, `IoSocket`): las salas y el broadcast, los gateways sobre Socket.IO y un adaptador de Redis llegan en
+cambios posteriores. La API de Engine.IO que hay debajo está oculta en la documentación y puede cambiar; `EngineOptions`
+(incluido en `IoOptions`) es la parte en la que puedes confiar.
 
 ```toml
 corvis = { version = "0.1", features = ["socket-io"] }
@@ -206,8 +206,30 @@ para conectar un limitador de tasa o una comprobación de autenticación al hand
 polling y las conexiones WebSocket directas, no para las peticiones de una sesión existente. `max_sessions_per_ip` cuenta
 como una sola dirección a los clientes detrás de un mismo NAT o de un CDN que no es un proxy de confianza: súbelo con
 `EngineOptions::max_sessions_per_ip(n)` en esos despliegues, o configura `set_trust_proxy` para que se use la dirección
-real del cliente. Un id de sesión entregado por un handshake que el cliente nunca usa se libera tras
-`first_request_timeout`.
+real del cliente. Los clientes detrás de una misma dirección compartida (el NAT de un operador móvil o de una empresa)
+comparten una sola cuota de dirección y pueden retrasarse unos a otros (sus sesiones cuentan juntas, y en el servidor
+Socket.IO también todo lo que retienen del presupuesto); `trust_proxy` solo ayuda cuando el proxy que está delante es uno
+que controlas. Un id de sesión entregado por un handshake que el cliente nunca usa se libera tras `first_request_timeout`.
+
+#### Memoria del transporte WebSocket fuera del presupuesto
+
+La biblioteca de WebSocket retiene dos buffers por sesión que ningún presupuesto de lectura cuenta: su buffer de lectura, que
+crece hasta alojar el mayor fotograma que la sesión recibió y después no se reduce, y, mientras un mensaje fragmentado está
+incompleto, el buffer de ese mensaje (que se duplica al crecer). La biblioteca (tungstenite 0.24, y 0.30 al medirla) no tiene
+ningún ajuste que los reduzca, y el tamaño del fotograma no se puede bajar sin rechazar mensajes que Node acepta, así que se
+mide, se declara y se acota con las opciones de abajo. Con `M` = `max_http_buffer_size`, una sesión retiene como mucho
+`1,25 x 2^ceil(log2(M + 4.110))` bytes tras un mensaje grande, mientras viva, y como mucho `2 x 2^ceil(log2(M))` más que eso
+mientras tiene un mensaje incompleto. Con el `M` por defecto de 1.000.000 la medición es 1,12 MiB y 3,14 MiB por sesión
+(1.169.504 y 3.294.439 bytes).
+
+| Opciones por defecto | Por sesión | Una dirección (`max_sessions_per_ip` 256) | El servidor (`max_sessions` 10.000) |
+|---|---|---|---|
+| Tras un mensaje de casi `M`, hasta que la sesión termina | 1,12 MiB | 286 MiB | 10,9 GiB |
+| Mientras un mensaje fragmentado está incompleto | 3,14 MiB | 804 MiB | 30,7 GiB |
+
+Estas cifras se suman a `max_total_unread_bytes` (256 MiB), que no las cuenta. Redúcelas con `max_http_buffer_size` (bajan en
+proporción, y 100.000 bytes dan 0,13 MiB y 0,32 MiB por sesión), `max_sessions_per_ip` y `max_sessions`. Cargar estos bytes a
+la sesión exigiría envolver el socket y queda como posible cambio posterior.
 
 El límite por dirección no detiene a un atacante con muchas direcciones: un `/48` de IPv6 contiene 65.536 `/64` y unas
 40 direcciones bastan para llenar el `max_sessions` por defecto de 10.000. Limita la tasa de handshakes en el borde (un
@@ -221,6 +243,167 @@ Las respuestas de polling no se comprimen (Node comprime por encima de 1 KiB cua
 v3, las cookies y WebTransport no están soportados. El
 [`send_timeout`](/es/http/performance#clientes-que-dejan-de-leer-send-timeout) del servidor se aplica al transporte
 WebSocket como a cualquier otra conexión actualizada.
+
+### El servidor Socket.IO
+
+Un `IoServer` se crea con `IoOptions`, se le dan espacios de nombres, middleware y manejadores, y se adjunta al servidor
+HTTP. El espacio `/` existe desde el principio; cualquier otro lo registra la aplicación con `io.of("/admin")`, porque un
+cliente no puede crearlo (los espacios dinámicos no están soportados). Un nombre recibe una `/` inicial y no puede tener
+más de 256 bytes ni contener `,` ni caracteres de control.
+
+```rust
+use corvis::socket_io::{ConnectError, IoOptions, IoServer};
+
+let io = IoServer::new(IoOptions::new())?;
+
+// El middleware corre antes de que el socket entre al espacio; `auth` es lo que envió el cliente.
+io.of("/admin")?.use_middleware(|socket| async move {
+    match socket.handshake().auth().get("token").and_then(|t| t.as_str()) {
+        Some("secret") => Ok(()),
+        _ => Err(ConnectError::new("not authorized").data(serde_json::json!({ "content": "retry later" }))),
+    }
+});
+
+io.main().on_connection(|socket| {
+    // Los manejadores se registran por socket, en el manejador de conexión, así no se pierde ningún evento.
+    socket.on("sum", |_socket, args, ack| async move {
+        let total: i64 = args.iter().filter_map(|a| a.as_i64()).sum();
+        if let Some(ack) = ack {
+            let _ = ack.send((total, "ok")); // el callback del cliente recibe (3, "ok")
+        }
+    });
+    let _ = socket.emit("hello", ("world", 1)); // los argumentos son una tupla de valores `Serialize`
+    socket.on_disconnect(|socket, reason| println!("{} se fue: {reason}", socket.id()));
+});
+
+io.attach(&app.get_http_server())?;
+```
+
+Un emit del servidor que espera la respuesta del cliente es `socket.emit_with_ack("ask", ("question",)).await`, con
+`socket.timeout(Duration::from_millis(200))` para elegir el plazo; falla con `operation has timed out`, o de inmediato si
+el socket se desconecta. Los valores binarios (`corvis::socket_io::Binary` o `IoValue::Binary`) pueden estar en cualquier
+parte de los argumentos y viajan como adjuntos; `args.get::<T>(i)` deserializa un argumento a cualquier tipo de `serde`, y
+un campo de tipo `Binary` recibe un buffer. `disconnect(false)` sale de un espacio y `disconnect(true)` sale de todos y
+cierra la conexión. Cada socket informa `client namespace disconnect`, `server namespace disconnect`, `transport close`,
+`transport error`, `ping timeout`, `parse error`, `forced close`, `forced server close`, `server shutting down`
+(`io.close()` y el apagado de la aplicación lo informan antes de cerrar las sesiones) o `admission timeout` (un paquete
+esperó más de `admission_timeout` a que hubiera sitio en el presupuesto; Node no tiene ese motivo), primero a los manejadores
+`on_disconnecting`, mientras el socket sigue en su espacio, y luego a los `on_disconnect`. Los nombres de evento reservados
+(`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`) no los puede emitir el
+servidor, y un paquete de un cliente que use uno no se puede decodificar.
+
+Un paquete que no se puede decodificar, un segundo CONNECT a un espacio al que la conexión ya entró (o está entrando), un
+paquete para un espacio al que no entró (o que se le rechazó) y un CONNECT_ERROR de un cliente cierran la conexión. Un
+paquete para un espacio al que la conexión sí entró y cuyo socket se fue desde entonces (el servidor llamó a
+`disconnect(false)` cuando el paquete del cliente ya iba de camino) se descarta (el servidor de Node cierra ahí toda la conexión; es una diferencia deliberada), y la conexión y sus demás
+espacios siguen: el paquete se lee, se mide y se carga como cualquier otro, sus adjuntos se consumen y luego se descarta; un
+nuevo CONNECT a ese espacio vuelve a unirlo.
+
+Manejadores y la conexión del cliente: cuando el cliente cierra la conexión (el transporte se cierra o falla, o deja de
+responder a los pings, o no avanza: una violación del protocolo, un paquete que esperó más de `admission_timeout`) los manejadores que siguen en ejecución se cancelan de inmediato, así que un manejador no debe
+suponer que llega a terminar cuando su cliente ya no está (el trabajo que debe sobrevivir va en una tarea que el manejador
+lanza, o lo que retiene se libera en un `Drop`). Un cliente que reconecta en bucle no puede dejar así una multitud de
+manejadores. Cuando el servidor cierra la conexión, o se apaga, los manejadores tienen `close_timeout` para terminar;
+`IoOptions::finish_handlers_after_client_close(true)` les da esa gracia también tras un cierre del cliente. Los manejadores
+que siguen tras el fin de su conexión cuentan contra su dirección de cliente, y una dirección que tiene
+`max_sessions_per_ip x max_inflight` de ellos (8.192 con los valores por defecto) recibe `503` en las sesiones nuevas hasta
+que algunos terminen.
+
+#### Límites de Socket.IO
+
+Todo lo que un cliente puede hacer que el servidor retenga tiene un valor por defecto acotado y una opción validada
+(`IoServer::new` rechaza un valor cero y nombra la opción). Donde Node no tiene límite, Corvis difiere a propósito.
+
+| Límite | Por defecto | `socket.io` 4.8.4 de Node | Al superarlo |
+|---|---|---|---|
+| Tamaño de paquete (un paquete de texto y cada adjunto) | el `max_http_buffer_size` del motor, 1.000.000 bytes | igual | `413` o código de cierre `1009` (Engine.IO) |
+| `max_attachments` por paquete binario, en ambos sentidos | 10 | 10 al decodificar, ninguno al codificar | un paquete recibido que declara más cierra la conexión antes de leer ningún adjunto; un emit falla con `TooManyAttachments` |
+| Bytes retenidos mientras se reensambla un paquete binario | como mucho `(max_attachments + 1) x max_http_buffer_size`, contados en `max_unread_bytes`; las opciones que no caben se rechazan | no se cuentan | se pausan las lecturas |
+| `attachment_timeout` (tiempo para los adjuntos tras la cabecera) | 30 s | ninguno | se cierra la conexión, diga lo que diga el latido |
+| `max_decoded_bytes` (la memoria en que se decodifica un paquete: una casilla de 40 bytes por valor JSON, un objeto añade una caja y una tabla hash, una cadena sus bytes, 24 bytes por asignación) | 32 MiB | ninguno | se cierra la conexión, antes de construir nada; se reserva en el presupuesto del servidor antes de decodificar y se carga hasta que termina el manejador |
+| Presupuesto del servidor `max_total_unread_bytes` | 256 MiB; una sesión siempre puede retener su parte justa, `max(16 KiB, presupuesto / max_sessions)` | ninguno | el paquete espera y la conexión no toma otro mensaje |
+| `max_address_share`: todo lo que retienen las sesiones de una dirección de cliente de ese presupuesto, en cualquier estado (mensajes sin leer por encima de la parte justa, paquetes que esperan sitio, paquetes que se reensamblan, paquetes decodificados y adjuntos hasta que terminan sus manejadores, el `auth` de sus sockets) | 1/16 del presupuesto, nunca menos de un paquete máximo (`max_decoded_bytes` más los bytes en el cable del mayor paquete): con los valores por defecto manda el mínimo, unos 41,5 MiB, así que **siete direcciones en su límite agotan el presupuesto de 256 MiB** (dieciséis donde los límites de paquete son lo bastante pequeños para que mande 1/16); las sesiones que una dirección puede tener abiertas, `max_sessions_per_ip`, conservan sus partes justas además | ninguno | las sesiones de esa dirección por encima de su parte justa no se leen y sus paquetes esperan |
+| `admission_timeout` (cuánto puede esperar un paquete a que haya sitio) | 30 s | ninguno | se cierra la conexión con el motivo de desconexión `admission timeout` |
+| `max_auth_bytes` (el `auth` de un CONNECT, que se conserva mientras vive el socket; el `serde_json::Value` guardado se carga por su tamaño real, que puede ser el doble del que mide este límite) | 16 KiB | ninguno | se cierra la conexión |
+| Anidamiento de JSON | 127 niveles | ninguno | se cierra la conexión |
+| `max_event_name_len`, `max_args` (de un cliente) | 256 bytes, 128 | ninguno | se cierra la conexión |
+| Id de confirmación de un cliente | como mucho 16 dígitos y 2^53 - 1 | cualquier racha de dígitos, leída como float | se cierra la conexión |
+| Espacios por conexión | un socket por espacio registrado, contando los intentos en middleware | igual una vez unido; los intentos pendientes no tienen límite | se cierra la conexión (`forced server close`) |
+| `middleware_timeout` | 10 s | ninguno | CONNECT_ERROR `Internal server error` |
+| `connect_timeout` | 45 s | 45 s | se cierra la conexión |
+| `max_inflight` manejadores por conexión | 32, iniciados en orden de llegada | ninguno | no se lee la conexión hasta que uno termina |
+| Manejadores que sobreviven a su conexión, por dirección de cliente (solo tras un cierre del servidor, o con `finish_handlers_after_client_close`) | `max_sessions_per_ip x max_inflight`, 8.192 | ninguno (Node los ejecuta hasta el final) | las sesiones nuevas de esa dirección reciben `503` hasta que algunos terminen |
+| `max_pending_acks` por socket | 1.000 | ninguno | la llamada falla con `TooManyPending` y no envía nada |
+| `ack_timeout` (plazo por defecto de `emit_with_ack`) | 30 s | ninguno | `operation has timed out` |
+| Nombre de espacio | 256 bytes, sin `,` ni caracteres de control | ninguno | `of` devuelve un error |
+| Id de socket | 120 bits aleatorios, nunca el id de sesión de Engine.IO | 96 bits más un contador | n/a |
+
+Lo que ocupa un paquete decodificado depende de su forma, no solo de su tamaño. El texto de un JSON corriente (objetos con
+unos pocos campos de texto y número) se decodifica en 11 a 20 veces su tamaño, así que un paquete de 1 MB cuesta de 11 a
+20 MB y se acepta con el valor por defecto. Las peores formas se expanden más: 1 MB de `{}` cuesta 45 MB, y 1 MB de objetos
+anidados con claves vacías cuesta 58 MB (el peor caso, 58 veces). Con 1 MB de texto, los 32 MiB por defecto aceptan hasta 33
+veces; un paquete por encima de `max_decoded_bytes` cierra la conexión y no se reserva nada de él (primero se mide el texto,
+luego se reserva el coste y solo entonces se decodifica). Todo lo que un cliente puede hacer que el servidor retenga se carga a
+su sesión, a su dirección de cliente y al presupuesto del servidor en una sola cadena, sea cual sea su estado: así una
+dirección retiene como mucho su parte (`max_address_share`) más, por cada sesión que tenga abierta, la parte justa y los
+mensajes en la mano (el transporte deja de leer una sesión por encima de su parte justa mientras su dirección supera su
+parte o el presupuesto está agotado, así que como mucho se ha leído por adelantado un mensaje de a lo sumo
+`max_http_buffer_size`, y otro se está recibiendo), y el servidor retiene como mucho `max_total_unread_bytes` más los mismos
+términos por cada sesión abierta; y dentro de `max_unread_bytes` más un paquete por sesión. Los manejadores de una sesión
+cerrada: cuando el cliente cierra la conexión, sus manejadores en ejecución se cancelan y liberan sus cargas de inmediato;
+cuando la cierra el servidor (o se apaga) mantienen sus paquetes cargados, al servidor y a la dirección del cliente, hasta
+que terminan (como mucho `close_timeout`), y cuentan para el tope por dirección de arriba, así que reconectar no multiplica
+lo que retiene una dirección. Un mensaje se carga por la asignación que
+hay detrás, no solo por su longitud (el mensaje que la biblioteca de WebSocket ensambló a partir de fragmentos se reduce
+cuando su buffer tiene más de un octavo de holgura). Otra dirección conserva el resto del presupuesto, hasta que bastan
+direcciones en su límite para agotarlo (véase la tabla; una aplicación detrás de un proxy inverso debe configurar
+`trust_proxy`, o todos los clientes son la única dirección del proxy; los clientes detrás del NAT de un operador o de una
+empresa comparten una dirección y por tanto una parte, y pueden retrasarse unos a otros). Los buffers de la propia biblioteca
+de WebSocket no entran en esta contabilidad: las cifras por sesión, dirección y servidor, y las opciones que las reducen,
+están en «Memoria del transporte WebSocket fuera del presupuesto», arriba.
+
+Mientras otros agotan el presupuesto, un paquete mayor que la parte justa de la sesión espera sitio, y la sesión no se lee
+entretanto. Esa espera no es obra de la sesión, así que su latido se retiene (no se cierra con `ping timeout` por una memoria
+que no retuvo) como mucho `admission_timeout` en total, y un pong que ya se esperaba se reanuda con lo que quedaba de su espera (nunca un
+`ping_timeout` nuevo entero), así que un cliente que nunca responde se cierra dentro de `ping_interval + ping_timeout +
+admission_timeout` de su último pong, aparezca y desaparezca la presión como sea; un paquete que no se puede admitir en ese tiempo cierra la conexión con el
+motivo `admission timeout`. Una sesión que supera sus propios límites, o cuya dirección supera su parte, conserva el latido
+ordinario. Un paquete que espera se admite en cuanto termina un manejador de otra conexión. Los bytes de los mensajes que
+esperan detrás de un paquete que no se puede admitir siguen cargados hasta que se admite o se cierra la conexión.
+
+Un paquete cuyo JSON tenga un objeto con una clave que `serde_json` lee como instrucción
+(`$serde_json::private::RawValue`) se entrega, pero solo como `IoValue`: `args.get::<serde_json::Value>(i)` y `to_json()` lo
+rechazan, porque `serde_json` volvería a parsear su valor con un presupuesto de recursión nuevo cuando otro crate de la
+compilación activa `raw_value`. Los manejadores que esperan respuestas del cliente (`emit_with_ack`) mientras la conexión
+tiene `max_inflight` manejadores en ejecución no pueden recibir la respuesta: la confirmación espera tras la misma puerta de
+lectura que cualquier otro paquete y solo se toma cuando se libera una plaza, así que la llamada falla con `operation has
+timed out` al llegar a `ack_timeout`. No esperes confirmaciones del mismo cliente dentro de muchos manejadores concurrentes
+(mantén los manejadores que esperan respuestas muy por debajo de `max_inflight`, o envía la pregunta desde una tarea que el
+manejador lanza y retorna).
+
+Diferencias que el cliente puede observar, cada una listada en el arnés con el escenario que la ejercita: un segundo
+CONNECT mientras el middleware de ese espacio sigue corriendo cierra la conexión (Node inicia otro socket pendiente por
+cada paquete), un id de confirmación superior a 2^53 - 1 cierra la conexión (Node responde con un id redondeado) y un JSON
+anidado a más de 127 niveles cierra la conexión (Node lo entrega), y también una cadena con un escape de sustituto
+suelto como `"\ud800"` (una cadena de Rust no puede contenerlo; Node lo conserva; un par válido sí se acepta). También más
+estricto, sin escenario porque el cliente oficial nunca lo hace: un tipo de paquete que no es un dígito, un evento o confirmación sin payload, una confirmación sin
+id, un id en un CONNECT, un índice de marcador que no es un entero.
+
+Un manejador que entra en pánico se contiene y se registra una vez por minuto y por espacio, con el número de los omitidos
+en la línea siguiente; la línea nombra el espacio y nunca el mensaje del pánico ni los datos del cliente (igual el aviso de un
+middleware de conexión que agotó su plazo). Esa línea es la del framework. Contener un pánico no silencia el gancho de pánico
+por defecto de la biblioteca estándar, que corre antes de capturar el desenrollado: escribe el mensaje del pánico en la salida
+de error cada vez, al ritmo al que el cliente envía, y el mensaje contiene lo que el manejador haya formateado en él, datos
+del cliente incluidos. Así que no hagas `unwrap()` ni `expect()` de nada derivado de datos del cliente (`args.get::<T>(i)?` es
+un `Result`; también lo son las conversiones de valores y las búsquedas de claves): el cliente elige sus datos, y un manejador
+que entra en pánico con datos malos es un manejador que el cliente puede hacer fallar a voluntad, y escribir en tu salida de
+error. Una aplicación que quiera silencio instala su propio gancho con `std::panic::set_hook` (el framework no instala
+ninguno, porque un gancho es global al proceso). Los argumentos que un manejador saca de `Args` (`into_vec`) o mueve a una tarea que lanza dejan de
+cargarse cuando el manejador termina: desde entonces son memoria de la aplicación.
+
+No soportado: salas y broadcast, gateways sobre Socket.IO, un adaptador de Redis (cambios posteriores); espacios dinámicos,
+recuperación del estado de la conexión, las banderas `volatile` y `compress`, oyentes globales, parsers personalizados,
+clientes de Engine.IO v3 y servir el bundle del cliente.
 
 ## Seguridad
 

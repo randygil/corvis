@@ -23,7 +23,7 @@ use super::packet::{Incoming, Packet, WsFrame, decode_frame};
 use super::session::{Candidate, CloseReason, Ready, Session};
 use crate::http_adapter::UpgradedIo;
 use crate::logger::Logger;
-use crate::ws::{WriteEnd, protocol_error, write_loop_with};
+use crate::ws::{Pause, WriteEnd, protocol_error, write_loop_with};
 
 /// What the WebSocket is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +46,24 @@ fn encode(packet: Packet) -> Message {
         WsFrame::Binary(b) => Message::Binary(b.to_vec()),
     }
 }
+
+/// A binary message as the engine keeps it, and the bytes of the allocation behind it, which is what the unread budget
+/// charges.
+///
+/// The WebSocket library builds a fragmented message by extending a buffer, so the buffer it hands over can have
+/// twice the capacity of the message (a 524,288 byte frame and a 1 byte continuation leave a megabyte). A buffer with
+/// more than an eighth of slack is shrunk to fit; what remains is at most an eighth of the length (plus what the
+/// allocator rounds up), and is charged: the charge is an upper bound of the allocation, never of the length alone.
+fn fit(mut data: Vec<u8>) -> (Bytes, usize) {
+    if data.capacity() - data.len() > data.len() / SLACK_DIVISOR {
+        data.shrink_to_fit();
+    }
+    let allocated = data.capacity();
+    (Bytes::from(data), allocated)
+}
+
+/// The largest fraction of a message's length (one in this many) its buffer may exceed it by without being shrunk.
+const SLACK_DIVISOR: usize = 8;
 
 fn spawn_writer(sink: Sink, session: &Session) -> Writer {
     tokio::spawn(write_loop_with(sink, session.outbox.clone(), encode))
@@ -94,6 +112,7 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
     }
 
     let mut closed = session.closed_watch();
+    let mut pressure_paused = false;
     let mut reason = CloseReason::TransportClose;
     let exit = loop {
         if session.is_closed() {
@@ -102,7 +121,14 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
         // Registered before the limit is read, so a release in between wakes this loop (`notify_waiters` stores
         // nothing for a waiter that is not registered yet).
         let unread_changed = session.unread.changed();
-        let paused = active && session.unread.over_limit();
+        let pause = if active { session.unread.pause() } else { Pause::No };
+        let paused = pause != Pause::No;
+        // Paused by the budget's pressure, not by what the session or its address holds: a pong it is not allowed to
+        // read must not close it (a no-op unless `pressure_pause_timeout` is set).
+        if (pause == Pause::Pressure) != pressure_paused {
+            pressure_paused = !pressure_paused;
+            session.set_pressure_pause(pressure_paused);
+        }
         let cancelled = async {
             match candidate.as_mut() {
                 Some(c) => {
@@ -122,12 +148,13 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
                 None => break Exit::Peer { close_frame: false },
                 Some(Ok(Message::Close(_))) => break Exit::Peer { close_frame: true },
                 Some(Ok(Message::Text(t))) => {
-                    if let Some(exit) = on_frame(&session, &mut candidate, &mut sink_slot, &mut writer, &mut active, decode_frame(WsFrame::Text(t))).await {
+                    if let Some(exit) = on_frame(&session, &mut candidate, &mut sink_slot, &mut writer, &mut active, decode_frame(WsFrame::Text(t)), 0).await {
                         break exit;
                     }
                 }
                 Some(Ok(Message::Binary(b))) => {
-                    if let Some(exit) = on_frame(&session, &mut candidate, &mut sink_slot, &mut writer, &mut active, decode_frame(WsFrame::Binary(Bytes::from(b)))).await {
+                    let (bytes, allocated) = fit(b);
+                    if let Some(exit) = on_frame(&session, &mut candidate, &mut sink_slot, &mut writer, &mut active, decode_frame(WsFrame::Binary(bytes)), allocated).await {
                         break exit;
                     }
                 }
@@ -216,10 +243,11 @@ async fn on_frame(
     writer: &mut Option<Writer>,
     active: &mut bool,
     incoming: Incoming,
+    allocated: usize,
 ) -> Option<Exit> {
     if *active {
         match incoming {
-            Incoming::Packet(packet) => session.on_packet(packet),
+            Incoming::Packet(packet) => session.on_packet_sized(packet, allocated),
             Incoming::Invalid => session.on_invalid(),
         }
         return None;
@@ -271,4 +299,37 @@ async fn finish_socket(mut sink: Sink, read: Stream, frame: Option<CloseFrame<'s
         while matches!(io.read(&mut scratch).await, Ok(n) if n > 0) {}
     })
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A buffer the way the WebSocket library leaves a fragmented message: extended past its length.
+    fn grown(len: usize, capacity: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(capacity);
+        v.resize(len, 7);
+        v
+    }
+
+    #[test]
+    fn a_buffer_with_more_than_an_eighth_of_slack_is_shrunk_and_never_charged_below_its_allocation() {
+        for (len, capacity) in [(524_289, 1_048_576), (1, 4096), (1_000, 1_126), (1_000, 2_000), (0, 64)] {
+            let (bytes, allocated) = fit(grown(len, capacity));
+            assert_eq!(bytes.len(), len);
+            assert!(allocated >= len, "the charge is at least the length");
+            assert!(allocated - len <= len / SLACK_DIVISOR, "len {len}, capacity {capacity}: {allocated} kept for {len} bytes");
+        }
+    }
+
+    #[test]
+    fn a_buffer_within_an_eighth_is_kept_as_it_is_and_its_capacity_is_what_is_charged() {
+        let (bytes, allocated) = fit(grown(1_000, 1_125));
+        assert_eq!((bytes.len(), allocated), (1_000, 1_125), "125 bytes of slack are within an eighth");
+        let (bytes, allocated) = fit(grown(1_000, 1_000));
+        assert_eq!((bytes.len(), allocated), (1_000, 1_000));
+        let (bytes, allocated) = fit(grown(1_000, 1_126));
+        assert_eq!(bytes.len(), 1_000);
+        assert_eq!(allocated, 1_000, "one byte more than an eighth: shrunk");
+    }
 }

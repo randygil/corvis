@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
@@ -52,7 +52,7 @@ use crate::http::Request;
 use crate::http_adapter::HttpServer;
 use crate::logger::Logger;
 use crate::server::ResBody;
-use crate::ws::UnreadGauge;
+use crate::ws::{UnreadGauge, UnreadTicket};
 
 /// The transport a session is currently using.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +72,7 @@ impl TransportKind {
 }
 
 type ConnectionCallback = Arc<dyn Fn(EngineSocket) + Send + Sync + 'static>;
+type ClosingCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
 pub(crate) struct ServerInner {
     options: Arc<EngineOptions>,
@@ -81,12 +82,49 @@ pub(crate) struct ServerInner {
     sessions: RwLock<Store>,
     /// Received bytes waiting for the application, across every session.
     total_unread: Arc<UnreadGauge>,
+    /// The gauge of every client address that holds something, when `max_address_unread_bytes` is set: between its
+    /// sessions' gauges and the server-wide one, so everything an address holds counts here, in every state, and
+    /// outlives its sessions for as long as anything charged through them does.
+    addresses: Arc<AddressTable>,
+    /// Handlers of a layer on top that outlive their connection, per client address (`EngineSocket::linger`).
+    lingering: Mutex<HashMap<String, usize>>,
     on_connection: RwLock<Option<ConnectionCallback>>,
+    /// Callbacks run at the start of `close()`, before any session is closed.
+    on_closing: RwLock<Vec<ClosingCallback>>,
     last_cap_warning: Mutex<Option<std::time::Instant>>,
     last_hook_warning: Mutex<Option<std::time::Instant>>,
 }
 
+type AddressTable = Mutex<HashMap<String, Weak<UnreadGauge>>>;
+
 impl ServerInner {
+    /// What a new session's gauge is chained to: the gauge of its address when the address has a share of the
+    /// budget, the server-wide gauge otherwise.
+    fn parent_gauge(&self, key: &str) -> Arc<UnreadGauge> {
+        let Some(share) = self.options.max_address_unread_bytes else { return self.total_unread.clone() };
+        let mut table = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(gauge) = table.get(key).and_then(Weak::upgrade) {
+            return gauge;
+        }
+        let (forget, owner) = (key.to_string(), Arc::downgrade(&self.addresses));
+        let gauge = Arc::new(
+            UnreadGauge::new(share, Some(self.total_unread.clone()))
+                .with_guarantee_cap(share.saturating_add(self.options.address_guarantee()))
+                .with_on_drop(move || {
+                    // Forget the address once nothing refers to it. A newer gauge of the same address may have replaced
+                    // this one already: only a dead entry is removed.
+                    if let Some(table) = owner.upgrade() {
+                        let mut table = table.lock().unwrap_or_else(|e| e.into_inner());
+                        if table.get(&forget).is_some_and(|w| w.strong_count() == 0) {
+                            table.remove(&forget);
+                        }
+                    }
+                }),
+        );
+        table.insert(key.to_string(), Arc::downgrade(&gauge));
+        gauge
+    }
+
     pub(crate) fn remove(&self, id: &str) {
         let mut store = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = store.map.remove(id) {
@@ -203,14 +241,17 @@ impl EngineServer {
     pub fn new(options: EngineOptions) -> Result<EngineServer, EngineOptionsError> {
         options.validate()?;
         let path = options.normalized_path();
-        let total_unread = Arc::new(UnreadGauge::new(options.max_total_unread_bytes, None));
+        let total_unread = Arc::new(UnreadGauge::new(options.max_total_unread_bytes, None).pooled());
         Ok(EngineServer {
             inner: Arc::new(ServerInner {
                 options: Arc::new(options),
                 path,
                 sessions: RwLock::new(Store::default()),
                 total_unread,
+                addresses: Arc::new(Mutex::new(HashMap::new())),
+                lingering: Mutex::new(HashMap::new()),
                 on_connection: RwLock::new(None),
+                on_closing: RwLock::new(Vec::new()),
                 last_cap_warning: Mutex::new(None),
                 last_hook_warning: Mutex::new(None),
             }),
@@ -235,6 +276,14 @@ impl EngineServer {
         self
     }
 
+    /// Adds a callback that runs at the start of [`close`](Self::close), after new handshakes are refused and
+    /// before any session is closed, so a layer on top can report the shutdown to its own users first. A panic in
+    /// it is logged and does not stop the close. It runs on every call of `close`: make it idempotent.
+    pub fn on_closing(&self, f: impl Fn() + Send + Sync + 'static) -> &Self {
+        self.inner.on_closing.write().unwrap_or_else(|e| e.into_inner()).push(Arc::new(f));
+        self
+    }
+
     /// The path the server takes over (normalized, with its trailing slash).
     pub fn path(&self) -> &str {
         &self.inner.path
@@ -254,6 +303,10 @@ impl EngineServer {
             store.closed = true;
             store.map.values().cloned().collect()
         };
+        let hooks: Vec<ClosingCallback> = self.inner.on_closing.read().unwrap_or_else(|e| e.into_inner()).clone();
+        for hook in hooks {
+            crate::ws::guarded("the Engine.IO on_closing callback", || hook());
+        }
         for s in sessions {
             s.close(CloseReason::ForcedClose);
         }
@@ -315,7 +368,7 @@ impl EngineServer {
             transport,
             handshake,
             self.inner.options.clone(),
-            Some(self.inner.total_unread.clone()),
+            Some(self.inner.parent_gauge(&key)),
         );
         *store.per_ip.entry(key).or_insert(0) += 1;
         store.map.insert(id, session.clone());
@@ -331,6 +384,11 @@ impl EngineServer {
         }
         let held = store.per_ip.get(key).copied().unwrap_or(0) + store.pending_ip.get(key).copied().unwrap_or(0);
         if held >= self.inner.options.max_sessions_per_ip {
+            return Err(OpenError::TooManyFromAddress);
+        }
+        if let Some(cap) = self.inner.options.max_lingering_per_ip
+            && self.inner.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(key).is_some_and(|n| *n >= cap)
+        {
             return Err(OpenError::TooManyFromAddress);
         }
         Ok(())
@@ -625,6 +683,62 @@ impl Query {
     }
 }
 
+/// Handlers that outlive their session, counted against its client address (`EngineSocket::linger`).
+pub(crate) struct Lingering {
+    server: Arc<ServerInner>,
+    key: String,
+    remaining: usize,
+}
+
+impl Lingering {
+    /// One of the handlers ended.
+    pub(crate) fn one_done(&mut self) {
+        self.give_back(1);
+    }
+
+    fn give_back(&mut self, count: usize) {
+        let count = count.min(self.remaining);
+        if count == 0 {
+            return;
+        }
+        self.remaining -= count;
+        let mut table = self.server.lingering.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = table.get_mut(&self.key) {
+            *n = n.saturating_sub(count);
+            if *n == 0 {
+                table.remove(&self.key);
+            }
+        }
+    }
+}
+
+impl Drop for Lingering {
+    fn drop(&mut self) {
+        self.give_back(self.remaining);
+    }
+}
+
+/// Bytes charged against a session's unread budget; they are released when this is dropped.
+pub struct Held(UnreadTicket);
+
+impl Held {
+    /// Lowers the charge to `bytes` (never raises it) and wakes whatever waits for room.
+    pub(crate) fn shrink_to(&mut self, bytes: usize) {
+        self.0.shrink_to(bytes);
+    }
+
+    /// The bytes this guard charges.
+    pub(crate) fn bytes(&self) -> usize {
+        self.0.size()
+    }
+}
+
+impl std::fmt::Debug for Held {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Held")
+    }
+}
+
 /// One session as the application sees it.
 #[derive(Clone)]
 pub struct EngineSocket {
@@ -662,6 +776,64 @@ impl EngineSocket {
     /// session with `transport error`.
     pub fn send(&self, message: impl Into<EngineMessage>) -> Result<(), SendError> {
         self.session.send(message.into())
+    }
+
+    /// Queues several messages as one unit: nothing else is queued between them, and the group is accepted or
+    /// refused as a whole (a group that would pass `max_buffered_amount` fails, discards the queue and closes the
+    /// session with `transport error`, like [`send`](Self::send)). A Socket.IO binary packet is such a group.
+    pub fn send_all(&self, messages: Vec<EngineMessage>) -> Result<(), SendError> {
+        self.session.send_all(messages)
+    }
+
+    /// Counts `count` handlers that outlive this session against its client address, until the guard says they are
+    /// done or is dropped. At `max_lingering_per_ip` of them an address gets no new sessions (`503`). `None` when the
+    /// server is gone.
+    pub(crate) fn linger(&self, count: usize) -> Option<Lingering> {
+        let server = self.session.server()?;
+        let key = self.session.addr_key.clone();
+        *server.lingering.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += count;
+        Some(Lingering { server, key, remaining: count })
+    }
+
+    /// Charges `bytes` against this session's unread budget (and the server's) until the returned guard is
+    /// dropped. A layer that keeps something decoded from received messages waiting charges its real size here.
+    pub fn hold(&self, bytes: usize) -> Held {
+        Held(UnreadTicket::new(&self.session.unread, bytes))
+    }
+
+    /// Charges `bytes` only if the session stays at or below its fair share of the server-wide budget (and its address
+    /// at or below its quota plus the guaranteed shares): what a session may always take, whatever others hold. An
+    /// atomic check and charge; `None` leaves every gauge unchanged.
+    pub(crate) fn hold_within_share(&self, bytes: usize, credit: usize) -> Option<Held> {
+        UnreadTicket::try_new_within_share(&self.session.unread, bytes, credit).map(Held)
+    }
+
+    /// Charges `bytes` only if the server-wide budget keeps room for them (an atomic check and charge, so racing
+    /// sessions cannot overshoot it together). `None` leaves every gauge unchanged.
+    pub(crate) fn hold_within_total(&self, bytes: usize, credit: usize) -> Option<Held> {
+        UnreadTicket::try_new_within_ancestors(&self.session.unread, bytes, credit).map(Held)
+    }
+
+    /// The test the transports use to stop reading: the session is over its own limit, or over its fair share while
+    /// the server-wide budget is exceeded.
+    pub(crate) fn unread_over_limit(&self) -> bool {
+        self.session.unread.over_limit()
+    }
+
+    /// Resolves at the next release of this session's gauge or the server-wide one. Create it before checking
+    /// [`unread_over_limit`](Self::unread_over_limit), so a release in between is not lost.
+    pub(crate) fn unread_changed(&self) -> impl std::future::Future<Output = ()> + '_ {
+        self.session.unread.changed()
+    }
+
+    /// Like [`messages`](Self::messages), but each message keeps counting against `max_unread_bytes` until its
+    /// [`Held`] guard is dropped, instead of until it is taken: what the caller keeps waiting for a handler or for
+    /// more messages stays inside the budget. Shares the single stream with `messages`.
+    pub fn messages_held(&self) -> Pin<Box<dyn Stream<Item = (EngineMessage, Held)> + Send + 'static>> {
+        match self.session.take_inbox() {
+            Some(mut rx) => Box::pin(futures::stream::poll_fn(move |cx| rx.poll_recv(cx)).map(|(message, ticket)| (message, Held(ticket)))),
+            None => Box::pin(futures::stream::empty()),
+        }
     }
 
     /// The messages received from the client. Only the first call gets the stream; later calls get an empty one.
@@ -707,8 +879,89 @@ impl EngineSocket {
     }
 }
 
+/// Helpers for the tests of the layers built on this one: a session with no network, fed and read directly.
+#[cfg(test)]
+impl EngineServer {
+    /// Opens a WebSocket-first session without any transport and hands it to the connection callback.
+    pub(crate) fn open_test_socket(&self) -> EngineSocket {
+        self.open_test_socket_from("127.0.0.1")
+    }
+
+    /// Bytes held against the server-wide unread budget by every session.
+    pub(crate) fn total_unread_bytes(&self) -> usize {
+        self.inner.total_unread.unread()
+    }
+
+    /// Bytes held by every session of `address` together (0 when it holds nothing).
+    pub(crate) fn address_unread_bytes(&self, address: &str) -> usize {
+        let key = address_key(address, None);
+        let table = self.inner.addresses.lock().unwrap_or_else(|e| e.into_inner());
+        table.get(&key).and_then(Weak::upgrade).map_or(0, |gauge| gauge.unread())
+    }
+
+    /// Handlers that outlive their connection and are counted against `address`.
+    pub(crate) fn lingering(&self, address: &str) -> usize {
+        let key = address_key(address, None);
+        self.inner.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(&key).copied().unwrap_or(0)
+    }
+
+    /// Whether a handshake from `address` would be answered `503` now.
+    pub(crate) fn refuses_new_sessions_from(&self, address: &str) -> bool {
+        let store = self.inner.sessions.read().unwrap_or_else(|e| e.into_inner());
+        self.caps_ok(&store, &address_key(address, None)).is_err()
+    }
+
+    /// The same, as if the client connected from `address`.
+    pub(crate) fn open_test_socket_from(&self, address: &str) -> EngineSocket {
+        let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=websocket").body(()).unwrap().into_parts();
+        let peer: std::net::SocketAddr = format!("{address}:1").parse().unwrap();
+        let handshake = Request::for_upgrade(parts, peer, &Default::default()).unwrap();
+        let reservation = self.reserve(&handshake).ok().expect("a free slot");
+        let session = self.open_session(TransportKind::WebSocket, handshake, reservation).ok().expect("an open session");
+        self.notify_connection(&session);
+        EngineSocket { session }
+    }
+}
+
+#[cfg(test)]
+impl EngineSocket {
+    /// As if the client had sent this message.
+    pub(crate) fn feed(&self, message: EngineMessage) {
+        self.session.on_packet(packet::Packet::Message(message));
+    }
+
+    /// The connection drops at once, as if the transport had closed under it.
+    pub(crate) fn kill(&self) {
+        self.session.close(session::CloseReason::TransportClose);
+    }
+
+    /// The server ends the connection at once, as a shutdown does.
+    pub(crate) fn force_close(&self) {
+        self.session.close(session::CloseReason::ForcedClose);
+    }
+
+    /// `true` once the session is closing or closed.
+    pub(crate) fn is_closing(&self) -> bool {
+        self.session.ready() != session::Ready::Open
+    }
+
+    /// Everything queued for the client since the last call, messages only (no open or ping packets).
+    pub(crate) fn take_sent(&self) -> Vec<EngineMessage> {
+        self.session
+            .outbox
+            .take_batch(usize::MAX, |p| p.polling_len() + 1)
+            .into_iter()
+            .filter_map(|p| match p {
+                packet::Packet::Message(m) => Some(m),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::packet::Packet;
     use super::*;
 
     #[test]
@@ -754,6 +1007,110 @@ mod tests {
         assert!(matches!(server.reserve(&handshake), Err(OpenError::Closing)));
         assert_eq!(server.session_count(), 0);
         assert!(server.inner.sessions.read().unwrap().per_ip.is_empty(), "the address counts are released with the sessions");
+    }
+
+    fn test_handshake() -> Request {
+        let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
+        Request::for_upgrade(parts, "127.0.0.1:1".parse().unwrap(), &Default::default()).unwrap()
+    }
+
+    fn open_socket(server: &EngineServer, transport: TransportKind) -> EngineSocket {
+        let handshake = test_handshake();
+        let reservation = server.reserve(&handshake).ok().unwrap();
+        let session = server.open_session(transport, handshake, reservation).ok().unwrap();
+        EngineSocket { session }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_group_is_queued_whole_and_never_interleaved_by_32_concurrent_senders() {
+        let server = EngineServer::new(EngineOptions::new()).unwrap();
+        let socket = open_socket(&server, TransportKind::WebSocket);
+        let senders: Vec<_> = (0..32u8)
+            .map(|n| {
+                let socket = socket.clone();
+                std::thread::spawn(move || {
+                    for round in 0..50u8 {
+                        let tag = format!("{n}:{round}");
+                        let group = vec![
+                            EngineMessage::Text(format!("head {tag}")),
+                            EngineMessage::Binary(bytes::Bytes::from(format!("a {tag}"))),
+                            EngineMessage::Binary(bytes::Bytes::from(format!("b {tag}"))),
+                        ];
+                        socket.send_all(group).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for sender in senders {
+            sender.join().unwrap();
+        }
+        let queued = socket.session.outbox.take_batch(usize::MAX, |p| p.polling_len() + 1);
+        // The open packet, then 32 * 50 groups of three.
+        assert_eq!(queued.len(), 1 + 32 * 50 * 3);
+        let mut groups = 0;
+        for chunk in queued[1..].chunks(3) {
+            let [
+                Packet::Message(EngineMessage::Text(head)),
+                Packet::Message(EngineMessage::Binary(a)),
+                Packet::Message(EngineMessage::Binary(b)),
+            ] = chunk
+            else {
+                panic!("a group was split: {chunk:?}")
+            };
+            let tag = head.strip_prefix("head ").unwrap();
+            assert_eq!(a.as_ref(), format!("a {tag}").as_bytes());
+            assert_eq!(b.as_ref(), format!("b {tag}").as_bytes());
+            groups += 1;
+        }
+        assert_eq!(groups, 1600);
+    }
+
+    #[tokio::test]
+    async fn a_group_over_the_send_buffer_is_refused_whole_and_closes_the_session() {
+        let server = EngineServer::new(EngineOptions::new().max_buffered_amount(300)).unwrap();
+        let socket = open_socket(&server, TransportKind::WebSocket);
+        // The open packet is already queued; a group that does not fit is refused whole.
+        let group = vec![EngineMessage::Text("x".repeat(100)), EngineMessage::Binary(bytes::Bytes::from(vec![0u8; 200]))];
+        assert_eq!(socket.send_all(group), Err(SendError::Full));
+        assert_eq!(socket.close_reason(), Some(CloseReason::TransportError));
+        assert_eq!(socket.buffered_amount(), 0, "nothing of the group stayed queued");
+        assert_eq!(socket.send_all(vec![EngineMessage::Text("late".into())]), Err(SendError::Closed));
+    }
+
+    #[tokio::test]
+    async fn received_bytes_stay_charged_until_the_guard_is_released() {
+        let server = EngineServer::new(EngineOptions::new()).unwrap();
+        let socket = open_socket(&server, TransportKind::WebSocket);
+        socket.session.on_packet(Packet::Message(EngineMessage::Text("hello".into())));
+        let charged = 5 + session::UNREAD_MESSAGE_OVERHEAD;
+        assert_eq!(socket.unread_bytes(), charged);
+        let mut messages = socket.messages_held();
+        let (message, held) = messages.next().await.unwrap();
+        assert_eq!(message, EngineMessage::Text("hello".into()));
+        assert_eq!(socket.unread_bytes(), charged, "taking the message does not release it");
+        let extra = socket.hold(1000);
+        assert_eq!(socket.unread_bytes(), charged + 1000);
+        drop(held);
+        assert_eq!(socket.unread_bytes(), 1000, "the gauge falls on release only");
+        drop(extra);
+        assert_eq!(socket.unread_bytes(), 0);
+        assert_eq!(server.inner.total_unread.unread(), 0, "the server-wide gauge follows");
+    }
+
+    #[tokio::test]
+    async fn the_closing_hook_runs_before_any_session_is_closed() {
+        let server = EngineServer::new(EngineOptions::new()).unwrap();
+        let socket = open_socket(&server, TransportKind::WebSocket);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        {
+            let seen = seen.clone();
+            let probe = socket.clone();
+            server.on_closing(move || seen.lock().unwrap().push(probe.close_reason()));
+        }
+        server.on_closing(|| panic!("a hook that panics does not stop the close"));
+        server.close();
+        assert_eq!(*seen.lock().unwrap(), vec![None], "the session was still open when the hook ran");
+        assert_eq!(socket.close_reason(), Some(CloseReason::ForcedClose));
     }
 
     #[tokio::test]

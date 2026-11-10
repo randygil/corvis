@@ -138,6 +138,32 @@ impl<M: QueueItem> OutQueue<M> {
         Ok(())
     }
 
+    /// Queues several items as one unit under a single lock: nothing else can be queued between them, and the group
+    /// is accepted or refused as a whole by the rule of [`push`](Self::push) applied to the sum of the sizes.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn push_group(&self, items: Vec<M>) -> Result<(), PushError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let sizes: Vec<usize> = items.iter().map(|m| m.size()).collect();
+        let total: usize = sizes.iter().sum();
+        let mut s = self.lock();
+        if s.closed {
+            return Err(PushError::Closed);
+        }
+        let pending = s.queued + s.writing;
+        if pending > 0 && pending + total > self.limit {
+            return Err(PushError::Full);
+        }
+        for (m, size) in items.into_iter().zip(sizes) {
+            s.items.push_back((m, size, None));
+        }
+        s.queued += total;
+        drop(s);
+        self.wake();
+        Ok(())
+    }
+
     /// Rejects any later item. The pending ones stay queued for the writer, or are dropped with
     /// `discard`. Returns `false` if the queue was already closed.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
@@ -351,16 +377,91 @@ pub(crate) struct UnreadGauge {
     /// this many bytes, so a session that is drained is never paused by the hoarding of others.
     fair: usize,
     parent: Option<Arc<UnreadGauge>>,
+    /// Whether exceeding `limit` is the fault of whoever holds the bytes (a session, an address) and not pressure
+    /// from the pool (the server-wide gauge).
+    blame: bool,
+    /// What a guaranteed charge may bring this gauge to (see `try_charge_share`): an address may hold its quota
+    /// plus the guaranteed shares of the sessions it may have open.
+    guarantee_cap: usize,
+    /// Runs when the gauge is dropped (an address gauge forgets its entry).
+    on_drop: Option<Box<dyn Fn() + Send + Sync>>,
+    /// How many charges this level has refused: a rollback compares it with the value seen when its charge was taken,
+    /// to know whether anyone was refused while this level held a charge that did not stay.
+    refusals: AtomicUsize,
+}
+
+/// A point of a refusal or an observation where another thread may run (see `UnreadGauge::observe`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// The decision was taken on a value read earlier; nothing is counted yet.
+    Decided,
+    /// The refusal is counted; the level is not read again yet.
+    Counted,
+}
+
+/// Why a gauge says to stop reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+pub(crate) enum Pause {
+    /// Reading may go on.
+    No,
+    /// Over a limit of its own: the session's, or its address's.
+    Own,
+    /// Over its fair share while the server-wide budget is exceeded, whoever exceeded it.
+    Pressure,
 }
 
 impl UnreadGauge {
     pub(crate) fn gateway(limit: usize) -> Self {
-        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: false, fair: 0, parent: None }
+        UnreadGauge {
+            bytes: AtomicUsize::new(0),
+            notify: Notify::new(),
+            limit,
+            wake_all: false,
+            fair: 0,
+            parent: None,
+            blame: true,
+            guarantee_cap: usize::MAX,
+            on_drop: None,
+            refusals: AtomicUsize::new(0),
+        }
     }
 
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn new(limit: usize, parent: Option<Arc<UnreadGauge>>) -> Self {
-        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: true, fair: 0, parent }
+        UnreadGauge {
+            bytes: AtomicUsize::new(0),
+            notify: Notify::new(),
+            limit,
+            wake_all: true,
+            fair: 0,
+            parent,
+            blame: true,
+            guarantee_cap: usize::MAX,
+            on_drop: None,
+            refusals: AtomicUsize::new(0),
+        }
+    }
+
+    /// Marks the gauge as the shared pool: going over its limit is nobody's own fault.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn pooled(mut self) -> Self {
+        self.blame = false;
+        self
+    }
+
+    /// Sets what guaranteed charges may bring this gauge to.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn with_guarantee_cap(mut self, cap: usize) -> Self {
+        self.guarantee_cap = cap;
+        self
+    }
+
+    /// Runs `f` when the gauge is dropped.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn with_on_drop(mut self, f: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_drop = Some(Box::new(f));
+        self
     }
 
     /// Sets the fair share (see the field). Only meaningful with a parent.
@@ -371,8 +472,50 @@ impl UnreadGauge {
     }
 
     pub(crate) fn over_limit(&self) -> bool {
-        let own = self.bytes.load(Ordering::SeqCst);
-        own > self.limit || (own > self.fair && self.parent.as_ref().is_some_and(|p| p.over_limit()))
+        self.observe().0
+    }
+
+    /// One reading of the chain of gauges, each level read once: whether reading must stop, and whether the cause is
+    /// the holder's own doing (the session's limit, its address's quota) and not the pool's.
+    ///
+    /// A caller that gets "over" is about to wait for a release, and a rollback elsewhere (a charge taken at a lower
+    /// level that a level above then refused) is a release no one announces, so the observer registers itself like a
+    /// refused charge does: it counts a refusal at the level it found over, and reads the level again, retrying if it
+    /// changed. The rollback subtracts first and reads the counter second, so with sequentially consistent ordering at
+    /// least one of the two sees the other: either the observer sees the level already lowered, or the rollback sees
+    /// the count and wakes the waiters. Nothing is counted for a level that is not over, and nothing is woken here.
+    fn observe(&self) -> (bool, bool) {
+        self.observe_with(&mut |_| {})
+    }
+
+    fn observe_with(&self, step: &mut dyn FnMut(Step)) -> (bool, bool) {
+        loop {
+            let own = self.bytes.load(Ordering::SeqCst);
+            let own_over = own > self.limit;
+            let (parent_over, parent_fault) = match &self.parent {
+                Some(p) if own > self.fair || own_over => p.observe_with(step),
+                _ => (false, false),
+            };
+            let over = own_over || (own > self.fair && parent_over);
+            if !over {
+                return (false, false);
+            }
+            // Counted only at the level whose own reading decides the pause (it is over its own limit). A level that
+            // is over merely because a level above is (`own > fair && parent_over`) is not what the observer waits
+            // on: the level above counted it, and a release there wakes every waiter below. Counting here too made
+            // every observation of a session under server-wide pressure look like a refusal at its address, so each
+            // rollback at the address (a charge the pool then refused) woke every sibling, which tried, rolled back
+            // and woke the others again: a stampede that fed itself for as long as the pressure lasted.
+            if own_over {
+                step(Step::Decided);
+                self.refusals.fetch_add(1, Ordering::SeqCst);
+                step(Step::Counted);
+                if self.bytes.load(Ordering::SeqCst) != own {
+                    continue;
+                }
+            }
+            return (true, (self.blame && own_over) || parent_fault);
+        }
     }
 
     /// Bytes received and not yet taken.
@@ -381,19 +524,29 @@ impl UnreadGauge {
         self.bytes.load(Ordering::SeqCst)
     }
 
-    /// Resolves at the next release of this gauge or its parent. The notifications are registered when this is
-    /// called, before the caller checks `over_limit`, so a release in between is not lost.
+    /// Resolves at the next release of this gauge or of any gauge above it (its address, the server-wide one). The
+    /// notifications are registered when this is called, before the caller checks `over_limit`, so a release in
+    /// between is not lost.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn changed(&self) -> impl std::future::Future<Output = ()> + '_ {
-        let own = self.notify.notified();
-        let parent = self.parent.as_ref().map(|p| p.notify.notified());
+        let mut waits = Vec::with_capacity(3);
+        let mut gauge = Some(self);
+        while let Some(g) = gauge {
+            waits.push(Box::pin(g.notify.notified()));
+            gauge = g.parent.as_deref();
+        }
         async move {
-            match parent {
-                Some(parent) => {
-                    tokio::select! { _ = own => {}, _ = parent => {} }
-                }
-                None => own.await,
-            }
+            futures::future::select_all(waits).await;
+        }
+    }
+
+    /// Whether reading must stop, and whose doing it is.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn pause(&self) -> Pause {
+        match self.observe() {
+            (false, _) => Pause::No,
+            (true, true) => Pause::Own,
+            (true, false) => Pause::Pressure,
         }
     }
 
@@ -404,13 +557,123 @@ impl UnreadGauge {
         }
     }
 
-    fn release(&self, size: usize) {
-        self.bytes.fetch_sub(size, Ordering::SeqCst);
+    /// Adds `size` only if this gauge stays at or below its fair share and every gauge above it at or below its
+    /// guarantee cap (an address: its quota plus the guaranteed shares of its sessions; the server-wide one has
+    /// none): what a session may always take, so one that holds little is never starved by the hoarding of others.
+    /// A compare-and-swap at every level; `false` leaves everything unchanged.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    fn try_charge_share(&self, size: usize, credit: usize) -> bool {
+        let Some(seen) = self.try_add_up_to(size, self.fair.saturating_add(credit)) else { return false };
+        if let Some(parent) = &self.parent
+            && !parent.try_charge_guaranteed(size, credit)
+        {
+            self.roll_back(size, seen);
+            return false;
+        }
+        true
+    }
+
+    fn try_charge_guaranteed(&self, size: usize, credit: usize) -> bool {
+        let Some(seen) = self.try_add_up_to(size, self.guarantee_cap.saturating_add(credit)) else { return false };
+        if let Some(parent) = &self.parent
+            && !parent.try_charge_guaranteed(size, credit)
+        {
+            self.roll_back(size, seen);
+            return false;
+        }
+        true
+    }
+
+    /// Adds `size` here if the total then stays at or below `limit`. `Some` carries the count of refusals this level had
+    /// made when the charge was taken (for `roll_back`); a refusal is counted.
+    ///
+    /// The refusal is counted before it is final: a refused caller increments the count FIRST, then reads the level
+    /// again and decides again if it changed. `roll_back` subtracts FIRST and then reads the count. With sequentially
+    /// consistent ordering at least one side sees the other: if the refusal's re-read comes before the subtraction, the
+    /// increment came before the re-read and so before the rollback's read of the count, which wakes the waiters; if
+    /// it comes after, it sees the lowered level and retries instead of waiting for a wakeup that would not come.
+    pub(crate) fn try_add_up_to(&self, size: usize, limit: usize) -> Option<usize> {
+        self.try_add_up_to_with(size, limit, &mut |_| {})
+    }
+
+    /// `try_add_up_to` calling `step` at the points where another thread could interleave (the tests run the other side
+    /// there, one step at a time).
+    fn try_add_up_to_with(&self, size: usize, limit: usize, step: &mut dyn FnMut(Step)) -> Option<usize> {
+        let seen = self.refusals.load(Ordering::SeqCst);
+        let mut current = self.bytes.load(Ordering::SeqCst);
+        loop {
+            let Some(next) = current.checked_add(size).filter(|n| *n <= limit) else {
+                step(Step::Decided);
+                self.refusals.fetch_add(1, Ordering::SeqCst);
+                step(Step::Counted);
+                let again = self.bytes.load(Ordering::SeqCst);
+                if again != current {
+                    current = again;
+                    continue;
+                }
+                return None;
+            };
+            match self.bytes.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Some(seen),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Adds `size` to this gauge and its ancestors only if every ancestor stays at or below its own limit (a
+    /// compare-and-swap, so concurrent callers cannot overshoot together). The gauge's own limit is not applied: it
+    /// decides whether a session reads, not what one decoded packet may add. `Err` leaves everything unchanged.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    fn try_charge_within_ancestors(&self, size: usize, credit: usize) -> bool {
+        if let Some(parent) = &self.parent
+            && !parent.try_charge_within(size, credit)
+        {
+            return false;
+        }
+        self.bytes.fetch_add(size, Ordering::SeqCst);
+        true
+    }
+
+    /// Adds `size` here and above only if this gauge and its ancestors stay at or below their limits.
+    fn try_charge_within(&self, size: usize, credit: usize) -> bool {
+        let Some(seen) = self.try_add_up_to(size, self.limit.saturating_add(credit)) else { return false };
+        if let Some(parent) = &self.parent
+            && !parent.try_charge_within(size, credit)
+        {
+            self.roll_back(size, seen);
+            return false;
+        }
+        true
+    }
+
+    /// Lowers a charge already taken, and wakes the waiters.
+    fn shrink(&self, by: usize) {
+        self.release(by);
+    }
+
+    fn wake(&self) {
         if self.wake_all {
             self.notify.notify_waiters();
         } else {
             self.notify.notify_one();
         }
+    }
+
+    /// Undoes a charge of this level that a failed charge higher up made void. For an instant this level was
+    /// higher than it ever stays, and a sibling that was refused then is waiting for it to drop, so the waiters are
+    /// woken when this level refused anything since the charge was taken (`seen` is the refusal count then). A
+    /// rollback that nobody could have noticed wakes no one: the asker itself waits on these levels too, and waking it
+    /// for its own rollback would make it retry in a loop for as long as a level above stays full.
+    pub(crate) fn roll_back(&self, size: usize, seen: usize) {
+        self.bytes.fetch_sub(size, Ordering::SeqCst);
+        if self.refusals.load(Ordering::SeqCst) != seen {
+            self.wake();
+        }
+    }
+
+    fn release(&self, size: usize) {
+        self.bytes.fetch_sub(size, Ordering::SeqCst);
+        self.wake();
         if let Some(parent) = &self.parent {
             parent.release(size);
         }
@@ -427,6 +690,41 @@ impl UnreadTicket {
     pub(crate) fn new(gauge: &Arc<UnreadGauge>, size: usize) -> Self {
         gauge.charge(size);
         UnreadTicket { gauge: gauge.clone(), size }
+    }
+
+    /// Charges `size` only if the gauge stays within its fair share and its ancestors within their guarantee caps (see
+    /// `UnreadGauge::try_charge_share`).
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn try_new_within_share(gauge: &Arc<UnreadGauge>, size: usize, credit: usize) -> Option<Self> {
+        gauge.try_charge_share(size, credit).then(|| UnreadTicket { gauge: gauge.clone(), size })
+    }
+
+    /// Charges `size` only if the gauge's ancestors stay within their limits (see `try_charge_within_ancestors`).
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn try_new_within_ancestors(gauge: &Arc<UnreadGauge>, size: usize, credit: usize) -> Option<Self> {
+        gauge.try_charge_within_ancestors(size, credit).then(|| UnreadTicket { gauge: gauge.clone(), size })
+    }
+
+    /// Lowers the charge to `size` (never raises it), releasing the difference and waking the waiters.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn shrink_to(&mut self, size: usize) {
+        if size < self.size {
+            self.gauge.shrink(self.size - size);
+            self.size = size;
+        }
+    }
+
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn size(&self) -> usize {
+        self.size
+    }
+}
+
+impl Drop for UnreadGauge {
+    fn drop(&mut self) {
+        if let Some(f) = self.on_drop.take() {
+            f();
+        }
     }
 }
 
@@ -1221,4 +1519,198 @@ async fn run(ws: WebSocket, stream: WebSocketStream<UpgradedIo>, mut control: mp
     ws.inner.queue.shutdown();
     let (code, reason) = received.unwrap_or((1006, String::new()));
     ws.emit_close(code, &reason);
+}
+
+#[cfg(test)]
+mod gauge_tests {
+    use super::*;
+    use futures::FutureExt;
+
+    /// Wakeups after a rollback, with the other side run at each point where it could interleave. The refusing side
+    /// counts FIRST and reads the level again; the rollback subtracts FIRST and reads the count.
+    #[test]
+    fn a_refusal_that_lands_around_a_rollback_is_never_left_waiting() {
+        for stage in [Step::Decided, Step::Counted] {
+            let level = UnreadGauge::new(300, None);
+            let waits = level.changed();
+            let seen = level.try_add_up_to(25, 300).expect("the asker's charge");
+            let mut rolled_back = false;
+            // The sibling decides on 25 held (it needs 290 of 300) and the whole rollback runs at `stage`.
+            let got = level.try_add_up_to_with(290, 300, &mut |at| {
+                if at == stage && !rolled_back {
+                    rolled_back = true;
+                    level.roll_back(25, seen);
+                }
+            });
+            assert!(rolled_back);
+            let woken = waits.now_or_never().is_some();
+            // Either the sibling saw the lowered level and was admitted, or it was refused and the rollback woke it.
+            assert!(got.is_some() || woken, "lost wakeup at {stage:?}");
+            assert!(got.is_some(), "the re-read sees the level lowered, so it retries and is admitted ({stage:?})");
+            assert_eq!(woken, stage == Step::Counted, "only a rollback that saw the count wakes ({stage:?})");
+        }
+    }
+
+    /// The observer side: a caller told "paused" because a level is over its limit counts like a refusal.
+    #[test]
+    fn an_observer_that_saw_a_transient_peak_is_woken_by_the_rollback() {
+        for stage in [None, Some(Step::Decided), Some(Step::Counted)] {
+            let level = Arc::new(UnreadGauge::new(300, None));
+            let session = Arc::new(UnreadGauge::new(10_000, Some(level.clone())));
+            let held = UnreadTicket::new(&session, 5);
+            let waits = session.changed();
+            // The asker's charge takes the address to 350 while its limit is 300; the level above has not answered.
+            let seen = level.try_add_up_to(350, 400).expect("the asker's charge");
+            let mut rolled_back = false;
+            let pause = match stage {
+                None => {
+                    let pause = session.pause();
+                    level.roll_back(350, seen);
+                    rolled_back = true;
+                    pause
+                }
+                Some(at) => {
+                    let (over, _) = session.observe_with(&mut |s| {
+                        if s == at && !rolled_back {
+                            rolled_back = true;
+                            level.roll_back(350, seen);
+                        }
+                    });
+                    if over { Pause::Own } else { Pause::No }
+                }
+            };
+            assert!(rolled_back);
+            let woken = waits.now_or_never().is_some();
+            match stage {
+                None => assert!(pause == Pause::Own && woken, "reported paused, so the rollback must wake it"),
+                // The first read saw the peak, the rollback came before the count, so the re-read retries and finds
+                // the level lowered: not paused, nothing to wake.
+                Some(Step::Decided) => assert!(pause == Pause::No && !woken),
+                // The count was in place when the rollback read it: woken, and the re-read retries to not paused.
+                Some(Step::Counted) => assert!(pause == Pause::No && woken),
+            }
+            assert_eq!(session.pause(), Pause::No);
+            drop(held);
+        }
+    }
+
+    #[test]
+    fn a_pause_is_classified_from_one_reading_and_idle_observers_wake_nobody() {
+        let total = Arc::new(UnreadGauge::new(1000, None).pooled());
+        let address = Arc::new(UnreadGauge::new(300, Some(total.clone())));
+        let session = Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(25));
+        let held = UnreadTicket::new(&session, 20);
+        assert_eq!(session.pause(), Pause::No);
+        // Not over: nothing is counted, so a rollback has nobody to wake.
+        let waits = address.changed();
+        let seen = address.try_add_up_to(10, 400).expect("a charge");
+        address.roll_back(10, seen);
+        assert!(waits.now_or_never().is_none());
+        // Over the address quota: the holder's own doing, from the same reading that found it over.
+        let more = UnreadTicket::new(&session, 400);
+        assert_eq!(session.pause(), Pause::Own);
+        assert_eq!(session.observe(), (true, true));
+        drop((held, more));
+        // Over only the pool's limit: pressure.
+        let total2 = Arc::new(UnreadGauge::new(100, None).pooled());
+        let address2 = Arc::new(UnreadGauge::new(300, Some(total2.clone())));
+        let session2 = Arc::new(UnreadGauge::new(10_000, Some(address2.clone())).with_fair_share(25));
+        let _x = UnreadTicket::new(&session2, 150);
+        assert_eq!(session2.pause(), Pause::Pressure);
+    }
+
+    /// The stampede of the fourth review round. The pool is over its limit; sessions of one address, itself under its
+    /// quota, are paused by that pressure and keep being observed. An observation must not count as a refusal at the
+    /// address (the address is not what they wait on), or every charge a sibling takes at the address and the pool
+    /// then refuses would wake them all on its rollback, each to try, roll back and wake the others again.
+    #[test]
+    fn observers_paused_by_the_pool_are_not_woken_by_rollbacks_at_their_address() {
+        let total = Arc::new(UnreadGauge::new(100, None).pooled());
+        let address = Arc::new(UnreadGauge::new(10_000, Some(total.clone())));
+        let sessions: Vec<_> = (0..256).map(|_| Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(1))).collect();
+        // Every session holds more than its fair share, and together they are over the pool's limit.
+        let _held: Vec<_> = sessions.iter().map(|s| UnreadTicket::new(s, 2)).collect();
+        for s in &sessions {
+            assert_eq!(s.pause(), Pause::Pressure);
+        }
+        let counted = address.refusals.load(Ordering::SeqCst);
+        // A sibling's charge is taken at the address and refused by the pool: the rollback has nobody to wake, however
+        // many times the paused sessions are observed in between.
+        for _ in 0..1_000 {
+            let waits = sessions[0].changed();
+            let seen = address.try_add_up_to(50, 10_000).expect("room at the address");
+            for s in &sessions {
+                assert!(s.over_limit());
+            }
+            address.roll_back(50, seen);
+            assert!(waits.now_or_never().is_none(), "a rollback at the address woke a session that waits on the pool");
+        }
+        assert_eq!(address.refusals.load(Ordering::SeqCst), counted, "observing counted refusals at the address");
+        // A release of the pool is what they wait for, and it wakes them.
+        let waits = sessions[0].changed();
+        drop(_held);
+        assert!(waits.now_or_never().is_some());
+    }
+
+    /// Many askers and observers on two addresses sharing a pool that refuses above the addresses' caps: charges taken
+    /// at the address level and rolled back by the pool. When all activity stops nobody may be left parked while room
+    /// exists. The waiters never time out by themselves; a lost wakeup is a thread that never finishes.
+    #[test]
+    fn nobody_is_left_parked_while_room_exists_after_the_activity_stops() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let total = Arc::new(UnreadGauge::new(100, None).pooled().with_guarantee_cap(100));
+        let mut threads = 0usize;
+        let (done, finished) = mpsc::channel::<()>();
+        for _ in 0..2 {
+            let address = Arc::new(UnreadGauge::new(40, Some(total.clone())).with_guarantee_cap(80));
+            for _ in 0..8 {
+                let session = Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(20));
+                let done = done.clone();
+                threads += 1;
+                std::thread::spawn(move || {
+                    for _ in 0..300 {
+                        let ticket = loop {
+                            let wait = session.changed();
+                            if let Some(t) = UnreadTicket::try_new_within_share(&session, 20, 0) {
+                                break t;
+                            }
+                            futures::executor::block_on(wait);
+                        };
+                        std::thread::yield_now();
+                        drop(ticket);
+                    }
+                    let _ = done.send(());
+                });
+            }
+            for _ in 0..4 {
+                let address = address.clone();
+                let done = done.clone();
+                threads += 1;
+                std::thread::spawn(move || {
+                    for _ in 0..300 {
+                        loop {
+                            let wait = address.changed();
+                            if !address.over_limit() {
+                                break;
+                            }
+                            futures::executor::block_on(wait);
+                        }
+                        std::thread::yield_now();
+                    }
+                    let _ = done.send(());
+                });
+            }
+        }
+        drop(done);
+        let mut ended = 0usize;
+        while ended < threads {
+            match finished.recv_timeout(Duration::from_secs(60)) {
+                Ok(()) => ended += 1,
+                Err(_) => panic!("{} of {threads} waiters are parked while room exists", threads - ended),
+            }
+        }
+        assert_eq!(total.unread(), 0, "everything was given back");
+    }
 }

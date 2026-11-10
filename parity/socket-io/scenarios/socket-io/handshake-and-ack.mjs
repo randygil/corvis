@@ -18,7 +18,7 @@ export default {
   name: "socket-io/handshake-and-ack",
   requires: ["socket-io"],
   async run({ url, record, step }) {
-    const response = await step("raw polling handshake", fetch(`${url}/socket.io/?EIO=4&transport=polling`));
+    const response = await step("raw polling handshake", fetch(`${url}/sio/?EIO=4&transport=polling`));
     const text = await step("raw polling body", response.text());
     record("raw", "http-response", {
       status: response.status,
@@ -27,7 +27,7 @@ export default {
       packets: decodePayload(text),
     });
 
-    const socket = io(url, { auth: { token: "t" }, forceNew: true, reconnection: false });
+    const socket = io(url, { path: "/sio/", auth: { token: "t" }, forceNew: true, reconnection: false });
     try {
       const outcome = await step(
         "connect",

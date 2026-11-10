@@ -1,0 +1,1144 @@
+{
+  "parser": "socket.io-parser",
+  "version": "4.2.7",
+  "encode": [
+    {
+      "name": "connect main",
+      "packet": {
+        "type": "CONNECT",
+        "nsp": "/"
+      },
+      "encoded": [
+        "0"
+      ]
+    },
+    {
+      "name": "connect main with data",
+      "packet": {
+        "type": "CONNECT",
+        "nsp": "/",
+        "data": {
+          "sid": "abc"
+        }
+      },
+      "encoded": [
+        "0{\"sid\":\"abc\"}"
+      ]
+    },
+    {
+      "name": "connect custom",
+      "packet": {
+        "type": "CONNECT",
+        "nsp": "/admin"
+      },
+      "encoded": [
+        "0/admin,"
+      ]
+    },
+    {
+      "name": "connect custom with data",
+      "packet": {
+        "type": "CONNECT",
+        "nsp": "/admin",
+        "data": {
+          "token": "abc",
+          "n": 1
+        }
+      },
+      "encoded": [
+        "0/admin,{\"token\":\"abc\",\"n\":1}"
+      ]
+    },
+    {
+      "name": "disconnect main",
+      "packet": {
+        "type": "DISCONNECT",
+        "nsp": "/"
+      },
+      "encoded": [
+        "1"
+      ]
+    },
+    {
+      "name": "disconnect custom",
+      "packet": {
+        "type": "DISCONNECT",
+        "nsp": "/admin"
+      },
+      "encoded": [
+        "1/admin,"
+      ]
+    },
+    {
+      "name": "event",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/",
+        "data": [
+          "hi"
+        ]
+      },
+      "encoded": [
+        "2[\"hi\"]"
+      ]
+    },
+    {
+      "name": "event several values",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/",
+        "data": [
+          "hi",
+          1,
+          "two",
+          {
+            "three": 3
+          },
+          null,
+          true,
+          [
+            4,
+            [
+              5
+            ]
+          ]
+        ]
+      },
+      "encoded": [
+        "2[\"hi\",1,\"two\",{\"three\":3},null,true,[4,[5]]]"
+      ]
+    },
+    {
+      "name": "event custom with id",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/admin",
+        "id": 12,
+        "data": [
+          "hi",
+          {
+            "a": [
+              1,
+              2,
+              {
+                "b": null
+              }
+            ]
+          }
+        ]
+      },
+      "encoded": [
+        "2/admin,12[\"hi\",{\"a\":[1,2,{\"b\":null}]}]"
+      ]
+    },
+    {
+      "name": "event id zero",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/",
+        "id": 0,
+        "data": [
+          "hi"
+        ]
+      },
+      "encoded": [
+        "20[\"hi\"]"
+      ]
+    },
+    {
+      "name": "event control characters",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/",
+        "data": [
+          "hi",
+          "a\u001eb\u0000\"\\\n\t é€"
+        ]
+      },
+      "encoded": [
+        "2[\"hi\",\"a\\u001eb\\u0000\\\"\\\\\\n\\t é€\"]"
+      ]
+    },
+    {
+      "name": "event keys in insertion order",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/",
+        "data": [
+          "hi",
+          {
+            "z": 1,
+            "a": 2,
+            "m": {
+              "y": 1,
+              "b": 2
+            }
+          }
+        ]
+      },
+      "encoded": [
+        "2[\"hi\",{\"z\":1,\"a\":2,\"m\":{\"y\":1,\"b\":2}}]"
+      ]
+    },
+    {
+      "name": "ack",
+      "packet": {
+        "type": "ACK",
+        "nsp": "/",
+        "id": 3,
+        "data": [
+          "ok",
+          1
+        ]
+      },
+      "encoded": [
+        "33[\"ok\",1]"
+      ]
+    },
+    {
+      "name": "ack custom empty",
+      "packet": {
+        "type": "ACK",
+        "nsp": "/admin",
+        "id": 9,
+        "data": []
+      },
+      "encoded": [
+        "3/admin,9[]"
+      ]
+    },
+    {
+      "name": "connect error object",
+      "packet": {
+        "type": "CONNECT_ERROR",
+        "nsp": "/",
+        "data": {
+          "message": "no"
+        }
+      },
+      "encoded": [
+        "4{\"message\":\"no\"}"
+      ]
+    },
+    {
+      "name": "connect error with data",
+      "packet": {
+        "type": "CONNECT_ERROR",
+        "nsp": "/admin",
+        "data": {
+          "message": "no",
+          "data": {
+            "content": "retry"
+          }
+        }
+      },
+      "encoded": [
+        "4/admin,{\"message\":\"no\",\"data\":{\"content\":\"retry\"}}"
+      ]
+    },
+    {
+      "name": "connect error string",
+      "packet": {
+        "type": "CONNECT_ERROR",
+        "nsp": "/",
+        "data": "text"
+      },
+      "encoded": [
+        "4\"text\""
+      ]
+    },
+    {
+      "name": "binary event",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/",
+        "data": [
+          "up",
+          {
+            "$binary": "010203"
+          }
+        ]
+      },
+      "encoded": [
+        "51-[\"up\",{\"_placeholder\":true,\"num\":0}]",
+        {
+          "$binary": "010203"
+        }
+      ]
+    },
+    {
+      "name": "binary event nested",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/x",
+        "id": 4,
+        "data": [
+          "up",
+          {
+            "first": {
+              "$binary": "01"
+            },
+            "list": [
+              {
+                "$binary": "0202"
+              },
+              5
+            ]
+          },
+          {
+            "$binary": "030303"
+          }
+        ]
+      },
+      "encoded": [
+        "53-/x,4[\"up\",{\"first\":{\"_placeholder\":true,\"num\":0},\"list\":[{\"_placeholder\":true,\"num\":1},5]},{\"_placeholder\":true,\"num\":2}]",
+        {
+          "$binary": "01"
+        },
+        {
+          "$binary": "0202"
+        },
+        {
+          "$binary": "030303"
+        }
+      ]
+    },
+    {
+      "name": "binary event several attachments",
+      "packet": {
+        "type": "EVENT",
+        "nsp": "/",
+        "data": [
+          "up",
+          {
+            "$binary": "00"
+          },
+          {
+            "$binary": "01"
+          },
+          {
+            "$binary": "02"
+          },
+          {
+            "$binary": ""
+          }
+        ]
+      },
+      "encoded": [
+        "54-[\"up\",{\"_placeholder\":true,\"num\":0},{\"_placeholder\":true,\"num\":1},{\"_placeholder\":true,\"num\":2},{\"_placeholder\":true,\"num\":3}]",
+        {
+          "$binary": "00"
+        },
+        {
+          "$binary": "01"
+        },
+        {
+          "$binary": "02"
+        },
+        {
+          "$binary": ""
+        }
+      ]
+    },
+    {
+      "name": "binary ack",
+      "packet": {
+        "type": "ACK",
+        "nsp": "/",
+        "id": 1,
+        "data": [
+          {
+            "$binary": "7a"
+          }
+        ]
+      },
+      "encoded": [
+        "61-1[{\"_placeholder\":true,\"num\":0}]",
+        {
+          "$binary": "7a"
+        }
+      ]
+    },
+    {
+      "name": "binary ack custom",
+      "packet": {
+        "type": "ACK",
+        "nsp": "/admin",
+        "id": 2,
+        "data": [
+          "x",
+          {
+            "b": {
+              "$binary": "7a7b"
+            }
+          }
+        ]
+      },
+      "encoded": [
+        "61-/admin,2[\"x\",{\"b\":{\"_placeholder\":true,\"num\":0}}]",
+        {
+          "$binary": "7a7b"
+        }
+      ]
+    }
+  ],
+  "decode": [
+    {
+      "name": "connect main",
+      "frames": [
+        "0"
+      ],
+      "packets": [
+        {
+          "type": "CONNECT",
+          "nsp": "/"
+        }
+      ]
+    },
+    {
+      "name": "connect with auth",
+      "frames": [
+        "0{\"token\":\"abc\"}"
+      ],
+      "packets": [
+        {
+          "type": "CONNECT",
+          "nsp": "/",
+          "data": {
+            "token": "abc"
+          }
+        }
+      ]
+    },
+    {
+      "name": "connect custom",
+      "frames": [
+        "0/admin,"
+      ],
+      "packets": [
+        {
+          "type": "CONNECT",
+          "nsp": "/admin"
+        }
+      ]
+    },
+    {
+      "name": "connect custom without comma",
+      "frames": [
+        "0/admin"
+      ],
+      "packets": [
+        {
+          "type": "CONNECT",
+          "nsp": "/admin"
+        }
+      ]
+    },
+    {
+      "name": "connect custom with auth",
+      "frames": [
+        "0/admin,{\"token\":\"abc\"}"
+      ],
+      "packets": [
+        {
+          "type": "CONNECT",
+          "nsp": "/admin",
+          "data": {
+            "token": "abc"
+          }
+        }
+      ]
+    },
+    {
+      "name": "disconnect",
+      "frames": [
+        "1"
+      ],
+      "packets": [
+        {
+          "type": "DISCONNECT",
+          "nsp": "/"
+        }
+      ]
+    },
+    {
+      "name": "disconnect custom",
+      "frames": [
+        "1/admin,"
+      ],
+      "packets": [
+        {
+          "type": "DISCONNECT",
+          "nsp": "/admin"
+        }
+      ]
+    },
+    {
+      "name": "event",
+      "frames": [
+        "2[\"hi\",1,\"two\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "hi",
+            1,
+            "two"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "event with id",
+      "frames": [
+        "213[\"hi\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "id": 13,
+          "data": [
+            "hi"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "event leading zeros in id",
+      "frames": [
+        "2007[\"hi\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "id": 7,
+          "data": [
+            "hi"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "event custom with id",
+      "frames": [
+        "2/admin,5[\"hi\",{\"a\":[1,null]}]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/admin",
+          "id": 5,
+          "data": [
+            "hi",
+            {
+              "a": [
+                1,
+                null
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "event numeric name",
+      "frames": [
+        "2[7,\"x\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            7,
+            "x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "event largest id",
+      "frames": [
+        "29007199254740991[\"x\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "id": 9007199254740991,
+          "data": [
+            "x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ack",
+      "frames": [
+        "37[\"x\",1]"
+      ],
+      "packets": [
+        {
+          "type": "ACK",
+          "nsp": "/",
+          "id": 7,
+          "data": [
+            "x",
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ack custom",
+      "frames": [
+        "3/admin,2[]"
+      ],
+      "packets": [
+        {
+          "type": "ACK",
+          "nsp": "/admin",
+          "id": 2,
+          "data": []
+        }
+      ]
+    },
+    {
+      "name": "connect error object",
+      "frames": [
+        "4{\"message\":\"no\"}"
+      ],
+      "packets": [
+        {
+          "type": "CONNECT_ERROR",
+          "nsp": "/",
+          "data": {
+            "message": "no"
+          }
+        }
+      ]
+    },
+    {
+      "name": "connect error string",
+      "frames": [
+        "4\"text\""
+      ],
+      "packets": [
+        {
+          "type": "CONNECT_ERROR",
+          "nsp": "/",
+          "data": "text"
+        }
+      ]
+    },
+    {
+      "name": "binary event",
+      "frames": [
+        "51-[\"x\",{\"_placeholder\":true,\"num\":0}]",
+        {
+          "$binary": "010203"
+        }
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "x",
+            {
+              "$binary": "010203"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "binary event nested",
+      "frames": [
+        "52-/x,9[\"up\",{\"a\":{\"_placeholder\":true,\"num\":1}},[{\"_placeholder\":true,\"num\":0}]]",
+        {
+          "$binary": "00"
+        },
+        {
+          "$binary": "0101"
+        }
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/x",
+          "id": 9,
+          "data": [
+            "up",
+            {
+              "a": {
+                "$binary": "0101"
+              }
+            },
+            [
+              {
+                "$binary": "00"
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "binary event repeated placeholder",
+      "frames": [
+        "51-[\"x\",{\"_placeholder\":true,\"num\":0},{\"_placeholder\":true,\"num\":0},{\"_placeholder\":true,\"num\":0}]",
+        {
+          "$binary": "aa"
+        }
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "x",
+            {
+              "$binary": "aa"
+            },
+            {
+              "$binary": "aa"
+            },
+            {
+              "$binary": "aa"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "binary event unused attachment",
+      "frames": [
+        "52-[\"x\",{\"_placeholder\":true,\"num\":1}]",
+        {
+          "$binary": "00"
+        },
+        {
+          "$binary": "01"
+        }
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "x",
+            {
+              "$binary": "01"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "binary ack",
+      "frames": [
+        "61-4[{\"_placeholder\":true,\"num\":0}]",
+        {
+          "$binary": "7a"
+        }
+      ],
+      "packets": [
+        {
+          "type": "ACK",
+          "nsp": "/",
+          "id": 4,
+          "data": [
+            {
+              "$binary": "7a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "two packets in a row",
+      "frames": [
+        "2[\"a\"]",
+        "51-[\"x\",{\"_placeholder\":true,\"num\":0}]",
+        {
+          "$binary": "01"
+        },
+        "2[\"b\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "a"
+          ]
+        },
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "x",
+            {
+              "$binary": "01"
+            }
+          ]
+        },
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "b"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unknown type 9",
+      "frames": [
+        "9"
+      ],
+      "packets": [],
+      "error": "unknown packet type 9"
+    },
+    {
+      "name": "unknown type 7",
+      "frames": [
+        "7[\"x\"]"
+      ],
+      "packets": [],
+      "error": "unknown packet type 7"
+    },
+    {
+      "name": "unknown type letter",
+      "frames": [
+        "a[\"x\"]"
+      ],
+      "packets": [],
+      "error": "unknown packet type NaN"
+    },
+    {
+      "name": "event object payload",
+      "frames": [
+        "2{\"a\":1}"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event empty array",
+      "frames": [
+        "2[]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event null name",
+      "frames": [
+        "2[null]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event reserved name disconnect",
+      "frames": [
+        "2[\"disconnect\"]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event reserved name connect",
+      "frames": [
+        "2[\"connect\"]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event reserved name connect_error",
+      "frames": [
+        "2[\"connect_error\"]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event reserved name disconnecting",
+      "frames": [
+        "2[\"disconnecting\"]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event reserved name newListener",
+      "frames": [
+        "2[\"newListener\"]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event reserved name removeListener",
+      "frames": [
+        "2[\"removeListener\"]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event bad json",
+      "frames": [
+        "2abc[\"x\"]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event truncated json",
+      "frames": [
+        "2[\"x\""
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "event trailing text",
+      "frames": [
+        "2[\"x\"] x"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "connect array payload",
+      "frames": [
+        "0[]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "connect string payload",
+      "frames": [
+        "0\"x\""
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "disconnect with payload",
+      "frames": [
+        "1{}"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "connect error array payload",
+      "frames": [
+        "4[]"
+      ],
+      "packets": [],
+      "error": "invalid payload"
+    },
+    {
+      "name": "binary without dash",
+      "frames": [
+        "5[\"x\"]"
+      ],
+      "packets": [],
+      "error": "Illegal attachments"
+    },
+    {
+      "name": "binary zero attachments",
+      "frames": [
+        "50-[\"x\"]"
+      ],
+      "packets": [],
+      "error": "Illegal attachments"
+    },
+    {
+      "name": "binary empty count",
+      "frames": [
+        "5-[\"x\"]"
+      ],
+      "packets": [],
+      "error": "Illegal attachments"
+    },
+    {
+      "name": "binary eleven attachments",
+      "frames": [
+        "511-[\"x\"]"
+      ],
+      "packets": [],
+      "error": "too many attachments"
+    },
+    {
+      "name": "binary ten attachments declared",
+      "frames": [
+        "510-[\"x\"]"
+      ],
+      "packets": []
+    },
+    {
+      "name": "binary huge count",
+      "frames": [
+        "5999999999999999999999999-[\"x\"]"
+      ],
+      "packets": [],
+      "error": "too many attachments"
+    },
+    {
+      "name": "text while reconstructing",
+      "frames": [
+        "51-[\"x\",{\"_placeholder\":true,\"num\":0}]",
+        "2[\"y\"]"
+      ],
+      "packets": [],
+      "error": "got plaintext data when reconstructing a packet"
+    },
+    {
+      "name": "binary without a header",
+      "frames": [
+        {
+          "$binary": "01"
+        }
+      ],
+      "packets": [],
+      "error": "got binary data when not reconstructing a packet"
+    },
+    {
+      "name": "placeholder out of range",
+      "frames": [
+        "51-[\"x\",{\"_placeholder\":true,\"num\":3}]",
+        {
+          "$binary": "01"
+        }
+      ],
+      "packets": [],
+      "error": "illegal attachments"
+    },
+    {
+      "name": "placeholder negative",
+      "frames": [
+        "51-[\"x\",{\"_placeholder\":true,\"num\":-1}]",
+        {
+          "$binary": "01"
+        }
+      ],
+      "packets": [],
+      "error": "illegal attachments"
+    },
+    {
+      "name": "ack without id",
+      "frames": [
+        "3[\"x\"]"
+      ],
+      "packets": [
+        {
+          "type": "ACK",
+          "nsp": "/",
+          "data": [
+            "x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "event without payload",
+      "frames": [
+        "2"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/"
+        }
+      ]
+    },
+    {
+      "name": "empty string",
+      "frames": [
+        ""
+      ],
+      "packets": [
+        {
+          "type": "CONNECT",
+          "nsp": "/"
+        }
+      ]
+    },
+    {
+      "name": "id on connect",
+      "frames": [
+        "00{}"
+      ],
+      "packets": [
+        {
+          "type": "CONNECT",
+          "nsp": "/",
+          "id": 0,
+          "data": {}
+        }
+      ]
+    },
+    {
+      "name": "ack id above 2^53",
+      "frames": [
+        "29007199254740992[\"x\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "id": 9007199254740992,
+          "data": [
+            "x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ack id of 22 digits",
+      "frames": [
+        "2123456789012345678901[\"x\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "id": 123456789012345680000,
+          "data": [
+            "x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "lone surrogate",
+      "frames": [
+        "2[\"x\",\"\\ud800\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "x",
+            {
+              "$lone_surrogate": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

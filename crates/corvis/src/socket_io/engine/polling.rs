@@ -13,6 +13,7 @@ use tokio::time::Instant;
 use super::packet::{Incoming as Decoded, Packet, decode_payload, encode_payload};
 use super::session::{CloseReason, Polled, Session};
 use crate::server::{PendingBody, ResBody};
+use crate::ws::Pause;
 
 /// The messages of Node's `Server.errorMessages`.
 pub(super) fn error_message(code: u8) -> &'static str {
@@ -138,6 +139,9 @@ pub(super) async fn post(
         }
     };
     drop(text);
+    // The decoded records are charged to the session; the request body is not, so it must not outlive the decoding
+    // while the answer is held for the budget below.
+    drop(bytes);
     for item in decoded {
         match item {
             Decoded::Packet(Packet::Close) => {
@@ -155,14 +159,19 @@ pub(super) async fn post(
     let mut closed = session.closed_watch();
     loop {
         let notified = session.unread.changed();
-        if !session.unread.over_limit() || session.is_closed() {
+        let pause = session.unread.pause();
+        if pause == Pause::No || session.is_closed() {
             break;
         }
+        // Held by the budget's pressure and not by what the session or its address holds: its next `POST` (the pong)
+        // cannot arrive meanwhile, so the wait for a pong stops (a no-op unless `pressure_pause_timeout` is set).
+        session.set_pressure_pause(pause == Pause::Pressure);
         tokio::select! {
             _ = notified => {}
             _ = closed.changed() => {}
         }
     }
+    session.set_pressure_pause(false);
     guard.finish();
     let mut resp = with_headers(StatusCode::OK, "text/html", "ok".to_string());
     resp.headers_mut().insert(http::header::CONTENT_LENGTH, HeaderValue::from_static("2"));

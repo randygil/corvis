@@ -26,6 +26,19 @@ impl HarnessController {
     fn close_reason(&self, #[param("sid")] sid: String) -> String {
         REASONS.lock().unwrap().get(&sid).cloned().unwrap_or_else(|| "open".to_string())
     }
+
+    /// What happened on the Socket.IO scenario servers, in order (loopback only: the servers bind to 127.0.0.1).
+    #[get("log")]
+    fn log(&self) -> serde_json::Value {
+        serde_json::Value::Array(super::io_app::LOG.lock().unwrap().clone())
+    }
+
+    /// Clears the log.
+    #[post("reset")]
+    fn reset(&self) -> serde_json::Value {
+        super::io_app::LOG.lock().unwrap().clear();
+        serde_json::Value::Null
+    }
 }
 
 #[module(controllers = [HarnessController])]
@@ -114,6 +127,8 @@ pub async fn start() -> (CorvisApplication, SocketAddr, Vec<EngineServer>) {
         engine.attach(&app.get_http_server()).unwrap();
         engines.push(engine);
     }
+    // The Socket.IO scenario servers live on their own paths (`/sio/`, `/sio-short/`), apart from the Engine.IO presets.
+    let _servers = super::io_app::attach_scenario_servers(&app);
     let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
     (app, addr, engines)
 }

@@ -295,6 +295,8 @@ task); a global ack table keyed by id (an ACK from another socket of the namespa
 |---|---|---|---|
 | Packet size: one string packet, and each attachment | `EngineOptions::max_http_buffer_size`, 1,000,000 B | same | Engine.IO: `413` / close `1009` (#32) |
 | `max_attachments` per binary packet, both directions | 10 | 10 when decoding, none when encoding | decode: connection closed (`forced close`); encode: `EmitError::TooManyAttachments` |
+| Decoded cost of one packet (`max_decoded_bytes`) | 32 MiB; text decodes to 11 to 20 times its size, at most 58 times | none | connection closed before anything is built; reserved in the server-wide budget before decoding |
+| Server-wide unread budget, per client address | `max_total_unread_bytes` 256 MiB; an address holds a quarter of it (at least one packet) plus the fair share of each session it may open; a session always holds its fair share | none | the packet waits, reads pause, heartbeat served |
 | Bytes held while reassembling one binary packet | at most `(max_attachments + 1) × max_http_buffer_size` (11 MB), counted in `max_unread_bytes` (16 MiB) | not counted | reads pause; options rejected at construction when the product exceeds `max_unread_bytes` |
 | Reassembly state | one packet per connection, no allocation from the declared count | same | text during reassembly closes the connection |
 | JSON nesting depth | 128 | none | invalid payload, connection closed |
@@ -316,7 +318,8 @@ max_http_buffer_size > max_unread_bytes` (a reassembly that could never complete
 own validation.
 
 Client-observable divergences (each gets a wire scenario and an entry in `expected-differences.json`): the second
-CONNECT while middleware is pending, the ack id above 2^53 - 1, nesting deeper than 128. The other limits either equal
+CONNECT while middleware is pending, the ack id above 2^53 - 1, nesting deeper than 128, and (round 1) a lone
+surrogate in a string. The other limits either equal
 Node or are only visible to server code; they are documented and tested in Rust.
 
 ### 10. Verification
@@ -398,3 +401,634 @@ These settle the open questions and override the design where they differ.
    accounting, `on_closing`) are made against the code #32 merged: the first task compares this design with it and
    records the adjustments in Implementation notes.
 6. The security review is mandatory before the merge (parser, attachment reassembly, ack tracking, limits).
+
+## Implementation notes
+
+Recorded while implementing, against `origin/dev` at `cabeb57` (#32 merged).
+
+### The design against the merged Engine.IO module (task 1.1)
+
+- Names that held: `EngineServer::{new, attach, on_connection, close, session_count}`, `EngineSocket::{id, handshake, ip,
+  transport, send, messages, close, closed, close_reason}`, `CloseReason` (`transport close`, `transport error`,
+  `ping timeout`, `parse error`, `forced close`), `sid::generate`, `EngineOptions` re-exported by `corvis::socket_io`.
+- `messages()` already queued `(message, UnreadTicket)` internally and dropped the ticket when the message was taken, as
+  the design said. The addition is `EngineSocket::messages_held()`, a stream of `(EngineMessage, Held)` where `Held` is a
+  public wrapper of the ticket, and `EngineSocket::hold(bytes) -> Held`, which charges the session's gauge (and the
+  server-wide one) for something the layer keeps: the decoded structure. Both share the single inbox with `messages()`.
+- `send_all(Vec<EngineMessage>)` is `OutQueue::push_group` (new, in `ws.rs`) under one lock with `push`'s rule applied to
+  the sum of the sizes; `Session::send` and `send_all` share the full-buffer handling (`transport error`).
+- `EngineServer::on_closing(callback)`: `close()` sets the `closed` flag and takes its snapshot under the sessions lock
+  (as before), then runs the hooks (each under `guarded`, so a panic does not stop the close), then closes the sessions.
+  Putting the flag first means no session can open between the hook and the close.
+- Test helpers behind `#[cfg(test)]`: `EngineServer::open_test_socket` (a WebSocket-first session with no transport),
+  `EngineSocket::{feed, take_sent, is_closing}`. They let `src/socket_io/tests.rs` test the layer on Tokio's paused clock
+  without a network.
+- `tests/engine_io.rs`, `tests/engine_io_security.rs`, `tests/engine_io_ws.rs` and the Engine.IO conformance test pass
+  unmodified.
+
+### Decisions and deviations
+
+- **More options than the design lists**, each a bound on something a client can make the server hold or wait for:
+  `max_decoded_bytes` (a decoded packet, 32 MiB since round 1; the design only bounded the text), `max_auth_bytes` (16 KiB: the `auth`
+  object lives as long as the socket, so 1 MB of it times 10,000 sessions was 10 GB), `max_event_name_len` (256),
+  `max_args` (128), `attachment_timeout` (30 s: the design bounded the bytes of a half-sent binary packet but a client
+  that answers pings could hold them forever), `middleware_timeout` (10 s). All validated; `max_decoded_bytes` must be at
+  least the engine's `max_http_buffer_size` and `max_auth_bytes` at most `max_decoded_bytes`.
+- **Charging decoded structures** (superseded: see "Security review (round 1)", item 1, for the cost model, the default of
+  `max_decoded_bytes` and the admission rules). `IoValue` is `Object(Box<IndexMap>)` so every node is 40 bytes; the cost model is 48
+  bytes per value, plus the text of strings and keys, plus 64 per object entry, whatever the value holds (an empty array
+  costs as much as a number). The decoder spends from a budget while it reads, so a 1 MB packet of `[]` is refused before
+  the 500,000 arrays exist. The charge is taken from the session's gauge (`hold`) when the packet is decoded and released
+  when its handler ends; a binary packet holds its header's cost and every attachment's message ticket until the packet
+  is handed over. The connection task takes the next message only while `held < max_unread_bytes` and a handler slot is
+  free (a reassembling packet is always completed), so what the layer holds stays inside the Engine.IO budget and no queue
+  of its own exists.
+- **JSON reader.** The decoder has its own visitor (`parser.rs`) instead of `jwt.rs`'s `PlainJson`: it has to spend a
+  budget and build `IoValue`, which `PlainJson` (a `serde_json::Value` builder) cannot do. It has no special keys, never
+  uses `IgnoredAny`, never builds a `Value`, and checks the depth itself. Conversion out of `IoValue` is guarded too:
+  `deserialize_into::<Value>()`, `Args::get::<Value>`, `to_json()` and `TryFrom<IoValue> for Value` refuse an object with a
+  key under `$serde_json::private::` (`IoValueError::ReservedKey`), because `Value`'s deserializer re-enters the parser for
+  `RawValue` when `raw_value` is on (sqlx turns it on); the value stays reachable as an `IoValue`.
+- **Depth is 127, not 128.** `serde_json` refuses the 128th nested container, and the decoder sits on it, so 127 is the
+  effective limit (`MAX_DEPTH`); the encoder and the conversions use the same number so a packet this server writes can
+  always be read back. The spec text says "deeper than 128 levels"; 127 is stricter by one level, invisible to a client.
+- **Stricter than Node, all fail-closed, listed in `fixtures/parser.json` tests as `STRICTER`:** an event or
+  acknowledgement without a payload, an acknowledgement without an id, an id on CONNECT / DISCONNECT / CONNECT_ERROR, an
+  empty string or a first character that is not a decimal digit (Node reads `Number(" ")` as CONNECT), an attachment
+  count with anything but digits, a placeholder `num` that is not a non-negative integer (Node indexes with
+  `buffers[0.5]`), a namespace in a packet longer than 256 bytes, an ack id above 2^53 - 1 or with more than 16 digits.
+  Only the last and the depth have a scenario and an expected difference (the official client sends none of the others).
+- **Handlers run inside the connection task**, in a `FuturesUnordered`, as the gateways do: they start in arrival order and
+  run concurrently, but on one thread per connection; the engine's WebSocket and polling tasks are separate. When the
+  connection ends, handlers already running get `close_timeout` (30 s) to finish and are then dropped. An ACK or a
+  DISCONNECT queued behind `max_inflight` blocked handlers waits too (reads stop at the limit), so a handler that waits for
+  `emit_with_ack` while the connection is at the limit gets the answer when a slot frees, or `operation has timed out`.
+- **Connection state.** CONNECT is queued while the connection's namespace table is locked and before the socket is marked
+  connected, so nothing the application emits can precede it. A packet that arrives right behind CONNECT, before the
+  connection handlers have run, waits for them (`ready`). A packet for a namespace whose middleware is still running is a
+  packet for a namespace not joined: the connection closes, as in Node.
+- **Lifetimes.** The connection callback of the engine holds the `IoServer` strongly (an application may drop its handle
+  after `attach`, as Node keeps `io` alive through the HTTP server); `IoServer::close` and the engine hook replace the
+  callback, which breaks the cycle. Sockets drop their handlers when they disconnect.
+- **Pending acknowledgements** expire in two ways: the call's own timeout, and a purge of expired entries each time a
+  call registers (an abandoned future that is never polled again still frees its slot at its deadline). A call whose
+  future is dropped removes its entry.
+- **Logging.** A panic in a handler or middleware is logged with the namespace only; undecodable packets and timeouts of a
+  connection are not logged at all, so a client cannot write to the log at the rate it sends. (Round 1 added the rate
+  limit: one line a minute per kind and namespace.)
+- **Harness.** The scenario servers live on `/sio/` and `/sio-short/`, not `/socket.io/`: on Corvis the Engine.IO scenario
+  presets own the default path, so `socket-io/handshake-and-ack` moved to `/sio/`. `emitWithAck` of Node resolves with the
+  first value of the answer only, so the Node scenario app logs the callback form to compare all values. The upstream
+  suite expects `/socket.io/`, so the conformance test starts its own server.
+- **`max_args` and the repeated placeholder.** With 128 arguments as the default the spec scenario "Repeated placeholder"
+  (10,000 values sharing one buffer) puts the 10,000 placeholders in one array argument instead of 10,000 arguments.
+- **API.** `IoNamespace::use_middleware`, `on_connection` and the disconnect handlers are synchronous or async as the
+  design says; `IoSocket::disconnect(close: bool)` mirrors Node's `disconnect(close)`; `IoServer::{main, on_connection,
+  use_middleware}` delegate to the main namespace. `IntoArgs` requires `Send` so an acknowledged emit can be awaited in a
+  spawned task.
+- Task 8.5 (security review), 9.6 (parity) and 9.7 belong to the maintainer's session and are not done here.
+
+## Security review (round 1)
+
+The first review (Medium: 1, Info: 3, plus two checks) found that the memory of decoded packets escaped both the
+per-session and the server-wide budget. Findings, fixes and the tests that pin them. Where this section differs from
+"Implementation notes" above, this section wins.
+
+### 1. Memory of decoded packets escaped the budgets (Medium)
+
+**Evidence.** One session sending 0.99 MB of text, `42["hold",[{},{},...]]` (330,000 empty objects), to a handler that
+keeps its arguments held 46.8 MB live while charged 16.8 MB; twelve sessions held 562 MB against a server-wide limit of
+16.8 MB; with the default per-address caps one address could pin about 12 GB. Three causes.
+
+**(a) The cost model undercharged.** `NODE_COST` 48 and `ENTRY_COST` 64 were guesses; an empty object really cost about
+142 bytes and the buffers carried growth slack. The model is now derived from the types (`value.rs`, 64-bit; every
+constant is a `size_of` or a sum of them, and a unit test pins the numbers):
+
+| Constant | Value | Derivation |
+|---|---|---|
+| `ALLOC_OVERHEAD` | 24 | what the allocator adds to an allocation: glibc's 8-byte header plus rounding to 16 (at most 23); a counting allocator sees requested sizes only, so this is slack on top of what the tests measure |
+| `SLOT` | 40 | `size_of::<IoValue>()`: the 32-byte `Bytes` of `Binary` plus the tag. Every value takes one slot, inline in the buffer of the array or entry that holds it |
+| `MAP_BASE` | 96 | an object is `Box<IndexMap>`: `size_of::<IndexMap<String, IoValue>>()` = 72 (hash table header 32, entry vector 24, `RandomState` 16) plus `ALLOC_OVERHEAD` |
+| `MAP_TABLE` | 100 | what a non-empty object adds once: the overhead of its entry vector and its hash table (2 x 24), the smallest `hashbrown` table (4 buckets x 9 bytes) and one trailing control group (16) |
+| `ENTRY` | 56 | per object entry besides the key text and the value's slot: stored hash 8 + key `String` header 24 + the table's index bytes 24 (a table with room for `n` entries has fewer than `16n/7 + 1` buckets of 9 bytes: at most 21 bytes per entry) |
+| key, string | `len + 24` (0 when empty) | the bytes and one allocation; an empty string owns no buffer |
+| array | `+ 24` when non-empty | the overhead of its buffer; the buffer's bytes are the slots of its elements |
+| `NUMBER_HEAP` | 0 | `serde_json::Number` is inline unless another crate turns on `arbitrary_precision`, in which case the constant becomes 40 + overhead (`size_of::<Number>()` is checked at compile time) |
+| `PACKET_COST` | `size_of::<Packet>() + 24` | the packet moved into the handler's task; its namespace, event name and argument buffer are charged as strings and an array |
+
+The decoder builds every buffer at its exact final size: a first pass over the JSON text (`measure`, string aware,
+bounded by `MAX_DEPTH`, four bytes of memory per container, shrunk to fit) counts the elements of every container, and the
+parser allocates `Vec::with_capacity(n)` and `IndexMap::with_capacity(n)` from those counts (limited by what the
+remaining budget can pay for, so a wrong count cannot allocate more than charged), then shrinks the one case that ends
+smaller (repeated keys). So no growth slack exists and the peak during decoding equals the final size. The same first
+pass computes an upper bound of the cost (escapes and repeated keys only make the real value smaller) and the packet is
+refused with `TooLarge` before anything is built when the bound exceeds `max_decoded_bytes`.
+`tests/socket_io_memory.rs` (its own binary, with a counting global allocator) decodes 21 shapes of 0.5 to 1 MB of text
+(arrays of `{}`, `[]`, `""`, `0`, `null`, floats, one-byte strings, one-key objects, one- and two-element arrays, nested
+one-key objects, nested arrays, nested empty-key objects, 500-byte keys, 60,000 keys in one object, one key repeated,
+escapes, one long string, a hundred arguments, ordinary records, an acknowledgement, a binary header) and asserts, for
+each, live heap of the decoded packet <= charged cost <= reservation, peak during decoding <= reservation + text, and
+that dropping the packet frees everything. Measured expansion (charged cost over text): `{}` 45.3x, `[]` 13.3x, `0` 20x,
+one-key objects 44.6x, nested one-key objects 52.7x, **nested empty-key objects 58.2x (the worst)**, records of six
+fields 11.5x, one long string 1.0x. `IoValue::cost` walks with a stack of iterators (one per nesting level) because a
+stack of references was itself an allocation as wide as the widest array (found by the peak assertion).
+
+**(b) Nothing consulted the server-wide gauge before taking the next message, and decoding was charged after the fact.**
+The connection task now takes a message only while the Engine.IO session is not over its limit by the engine's own test
+(`UnreadGauge::over_limit`: its `max_unread_bytes`, or its fair share while the server-wide budget is exceeded: the rule
+the transports use; the layer's own counter is gone) and while no measured packet waits for room. A text message is
+measured (`Decoder::prepare`: header, first pass, bound), its reservation is made against the server-wide budget
+(`Reservation::try_new`), it is decoded with the budget equal to the reservation, and the reservation is shrunk to the
+packet's real cost (`UnreadTicket::shrink_to`). When there is no room the message is parked, keeping its wire charge,
+and the connection takes nothing else; the select loop wakes on any release of the session's or the server's gauge (the
+notification is registered before the gauges are read, as the WebSocket reader does) and the heartbeat is served by the
+Engine.IO tasks as always. A binary header is reserved the same way; its attachments are charged as received.
+
+Admission (`budget.rs`): the session may hold the fair share `f = max(16 KiB, max_total_unread_bytes / max_sessions)`
+whatever others hold (the guaranteed share), and anything beyond it needs room in the server-wide budget (an atomic
+compare-and-swap, so concurrent connections cannot overshoot together). Both are limited per client address (the key the
+Engine.IO layer counts sessions under, so `set_trust_proxy` is honored): an address may hold a quarter of the budget
+(never less than one packet, never more than the budget) plus `f` for each session it may have open
+(`max_sessions_per_ip`), counting the handlers still running for sessions it already closed. **Wrong in round 1, replaced
+in round 2:** that count covered decoded packets only; the address share is now an option that covers everything an
+address holds, in every state (see "Security review (round 2)", "The accounting rule"). A binary header whose cost
+and attachments could not fit together in `max_unread_bytes` is refused when it arrives (it could never complete: the
+transport stops reading while the session is over its limit). `max_decoded_bytes` is validated to be at most
+`max_total_unread_bytes`, so one packet can always be reserved.
+
+*Invariant.* Let `T` = `max_total_unread_bytes`, `U` = `max_unread_bytes`, `D` = `max_decoded_bytes`, `W` =
+`3 x max_http_buffer_size + 64` (the largest message, its accounting, and the first pass's counts, four bytes per
+container and at most one container per two bytes of text, which a parked message keeps), `f` the fair share, `Q = min(T, max(T/4, D))` the
+address quota, `N` = `max_sessions_per_ip` and `S` the number of sessions open or closed with a handler still running.
+- Bytes held by decoded packets, reassembly buffers and unread messages across a server: `H <= T + S x (f + W)`. Every
+  reservation beyond a session's guaranteed share is checked against `T` atomically; a guaranteed one keeps the session
+  at or below `f`; the transport stops reading a session above `f` while the budget is exceeded, so each session adds at
+  most one message in the hand (`W`). With the defaults (`T` 256 MiB, 10,000 sessions) `f` is 26,843 bytes and the
+  overshoot term is at most `S x (26 KiB + 1 MB)`, reached only if every session has a message in the hand at once.
+- Per session: `U + D + W` (reads stop above `U`; one more packet is reserved; one message in the hand).
+- Per client address, closed sessions included: **wrong in round 1** (it said `Q + N x f` for decoded packets, "plus the
+  wire messages of its open sessions", which were bounded by nothing but the session and server gauges). Corrected in
+  round 2: `A + N x (f + W)` for everything the address holds, with `A` = `max_address_share`.
+- The decoding itself never overshoots its reservation (the peak test above), and a reservation never exceeds `D`.
+
+**(c) Closed sessions.** The charge of a packet lives in the handler's future (`Charge`), which the connection task
+hands to a grace task for `close_timeout` (30 s) when the session ends: the handler keeps running, and its charge stays
+on the server-wide gauge and on the address, until the handler returns or the grace period drops it. The charge holds
+its gauges and its address slot by `Arc`, so nothing is released early and nothing is leaked. A client cannot multiply
+it by reconnecting: the count belongs to the address (a new session of the same address finds the quota used, so its
+packet waits, which is the intended backpressure), and the guaranteed shares of sessions that closed are counted in the
+address's cap too (a test reconnects 60 times and the address never holds more than its cap). Other addresses are not
+affected because every limit above is checked against the session's own gauge and the address's own slot: the fair
+share is the same number for everyone and nobody else's holdings consume it, and an address can use at most `Q + N x f`
+of the shared budget, so an honest address keeps at least `T - Q` for packets that need server-wide room, and its small
+packets are always admitted. (Round 2: "an honest address keeps at least `T - Q`" holds only while the addresses at
+their share do not add up to the budget; with the defaults seven of them do.)
+Regression tests: `a_decoded_packet_is_charged_at_its_cost_not_at_what_was_reserved_for_it`,
+`a_packet_that_finds_no_room_waits_and_the_connection_takes_nothing_else`,
+`an_honest_address_is_served_while_another_holds_its_maximum`,
+`the_charge_of_a_running_handler_outlives_its_session_and_is_not_multiplied_by_reconnecting`,
+`reconnecting_over_and_over_cannot_multiply_what_an_address_holds_even_in_guaranteed_shares`,
+`a_handler_that_never_ends_loses_its_charge_when_the_grace_period_does`, `a_waiting_packet_is_released_with_its_session`,
+`a_connection_over_its_unread_limit_takes_no_more_messages` (`src/socket_io/tests.rs`, paused clock);
+`many_sessions_of_one_address_hold_a_bounded_amount_while_their_handlers_wait` (twelve sessions, counting allocator,
+live heap against the invariant) and `an_honest_address_is_served_while_another_holds_its_maximum` (a client bound to
+127.0.0.2 while 127.0.0.1 holds its quota) in `tests/socket_io_memory.rs`; the gauge operations in `engine/session.rs`
+tests and the budget rules in `budget.rs` tests.
+
+**Default of `max_decoded_bytes`: 32 MiB (was 16 MiB).** With honest costs a text packet of ordinary JSON (objects with
+a handful of string and number fields) decodes to 11 to 20 times its size, so a legitimate 1 MB payload costs 11 to
+20 MB: it would have been refused or borderline under 16 MiB. At 32 MiB anything up to 33 times is accepted; the shapes
+above 33 times (the worst is 58x) are refused: the connection is closed and nothing is allocated for them. The limit is
+documented in the limits table (EN and ES) with the worst-case expansion factor, and in the rustdoc of
+`IoOptions::max_decoded_bytes`.
+
+### 2. Unbounded middleware-timeout warning (Info)
+
+The line was written once per timed-out connection attempt. It goes through `WarnLimiter` (`warn.rs`, mirroring the
+limiter of the local strategy's hasher, on `tokio::time::Instant` so it can be tested on a paused clock): at most once a
+minute per kind and per namespace, the next carrying the count left out. Keys are a static description and the name of
+a namespace the application registered (never client data), and the table is capped at 4,096 keys. Tests:
+`warn.rs` unit tests and `a_slow_connect_middleware_warns_once_a_minute_per_namespace` in `tests/socket_io_log.rs`.
+
+### 3. Handler panics logged at the packet rate (Info)
+
+The framework's "panicked" lines (event handlers, connection handlers, `on_disconnecting` and `on_disconnect` handlers,
+connect middleware) go through the same limiter, one line a minute per kind and namespace. The connection and
+disconnect handlers used `ws::guarded`, which wrote the panic payload; they now use `WarnLimiter::guard`, and no line of
+this layer includes a panic message or any data of a packet. Documented: handlers should not `unwrap()` the conversion of
+an argument. Test: `a_handler_that_panics_on_client_data_writes_one_line_a_minute_without_the_data_or_the_message` and
+`panics_in_connection_and_disconnect_handlers_are_limited_and_never_print_the_message`.
+
+### 4. Lone surrogate (Info)
+
+`JSON.parse('"\\ud800"')` keeps the lone surrogate (JavaScript strings are UTF-16) and Node delivers the event; `serde_json`
+refuses it (`lone leading surrogate in hex escape`), so Corvis treats the packet as undecodable and closes the
+connection: stricter and fail-closed, now a listed expected difference with the scenario `socket-io/wire/surrogate`
+(a valid pair is delivered by both), a `STRICTER` entry in the parser fixture recorded from `socket.io-parser`
+(`"lone surrogate"`; the recorder marks surrogates it cannot write), the requirement "Lone surrogates are refused" and
+the unit test `a_lone_surrogate_is_refused_and_a_pair_of_them_is_a_character`.
+
+### 5. Reserved key and depth tests with and without `raw_value` (check)
+
+The dev-dependency `serde_json` of `corvis` enables `raw_value` (the JWT header tests need it). To run the reserved-key
+test (`objects_with_a_key_serde_json_reads_as_an_instruction_are_never_deserialized`), the depth tests and the rest of
+`socket_io::value` and `socket_io::parser` without it, the feature was removed from that line of
+`crates/corvis/Cargo.toml` (confirmed with `cargo tree -e features -i serde_json` that nothing else enables it), and
+`cargo test -p corvis --features socket-io --lib -- socket_io::value socket_io::parser` and `--test socket_io_security`
+were run: 33 and 8 tests passed. The line was restored; both runs are manual (there is no dev-dependency feature switch
+that does not change the default build), and the default test run keeps `raw_value` on, the worse case.
+
+### Not changed by this round
+
+- Application memory: arguments a handler moves out of `Args` (`into_vec`) or into a task it spawns are the
+  application's after the handler returns; their charge ends with the handler. Documented in the limits discussion.
+- The Engine.IO layer's own accounting of one message in the hand per session (`W`) is the pre-existing term of the
+  invariant; it is the engine's, not this layer's.
+
+## Security review (round 2)
+
+The second review found that round 1's cost model for JSON text held under ten new shapes, and that the accounting
+around it did not: the per-address quota covered only decoded packets, so everything else an address holds on the
+shared budget (messages in transit or parked, binary attachments, charges of handlers that outlive their session) was
+outside it, a fragmented message occupied up to twice what was charged, an honest packet that needed room waited
+behind a heartbeat that closed it for memory it did not hold, and the stored handshake `auth` was not charged. Where
+this section differs from "Security review (round 1)" and "Implementation notes", this section wins.
+
+### Corrections to round 1
+
+- **The invariant of round 1 was wrong for the address.** It bounded "decoded packets" per address by `Q + N x f` and
+  added "the wire messages of its open sessions" as if they were bounded elsewhere. They were not: wire messages above
+  a session's guaranteed share, parked messages and every binary attachment (`Reservation::plain`) were charged to the
+  session and server gauges only, so one address could hold the whole server budget (69 MB held against a quota of 21 MB
+  with 8 sessions of 127.0.0.1 and 0.5 MB attachments; 68 to 85 MB of text against a 67 MB budget). The formulas below
+  replace it.
+- **"An honest address always keeps at least `T - Q`" was only true while the addresses that could reach their quota
+  did not add up to the budget.** With a quarter of the budget four addresses exhausted it. The share is now an option,
+  defaults to 1/16, and the number of addresses that exhaust the budget is stated (see "Item 3a").
+- **A message was charged for its length, not its allocation.** See "Item 2".
+
+### The accounting rule (one path)
+
+There is one accounting path, in the gauge chain, and `budget.rs` states it. Every byte the Socket.IO layer keeps
+that came from a client is charged to the unread gauge of its Engine.IO session, and a session's gauge is chained to the
+gauge of its client address, which is chained to the server-wide one (`ws.rs`: `UnreadGauge`; `engine/mod.rs`:
+`ServerInner::parent_gauge`). A charge at any level counts at every level above it, so the address gauge holds,
+by construction and in every state, the wire messages the transport received and nobody took, the message a connection
+took and parked, the attachments of a packet being reassembled or already delivered, the reservations and decoded
+packets, the stored `auth` of the sockets, and the charges of handlers that outlive their session (a charge keeps its
+whole chain alive through `Arc`, so nothing is released early and an address's gauge exists as long as anything
+charged through it does). The separate address counter of round 1 (`AddressBudgets`, `AddressSlot`) is gone.
+
+Let `T` = `max_total_unread_bytes`, `U` = `max_unread_bytes`, `D` = `max_decoded_bytes`, `M` =
+`max_http_buffer_size`, `f = max(16 KiB, T / max_sessions)` the fair share, `N` = `max_sessions_per_ip`, `A` =
+`max_address_share`, and `held` the bytes a gauge counts.
+
+- **Admission** of a reservation `R` for the message `W_m` that is being decoded (`credit = W_m`: the message is
+  released once the packet is decoded, so the packet is checked net of it and a message is not counted twice) by session
+  `s` of address `a`:
+  1. *guaranteed share*: `s.held + R <= f + credit` and `a.held + R <= A + N x f + credit`;
+  2. otherwise *shared budget*: `a.held + R <= A + credit` and `total.held + R <= T + credit`.
+  Each test is a compare-and-swap at its level and a failure changes nothing, so concurrent connections cannot
+  overshoot together.
+- **Reading** (the test the transports and the connection task use): a session is paused iff `s.held > U`, or
+  `s.held > f` and (`a.held > A` or `total.held > T`). A session at or below `f` is always read.
+- **Whose doing a pause is**: `Own` when `s.held > U` or `a.held > A`; `Pressure` when only the server-wide budget is
+  exceeded. The heartbeat is held only for `Pressure` (Item 3b).
+- **Floor and default of `A`**: `F = min(T, D + max(max_attachments, 1) x (M + 64))` (one maximum packet: a decoded
+  packet next to the wire bytes of the largest binary packet); `A = max(T / 16, F)`, an explicit value must be in
+  `[F, T]`. With the defaults `F` = 43,555,072 bytes (41.5 MiB) is above `T / 16` (16 MiB), so **`ceil(T / A)` = 7
+  addresses at their share exhaust the 256 MiB budget**; with `max_decoded_bytes` and `max_attachments` small enough for
+  `T / 16` to bind, 16 do.
+- **Bounds.** An address holds at most `A + N x (f + W)` where `W = 3 x M + 64` is what one session adds beyond its
+  share: the message the transport had read when it stopped, the one being received (the WebSocket library buffers an
+  incomplete message in a buffer that can reach twice `M`, uncharged until it is a message) and the first pass's counts.
+  The server holds at most `T + S x (f + W)` for `S` open sessions (and closed ones with handlers running, for their
+  charges). Per session `U + D + W`. `N` and `W` make the address term large with the defaults (`256 x 3 MB`): an
+  operator who wants it tight lowers `max_sessions_per_ip` or `max_http_buffer_size`. The tests assert the live heap of
+  one address against exactly this formula and against `T / 2`.
+- **A charge never fails and nothing is refused beyond what already existed**: wire messages are charged when they
+  arrive (they cannot be refused) and the reading limits above stop the next one; only reservations wait.
+
+For a plain Engine.IO user nothing changes unless they set the two new engine options: `max_address_unread_bytes`
+(default none: no address gauge exists and a session's gauge is chained straight to the server's) and
+`pressure_pause_timeout` (default none: a paused session is closed by the heartbeat). `IoServer` sets both from its own
+options. `engine_io_security.rs` (the fair-share and unread-budget tests) passes unmodified. The engine changes that
+apply to everyone: a binary WebSocket message is charged for its buffer capacity (equal to its length unless the
+WebSocket library over-allocated it, in which case it was a bug), and `UnreadGauge::changed` wakes on a release at any
+gauge above the session's.
+
+### Item 1 (Medium): attachments and wire messages outside the quota
+
+Fixed by the rule above. Wire messages already counted at the address in the chain; attachments no longer use a
+`plain` reservation that skipped the address (`Reservation::from_held` wraps the ticket the engine made, which is
+already on the chain); the credit stops a message from being counted twice at admission. Regression tests:
+`socket_io_accounting.rs`: `binary_attachments_of_one_address_stay_inside_its_share_and_do_not_starve_an_honest_session`
+(the reviewer's case: 8 sessions of 127.0.0.1, `51-["hold",{"_placeholder":true,"num":0}]` and 524,289 bytes, 40 times
+each; live heap against `A + 8 x (f + W) + 2 MiB` and against `T / 2`; an honest session on 127.0.0.200 answered) and
+`large_text_events_of_one_address_stay_inside_its_share_and_do_not_starve_an_honest_session` (0.9 MB strings), with a raw
+client that writes from the caller's buffers so only the server's memory is counted; unit tests in `tests.rs`
+(`binary_attachments_count_against_the_address_in_every_state`) and `engine/session.rs` (the chain: wire messages,
+reservations, guarantee cap, quota, credit, wake-up by a sibling's release).
+
+### Item 2 (Medium/low): fragmented messages occupied up to twice their charge
+
+The WebSocket library builds a fragmented message by extending a buffer, which keeps the capacity of its last doubling
+(a 524,288 byte frame and a 1 byte continuation: a megabyte for half a megabyte). `websocket::fit` shrinks a binary
+buffer whose slack exceeds an eighth of its length and returns the capacity that remains, and
+`Session::on_packet_sized` charges `max(length, allocated) + 64`. What the engine keeps of the other messages is already
+exact: a text message is copied (`to_string`) to a buffer of its own length, a polling record likewise (no slice of the
+request body is kept, so a small record never pins a large buffer), and a base64 binary message keeps at most two bytes
+of capacity beyond its length (a unit test pins both). The buffer of an incomplete fragmented message inside the library
+is not a message yet: it is the transit term of `W` (at most `2 x M` per open session). Regression tests:
+`fragmented_binary_messages_occupy_no_more_than_they_are_charged` (frames of 524,288 + 1 bytes, 513 frames of 1 KiB, and
+300,000 + 224,289 bytes: live heap per kept attachment 1.00 to 1.20, was 2.0), `websocket::tests` (the shrink rule),
+`packet::capacity_tests`, `session::a_message_is_charged_for_the_allocation_behind_it_when_that_is_larger_than_its_length`.
+
+### Item 3: an honest packet waiting for budget others hold
+
+**(a) The share is an option.** `IoOptions::max_address_share` (and `address_share()`, `address_share_floor()` to read
+the values in force): default `max(T / 16, F)`, validated against `[F, T]`; documented with the number of addresses that
+exhaust the budget and the need for `trust_proxy` behind a proxy (EN and ES limits tables).
+
+**(b) A session is not closed for pressure it did not cause.** The transports ask `UnreadGauge::pause()`, which says
+`No`, `Own` or `Pressure`. While a session is paused for `Pressure` the engine holds its pong deadline
+(`Heartbeat::suspend`; `Session::set_pressure_pause`, called by the WebSocket loop and by the polling `POST` that holds
+its answer) for at most `pressure_pause_timeout`, which `IoServer` sets to `admission_timeout`; when reading resumes, or
+the grace ends, a pong still awaited is awaited for what was left of its deadline (round 4: it was a fresh `ping_timeout`, which chained suspensions). A session over its own limit, or whose
+address is over its share, keeps the ordinary heartbeat. The wait itself is bounded by `admission_timeout` (default
+30 s, validated, above zero and at most a day): the connection task keeps the deadline of the message it parked and, when
+it passes, closes the connection with the new disconnect reason `admission timeout`
+(`DisconnectReason::AdmissionTimeout`, documented, not a Node reason). Messages that wait behind a parked one stay
+charged until it is admitted or the connection closes: an address whose own backlog fills its share with nothing
+running is therefore released by the admission timeout, not before (a unit test shows it). The suspension is
+bounded too, so a session cannot hide behind it: after `pressure_pause_timeout` the heartbeat applies again.
+
+**(c) Wakeups.** A release at any level notifies every gauge above it (`UnreadGauge::release`), and a waiting
+connection registers the notifications of its whole chain (`changed()`, created before it reads the gauges, so there is
+no lost wakeup and no polling loop). `a_parked_packet_is_admitted_as_soon_as_room_is_released_and_its_deadline_is_forgotten`
+(paused clock: admitted with no time passing) and, over real sockets, the delayed-handler test below.
+
+Regression tests: `tests/socket_io_accounting.rs`
+`a_session_waiting_for_room_others_hold_is_not_closed_and_is_served_as_soon_as_a_handler_returns` (eleven addresses of
+four packets each hold the 8 MiB budget with handlers that return after 8 s; heartbeat window 1.5 s; the honest packet
+is answered after more than 2 s, within 3 s of the first handler returning, no disconnect) and
+`when_handlers_never_return_the_waiting_session_is_closed_at_the_admission_timeout_not_by_the_heartbeat` (the disconnect
+reason is `admission timeout`, after at least `admission_timeout`); both fail with `PingTimeout` after 1.5 s when the
+pause is not suspended (checked by disabling it). Unit tests: `Heartbeat::suspend/resume` (fresh interval, bounded
+grace, a ping falling due while suspended), `Session` on the paused clock (not closed in the pause, closed after the
+grace, unchanged without the option), `a_packet_that_waits_longer_than_the_admission_timeout_closes_the_connection_with_its_own_reason`.
+
+### Item 4 (Low): the stored `auth`
+
+Kept as a `serde_json::Value`, because that is the public type of `Handshake::auth()` and `IoValue` would change the API
+of every application that reads it. Its real size is charged instead: `value::json_cost` (the heap a `Value` owns, with
+buffers measured by capacity; the slot itself sits in the socket's structures) is taken with `EngineSocket::hold` when the
+CONNECT is handled and kept in the `Handshake`, so it is charged to the session and the address for the socket's life and
+released when the handshake is dropped. The model follows the compiled `serde_json::Map`: an `IndexMap` when another
+crate of the build enables `preserve_order` (the case in this workspace, so what is measured), a B-tree otherwise (the
+bound for that build is derived from the node layout and not measured here). A small object is up to about twice its
+`IoValue` model (`[{"":0},...]`), so the 16 KiB limit does not bound the stored value; the charge does. The charge is
+taken unconditionally (the CONNECT cannot be refused after it was decoded): a flood of CONNECTs with large auth stops at
+the address share like any other packet, because the reservations behind it wait. Tests: `socket_io_accounting.rs`
+`the_stored_auth_is_charged_at_its_real_size_across_many_sockets_and_namespaces` (five shapes, 200 stored values each,
+live heap <= charged <= 3 x live heap, through `corvis::socket_io::probe_auth`), and in `tests.rs` the address holding
+exactly the sum over 30 sockets in 10 namespaces and releasing it as they go.
+
+### Item 5 (docs): the default panic hook
+
+`catch_unwind` does not silence the standard library's hook: each handler panic still writes its message to standard
+error, at the client's packet rate, and the message may hold client data the handler formatted. Said in the limits
+page (EN and ES) and in the rustdoc of `IoSocket::on`: do not `unwrap()` or `expect()` anything derived from client data;
+an application that wants silence installs its own hook with `std::panic::set_hook`. The framework installs none (it is
+process-wide).
+
+### Not changed by this round
+
+- The memory of the WebSocket library's buffer for an incomplete message (up to `2 x M` per open session) is not
+  charged: it is not a message yet. It is the transit term of `W`, bounded by `max_sessions`.
+- A session whose own backlog is the whole of its address's share waits for the admission timeout (above).
+
+## Security review (round 3)
+
+The third review found one medium and six low items. Where this section differs from the earlier ones, this section
+wins.
+
+### Corrections to earlier rounds
+
+- **`W` in round 2 was wrong.** It named only `2 x M` for an incomplete message. The WebSocket library holds two buffers
+  per session outside every gauge: its read buffer, which grows to the largest frame ever received and is never shrunk,
+  and the buffer of an incomplete fragmented message. They are not part of `W`; they are the transit term `X` below, they
+  are not charged, and they exist already in the Engine.IO server merged as #32.
+- **"Handlers keep their charges until they end, for at most `close_timeout`" was stated for every close.** It is now
+  true of a close by the server and of a shutdown. When the client drops the connection the handlers are cancelled at
+  once (item E).
+- **The heartbeat suspension of round 2 was a per-pause allowance**, which a pressure, relief, pressure sequence renewed
+  (item D).
+
+### Item A (Medium): transit memory of the WebSocket transport
+
+Measured with default options (counting allocator, raw client that writes from the caller's buffers, 16 sessions of one
+address, `max_http_buffer_size` `M` = 1,000,000): a session that received one valid message of nearly `M` keeps
+**1,169,504 B** for the rest of its life (the library's read buffer), and a session with an incomplete fragmented
+message (a binary frame of `M - 1` bytes, a one byte continuation, a continuation that claims `M` and sends most of it)
+holds **3,294,439 B**: the read buffer, and the message buffer that doubled to 2^21 bytes. Neither is charged.
+
+*At the source.* tungstenite 0.24 (the version in the lock file) has no setting that bounds the read buffer: its
+`WebSocketConfig` has `max_message_size`, `max_frame_size`, `write_buffer_size`, `max_write_buffer_size` and
+`accept_unmasked_frames`, and the read buffer is a `Vec` that only grows. Lowering `max_frame_size` below
+`max_http_buffer_size` would refuse messages Node accepts. tungstenite 0.30 (the latest, with tokio-tungstenite 0.30)
+adds `read_buffer_size`, but it is the initial capacity: a scratch program outside the repository, same shapes, same
+raw client, measured 0.24 at 1,107,002 / 3,232,009 B per session and 0.30 at 1,058,392 / 4,183,349 B (the read buffer is
+kept at the size of the frame, and the incomplete message is kept as before and then copied again). The upgrade would
+have changed `Message` for the whole workspace (the default `ws` adapter, ports and examples) and fixed neither, so it
+was not made. Nothing in the transport code releases a completed message's buffer either: it is the library's own.
+
+*What remains, stated.* Per session, with `M` = `max_http_buffer_size`: after a large message at most
+`R(M) = 1.25 x 2^ceil(log2(M + 4,110))` bytes for the session's life, and while a fragmented message is incomplete at
+most `R(M) + 2 x 2^ceil(log2(M))`. The factor 1.25 is the excess the measurements show over the power of two
+(1,169,504 against 1,048,576 at the default, 133,224 against 131,072 at 100,000, 273,671 against 262,144 at 250,000);
+the library alone outside this server shows the same excess. The transit term is `X = S x (R + 2 x 2^ceil(log2 M))` for
+`S` sessions, apart from the budget `T`:
+
+| Default options | Per session | One address (`N` = 256) | The server (`max_sessions` 10,000) |
+|---|---|---|---|
+| after one large message | 1.12 MiB | 286 MiB | 10.9 GiB |
+| incomplete fragmented message | 3.14 MiB | 804 MiB | 30.7 GiB |
+
+The ceilings fall with `max_http_buffer_size` (about 0.13 MiB and 0.32 MiB per session at 100,000 bytes),
+`max_sessions_per_ip` and `max_sessions`; the limits pages say so (EN and ES, the Engine.IO section and the Socket.IO
+paragraph on bounds). The address bound of round 2 reads `A + N x (f + W) + N x (R + 2 x 2^ceil(log2 M))` with `W` the
+message in hand only.
+
+*Considered and left:* charging transit bytes to the session. It needs a byte-counting wrapper around the socket under
+the WebSocket library (the library reads in chunks and the buffer is internal), changes the stream type given to
+`from_raw_socket` and touches reads on every transport; the numbers above are what it would remove. A candidate
+follow-up, not done here.
+
+Regression tests, `tests/socket_io_transit.rs`:
+`the_transport_holds_at_most_the_documented_bytes_per_session_at_the_default_message_size` and
+`max_http_buffer_size_lowers_what_a_session_holds_in_proportion` (idle retention and incomplete message per session
+against `R` and `R + 2 x 2^ceil(log2 M)`, at 1,000,000, 250,000 and 100,000 bytes; they also fail if the measurement
+saw nothing, so a change that hides the buffer from the counter is caught).
+
+### Item B (Low): the body of a polling `POST` kept alive while the answer waits
+
+`polling::post` decoded the records (charged to the session) and kept the request body, uncharged, through the wait
+that holds the answer for the budget. The body is dropped right after decoding. Test:
+`socket_io_transit.rs::a_polling_post_body_is_released_while_its_answer_is_held_for_the_budget` (16 sessions, 600 KB of
+records each, held: 708,101 B live per session for 600,000 B of records; with the body alive it is about double).
+
+### Item C (Low): a rolled-back reservation did not wake its siblings
+
+A multi-level charge takes the session and address levels and may be refused by the level above; a sibling that looked
+while the lower levels were inflated registered for a change and nothing woke it, since nothing was released. A rollback
+now wakes the waiters of the level it undoes. **The first version of this fix woke unconditionally, and it livelocked**:
+the asker registers for changes before it tries, so its own rollback woke it, it retried, rolled back again and spun
+(the lib tests of the Socket.IO layer hung in `reconnecting_over_and_over_cannot_multiply_what_an_address_holds_...`,
+a real defect in the code and not a test problem). Two askers refused by the same level above would have woken each other
+the same way. A level now counts the charges it refused (`refusals`); a charge records the count when it is taken and its
+rollback wakes the waiters only if the count moved, that is, only if someone was refused while the level held a charge
+that did not stay. The asker's own rollback moves no count at the levels it took. Test (`engine/session.rs`):
+`a_rolled_back_reservation_wakes_the_siblings_that_were_refused_meanwhile_and_not_its_own_asker`, through the budget API
+with no timing: a sibling refused inside the window is woken, and the asker is not woken by its own rollback on either
+quota path.
+
+### Item D (Low): the heartbeat suspension could be chained
+
+The allowance is per session since its last received pong: `Heartbeat` keeps the suspension time used
+(`suspension_used`), a pause may hold the pong deadline only for what remains of `pressure_pause_timeout`, and only a
+pong renews it. Once it is used the heartbeat applies, however often the pressure comes and goes. Tests on the paused
+clock: `Heartbeat::the_allowance_is_per_session_since_the_last_pong_and_not_per_suspension` and, through a session,
+`oscillating_pressure_cannot_chain_the_suspension_and_a_pong_renews_the_allowance`.
+
+### Item E (Low): handlers that outlive their connection
+
+Eight churning connections from one address reached about 86,000 lingering futures and 50 MB for `close_timeout`.
+Now: when the client drops the connection (transport close or error, parse error, ping timeout, any reason except the
+server's own `forced close`; round 4 adds the closes the server takes because the client failed to make progress) the handlers still running are dropped at once, which releases their charges, unless
+`IoOptions::finish_handlers_after_client_close(true)`. A close by the server, and a shutdown, keep the grace of
+`close_timeout`, and the handlers that linger are counted per client address (`EngineSocket::linger`, a guard that gives
+the count back as each ends or when dropped). An address at `max_sessions_per_ip x max_inflight` of them
+(`IoOptions::max_lingering_per_ip()`, 8,192 by default) is refused new sessions with the existing `503`
+(`EngineOptions::max_lingering_per_ip`, set by `IoServer`, unset for plain Engine.IO). Behaviour change visible to
+applications: a handler is cancelled when its client goes away, so work that must survive goes in a task the handler
+spawns (handler guidance in the page, EN and ES); Node runs handlers to completion. Nothing changes for plain Engine.IO
+or the default WebSocket adapter. Tests: `tests/socket_io_lingering.rs` (the churn PoC: 200 sessions, about 6,000
+handlers started, none left, heap +2 KB over the baseline; with the grace requested the lingering handlers peak at the
+cap of 32 and 32 of 40 sessions are refused) and unit tests
+(`handlers_are_cancelled_at_once_when_the_client_drops_the_connection_unless_the_application_opted_in`,
+`handlers_get_their_grace_when_the_server_closes_the_connection_and_count_against_the_address_meanwhile`,
+`an_address_with_too_many_lingering_handlers_is_refused_new_sessions_until_they_end`). The last two end the connection
+from the server with a test helper, `force_close`: the graceful `close()` of a socket with no transport in a unit test
+only completes at `close_timeout`, and a second CONNECT is not read while the connection is at `max_inflight`. An earlier
+attempt had swapped `close()` for a second CONNECT to get past the hang above; the hang was the livelock of item C and
+not the close path, which was checked.
+
+### Item F (Low): a packet for a namespace the server just left
+
+A namespace slot has a third state, `Left`: the connection joined and its socket left (by the server's `disconnect(false)`
+or by the client). A packet for it is dropped (`Flow::Continue`) after it was read, measured, charged and, for a binary
+event, its attachments consumed by the decoder, so no reassembly slot leaks; a new CONNECT replaces the slot. The set is
+bounded by the registered namespaces (one slot each). A packet for a namespace never joined or refused still closes the
+connection. Tests: `socket_io_lingering.rs::packets_that_race_the_servers_leave_of_a_namespace_are_dropped_and_the_connection_survives`
+(an ACK, an event and a binary event with a 100 KB attachment for the left namespace, then the main namespace answers,
+then a packet for a namespace never joined closes the connection) and
+`tests.rs::packets_for_a_namespace_the_server_just_left_are_dropped_and_the_other_namespaces_survive`.
+
+### Item G (docs)
+
+The acknowledgements section says a handler that awaits `emit_with_ack` while its connection has `max_inflight` handlers
+running cannot receive the answer (the ACK waits behind the same read gate) and fails at `ack_timeout`. The limits page
+says clients behind one shared address (carrier or corporate NAT) share one address quota and can delay each other, and
+that `trust_proxy` only helps behind a proxy the operator controls. EN and ES.
+
+### Not changed by this round
+
+- The transit bytes are not charged (item A, considered and left).
+- The harness `expected-differences.json` gains nothing: the dropped packet for a left namespace has no scenario (see round 5: it is NOT what Node does),
+  and the cancelled handlers are not observable by a client.
+
+## Security review (round 4)
+
+### Corrections to round 3
+
+- Item D said the suspension could not be chained. It could: every resume granted a whole new `ping_timeout`, so a
+  WebSocket client that never answered lived 38.5 s against a bound of about 5 s.
+- Item C said a rolled-back reservation wakes the siblings that were refused. A refusal counted after the decision, and
+  an observer that only paused, could still be missed.
+- Item E said handlers are cancelled as soon as the client leaves. A close the server took because the client failed to
+  make progress (`admission timeout`, a protocol violation, the connect or reassembly timeouts) got the whole
+  `close_timeout`.
+
+### Item 1 (Low): the heartbeat suspension chained
+
+`Heartbeat` remembers how much of the pong deadline was left when the suspension began (`pong_left`); `resume` restores
+`now + left`. Only a ping sent while suspended, whose deadline had not started, gets a fresh `ping_timeout`, once per
+ping. The heartbeat is the session's, so the fix holds for WebSocket and polling alike. Bound for a client that never
+answers: `ping_interval + ping_timeout + admission_timeout` after its last pong, whatever the pattern of pressure. Paused
+clock tests (`engine/session.rs`): a thousand short suspensions close a silent client at the tick (800 ms for a bound of
+1,200 ms), a client that answers is never closed, an honest paused client that answers within what was left stays.
+
+### Item 2 (Low): lost wakeups after a rollback
+
+A refusal was counted after the decision and `roll_back` read the counter after its subtraction, so a refusal in
+between woke nobody; `pause()` counted nothing, so a reader that saw a sibling's transient peak was never woken. Now the
+refusing side increments the level's refusal counter FIRST, re-reads the level's bytes and decides again if they changed;
+the rollback subtracts and THEN reads the counter. With sequentially consistent ordering at least one side sees the other
+(the ordering argument is in `try_add_up_to`). `UnreadGauge::observe` applies the same to a caller that reports
+"paused": it counts at the level it found over and re-reads. One reading of the chain also classifies the pause (`Own`
+or `Pressure`), where `over_limit` and `at_fault` read twice. Unchanged: an asker's own rollback does not wake it, and
+idle connections make no attempts (nothing is counted for a level that is not over). Tests (`ws.rs::gauge_tests`):
+explicit interleavings through the budget API for the refusal and for the observer, one reading for the
+classification, and a stress test that ends only if no waiter is left parked while room exists.
+
+### Item 3 (Low): a client that leaves while its reader is paused
+
+A paused WebSocket reader does not read the socket, so the peer's close is not seen, and the session ended as
+`admission timeout`, which was treated as a server close: the handlers got `close_timeout`. Now every close caused by the
+client's failure to make progress (`admission timeout`, protocol violations, the connect and reassembly timeouts) cancels
+the in-flight handlers at once, like a client drop; only an application or server close (`disconnect`, `IoServer::close`,
+shutdown) keeps the grace, unless `finish_handlers_after_client_close(true)`. Reading the paused socket to see the close
+would buffer application data past the pause, so it is not done: the bound is `admission_timeout` after the packet
+parked (the ping deadline can come sooner), and the address quota is back when the handlers are dropped. Test:
+`socket_io_accounting.rs::a_client_that_goes_away_while_its_packet_waits_for_room_loses_its_handlers_at_the_admission_timeout`.
+
+## Security review (round 5)
+
+A closing pass over rounds 3 and 4, with proofs of concept for each item.
+
+Held: the heartbeat suspension (the three silent victims of the earlier measurement close at 2.0 to 2.1 s against
+38.5 s and 33.0 s; with spikes of 1 ms a silent client closes at 3.1 s and one that answered a single ping at 3.9 s,
+inside the bound of `ping_interval + ping_timeout + admission_timeout`; honest clients are not closed); the
+cancellation of handlers (the churn that left about 86,000 lingering futures leaves only those of open sessions, back
+to zero 31 ms after it stops; five ways out, 11,001 handlers started and as many dropped, `on_disconnect` exactly
+once, capacity unchanged); packets for a namespace that was left (a flood costs what a joined namespace without a
+handler costs, attachments are consumed, 10,000 join/leave cycles leave the heap unchanged).
+
+### The stampede (Medium, introduced by round 4 and fixed here)
+
+Round 4 made an observer count a refusal at every level it found over. A level can be over only because the level
+above is (`own > fair && parent_over`): an address under its quota whose pool is full. Sessions of that address,
+paused by the pool, therefore counted refusals at the ADDRESS each time they were observed, so every rollback at the
+address (a sibling's charge taken there and refused by the pool) found the counter moved and woke all of them, each to
+try, roll back and wake the others again. Measured on the real server with 256 parked connections of one address: 6.2
+to 6.5 cores of 8, sustained for the whole `admission_timeout`, against 0.004 idle.
+
+Fix (`UnreadGauge::observe_with`): an observer counts a refusal only at the level whose OWN reading decides the pause
+(`own_over`). A level that is over because of the level above is not what the observer waits on; the level above
+counted it, and a release there wakes every waiter below, since a waiter listens to its gauge and to every gauge above
+it. The lost-wakeup protocol of round 4 is unchanged where it applies (a transient peak that takes a level over its
+own limit). After the fix the same measurement gives 0.005 to 0.009 cores. Regression test:
+`observers_paused_by_the_pool_are_not_woken_by_rollbacks_at_their_address` (256 paused sessions, a thousand rollbacks
+at the address, no wakeup and no refusal counted there, and a release of the pool still wakes them).
+
+### A statement of round 3 corrected
+
+Round 3 (item F) said a packet for a namespace the connection had left is dropped "as Node does". It is not what Node
+does: the Node server closes the connection for any packet other than CONNECT addressed to a namespace it has no
+socket for ("invalid state"), a left namespace included. Dropping it is kept as a deliberate, more lenient difference:
+a normal race (the server disconnects one namespace while the client's packet for it is on its way) should not take
+down the client's other namespaces, and the review measured that such packets cost what packets for a joined
+namespace without a handler cost. A packet for a namespace never joined, refused or unknown still closes the
+connection, as in Node. The comment in `client.rs`, the spec and the docs say so now.
+
