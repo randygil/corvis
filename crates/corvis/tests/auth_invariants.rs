@@ -228,6 +228,12 @@ async fn failed_login_with_an_anonymous_session() {
     // The same browser can still use its session.
     let r = h.post_json("/login-session", &[("cookie", &cookie)], json!({ "username": "ana", "password": PASSWORD })).await;
     assert_eq!(r.status, 200);
+    // A browser with no session at all gets none from a failed login either, and no record is written.
+    let records = h.store.len();
+    let r = h.post_json("/login-session", &[], json!({ "username": "ana", "password": "wrong" })).await;
+    assert_eq!(r.status, 401);
+    assert!(set_cookies(&r).is_empty(), "{:?}", set_cookies(&r));
+    assert_eq!(h.store.len(), records);
 }
 
 #[tokio::test]
@@ -327,6 +333,15 @@ async fn bearer_value_shared_by_two_strategies() {
         let key = h.probe.key_raw.lock().unwrap().clone();
         assert_eq!(jwt, key, "the two strategies read different values from {value:?}");
     }
+    // The one place they differ, and in the safe direction: the API key reader gives up on a header with more than
+    // `max_key_bytes + 128` bytes of leading whitespace, the token reader does not. What the API key strategy reads,
+    // the token strategy reads too, never the other way.
+    h.probe.jwt_raw.lock().unwrap().clear();
+    h.probe.key_raw.lock().unwrap().clear();
+    let padded = format!("{}Bearer {t}", " ".repeat(700));
+    h.get("/chain-jwt-key", &[("authorization", &padded)]).await;
+    assert_eq!(h.probe.jwt_raw.lock().unwrap().clone(), vec![t.clone()]);
+    assert!(h.probe.key_raw.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

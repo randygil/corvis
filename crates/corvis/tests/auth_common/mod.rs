@@ -285,7 +285,7 @@ impl Routes {
     fn hit(&self, route: &str, req: &Request) -> Value {
         let user = req.user();
         self.probe.0.hits.lock().unwrap().push(Hit { route: route.to_string(), user: user.clone() });
-        json!({ "route": route, "user": user })
+        json!({ "route": route, "user": user, "return_to": corvis::auth::oauth2::return_to(req) })
     }
 }
 
@@ -506,6 +506,10 @@ pub struct Config {
     /// runs before every `AuthGuard` of the grid.
     pub throttle: Option<ThrottlerStorage>,
     pub local: LocalStrategyOptions,
+    /// Applies to the options of the `oauth` strategy (the one that keeps its state in a cookie).
+    pub oauth: Box<dyn FnOnce(OAuth2Options) -> OAuth2Options>,
+    /// The application logs (the request line included, through `LoggingInterceptor`): a test installs a sink first.
+    pub logging: bool,
 }
 
 impl Default for Config {
@@ -518,6 +522,8 @@ impl Default for Config {
             global_guard: false,
             throttle: None,
             local: LocalStrategyOptions::default(),
+            oauth: Box::new(|o| o),
+            logging: false,
         }
     }
 }
@@ -559,7 +565,7 @@ impl Harness {
         let store = RecordingStore::new();
         let probe = Arc::new(Probe::default());
         let session = (config.session)(session_options(&store));
-        let mut builder = Test::create_testing_module().with_logger(false);
+        let mut builder = Test::create_testing_module().with_logger(config.logging);
         if let Some(storage) = config.throttle {
             builder = builder.import_dynamic(ThrottlerModule::for_root_storage(storage)).providers(vec![Provider::app_guard::<ThrottlerGuard>()]);
         }
@@ -569,7 +575,7 @@ impl Harness {
             .providers(vec![
                 Provider::value(ProbeRef(probe.clone())),
                 Provider::value(LocalFlags(config.local)),
-                Provider::value(OauthOptions(oauth_options(&mock))),
+                Provider::value(OauthOptions((config.oauth)(oauth_options(&mock)))),
                 Provider::value(OauthSessionOptions(oauth_session_options(&mock))),
                 Provider::use_value(Token::of::<PasswordHasher>(), small_hasher()),
                 Provider::class::<JwtAuth>(),
@@ -600,6 +606,9 @@ impl Harness {
         }
         if config.global_guard {
             app.use_global_guards(AuthGuard::new("jwt").optional());
+        }
+        if config.logging {
+            app.use_global_interceptors(corvis::LoggingInterceptor);
         }
         app.init().await.map_err(|e| format!("{e:#}"))?;
         Ok(Harness { app, probe, mock, store })
