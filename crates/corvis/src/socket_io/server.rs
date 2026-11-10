@@ -34,6 +34,8 @@ pub(crate) struct ServerInner {
     pub(crate) warnings: Arc<WarnLimiter>,
     namespaces: RwLock<HashMap<String, IoNamespace>>,
     closed: AtomicBool,
+    /// `release` ran: the adapters are closed once per namespace however many paths reach it.
+    released: AtomicBool,
 }
 
 impl ServerInner {
@@ -44,6 +46,9 @@ impl ServerInner {
     /// After a close: the engine refuses handshakes, and anything that still reaches the callback is closed. The
     /// callback no longer holds the server.
     pub(crate) fn release(&self) {
+        if self.released.swap(true, Ordering::SeqCst) {
+            return;
+        }
         self.engine.on_connection(|socket| socket.close());
         // The adapters release what they hold; without a runtime there is nothing to wait for (the in-memory adapter
         // has already seen every socket leave).
@@ -127,6 +132,7 @@ impl IoServer {
             warnings: Arc::new(WarnLimiter::new(WARN_INTERVAL)),
             namespaces: RwLock::new(namespaces),
             closed: AtomicBool::new(false),
+            released: AtomicBool::new(false),
         });
         let weak: Weak<ServerInner> = Arc::downgrade(&inner);
         // The connection callback keeps the server alive, as `new Server(httpServer)` is kept by its HTTP server: an

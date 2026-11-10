@@ -31,6 +31,9 @@ pub const DEFAULT_MAX_ARGS: usize = 128;
 pub const DEFAULT_ATTACHMENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the connect middleware of one connection attempt may run.
 pub const DEFAULT_MIDDLEWARE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a call of the adapter made by `emit`, `fetch_sockets` and the bulk operations, and its `init`, may take
+/// (see [`IoOptions::adapter_timeout`]).
+pub const DEFAULT_ADAPTER_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a packet may wait for room in the unread budget (see [`IoOptions::admission_timeout`]).
 pub const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
 /// The default share of the server-wide unread budget one client address may hold: one in this many (see
@@ -85,6 +88,7 @@ pub enum IoOptionsError {
 /// | [`max_rooms_per_socket`](Self::max_rooms_per_socket) | 1,000 (own id's room included) | none |
 /// | [`max_room_name_length`](Self::max_room_name_length) | 256 bytes | none |
 /// | [`max_broadcast_ack_bytes`](Self::max_broadcast_ack_bytes) | 16 MiB per broadcast | none |
+/// | [`adapter_timeout`](Self::adapter_timeout) | 5 s per adapter call | none |
 ///
 /// Other differences, fixed rather than configurable: JSON nested deeper than 127 levels is refused; a client
 /// acknowledgement id has at most 16 digits and is at most 2^53 - 1; a connection holds at most one socket per
@@ -112,6 +116,7 @@ pub struct IoOptions {
     pub(crate) max_rooms_per_socket: usize,
     pub(crate) max_room_name_length: usize,
     pub(crate) max_broadcast_ack_bytes: usize,
+    pub(crate) adapter_timeout: Duration,
     pub(crate) adapter: AdapterFactory,
 }
 
@@ -136,6 +141,7 @@ impl Default for IoOptions {
             max_rooms_per_socket: DEFAULT_MAX_ROOMS_PER_SOCKET,
             max_room_name_length: DEFAULT_MAX_ROOM_NAME_LENGTH,
             max_broadcast_ack_bytes: DEFAULT_MAX_BROADCAST_ACK_BYTES,
+            adapter_timeout: DEFAULT_ADAPTER_TIMEOUT,
             adapter: AdapterFactory::in_memory(),
         }
     }
@@ -298,6 +304,17 @@ impl IoOptions {
         self
     }
 
+    /// How long one call of the adapter may take when an operator makes it (`emit`, `fetch_sockets`, `sockets_join`,
+    /// `sockets_leave`, `disconnect_sockets`) and when the adapter is initialised, before the call fails with
+    /// `EmitError::Adapter(AdapterError::Timeout)`. An adapter that never answers cannot hang its caller. The
+    /// in-memory adapter finishes at once; a cluster adapter needs a value above its own round trip. A broadcast with
+    /// acknowledgements is bounded by its own deadline. Default 5 s, above zero and at most one day. Node has no
+    /// limit.
+    pub fn adapter_timeout(mut self, timeout: Duration) -> Self {
+        self.adapter_timeout = timeout;
+        self
+    }
+
     /// The adapter of every namespace: `factory` is called once per namespace, when it is registered, with a handle to
     /// the namespace's local sockets (Node's `io.adapter(Adapter)`). The default is the in-memory adapter.
     ///
@@ -336,6 +353,7 @@ impl IoOptions {
             ("attachment_timeout", self.attachment_timeout),
             ("middleware_timeout", self.middleware_timeout),
             ("admission_timeout", self.admission_timeout),
+            ("adapter_timeout", self.adapter_timeout),
         ];
         for (option, value) in durations {
             if value.is_zero() {
@@ -469,6 +487,7 @@ mod tests {
         assert_eq!(o.max_rooms_per_socket, 1_000);
         assert_eq!(o.max_room_name_length, 256);
         assert_eq!(o.max_broadcast_ack_bytes, 16 * 1024 * 1024);
+        assert_eq!(o.adapter_timeout, Duration::from_secs(5));
         assert!(o.validate().is_ok());
     }
 
@@ -487,6 +506,7 @@ mod tests {
             ("ack_timeout", IoOptions::new().ack_timeout(Duration::ZERO)),
             ("attachment_timeout", IoOptions::new().attachment_timeout(Duration::ZERO)),
             ("middleware_timeout", IoOptions::new().middleware_timeout(Duration::ZERO)),
+            ("adapter_timeout", IoOptions::new().adapter_timeout(Duration::ZERO)),
             ("max_attachments", IoOptions::new().max_attachments(0)),
             ("max_inflight", IoOptions::new().max_inflight(0)),
             ("max_pending_acks", IoOptions::new().max_pending_acks(0)),
@@ -512,6 +532,7 @@ mod tests {
             ("ack_timeout", IoOptions::new().ack_timeout(Duration::from_secs(2 * 24 * 3600))),
             ("attachment_timeout", IoOptions::new().attachment_timeout(Duration::MAX)),
             ("middleware_timeout", IoOptions::new().middleware_timeout(Duration::MAX)),
+            ("adapter_timeout", IoOptions::new().adapter_timeout(Duration::MAX)),
         ] {
             let err = options.validate().unwrap_err();
             assert!(matches!(err, IoOptionsError::Range { option, .. } if option == name), "{name}: {err}");

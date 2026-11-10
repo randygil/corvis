@@ -169,7 +169,7 @@ impl Drop for PendingGuard {
 /// Room held in the budget while a packet is being reassembled or handled; released when the packet's handler ends
 /// (or the connection task is dropped), and not before: a closed connection keeps its handlers' charges on the
 /// server-wide gauge for as long as they run.
-struct Charge {
+pub(crate) struct Charge {
     parts: Vec<Reservation>,
 }
 
@@ -453,7 +453,7 @@ async fn handle_packet(
             }
             match body {
                 Body::Disconnect => socket.disconnect_with(DisconnectReason::ClientNamespaceDisconnect, false),
-                Body::Ack { id, args } => socket.resolve_ack(id, args),
+                Body::Ack { id, args } => socket.resolve_ack(id, args, charge),
                 Body::Event { id, name, args } => dispatch(shared, &socket, id, &name, args, charge, inflight),
                 Body::Connect(_) | Body::ConnectError(_) => unreachable!("handled above"),
             }

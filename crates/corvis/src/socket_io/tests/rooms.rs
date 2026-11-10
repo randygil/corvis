@@ -162,7 +162,13 @@ async fn leave_takes_effect_at_once_and_an_empty_room_is_deleted() {
     io.to("r").emit("e", ()).await.unwrap();
     assert!(a.sent().await.is_empty());
     assert_eq!(size(&io.main()).rooms, 1, "only the room of the socket's own id is left");
+    // The room of its own id cannot be left: it is how the socket is addressed (listed difference from Node).
     sa.leave(&ia);
+    assert_eq!(size(&io.main()).rooms, 1);
+    io.to(ia.as_str()).emit("own", ()).await.unwrap();
+    assert_eq!(a.sent().await.len(), 1);
+    drop(sa);
+    io.disconnect_sockets(false).await.unwrap();
     assert_eq!(size(&io.main()), MembershipSize { rooms: 0, sockets: 0, memberships: 0 });
 }
 
@@ -290,11 +296,11 @@ async fn bulk_operations_act_on_the_selection() {
     assert_eq!(fetched.len(), 1);
     let one = fetched.pop().unwrap();
     assert_eq!(one.id(), ia);
-    let mut rooms: Vec<&String> = one.rooms().iter().collect();
+    let mut rooms: Vec<&str> = one.rooms().iter().map(|r| &**r).collect();
     rooms.sort();
     let mut expected = vec![ia.clone(), "r1".to_string()];
     expected.sort();
-    assert_eq!(rooms.into_iter().cloned().collect::<Vec<_>>(), expected);
+    assert_eq!(rooms.into_iter().map(str::to_string).collect::<Vec<_>>(), expected);
     assert!(one.local().is_some());
     // A remote socket does its operations through the adapter.
     one.emit("direct", ()).await.unwrap();

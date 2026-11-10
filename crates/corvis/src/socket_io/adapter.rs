@@ -30,13 +30,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
+use super::client::Charge;
 use super::engine::session::after;
 use super::namespace::NamespaceInner;
 use super::options::IoOptions;
 use super::parser::{self, Body, EncodeError};
 
 pub use super::parser::Packet;
-use super::socket::{IoSocket, SocketInner};
+use super::socket::{Handshake, IoSocket, SocketInner};
 use super::value::{Args, IoValue};
 
 /// A room name. Cheap to clone.
@@ -57,6 +58,14 @@ pub enum RoomError {
     /// The socket would be in more than `max_rooms_per_socket` rooms.
     #[error("a socket may be in at most {max} rooms")]
     TooManyRooms { max: usize },
+    /// The room is named like the id of another connected socket of the namespace: a client that joined it would
+    /// receive what is sent to that socket. Node allows it; Corvis refuses it.
+    #[error("a room cannot be named like the id of another socket")]
+    SocketIdRoom,
+    /// A broadcast operator names more rooms (`to`, `within`, `except`, counted together) than
+    /// `max_rooms_per_socket` allows.
+    #[error("a broadcast operator may name at most {max} rooms")]
+    TooManyTargets { max: usize },
 }
 
 /// Why a packet could not be encoded for a broadcast.
@@ -113,6 +122,10 @@ pub struct BroadcastOptions {
     pub rooms: HashSet<Room>,
     pub except: HashSet<Room>,
     pub flags: BroadcastFlags,
+    /// Reach exactly this socket: it is the only candidate, `rooms` are ignored and `except` still applies. How a
+    /// [`RemoteSocket`](super::RemoteSocket) of a socket held by another process is addressed: by its id, never as
+    /// "the members of the room named like the id", which a client may have joined.
+    pub socket: Option<SocketId>,
 }
 
 impl BroadcastOptions {
@@ -134,27 +147,184 @@ impl BroadcastOptions {
         self.flags = flags;
         self
     }
+
+    pub fn socket(mut self, id: SocketId) -> Self {
+        self.socket = Some(id);
+        self
+    }
 }
 
-/// What a client sent when it connected, as plain data (`socket.handshake`, serializable so another process can
-/// describe a socket it does not hold).
+/// A handshake as plain data, the form that crosses processes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PlainHandshake {
+    auth: serde_json::Value,
+    headers: Vec<(String, String)>,
+    url: String,
+    address: String,
+    issued_at: u64,
+}
+
+#[derive(Clone)]
+enum HandshakeRepr {
+    /// A socket of this process: shares its handshake, copies nothing.
+    Local(Handshake),
+    /// A socket described by another process.
+    Plain(Box<PlainHandshake>),
+}
+
+/// What a client sent when it connected (`socket.handshake`). For a socket of this process it shares the socket's own
+/// handshake instead of copying it (a cookie-heavy handshake is hundreds of kilobytes); it serializes as plain data
+/// so another process can describe a socket it does not hold.
+///
+/// `Debug` hides credentials: it prints the names of the headers and of the `auth` keys, never their values, and the
+/// URL without its query.
+#[derive(Clone)]
 pub struct HandshakeInfo {
-    pub auth: serde_json::Value,
-    pub headers: Vec<(String, String)>,
-    pub url: String,
-    pub address: String,
-    /// Milliseconds since the Unix epoch.
-    pub issued_at: u64,
+    repr: HandshakeRepr,
 }
 
-/// A socket described by plain data: what `fetch_sockets` returns, whichever process holds the socket.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The headers whose values `Debug` never prints.
+const SECRET_HEADERS: [&str; 3] = ["cookie", "authorization", "proxy-authorization"];
+
+impl HandshakeInfo {
+    /// A handshake described by plain data (what a remote adapter builds from what another process sent).
+    pub fn new(auth: serde_json::Value, headers: Vec<(String, String)>, url: String, address: String, issued_at: u64) -> Self {
+        HandshakeInfo { repr: HandshakeRepr::Plain(Box::new(PlainHandshake { auth, headers, url, address, issued_at })) }
+    }
+
+    pub(crate) fn local(handshake: Handshake) -> Self {
+        HandshakeInfo { repr: HandshakeRepr::Local(handshake) }
+    }
+
+    /// The `auth` object of the CONNECT packet.
+    pub fn auth(&self) -> &serde_json::Value {
+        match &self.repr {
+            HandshakeRepr::Local(h) => h.auth(),
+            HandshakeRepr::Plain(p) => &p.auth,
+        }
+    }
+
+    /// The headers of the request that opened the connection (those that are valid text), in order.
+    pub fn headers(&self) -> Vec<(&str, &str)> {
+        match &self.repr {
+            HandshakeRepr::Local(h) => h.headers().iter().filter_map(|(k, v)| Some((k.as_str(), v.to_str().ok()?))).collect(),
+            HandshakeRepr::Plain(p) => p.headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(),
+        }
+    }
+
+    /// The URL of the request, query included.
+    pub fn url(&self) -> String {
+        match &self.repr {
+            HandshakeRepr::Local(h) => h.request().url(),
+            HandshakeRepr::Plain(p) => p.url.clone(),
+        }
+    }
+
+    /// The client address.
+    pub fn address(&self) -> String {
+        match &self.repr {
+            HandshakeRepr::Local(h) => h.ip(),
+            HandshakeRepr::Plain(p) => p.address.clone(),
+        }
+    }
+
+    /// Milliseconds since the Unix epoch.
+    pub fn issued_at(&self) -> u64 {
+        match &self.repr {
+            HandshakeRepr::Local(h) => h.issued_at().duration_since(std::time::SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
+            HandshakeRepr::Plain(p) => p.issued_at,
+        }
+    }
+
+    fn to_plain(&self) -> PlainHandshake {
+        PlainHandshake {
+            auth: self.auth().clone(),
+            headers: self.headers().into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            url: self.url(),
+            address: self.address(),
+            issued_at: self.issued_at(),
+        }
+    }
+}
+
+impl PartialEq for HandshakeInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_plain() == other.to_plain()
+    }
+}
+
+impl Serialize for HandshakeInfo {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_plain().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HandshakeInfo {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(HandshakeInfo { repr: HandshakeRepr::Plain(Box::new(PlainHandshake::deserialize(deserializer)?)) })
+    }
+}
+
+impl std::fmt::Debug for HandshakeInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let auth_keys: Vec<&str> = match self.auth() {
+            serde_json::Value::Object(map) => map.keys().map(String::as_str).collect(),
+            _ => Vec::new(),
+        };
+        let headers: Vec<String> = self
+            .headers()
+            .into_iter()
+            .map(|(name, value)| if SECRET_HEADERS.contains(&name.to_ascii_lowercase().as_str()) { format!("{name}: <hidden>") } else { format!("{name}: {value}") })
+            .collect();
+        let url = self.url();
+        let url = match url.split_once('?') {
+            Some((path, _)) => format!("{path}?<hidden>"),
+            None => url,
+        };
+        f.debug_struct("HandshakeInfo")
+            .field("auth_keys", &auth_keys)
+            .field("headers", &headers)
+            .field("url", &url)
+            .field("address", &self.address())
+            .field("issued_at", &self.issued_at())
+            .finish()
+    }
+}
+
+/// Rooms as a plain list of names on the wire; in memory each is a shared string.
+mod rooms_serde {
+    use super::Room;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(rooms: &[Room], serializer: S) -> Result<S::Ok, S::Error> {
+        let names: Vec<&str> = rooms.iter().map(|r| &**r).collect();
+        names.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Room>, D::Error> {
+        let names = Vec::<String>::deserialize(deserializer)?;
+        Ok(names.into_iter().map(|n| Room::from(n.as_str())).collect())
+    }
+}
+
+/// A socket described by data: what `fetch_sockets` returns, whichever process holds the socket. For a socket of this
+/// process nothing big is copied: the handshake is shared, and the rooms are shared names (16 bytes each, at most
+/// `max_rooms_per_socket`). `data` is a copy of the application's own `socket.data`.
+///
+/// `Debug` hides credentials (see [`HandshakeInfo`]).
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SocketInfo {
     pub id: String,
     pub handshake: HandshakeInfo,
-    pub rooms: Vec<String>,
+    #[serde(with = "rooms_serde")]
+    pub rooms: Vec<Room>,
     pub data: serde_json::Value,
+}
+
+impl std::fmt::Debug for SocketInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SocketInfo").field("id", &self.id).field("handshake", &self.handshake).field("rooms", &self.rooms.len()).finish_non_exhaustive()
+    }
 }
 
 // ----------------------------------------------------------------------------------------- the local namespace
@@ -200,6 +370,11 @@ impl LocalNamespace {
     /// own lock, so no membership is left behind by a socket that went away.
     pub fn is_live(&self, id: &str) -> bool {
         self.socket(id).is_some_and(|s| s.is_live())
+    }
+
+    /// Whether `id` is the id of a live socket of this namespace (connected, or disconnecting).
+    pub(crate) fn is_socket_id(&self, id: &str) -> bool {
+        self.is_live(id)
     }
 
     /// The options of the namespace's server.
@@ -251,6 +426,8 @@ impl AdapterFactory {
 
 struct AckState {
     responses: Vec<Args>,
+    /// What the answers occupy in the unread budget of the sockets that sent them, held until the call ends.
+    charges: Vec<Charge>,
     bytes: usize,
     expected_clients: usize,
     reported: usize,
@@ -278,6 +455,7 @@ impl AckShared {
         Arc::new(AckShared {
             state: Mutex::new(AckState {
                 responses: Vec::new(),
+                charges: Vec::new(),
                 bytes: 0,
                 expected_clients: 0,
                 reported: 0,
@@ -320,12 +498,14 @@ impl AckShared {
     /// Takes what was collected and ends the collection: later `expect` and `respond` calls do nothing, and the
     /// cleanups registered by the adapter run (outside the lock). Idempotent.
     pub(crate) fn finish(&self) -> Vec<Args> {
-        let (responses, cleanups) = {
+        let (responses, charges, cleanups) = {
             let mut s = self.lock();
             s.finished = true;
             s.bytes = 0;
-            (std::mem::take(&mut s.responses), std::mem::take(&mut s.cleanups))
+            (std::mem::take(&mut s.responses), std::mem::take(&mut s.charges), std::mem::take(&mut s.cleanups))
         };
+        // Released outside the lock: a release wakes the connections that wait for room.
+        drop(charges);
         for cleanup in cleanups {
             cleanup();
         }
@@ -368,6 +548,16 @@ impl AckSink {
     /// A client's answer. The answers of one broadcast are bounded by `max_broadcast_ack_bytes`: the one that would
     /// pass it is dropped and ends the call with the answers that were collected.
     pub fn respond(&self, args: Args) {
+        self.collect(args, None);
+    }
+
+    /// The answer of a local socket with the room it occupies in that connection's unread budget: held with the
+    /// answer until the call ends, dropped at once when the answer is not kept.
+    pub(crate) fn respond_charged(&self, args: Args, charge: Charge) {
+        self.collect(args, Some(charge));
+    }
+
+    fn collect(&self, args: Args, charge: Option<Charge>) {
         let cost = args.iter().map(IoValue::cost).fold(std::mem::size_of::<Args>(), usize::saturating_add);
         {
             let mut s = self.shared.lock();
@@ -379,6 +569,7 @@ impl AckSink {
             } else {
                 s.bytes += cost;
                 s.responses.push(args);
+                s.charges.extend(charge);
             }
         }
         self.shared.notify.notify_one();
@@ -410,10 +601,13 @@ pub trait Adapter: Send + Sync + 'static {
     /// How many servers run the namespace, this one included.
     async fn server_count(&self) -> Result<usize, AdapterError>;
 
-    /// Joins a socket connected to this process to rooms (Node's `addAll`). All or nothing: a name over the limit or
-    /// more rooms than the socket may be in joins none. A socket that is not connected is ignored.
+    /// Joins a socket connected to this process to rooms (Node's `addAll`). All or nothing: a name over the limit,
+    /// more rooms than the socket may be in (a call naming more than that is refused without examining them), or a
+    /// name that is the id of another live socket of the namespace joins none. A socket that is not connected is
+    /// ignored.
     fn add_all(&self, id: &str, rooms: &[Room]) -> Result<(), RoomError>;
-    /// Removes a socket from a room (Node's `del`).
+    /// Removes a socket from a room (Node's `del`). A socket cannot leave the room named like its own id: that is
+    /// how a direct emit to it and `RemoteSocket` reach exactly it.
     fn del(&self, id: &str, room: &str);
     /// Removes a socket from every room (Node's `delAll`).
     fn del_all(&self, id: &str);
@@ -435,6 +629,13 @@ pub trait Adapter: Send + Sync + 'static {
     async fn del_sockets(&self, opts: BroadcastOptions, rooms: Vec<Room>) -> Result<(), AdapterError>;
     /// Disconnects the selected sockets, closing their connection when `close`.
     async fn disconnect_sockets(&self, opts: BroadcastOptions, close: bool) -> Result<(), AdapterError>;
+
+    /// Whether a room with this name has members here. The namespace refuses to assign a new socket an id that is
+    /// already a room, so a room created in advance cannot capture a future socket. An adapter that keeps rooms
+    /// should implement it; the default says no.
+    fn room_exists(&self, _room: &str) -> bool {
+        false
+    }
 
     /// What the local maps hold, for the tests that check nothing is left behind. `None` when the adapter has no such
     /// maps.
@@ -464,20 +665,27 @@ pub trait Adapter: Send + Sync + 'static {
 pub(crate) struct Membership {
     pub(crate) rooms: HashMap<Room, HashSet<SocketId>>,
     pub(crate) sids: HashMap<SocketId, HashSet<Room>>,
+    /// The names the last `add` looked at: the work done under the lock, for the tests.
+    pub(crate) examined: usize,
 }
 
 impl Membership {
-    /// Joins `id` to `rooms`, all or nothing: refused when the socket would be in more than `max_rooms`.
+    /// Joins `id` to `rooms` (distinct names; the caller deduplicates outside the lock), all or nothing: refused, at
+    /// the first name that would take the socket past `max_rooms`, without looking at the rest.
     pub(crate) fn add(&mut self, id: &str, rooms: &[Room], max_rooms: usize) -> Result<(), RoomError> {
         let current = self.sids.get(id);
-        let mut fresh: HashSet<&Room> = HashSet::new();
+        let held = current.map_or(0, HashSet::len);
+        let mut fresh: Vec<&Room> = Vec::new();
+        self.examined = 0;
         for room in rooms {
-            if !current.is_some_and(|set| set.contains(&**room)) {
-                fresh.insert(room);
+            self.examined += 1;
+            if current.is_some_and(|set| set.contains(&**room)) {
+                continue;
             }
-        }
-        if current.map_or(0, HashSet::len) + fresh.len() > max_rooms {
-            return Err(RoomError::TooManyRooms { max: max_rooms });
+            if held + fresh.len() + 1 > max_rooms {
+                return Err(RoomError::TooManyRooms { max: max_rooms });
+            }
+            fresh.push(room);
         }
         if fresh.is_empty() {
             return Ok(());
@@ -551,6 +759,13 @@ impl Membership {
     /// cheaper of the two ways of testing the except rooms.
     pub(crate) fn select(&self, opts: &BroadcastOptions) -> Vec<SocketId> {
         let except: Vec<&HashSet<SocketId>> = opts.except.iter().filter_map(|r| self.rooms.get(r)).collect();
+        if let Some(target) = &opts.socket {
+            // Exactly this socket, whoever else is in a room named like it.
+            return match self.sids.get_key_value(&**target) {
+                Some((key, _)) if !except.iter().any(|set| set.contains(&**key)) => vec![key.clone()],
+                _ => Vec::new(),
+            };
+        }
         let except_members: usize = except.iter().map(|s| s.len()).sum();
         let mut candidates: Vec<&SocketId> = Vec::new();
         if opts.rooms.is_empty() {
@@ -687,24 +902,46 @@ impl Adapter for InMemoryAdapter {
     }
 
     fn add_all(&self, id: &str, rooms: &[Room]) -> Result<(), RoomError> {
+        // The input is bounded and validated before the lock is taken: a call naming more rooms than a socket may be
+        // in is refused at once, and names are checked and deduplicated outside it.
+        let max_rooms = self.local.max_rooms_per_socket();
+        if rooms.len() > max_rooms {
+            return Err(RoomError::TooManyRooms { max: max_rooms });
+        }
         let max_name = self.local.max_room_name_length();
+        let mut seen: HashSet<&str> = HashSet::with_capacity(rooms.len());
+        let mut distinct: Vec<Room> = Vec::with_capacity(rooms.len());
         for room in rooms {
             if room.len() > max_name {
                 return Err(RoomError::NameTooLong { len: room.len(), max: max_name });
             }
+            if seen.insert(room) {
+                distinct.push(room.clone());
+            }
         }
-        let max_rooms = self.local.max_rooms_per_socket();
         let mut m = self.write();
         // Under the write lock: a socket that disconnects marks itself before it calls `del_all`, which waits for
         // this lock, so nothing is left behind whatever order the two run in.
         if !self.local.is_live(id) {
             return Ok(());
         }
-        m.add(id, rooms, max_rooms)
+        // The id of another live socket is not a room a client may join: it would receive what is sent to that
+        // socket. Checked under the same lock, so the whole call stays all or nothing.
+        if distinct.iter().any(|room| &**room != id && self.local.is_socket_id(room)) {
+            return Err(RoomError::SocketIdRoom);
+        }
+        m.add(id, &distinct, max_rooms)
     }
 
     fn del(&self, id: &str, room: &str) {
+        if id == room {
+            return;
+        }
         self.write().remove(id, room);
+    }
+
+    fn room_exists(&self, room: &str) -> bool {
+        self.read().rooms.contains_key(room)
     }
 
     fn del_all(&self, id: &str) {

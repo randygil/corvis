@@ -116,9 +116,22 @@ impl IoNamespace {
     }
 
     /// The adapter, after its `init` ran (once, before the first cluster operation).
+    /// Bounded by `adapter_timeout`: an adapter whose `init` never returns fails the call with `Timeout`.
     pub(crate) async fn ready_adapter(&self) -> Result<&Arc<dyn Adapter>, super::adapter::AdapterError> {
-        self.inner.initialized.get_or_try_init(|| self.inner.adapter.init()).await?;
+        self.bounded(async { self.inner.initialized.get_or_try_init(|| self.inner.adapter.init()).await.map(|_| ()) }).await?;
         Ok(&self.inner.adapter)
+    }
+
+    /// Runs a call of the adapter with the `adapter_timeout` deadline: an adapter that never answers fails it with
+    /// `AdapterError::Timeout`, and the call is dropped.
+    pub(crate) async fn bounded<T>(
+        &self,
+        call: impl Future<Output = Result<T, super::adapter::AdapterError>>,
+    ) -> Result<T, super::adapter::AdapterError> {
+        match tokio::time::timeout(self.inner.options.adapter_timeout, call).await {
+            Ok(result) => result,
+            Err(_) => Err(super::adapter::AdapterError::Timeout),
+        }
     }
 
     /// The namespace name, with its leading `/`.

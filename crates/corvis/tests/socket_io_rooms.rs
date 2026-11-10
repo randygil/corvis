@@ -384,7 +384,7 @@ async fn bulk_operations() {
         let fetched = fx.io.to("r1").except(b.id.as_str()).fetch_sockets().await.unwrap();
         assert_eq!(fetched.len(), 1, "{v:?}");
         assert_eq!(fetched[0].id(), a.id);
-        let rooms: HashSet<&str> = fetched[0].rooms().iter().map(String::as_str).collect();
+        let rooms: HashSet<&str> = fetched[0].rooms().iter().map(|r| &**r).collect();
         assert_eq!(rooms, HashSet::from([a.id.as_str(), "r1", "r2"]));
         // Disconnect a room without closing the connections: `io server disconnect` for that namespace only.
         fx.io.to("r1").disconnect_sockets(false).await.unwrap();

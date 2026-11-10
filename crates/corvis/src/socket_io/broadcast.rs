@@ -23,7 +23,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::adapter::{AckShared, AckSink, AdapterError, BroadcastOptions, HandshakeInfo, Room, RoomError, SocketInfo};
+use super::adapter::{AckShared, AckSink, AdapterError, BroadcastFlags, BroadcastOptions, HandshakeInfo, Room, RoomError, SocketId, SocketInfo};
 use super::engine::options::MAX_DURATION;
 use super::namespace::IoNamespace;
 use super::parser::{self, Body, Packet};
@@ -149,38 +149,106 @@ impl Drop for Collection {
     }
 }
 
+/// One call of `to`, `within` or `except`, linked to the ones before it. A chain shares its prefix with every operator
+/// built from it, so building one costs the rooms of each call once, not once per call.
+struct Step {
+    parent: Option<Arc<Step>>,
+    rooms: Vec<Room>,
+    except: bool,
+}
+
+impl Drop for Step {
+    /// Iterative, so a long chain is not dropped by recursion.
+    fn drop(&mut self) {
+        let mut next = self.parent.take();
+        while let Some(step) = next {
+            match Arc::try_unwrap(step) {
+                Ok(mut step) => next = step.parent.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
 /// A chain of `to` / `within` / `except` / `local` / `timeout` that ends in an emit or a bulk operation. Cheap to
-/// clone.
-#[derive(Debug, Clone)]
+/// clone; each call costs the rooms it adds, however long the chain already is. An operator names at most
+/// [`max_rooms_per_socket`](super::IoOptions::max_rooms_per_socket) rooms in all (`to`, `within` and `except`
+/// together): past that, every terminal operation fails with `RoomError::TooManyTargets`.
+///
+/// A `to` or `within` given an empty collection selects no socket (when no other call adds rooms), where Node would
+/// reach everyone: an empty list that came from a client must not mean "everyone". An operator with no `to` at all
+/// reaches every socket of the namespace.
+#[derive(Clone)]
 pub struct BroadcastOperator {
     nsp: IoNamespace,
-    opts: BroadcastOptions,
+    steps: Option<Arc<Step>>,
+    /// The rooms named by `to`, `within` and `except`.
+    named: usize,
+    /// `to` or `within` was called: with no room in the end the operator selects nobody.
+    narrowed: bool,
+    flags: BroadcastFlags,
+    socket: Option<SocketId>,
     error: Option<RoomError>,
+}
+
+impl std::fmt::Debug for BroadcastOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BroadcastOperator")
+            .field("namespace", &self.nsp.name())
+            .field("rooms_named", &self.named)
+            .field("flags", &self.flags)
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
 }
 
 impl BroadcastOperator {
     pub(crate) fn new(nsp: IoNamespace) -> Self {
-        BroadcastOperator { nsp, opts: BroadcastOptions::new(), error: None }
+        BroadcastOperator { nsp, steps: None, named: 0, narrowed: false, flags: BroadcastFlags::default(), socket: None, error: None }
     }
 
-    /// Adds a socket id to the excluded rooms: a socket id is a room name of fixed, valid length.
+    /// An operator that reaches exactly one socket, by its id (never as a room).
+    pub(crate) fn for_socket(nsp: IoNamespace, id: &str) -> Self {
+        let mut operator = BroadcastOperator::new(nsp);
+        operator.socket = Some(Arc::from(id));
+        operator
+    }
+
+    fn push(&mut self, rooms: Vec<Room>, except: bool) {
+        if !rooms.is_empty() {
+            self.steps = Some(Arc::new(Step { parent: self.steps.take(), rooms, except }));
+        }
+    }
+
+    /// Adds a socket id to the excluded rooms: a socket id is a room name of fixed, valid length. Not counted
+    /// against the rooms an operator may name.
     pub(crate) fn except_ids_unchecked(mut self, id: &str) -> Self {
-        self.opts.except.insert(Arc::from(id));
+        self.push(vec![Arc::from(id)], true);
         self
     }
 
     fn with_rooms(&self, rooms: impl IntoRooms, except: bool) -> Self {
         let mut next = self.clone();
-        let max = self.nsp.options().max_room_name_length;
+        if !except {
+            next.narrowed = true;
+        }
+        let options = self.nsp.options();
+        let max = options.max_room_name_length;
+        let mut kept = Vec::new();
         for room in rooms.into_rooms() {
             if room.len() > max {
                 // Kept, not dropped: leaving the name out of `to` could make the broadcast reach everyone.
                 next.error.get_or_insert(RoomError::NameTooLong { len: room.len(), max });
-            } else if except {
-                next.opts.except.insert(room);
             } else {
-                next.opts.rooms.insert(room);
+                kept.push(room);
             }
+        }
+        let most = options.max_rooms_per_socket;
+        if next.named.saturating_add(kept.len()) > most {
+            next.error.get_or_insert(RoomError::TooManyTargets { max: most });
+        } else {
+            next.named += kept.len();
+            next.push(kept, except);
         }
         next
     }
@@ -196,7 +264,7 @@ impl BroadcastOperator {
     }
 
     /// `except(rooms)`: excludes the members of these rooms; a socket id is a room, so `except(id)` excludes that
-    /// socket.
+    /// socket. An empty collection excludes nobody.
     pub fn except(&self, rooms: impl IntoRooms) -> Self {
         self.with_rooms(rooms, true)
     }
@@ -204,7 +272,7 @@ impl BroadcastOperator {
     /// `local`: reach only the sockets connected to this server.
     pub fn local(&self) -> Self {
         let mut next = self.clone();
-        next.opts.flags.local = true;
+        next.flags.local = true;
         next
     }
 
@@ -212,7 +280,7 @@ impl BroadcastOperator {
     /// [`ack_timeout`](super::IoOptions::ack_timeout) otherwise.
     pub fn timeout(&self, timeout: Duration) -> Self {
         let mut next = self.clone();
-        next.opts.flags.timeout = Some(timeout);
+        next.flags.timeout = Some(timeout);
         next
     }
 
@@ -221,6 +289,24 @@ impl BroadcastOperator {
             Some(error) => Err(error.clone().into()),
             None => Ok(()),
         }
+    }
+
+    /// What the adapter is asked to reach, built once for the terminal operation; `None` when the operator selects
+    /// nobody (an empty `to`).
+    fn selection(&self) -> Result<Option<BroadcastOptions>, EmitError> {
+        self.check()?;
+        let mut opts = BroadcastOptions::new().flags(self.flags.clone());
+        opts.socket = self.socket.clone();
+        let mut step = self.steps.as_deref();
+        while let Some(s) = step {
+            let into = if s.except { &mut opts.except } else { &mut opts.rooms };
+            into.extend(s.rooms.iter().cloned());
+            step = s.parent.as_deref();
+        }
+        if self.narrowed && opts.rooms.is_empty() && opts.socket.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(opts))
     }
 
     fn packet(&self, event: &str, args: impl IntoArgs) -> Result<Packet, EmitError> {
@@ -235,11 +321,17 @@ impl BroadcastOperator {
     /// `emit(event, ...args)`: sends the event to the sockets selected, once, the same packet a direct emit sends,
     /// encoded once for all of them. It never waits for a recipient: one whose send buffer is full is closed
     /// (`transport error`), and the others and the caller are not affected. Fails, sending nothing, for a reserved
-    /// event name, an invalid room, arguments that cannot be sent, or an adapter error.
+    /// event name, an invalid room, arguments that cannot be sent, or an adapter error (an adapter that takes longer
+    /// than [`adapter_timeout`](super::IoOptions::adapter_timeout) fails the call with `AdapterError::Timeout`).
+    ///
+    /// Order: two broadcasts one caller issues one after the other, the second after the first returned, reach each
+    /// recipient they have in common in that order. Broadcasts of concurrent tasks (the handlers of one connection
+    /// run concurrently) have no order between them.
     pub async fn emit(&self, event: &str, args: impl IntoArgs) -> Result<(), EmitError> {
         let packet = self.packet(event, args)?;
+        let Some(opts) = self.selection()? else { return Ok(()) };
         let adapter = self.nsp.ready_adapter().await?;
-        adapter.broadcast(packet, self.opts.clone()).await?;
+        self.nsp.bounded(adapter.broadcast(packet, opts)).await?;
         Ok(())
     }
 
@@ -247,20 +339,22 @@ impl BroadcastOperator {
     /// the order they arrive. It ends when every recipient answered, or at the deadline ([`timeout`](Self::timeout),
     /// else `ack_timeout`), failing with `operation has timed out` and the answers so far. A recipient that
     /// disconnects, or that waits for `max_pending_acks` answers already, does not answer. The answers held are
-    /// bounded by `max_broadcast_ack_bytes`; the call fails with `ResponsesTooLarge` once they would pass it. Node,
-    /// without `timeout()`, fails at once.
+    /// bounded by `max_broadcast_ack_bytes`; the call fails with `ResponsesTooLarge` once they would pass it. While
+    /// the call runs, each answer also counts against the unread budget of the connection that sent it (its session,
+    /// its address and the server), so a client cannot make the server hold more than its share by answering many
+    /// calls. Node, without `timeout()`, fails at once.
     pub async fn emit_with_ack(&self, event: &str, args: impl IntoArgs) -> Result<Vec<Args>, BroadcastAckError> {
         let packet = self.packet(event, args)?;
+        let Some(mut opts) = self.selection()? else { return Ok(Vec::new()) };
         let options = self.nsp.options().clone();
-        let timeout = self.opts.flags.timeout.unwrap_or(options.ack_timeout).min(MAX_DURATION);
-        let mut opts = self.opts.clone();
+        let timeout = self.flags.timeout.unwrap_or(options.ack_timeout).min(MAX_DURATION);
         opts.flags.timeout = Some(timeout);
         let shared = AckShared::new(options.max_broadcast_ack_bytes);
         let collection = Collection(shared.clone());
         let work = async {
             let adapter = self.nsp.ready_adapter().await?;
-            shared.set_servers(adapter.server_count().await?);
-            adapter.broadcast_with_ack(packet, opts, AckSink::new(shared.clone())).await?;
+            shared.set_servers(self.nsp.bounded(adapter.server_count()).await?);
+            self.nsp.bounded(adapter.broadcast_with_ack(packet, opts, AckSink::new(shared.clone()))).await?;
             Ok::<_, AdapterError>(shared.wait().await)
         };
         let outcome = tokio::time::timeout(timeout, work).await;
@@ -278,44 +372,53 @@ impl BroadcastOperator {
 
     /// `fetchSockets()`: the sockets selected, as [`RemoteSocket`]s (plain data plus operations that work whether or
     /// not the socket is connected to this process). A snapshot: sockets that join or leave afterwards do not change it.
+    /// For sockets of this process the handshake is shared, not copied.
     pub async fn fetch_sockets(&self) -> Result<Vec<RemoteSocket>, EmitError> {
-        self.check()?;
+        let Some(opts) = self.selection()? else { return Ok(Vec::new()) };
         let adapter = self.nsp.ready_adapter().await?;
-        let infos = adapter.fetch_sockets(self.opts.clone()).await?;
+        let infos = self.nsp.bounded(adapter.fetch_sockets(opts)).await?;
         Ok(infos.into_iter().map(|info| RemoteSocket { nsp: self.nsp.clone(), info }).collect())
     }
 
     /// `socketsJoin(rooms)`: makes every socket selected join these rooms. A socket that would pass
-    /// `max_rooms_per_socket` is skipped and a warning is logged; the others join (Node has no cap).
+    /// `max_rooms_per_socket`, or that the rooms would make join the room of another socket's id, is skipped and a
+    /// warning is logged; the others join (Node has no cap). A call naming more rooms than `max_rooms_per_socket`
+    /// fails at once.
     pub async fn sockets_join(&self, rooms: impl IntoRooms) -> Result<(), EmitError> {
         self.check()?;
         let rooms = self.valid_rooms(rooms)?;
+        let Some(opts) = self.selection()? else { return Ok(()) };
         let adapter = self.nsp.ready_adapter().await?;
-        adapter.add_sockets(self.opts.clone(), rooms).await?;
+        self.nsp.bounded(adapter.add_sockets(opts, rooms)).await?;
         Ok(())
     }
 
-    /// `socketsLeave(rooms)`: makes every socket selected leave these rooms.
+    /// `socketsLeave(rooms)`: makes every socket selected leave these rooms (never the room of its own id).
     pub async fn sockets_leave(&self, rooms: impl IntoRooms) -> Result<(), EmitError> {
         self.check()?;
         let rooms = self.valid_rooms(rooms)?;
+        let Some(opts) = self.selection()? else { return Ok(()) };
         let adapter = self.nsp.ready_adapter().await?;
-        adapter.del_sockets(self.opts.clone(), rooms).await?;
+        self.nsp.bounded(adapter.del_sockets(opts, rooms)).await?;
         Ok(())
     }
 
     /// `disconnectSockets(close)`: disconnects every socket selected from this namespace (they hear `io server
     /// disconnect`), and with `close` closes their connections too.
     pub async fn disconnect_sockets(&self, close: bool) -> Result<(), EmitError> {
-        self.check()?;
+        let Some(opts) = self.selection()? else { return Ok(()) };
         let adapter = self.nsp.ready_adapter().await?;
-        adapter.disconnect_sockets(self.opts.clone(), close).await?;
+        self.nsp.bounded(adapter.disconnect_sockets(opts, close)).await?;
         Ok(())
     }
 
     fn valid_rooms(&self, rooms: impl IntoRooms) -> Result<Vec<Room>, RoomError> {
-        let max = self.nsp.options().max_room_name_length;
+        let options = self.nsp.options();
         let rooms = rooms.into_rooms();
+        if rooms.len() > options.max_rooms_per_socket {
+            return Err(RoomError::TooManyRooms { max: options.max_rooms_per_socket });
+        }
+        let max = options.max_room_name_length;
         match rooms.iter().find(|r| r.len() > max) {
             Some(room) => Err(RoomError::NameTooLong { len: room.len(), max }),
             None => Ok(rooms),
@@ -323,12 +426,19 @@ impl BroadcastOperator {
     }
 }
 
-/// A socket returned by `fetch_sockets`: its data, and operations that work through the adapter, so they keep
-/// working when the socket is connected to another server.
-#[derive(Debug, Clone)]
+/// A socket returned by `fetch_sockets`: its data, and operations on it. For a socket of this process they act on
+/// that socket directly (as Node returns the local socket); for one held by another process they go to the adapter,
+/// addressed to that socket's id and to nothing else.
+#[derive(Clone)]
 pub struct RemoteSocket {
     nsp: IoNamespace,
     info: SocketInfo,
+}
+
+impl std::fmt::Debug for RemoteSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteSocket").field("namespace", &self.nsp.name()).field("info", &self.info).finish()
+    }
 }
 
 impl RemoteSocket {
@@ -341,7 +451,7 @@ impl RemoteSocket {
     }
 
     /// The rooms the socket was in when it was fetched.
-    pub fn rooms(&self) -> &[String] {
+    pub fn rooms(&self) -> &[Room] {
         &self.info.rooms
     }
 
@@ -360,24 +470,47 @@ impl RemoteSocket {
         self.nsp.socket(&self.info.id)
     }
 
-    /// An operator that targets this socket: the room named after its id.
+    /// An operator that targets exactly this socket, by its id: not "the members of the room named like it".
     pub fn operator(&self) -> BroadcastOperator {
-        BroadcastOperator::new(self.nsp.clone()).to(self.info.id.as_str())
+        BroadcastOperator::for_socket(self.nsp.clone(), &self.info.id)
     }
 
+    /// Sends an event to the socket. A socket that is gone receives nothing and the call succeeds.
     pub async fn emit(&self, event: &str, args: impl IntoArgs) -> Result<(), EmitError> {
+        if let Some(socket) = self.local() {
+            return match socket.emit(event, args) {
+                Err(EmitError::NotConnected) => Ok(()),
+                other => other,
+            };
+        }
         self.operator().emit(event, args).await
     }
 
+    /// Makes the socket join rooms, under the same rules as [`IoSocket::join`].
     pub async fn join(&self, rooms: impl IntoRooms) -> Result<(), EmitError> {
+        if let Some(socket) = self.local() {
+            return Ok(socket.join(rooms)?);
+        }
         self.operator().sockets_join(rooms).await
     }
 
+    /// Makes the socket leave rooms (never the room of its own id).
     pub async fn leave(&self, rooms: impl IntoRooms) -> Result<(), EmitError> {
+        if let Some(socket) = self.local() {
+            for room in rooms.into_rooms() {
+                socket.leave(&room);
+            }
+            return Ok(());
+        }
         self.operator().sockets_leave(rooms).await
     }
 
+    /// Disconnects the socket from the namespace, and closes its connection with `close`.
     pub async fn disconnect(&self, close: bool) -> Result<(), EmitError> {
+        if let Some(socket) = self.local() {
+            socket.disconnect(close);
+            return Ok(());
+        }
         self.operator().disconnect_sockets(close).await
     }
 }

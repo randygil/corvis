@@ -14,7 +14,7 @@ use tokio::time::Instant;
 
 use super::adapter::{AckSink, AdapterError, HandshakeInfo, Room, RoomError, SocketInfo};
 use super::broadcast::{BroadcastOperator, IntoRooms};
-use super::client::ClientShared;
+use super::client::{Charge, ClientShared};
 use super::engine::Held;
 use super::engine::options::MAX_DURATION;
 use super::engine::session::{CloseReason, after};
@@ -150,41 +150,47 @@ pub enum AckError {
 /// What a client sent in its CONNECT packet and how it arrived (`socket.handshake` in Node).
 #[derive(Debug, Clone)]
 pub struct Handshake {
+    data: Arc<HandshakeData>,
+}
+
+#[derive(Debug)]
+struct HandshakeData {
     auth: Value,
     request: Request,
     issued_at: SystemTime,
     /// What `auth` occupies, charged to the connection's session and address for as long as the handshake lives (the
-    /// socket's life): `auth` is a `serde_json::Value`, whose size is not the one `max_auth_bytes` measures.
-    _charge: Option<Arc<Held>>,
+    /// socket's life, or that of a `fetch_sockets` result that shares it): `auth` is a `serde_json::Value`, whose
+    /// size is not the one `max_auth_bytes` measures.
+    _charge: Option<Held>,
 }
 
 impl Handshake {
     pub(crate) fn new(auth: Value, request: Request, charge: Option<Held>) -> Self {
-        Handshake { auth, request, issued_at: SystemTime::now(), _charge: charge.map(Arc::new) }
+        Handshake { data: Arc::new(HandshakeData { auth, request, issued_at: SystemTime::now(), _charge: charge }) }
     }
 
     /// The `auth` object of the CONNECT packet (`{}` when the client sent none).
     pub fn auth(&self) -> &Value {
-        &self.auth
+        &self.data.auth
     }
 
     /// The HTTP request that opened the Engine.IO session: headers, query, URL.
     pub fn request(&self) -> &Request {
-        &self.request
+        &self.data.request
     }
 
     pub fn headers(&self) -> &http::HeaderMap {
-        self.request.headers()
+        self.data.request.headers()
     }
 
     /// The client address (it follows `set_trust_proxy`).
     pub fn ip(&self) -> String {
-        self.request.ip()
+        self.data.request.ip()
     }
 
     /// When the CONNECT packet was handled.
     pub fn issued_at(&self) -> SystemTime {
-        self.issued_at
+        self.data.issued_at
     }
 }
 
@@ -273,7 +279,8 @@ fn emit_error(e: EncodeError) -> EmitError {
 impl IoSocket {
     pub(crate) fn new(nsp: IoNamespace, client: Arc<ClientShared>, handshake: Handshake) -> IoSocket {
         let mut id = super::engine::sid::generate();
-        while nsp.socket(&id).is_some() {
+        // Never an id that is already a room: a room created in advance cannot capture a future socket.
+        while nsp.socket(&id).is_some() || nsp.adapter().room_exists(&id) {
             id = super::engine::sid::generate();
         }
         IoSocket {
@@ -439,20 +446,7 @@ impl IoSocket {
 
     /// The socket as plain data (what `fetch_sockets` returns).
     pub(crate) fn info(&self, rooms: Vec<Room>) -> SocketInfo {
-        let request = self.inner.handshake.request();
-        let headers = request.headers().iter().filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
-        SocketInfo {
-            id: self.inner.id.clone(),
-            handshake: HandshakeInfo {
-                auth: self.inner.handshake.auth().clone(),
-                headers,
-                url: request.url(),
-                address: request.ip(),
-                issued_at: self.inner.handshake.issued_at().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64),
-            },
-            rooms: rooms.iter().map(|r| r.to_string()).collect(),
-            data: self.data(),
-        }
+        SocketInfo { id: self.inner.id.clone(), handshake: HandshakeInfo::local(self.inner.handshake.clone()), rooms, data: self.data() }
     }
 
     // ------------------------------------------------------------------------------------------------- rooms
@@ -468,7 +462,9 @@ impl IoSocket {
     /// [`max_room_name_length`](super::IoOptions::max_room_name_length) fails with `RoomError::NameTooLong`, and
     /// joining more rooms than [`max_rooms_per_socket`](super::IoOptions::max_rooms_per_socket) (the room of the
     /// socket's own id counts) fails with `RoomError::TooManyRooms`, in both cases joining none. Node accepts both.
-    /// A socket that is not connected, or has disconnected, joins nothing and the call succeeds, as in Node.
+    /// A socket that is not connected, or has disconnected, joins nothing and the call succeeds, as in Node. A call
+    /// naming more than `max_rooms_per_socket` rooms is refused without looking at them, and a room named like the id
+    /// of another socket of the namespace fails with `RoomError::SocketIdRoom` (Node allows it), joining none.
     ///
     /// ```
     /// # use corvis::socket_io::{IoOptions, IoServer};
@@ -481,6 +477,10 @@ impl IoSocket {
     pub fn join(&self, rooms: impl IntoRooms) -> Result<(), RoomError> {
         let rooms = rooms.into_rooms();
         let options = self.inner.nsp.options();
+        // The input is bounded before anything looks at it: more names than a socket may hold is refused at once.
+        if rooms.len() > options.max_rooms_per_socket {
+            return Err(RoomError::TooManyRooms { max: options.max_rooms_per_socket });
+        }
         for room in &rooms {
             if room.len() > options.max_room_name_length {
                 return Err(RoomError::NameTooLong { len: room.len(), max: options.max_room_name_length });
@@ -489,7 +489,8 @@ impl IoSocket {
         self.inner.nsp.adapter().add_all(&self.inner.id, &rooms)
     }
 
-    /// `socket.leave(room)`: leaves a room at once; a room that was not joined is ignored.
+    /// `socket.leave(room)`: leaves a room at once; a room that was not joined is ignored. A socket cannot leave the
+    /// room named like its own id (Node lets it): that room is how the socket is addressed.
     pub fn leave(&self, room: &str) {
         self.inner.nsp.adapter().del(&self.inner.id, room);
     }
@@ -601,14 +602,19 @@ impl IoSocket {
 
     /// A client acknowledgement for an id this socket sent; an id that is not pending (never issued, already
     /// answered, expired, issued to another socket) is ignored.
-    pub(crate) fn resolve_ack(&self, id: u64, args: Vec<IoValue>) {
+    ///
+    /// `charge` is what the answer occupies in the unread budget of this connection. The collector of a broadcast
+    /// keeps it until the call ends, so the answers it holds count against this socket's session, its address and the
+    /// server; any other answer drops it here, as before.
+    pub(crate) fn resolve_ack(&self, id: u64, args: Vec<IoValue>, charge: Charge) {
         let entry = self.state().acks.remove(&id);
         match entry {
             Some(PendingAck { target: AckTarget::One(tx), .. }) => {
+                drop(charge);
                 let _ = tx.send(Ok(Args::new(args)));
             }
-            Some(PendingAck { target: AckTarget::Broadcast(sink), .. }) => sink.respond(Args::new(args)),
-            None => {}
+            Some(PendingAck { target: AckTarget::Broadcast(sink), .. }) => sink.respond_charged(Args::new(args), charge),
+            None => drop(charge),
         }
     }
 
@@ -698,7 +704,10 @@ impl IoSocket {
             state.phase = Phase::Disconnected;
             std::mem::take(&mut state.acks)
         };
-        self.inner.nsp.adapter().del_all(&self.inner.id);
+        // A panic in the adapter must not leave the socket in the namespace with its charges: it is contained, logged,
+        // and the socket is removed all the same.
+        let adapter = self.inner.nsp.adapter();
+        self.inner.client.warnings.guard("an adapter's del_all", self.inner.nsp.name(), || adapter.del_all(&self.inner.id));
         self.inner.nsp.remove_socket(&self.inner.id);
         self.inner.client.forget(self.inner.nsp.name(), self);
         for (_, ack) in acks {
