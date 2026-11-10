@@ -1,5 +1,9 @@
 # Design
 
+> Reconciled with the code #33 merged (task 1.1): the layers described below were as designed, with the renames and
+> shape changes recorded in "Implementation notes" at the end (`Packet` public and opaque, `EngineMessage::Shared`,
+> `PendingAck::target`, the disconnect order, `HandshakeInfo`).
+
 ## Context
 
 Design source: the Socket.IO spike #31 (`openspec/changes/archive/2026-11-08-e2-spike-engine-io-v4-socket-io-v5-in-rust/`):
@@ -342,3 +346,125 @@ These settle the open questions and override the design where they differ.
    adjustments in Implementation notes.
 8. The security review is mandatory before the merge (room limits, broadcast fan-out, slow receivers, ack
    accumulation).
+
+## Implementation notes
+
+### Comparison with the code #33 merged (task 1.1)
+
+The decisions held; the names and a few shapes moved. Adjustments, in the order a reader of "The layers this builds on"
+meets them:
+
+- `Packet`, `Body` and `encode` were `pub(crate)` in `socket_io/parser.rs`. `Packet` is now `pub` and opaque (its fields
+  stay `pub(crate)`) so the adapter trait can name it; `encode` still returns `Encoded` (a `String` plus attachments).
+  `Encoded::share()` turns it into `SharedEncoded` (`Arc<str>` plus `Bytes` attachments), the one value a broadcast queues
+  on every recipient.
+- `EngineSocket::send_all` exists as designed (it queues the messages of a packet whole). It takes `EngineMessage`s, whose
+  text was a `String`, which cannot be shared: the hidden Engine.IO enum gained a variant `EngineMessage::Shared(Arc<str>)`
+  (sent only, never received; a received one closes the connection). It is the only change in the Engine.IO layer: its
+  `len`, `polling_len` and `encode_polling` handle the variant like a text, so plain Engine.IO users, polling and
+  WebSocket, behave as before. The `Packet::encode_ws` copy into a frame is unchanged: it happens per session, at write
+  time (see the memory formula).
+- `IoSocket::send_encoded` existed unused (`#[allow(dead_code)]`); `send_shared` is the one the broadcast uses. It checks the
+  phase first, so a socket that disconnected is never sent a packet.
+- Pending acknowledgements: `SocketState.acks` held a `oneshot` sender per entry; an entry is now
+  `PendingAck { target: AckTarget::One(oneshot) | AckTarget::Broadcast(AckSink), deadline }`, so a broadcast shares the
+  per-socket table, the `max_pending_acks` cap and the lazy purge by `deadline` with `emit_with_ack`. The namespace id
+  counter (`NamespaceInner::next_ack_id`) is the one the adapter draws from through `LocalNamespace`.
+- Disconnect order. #33: `disconnecting` handlers, `remove_socket`, `forget`, phase `Disconnected` and pending acks failed,
+  `disconnect` handlers. Now: `disconnecting` handlers (rooms intact), phase `Disconnected` and pending acks taken,
+  `adapter.del_all`, `remove_socket`, `forget`, acks failed, `disconnect` handlers. The mark comes before `del_all` and the
+  connected test of `add_all` runs under the adapter's write lock: that pair is what leaves no membership behind.
+- `IoSocket::data` is a `serde_json::Value`, as designed; `SocketInfo.data` carries it. `Handshake` is not serializable
+  (it holds the request), so `fetch_sockets` returns `HandshakeInfo` (auth, headers, URL, address, issue time in ms): plain
+  data a remote adapter can produce. `RemoteSocket::handshake()` returns that, not a `Handshake`.
+- `IoSocket::timeout(d)` already exists (a deadline for one acknowledged emit, Node's `socket.timeout`): the broadcast
+  version is `socket.broadcast().timeout(d)`.
+- The own-id room is joined in `client::connect`, right after `add_socket` and before the connection handlers run.
+- Socket ids are 20 characters (`engine/sid.rs`), which is where the minimum of `max_room_name_length` (20) comes from.
+
+### Decisions and deviations
+
+- **Types.** `Room` and `SocketId` are `Arc<str>` (`pub type`). Membership methods that only look a name up take `&str`
+  (`del`, `del_all`, `socket_rooms`, `add_all`'s id), so no allocation is needed to leave a room.
+- **`LocalNamespace`** holds a `Weak` to the namespace (the namespace owns the adapter: no cycle) and offers lookup by id,
+  `sockets_by_ids` (one read lock), `is_live`, the two room limits and the ack id counter. Created with `Arc::new_cyclic`,
+  so the factory gets a handle that cannot be used until it returns (documented).
+- **Public error types.** `EmitError` gained `InvalidRoom(RoomError)` and `Adapter(AdapterError)`; an adapter's
+  `InvalidPacket` is mapped back to `TooManyAttachments` / `TooDeep`. `AdapterError` has `Timeout`, `Closed`,
+  `Unavailable(String)` and `InvalidPacket(PacketError)`.
+- **Hidden adapter module.** Review note 6: `pub mod adapter` is `#[doc(hidden)]`, and so is `IoOptions::adapter`. The types
+  an application meets (`RoomError`, `AdapterError`, `SocketInfo`, `HandshakeInfo`, the operator, `RemoteSocket`, the ack
+  error) are re-exported at `corvis::socket_io` and documented. The trait has three provided, hidden test hooks
+  (`membership_size`, `check_invariants`, `has_socket`) that the in-memory adapter implements.
+- **`init` and `close`.** `init` runs once per namespace before its first cluster operation (a `tokio::sync::OnceCell`),
+  not at registration, because `IoServer::of` is synchronous and may run outside a runtime. `IoServer::close` and the
+  application's shutdown spawn `Adapter::close` for every namespace when a runtime is available.
+- **`AckSink`** gained `on_finish(cleanup)`: the adapter registers what it must undo when the call ends. The in-memory
+  adapter registers one closure holding a `Weak` per recipient, which removes the pending entry; it runs at completion, at
+  the deadline and when the call's future is dropped (`Collection` guard), so no recipient keeps an entry.
+- **A recipient whose pending table is full** is sent the event and is not counted in `expect`, so it does not hold the call
+  until the deadline (design Decision 6 counted it; its own table row, "answer is not awaited", is the behavior kept). A
+  recipient that disconnects after being counted never answers, as in Node, and the call ends at the deadline.
+- **Responses.** Node's broadcast acknowledgement callback receives only the first value of each client's answer
+  (`ack.apply(this, packet.data)` into a one-parameter function). Corvis returns the whole `Args` of each answer; the
+  harness records the first value on both sides.
+- **Selection.** `Membership::select` follows Node's `apply`. The except rooms are tested the cheaper way: per candidate when
+  `candidates x except rooms` is not above the members of those rooms, else through one set of their members, so neither a
+  long `to` list with a big except room nor the opposite is a product of two large numbers.
+- **Delivery yields** to the runtime every 512 recipients, so a very large fan-out does not hold a worker thread; the
+  per-task order of emits is kept because the caller awaits the call.
+- **Harness.** The room commands of the scenario apps are `join`, `room-leave` (`leave` already disconnects a socket),
+  `rooms`, `broadcast`, `broadcast-ack`, `sockets-join`, `sockets-leave`, `disconnect-sockets`, `fetch-sockets`. The
+  `disconnect` log entries gained `roomsDuring` and `roomsAfter` (one entry, so no existing scenario that counts entries
+  changes), and every socket says `left` to the people in its rooms from `disconnecting` (harmless without shared rooms).
+  The expected differences are nine paths of two scenarios: the room cap and name rows of `rooms/limits`, and the default
+  deadline of `rooms/broadcast-ack` (the clients answer after 100 ms, so Node's immediate failure is not a race).
+- **Tests.** The test-only adapter lives in `tests/socket_io_rooms.rs` and uses the public API only. The slow-client and
+  shared-encoding tests use long-polling sessions that never poll: what is queued stays queued, deterministically, with no
+  dependency on operating-system socket buffers. The 1,000-round join / disconnect race runs on 4 worker threads and was
+  run five times in a row. No test compares durations.
+
+### Memory of a broadcast in flight
+
+For an encoding of `E` bytes (text plus attachments) delivered to `N` recipients, the process holds
+`E + 24 N` bytes for the broadcast (the shared buffer, and the snapshot of `N` socket ids and handles) plus, in each
+recipient's queue, one reference to the buffer and one queue entry. It never holds `N x E`.
+`tests/socket_io_rooms_memory.rs` measures it with a counting allocator: a 1 MiB packet to 10 and to 100 sockets holds
+1,048,608 bytes in both cases. While it is queued, a recipient's connection holds the reference until its transport has
+written the message, and then a frame copy of that message for as long as the write takes (one frame per session). Every
+recipient is bounded by its own `max_buffered_amount`, and with no server-wide outbound budget (#176) `S` slow recipients
+hold at most `S x max_buffered_amount` queued (plus the frame in flight each): that is the figure to size.
+
+A broadcast with acknowledgements adds, until it ends, a pending entry of one `AckSink` reference and one `u64` per
+recipient (about 40 bytes with the table's overhead) and at most `max_broadcast_ack_bytes` (16 MiB) of collected answers.
+The answers are decoded packets charged to their sessions while their handler runs; the collector holds them beyond that,
+bounded by that figure, counted with the decoded-size model of `value.rs`.
+
+### Lock order
+
+Outermost first: the adapter's membership lock, the namespace's socket table, a socket's state. The membership lock is held
+for a lookup or an update and never across an await or while application code runs; no other lock is taken while the socket
+table is held for writing. Broadcast selection takes the membership read lock, then the table read lock once for all ids
+(`sockets_by_ids`), and delivers with neither held, locking one socket's state at a time for the phase check and the
+engine's queue. `add_all` takes the write lock, then asks the table and the socket's phase (`is_live`); the disconnect path
+sets the phase (state lock, released) and only then calls `del_all` (write lock), so whichever of a join and a disconnect
+takes the membership lock first, nothing of the socket survives. `AckShared`'s mutex is a leaf: answers are delivered to it
+from the socket's resolve path after the state lock was released, and its cleanups run after its own lock was released.
+
+### The bounds, with their tests
+
+| Bound | Default | Enforced by | Test |
+|---|---|---|---|
+| `max_rooms_per_socket` | 1,000 | `Membership::add`, under the write lock, all or nothing | `a_socket_cannot_join_more_rooms_than_the_cap_and_a_refused_join_changes_nothing`, `the_room_cap_and_the_name_length_are_enforced_all_or_nothing`, `fuzz_the_room_cap_is_all_or_nothing`, harness `rooms/limits` |
+| `max_room_name_length` | 256 B (min 20) | `IoSocket::join`, `add_all`, the operator's deferred error | `a_room_name_over_the_limit_is_refused_in_join`, `a_long_room_name_in_an_operator_fails_every_operation_and_never_widens_the_broadcast`, `a_long_name_in_to_sends_nothing` |
+| `max_broadcast_ack_bytes` | 16 MiB | `AckSink::respond` | `answers_past_the_cap_end_the_call_with_what_fit` |
+| Ack deadline | `timeout()` or `ack_timeout` | `tokio::time::timeout` in `emit_with_ack` | `without_a_timeout_the_default_deadline_applies`, `a_silent_recipient_ends_the_call_at_the_deadline_with_the_answers_so_far` |
+| No membership left behind | maps empty after churn | mark then `del_all`; `add_all` checks `is_live` under the lock | `churn_leaves_the_maps_empty` (100,000 join / leave cycles, 200 disconnects), `a_join_racing_a_disconnect_leaves_no_membership_behind` (1,000 rounds), `fuzz_the_two_maps_mirror_each_other_and_hold_nothing_empty` |
+| One encoding per broadcast | 1 | `Encoded::share`, `EngineMessage::Shared` | `a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reaches` |
+| Recipient queue | `max_buffered_amount` | Engine.IO outbox | `many_slow_clients_never_hold_the_broadcast_back_and_each_is_cut_at_its_own_bound` |
+| Answers once, only recipients | 1 per recipient | the per-socket entry is removed when it answers | `an_outsider_is_ignored_and_a_second_answer_counts_once` |
+
+### Not done by this implementation
+
+Task 6.3 (the security review), 7.6 (the `corvis-parity` check), 7.7 and the archive and GitHub steps belong to the
+maintainer's session.
