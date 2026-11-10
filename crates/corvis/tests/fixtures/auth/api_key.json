@@ -1,0 +1,1021 @@
+{
+  "versions": {
+    "passport-headerapikey": "1.2.2",
+    "passport-custom": "1.2.1",
+    "@nestjs/passport": "12.0.1"
+  },
+  "cases": [
+    {
+      "name": "default header, valid key",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, wrong key",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "wrong-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, missing",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, empty value",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": ""
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, two values joined",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "test-key-000000000000000000000000000001, test-key-000000000000000000000000000002"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 80
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, key in the query is ignored",
+      "request": {
+        "method": "GET",
+        "path": "/header?api_key=test-key-000000000000000000000000000001",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, key in the Authorization header is ignored",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "authorization": "Bearer test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, key in a cookie is ignored",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "cookie": "x-api-key=test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, validator returns no user",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "test-key-null-00000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, validator throws",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "test-key-throw-0000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "message": "Key suspended",
+          "error": "Forbidden",
+          "statusCode": 403
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, validator fails with a plain error",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "test-key-boom-00000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 500,
+        "body": {
+          "statusCode": 500,
+          "message": "Internal server error"
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, validator returns a user and info",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "test-key-info-00000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 37
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "default header, oversized key",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "test-key-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 609
+          }
+        }
+      },
+      "divergence": "the original has no limit of its own; Corvis refuses a key over 512 bytes before the validator runs"
+    },
+    {
+      "name": "default header, key of 512 bytes",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-api-key": "test-key-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 512
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "custom header, valid key",
+      "request": {
+        "method": "GET",
+        "path": "/custom",
+        "headers": {
+          "x-service-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "custom header, the default header is ignored",
+      "request": {
+        "method": "GET",
+        "path": "/custom",
+        "headers": {
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "prefixed, prefix and key",
+      "request": {
+        "method": "GET",
+        "path": "/prefixed",
+        "headers": {
+          "authorization": "Api-Key test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "prefixed, key without the prefix",
+      "request": {
+        "method": "GET",
+        "path": "/prefixed",
+        "headers": {
+          "authorization": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "prefixed, prefix in another case",
+      "request": {
+        "method": "GET",
+        "path": "/prefixed",
+        "headers": {
+          "authorization": "api-key test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "prefixed, bearer scheme",
+      "request": {
+        "method": "GET",
+        "path": "/prefixed",
+        "headers": {
+          "authorization": "Bearer test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "prefixed, prefix only",
+      "request": {
+        "method": "GET",
+        "path": "/prefixed",
+        "headers": {
+          "authorization": "Api-Key "
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "plus prefix, literal prefix",
+      "request": {
+        "method": "GET",
+        "path": "/plus",
+        "headers": {
+          "x-key": "Key+test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": {
+        "reason": "passport-headerapikey removes the prefix with an unescaped regular expression (`^Key+` removes only \"Key\", leaving \"+<key>\"); Corvis removes the literal prefix",
+        "status": 200,
+        "validatorKey": "test-key-000000000000000000000000000001"
+      }
+    },
+    {
+      "name": "plus prefix, a character the pattern would match",
+      "request": {
+        "method": "GET",
+        "path": "/plus",
+        "headers": {
+          "x-key": "Keyytest-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "plus prefix, prefix without the plus",
+      "request": {
+        "method": "GET",
+        "path": "/plus",
+        "headers": {
+          "x-key": "Keytest-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, valid key",
+      "request": {
+        "method": "GET",
+        "path": "/query?api_key=test-key-000000000000000000000000000001",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, valid key with other parameters",
+      "request": {
+        "method": "GET",
+        "path": "/query?page=2&api_key=test-key-000000000000000000000000000001&sort=asc",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, percent-encoded key",
+      "request": {
+        "method": "GET",
+        "path": "/query?api_key=test%2Dkey-000000000000000000000000000001",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, wrong key",
+      "request": {
+        "method": "GET",
+        "path": "/query?api_key=wrong-key-000000000000000000000000000001",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, missing",
+      "request": {
+        "method": "GET",
+        "path": "/query",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, empty value",
+      "request": {
+        "method": "GET",
+        "path": "/query?api_key=",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, repeated parameter",
+      "request": {
+        "method": "GET",
+        "path": "/query?api_key=test-key-000000000000000000000000000001&api_key=test-key-000000000000000000000000000002",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, bracketed parameter",
+      "request": {
+        "method": "GET",
+        "path": "/query?api_key[]=test-key-000000000000000000000000000001",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, key in the header is ignored",
+      "request": {
+        "method": "GET",
+        "path": "/query",
+        "headers": {
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query, control character in the key",
+      "request": {
+        "method": "GET",
+        "path": "/query?api_key=test-key-%00000000000000000000000000001",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 37
+          }
+        }
+      },
+      "divergence": "the original passes a NUL character on to the validator; Corvis refuses control characters in a key"
+    },
+    {
+      "name": "bearer, valid key",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "bearer, scheme in lower case",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "bearer test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "bearer, several spaces",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer     test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "bearer, another scheme",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Basic test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "bearer, scheme only",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "bearer, no scheme",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "bearer, missing",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "bearer, wrong key",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer wrong-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "bearer, oversized key",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer test-key-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 609
+          }
+        }
+      },
+      "divergence": "the original has no limit of its own; Corvis refuses a key over 512 bytes before the validator runs"
+    },
+    {
+      "name": "chain, only the API key",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain, only the bearer user",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "authorization": "Bearer user-token-0000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "user-1"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain, both valid: the first strategy wins",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "authorization": "Bearer user-token-0000000000000000000000000001",
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "user-1"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain, bearer wrong and API key valid",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "authorization": "Bearer wrong-key-000000000000000000000000000001",
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain, neither",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain, API key wrong",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-api-key": "wrong-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain, API key suspended",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-api-key": "test-key-throw-0000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "message": "Key suspended",
+          "error": "Forbidden",
+          "statusCode": 403
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "two places, header only",
+      "request": {
+        "method": "GET",
+        "path": "/two-places",
+        "headers": {
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "two places, query only",
+      "request": {
+        "method": "GET",
+        "path": "/two-places?api_key=test-key-000000000000000000000000000001",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "two places, the same key in both",
+      "request": {
+        "method": "GET",
+        "path": "/two-places?api_key=test-key-000000000000000000000000000001",
+        "headers": {
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "two places, different keys",
+      "request": {
+        "method": "GET",
+        "path": "/two-places?api_key=test-key-000000000000000000000000000002",
+        "headers": {
+          "x-api-key": "test-key-000000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "service-1",
+            "keyLength": 39
+          }
+        }
+      },
+      "divergence": "the original has one source (or the first one wins); Corvis fails when two sources carry different keys"
+    },
+    {
+      "name": "two places, neither",
+      "request": {
+        "method": "GET",
+        "path": "/two-places",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    }
+  ]
+}

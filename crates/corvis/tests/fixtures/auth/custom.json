@@ -1,0 +1,272 @@
+{
+  "versions": {
+    "passport-custom": "1.2.1",
+    "@nestjs/passport": "12.0.1"
+  },
+  "cases": [
+    {
+      "name": "device found",
+      "request": {
+        "method": "GET",
+        "path": "/device",
+        "headers": {
+          "x-device-id": "dev-1"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "dev-1",
+            "name": "device dev-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "device found with info",
+      "request": {
+        "method": "GET",
+        "path": "/device",
+        "headers": {
+          "x-device-id": "dev-info"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "dev-info",
+            "name": "device dev-info"
+          }
+        }
+      }
+    },
+    {
+      "name": "device unknown",
+      "request": {
+        "method": "GET",
+        "path": "/device",
+        "headers": {
+          "x-device-id": "dev-404"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "no device header",
+      "request": {
+        "method": "GET",
+        "path": "/device",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "empty device header",
+      "request": {
+        "method": "GET",
+        "path": "/device",
+        "headers": {
+          "x-device-id": ""
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "device blocked",
+      "request": {
+        "method": "GET",
+        "path": "/device",
+        "headers": {
+          "x-device-id": "dev-blocked"
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "message": "Device blocked",
+          "error": "Forbidden",
+          "statusCode": 403
+        }
+      }
+    },
+    {
+      "name": "devices store fails",
+      "request": {
+        "method": "GET",
+        "path": "/device",
+        "headers": {
+          "x-device-id": "dev-broken"
+        }
+      },
+      "response": {
+        "status": 500,
+        "body": {
+          "statusCode": 500,
+          "message": "Internal server error"
+        }
+      }
+    },
+    {
+      "name": "chain, only the device",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-device-id": "dev-1"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "dev-1",
+            "name": "device dev-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "chain, only the bearer user",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "authorization": "Bearer user-token-0000000000000000000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "user-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "chain, both: the first strategy wins",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "authorization": "Bearer user-token-0000000000000000000000000001",
+          "x-device-id": "dev-1"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "user-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "chain, neither",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "chain, device unknown",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-device-id": "dev-404"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "chain, device blocked",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-device-id": "dev-blocked"
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "message": "Device blocked",
+          "error": "Forbidden",
+          "statusCode": 403
+        }
+      }
+    },
+    {
+      "name": "chain, devices store fails",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-device-id": "dev-broken"
+        }
+      },
+      "response": {
+        "status": 500,
+        "body": {
+          "statusCode": 500,
+          "message": "Internal server error"
+        }
+      }
+    },
+    {
+      "name": "chain, bearer user and a failing device store",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "authorization": "Bearer user-token-0000000000000000000000000001",
+          "x-device-id": "dev-broken"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "user-1"
+          }
+        }
+      }
+    }
+  ]
+}
