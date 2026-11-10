@@ -250,9 +250,13 @@ async fn the_profiles_equal_the_ones_the_original_hands_to_validate() {
         let seen = &cfg.seen()[0];
         let got = seen.profile.as_ref().unwrap();
         let want = &recorded["profile"];
-        for key in ["provider", "id", "displayName", "name", "photos", "username", "profileUrl", "nodeId", "_json"] {
+        for key in ["id", "displayName", "name", "photos", "username", "profileUrl", "nodeId", "_json"] {
             assert_eq!(got.get(key), want.get(key), "{config}: {key}");
         }
+        // A listed divergence: the original names the provider after the package; here a strategy named like a preset
+        // that talks to another server (the mock) is not that provider, so its ids get the issuer in their namespace.
+        let original = want["provider"].as_str().unwrap();
+        assert_eq!(got["provider"], format!("{original}@{}", mock.addr), "{config}: provider");
         match config {
             "google" => assert_eq!(got["emails"], want["emails"], "google emails, flag included"),
             "github" => assert_eq!(got["emails"], drop_visibility(&want["emails"]), "github emails (allRawEmails) without `visibility`"),

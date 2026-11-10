@@ -42,7 +42,9 @@ impl Redeemed {
         let key: [u8; 32] = Sha256::digest(state.as_bytes()).into();
         let mut inner = lock(&self.inner);
         while let Some(&(old, expires)) = inner.order.front() {
-            if expires > now {
+            // Kept through the second it expires in: a flow is accepted while its age is at most the limit, so an entry
+            // dropped a second early would let its state through once more.
+            if expires >= now {
                 break;
             }
             inner.order.pop_front();
@@ -127,9 +129,10 @@ mod tests {
         assert!(!r.claim("a", 0));
         assert!(!r.claim("a", 9));
         assert!(r.claim("b", 9));
-        assert!(r.claim("a", 10), "an entry expires after the retention time");
-        assert!(!r.claim("b", 18));
-        assert!(r.claim("b", 19));
+        assert!(!r.claim("a", 10), "an entry is kept through the second it expires in");
+        assert!(r.claim("a", 11), "and expires after the retention time");
+        assert!(!r.claim("b", 19));
+        assert!(r.claim("b", 20));
     }
 
     #[test]

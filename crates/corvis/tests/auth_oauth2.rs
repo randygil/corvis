@@ -305,7 +305,9 @@ async fn the_callback_exchanges_the_code_and_the_validator_receives_the_grant() 
     let (app, cfg) = google_app(&mock).await;
     let (l, r) = flow(&app, "/auth/google", "the-code").await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json_value()["user"], json!({ "id": "google:110169484474386276334" }));
+    // The strategy is named `google` but talks to the mock, not to Google's own endpoints: its ids are not Google's, so
+    // the provider carries the issuer.
+    assert_eq!(r.json_value()["user"], json!({ "id": format!("google@{}:110169484474386276334", mock.addr) }));
     assert_eq!(r.header("cache-control"), Some("no-store"));
     assert_eq!(r.header("referrer-policy"), Some("no-referrer"));
 
@@ -336,7 +338,7 @@ async fn the_callback_exchanges_the_code_and_the_validator_receives_the_grant() 
     assert_eq!((s.access.as_str(), s.refresh.as_deref()), ("ACCESS-TOKEN-FAKE", Some("REFRESH-TOKEN-FAKE")));
     assert_eq!((s.expires_in, s.scope.as_deref(), s.id_token.as_deref()), (Some(3600), Some("email profile"), Some("ID-TOKEN-FAKE")));
     let p = s.profile.as_ref().unwrap();
-    assert_eq!(p["provider"], "google");
+    assert_eq!(p["provider"], format!("google@{}", mock.addr));
     assert_eq!(p["id"], "110169484474386276334");
     assert_eq!(p["displayName"], "Ana Perez");
     assert_eq!(p["name"], json!({ "familyName": "Perez", "givenName": "Ana" }));
@@ -1028,10 +1030,14 @@ async fn the_github_profile_with_emails_and_the_primary_verified_address() {
     let app = AppBuilder::default().github(&cfg).build().await;
     let (_, r) = flow(&app, "/auth/github", "c").await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json_value()["user"], json!({ "id": "github:583231" }), "a numeric id becomes a string");
+    assert_eq!(
+        r.json_value()["user"],
+        json!({ "id": format!("github@{}:583231", mock.addr) }),
+        "a numeric id becomes a string, under the provider of a strategy named like the preset that is not the preset"
+    );
     let s = &cfg.seen()[0];
     let p = s.profile.as_ref().unwrap();
-    assert_eq!(p["provider"], "github");
+    assert_eq!(p["provider"], format!("github@{}", mock.addr));
     assert_eq!(p["username"], "octocat");
     assert_eq!(p["displayName"], "The Octocat");
     assert_eq!(p["profileUrl"], "https://github.com/octocat");

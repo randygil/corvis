@@ -142,6 +142,13 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
                 return Err(factory_error::<V>(problems.join("; ")));
             }
             let log = Logger::new("OAuth2Strategy");
+            if super::options::PRESET_NAMES.contains(&V::NAME) && options.preset_name() != Some(V::NAME) {
+                log.warn(format!(
+                    "strategy \"{0}\": it is named like the {0} preset but does not use that preset's own endpoints, so its profiles get the provider \"{0}@{1}\" instead of \"{0}\" (their ids belong to another identity provider); give the strategy a name of its own to choose the provider value",
+                    V::NAME,
+                    options.issuer()
+                ));
+            }
             let storage = match &options.storage {
                 StateStorage::Cookie(keys) => {
                     let name = state_cookie_name(&options, V::NAME).map_err(factory_error::<V>)?;
@@ -491,7 +498,8 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             Storage::Session => self.options.pkce.then(|| flow.verifier.clone()).flatten(),
         };
         // A client address holds a limited share of the in-flight slots for the whole exchange. The slot is taken before
-        // the state is claimed, so a refusal here burns nothing of the flow.
+        // the state is claimed, so a refusal here burns nothing of the flow on the server (the answer still clears the
+        // state cookie in the browser, like every refusal of the callback).
         let Some(slot) = self.slots.acquire(client_key(req)) else {
             self.note("one client address holds its share of the requests to the provider", true, String::new());
             return StrategyOutcome::Error(ServiceUnavailableException::empty());

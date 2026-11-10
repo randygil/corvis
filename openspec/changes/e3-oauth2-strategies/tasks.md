@@ -158,7 +158,7 @@ No compilation is needed to review this plan; every task below ends with how to 
   the check and verify the three port apps (consi, facten, houseplan) keep 0 apidiff differences; otherwise record in
   the archive notes that nothing outside the feature changed
 - [x] 9.7 `cargo deny check` passes and `Cargo.lock` has no new package
-- [ ] 9.8 **Security review (required before the merge)**: run the `security-reviewer` agent over
+- [x] 9.8 **Security review (required before the merge)**: run the `security-reviewer` agent over
   `corvis::auth::oauth2`, the fixture generator and the example. Scope: login CSRF and `state` handling (generation,
   binding, expiry, replay in both storage modes, cookie tossing and the `__Host-` prefix, a record reused across
   strategies); PKCE (verifier entropy, challenge, downgrade); redirect URI and host header injection; open redirect
@@ -189,7 +189,16 @@ No compilation is needed to review this plan; every task below ends with how to 
 - [x] 10.8 Docs in English and Spanish (callback throttling, in-flight cap and per-address share, `(provider, id)`
   with the rule and the warning against e-mail alone, the string `id`, the cookie-name warnings); `npm run docs:check`
   passes
-- [ ] 10.9 Maintainer: re-run the security review over the fixes (task 9.8 stays open until then)
+- [x] 10.9 Maintainer: re-run the security review over the fixes (task 9.8 stays open until then)
+
+## 11. Security review (round 2) fixes
+
+- [x] 11.1 The router's 404 message uses the redacted URL; verify with
+  `a_callback_url_that_misses_its_route_does_not_answer_its_query_back`
+- [x] 11.2 `provider_namespace`: `name@issuer` for a strategy named like a preset that is not the preset, with a
+  startup warning; verify with the provider assertions and the log test
+- [x] 11.3 Redeemed entries kept through the second they expire in; cookie-name prefixes compared without case
+- [x] 11.4 Docs (EN, ES), the option's rustdoc, the example's comment and the spec state the provider rule
 
 ## Workflow follow-up
 

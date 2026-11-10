@@ -71,7 +71,8 @@ impl OAuth2Validator for GithubAuth {
 
     async fn validate(&self, _req: &Request, grant: OAuth2Grant) -> Result<Option<LoginUser>, HttpException> {
         // Identify by (provider, id), never by e-mail alone. `provider` is "github" only for github.com itself: when the
-        // endpoints are replaced (a GitHub Enterprise server) it is this strategy's name, so a user id of that server
+        // endpoints are replaced (a GitHub Enterprise server) it is `github@<that server's host>`, because this strategy is
+        // named like the preset (a strategy with a name of its own would get that name), so a user id of that server
         // cannot become the account of the same number on github.com. A GitHub account without a verified primary
         // address is still a GitHub account; an application that links accounts by e-mail must use `verified_email()`
         // and nothing else.

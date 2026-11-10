@@ -661,3 +661,37 @@ parsing, logs and the session interaction held. The maintainer decided these fix
 Tests: `crates/corvis/tests/auth_oauth2_review.rs` (M1, M2, I1, I2), the unit tests of `redeem.rs`, `options.rs` and
 `state.rs`, `auth_oauth2_log.rs` (L1) and `examples/cats-app/tests/github_login.rs` (L2). `auth_oauth2.rs`: the
 cookie-mode replay test now expects no second token request.
+
+## Security review (round 2)
+
+The second pass could not get around the round 1 fixes (200 concurrent callbacks of one flow cost one token request
+and no 503; a third party with a victim's `state` but not the cookie cannot burn it; spoofed forwarding headers do not
+multiply the per-address share; the slot counters return to zero after thousands of cycles over every exit path) and
+judged the change ready to merge. What it noted, and what was done:
+
+- **Low: a 404 answered the callback's query string.** The router builds the message of its `NotFoundException` from
+  the URL (`Cannot GET /path?...`); a callback URL that misses its route (a typo in the path, a `POST`) got its `code`,
+  `state` and error text back in the body. The router now uses `redacted_url()` there, which is the same text when the
+  application registered no credential parameter.
+- **Low: a strategy named like a preset that is not the preset shared the preset's id space.** A generic strategy (or a
+  preset pointed at another server) named `github` produced `provider = "github"`, the pair github.com itself yields
+  for the same number. Such a strategy now gets `name@issuer` (`provider_namespace` in `options.rs`), with a warning at
+  startup that names the value. Refusing to start was considered and not chosen: the cats example and the tests of
+  this change name their strategy `github` and put a test double behind it. Round 1's sentence "`(provider, id)` never
+  collides" held only for strategies with names of their own; the docs, the option's rustdoc and the example's comment
+  now state the rule.
+- **Retention boundary of the redeemed set.** An entry was dropped in the second it expired in while a flow is still
+  accepted at exactly that age, so a state could pass once more at that instant. Entries are kept through that second.
+- **Prefix check of the state cookie name** compared `__Host-` / `__Secure-` with case; browsers do not. It ignores
+  case now, like the warning.
+- Documented, not changed: the global in-flight 503 happens after the state was claimed, so that flow must be started
+  again, while the per-address 503 claims nothing on the server (both clear the browser's state cookie); with
+  `trust_proxy(true)` a client chooses its own address key through `X-Forwarded-For`, as for the throttler, so a hop
+  count is the setting to use; four addresses at their share fill the default cap of 32, which is inherent to a
+  global cap; `issuer` is the host of the authorization endpoint, from configuration.
+
+Tests: `a_strategy_named_like_a_preset_that_is_not_the_preset_warns_and_names_its_provider` (`auth_oauth2_log.rs`),
+the provider assertions of `auth_oauth2.rs`, `auth_oauth2_original.rs` and `auth_oauth2_review.rs`, the unit tests of
+`redeem.rs` and `options.rs`, and `a_callback_url_that_misses_its_route_does_not_answer_its_query_back`
+(`auth_oauth2_review.rs`).
+

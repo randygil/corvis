@@ -656,7 +656,9 @@ async fn route_request_owned(shared: Arc<AppShared>, req: Request) -> Result<Res
         }
     }
     let Some((candidates, params)) = shared.router.lookup(req.method(), req.path()) else {
-        let e = NotFoundException::new(format!("Cannot {} {}", req.method(), req.url()));
+        // The redacted form (the same text when the application registered no credential parameter): a callback URL
+        // that misses its route must not answer its `code` back.
+        let e = NotFoundException::new(format!("Cannot {} {}", req.method(), req.redacted_url()));
         return Err((e, req));
     };
     let params = match params {
@@ -665,7 +667,9 @@ async fn route_request_owned(shared: Arc<AppShared>, req: Request) -> Result<Res
         Err(msg) => return Err((crate::http::BadRequestException::new(msg), req)),
     };
     let Some(idx) = select_route(&shared, &candidates, &req) else {
-        let e = NotFoundException::new(format!("Cannot {} {}", req.method(), req.url()));
+        // The redacted form (the same text when the application registered no credential parameter): a callback URL
+        // that misses its route must not answer its `code` back.
+        let e = NotFoundException::new(format!("Cannot {} {}", req.method(), req.redacted_url()));
         return Err((e, req));
     };
     let route = shared.router.routes[idx].clone();

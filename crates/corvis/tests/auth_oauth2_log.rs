@@ -35,8 +35,28 @@ fn all_lines(captured: &Captured) -> Vec<String> {
     captured.lock().unwrap().iter().map(|(_, m, _)| m.clone()).collect()
 }
 
+/// The lines of one logger context. The strategies of these tests are named `google` and `github` and talk to the mock,
+/// so every start also logs the note about a strategy named like a preset; it has a test of its own and is left out
+/// here.
 fn lines(captured: &Captured, context: &str) -> Vec<String> {
+    with_preset_note(captured, context).into_iter().filter(|m| !m.contains("is named like the")).collect()
+}
+
+fn with_preset_note(captured: &Captured, context: &str) -> Vec<String> {
     captured.lock().unwrap().iter().filter(|(_, _, c)| c.as_deref() == Some(context)).map(|(_, m, _)| m.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_strategy_named_like_a_preset_that_is_not_the_preset_warns_and_names_its_provider() {
+    let _g = SERIAL.lock().await;
+    let captured = capture();
+    let mock = Mock::start(standard).await;
+    let cfg = Cfg::new(google_options(&mock));
+    let _app = AppBuilder::default().google(&cfg).logger().build().await;
+    let notes: Vec<String> =
+        with_preset_note(&captured, "OAuth2Strategy").into_iter().filter(|m| m.contains("is named like the")).collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("\"google\"") && notes[0].contains(&format!("\"google@{}\"", mock.addr)), "{notes:?}");
 }
 
 #[tokio::test]

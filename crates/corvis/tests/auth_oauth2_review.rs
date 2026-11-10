@@ -193,13 +193,15 @@ async fn the_provider_of_a_profile_is_the_strategy_name_unless_the_preset_is_use
     let app = AppBuilder::default().sso(&sso).build().await;
     let (_, r) = flow_of(&app, "/auth/sso").await;
     assert_eq!(r.json_value()["user"], json!({ "id": "sso:583231" }), "{}", r.text());
-    // The strategy named like its preset keeps the preset's namespace when only a test double is behind it, so the
-    // three namespaces of the same subject differ: github (unchanged preset, checked in the options' unit test),
-    // corp (preset with other endpoints) and sso (generic).
+    // A strategy NAMED `github` that does not use the preset's own endpoints (here the mock is behind it) is not
+    // github.com either: its name alone would put another server's ids into github.com's namespace, so it gets the
+    // issuer appended. The namespaces of the same subject therefore all differ: github (the unchanged preset, checked in
+    // the options' unit test), github@host (named like the preset, other endpoints), corp (preset with other
+    // endpoints) and sso (generic).
     let github = Cfg::new(github_options(&mock));
     let app = AppBuilder::default().github(&github).build().await;
     let (_, r) = flow_of(&app, "/auth/github").await;
-    assert_eq!(r.json_value()["user"], json!({ "id": "github:583231" }));
+    assert_eq!(r.json_value()["user"], json!({ "id": format!("github@{}:583231", mock.addr) }));
     // The issuer is the host of the authorization endpoint.
     let expected = mock.addr.to_string();
     for cfg in [&ghe, &sso, &github] {
@@ -261,4 +263,21 @@ async fn with_a_failure_page_every_refusal_goes_there_including_the_validators()
     let l = login(&app, "/auth/google").await;
     let r = callback(&app, "/auth/google/callback", &l, "c").await;
     assert_eq!((r.status, r.json_value()), (401, unauthorized()));
+}
+
+/// The router's own 404 names the URL it did not find: with the redacted form, a callback URL that misses its route (a
+/// typo in the path) does not answer the `code`, the `state` or the provider's error text back.
+#[tokio::test]
+async fn a_callback_url_that_misses_its_route_does_not_answer_its_query_back() {
+    let mock = Mock::start(standard).await;
+    let cfg = Cfg::new(github_options(&mock));
+    let app = AppBuilder::default().github(&cfg).build().await;
+    let url = "/auth/github/callbackZ?code=CODEX6&state=STATEX6&error_description=DESCX6&error_uri=URIX6&page=2";
+    let r = corvis::testing::request(&app).get(url).send().await;
+    assert_eq!(r.status, 404, "{}", r.text());
+    let body = r.text();
+    assert!(body.contains("/auth/github/callbackZ") && body.contains("page=2"), "{body}");
+    for secret in ["CODEX6", "STATEX6", "DESCX6", "URIX6"] {
+        assert!(!body.contains(secret), "{body}");
+    }
 }

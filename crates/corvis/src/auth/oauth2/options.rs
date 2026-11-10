@@ -489,7 +489,9 @@ impl OAuth2Options {
 
     /// The `provider` value of this strategy's profiles: the preset's name only when the preset's own endpoints are
     /// in use; the strategy's name when any endpoint was changed and for a generic strategy. A strategy name is unique
-    /// in the application, so `(provider, id)` never collides across instances of one provider.
+    /// in the application, so `(provider, id)` does not collide across instances of one provider. A strategy that is
+    /// not a preset and is named like one (`github`, `google`) gets `name@issuer` instead, so it cannot take the
+    /// namespace of the real provider's ids (see `provider_namespace`).
     ///
     /// This is the preset's name when the preset's own endpoints are in use unchanged, `None` otherwise.
     pub(crate) fn preset_name(&self) -> Option<&'static str> {
@@ -728,6 +730,21 @@ pub(crate) fn valid_cookie_name(name: &str) -> bool {
 }
 
 /// The name of the state cookie for the strategy `strategy`, or the problem with the configured one.
+/// The names the presets give their profiles: the namespaces of the ids of google.com and github.com themselves.
+pub(crate) const PRESET_NAMES: [&str; 2] = ["google", "github"];
+
+/// The `provider` of a strategy's profiles. `preset` is the preset's name while the preset's own endpoints are in use
+/// (`OAuth2Options::preset_name`). Any other strategy is named after itself, unless its name is a preset's: then the
+/// name alone would put the ids of another identity provider into the space of the real one (a generic strategy
+/// named `github`, next to the real GitHub preset under another name), so the issuer is appended.
+pub(crate) fn provider_namespace(preset: Option<&'static str>, strategy: &str, issuer: &str) -> String {
+    match preset {
+        Some(name) => name.to_string(),
+        None if PRESET_NAMES.contains(&strategy) => format!("{strategy}@{issuer}"),
+        None => strategy.to_string(),
+    }
+}
+
 pub(crate) fn state_cookie_name(options: &OAuth2Options, strategy: &str) -> Result<String, String> {
     let name = match &options.cookie_name {
         Some(name) => name.clone(),
@@ -741,7 +758,9 @@ pub(crate) fn state_cookie_name(options: &OAuth2Options, strategy: &str) -> Resu
             "state_cookie_name: the strategy name does not make a valid cookie name: set state_cookie_name".into()
         });
     }
-    if !options.cookie_secure && (name.starts_with("__Host-") || name.starts_with("__Secure-")) {
+    // Browsers match these prefixes without regard to case.
+    let prefixed = |prefix: &str| name.len() >= prefix.len() && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes());
+    if !options.cookie_secure && (prefixed("__Host-") || prefixed("__Secure-")) {
         return Err("state_cookie_name: a name with the __Host- or __Secure- prefix needs a Secure cookie".into());
     }
     Ok(name)

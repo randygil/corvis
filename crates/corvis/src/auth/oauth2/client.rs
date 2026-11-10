@@ -574,7 +574,7 @@ impl Provider {
             }
         };
         // The namespace of the id: the preset's name only while the preset's own endpoints are in use.
-        profile.provider = self.preset.map_or_else(|| provider_name.to_string(), str::to_string);
+        profile.provider = super::options::provider_namespace(self.preset, provider_name, &self.issuer);
         profile.issuer = self.issuer.clone();
         Ok(Some(profile))
     }

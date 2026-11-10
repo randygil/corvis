@@ -550,7 +550,7 @@ the original passes to `validate()`, apart from `_raw` and the added e-mail flag
 
 ### Requirement: A profile's provider namespaces its id
 The profile's `provider` MUST be the preset's name only when the strategy uses that preset's own endpoints
-unchanged; when any endpoint was replaced, and for a generic strategy, it MUST be the strategy's name. The profile
+unchanged; when any endpoint was replaced, and for a generic strategy, it MUST be the strategy's name, or `name@issuer` when that name is a preset's. The profile
 SHALL also carry `issuer`, the host of the authorization endpoint. Strategy names are unique in the application.
 
 #### Scenario: Three namespaces for one subject
