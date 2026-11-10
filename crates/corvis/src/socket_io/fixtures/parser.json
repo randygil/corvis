@@ -1121,6 +1121,24 @@
           ]
         }
       ]
+    },
+    {
+      "name": "lone surrogate",
+      "frames": [
+        "2[\"x\",\"\\ud800\"]"
+      ],
+      "packets": [
+        {
+          "type": "EVENT",
+          "nsp": "/",
+          "data": [
+            "x",
+            {
+              "$lone_surrogate": true
+            }
+          ]
+        }
+      ]
     }
   ]
 }

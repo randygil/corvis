@@ -642,7 +642,19 @@ impl Query {
 }
 
 /// Bytes charged against a session's unread budget; they are released when this is dropped.
-pub struct Held(#[allow(dead_code)] UnreadTicket);
+pub struct Held(UnreadTicket);
+
+impl Held {
+    /// Lowers the charge to `bytes` (never raises it) and wakes whatever waits for room.
+    pub(crate) fn shrink_to(&mut self, bytes: usize) {
+        self.0.shrink_to(bytes);
+    }
+
+    /// The bytes this guard charges.
+    pub(crate) fn bytes(&self) -> usize {
+        self.0.size()
+    }
+}
 
 impl std::fmt::Debug for Held {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -700,6 +712,35 @@ impl EngineSocket {
     /// dropped. A layer that keeps something decoded from received messages waiting charges its real size here.
     pub fn hold(&self, bytes: usize) -> Held {
         Held(UnreadTicket::new(&self.session.unread, bytes))
+    }
+
+    /// Charges `bytes` only if the session stays at or below its fair share of the server-wide budget: what a session
+    /// may always take, whatever others hold.
+    pub(crate) fn hold_within_share(&self, bytes: usize) -> Option<Held> {
+        self.session.unread.fits_fair_share(bytes).then(|| self.hold(bytes))
+    }
+
+    /// Charges `bytes` only if the server-wide budget keeps room for them (an atomic check and charge, so racing
+    /// sessions cannot overshoot it together). `None` leaves every gauge unchanged.
+    pub(crate) fn hold_within_total(&self, bytes: usize) -> Option<Held> {
+        UnreadTicket::try_new_within_ancestors(&self.session.unread, bytes).map(Held)
+    }
+
+    /// The test the transports use to stop reading: the session is over its own limit, or over its fair share while
+    /// the server-wide budget is exceeded.
+    pub(crate) fn unread_over_limit(&self) -> bool {
+        self.session.unread.over_limit()
+    }
+
+    /// Resolves at the next release of this session's gauge or the server-wide one. Create it before checking
+    /// [`unread_over_limit`](Self::unread_over_limit), so a release in between is not lost.
+    pub(crate) fn unread_changed(&self) -> impl std::future::Future<Output = ()> + '_ {
+        self.session.unread.changed()
+    }
+
+    /// The key the session is counted under in the per-address cap (the resolved client address, normalized).
+    pub(crate) fn address_key(&self) -> &str {
+        &self.session.addr_key
     }
 
     /// Like [`messages`](Self::messages), but each message keeps counting against `max_unread_bytes` until its
@@ -760,8 +801,19 @@ impl EngineSocket {
 impl EngineServer {
     /// Opens a WebSocket-first session without any transport and hands it to the connection callback.
     pub(crate) fn open_test_socket(&self) -> EngineSocket {
+        self.open_test_socket_from("127.0.0.1")
+    }
+
+    /// Bytes held against the server-wide unread budget by every session.
+    pub(crate) fn total_unread_bytes(&self) -> usize {
+        self.inner.total_unread.unread()
+    }
+
+    /// The same, as if the client connected from `address`.
+    pub(crate) fn open_test_socket_from(&self, address: &str) -> EngineSocket {
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=websocket").body(()).unwrap().into_parts();
-        let handshake = Request::for_upgrade(parts, "127.0.0.1:1".parse().unwrap(), &Default::default()).unwrap();
+        let peer: std::net::SocketAddr = format!("{address}:1").parse().unwrap();
+        let handshake = Request::for_upgrade(parts, peer, &Default::default()).unwrap();
         let reservation = self.reserve(&handshake).ok().expect("a free slot");
         let session = self.open_session(TransportKind::WebSocket, handshake, reservation).ok().expect("an open session");
         self.notify_connection(&session);
@@ -774,6 +826,11 @@ impl EngineSocket {
     /// As if the client had sent this message.
     pub(crate) fn feed(&self, message: EngineMessage) {
         self.session.on_packet(packet::Packet::Message(message));
+    }
+
+    /// The connection drops at once, as if the transport had closed under it.
+    pub(crate) fn kill(&self) {
+        self.session.close(session::CloseReason::TransportClose);
     }
 
     /// `true` once the session is closing or closed.

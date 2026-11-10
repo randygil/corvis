@@ -38,6 +38,7 @@
 #[doc(hidden)]
 pub mod engine;
 
+mod budget;
 mod client;
 mod namespace;
 mod options;
@@ -45,6 +46,7 @@ mod parser;
 mod server;
 mod socket;
 mod value;
+mod warn;
 
 #[cfg(test)]
 mod fuzz_parser;
@@ -55,6 +57,34 @@ pub use options::{IoOptions, IoOptionsError};
 pub use server::{IoServer, NamespaceNameError};
 pub use socket::{AckEmitter, AckError, AckSender, DisconnectReason, EmitError, Handshake, IoSocket};
 pub use value::{Args, Binary, IntoArgs, IoValue, IoValueError, MAX_DEPTH};
+
+/// What decoding one packet cost, for the tests that measure the real heap against the model. Unstable and hidden.
+#[doc(hidden)]
+pub struct DecodeProbe {
+    /// What the connection reserves before it decodes the packet.
+    pub reservation: usize,
+    /// What the decoded packet is charged once decoded.
+    pub cost: usize,
+    _keep: Box<dyn std::any::Any + Send>,
+}
+
+/// Decodes one text packet the way a connection does (measure, then decode) with the given `max_decoded_bytes`, and
+/// keeps the result alive in the probe. Unstable and hidden: for the allocator-based tests of the cost model.
+#[doc(hidden)]
+pub fn probe_decode(text: &str, max_decoded_bytes: usize) -> Result<DecodeProbe, String> {
+    let options = IoOptions::new().max_decoded_bytes(max_decoded_bytes);
+    let mut decoder = parser::Decoder::new(parser::Limits::from_options(&options));
+    let prepared = decoder.prepare(text.to_owned()).map_err(|e| e.to_string())?;
+    let reservation = prepared.reservation();
+    let packet = decoder.decode(prepared).map_err(|e| e.to_string())?;
+    let cost = packet.as_ref().map_or_else(|| decoder.pending_cost(), parser::Packet::cost);
+    // What is kept is the packet, or the decoder holding the header of a binary packet: the model charges both.
+    let keep: Box<dyn std::any::Any + Send> = match packet {
+        Some(packet) => Box::new(packet),
+        None => Box::new(decoder),
+    };
+    Ok(DecodeProbe { reservation, cost, _keep: keep })
+}
 
 #[cfg(test)]
 mod tests;

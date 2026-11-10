@@ -22,11 +22,35 @@ pub const MAX_DEPTH: usize = 127;
 /// the field into a binary leaf; any other serializer sees a byte sequence.
 pub(crate) const BINARY_MARKER: &str = "$corvis::socket_io::Binary";
 
-/// What one decoded JSON value costs in memory, whatever it holds: a node, the longest of `IoValue`'s variants
-/// rounded up. An empty array costs as much as a small number.
-pub(crate) const NODE_COST: usize = 48;
-/// What one object entry costs besides its key text and its value.
-pub(crate) const ENTRY_COST: usize = 64;
+// The cost model of a decoded value: an upper bound of the heap it holds, derived from the types, not guessed.
+//
+// Every value occupies one `IoValue` slot, inline in the buffer of the array or entry that holds it. What a value
+// owns on the heap is charged on top: the bytes of a string, the buffer of a non-empty array, the box and the
+// buffers of an object. The decoder builds every buffer at its exact final size (it counts the elements first), so
+// no growth slack exists; `ALLOC_OVERHEAD` covers what the allocator adds to each allocation (glibc: an 8-byte header
+// and rounding to a multiple of 16, at most 23 bytes; a counting allocator that sees requested sizes only sees less).
+
+/// What the allocator adds to every allocation, on top of the requested size.
+pub(crate) const ALLOC_OVERHEAD: usize = 24;
+/// The slot of one value: the size of the enum (the largest variant, `Binary`'s `Bytes`, plus the tag).
+pub(crate) const SLOT: usize = std::mem::size_of::<IoValue>();
+/// An object is `Box<IndexMap>`: the map itself (the table header, the entry vector and the hasher) on the heap.
+pub(crate) const MAP_BASE: usize = std::mem::size_of::<IndexMap<String, IoValue>>() + ALLOC_OVERHEAD;
+/// What a non-empty object adds once: the allocation overhead of its entry vector and of its hash table, and the
+/// smallest table `hashbrown` builds (4 buckets of one index each, their control bytes and one trailing control
+/// group of 16).
+pub(crate) const MAP_TABLE: usize = 2 * ALLOC_OVERHEAD + 4 * (std::mem::size_of::<usize>() + 1) + 16;
+/// What one object entry costs besides its key text and its value's slot: the stored hash and the key's `String`
+/// header, and the hash table's index bytes for the entry. A table with room for `n` entries has fewer than
+/// `16n/7 + 1` buckets of `size_of::<usize>() + 1` bytes: at most 21 bytes per entry, rounded up to 24.
+pub(crate) const ENTRY: usize = std::mem::size_of::<usize>() + std::mem::size_of::<String>() + 3 * std::mem::size_of::<usize>();
+/// Extra heap of a number: none for `serde_json`'s default `Number`; a build where another crate turns on
+/// `arbitrary_precision` stores the digits in a `String` (at most 40 bytes of digits, charged with its allocation).
+pub(crate) const NUMBER_HEAP: usize = if std::mem::size_of::<Number>() > 16 { 40 + ALLOC_OVERHEAD } else { 0 };
+/// The heap of a string or key of `len` bytes.
+pub(crate) const fn text_cost(len: usize) -> usize {
+    if len == 0 { 0 } else { len + ALLOC_OVERHEAD }
+}
 
 /// An error converting to or from an [`IoValue`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -272,22 +296,60 @@ impl IoValue {
         false
     }
 
-    /// What the value costs in memory, with the model of `IoOptions::max_decoded_bytes`: [`NODE_COST`] per value,
-    /// the text of strings and keys, [`ENTRY_COST`] per object entry. Binary data is charged where it arrives, as
-    /// an attachment, so a placeholder repeated many times costs one node each and no bytes.
+    /// What the value costs in memory, with the model above (an upper bound of the heap a decoded value holds).
+    /// Binary data is charged where it arrives, as an attachment, so a placeholder repeated many times costs one
+    /// slot each and no bytes. Buffers are measured by capacity, so a value built without exact capacities is not
+    /// undercharged.
     pub(crate) fn cost(&self) -> usize {
+        // A walk whose stack holds one iterator per nesting level, so it allocates nothing proportional to the number
+        // of values (a stack of references would be one more allocation as wide as the widest array).
+        enum Walk<'a> {
+            Items(std::slice::Iter<'a, IoValue>),
+            Entries(indexmap::map::Iter<'a, String, IoValue>),
+        }
         let mut total = 0usize;
-        let mut stack = vec![self];
-        while let Some(v) = stack.pop() {
-            total = total.saturating_add(NODE_COST);
+        let mut stack: Vec<Walk<'_>> = Vec::new();
+        let mut next = Some(self);
+        loop {
+            let v = match next.take() {
+                Some(v) => v,
+                None => match stack.last_mut() {
+                    None => break,
+                    Some(Walk::Items(items)) => match items.next() {
+                        Some(v) => v,
+                        None => {
+                            stack.pop();
+                            continue;
+                        }
+                    },
+                    Some(Walk::Entries(entries)) => match entries.next() {
+                        Some((k, v)) => {
+                            total = total.saturating_add(ENTRY).saturating_add(text_cost(k.capacity()));
+                            v
+                        }
+                        None => {
+                            stack.pop();
+                            continue;
+                        }
+                    },
+                },
+            };
+            total = total.saturating_add(SLOT);
             match v {
-                IoValue::String(s) => total = total.saturating_add(s.len()),
-                IoValue::Array(a) => stack.extend(a.iter()),
-                IoValue::Object(o) => {
-                    for (k, v) in o.iter() {
-                        total = total.saturating_add(ENTRY_COST).saturating_add(k.len());
-                        stack.push(v);
+                IoValue::Number(_) => total = total.saturating_add(NUMBER_HEAP),
+                IoValue::String(s) => total = total.saturating_add(text_cost(s.capacity())),
+                IoValue::Array(a) => {
+                    if a.capacity() > 0 {
+                        total = total.saturating_add(ALLOC_OVERHEAD).saturating_add((a.capacity() - a.len()).saturating_mul(SLOT));
                     }
+                    stack.push(Walk::Items(a.iter()));
+                }
+                IoValue::Object(o) => {
+                    total = total.saturating_add(MAP_BASE);
+                    if !o.is_empty() {
+                        total = total.saturating_add(MAP_TABLE);
+                    }
+                    stack.push(Walk::Entries(o.iter()));
                 }
                 _ => {}
             }
@@ -1241,8 +1303,17 @@ mod tests {
     }
 
     #[test]
-    fn a_node_is_never_costlier_than_the_model_says() {
-        assert!(std::mem::size_of::<IoValue>() <= NODE_COST, "IoValue is {} bytes", std::mem::size_of::<IoValue>());
+    fn the_slot_is_the_size_of_the_value_and_the_constants_follow_the_types() {
+        assert_eq!(SLOT, std::mem::size_of::<IoValue>());
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(SLOT, 40, "a value is the 32-byte Bytes of Binary plus a tag");
+            assert_eq!(MAP_BASE, 72 + ALLOC_OVERHEAD, "an object is a boxed IndexMap of 72 bytes with the default hasher");
+            assert_eq!(ENTRY, 8 + 24 + 24);
+        }
+        assert_eq!(NUMBER_HEAP, 0, "serde_json::Number is inline unless arbitrary_precision is on");
+        assert_eq!(text_cost(0), 0);
+        assert_eq!(text_cost(1), 1 + ALLOC_OVERHEAD);
     }
 
     #[test]
@@ -1375,11 +1446,12 @@ mod tests {
 
     #[test]
     fn the_cost_counts_empty_values_and_keys() {
-        assert_eq!(IoValue::Null.cost(), NODE_COST);
-        assert_eq!(IoValue::Array(Vec::new()).cost(), NODE_COST);
+        assert_eq!(IoValue::Null.cost(), SLOT);
+        assert_eq!(IoValue::Array(Vec::new()).cost(), SLOT, "an empty array owns no buffer");
         let many = IoValue::Array(vec![IoValue::Array(Vec::new()); 1000]);
-        assert_eq!(many.cost(), 1001 * NODE_COST);
+        assert_eq!(many.cost(), 1001 * SLOT + ALLOC_OVERHEAD);
         let obj = IoValue::object([("key", IoValue::from("value"))]);
-        assert_eq!(obj.cost(), NODE_COST + ENTRY_COST + 3 + NODE_COST + 5);
+        assert_eq!(obj.cost(), SLOT + MAP_BASE + MAP_TABLE + ENTRY + text_cost(3) + SLOT + text_cost(5));
+        assert_eq!(IoValue::object(Vec::<(String, IoValue)>::new()).cost(), SLOT + MAP_BASE, "an empty object is still a box");
     }
 }

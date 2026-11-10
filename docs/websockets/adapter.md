@@ -277,7 +277,8 @@ value and names the option). Where Node has no bound, Corvis differs on purpose.
 | `max_attachments` per binary packet, both directions | 10 | 10 when decoding, none when encoding | a received packet that declares more closes the connection before any attachment is read; an emit fails with `TooManyAttachments` |
 | Bytes held while a binary packet is reassembled | at most `(max_attachments + 1) x max_http_buffer_size`, counted in `max_unread_bytes`; options that cannot fit are refused | not counted | reads pause |
 | `attachment_timeout` (time for the attachments after the header) | 30 s | none | the connection is closed, whatever the heartbeat says |
-| `max_decoded_bytes` (a decoded packet: every JSON value costs at least 48 bytes, empty ones included) | 16 MiB | none | the connection is closed while decoding; charged to `max_unread_bytes` until the handler ends |
+| `max_decoded_bytes` (the memory a packet decodes to: a 40-byte slot per JSON value, an object adds a box and a hash table, a string its bytes, 24 bytes per allocation) | 32 MiB | none | the connection is closed, before anything is built; reserved in the server-wide budget before decoding and charged until the handler ends |
+| Server-wide budget `max_total_unread_bytes`, and the part of it one client address may hold | 256 MiB, and a quarter of it (at least one packet); a session may always hold its fair share, `max(16 KiB, budget / max_sessions)` | none | the packet waits, and the connection takes no other message; its heartbeat is still served |
 | `max_auth_bytes` (the `auth` of a CONNECT, kept as long as the socket lives) | 16 KiB | none | the connection is closed |
 | JSON nesting | 127 levels | none | the connection is closed |
 | `max_event_name_len`, `max_args` (from a client) | 256 bytes, 128 | none | the connection is closed |
@@ -291,6 +292,17 @@ value and names the option). Where Node has no bound, Corvis differs on purpose.
 | Namespace name | 256 bytes, no `,`, no control characters | none | `of` returns an error |
 | Socket id | 120 random bits, never the Engine.IO session id | 96 bits plus a counter | n/a |
 
+How much a packet decodes to depends on its shape, not only on its size. Text of ordinary JSON (objects with a handful of
+string and number fields) decodes to 11 to 20 times its size, so a 1 MB packet costs 11 to 20 MB and is accepted under the
+default. The worst shapes expand more: 1 MB of `{}` costs 45 MB, and 1 MB of objects nested through empty keys costs 58 MB
+(the worst case, 58 times). With 1 MB of text the default 32 MiB therefore accepts anything up to 33 times; a packet above
+`max_decoded_bytes` closes the connection, and nothing of it is allocated (the text is measured first, then the cost is
+reserved and only then is the packet decoded). What a server holds for packets, reassembly buffers and unread messages stays
+within `max_total_unread_bytes` plus, for each open session, its fair share and the one message it may have in hand, and
+within `max_unread_bytes` plus one packet for each session; a closed session's handlers keep their packets charged, to the
+server and to the client address, until they end (at most `close_timeout`), so reconnecting does not multiply what an
+address holds. Another address always keeps the rest of the budget.
+
 A packet whose JSON holds an object with a key `serde_json` reads as an instruction (`$serde_json::private::RawValue`) is
 delivered, but only as an `IoValue`: `args.get::<serde_json::Value>(i)` and `to_json()` refuse it, because `serde_json`
 would parse its value again with a fresh recursion budget when another crate of the build enables `raw_value`. Handlers
@@ -300,9 +312,16 @@ slot frees, or fail with `operation has timed out`: keep the number of handlers 
 Differences the client can observe, each listed in the harness with the scenario that exercises it: a second CONNECT while
 the middleware of that namespace still runs closes the connection (Node starts another pending socket for each packet),
 an acknowledgement id above 2^53 - 1 closes the connection (Node answers with a rounded id), and JSON nested deeper than
-127 levels closes the connection (Node delivers it). Also stricter, with no scenario because the official client never
-does them: a packet type that is not a digit, an event or acknowledgement without a payload, an acknowledgement without an
+127 levels closes the connection (Node delivers it), and so does a string with a lone surrogate escape such as `"\ud800"`
+(a Rust string cannot hold one; Node keeps it; a valid pair is fine). Also stricter, with no scenario because the official
+client never does them: a packet type that is not a digit, an event or acknowledgement without a payload, an acknowledgement without an
 id, an id on a CONNECT, a placeholder index that is not an integer.
+
+A handler that panics is contained and logged once a minute per namespace, with the number left out in the next line; the
+line names the namespace and never the panic message or the client's data (so does the warning of a connect middleware that
+timed out). Do not `unwrap()` the conversion of an argument (`args.get::<T>(i)?` is a `Result`): a client chooses its data, and
+a handler that panics on bad input is a handler the client can make fail at will. Arguments a handler moves out of `Args`
+(`into_vec`) or into a task it spawns stop being charged when the handler returns: they are the application's memory from then on.
 
 Not supported: rooms and broadcast, gateways over Socket.IO, a Redis adapter (later changes); dynamic namespaces, connection
 state recovery, `volatile` and `compress` flags, catch-all listeners, custom parsers, Engine.IO v3 clients and serving the

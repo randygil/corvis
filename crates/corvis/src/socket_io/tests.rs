@@ -645,7 +645,7 @@ async fn decoded_packets_are_charged_until_their_handler_finishes() {
     conn.text(&format!(r#"2["slow",[{arrays}]]"#));
     settle().await;
     let charged = conn.socket.unread_bytes() - before;
-    assert!(charged >= 5_000 * 48, "empty structures cost their real size: {charged}");
+    assert!(charged >= 5_000 * 40, "empty structures cost their real size: {charged}");
     release.notify_waiters();
     settle().await;
     assert_eq!(conn.socket.unread_bytes(), before);
@@ -1272,4 +1272,318 @@ async fn an_event_that_runs_when_the_connection_ends_gets_a_grace_period() {
     settle().await;
     advance(5_000).await;
     assert!(done.load(Ordering::SeqCst), "a handler already running is not cancelled by the end of the connection");
+}
+
+// -------------------------------------------------------------------------------- the decoded-packet budget
+
+/// A server whose server-wide budget is 1 MiB and whose packets cost at most 256 KiB, so the rules of `budget.rs`
+/// are reached with small packets: one address may hold a quarter of the budget (256 KiB), and a session may always
+/// hold the fair share of 16 KiB.
+fn tight() -> IoOptions {
+    let engine = EngineOptions::new()
+        .ping_interval(DAY)
+        .ping_timeout(DAY)
+        .max_http_buffer_size(50_000)
+        .max_unread_bytes(1024 * 1024)
+        .max_total_unread_bytes(1024 * 1024);
+    IoOptions::new().engine(engine).max_decoded_bytes(256 * 1024)
+}
+
+/// `n` empty objects in one argument: 3 bytes of text each, 128 bytes of structure each.
+fn hold_event(n: usize) -> String {
+    format!(r#"2["hold",[{}]]"#, vec!["{}"; n].join(","))
+}
+
+/// The cost of `hold_event(1_500)`: about 205 kB.
+const BIG: usize = 1_500;
+
+struct Gate {
+    entered: Arc<AtomicUsize>,
+    small: Arc<AtomicUsize>,
+    release: Arc<Notify>,
+}
+
+/// `hold` keeps its arguments until `release` is notified; `small` only counts.
+fn gated(io: &IoServer) -> Gate {
+    let gate = Gate { entered: Arc::new(AtomicUsize::new(0)), small: Arc::new(AtomicUsize::new(0)), release: Arc::new(Notify::new()) };
+    let (entered, small, release) = (gate.entered.clone(), gate.small.clone(), gate.release.clone());
+    io.on_connection(move |socket| {
+        let (entered, release) = (entered.clone(), release.clone());
+        socket.on("hold", move |_s, args, _a| {
+            let (entered, release) = (entered.clone(), release.clone());
+            async move {
+                entered.fetch_add(1, Ordering::SeqCst);
+                release.notified().await;
+                drop(args);
+            }
+        });
+        let small = small.clone();
+        socket.on("small", move |_s, _a, _k| {
+            small.fetch_add(1, Ordering::SeqCst);
+            async {}
+        });
+    });
+    gate
+}
+
+impl Gate {
+    fn entered(&self) -> usize {
+        self.entered.load(Ordering::SeqCst)
+    }
+
+    fn small(&self) -> usize {
+        self.small.load(Ordering::SeqCst)
+    }
+
+    async fn open(&self) {
+        self.release.notify_waiters();
+        settle().await;
+    }
+
+    /// Opens the gate until nothing new enters: every handler that was waiting for room has run and ended.
+    async fn drain(&self) {
+        for _ in 0..30 {
+            self.open().await;
+        }
+    }
+}
+
+trait OpenFrom {
+    fn conn_from(&self, address: &str) -> Conn;
+}
+
+impl OpenFrom for IoServer {
+    fn conn_from(&self, address: &str) -> Conn {
+        Conn { socket: self.engine().open_test_socket_from(address) }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_decoded_packet_is_charged_at_its_cost_not_at_what_was_reserved_for_it() {
+    let io = server(tight());
+    let gate = gated(&io);
+    let conn = io.conn();
+    conn.join("0").await;
+    // 2,000 times the same key: the text says up to 2,000 entries (about 230 kB reserved), the object has one.
+    let repeated = vec![r#""a":1"#; 2_000].join(",");
+    conn.text(&format!(r#"2["hold",{{{repeated}}}]"#));
+    settle().await;
+    assert_eq!(gate.entered(), 1);
+    let held = io.engine().total_unread_bytes();
+    assert!(held < 2_048, "the reservation shrank to the cost of the object that exists: {held} bytes");
+    assert_eq!(conn.socket.unread_bytes(), held, "the wire message was released too");
+    gate.open().await;
+    assert_eq!(io.engine().total_unread_bytes(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_packet_that_finds_no_room_waits_and_the_connection_takes_nothing_else() {
+    let io = server(tight());
+    let gate = gated(&io);
+    let first = io.conn_from("203.0.113.1");
+    let second = io.conn_from("203.0.113.1");
+    for c in [&first, &second] {
+        c.join("0").await;
+    }
+    first.text(&hold_event(BIG));
+    settle().await;
+    assert_eq!(gate.entered(), 1);
+    let one_packet = io.engine().total_unread_bytes();
+    assert!(one_packet > 200_000 && one_packet < 210_000, "{one_packet}");
+    // The same address cannot hold a second packet of this size (its quota is 256 kB): it waits, with its message
+    // still charged, and the connection takes no further message from the engine.
+    second.text(&hold_event(BIG));
+    second.text(r#"2["small"]"#);
+    second.text(r#"2["small"]"#);
+    settle().await;
+    assert_eq!(gate.entered(), 1, "the second packet is parked");
+    assert_eq!(gate.small(), 0, "and nothing behind it is taken");
+    assert!(second.socket.unread_bytes() > 4_500, "the waiting message and the queued ones stay accounted");
+    assert!(!second.socket.is_closing(), "waiting is not an error");
+    // Room released: it goes in, and the two behind it follow in order.
+    gate.open().await;
+    assert_eq!(gate.entered(), 2);
+    assert_eq!(gate.small(), 2);
+    gate.open().await;
+    assert_eq!(io.engine().total_unread_bytes(), 0);
+    assert_eq!(second.socket.unread_bytes(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_honest_address_is_served_while_another_holds_its_maximum() {
+    let io = server(tight());
+    let gate = gated(&io);
+    let attackers: Vec<Conn> = (0..8).map(|_| io.conn_from("203.0.113.1")).collect();
+    for c in &attackers {
+        c.join("0").await;
+        c.text(&hold_event(BIG));
+    }
+    settle().await;
+    assert_eq!(gate.entered(), 1, "one address holds one packet of this size: its quota is a quarter of the budget");
+    // Another address, and a packet that needs room in the server-wide budget (above the fair share).
+    let honest = io.conn_from("198.51.100.7");
+    honest.join("0").await;
+    honest.text(&hold_event(BIG));
+    honest.text(r#"2["small"]"#);
+    settle().await;
+    assert_eq!(gate.entered(), 2, "the honest packet is decoded while the attacker's seven wait");
+    assert_eq!(gate.small(), 1);
+    // A small packet is always taken, even by a session of the attacking address (the guaranteed share).
+    attackers[7].text(r#"2["small"]"#);
+    settle().await;
+    assert_eq!(gate.small(), 1, "queued behind its own parked packet, as any connection");
+    let fresh = io.conn_from("203.0.113.1");
+    fresh.join("0").await;
+    fresh.text(r#"2["small"]"#);
+    settle().await;
+    assert_eq!(gate.small(), 2, "a session with nothing waiting is served from its guaranteed share");
+    gate.drain().await;
+    assert_eq!(gate.entered(), 9, "the attacking address's seven waiting packets run after, one at a time");
+    assert_eq!(io.engine().total_unread_bytes(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_charge_of_a_running_handler_outlives_its_session_and_is_not_multiplied_by_reconnecting() {
+    let io = server(tight());
+    let gate = gated(&io);
+    let slot = io.inner.budgets.slot("203.0.113.1");
+    let first = io.conn_from("203.0.113.1");
+    first.join("0").await;
+    first.text(&hold_event(BIG));
+    settle().await;
+    let charge = io.engine().total_unread_bytes();
+    assert_eq!(gate.entered(), 1);
+    assert_eq!(slot.held(), charge);
+    // The session ends; the handler keeps running (it gets its grace period) and keeps its charge.
+    // (A graceful close ends the session after `close_timeout`, 30 s; the handler's own grace period starts then.)
+    first.socket.close();
+    advance(31_000).await;
+    assert!(first.socket.is_closing());
+    assert_eq!(io.engine().total_unread_bytes(), charge, "the server-wide gauge still counts the running handler");
+    assert_eq!(slot.held(), charge, "and so does the address");
+    // Reconnecting from the same address does not give it a new quota: the packet waits.
+    let again = io.conn_from("203.0.113.1");
+    again.join("0").await;
+    again.text(&hold_event(BIG));
+    settle().await;
+    assert_eq!(gate.entered(), 1);
+    // Other addresses are not affected.
+    let other = io.conn_from("198.51.100.7");
+    other.join("0").await;
+    other.text(&hold_event(BIG));
+    settle().await;
+    assert_eq!(gate.entered(), 2);
+    // The handler ends: the room is released and the new session's packet goes in.
+    gate.open().await;
+    assert_eq!(gate.entered(), 3);
+    gate.open().await;
+    assert_eq!(io.engine().total_unread_bytes(), 0);
+    assert_eq!(slot.held(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn reconnecting_over_and_over_cannot_multiply_what_an_address_holds_even_in_guaranteed_shares() {
+    // Five open sessions per address: the guaranteed shares an address may use add up to 5 x 16 KiB. Sessions that
+    // close at once keep their packets charged while the handlers run, so each reconnect would give the address a
+    // fresh share if the count belonged to the session.
+    let engine = EngineOptions::new()
+        .ping_interval(DAY)
+        .ping_timeout(DAY)
+        .max_http_buffer_size(50_000)
+        .max_unread_bytes(1024 * 1024)
+        .max_total_unread_bytes(1024 * 1024)
+        .max_sessions_per_ip(5);
+    let io = server(IoOptions::new().engine(engine).max_decoded_bytes(256 * 1024));
+    let gate = gated(&io);
+    let cap = io.inner.budgets.address_cap();
+    assert_eq!(cap, 256 * 1024 + 5 * 16 * 1024);
+    // 100 empty objects: about 14 kB decoded, below the guaranteed share.
+    for _ in 0..60 {
+        let conn = io.conn_from("203.0.113.9");
+        conn.join("0").await;
+        conn.text(&hold_event(100));
+        settle().await;
+        conn.socket.kill();
+        settle().await;
+    }
+    let held = io.engine().total_unread_bytes();
+    assert!(held <= cap, "the address holds {held} bytes, above its cap of {cap}");
+    assert!(gate.entered() >= 20 && gate.entered() <= 26, "{} packets admitted before the cap", gate.entered());
+    // Another address is untouched.
+    let admitted = gate.entered();
+    let other = io.conn_from("198.51.100.7");
+    other.join("0").await;
+    other.text(&hold_event(100));
+    settle().await;
+    assert_eq!(gate.entered(), admitted + 1, "an address that holds nothing is served at once");
+    gate.drain().await;
+    assert_eq!(io.engine().total_unread_bytes(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_handler_that_never_ends_loses_its_charge_when_the_grace_period_does() {
+    let io = server(tight());
+    let gate = gated(&io);
+    let conn = io.conn_from("203.0.113.1");
+    conn.join("0").await;
+    conn.text(&hold_event(BIG));
+    settle().await;
+    assert!(io.engine().total_unread_bytes() > 200_000);
+    // The session ends after `close_timeout` (a graceful close); the handler's own grace period of `close_timeout`
+    // starts then, and is measured from that moment, so the clock is moved in steps the tasks can follow.
+    conn.socket.close();
+    advance(31_000).await;
+    assert!(io.engine().total_unread_bytes() > 200_000, "the handler gets its grace period");
+    advance(28_000).await;
+    assert!(io.engine().total_unread_bytes() > 200_000, "still inside close_timeout");
+    advance(3_000).await;
+    assert_eq!(io.engine().total_unread_bytes(), 0, "after close_timeout the handler is dropped and the room is free");
+    assert_eq!(gate.entered(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_waiting_packet_is_released_with_its_session() {
+    let io = server(tight());
+    let gate = gated(&io);
+    let first = io.conn_from("203.0.113.1");
+    let second = io.conn_from("203.0.113.1");
+    for c in [&first, &second] {
+        c.join("0").await;
+    }
+    first.text(&hold_event(BIG));
+    second.text(&hold_event(BIG));
+    settle().await;
+    let both = io.engine().total_unread_bytes();
+    assert_eq!(gate.entered(), 1);
+    second.socket.close();
+    advance(31_000).await;
+    assert!(io.engine().total_unread_bytes() < both - 4_500, "the parked wire message went with its session");
+    gate.open().await;
+    assert_eq!(io.engine().total_unread_bytes(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_over_its_unread_limit_takes_no_more_messages() {
+    // The session limit is 64 KiB (the engine's own test, not a counter of the layer): four packets of about 20 kB
+    // pass it, and the fifth stays in the engine until a handler ends.
+    let engine = EngineOptions::new()
+        .ping_interval(DAY)
+        .ping_timeout(DAY)
+        .max_http_buffer_size(10_000)
+        .max_unread_bytes(64 * 1024)
+        .max_total_unread_bytes(1024 * 1024);
+    let io = server(IoOptions::new().engine(engine).max_decoded_bytes(256 * 1024).max_inflight(100).max_attachments(1));
+    let gate = gated(&io);
+    let conn = io.conn();
+    conn.join("0").await;
+    for _ in 0..8 {
+        conn.text(&hold_event(150));
+    }
+    settle().await;
+    assert_eq!(gate.entered(), 4, "reads stop once the session holds more than its limit");
+    assert!(conn.socket.unread_bytes() > 64 * 1024);
+    gate.open().await;
+    assert_eq!(gate.entered(), 8, "when room is released the rest is taken");
+    gate.open().await;
+    assert_eq!(conn.socket.unread_bytes(), 0);
 }

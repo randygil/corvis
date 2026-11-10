@@ -283,7 +283,8 @@ Todo lo que un cliente puede hacer que el servidor retenga tiene un valor por de
 | `max_attachments` por paquete binario, en ambos sentidos | 10 | 10 al decodificar, ninguno al codificar | un paquete recibido que declara más cierra la conexión antes de leer ningún adjunto; un emit falla con `TooManyAttachments` |
 | Bytes retenidos mientras se reensambla un paquete binario | como mucho `(max_attachments + 1) x max_http_buffer_size`, contados en `max_unread_bytes`; las opciones que no caben se rechazan | no se cuentan | se pausan las lecturas |
 | `attachment_timeout` (tiempo para los adjuntos tras la cabecera) | 30 s | ninguno | se cierra la conexión, diga lo que diga el latido |
-| `max_decoded_bytes` (un paquete decodificado: cada valor JSON cuesta al menos 48 bytes, también los vacíos) | 16 MiB | ninguno | se cierra la conexión al decodificar; se carga a `max_unread_bytes` hasta que termina el manejador |
+| `max_decoded_bytes` (la memoria en que se decodifica un paquete: una casilla de 40 bytes por valor JSON, un objeto añade una caja y una tabla hash, una cadena sus bytes, 24 bytes por asignación) | 32 MiB | ninguno | se cierra la conexión, antes de construir nada; se reserva en el presupuesto del servidor antes de decodificar y se carga hasta que termina el manejador |
+| Presupuesto del servidor `max_total_unread_bytes`, y la parte que puede retener una dirección de cliente | 256 MiB, y una cuarta parte (al menos un paquete); una sesión siempre puede retener su parte justa, `max(16 KiB, presupuesto / max_sessions)` | ninguno | el paquete espera y la conexión no toma otro mensaje; su latido se sigue atendiendo |
 | `max_auth_bytes` (el `auth` de un CONNECT, que se conserva mientras vive el socket) | 16 KiB | ninguno | se cierra la conexión |
 | Anidamiento de JSON | 127 niveles | ninguno | se cierra la conexión |
 | `max_event_name_len`, `max_args` (de un cliente) | 256 bytes, 128 | ninguno | se cierra la conexión |
@@ -297,6 +298,17 @@ Todo lo que un cliente puede hacer que el servidor retenga tiene un valor por de
 | Nombre de espacio | 256 bytes, sin `,` ni caracteres de control | ninguno | `of` devuelve un error |
 | Id de socket | 120 bits aleatorios, nunca el id de sesión de Engine.IO | 96 bits más un contador | n/a |
 
+Lo que ocupa un paquete decodificado depende de su forma, no solo de su tamaño. El texto de un JSON corriente (objetos con
+unos pocos campos de texto y número) se decodifica en 11 a 20 veces su tamaño, así que un paquete de 1 MB cuesta de 11 a
+20 MB y se acepta con el valor por defecto. Las peores formas se expanden más: 1 MB de `{}` cuesta 45 MB, y 1 MB de objetos
+anidados con claves vacías cuesta 58 MB (el peor caso, 58 veces). Con 1 MB de texto, los 32 MiB por defecto aceptan hasta 33
+veces; un paquete por encima de `max_decoded_bytes` cierra la conexión y no se reserva nada de él (primero se mide el texto,
+luego se reserva el coste y solo entonces se decodifica). Lo que el servidor retiene por paquetes, buffers de reensamblado y
+mensajes sin leer queda dentro de `max_total_unread_bytes` más, por cada sesión abierta, su parte justa y el único mensaje
+que puede tener en la mano, y dentro de `max_unread_bytes` más un paquete por sesión; los manejadores de una sesión cerrada
+mantienen sus paquetes cargados, al servidor y a la dirección del cliente, hasta que terminan (como mucho `close_timeout`),
+así que reconectar no multiplica lo que retiene una dirección. Otra dirección conserva siempre el resto del presupuesto.
+
 Un paquete cuyo JSON tenga un objeto con una clave que `serde_json` lee como instrucción
 (`$serde_json::private::RawValue`) se entrega, pero solo como `IoValue`: `args.get::<serde_json::Value>(i)` y `to_json()` lo
 rechazan, porque `serde_json` volvería a parsear su valor con un presupuesto de recursión nuevo cuando otro crate de la
@@ -307,9 +319,17 @@ mantén el número de manejadores que esperan respuestas por debajo del límite.
 Diferencias que el cliente puede observar, cada una listada en el arnés con el escenario que la ejercita: un segundo
 CONNECT mientras el middleware de ese espacio sigue corriendo cierra la conexión (Node inicia otro socket pendiente por
 cada paquete), un id de confirmación superior a 2^53 - 1 cierra la conexión (Node responde con un id redondeado) y un JSON
-anidado a más de 127 niveles cierra la conexión (Node lo entrega). También más estricto, sin escenario porque el cliente
-oficial nunca lo hace: un tipo de paquete que no es un dígito, un evento o confirmación sin payload, una confirmación sin
+anidado a más de 127 niveles cierra la conexión (Node lo entrega), y también una cadena con un escape de sustituto
+suelto como `"\ud800"` (una cadena de Rust no puede contenerlo; Node lo conserva; un par válido sí se acepta). También más
+estricto, sin escenario porque el cliente oficial nunca lo hace: un tipo de paquete que no es un dígito, un evento o confirmación sin payload, una confirmación sin
 id, un id en un CONNECT, un índice de marcador que no es un entero.
+
+Un manejador que entra en pánico se contiene y se registra una vez por minuto y por espacio, con el número de los omitidos
+en la línea siguiente; la línea nombra el espacio y nunca el mensaje del pánico ni los datos del cliente (igual el aviso de un
+middleware de conexión que agotó su plazo). No hagas `unwrap()` de la conversión de un argumento (`args.get::<T>(i)?` es un
+`Result`): el cliente elige sus datos, y un manejador que entra en pánico con datos malos es un manejador que el cliente puede
+hacer fallar a voluntad. Los argumentos que un manejador saca de `Args` (`into_vec`) o mueve a una tarea que lanza dejan de
+cargarse cuando el manejador termina: desde entonces son memoria de la aplicación.
 
 No soportado: salas y broadcast, gateways sobre Socket.IO, un adaptador de Redis (cambios posteriores); espacios dinámicos,
 recuperación del estado de la conexión, las banderas `volatile` y `compress`, oyentes globales, parsers personalizados,

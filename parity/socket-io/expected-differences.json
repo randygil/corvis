@@ -94,5 +94,17 @@
     "path": "$.entries[1].data.closed",
     "reason": "the same bound: the packet is undecodable, Corvis closes the connection and Node keeps it open",
     "spec": "ws/socket-io: Nesting depth is bounded (Nesting above the limit)"
+  },
+  {
+    "scenario": "socket-io/wire/surrogate",
+    "path": "$.entries[1].data.answered",
+    "reason": "Node keeps a lone surrogate (a JavaScript string is UTF-16) and answers; a Rust string cannot hold one, so Corvis refuses the packet",
+    "spec": "ws/socket-io: Lone surrogates are refused (Lone surrogate in an argument)"
+  },
+  {
+    "scenario": "socket-io/wire/surrogate",
+    "path": "$.entries[1].data.closed",
+    "reason": "the same bound: the packet is undecodable, Corvis closes the connection (stricter, fail-closed) and Node keeps it open",
+    "spec": "ws/socket-io: Lone surrogates are refused (Lone surrogate in an argument)"
   }
 ]

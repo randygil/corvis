@@ -15,8 +15,10 @@ pub const DEFAULT_MAX_ATTACHMENTS: usize = 10;
 pub const DEFAULT_MAX_INFLIGHT: usize = 32;
 /// Unanswered server-side acknowledgements per socket.
 pub const DEFAULT_MAX_PENDING_ACKS: usize = 1_000;
-/// What one packet may cost once decoded (see [`IoOptions::max_decoded_bytes`]): 16 MiB.
-pub const DEFAULT_MAX_DECODED_BYTES: usize = 16 * 1024 * 1024;
+/// What one packet may cost once decoded (see [`IoOptions::max_decoded_bytes`]): 32 MiB, which keeps a 1 MB text
+/// packet of ordinary JSON working (it decodes to 11 to 20 times its size) and refuses the shapes that expand more
+/// than 33 times (the worst, nested objects with empty keys, expands 58 times).
+pub const DEFAULT_MAX_DECODED_BYTES: usize = 32 * 1024 * 1024;
 /// What the `auth` payload of a CONNECT may cost once decoded.
 pub const DEFAULT_MAX_AUTH_BYTES: usize = 16 * 1024;
 /// Longest event name accepted from a client, in bytes.
@@ -55,7 +57,7 @@ pub enum IoOptionsError {
 /// | [`max_attachments`](Self::max_attachments) | 10 | 10 when decoding, none when encoding |
 /// | [`max_inflight`](Self::max_inflight) | 32 per connection | none |
 /// | [`max_pending_acks`](Self::max_pending_acks) | 1,000 per socket | none |
-/// | [`max_decoded_bytes`](Self::max_decoded_bytes) | 16 MiB per packet | none |
+/// | [`max_decoded_bytes`](Self::max_decoded_bytes) | 32 MiB per packet | none |
 /// | [`max_auth_bytes`](Self::max_auth_bytes) | 16 KiB | none |
 /// | [`max_event_name_len`](Self::max_event_name_len) | 256 bytes | none |
 /// | [`max_args`](Self::max_args) | 128 | none |
@@ -150,11 +152,14 @@ impl IoOptions {
         self
     }
 
-    /// The most a decoded packet may cost in memory, counting every JSON value at its real size (an empty array
-    /// costs as much as a small number: 32 bytes) plus the text of strings and keys. A packet above it closes the
-    /// connection while it is being decoded, so the structure is never built. A decoded packet is charged against
-    /// the session's `max_unread_bytes` until its handler finishes. Must be at least `max_http_buffer_size`. Node
-    /// has no limit.
+    /// The most a decoded packet may cost in memory: an upper bound of the heap its structure occupies (every value
+    /// takes a 40-byte slot, an object adds a box and a hash table, a string its bytes, and every allocation 24
+    /// bytes of bookkeeping), worked out from the text before anything is built. A packet above it closes the
+    /// connection and nothing is allocated for it. Packets of ordinary JSON decode to 11 to 20 times their size and
+    /// the worst shape (nested objects with empty keys) to 58 times, so with 1 MB of text the default 32 MiB keeps
+    /// anything up to 33 times. The cost is reserved in the server-wide unread budget before the packet is decoded and
+    /// charged until its handler finishes. Must be at least `max_http_buffer_size`, and at most the engine's
+    /// `max_total_unread_bytes`, so that one packet can always be reserved. Node has no limit.
     pub fn max_decoded_bytes(mut self, bytes: usize) -> Self {
         self.max_decoded_bytes = bytes;
         self
@@ -246,6 +251,15 @@ impl IoOptions {
                 ),
             });
         }
+        if self.max_decoded_bytes > self.engine.max_total_unread_bytes {
+            return Err(IoOptionsError::Range {
+                option: "max_decoded_bytes",
+                reason: format!(
+                    "must be at most the engine's max_total_unread_bytes ({}), got {}: a packet could never be reserved",
+                    self.engine.max_total_unread_bytes, self.max_decoded_bytes
+                ),
+            });
+        }
         if self.max_auth_bytes > self.max_decoded_bytes {
             return Err(IoOptionsError::Range {
                 option: "max_auth_bytes",
@@ -268,7 +282,7 @@ mod tests {
         assert_eq!(o.max_attachments, 10);
         assert_eq!(o.max_inflight, 32);
         assert_eq!(o.max_pending_acks, 1_000);
-        assert_eq!(o.max_decoded_bytes, 16 * 1024 * 1024);
+        assert_eq!(o.max_decoded_bytes, 32 * 1024 * 1024);
         assert_eq!(o.max_auth_bytes, 16 * 1024);
         assert_eq!(o.max_event_name_len, 256);
         assert_eq!(o.max_args, 128);
@@ -332,8 +346,20 @@ mod tests {
     fn decoded_size_limits_are_consistent_with_the_engine() {
         let err = IoOptions::new().max_decoded_bytes(999_999).validate().unwrap_err();
         assert!(matches!(err, IoOptionsError::Range { option: "max_decoded_bytes", .. }), "{err}");
-        let err = IoOptions::new().max_auth_bytes(32 * 1024 * 1024).validate().unwrap_err();
+        let err = IoOptions::new().max_auth_bytes(33 * 1024 * 1024).validate().unwrap_err();
         assert!(matches!(err, IoOptionsError::Range { option: "max_auth_bytes", .. }), "{err}");
+    }
+
+    #[test]
+    fn one_decoded_packet_must_fit_in_the_server_wide_budget() {
+        // The default packet (32 MiB) needs a budget of at least 32 MiB.
+        let small = EngineOptions::new().max_total_unread_bytes(16 * 1024 * 1024);
+        let err = IoOptions::new().engine(small.clone()).validate().unwrap_err();
+        assert!(matches!(err, IoOptionsError::Range { option: "max_decoded_bytes", .. }), "{err}");
+        assert!(err.to_string().contains("max_total_unread_bytes"));
+        assert!(IoOptions::new().engine(small).max_decoded_bytes(16 * 1024 * 1024).validate().is_ok());
+        let exact = EngineOptions::new().max_total_unread_bytes(32 * 1024 * 1024);
+        assert!(IoOptions::new().engine(exact).validate().is_ok());
     }
 
     #[test]

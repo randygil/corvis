@@ -4,12 +4,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
+use super::budget::AddressBudgets;
 use super::client::{self, ClientShared};
 use super::engine::{EngineOptionsError, EngineServer};
 use super::namespace::IoNamespace;
 use super::options::{IoOptions, IoOptionsError};
 use super::parser::MAX_NAMESPACE_LEN;
 use super::socket::{DisconnectReason, IoSocket};
+use super::warn::{WARN_INTERVAL, WarnLimiter};
 use crate::http_adapter::HttpServer;
 
 /// Why a namespace could not be registered.
@@ -29,6 +31,10 @@ pub enum NamespaceNameError {
 pub(crate) struct ServerInner {
     pub(crate) options: Arc<IoOptions>,
     pub(crate) engine: EngineServer,
+    /// What each client address holds of the server-wide unread budget (see `budget.rs`).
+    pub(crate) budgets: Arc<AddressBudgets>,
+    /// Rate limit of the lines a client can provoke.
+    pub(crate) warnings: Arc<WarnLimiter>,
     namespaces: RwLock<HashMap<String, IoNamespace>>,
     closed: AtomicBool,
 }
@@ -109,8 +115,16 @@ impl IoServer {
         let options = Arc::new(options);
         let mut namespaces = HashMap::new();
         namespaces.insert("/".to_string(), IoNamespace::new("/".to_string(), options.clone()));
-        let inner =
-            Arc::new(ServerInner { options, engine: engine.clone(), namespaces: RwLock::new(namespaces), closed: AtomicBool::new(false) });
+        let guarantee = options.engine.fair_unread_share().saturating_mul(options.engine.max_sessions_per_ip);
+        let budgets = AddressBudgets::new(options.engine.max_total_unread_bytes, options.max_decoded_bytes, guarantee);
+        let inner = Arc::new(ServerInner {
+            options,
+            engine: engine.clone(),
+            budgets,
+            warnings: Arc::new(WarnLimiter::new(WARN_INTERVAL)),
+            namespaces: RwLock::new(namespaces),
+            closed: AtomicBool::new(false),
+        });
         let weak: Weak<ServerInner> = Arc::downgrade(&inner);
         // The connection callback keeps the server alive, as `new Server(httpServer)` is kept by its HTTP server: an
         // application may drop its `IoServer` handle after attaching it. `close`, and the application's shutdown,
@@ -118,7 +132,7 @@ impl IoServer {
         let strong = inner.clone();
         engine.on_connection(move |socket| {
             let messages = socket.messages_held();
-            let shared = ClientShared::new(socket, strong.options.clone());
+            let shared = ClientShared::new(socket, strong.options.clone(), &strong);
             tokio::spawn(client::run(strong.clone(), shared, messages));
         });
         // The application's shutdown closes the engine: the sockets hear `server shutting down` first.

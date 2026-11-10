@@ -17,8 +17,9 @@ use bytes::Bytes;
 use indexmap::IndexMap;
 use serde::de::{self, DeserializeSeed, Visitor};
 
+use super::engine::session::UNREAD_MESSAGE_OVERHEAD;
 use super::options::IoOptions;
-use super::value::{Binary, ENTRY_COST, IoValue, MAX_DEPTH, NODE_COST};
+use super::value::{ALLOC_OVERHEAD, Binary, ENTRY, IoValue, MAP_BASE, MAP_TABLE, MAX_DEPTH, NUMBER_HEAP, SLOT, text_cost};
 
 /// The event names a client may not send and the server may not emit (`RESERVED_EVENTS` of `socket.io-parser`).
 pub(crate) const RESERVED_EVENTS: [&str; 6] = ["connect", "connect_error", "disconnect", "disconnecting", "newListener", "removeListener"];
@@ -29,8 +30,9 @@ pub(crate) const MAX_ACK_ID: u64 = (1 << 53) - 1;
 /// The longest namespace a packet may carry; registered namespaces are at most this long.
 pub(crate) const MAX_NAMESPACE_LEN: usize = 256;
 
-/// What a decoded packet costs besides its values: the packet, the namespace and the event name headers.
-const PACKET_COST: usize = 128;
+/// What a decoded packet costs besides its namespace, name and values: the packet itself, moved into the task of
+/// its handler.
+const PACKET_COST: usize = std::mem::size_of::<Packet>() + ALLOC_OVERHEAD;
 
 pub(crate) fn is_reserved(name: &str) -> bool {
     RESERVED_EVENTS.contains(&name)
@@ -61,17 +63,23 @@ pub(crate) enum Body {
     ConnectError(IoValue),
 }
 
+/// What the arguments of a packet cost: their buffer and the values in it.
+fn args_cost(args: &[IoValue], capacity: usize) -> usize {
+    let buffer = if capacity > 0 { ALLOC_OVERHEAD + (capacity - args.len()) * SLOT } else { 0 };
+    args.iter().map(IoValue::cost).fold(buffer, usize::saturating_add)
+}
+
 impl Packet {
-    /// What the decoded packet costs in memory (the model of `IoOptions::max_decoded_bytes`).
+    /// What the decoded packet costs in memory (the model of `value.rs`): the most its decoded structure can occupy.
     pub(crate) fn cost(&self) -> usize {
         let values = match &self.body {
             Body::Connect(v) => v.as_ref().map_or(0, IoValue::cost),
             Body::Disconnect => 0,
-            Body::Event { name, args, .. } => name.len() + args.iter().map(IoValue::cost).fold(0usize, usize::saturating_add),
-            Body::Ack { args, .. } => args.iter().map(IoValue::cost).fold(0usize, usize::saturating_add),
+            Body::Event { name, args, .. } => text_cost(name.capacity()).saturating_add(args_cost(args, args.capacity())),
+            Body::Ack { args, .. } => args_cost(args, args.capacity()),
             Body::ConnectError(v) => v.cost(),
         };
-        PACKET_COST.saturating_add(self.nsp.len()).saturating_add(values)
+        PACKET_COST.saturating_add(text_cost(self.nsp.capacity())).saturating_add(values)
     }
 }
 
@@ -114,6 +122,10 @@ pub(crate) struct Limits {
     pub(crate) max_auth_bytes: usize,
     pub(crate) max_event_name_len: usize,
     pub(crate) max_args: usize,
+    /// What a session may hold unread, and the largest message the transport accepts: a binary packet whose header and
+    /// attachments could not fit together would pause the reads that complete it.
+    pub(crate) max_unread_bytes: usize,
+    pub(crate) max_message_bytes: usize,
 }
 
 impl Limits {
@@ -124,7 +136,16 @@ impl Limits {
             max_auth_bytes: options.max_auth_bytes,
             max_event_name_len: options.max_event_name_len,
             max_args: options.max_args,
+            max_unread_bytes: options.engine.max_unread_bytes,
+            max_message_bytes: options.engine.max_http_buffer_size,
         }
+    }
+
+    /// `true` when a binary packet whose header costs `header` and that declares `attachments` can be reassembled
+    /// inside the session's unread limit: the header's cost and every attachment (at its largest) are held together.
+    fn fits_reassembly(&self, header: usize, attachments: usize) -> bool {
+        let each = self.max_message_bytes.saturating_add(UNREAD_MESSAGE_OVERHEAD);
+        header.saturating_add(attachments.saturating_mul(each)) <= self.max_unread_bytes
     }
 }
 
@@ -274,9 +295,137 @@ enum Fail {
     Depth,
 }
 
+/// What a first pass over the JSON of a packet learns, without building anything: an upper bound of what the decoded
+/// value costs, and how many elements each container has, so every buffer is allocated once at its exact size.
+#[derive(Debug)]
+struct Measured {
+    /// An upper bound of the cost of the decoded value (escapes and repeated keys only make the real value smaller).
+    bound: usize,
+    /// The number of elements (array) or entries (object) of every container, in the order they open.
+    sizes: Vec<u32>,
+}
+
+/// Measures the JSON text of a packet: string-aware, bounded by `MAX_DEPTH`, with memory proportional to the number
+/// of containers (at most four bytes per `[` or `{` of the text). It does not validate; the parser that follows
+/// does, and fails on anything this pass counted wrongly.
+fn measure(json: &str) -> Result<Measured, DecodeError> {
+    struct Frame {
+        id: usize,
+        is_object: bool,
+        commas: usize,
+        nonempty: bool,
+    }
+    let b = json.as_bytes();
+    let openers = memchr::memchr2_iter(b'[', b'{', b).count();
+    // A container takes two bytes of text at least (`[]`), whatever the brackets inside strings add to the count.
+    let mut sizes: Vec<u32> = Vec::with_capacity(openers.min(b.len() / 2 + 1));
+    let mut stack: Vec<Frame> = Vec::new();
+    let (mut values, mut objects, mut full_objects, mut entries, mut full_arrays) = (1usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut string_bytes, mut full_strings, mut tokens) = (0usize, 0usize, 0usize);
+    let mut in_token = false;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            b'"' => {
+                in_token = false;
+                if let Some(top) = stack.last_mut() {
+                    top.nonempty = true;
+                }
+                let start = i + 1;
+                i = start;
+                loop {
+                    let Some(k) = memchr::memchr2(b'"', b'\\', &b[i..]) else { return Err(DecodeError::InvalidPayload) };
+                    i += k;
+                    if b[i] == b'"' {
+                        break;
+                    }
+                    // A backslash: the next byte belongs to the escape.
+                    i += 2;
+                    if i > b.len() {
+                        return Err(DecodeError::InvalidPayload);
+                    }
+                }
+                let len = i - start;
+                string_bytes = string_bytes.saturating_add(len);
+                if len > 0 {
+                    full_strings += 1;
+                }
+                i += 1;
+            }
+            b'[' | b'{' => {
+                in_token = false;
+                if stack.len() + 1 > MAX_DEPTH {
+                    return Err(DecodeError::TooDeep);
+                }
+                if let Some(top) = stack.last_mut() {
+                    top.nonempty = true;
+                }
+                sizes.push(0);
+                stack.push(Frame { id: sizes.len() - 1, is_object: c == b'{', commas: 0, nonempty: false });
+                i += 1;
+            }
+            b']' | b'}' => {
+                in_token = false;
+                let Some(frame) = stack.pop() else { return Err(DecodeError::InvalidPayload) };
+                let count = if frame.nonempty { frame.commas + 1 } else { 0 };
+                sizes[frame.id] = u32::try_from(count).unwrap_or(u32::MAX);
+                values = values.saturating_add(count);
+                if frame.is_object {
+                    objects += 1;
+                    entries = entries.saturating_add(count);
+                    if count > 0 {
+                        full_objects += 1;
+                    }
+                } else if count > 0 {
+                    full_arrays += 1;
+                }
+                i += 1;
+            }
+            b',' => {
+                in_token = false;
+                if let Some(top) = stack.last_mut() {
+                    top.commas += 1;
+                }
+                i += 1;
+            }
+            b' ' | b'\t' | b'\r' | b'\n' | b':' => {
+                in_token = false;
+                i += 1;
+            }
+            _ => {
+                if !in_token {
+                    in_token = true;
+                    tokens += 1;
+                }
+                if let Some(top) = stack.last_mut() {
+                    top.nonempty = true;
+                }
+                i += 1;
+            }
+        }
+    }
+    if !stack.is_empty() {
+        return Err(DecodeError::InvalidPayload);
+    }
+    let bound = SLOT
+        .saturating_mul(values)
+        .saturating_add(MAP_BASE.saturating_mul(objects))
+        .saturating_add(MAP_TABLE.saturating_mul(full_objects))
+        .saturating_add(ENTRY.saturating_mul(entries))
+        .saturating_add(ALLOC_OVERHEAD.saturating_mul(full_arrays))
+        .saturating_add(string_bytes)
+        .saturating_add(ALLOC_OVERHEAD.saturating_mul(full_strings))
+        .saturating_add(NUMBER_HEAP.saturating_mul(tokens));
+    sizes.shrink_to_fit();
+    Ok(Measured { bound, sizes })
+}
+
 struct Budget {
     remaining: Cell<usize>,
     fail: Cell<Option<Fail>>,
+    sizes: Vec<u32>,
+    next: Cell<usize>,
 }
 
 impl Budget {
@@ -288,6 +437,15 @@ impl Budget {
         }
         self.remaining.set(left - cost);
         Ok(())
+    }
+
+    /// The element count the first pass found for the container that opens now, never more than the remaining
+    /// budget could pay for at `per` bytes each.
+    fn next_size(&self, per: usize) -> usize {
+        let i = self.next.get();
+        self.next.set(i + 1);
+        let hint = self.sizes.get(i).copied().unwrap_or(0) as usize;
+        hint.min(self.remaining.get() / per.max(1))
     }
 }
 
@@ -317,11 +475,12 @@ impl<'de> DeserializeSeed<'de> for KeySeed<'_> {
                 f.write_str("a string key")
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
-                self.0.charge::<E>(ENTRY_COST.saturating_add(v.len()))?;
+                self.0.charge::<E>(ENTRY.saturating_add(text_cost(v.len())))?;
                 Ok(v.to_owned())
             }
-            fn visit_string<E: de::Error>(self, v: String) -> Result<String, E> {
-                self.0.charge::<E>(ENTRY_COST.saturating_add(v.len()))?;
+            fn visit_string<E: de::Error>(self, mut v: String) -> Result<String, E> {
+                self.0.charge::<E>(ENTRY.saturating_add(text_cost(v.len())))?;
+                v.shrink_to_fit();
                 Ok(v)
             }
         }
@@ -335,12 +494,12 @@ struct Visit<'a> {
 }
 
 impl Visit<'_> {
-    fn container<E: de::Error>(&self) -> Result<(), E> {
+    fn container<E: de::Error>(&self, extra: usize) -> Result<(), E> {
         if self.depth + 1 > MAX_DEPTH {
             self.budget.fail.set(Some(Fail::Depth));
             return Err(E::custom("JSON nested too deeply"));
         }
-        self.budget.charge::<E>(NODE_COST)
+        self.budget.charge::<E>(SLOT.saturating_add(extra))
     }
 }
 
@@ -351,56 +510,72 @@ impl<'de> Visitor<'de> for Visit<'_> {
         f.write_str("any JSON value")
     }
     fn visit_bool<E: de::Error>(self, v: bool) -> Result<IoValue, E> {
-        self.budget.charge::<E>(NODE_COST)?;
+        self.budget.charge::<E>(SLOT)?;
         Ok(IoValue::Bool(v))
     }
     fn visit_i64<E: de::Error>(self, v: i64) -> Result<IoValue, E> {
-        self.budget.charge::<E>(NODE_COST)?;
+        self.budget.charge::<E>(SLOT + NUMBER_HEAP)?;
         Ok(IoValue::from(v))
     }
     fn visit_u64<E: de::Error>(self, v: u64) -> Result<IoValue, E> {
-        self.budget.charge::<E>(NODE_COST)?;
+        self.budget.charge::<E>(SLOT + NUMBER_HEAP)?;
         Ok(IoValue::from(v))
     }
     fn visit_f64<E: de::Error>(self, v: f64) -> Result<IoValue, E> {
-        self.budget.charge::<E>(NODE_COST)?;
+        self.budget.charge::<E>(SLOT + NUMBER_HEAP)?;
         Ok(IoValue::from(v))
     }
     fn visit_str<E: de::Error>(self, v: &str) -> Result<IoValue, E> {
-        self.budget.charge::<E>(NODE_COST.saturating_add(v.len()))?;
+        self.budget.charge::<E>(SLOT.saturating_add(text_cost(v.len())))?;
         Ok(IoValue::String(v.to_owned()))
     }
-    fn visit_string<E: de::Error>(self, v: String) -> Result<IoValue, E> {
-        self.budget.charge::<E>(NODE_COST.saturating_add(v.len()))?;
+    fn visit_string<E: de::Error>(self, mut v: String) -> Result<IoValue, E> {
+        self.budget.charge::<E>(SLOT.saturating_add(text_cost(v.len())))?;
+        v.shrink_to_fit();
         Ok(IoValue::String(v))
     }
     fn visit_unit<E: de::Error>(self) -> Result<IoValue, E> {
-        self.budget.charge::<E>(NODE_COST)?;
+        self.budget.charge::<E>(SLOT)?;
         Ok(IoValue::Null)
     }
     fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<IoValue, A::Error> {
-        self.container::<A::Error>()?;
-        // No capacity from a size hint: the vector grows as items are read and paid for.
-        let mut items = Vec::new();
+        self.container::<A::Error>(0)?;
+        let hint = self.budget.next_size(SLOT);
+        if hint > 0 {
+            self.budget.charge::<A::Error>(ALLOC_OVERHEAD)?;
+        }
+        // The capacity comes from the first pass over this very text and is limited by what the budget can pay for.
+        let mut items = Vec::with_capacity(hint);
         while let Some(item) = seq.next_element_seed(Seed { budget: self.budget, depth: self.depth + 1 })? {
             items.push(item);
+        }
+        if items.len() < items.capacity() {
+            items.shrink_to_fit();
         }
         Ok(IoValue::Array(items))
     }
     fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<IoValue, A::Error> {
-        self.container::<A::Error>()?;
-        let mut entries = IndexMap::new();
+        self.container::<A::Error>(MAP_BASE)?;
+        let hint = self.budget.next_size(ENTRY);
+        if hint > 0 {
+            self.budget.charge::<A::Error>(MAP_TABLE)?;
+        }
+        let mut entries = IndexMap::with_capacity(hint);
         while let Some(key) = map.next_key_seed(KeySeed { budget: self.budget })? {
             let value = map.next_value_seed(Seed { budget: self.budget, depth: self.depth + 1 })?;
             entries.insert(key, value);
+        }
+        // A repeated key replaced an entry: give back the room that was reserved for it.
+        if entries.len() < hint {
+            entries.shrink_to_fit();
         }
         Ok(IoValue::Object(Box::new(entries)))
     }
 }
 
-/// Parses one JSON document, whole, spending at most `budget` of the cost model.
-fn parse_json(text: &str, budget: usize) -> Result<IoValue, DecodeError> {
-    let state = Budget { remaining: Cell::new(budget), fail: Cell::new(None) };
+/// Parses the JSON document of a packet, whole, spending at most what the first pass found.
+fn parse_json(text: &str, measured: Measured) -> Result<IoValue, DecodeError> {
+    let state = Budget { remaining: Cell::new(measured.bound), fail: Cell::new(None), sizes: measured.sizes, next: Cell::new(0) };
     let mut de = serde_json::Deserializer::from_str(text);
     let result = Seed { budget: &state, depth: 0 }.deserialize(&mut de).and_then(|v| de.end().map(|()| v));
     match result {
@@ -425,6 +600,29 @@ struct Pending {
     expected: usize,
     buffers: Vec<Bytes>,
     cost: usize,
+}
+
+/// A text message whose header was read and whose JSON was measured, not yet decoded: what the connection reserves
+/// room for before any value is built.
+#[derive(Debug)]
+pub(crate) struct Prepared {
+    kind: u8,
+    expected: usize,
+    nsp: String,
+    id: Option<u64>,
+    /// The packet text, owned so the message can wait for room without being scanned again.
+    text: String,
+    payload_at: usize,
+    measured: Measured,
+    reservation: usize,
+}
+
+impl Prepared {
+    /// The most the decode can occupy at any moment: the structure it builds, the packet around it and the
+    /// element counts of the first pass. The reservation is shrunk to the packet's real cost afterwards.
+    pub(crate) fn reservation(&self) -> usize {
+        self.reservation
+    }
 }
 
 /// The streaming decoder of one Engine.IO connection: text messages and binary messages in the order they arrive.
@@ -459,9 +657,18 @@ impl Decoder {
         self.pending.as_ref().map_or(0, |p| p.expected - p.buffers.len())
     }
 
-    /// Adds a text message. `Ok(Some(packet))` when it is a complete packet, `Ok(None)` when it is the header of a
-    /// binary packet.
+    /// Adds a text message in one step (what the connection does in three: [`prepare`](Self::prepare), reserve,
+    /// [`decode`](Self::decode)). `Ok(Some(packet))` when it is a complete packet, `Ok(None)` when it is the header
+    /// of a binary packet.
+    #[cfg(test)]
     pub(crate) fn add_text(&mut self, text: &str) -> Result<Option<Packet>, DecodeError> {
+        let prepared = self.prepare(text.to_owned())?;
+        self.decode(prepared)
+    }
+
+    /// Reads the header of a text message and measures its JSON, building nothing: the packet is refused here when
+    /// its header is wrong or its decoded structure could cost more than `max_decoded_bytes`.
+    pub(crate) fn prepare(&self, text: String) -> Result<Prepared, DecodeError> {
         if self.pending.is_some() {
             return Err(DecodeError::UnexpectedText);
         }
@@ -518,18 +725,43 @@ impl Decoder {
             pos += id_len;
             Some(v)
         };
+        // The checks that need no payload, in the order the packet types are read.
+        let empty = pos == b.len();
+        match kind {
+            0 | 1 | 4 if id.is_some() => return Err(DecodeError::InvalidAckId),
+            1 if !empty => return Err(DecodeError::InvalidPayload),
+            2 | 5 if empty => return Err(DecodeError::InvalidPayload),
+            3 | 6 if id.is_none() => return Err(DecodeError::InvalidAckId),
+            3 | 6 if empty => return Err(DecodeError::InvalidPayload),
+            _ => {}
+        }
         // `pos` follows ASCII only.
-        let payload = &text[pos..];
-        let budget = self.limits.max_decoded_bytes;
+        let measured = if empty { Measured { bound: 0, sizes: Vec::new() } } else { measure(&text[pos..])? };
+        let json_limit =
+            if kind == 0 { self.limits.max_decoded_bytes.min(self.limits.max_auth_bytes) } else { self.limits.max_decoded_bytes };
+        let header = PACKET_COST.saturating_add(text_cost(nsp.len()));
+        let reservation = measured.bound.saturating_add(header);
+        if measured.bound > json_limit || reservation > self.limits.max_decoded_bytes {
+            return Err(DecodeError::TooLarge);
+        }
+        // The first pass's own memory (one `u32` per container) lives until the decode ends.
+        let scratch = measured.sizes.capacity().saturating_mul(std::mem::size_of::<u32>()).saturating_add(ALLOC_OVERHEAD);
+        let reservation = reservation.saturating_add(scratch);
+        Ok(Prepared { kind, expected, nsp, id, text, payload_at: pos, measured, reservation })
+    }
+
+    /// Decodes a prepared message. `Ok(Some(packet))` when it is a complete packet, `Ok(None)` when it is the header
+    /// of a binary packet.
+    pub(crate) fn decode(&mut self, prepared: Prepared) -> Result<Option<Packet>, DecodeError> {
+        let Prepared { kind, expected, nsp, id, text, payload_at, measured, .. } = prepared;
+        let binary = kind == 5 || kind == 6;
+        let payload = &text[payload_at..];
         match kind {
             0 => {
-                if id.is_some() {
-                    return Err(DecodeError::InvalidAckId);
-                }
                 let auth = if payload.is_empty() {
                     None
                 } else {
-                    let v = parse_json(payload, budget.min(self.limits.max_auth_bytes))?;
+                    let v = parse_json(payload, measured)?;
                     if !matches!(v, IoValue::Object(_)) {
                         return Err(DecodeError::InvalidPayload);
                     }
@@ -537,23 +769,12 @@ impl Decoder {
                 };
                 Ok(Some(Packet { nsp, body: Body::Connect(auth) }))
             }
-            1 => {
-                if id.is_some() {
-                    return Err(DecodeError::InvalidAckId);
-                }
-                if !payload.is_empty() {
-                    return Err(DecodeError::InvalidPayload);
-                }
-                Ok(Some(Packet { nsp, body: Body::Disconnect }))
-            }
+            1 => Ok(Some(Packet { nsp, body: Body::Disconnect })),
             4 => {
-                if id.is_some() {
-                    return Err(DecodeError::InvalidAckId);
-                }
                 let data = if payload.is_empty() {
                     IoValue::Null
                 } else {
-                    let v = parse_json(payload, budget)?;
+                    let v = parse_json(payload, measured)?;
                     if !matches!(v, IoValue::String(_) | IoValue::Object(_)) {
                         return Err(DecodeError::InvalidPayload);
                     }
@@ -562,14 +783,11 @@ impl Decoder {
                 Ok(Some(Packet { nsp, body: Body::ConnectError(data) }))
             }
             2 | 5 => {
-                if payload.is_empty() {
-                    return Err(DecodeError::InvalidPayload);
-                }
-                let IoValue::Array(mut items) = parse_json(payload, budget)? else { return Err(DecodeError::InvalidPayload) };
+                let IoValue::Array(mut items) = parse_json(payload, measured)? else { return Err(DecodeError::InvalidPayload) };
                 if items.is_empty() || items.len() - 1 > self.limits.max_args {
                     return Err(if items.is_empty() { DecodeError::InvalidPayload } else { DecodeError::TooManyArguments });
                 }
-                let name = match items.remove(0) {
+                let mut name = match items.remove(0) {
                     IoValue::String(s) => {
                         if is_reserved(&s) {
                             return Err(DecodeError::InvalidPayload);
@@ -582,8 +800,14 @@ impl Decoder {
                     IoValue::Number(n) => n.to_string(),
                     _ => return Err(DecodeError::InvalidPayload),
                 };
+                name.shrink_to_fit();
+                // Removing the name left a buffer one slot too large.
+                items.shrink_to_fit();
                 if binary {
-                    let cost = items.iter().map(IoValue::cost).fold(0usize, usize::saturating_add).saturating_add(PACKET_COST);
+                    let cost = pending_cost(&nsp, Some(&name), &items);
+                    if !self.limits.fits_reassembly(cost, expected) {
+                        return Err(DecodeError::TooLarge);
+                    }
                     self.pending = Some(Pending { nsp, id, name: Some(name), args: items, expected, buffers: Vec::new(), cost });
                     Ok(None)
                 } else {
@@ -592,15 +816,15 @@ impl Decoder {
             }
             3 | 6 => {
                 let Some(id) = id else { return Err(DecodeError::InvalidAckId) };
-                if payload.is_empty() {
-                    return Err(DecodeError::InvalidPayload);
-                }
-                let IoValue::Array(items) = parse_json(payload, budget)? else { return Err(DecodeError::InvalidPayload) };
+                let IoValue::Array(items) = parse_json(payload, measured)? else { return Err(DecodeError::InvalidPayload) };
                 if items.len() > self.limits.max_args {
                     return Err(DecodeError::TooManyArguments);
                 }
                 if binary {
-                    let cost = items.iter().map(IoValue::cost).fold(0usize, usize::saturating_add).saturating_add(PACKET_COST);
+                    let cost = pending_cost(&nsp, None, &items);
+                    if !self.limits.fits_reassembly(cost, expected) {
+                        return Err(DecodeError::TooLarge);
+                    }
                     self.pending = Some(Pending { nsp, id: Some(id), name: None, args: items, expected, buffers: Vec::new(), cost });
                     Ok(None)
                 } else {
@@ -634,6 +858,14 @@ impl Decoder {
     pub(crate) fn reset(&mut self) {
         self.pending = None;
     }
+}
+
+/// What the packet a binary header announces costs once its attachments are in place.
+fn pending_cost(nsp: &str, name: Option<&str>, args: &[IoValue]) -> usize {
+    PACKET_COST
+        .saturating_add(text_cost(nsp.len()))
+        .saturating_add(name.map_or(0, |n| text_cost(n.len())))
+        .saturating_add(args_cost(args, args.len()))
 }
 
 /// Puts the attachments where their placeholders are, as `reconstructPacket` does. The same attachment may be
@@ -679,8 +911,15 @@ mod fixture_tests {
     const FIXTURE: &str = include_str!("fixtures/parser.json");
 
     /// Inputs the npm decoder accepts and this one refuses (the codec fails closed): see the module docs of `parser`.
-    const STRICTER: [&str; 6] =
-        ["ack without id", "event without payload", "empty string", "id on connect", "ack id above 2^53", "ack id of 22 digits"];
+    const STRICTER: [&str; 7] = [
+        "ack without id",
+        "event without payload",
+        "empty string",
+        "id on connect",
+        "ack id above 2^53",
+        "ack id of 22 digits",
+        "lone surrogate",
+    ];
 
     fn unhex(s: &str) -> Vec<u8> {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
@@ -1138,7 +1377,7 @@ mod tests {
 
     #[test]
     fn empty_structures_are_charged_like_any_other_value() {
-        // A packet of 1 MB of `[]` would be 500,000 arrays: with the model of 48 bytes it costs 24 MB, above the 16 MiB budget.
+        // 30,000 empty arrays are 90 kB of text and cost 1.2 MB (a 40-byte slot each), above this 1 MB budget.
         let small_budget = Limits { max_decoded_bytes: 1_000_000, ..limits() };
         let arrays = vec!["[]"; 30_000].join(",");
         let text = format!("2[\"x\",{arrays}]");
@@ -1148,7 +1387,7 @@ mod tests {
         assert_eq!(Decoder::new(small_budget).add_text(&format!("2[\"x\",{objects}]")), Err(DecodeError::TooLarge));
         // Within the budget the same shape decodes, and the packet reports its cost.
         let p = decode(&format!("2[\"x\",{}]", vec!["[]"; 100].join(","))).unwrap().unwrap();
-        assert!(p.cost() >= 100 * NODE_COST);
+        assert!(p.cost() >= 100 * SLOT);
     }
 
     #[test]
@@ -1160,6 +1399,30 @@ mod tests {
         assert_eq!(d.add_text(&big), Err(DecodeError::TooLarge));
         // An event with the same payload is not subject to it.
         assert!(d.add_text(&format!(r#"2["x","{}"]"#, "x".repeat(2000))).is_ok());
+    }
+
+    #[test]
+    fn a_binary_header_that_could_not_be_reassembled_inside_the_unread_limit_is_refused_at_once() {
+        // Unread limit 100 kB, attachments of up to 10 kB: a header of `n` empty objects (136 bytes each) leaves room
+        // for its attachments only while it costs at most 100,000 - 2 x 10,064.
+        let limits = Limits { max_unread_bytes: 100_000, max_message_bytes: 10_000, ..limits() };
+        let header =
+            |n: usize| format!(r#"52-["x",[{}],{{"_placeholder":true,"num":0}},{{"_placeholder":true,"num":1}}]"#, vec!["{}"; n].join(","));
+        assert!(Decoder::new(limits).add_text(&header(500)).is_ok(), "64 kB of header and two attachments fit");
+        assert_eq!(Decoder::new(limits).add_text(&header(700)), Err(DecodeError::TooLarge), "90 kB of header leaves no room for them");
+    }
+
+    #[test]
+    fn a_lone_surrogate_is_refused_and_a_pair_of_them_is_a_character() {
+        // `JSON.parse` keeps `"\ud800"` (JavaScript strings are UTF-16); a Rust string cannot hold it, so the packet
+        // is undecodable and the connection closes: stricter than Node, fail closed (a listed expected difference).
+        assert_eq!(decode(r#"2["x","\ud800"]"#), Err(DecodeError::InvalidPayload));
+        assert_eq!(decode(r#"2["x","\udc00"]"#), Err(DecodeError::InvalidPayload));
+        assert_eq!(decode(r#"2["x",{"\ud800":1}]"#), Err(DecodeError::InvalidPayload));
+        assert_eq!(decode(r#"2["x","\ud800A"]"#), Err(DecodeError::InvalidPayload));
+        assert_eq!(decode(r#"0{"token":"\ud800"}"#), Err(DecodeError::InvalidPayload));
+        let pair = decode(r#"2["x","😀"]"#).unwrap().unwrap();
+        assert_eq!(pair, event("/", None, "x", vec![IoValue::from("\u{1F600}")]));
     }
 
     #[test]

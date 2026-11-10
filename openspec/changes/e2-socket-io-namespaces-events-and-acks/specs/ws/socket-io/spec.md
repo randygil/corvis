@@ -230,7 +230,8 @@ repeated many times MUST NOT copy the attachment. Each attachment is bounded by 
 ### Requirement: Reassembly and waiting packets stay within the received-data bound
 Attachments received for a packet that is not yet complete, and packets waiting for a handler, SHALL count against the
 Engine.IO session's `max_unread_bytes` until the packet is handed to a handler or discarded. Options under which one
-maximal binary packet could not fit in `max_unread_bytes` MUST be rejected when the server is created.
+maximal binary packet could not fit in `max_unread_bytes` MUST be rejected when the server is created, and a binary
+header whose cost and attachments could not fit together MUST close the connection when it arrives.
 
 #### Scenario: Incomplete packets on many connections
 - **WHEN** a client sends a binary packet header and 9 of its 10 attachments of 1 MB and then stops
@@ -240,6 +241,69 @@ maximal binary packet could not fit in `max_unread_bytes` MUST be rejected when 
 - **WHEN** a server is created with `max_attachments` 100 and the default `max_http_buffer_size` and
   `max_unread_bytes`
 - **THEN** creation fails with an error naming the options
+
+### Requirement: Decoded packets are reserved before they are built
+The decoded cost of a packet, an upper bound of the heap its values occupy (derived from the types: a slot per value,
+the box and table of an object, the bytes of strings, allocator overhead), SHALL be worked out from its text before
+anything is built, and a packet above `max_decoded_bytes` (default 32 MiB) MUST close the connection. The cost MUST be
+reserved in the server-wide unread budget before decoding, shrunk to the real cost afterwards, and charged until the
+handler ends.
+
+#### Scenario: Cost is an upper bound of the heap
+- **WHEN** packets of adversarial shapes (empty objects, empty arrays, empty strings, numbers, nested one-key objects,
+  long keys, many keys, repeated keys, escapes) are decoded under a counting allocator
+- **THEN** for each, the live heap of the decoded packet is at most its charged cost, the charged cost at most the
+  reservation, and the peak during decoding at most the reservation plus the text
+
+#### Scenario: Packet above the budget
+- **WHEN** a raw client sends 0.99 MB of text that decodes to 45 MB (330,000 empty objects) under the default limit
+- **THEN** the connection is closed after a pass over the text that allocates less than one byte per two of it, and
+  nothing of the packet is built
+
+### Requirement: A connection waits while the budget has no room
+A connection SHALL NOT take another message from the engine while its session is over its unread limit by the engine's
+own test (its limit, or its fair share while the server-wide budget is exceeded), nor while a measured packet waits for
+room. A packet is admitted when the session stays within its fair share, or when the server-wide budget and the client
+address's quota (a quarter of the budget, at least one packet) have room. Heartbeats MUST still be served.
+
+#### Scenario: Many sessions of one address
+- **WHEN** twelve sessions of one address each send a packet that decodes to 7 MB, to a handler that keeps its
+  arguments, with `max_total_unread_bytes` 16 MiB
+- **THEN** one packet is admitted, the others wait, the live heap stays within `max_total_unread_bytes` plus, per open
+  session, its fair share and one message, and all twelve are handled once the handlers end
+
+#### Scenario: Honest address
+- **WHEN** one address holds its quota with handlers that do not end, and a session of another address sends a packet
+  that needs room in the server-wide budget
+- **THEN** that packet is decoded and handled
+
+### Requirement: Charges end with their handlers
+The charge of a decoded packet MUST stay on the server-wide gauge until its handler ends, including after its session
+closed (for at most `close_timeout`, after which the handler is dropped), and MUST count against the client address,
+so reconnecting does not multiply it and sessions of other addresses keep their guaranteed share and the room left.
+
+#### Scenario: Handler running after the close
+- **WHEN** a session closes while its handler keeps a packet, and the address reconnects and sends the same packet
+- **THEN** the gauge still counts the first packet, the second waits, and it is admitted when the first handler ends
+
+### Requirement: Lone surrogates are refused
+A string of a packet holding a lone UTF-16 surrogate escape (`"\ud800"`) SHALL make the packet undecodable and close the
+connection, because a Rust string cannot hold it and Node keeps it. The difference is stricter and fail-closed, and
+MUST be listed in `expected-differences.json` with its scenario.
+
+#### Scenario: Lone surrogate in an argument
+- **WHEN** a raw client sends an event whose argument is `"\ud800"`, and another whose argument is a valid pair
+- **THEN** Corvis closes the connection for the first and delivers the second; Node delivers both, and the harness
+  lists the first as an expected difference
+
+### Requirement: Log lines a client can provoke are rate limited
+A line written because of what a client sent (a handler or connection handler that panicked, a connect middleware that
+timed out) SHALL be written at most once per minute per kind and per namespace the application registered, the next
+one carrying the count of those left out, and MUST NOT include a panic message or data of a packet.
+
+#### Scenario: Handler that panics on bad input
+- **WHEN** a client sends 50 events that make a handler panic with a message and the client's data
+- **THEN** one line is logged, naming the namespace, and neither the message nor the data appears in the log
 
 ### Requirement: Nesting depth is bounded
 A packet whose JSON is nested deeper than 128 levels MUST be treated as an undecodable packet, and no recursion of
@@ -324,7 +388,8 @@ before the Engine.IO sessions are closed, and fail their pending acknowledgement
 
 ### Requirement: Options are validated
 Creating a Socket.IO server SHALL fail, with an error naming the option, on a zero `connect_timeout`, `ack_timeout`,
-`max_attachments`, `max_inflight` or `max_pending_acks`, and on any option the Engine.IO layer rejects.
+`max_attachments`, `max_inflight` or `max_pending_acks`, on a `max_decoded_bytes` above the engine's
+`max_total_unread_bytes`, and on any option the Engine.IO layer rejects.
 
 #### Scenario: Zero connect timeout
 - **WHEN** a server is created with `connect_timeout(Duration::ZERO)`
@@ -338,8 +403,9 @@ harness's `expected-differences.json` with the scenario that exercises it.
 #### Scenario: Documented bounds
 - **WHEN** the documentation page and the rustdoc of `IoOptions` are read
 - **THEN** they list, with default and Node's value: one pending socket per namespace, acknowledgement id range,
-  nesting depth, attachments when encoding, reassembly accounting, handlers in flight, pending acknowledgements and
-  their default deadline, namespace names and socket id entropy
+  nesting depth, attachments when encoding, reassembly accounting, the decoded cost of a packet with its worst-case
+  expansion, the address quota, handlers in flight, pending acknowledgements and their default deadline, namespace
+  names and socket id entropy
 
 #### Scenario: Divergences are listed
 - **WHEN** the harness runs the Socket.IO scenarios against both servers

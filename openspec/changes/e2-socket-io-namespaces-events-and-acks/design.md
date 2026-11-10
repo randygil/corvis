@@ -295,6 +295,8 @@ task); a global ack table keyed by id (an ACK from another socket of the namespa
 |---|---|---|---|
 | Packet size: one string packet, and each attachment | `EngineOptions::max_http_buffer_size`, 1,000,000 B | same | Engine.IO: `413` / close `1009` (#32) |
 | `max_attachments` per binary packet, both directions | 10 | 10 when decoding, none when encoding | decode: connection closed (`forced close`); encode: `EmitError::TooManyAttachments` |
+| Decoded cost of one packet (`max_decoded_bytes`) | 32 MiB; text decodes to 11 to 20 times its size, at most 58 times | none | connection closed before anything is built; reserved in the server-wide budget before decoding |
+| Server-wide unread budget, per client address | `max_total_unread_bytes` 256 MiB; an address holds a quarter of it (at least one packet) plus the fair share of each session it may open; a session always holds its fair share | none | the packet waits, reads pause, heartbeat served |
 | Bytes held while reassembling one binary packet | at most `(max_attachments + 1) × max_http_buffer_size` (11 MB), counted in `max_unread_bytes` (16 MiB) | not counted | reads pause; options rejected at construction when the product exceeds `max_unread_bytes` |
 | Reassembly state | one packet per connection, no allocation from the declared count | same | text during reassembly closes the connection |
 | JSON nesting depth | 128 | none | invalid payload, connection closed |
@@ -316,7 +318,8 @@ max_http_buffer_size > max_unread_bytes` (a reassembly that could never complete
 own validation.
 
 Client-observable divergences (each gets a wire scenario and an entry in `expected-differences.json`): the second
-CONNECT while middleware is pending, the ack id above 2^53 - 1, nesting deeper than 128. The other limits either equal
+CONNECT while middleware is pending, the ack id above 2^53 - 1, nesting deeper than 128, and (round 1) a lone
+surrogate in a string. The other limits either equal
 Node or are only visible to server code; they are documented and tested in Rust.
 
 ### 10. Verification
@@ -426,12 +429,13 @@ Recorded while implementing, against `origin/dev` at `cabeb57` (#32 merged).
 ### Decisions and deviations
 
 - **More options than the design lists**, each a bound on something a client can make the server hold or wait for:
-  `max_decoded_bytes` (a decoded packet, 16 MiB; the design only bounded the text), `max_auth_bytes` (16 KiB: the `auth`
+  `max_decoded_bytes` (a decoded packet, 32 MiB since round 1; the design only bounded the text), `max_auth_bytes` (16 KiB: the `auth`
   object lives as long as the socket, so 1 MB of it times 10,000 sessions was 10 GB), `max_event_name_len` (256),
   `max_args` (128), `attachment_timeout` (30 s: the design bounded the bytes of a half-sent binary packet but a client
   that answers pings could hold them forever), `middleware_timeout` (10 s). All validated; `max_decoded_bytes` must be at
   least the engine's `max_http_buffer_size` and `max_auth_bytes` at most `max_decoded_bytes`.
-- **Charging decoded structures.** `IoValue` is `Object(Box<IndexMap>)` so every node is 40 bytes; the cost model is 48
+- **Charging decoded structures** (superseded: see "Security review (round 1)", item 1, for the cost model, the default of
+  `max_decoded_bytes` and the admission rules). `IoValue` is `Object(Box<IndexMap>)` so every node is 40 bytes; the cost model is 48
   bytes per value, plus the text of strings and keys, plus 64 per object entry, whatever the value holds (an empty array
   costs as much as a number). The decoder spends from a budget while it reads, so a 1 MB packet of `[]` is refused before
   the 500,000 arrays exist. The charge is taken from the session's gauge (`hold`) when the packet is decoded and released
@@ -470,7 +474,8 @@ Recorded while implementing, against `origin/dev` at `cabeb57` (#32 merged).
   call registers (an abandoned future that is never polled again still frees its slot at its deadline). A call whose
   future is dropped removes its entry.
 - **Logging.** A panic in a handler or middleware is logged with the namespace only; undecodable packets and timeouts of a
-  connection are not logged at all, so a client cannot write to the log at the rate it sends.
+  connection are not logged at all, so a client cannot write to the log at the rate it sends. (Round 1 added the rate
+  limit: one line a minute per kind and namespace.)
 - **Harness.** The scenario servers live on `/sio/` and `/sio-short/`, not `/socket.io/`: on Corvis the Engine.IO scenario
   presets own the default path, so `socket-io/handshake-and-ack` moved to `/sio/`. `emitWithAck` of Node resolves with the
   first value of the answer only, so the Node scenario app logs the callback form to compare all values. The upstream
@@ -482,3 +487,156 @@ Recorded while implementing, against `origin/dev` at `cabeb57` (#32 merged).
   use_middleware}` delegate to the main namespace. `IntoArgs` requires `Send` so an acknowledged emit can be awaited in a
   spawned task.
 - Task 8.5 (security review), 9.6 (parity) and 9.7 belong to the maintainer's session and are not done here.
+
+## Security review (round 1)
+
+The first review (Medium: 1, Info: 3, plus two checks) found that the memory of decoded packets escaped both the
+per-session and the server-wide budget. Findings, fixes and the tests that pin them. Where this section differs from
+"Implementation notes" above, this section wins.
+
+### 1. Memory of decoded packets escaped the budgets (Medium)
+
+**Evidence.** One session sending 0.99 MB of text, `42["hold",[{},{},...]]` (330,000 empty objects), to a handler that
+keeps its arguments held 46.8 MB live while charged 16.8 MB; twelve sessions held 562 MB against a server-wide limit of
+16.8 MB; with the default per-address caps one address could pin about 12 GB. Three causes.
+
+**(a) The cost model undercharged.** `NODE_COST` 48 and `ENTRY_COST` 64 were guesses; an empty object really cost about
+142 bytes and the buffers carried growth slack. The model is now derived from the types (`value.rs`, 64-bit; every
+constant is a `size_of` or a sum of them, and a unit test pins the numbers):
+
+| Constant | Value | Derivation |
+|---|---|---|
+| `ALLOC_OVERHEAD` | 24 | what the allocator adds to an allocation: glibc's 8-byte header plus rounding to 16 (at most 23); a counting allocator sees requested sizes only, so this is slack on top of what the tests measure |
+| `SLOT` | 40 | `size_of::<IoValue>()`: the 32-byte `Bytes` of `Binary` plus the tag. Every value takes one slot, inline in the buffer of the array or entry that holds it |
+| `MAP_BASE` | 96 | an object is `Box<IndexMap>`: `size_of::<IndexMap<String, IoValue>>()` = 72 (hash table header 32, entry vector 24, `RandomState` 16) plus `ALLOC_OVERHEAD` |
+| `MAP_TABLE` | 100 | what a non-empty object adds once: the overhead of its entry vector and its hash table (2 x 24), the smallest `hashbrown` table (4 buckets x 9 bytes) and one trailing control group (16) |
+| `ENTRY` | 56 | per object entry besides the key text and the value's slot: stored hash 8 + key `String` header 24 + the table's index bytes 24 (a table with room for `n` entries has fewer than `16n/7 + 1` buckets of 9 bytes: at most 21 bytes per entry) |
+| key, string | `len + 24` (0 when empty) | the bytes and one allocation; an empty string owns no buffer |
+| array | `+ 24` when non-empty | the overhead of its buffer; the buffer's bytes are the slots of its elements |
+| `NUMBER_HEAP` | 0 | `serde_json::Number` is inline unless another crate turns on `arbitrary_precision`, in which case the constant becomes 40 + overhead (`size_of::<Number>()` is checked at compile time) |
+| `PACKET_COST` | `size_of::<Packet>() + 24` | the packet moved into the handler's task; its namespace, event name and argument buffer are charged as strings and an array |
+
+The decoder builds every buffer at its exact final size: a first pass over the JSON text (`measure`, string aware,
+bounded by `MAX_DEPTH`, four bytes of memory per container, shrunk to fit) counts the elements of every container, and the
+parser allocates `Vec::with_capacity(n)` and `IndexMap::with_capacity(n)` from those counts (limited by what the
+remaining budget can pay for, so a wrong count cannot allocate more than charged), then shrinks the one case that ends
+smaller (repeated keys). So no growth slack exists and the peak during decoding equals the final size. The same first
+pass computes an upper bound of the cost (escapes and repeated keys only make the real value smaller) and the packet is
+refused with `TooLarge` before anything is built when the bound exceeds `max_decoded_bytes`.
+`tests/socket_io_memory.rs` (its own binary, with a counting global allocator) decodes 21 shapes of 0.5 to 1 MB of text
+(arrays of `{}`, `[]`, `""`, `0`, `null`, floats, one-byte strings, one-key objects, one- and two-element arrays, nested
+one-key objects, nested arrays, nested empty-key objects, 500-byte keys, 60,000 keys in one object, one key repeated,
+escapes, one long string, a hundred arguments, ordinary records, an acknowledgement, a binary header) and asserts, for
+each, live heap of the decoded packet <= charged cost <= reservation, peak during decoding <= reservation + text, and
+that dropping the packet frees everything. Measured expansion (charged cost over text): `{}` 45.3x, `[]` 13.3x, `0` 20x,
+one-key objects 44.6x, nested one-key objects 52.7x, **nested empty-key objects 58.2x (the worst)**, records of six
+fields 11.5x, one long string 1.0x. `IoValue::cost` walks with a stack of iterators (one per nesting level) because a
+stack of references was itself an allocation as wide as the widest array (found by the peak assertion).
+
+**(b) Nothing consulted the server-wide gauge before taking the next message, and decoding was charged after the fact.**
+The connection task now takes a message only while the Engine.IO session is not over its limit by the engine's own test
+(`UnreadGauge::over_limit`: its `max_unread_bytes`, or its fair share while the server-wide budget is exceeded: the rule
+the transports use; the layer's own counter is gone) and while no measured packet waits for room. A text message is
+measured (`Decoder::prepare`: header, first pass, bound), its reservation is made against the server-wide budget
+(`Reservation::try_new`), it is decoded with the budget equal to the reservation, and the reservation is shrunk to the
+packet's real cost (`UnreadTicket::shrink_to`). When there is no room the message is parked, keeping its wire charge,
+and the connection takes nothing else; the select loop wakes on any release of the session's or the server's gauge (the
+notification is registered before the gauges are read, as the WebSocket reader does) and the heartbeat is served by the
+Engine.IO tasks as always. A binary header is reserved the same way; its attachments are charged as received.
+
+Admission (`budget.rs`): the session may hold the fair share `f = max(16 KiB, max_total_unread_bytes / max_sessions)`
+whatever others hold (the guaranteed share), and anything beyond it needs room in the server-wide budget (an atomic
+compare-and-swap, so concurrent connections cannot overshoot together). Both are limited per client address (the key the
+Engine.IO layer counts sessions under, so `set_trust_proxy` is honored): an address may hold a quarter of the budget
+(never less than one packet, never more than the budget) plus `f` for each session it may have open
+(`max_sessions_per_ip`), counting the handlers still running for sessions it already closed. A binary header whose cost
+and attachments could not fit together in `max_unread_bytes` is refused when it arrives (it could never complete: the
+transport stops reading while the session is over its limit). `max_decoded_bytes` is validated to be at most
+`max_total_unread_bytes`, so one packet can always be reserved.
+
+*Invariant.* Let `T` = `max_total_unread_bytes`, `U` = `max_unread_bytes`, `D` = `max_decoded_bytes`, `W` =
+`3 x max_http_buffer_size + 64` (the largest message, its accounting, and the first pass's counts, four bytes per
+container and at most one container per two bytes of text, which a parked message keeps), `f` the fair share, `Q = min(T, max(T/4, D))` the
+address quota, `N` = `max_sessions_per_ip` and `S` the number of sessions open or closed with a handler still running.
+- Bytes held by decoded packets, reassembly buffers and unread messages across a server: `H <= T + S x (f + W)`. Every
+  reservation beyond a session's guaranteed share is checked against `T` atomically; a guaranteed one keeps the session
+  at or below `f`; the transport stops reading a session above `f` while the budget is exceeded, so each session adds at
+  most one message in the hand (`W`). With the defaults (`T` 256 MiB, 10,000 sessions) `f` is 26,843 bytes and the
+  overshoot term is at most `S x (26 KiB + 1 MB)`, reached only if every session has a message in the hand at once.
+- Per session: `U + D + W` (reads stop above `U`; one more packet is reserved; one message in the hand).
+- Per client address, closed sessions included: `Q + N x f` for decoded packets (default `64 MiB + 256 x 26 KiB`, about
+  71 MiB), plus the wire messages of its open sessions.
+- The decoding itself never overshoots its reservation (the peak test above), and a reservation never exceeds `D`.
+
+**(c) Closed sessions.** The charge of a packet lives in the handler's future (`Charge`), which the connection task
+hands to a grace task for `close_timeout` (30 s) when the session ends: the handler keeps running, and its charge stays
+on the server-wide gauge and on the address, until the handler returns or the grace period drops it. The charge holds
+its gauges and its address slot by `Arc`, so nothing is released early and nothing is leaked. A client cannot multiply
+it by reconnecting: the count belongs to the address (a new session of the same address finds the quota used, so its
+packet waits, which is the intended backpressure), and the guaranteed shares of sessions that closed are counted in the
+address's cap too (a test reconnects 60 times and the address never holds more than its cap). Other addresses are not
+affected because every limit above is checked against the session's own gauge and the address's own slot: the fair
+share is the same number for everyone and nobody else's holdings consume it, and an address can use at most `Q + N x f`
+of the shared budget, so an honest address keeps at least `T - Q` for packets that need server-wide room, and its small
+packets are always admitted.
+Regression tests: `a_decoded_packet_is_charged_at_its_cost_not_at_what_was_reserved_for_it`,
+`a_packet_that_finds_no_room_waits_and_the_connection_takes_nothing_else`,
+`an_honest_address_is_served_while_another_holds_its_maximum`,
+`the_charge_of_a_running_handler_outlives_its_session_and_is_not_multiplied_by_reconnecting`,
+`reconnecting_over_and_over_cannot_multiply_what_an_address_holds_even_in_guaranteed_shares`,
+`a_handler_that_never_ends_loses_its_charge_when_the_grace_period_does`, `a_waiting_packet_is_released_with_its_session`,
+`a_connection_over_its_unread_limit_takes_no_more_messages` (`src/socket_io/tests.rs`, paused clock);
+`many_sessions_of_one_address_hold_a_bounded_amount_while_their_handlers_wait` (twelve sessions, counting allocator,
+live heap against the invariant) and `an_honest_address_is_served_while_another_holds_its_maximum` (a client bound to
+127.0.0.2 while 127.0.0.1 holds its quota) in `tests/socket_io_memory.rs`; the gauge operations in `engine/session.rs`
+tests and the budget rules in `budget.rs` tests.
+
+**Default of `max_decoded_bytes`: 32 MiB (was 16 MiB).** With honest costs a text packet of ordinary JSON (objects with
+a handful of string and number fields) decodes to 11 to 20 times its size, so a legitimate 1 MB payload costs 11 to
+20 MB: it would have been refused or borderline under 16 MiB. At 32 MiB anything up to 33 times is accepted; the shapes
+above 33 times (the worst is 58x) are refused: the connection is closed and nothing is allocated for them. The limit is
+documented in the limits table (EN and ES) with the worst-case expansion factor, and in the rustdoc of
+`IoOptions::max_decoded_bytes`.
+
+### 2. Unbounded middleware-timeout warning (Info)
+
+The line was written once per timed-out connection attempt. It goes through `WarnLimiter` (`warn.rs`, mirroring the
+limiter of the local strategy's hasher, on `tokio::time::Instant` so it can be tested on a paused clock): at most once a
+minute per kind and per namespace, the next carrying the count left out. Keys are a static description and the name of
+a namespace the application registered (never client data), and the table is capped at 4,096 keys. Tests:
+`warn.rs` unit tests and `a_slow_connect_middleware_warns_once_a_minute_per_namespace` in `tests/socket_io_log.rs`.
+
+### 3. Handler panics logged at the packet rate (Info)
+
+The framework's "panicked" lines (event handlers, connection handlers, `on_disconnecting` and `on_disconnect` handlers,
+connect middleware) go through the same limiter, one line a minute per kind and namespace. The connection and
+disconnect handlers used `ws::guarded`, which wrote the panic payload; they now use `WarnLimiter::guard`, and no line of
+this layer includes a panic message or any data of a packet. Documented: handlers should not `unwrap()` the conversion of
+an argument. Test: `a_handler_that_panics_on_client_data_writes_one_line_a_minute_without_the_data_or_the_message` and
+`panics_in_connection_and_disconnect_handlers_are_limited_and_never_print_the_message`.
+
+### 4. Lone surrogate (Info)
+
+`JSON.parse('"\\ud800"')` keeps the lone surrogate (JavaScript strings are UTF-16) and Node delivers the event; `serde_json`
+refuses it (`lone leading surrogate in hex escape`), so Corvis treats the packet as undecodable and closes the
+connection: stricter and fail-closed, now a listed expected difference with the scenario `socket-io/wire/surrogate`
+(a valid pair is delivered by both), a `STRICTER` entry in the parser fixture recorded from `socket.io-parser`
+(`"lone surrogate"`; the recorder marks surrogates it cannot write), the requirement "Lone surrogates are refused" and
+the unit test `a_lone_surrogate_is_refused_and_a_pair_of_them_is_a_character`.
+
+### 5. Reserved key and depth tests with and without `raw_value` (check)
+
+The dev-dependency `serde_json` of `corvis` enables `raw_value` (the JWT header tests need it). To run the reserved-key
+test (`objects_with_a_key_serde_json_reads_as_an_instruction_are_never_deserialized`), the depth tests and the rest of
+`socket_io::value` and `socket_io::parser` without it, the feature was removed from that line of
+`crates/corvis/Cargo.toml` (confirmed with `cargo tree -e features -i serde_json` that nothing else enables it), and
+`cargo test -p corvis --features socket-io --lib -- socket_io::value socket_io::parser` and `--test socket_io_security`
+were run: 33 and 8 tests passed. The line was restored; both runs are manual (there is no dev-dependency feature switch
+that does not change the default build), and the default test run keeps `raw_value` on, the worse case.
+
+### Not changed by this round
+
+- Application memory: arguments a handler moves out of `Args` (`into_vec`) or into a task it spawns are the
+  application's after the handler returns; their charge ends with the handler. Documented in the limits discussion.
+- The Engine.IO layer's own accounting of one message in the hand per session (`W`) is the pre-existing term of the
+  invariant; it is the engine's, not this layer's.

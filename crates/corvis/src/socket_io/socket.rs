@@ -19,7 +19,6 @@ use super::namespace::IoNamespace;
 use super::parser::{self, Body, EncodeError, Encoded, Packet};
 use super::value::{Args, IntoArgs, IoValue, IoValueError};
 use crate::http::Request;
-use crate::logger::Logger;
 
 pub(crate) type EventHandler = Arc<dyn Fn(IoSocket, Args, Option<AckSender>) -> BoxFuture<'static, ()> + Send + Sync>;
 type DisconnectHandler = Arc<dyn Fn(&IoSocket, DisconnectReason) + Send + Sync>;
@@ -508,7 +507,7 @@ impl IoSocket {
         }
         let handlers: Vec<DisconnectHandler> = std::mem::take(&mut *self.inner.disconnecting.lock().unwrap_or_else(|e| e.into_inner()));
         for h in handlers {
-            crate::ws::guarded("a Socket.IO disconnecting handler", || h(self, reason));
+            self.inner.client.warnings.guard("a disconnecting handler", self.inner.nsp.name(), || h(self, reason));
         }
         self.inner.nsp.remove_socket(&self.inner.id);
         self.inner.client.forget(self.inner.nsp.name(), self);
@@ -522,7 +521,7 @@ impl IoSocket {
         }
         let handlers: Vec<DisconnectHandler> = std::mem::take(&mut *self.inner.disconnect.lock().unwrap_or_else(|e| e.into_inner()));
         for h in handlers {
-            crate::ws::guarded("a Socket.IO disconnect handler", || h(self, reason));
+            self.inner.client.warnings.guard("a disconnect handler", self.inner.nsp.name(), || h(self, reason));
         }
         // The handlers may hold clones of the socket: drop them so nothing keeps the socket alive.
         self.inner.handlers.write().unwrap_or_else(|e| e.into_inner()).clear();
@@ -584,9 +583,4 @@ impl AckSender {
         let args = args.into_args()?;
         self.socket.send(&Packet { nsp: self.socket.inner.nsp.name().to_string(), body: Body::Ack { id: self.id, args } })
     }
-}
-
-/// Logs a panic of a handler without the client's data: only the namespace, which the application registered.
-pub(crate) fn log_panic(what: &str, namespace: &str) {
-    Logger::new("SocketIO").error(format!("{what} of the namespace {namespace} panicked"));
 }

@@ -1075,6 +1075,47 @@ mod review_round_two_tests {
         assert_eq!(EngineOptions::new().max_sessions(2).max_total_unread_bytes(1 << 20).fair_unread_share(), 1 << 19);
     }
 
+    #[test]
+    fn a_reservation_takes_room_only_while_the_server_wide_budget_has_it_and_is_atomic() {
+        let total = Arc::new(UnreadGauge::new(1000, None));
+        let own = Arc::new(UnreadGauge::new(100, Some(total.clone())).with_fair_share(10));
+        // The session's own limit does not apply (it decides who reads); the server-wide one does.
+        let a = UnreadTicket::try_new_within_ancestors(&own, 600).expect("room for 600 of 1000");
+        assert_eq!((own.unread(), total.unread()), (600, 600));
+        assert!(UnreadTicket::try_new_within_ancestors(&own, 401).is_none(), "one byte too many");
+        assert_eq!((own.unread(), total.unread()), (600, 600), "a refusal changes nothing");
+        let b = UnreadTicket::try_new_within_ancestors(&own, 400).expect("exactly the rest");
+        assert_eq!(total.unread(), 1000);
+        drop((a, b));
+        assert_eq!((own.unread(), total.unread()), (0, 0));
+    }
+
+    #[test]
+    fn the_fair_share_is_what_a_session_may_always_hold() {
+        let total = Arc::new(UnreadGauge::new(1000, None));
+        let own = Arc::new(UnreadGauge::new(100, Some(total.clone())).with_fair_share(10));
+        assert!(own.fits_fair_share(10));
+        assert!(!own.fits_fair_share(11));
+        let _held = UnreadTicket::new(&own, 6);
+        assert!(own.fits_fair_share(4));
+        assert!(!own.fits_fair_share(5));
+    }
+
+    #[tokio::test]
+    async fn shrinking_a_charge_releases_the_difference_and_wakes_the_waiters_and_never_raises_it() {
+        let total = Arc::new(UnreadGauge::new(1000, None));
+        let own = Arc::new(UnreadGauge::new(100, Some(total.clone())));
+        let mut ticket = UnreadTicket::new(&own, 500);
+        let changed = own.changed();
+        ticket.shrink_to(200);
+        tokio::time::timeout(Duration::from_secs(5), changed).await.expect("woken by the shrink");
+        assert_eq!((own.unread(), total.unread(), ticket.size()), (200, 200, 200));
+        ticket.shrink_to(900);
+        assert_eq!((own.unread(), total.unread(), ticket.size()), (200, 200, 200), "a charge never grows");
+        drop(ticket);
+        assert_eq!((own.unread(), total.unread()), (0, 0));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_session_at_or_below_the_fair_share_is_never_over_its_limit_because_of_the_total() {
         let total = Arc::new(UnreadGauge::new(1000, None));

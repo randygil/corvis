@@ -49,6 +49,22 @@ impl Raw {
         Raw { ws, open }
     }
 
+    /// The same, from another local address (any `127.x.y.z` is loopback), so the server sees another client.
+    pub async fn connect_from(addr: SocketAddr, local: std::net::IpAddr) -> Raw {
+        let socket = tokio::net::TcpSocket::new_v4().expect("a socket");
+        socket.bind(SocketAddr::new(local, 0)).expect("bind the local address");
+        let stream = socket.connect(addr).await.expect("connect");
+        let (mut ws, _) = tokio_tungstenite::client_async(
+            format!("ws://{addr}/socket.io/?EIO=4&transport=websocket"),
+            tokio_tungstenite::MaybeTlsStream::Plain(stream),
+        )
+        .await
+        .expect("WebSocket handshake");
+        let open = super::next_text(&mut ws).await;
+        let open = serde_json::from_str(open.strip_prefix('0').expect("an open packet")).unwrap();
+        Raw { ws, open }
+    }
+
     /// Sends a Socket.IO packet (as an Engine.IO message).
     pub async fn send(&mut self, packet: &str) {
         self.ws.send(Message::Text(format!("4{packet}"))).await.unwrap();

@@ -23,6 +23,8 @@ const revive = (value) => {
 
 const neutral = (value) => {
   if (Buffer.isBuffer(value)) return { $binary: value.toString("hex") };
+  // A lone surrogate cannot be written in a JSON file a Rust test reads: it is marked instead.
+  if (typeof value === "string" && !value.isWellFormed()) return { $lone_surrogate: true };
   if (Array.isArray(value)) return value.map(neutral);
   if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, neutral(v)]));
   return value;
@@ -117,6 +119,8 @@ const decodeCases = [
   { name: "id on connect", frames: ["00{}"] },
   { name: "ack id above 2^53", frames: ['29007199254740992["x"]'] },
   { name: "ack id of 22 digits", frames: ['2123456789012345678901["x"]'] },
+  // `JSON.parse` keeps a lone surrogate (JavaScript strings are UTF-16); a Rust string cannot hold one.
+  { name: "lone surrogate", frames: ['2["x","\\ud800"]'] },
 ];
 
 const out = { parser: "socket.io-parser", version, encode: [], decode: [] };

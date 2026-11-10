@@ -3,16 +3,18 @@
 //!
 //! One task per connection reads its messages. Packets of the connection are handled in arrival order; the handlers of
 //! events run concurrently inside that task (so they start in order), at most `max_inflight` at a time. The task takes
-//! the next message only while a handler slot is free and while what it holds (reassembling packets, packets being
-//! handled) is under `max_unread_bytes`; everything it holds is charged to the Engine.IO session's unread gauge until
-//! the packet's handler finishes, so the transport stops reading when the budget is spent and no queue of the
-//! Socket.IO layer can grow without bound.
+//! the next message only while a handler slot is free and while the Engine.IO session is not over its unread limit
+//! (its own, or the server-wide one with the fair share: the test the transports use to stop reading). Everything it
+//! keeps is charged to the session's unread gauge, which is chained to the server-wide one, until the packet's handler
+//! finishes. A packet's decoded cost is reserved before any value is built (`budget.rs`): when the budget has no room
+//! the message waits, parked, and the connection takes no other, so no queue of the Socket.IO layer can grow without
+//! bound and the decoding itself cannot overshoot.
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,15 +23,16 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::time::Instant;
 
-use super::engine::session::{CloseReason, UNREAD_MESSAGE_OVERHEAD, after};
+use super::budget::{AddressSlot, Reservation};
+use super::engine::session::{CloseReason, after};
 use super::engine::{EngineMessage, EngineSocket, Held, SendError};
 use super::namespace::{ConnectError, IoNamespace};
 use super::options::IoOptions;
-use super::parser::{self, Body, Decoder, Encoded, Limits, Packet};
+use super::parser::{self, Body, Decoder, Encoded, Limits, Packet, Prepared};
 use super::server::ServerInner;
-use super::socket::{AckSender, DisconnectReason, EmitError, Handshake, IoSocket, Phase, log_panic};
+use super::socket::{AckSender, DisconnectReason, EmitError, Handshake, IoSocket, Phase};
 use super::value::{Args, IoValue};
-use crate::logger::Logger;
+use super::warn::WarnLimiter;
 
 enum Slot {
     /// The CONNECT was accepted and the middleware is running.
@@ -46,19 +49,23 @@ pub(crate) struct ClientShared {
     /// Set by the first `terminate`: no socket joins afterwards.
     done: AtomicBool,
     joined_once: AtomicBool,
-    /// Bytes of received data this connection holds (charged to the session's gauge too).
-    held: Arc<AtomicUsize>,
+    /// What the client address holds of the server-wide budget: shared by its connections, past their lifetime.
+    address: Arc<AddressSlot>,
+    /// Rate limit of the lines a client can provoke.
+    pub(crate) warnings: Arc<WarnLimiter>,
 }
 
 impl ClientShared {
-    pub(crate) fn new(engine: EngineSocket, options: Arc<IoOptions>) -> Arc<ClientShared> {
+    pub(crate) fn new(engine: EngineSocket, options: Arc<IoOptions>, server: &ServerInner) -> Arc<ClientShared> {
+        let address = server.budgets.slot(engine.address_key());
         Arc::new(ClientShared {
             engine,
             options,
             nsps: Mutex::new(HashMap::new()),
             done: AtomicBool::new(false),
             joined_once: AtomicBool::new(false),
-            held: Arc::new(AtomicUsize::new(0)),
+            address,
+            warnings: server.warnings.clone(),
         })
     }
 
@@ -139,29 +146,28 @@ impl Drop for PendingGuard {
     }
 }
 
-/// Bytes held against the budget while a packet is being reassembled or handled.
+/// Room held in the budget while a packet is being reassembled or handled; released when the packet's handler ends
+/// (or the connection task is dropped), and not before: a closed connection keeps its handlers' charges on the
+/// server-wide gauge for as long as they run.
 struct Charge {
-    guards: Vec<Held>,
-    bytes: usize,
-    counter: Arc<AtomicUsize>,
+    parts: Vec<Reservation>,
 }
 
 impl Charge {
-    fn new(counter: &Arc<AtomicUsize>) -> Charge {
-        Charge { guards: Vec::new(), bytes: 0, counter: counter.clone() }
+    fn new(first: Reservation) -> Charge {
+        Charge { parts: vec![first] }
     }
 
-    fn add(&mut self, held: Held, bytes: usize) {
-        self.counter.fetch_add(bytes, Ordering::SeqCst);
-        self.bytes += bytes;
-        self.guards.push(held);
+    fn add(&mut self, part: Reservation) {
+        self.parts.push(part);
     }
 }
 
-impl Drop for Charge {
-    fn drop(&mut self) {
-        self.counter.fetch_sub(self.bytes, Ordering::SeqCst);
-    }
+/// A text message that was measured and waits for room in the budget, with the wire message it came from (which
+/// stays charged meanwhile).
+struct Parked {
+    prepared: Prepared,
+    wire: Held,
 }
 
 enum Flow {
@@ -193,13 +199,29 @@ pub(crate) async fn run(
     let mut inflight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let mut connect_deadline = Some(after(Instant::now(), options.connect_timeout));
     let mut reassembly: Option<(Instant, Charge)> = None;
+    let mut parked: Option<Parked> = None;
     let mut stream_done = false;
     let mut closed: Closed<'_> = Box::pin(engine.closed());
-    let max_unread = options.engine.max_unread_bytes;
     loop {
+        // Registered before anything below looks at the gauges, so a release in between wakes the select.
+        let unread_changed = engine.unread_changed();
+        if let Some(waiting) = parked.take() {
+            let flow = admit(&server, &shared, &mut decoder, &mut reassembly, &mut parked, &mut inflight, &mut closed, waiting).await;
+            match flow {
+                Flow::Continue => {}
+                Flow::Close(reason) => {
+                    shared.terminate(reason, false, true);
+                    break;
+                }
+                Flow::Gone(reason) => {
+                    shared.terminate(reason.into(), false, false);
+                    break;
+                }
+            }
+        }
         let reassembling = decoder.is_reassembling();
-        let can_read =
-            !stream_done && (reassembling || (inflight.len() < options.max_inflight && shared.held.load(Ordering::SeqCst) < max_unread));
+        let over_limit = !reassembling && engine.unread_over_limit();
+        let can_read = !stream_done && parked.is_none() && (reassembling || (inflight.len() < options.max_inflight && !over_limit));
         let connect_wait = wait_until(connect_deadline);
         let reassembly_wait = wait_until(reassembly.as_ref().map(|(deadline, _)| *deadline));
         tokio::select! {
@@ -220,12 +242,14 @@ pub(crate) async fn run(
                 shared.terminate(DisconnectReason::ForcedServerClose, false, true);
                 break;
             }
+            // A release of room somewhere: the parked message, or the reads that are paused, may go on.
+            _ = unread_changed, if parked.is_some() || over_limit => {}
             next = messages.next(), if can_read => {
                 let Some((message, held)) = next else {
                     stream_done = true;
                     continue;
                 };
-                let flow = handle_message(&server, &shared, &mut decoder, &mut reassembly, &mut inflight, &mut closed, message, held).await;
+                let flow = handle_message(&server, &shared, &mut decoder, &mut reassembly, &mut parked, &mut inflight, &mut closed, message, held).await;
                 match flow {
                     Flow::Continue => {}
                     Flow::Close(reason) => {
@@ -255,48 +279,75 @@ async fn handle_message(
     shared: &Arc<ClientShared>,
     decoder: &mut Decoder,
     reassembly: &mut Option<(Instant, Charge)>,
+    parked: &mut Option<Parked>,
     inflight: &mut FuturesUnordered<BoxFuture<'static, ()>>,
     closed: &mut Closed<'_>,
     message: EngineMessage,
     held: Held,
 ) -> Flow {
     match message {
-        EngineMessage::Text(text) => match decoder.add_text(&text) {
+        EngineMessage::Text(text) => match decoder.prepare(text) {
             Err(_) => Flow::Close(DisconnectReason::ForcedClose),
-            Ok(Some(packet)) => {
-                // The text is dropped with this message: what stays is the decoded packet, at its real cost.
-                let mut charge = Charge::new(&shared.held);
-                let cost = packet.cost();
-                charge.add(shared.engine.hold(cost), cost);
-                drop(held);
-                drop(text);
-                handle_packet(server, shared, packet, charge, inflight, closed).await
-            }
+            Ok(prepared) => admit(server, shared, decoder, reassembly, parked, inflight, closed, Parked { prepared, wire: held }).await,
+        },
+        EngineMessage::Binary(data) => match decoder.add_binary(data) {
+            Err(_) => Flow::Close(DisconnectReason::ForcedClose),
             Ok(None) => {
-                let mut charge = Charge::new(&shared.held);
-                let cost = decoder.pending_cost();
-                charge.add(shared.engine.hold(cost), cost);
-                drop(held);
-                *reassembly = Some((after(Instant::now(), shared.options.attachment_timeout), charge));
+                if let Some((_, charge)) = reassembly.as_mut() {
+                    charge.add(Reservation::plain(held));
+                }
                 Flow::Continue
             }
-        },
-        EngineMessage::Binary(data) => {
-            let bytes = data.len() + UNREAD_MESSAGE_OVERHEAD;
-            match decoder.add_binary(data) {
-                Err(_) => Flow::Close(DisconnectReason::ForcedClose),
-                Ok(None) => {
-                    if let Some((_, charge)) = reassembly.as_mut() {
-                        charge.add(held, bytes);
-                    }
-                    Flow::Continue
-                }
-                Ok(Some(packet)) => {
-                    let Some((_, mut charge)) = reassembly.take() else { return Flow::Close(DisconnectReason::ForcedClose) };
-                    charge.add(held, bytes);
-                    handle_packet(server, shared, packet, charge, inflight, closed).await
-                }
+            Ok(Some(packet)) => {
+                let Some((_, mut charge)) = reassembly.take() else { return Flow::Close(DisconnectReason::ForcedClose) };
+                charge.add(Reservation::plain(held));
+                handle_packet(server, shared, packet, charge, inflight, closed).await
             }
+        },
+    }
+}
+
+/// Reserves the decoded cost of a measured message and decodes it; when the budget has no room the message is parked
+/// and the connection takes no other until room is released.
+#[allow(clippy::too_many_arguments)]
+async fn admit(
+    server: &Arc<ServerInner>,
+    shared: &Arc<ClientShared>,
+    decoder: &mut Decoder,
+    reassembly: &mut Option<(Instant, Charge)>,
+    parked: &mut Option<Parked>,
+    inflight: &mut FuturesUnordered<BoxFuture<'static, ()>>,
+    closed: &mut Closed<'_>,
+    waiting: Parked,
+) -> Flow {
+    let Some(mut reservation) = Reservation::try_new(&shared.engine, &shared.address, waiting.prepared.reservation()) else {
+        *parked = Some(waiting);
+        return Flow::Continue;
+    };
+    let reserved = reservation.bytes();
+    let Parked { prepared, wire } = waiting;
+    match decoder.decode(prepared) {
+        Err(_) => Flow::Close(DisconnectReason::ForcedClose),
+        Ok(Some(packet)) => {
+            // The text is gone with the decode: what stays is the decoded packet, at its real cost. The cost model is
+            // an upper bound and the reservation was made from it; a packet above it would be a defect, and is refused.
+            let cost = packet.cost();
+            if cost > reserved {
+                return Flow::Close(DisconnectReason::ForcedClose);
+            }
+            reservation.shrink_to(cost);
+            drop(wire);
+            handle_packet(server, shared, packet, Charge::new(reservation), inflight, closed).await
+        }
+        Ok(None) => {
+            let cost = decoder.pending_cost();
+            if cost > reserved {
+                return Flow::Close(DisconnectReason::ForcedClose);
+            }
+            reservation.shrink_to(cost);
+            drop(wire);
+            *reassembly = Some((after(Instant::now(), shared.options.attachment_timeout), Charge::new(reservation)));
+            Flow::Continue
         }
     }
 }
@@ -348,7 +399,6 @@ fn dispatch(
     charge: Charge,
     inflight: &mut FuturesUnordered<BoxFuture<'static, ()>>,
 ) {
-    let _ = shared;
     let Some(handler) = socket.handler(name) else { return };
     let ack = id.map(|id| AckSender::new(socket.clone(), id));
     let namespace = socket.namespace().name().to_string();
@@ -358,14 +408,15 @@ fn dispatch(
     let future = match created {
         Ok(future) => future,
         Err(_) => {
-            log_panic("an event handler", &namespace);
+            shared.warnings.panicked("an event handler", &namespace);
             return;
         }
     };
+    let warnings = shared.warnings.clone();
     inflight.push(Box::pin(async move {
         let _charge = charge;
         if AssertUnwindSafe(future).catch_unwind().await.is_err() {
-            log_panic("an event handler", &namespace);
+            warnings.panicked("an event handler", &namespace);
         }
     }));
 }
@@ -401,7 +452,7 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
     let name = namespace.name().to_string();
     let mut guard = PendingGuard { shared: shared.clone(), name: name.clone(), armed: true };
     let outcome = tokio::select! {
-        outcome = run_middleware(&namespace, &socket, shared.options.middleware_timeout) => outcome,
+        outcome = run_middleware(&namespace, &socket, shared.options.middleware_timeout, &shared.warnings) => outcome,
         // The connection closed while the middleware ran: no CONNECT_ERROR, no handlers (the guard frees the slot).
         _ = shared.engine.closed() => return,
     };
@@ -435,15 +486,13 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
     if socket.is_phase(Phase::Connected) {
         for handler in namespace.connection_handlers() {
             let s = socket.clone();
-            if !crate::ws::guarded("a Socket.IO connection handler", || handler(s)) {
-                log_panic("a connection handler", &name);
-            }
+            shared.warnings.guard("a connection handler", &name, || handler(s));
         }
     }
     socket.mark_ready();
 }
 
-async fn run_middleware(namespace: &IoNamespace, socket: &IoSocket, limit: Duration) -> Result<(), ConnectError> {
+async fn run_middleware(namespace: &IoNamespace, socket: &IoSocket, limit: Duration, warnings: &WarnLimiter) -> Result<(), ConnectError> {
     let chain = namespace.middleware();
     let name = namespace.name().to_string();
     let work = async {
@@ -451,7 +500,7 @@ async fn run_middleware(namespace: &IoNamespace, socket: &IoSocket, limit: Durat
             let future = match std::panic::catch_unwind(AssertUnwindSafe(|| middleware(socket.clone()))) {
                 Ok(future) => future,
                 Err(_) => {
-                    log_panic("connect middleware", &name);
+                    warnings.panicked("a connect middleware", &name);
                     return Err(ConnectError::internal());
                 }
             };
@@ -459,7 +508,7 @@ async fn run_middleware(namespace: &IoNamespace, socket: &IoSocket, limit: Durat
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => return Err(error),
                 Err(_) => {
-                    log_panic("connect middleware", &name);
+                    warnings.panicked("a connect middleware", &name);
                     return Err(ConnectError::internal());
                 }
             }
@@ -469,8 +518,11 @@ async fn run_middleware(namespace: &IoNamespace, socket: &IoSocket, limit: Durat
     match tokio::time::timeout(limit, work).await {
         Ok(result) => result,
         Err(_) => {
-            Logger::new("SocketIO")
-                .warn(format!("the connect middleware of the namespace {name} took longer than {limit:?}: the connection was refused"));
+            warnings.warn(
+                "a connect middleware timeout",
+                &name,
+                &format!("the connect middleware of the namespace {name} took longer than {limit:?}: the connection was refused"),
+            );
             Err(ConnectError::internal())
         }
     }

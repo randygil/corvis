@@ -430,6 +430,51 @@ impl UnreadGauge {
         }
     }
 
+    /// `true` when `size` more bytes keep this gauge at or below its fair share: what a session may always take, so
+    /// a session that holds little is never starved by the hoarding of others.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn fits_fair_share(&self, size: usize) -> bool {
+        self.bytes.load(Ordering::SeqCst).saturating_add(size) <= self.fair
+    }
+
+    /// Adds `size` to this gauge and its ancestors only if every ancestor stays at or below its own limit (a
+    /// compare-and-swap, so concurrent callers cannot overshoot together). The gauge's own limit is not applied: it
+    /// decides whether a session reads, not what one decoded packet may add. `Err` leaves everything unchanged.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    fn try_charge_within_ancestors(&self, size: usize) -> bool {
+        if let Some(parent) = &self.parent
+            && !parent.try_charge_within(size)
+        {
+            return false;
+        }
+        self.bytes.fetch_add(size, Ordering::SeqCst);
+        true
+    }
+
+    /// Adds `size` here and above only if this gauge and its ancestors stay at or below their limits.
+    fn try_charge_within(&self, size: usize) -> bool {
+        let mut current = self.bytes.load(Ordering::SeqCst);
+        loop {
+            let Some(next) = current.checked_add(size).filter(|n| *n <= self.limit) else { return false };
+            match self.bytes.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+        if let Some(parent) = &self.parent
+            && !parent.try_charge_within(size)
+        {
+            self.bytes.fetch_sub(size, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    /// Lowers a charge already taken, and wakes the waiters.
+    fn shrink(&self, by: usize) {
+        self.release(by);
+    }
+
     fn release(&self, size: usize) {
         self.bytes.fetch_sub(size, Ordering::SeqCst);
         if self.wake_all {
@@ -453,6 +498,26 @@ impl UnreadTicket {
     pub(crate) fn new(gauge: &Arc<UnreadGauge>, size: usize) -> Self {
         gauge.charge(size);
         UnreadTicket { gauge: gauge.clone(), size }
+    }
+
+    /// Charges `size` only if the gauge's ancestors stay within their limits (see `try_charge_within_ancestors`).
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn try_new_within_ancestors(gauge: &Arc<UnreadGauge>, size: usize) -> Option<Self> {
+        gauge.try_charge_within_ancestors(size).then(|| UnreadTicket { gauge: gauge.clone(), size })
+    }
+
+    /// Lowers the charge to `size` (never raises it), releasing the difference and waking the waiters.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn shrink_to(&mut self, size: usize) {
+        if size < self.size {
+            self.gauge.shrink(self.size - size);
+            self.size = size;
+        }
+    }
+
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn size(&self) -> usize {
+        self.size
     }
 }
 

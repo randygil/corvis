@@ -111,8 +111,8 @@ the configured value, "within" bounds are generous, timer logic runs on Tokio's 
   `socket.io-protocol` suite fetched by `scripts/fetch-suites.mjs`; verify every test passes with
   `CORVIS_NODE_DIFF=1`, and that the same suite passes against the Node reference server started with the suite's
   options
-- [x] 8.2 Review `parity/socket-io/expected-differences.json`: exactly the three client-observable divergences of
-  design.md Decision 9, each with reason and `ws/socket-io` requirement; verify the full harness run has no unlisted
+- [x] 8.2 Review `parity/socket-io/expected-differences.json`: exactly the client-observable divergences of
+  design.md Decision 9 (the three of the first plan and, since round 1, the lone surrogate), each with reason and `ws/socket-io` requirement; verify the full harness run has no unlisted
   and no stale difference, three times in a row
 - [x] 8.3 Rustdoc for every public item of `corvis::socket_io` added here (each option with its default, Node's value
   and the divergence; a compiling example on `IoServer`, `IoSocket::on`, `emit_with_ack` and `use_middleware`);
@@ -127,6 +127,31 @@ the configured value, "within" bounds are generous, timer logic runs on Tokio's 
   CONNECT handling, limits of design.md Decision 9, the three Engine.IO additions); repeat rounds until no open
   finding; record findings and their fixes in design.md under "Security review"; verify every finding has a regression
   test or a recorded reason
+
+## 8a. Security review, round 1 (design.md "Security review (round 1)")
+
+- [x] 8a.1 Cost model derived from the types (`SLOT`, `MAP_BASE`, `MAP_TABLE`, `ENTRY`, `ALLOC_OVERHEAD`), exact
+  capacities from a first pass over the text, the upper bound computed before anything is built, `max_decoded_bytes`
+  default 32 MiB (validated against `max_total_unread_bytes`); `tests/socket_io_memory.rs` with a counting allocator over
+  21 adversarial shapes (live heap <= charged <= reservation, peak <= reservation + text) and the refusal of a packet
+  above the budget before it is built; verify the tests
+- [x] 8a.2 Admission before decoding: the connection takes messages only while the engine's own over-limit test allows,
+  parks a measured packet that finds no room, reserves with an atomic server-wide check, shrinks to the real cost;
+  guaranteed fair share, per-address quota and cap (closed sessions included); a binary header that could not be
+  reassembled inside `max_unread_bytes` is refused; unit tests on the paused clock and the twelve-session allocator
+  test against the invariant; verify the tests
+- [x] 8a.3 Charges stay on the server-wide gauge and the address until the handler ends, for at most `close_timeout`
+  after the session closed; reconnecting does not multiply them; an honest address is served while another holds its
+  maximum (unit and 127.0.0.2 integration tests); verify the tests
+- [x] 8a.4 Rate-limited log lines (`WarnLimiter`): middleware timeouts and handler panics, once a minute per kind and
+  namespace, never the panic message or client data; the connection and disconnect handlers no longer use
+  `ws::guarded`; `tests/socket_io_log.rs`; document that handlers should not `unwrap()` argument conversions
+- [x] 8a.5 Lone surrogate: scenario `socket-io/wire/surrogate`, expected-difference entries, fixture case `lone surrogate`
+  recorded from `socket.io-parser`, unit test; requirement "Lone surrogates are refused"
+- [x] 8a.6 The reserved-key and depth tests run with and without `serde_json/raw_value` (recorded in design.md)
+- [x] 8a.7 Docs (EN and ES): limits table with the decoded cost, its worst-case expansion factor, the server-wide budget
+  and address quota, the invariant, the surrogate difference, log rate limit; spec delta updated and
+  `openspec validate e2-socket-io-namespaces-events-and-acks --strict` passes
 
 ## 9. Definition of done
 
