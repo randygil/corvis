@@ -329,6 +329,7 @@ pub struct Seen {
     pub id_token: Option<String>,
     pub profile: Option<Value>,
     pub verified_email: Option<String>,
+    pub issuer: Option<String>,
     pub debug: String,
 }
 
@@ -371,6 +372,7 @@ impl Cfg {
             id_token: grant.params.id_token().map(|t| t.expose().to_string()),
             profile: profile.map(|p| p.to_json()),
             verified_email: profile.and_then(|p| p.verified_email()).map(str::to_string),
+            issuer: profile.map(|p| p.issuer.clone()),
             debug: format!("{grant:?}"),
         });
         match self.verdict.lock().unwrap().clone() {
@@ -413,6 +415,7 @@ macro_rules! validator {
 validator!(GoogleCfg, GoogleAuth, "google");
 validator!(GithubCfg, GithubAuth, "github");
 validator!(GenericCfg, GenericAuth, "corp");
+validator!(SsoCfg, SsoAuth, "sso");
 
 fn view(req: &Request) -> Value {
     json!({ "user": req.user(), "return_to": oauth2::return_to(req), "auth_info": req.auth_info() })
@@ -533,6 +536,24 @@ impl GenericRoutes {
     }
 }
 
+#[controller("")]
+pub struct SsoRoutes;
+
+#[routes]
+impl SsoRoutes {
+    #[get("auth/sso")]
+    #[use_guards(AuthGuard::new("sso"))]
+    fn login(&self, req: Request) -> Value {
+        view(&req)
+    }
+
+    #[get("auth/sso/callback")]
+    #[use_guards(AuthGuard::new("sso"))]
+    fn callback(&self, req: Request) -> Value {
+        view(&req)
+    }
+}
+
 /// Presets pointed at `mock`.
 pub fn endpoints(mock: &Mock) -> OAuth2Endpoints {
     OAuth2Endpoints::new(mock.url("/authorize"), mock.url("/token")).userinfo_url(mock.url("/userinfo"))
@@ -564,12 +585,26 @@ pub struct AppBuilder {
     pub google: Option<Arc<Cfg>>,
     pub github: Option<Arc<Cfg>>,
     pub generic: Option<Arc<Cfg>>,
+    pub sso: Option<Arc<Cfg>>,
     pub session: Option<SessionOptions>,
     pub logger: bool,
     pub logging_interceptor: bool,
+    pub trust_proxy: bool,
 }
 
 impl AppBuilder {
+    /// A second generic strategy, named `sso`.
+    pub fn sso(mut self, cfg: &Arc<Cfg>) -> Self {
+        self.sso = Some(cfg.clone());
+        self
+    }
+
+    /// `set_trust_proxy(true)`: the client address is the one `X-Forwarded-For` names.
+    pub fn trust_proxy(mut self) -> Self {
+        self.trust_proxy = true;
+        self
+    }
+
     pub fn google(mut self, cfg: &Arc<Cfg>) -> Self {
         self.google = Some(cfg.clone());
         self
@@ -634,8 +669,20 @@ impl AppBuilder {
                 ])
                 .controller::<GenericRoutes>();
         }
+        if let Some(cfg) = self.sso {
+            builder = builder
+                .providers(vec![
+                    Provider::value(SsoCfg(cfg)),
+                    Provider::class::<SsoAuth>(),
+                    Provider::strategy::<OAuth2Strategy<SsoAuth>>(),
+                ])
+                .controller::<SsoRoutes>();
+        }
         let module = builder.compile().await.map_err(|e| format!("{e:#}"))?;
         let mut app = module.create_corvis_application();
+        if self.trust_proxy {
+            app.set_trust_proxy(true);
+        }
         if self.logging_interceptor {
             app.use_global_interceptors(corvis::LoggingInterceptor);
         }

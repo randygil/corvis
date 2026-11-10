@@ -90,8 +90,14 @@ async fn the_github_login_ends_with_the_applications_token() {
     assert!(paths.lock().unwrap().is_empty(), "the login start contacts nobody");
 
     // A callback that does not carry this browser's state never reaches the provider.
-    let forged = c.get("/api/v1/auth/github/callback?code=abc&state=forged").header("cookie", &cookie).send().await;
+    let forged = c.get("/api/v1/auth/github/callback?code=SECRET-CODE-2&state=forged").header("cookie", &cookie).send().await;
     assert_eq!(forged.status, 401);
+    // The error body names the path, never the callback's code or state.
+    assert!(forged.text().contains("/api/v1/auth/github/callback"), "{}", forged.text());
+    assert!(!forged.text().contains("SECRET-CODE-2") && !forged.text().contains("forged"), "{}", forged.text());
+    let denied = c.get("/api/v1/auth/github/callback?error=access_denied&error_description=SECRET-DESC&state=x").send().await;
+    assert_eq!(denied.status, 401);
+    assert!(!denied.text().contains("SECRET-DESC"), "{}", denied.text());
     let no_cookie = c.get(&format!("/api/v1/auth/github/callback?code=abc&state={state}")).send().await;
     assert_eq!(no_cookie.status, 401);
     assert!(paths.lock().unwrap().is_empty());

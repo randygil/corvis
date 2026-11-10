@@ -20,11 +20,11 @@ pub struct GithubAccounts {
 impl GithubAccounts {
     /// The account of the GitHub user `id`, created on the first login. User ids from 1000 on, so they cannot clash with
     /// the seeded users.
-    fn find_or_create(&self, id: &str, login: &str) -> LoginUser {
+    fn find_or_create(&self, provider: &str, id: &str, login: &str) -> LoginUser {
         let mut accounts = self.by_github_id.lock().unwrap_or_else(|e| e.into_inner());
         let next = 1000 + accounts.len() as u32;
         accounts
-            .entry(format!("github:{id}"))
+            .entry(format!("{provider}:{id}"))
             .or_insert_with(|| LoginUser { user_id: next, username: format!("github:{login}"), roles: vec![Role::User] })
             .clone()
     }
@@ -70,11 +70,14 @@ impl OAuth2Validator for GithubAuth {
     }
 
     async fn validate(&self, _req: &Request, grant: OAuth2Grant) -> Result<Option<LoginUser>, HttpException> {
-        // Identify by (provider, id). A GitHub account without a verified primary address is still a GitHub account;
-        // an application that links accounts by e-mail must use `verified_email()` and nothing else.
+        // Identify by (provider, id), never by e-mail alone. `provider` is "github" only for github.com itself: when the
+        // endpoints are replaced (a GitHub Enterprise server) it is this strategy's name, so a user id of that server
+        // cannot become the account of the same number on github.com. A GitHub account without a verified primary
+        // address is still a GitHub account; an application that links accounts by e-mail must use `verified_email()`
+        // and nothing else.
         let Some(profile) = grant.profile else { return Ok(None) };
         let login = profile.username.as_deref().unwrap_or("user");
-        Ok(Some(self.accounts.find_or_create(&profile.id, login)))
+        Ok(Some(self.accounts.find_or_create(&profile.provider, &profile.id, login)))
     }
 }
 

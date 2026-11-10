@@ -611,3 +611,51 @@ The design's line references are not repeated: the files moved. These are the AP
 ### Left to the maintainer's session
 
 Task 1.3 (the CI run in a pull request), 9.6 (parity: the only core change is a visibility, `GuardPhase::is_active`, plus a feature-gated re-export), 9.8 (the security review), the archive, the follow-up issues and the `ROADMAP.md` name.
+
+## Security review (round 1)
+
+The review ran a proof of concept for all eight areas. `state`, PKCE, `redirect_uri`, return-to, the HTTPS client, JSON
+parsing, logs and the session interaction held. The maintainer decided these fixes.
+
+- **M1 (Medium), one client exhausting the in-flight slots.** In cookie mode a flow record stays valid in the browser
+  if it ignores the clearing cookie, so one `state` could be presented again and again, each copy taking a slot (and
+  spending the application's quota at the provider): more than 32 concurrent copies made every login answer 503.
+  Fixed three ways. (a) Each strategy instance keeps a bounded set of the verified states it presented to the token
+  endpoint (SHA-256 of the state, a hash set and an insertion-ordered queue, retained for `state_ttl` plus the accepted
+  clock skew, `redeemed_states_max` entries, default 100000, 16 to 10 million; the oldest are dropped when full; O(1)
+  amortized per callback). A callback whose state is in the set, including one being redeemed now, gets the uniform
+  "state mismatch" failure before any token request. Only states that matched the flow record enter the set, so
+  callbacks with forged states grow nothing. This is a cost control per instance: a second instance behind a load
+  balancer has its own set, session storage already removes the record, and a deployment with several instances
+  that needs a guarantee needs session storage with a shared store. (b) The slots one client address can hold at once
+  are bounded to a share of `max_in_flight` (`max_in_flight_per_client`, default a quarter, at least 1, 1 to 1024),
+  keyed by the address the framework resolves for the request (`Request::ip`, so `trust proxy` is honoured), normalized
+  as the throttler does (IPv6 to its /64, IPv4-mapped to IPv4; a value that is not an address falls back to the
+  socket peer). The slot is taken before the state is claimed and held through the token and profile requests, so a
+  refusal burns nothing of the flow and a released slot leaves no entry. An address over its share gets the 503
+  while others proceed. (c) The docs ask to throttle the callback route per client as well as the login route and
+  explain both caps.
+- **M2 (Medium), `provider` collided across instances.** `provider` was fixed to `"github"` or `"google"` even when
+  `endpoints()` pointed the preset at another instance (GitHub Enterprise), so `(provider, id)` was shared between
+  github.com and the enterprise server. Now `provider` is the preset's name only when all of the preset's endpoints are
+  unchanged; for any replaced endpoint and for a generic strategy it is the strategy's name, unique in the application
+  (checked at startup). `OAuth2Profile::issuer` is the host (and port) of the authorization endpoint. The `issuer`
+  is not part of the JSON form, which keeps the original's keys. A strategy named like its preset (`github`) with
+  replaced endpoints therefore still gets `github`: name strategies of other instances differently. The docs and the
+  cats example key accounts by `(provider, id)` with that rule and warn against keying by e-mail alone.
+- **L1 (Low), cookie tossing.** A state cookie without the `__Host-` prefix, and a session cookie without it under
+  `state_in_session()`, now log one startup warning each, naming the strategy and the cookie, saying a sibling
+  subdomain can plant a cookie (login CSRF) and how to fix it. Not an error: plain-HTTP development and shared
+  domains are legitimate.
+- **L2 (Low, example).** The cats example's exception filter answered `request.url()` and echoed the callback's `code`
+  and `state`; it now answers `redacted_url()` (tested).
+- **I1.** Flow expiry used unchecked arithmetic and overflowed for a timestamp of `i64::MIN`. It now uses checked
+  arithmetic and treats an impossible timestamp as an invalid flow.
+- **I2.** A validator returning `None` or an empty user answered 401 even with `failure_redirect`. With a failure
+  page every refusal of the callback goes there; without one it stays a 401. The reason is not shown to the client.
+- **I5 (docs).** The profile `id` is the provider's value as a string, compared exactly (`"00012"` and `"12"` differ);
+  the docs recommend storing it as given.
+
+Tests: `crates/corvis/tests/auth_oauth2_review.rs` (M1, M2, I1, I2), the unit tests of `redeem.rs`, `options.rs` and
+`state.rs`, `auth_oauth2_log.rs` (L1) and `examples/cats-app/tests/github_login.rs` (L2). `auth_oauth2.rs`: the
+cookie-mode replay test now expects no second token request.

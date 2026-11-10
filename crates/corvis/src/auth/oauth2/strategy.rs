@@ -13,6 +13,7 @@ use serde_json::{Map, Value, json};
 use super::client::{Grant, OAuth2Error, OAuth2TokenResponse, Provider};
 use super::options::{OAuth2Options, StateStorage, check_scope, state_cookie_name};
 use super::profile::OAuth2Profile;
+use super::redeem::{ClientSlots, Redeemed};
 use super::secret::OAuth2Token;
 use super::state::{self, Flow, StateCookie};
 use crate::auth::session::{SameSite, SessionManager};
@@ -69,8 +70,8 @@ impl std::fmt::Debug for OAuth2Grant {
 ///
 ///     async fn validate(&self, _: &Request, grant: OAuth2Grant) -> Result<Option<SessionUser>, HttpException> {
 ///         let Some(profile) = grant.profile else { return Ok(None) };
-///         // Identify by (provider, id); link by e-mail only through verified_email().
-///         Ok(Some(self.users.find_or_create("google", &profile.id, profile.verified_email()).await?))
+///         // Identify by (provider, id), never by e-mail alone; link by e-mail only through verified_email().
+///         Ok(Some(self.users.find_or_create(&profile.provider, &profile.id, profile.verified_email()).await?))
 ///     }
 /// }
 ///
@@ -112,6 +113,8 @@ pub struct OAuth2Strategy<V: OAuth2Validator> {
     storage: Storage,
     provider: Provider,
     warnings: WarnLimiter,
+    redeemed: Redeemed,
+    slots: Arc<ClientSlots>,
     _marker: PhantomData<fn() -> V>,
 }
 
@@ -148,6 +151,12 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
                             V::NAME
                         ));
                     }
+                    if !has_host_prefix(&name) {
+                        log.warn(format!(
+                            "strategy \"{}\": the state cookie \"{name}\" has no __Host- prefix, so a page on a sibling subdomain can plant its own state cookie and sign a victim in to the attacker's account (login CSRF): name it __Host-... on a Secure HTTPS host, or keep the application off a domain shared with untrusted subdomains",
+                            V::NAME
+                        ));
+                    }
                     Storage::Cookie(StateCookie::new(name, keys.clone(), &options))
                 }
                 StateStorage::Session => {
@@ -159,6 +168,13 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
                             "state_in_session: the session cookie is SameSite=Strict, so the callback would arrive without the session".into(),
                         ));
                     }
+                    if !has_host_prefix(&manager.options.name) {
+                        log.warn(format!(
+                            "strategy \"{}\": the session cookie \"{}\" that keeps the login state has no __Host- prefix, so a page on a sibling subdomain can plant its own session cookie and sign a victim in to the attacker's account (login CSRF): name the session cookie __Host-... on a Secure HTTPS host with Path=/ and no Domain",
+                            V::NAME,
+                            manager.options.name
+                        ));
+                    }
                     Storage::Session
                 }
                 StateStorage::Unset | StateStorage::Invalid(_) => return Err(factory_error::<V>("state storage is not chosen".into())),
@@ -167,17 +183,40 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
                 log.warn(format!("strategy \"{}\": PKCE is turned off (pkce(false)); state is still sent and checked", V::NAME));
             }
             let provider = Provider::new(&options).map_err(factory_error::<V>)?;
+            // A flow stays valid in the browser for `state_ttl` plus the accepted clock skew.
+            let redeemed = Redeemed::new(options.redeemed_states_max, options.state_ttl.as_secs() as i64 + state::MAX_SKEW_SECONDS);
+            let slots = ClientSlots::new(options.http.per_client_slots());
             Ok(OAuth2Strategy {
                 validator,
                 options,
                 storage,
                 provider,
                 warnings: WarnLimiter::new(Duration::from_secs(60)),
+                redeemed,
+                slots,
                 _marker: PhantomData,
             })
         }
         .boxed()
     }
+}
+
+/// Whether a cookie name carries the `__Host-` prefix (browsers compare it case-insensitively).
+fn has_host_prefix(name: &str) -> bool {
+    name.len() >= 7 && name.as_bytes()[..7].eq_ignore_ascii_case(b"__Host-")
+}
+
+/// The key a client's slots are counted under: the address the request resolved to (so `trust proxy` is honoured),
+/// normalized, IPv6 reduced to its prefix. A value that is not an address falls back to the socket's peer, so a header
+/// cannot pick a fresh key per request.
+fn client_key(req: &Request) -> String {
+    use crate::modules::throttler::{DEFAULT_IPV6_SUBNET_PREFIX, normalize_ip};
+    let is_address = |key: &str| key.split('/').next().is_some_and(|a| a.parse::<std::net::IpAddr>().is_ok());
+    let key = normalize_ip(&req.ip(), DEFAULT_IPV6_SUBNET_PREFIX);
+    if is_address(&key) {
+        return key;
+    }
+    req.remote_addr().map(|a| normalize_ip(&a.ip().to_string(), DEFAULT_IPV6_SUBNET_PREFIX)).unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 /// The return-to path of the login a successful callback belongs to, set on the request by the strategy only.
@@ -286,6 +325,18 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             challenge.insert("error".into(), json!(code));
         }
         StrategyOutcome::Fail { challenge: Some(Value::Object(challenge)), status: Some(401) }
+    }
+
+    /// The validator refused the login (no user, or one that never authenticates): the failure page when one is
+    /// configured, otherwise the plain 401 of the guard. The reason stays with the validator.
+    fn refused(&self) -> StrategyOutcome {
+        match &self.options.failure_redirect {
+            Some(url) => {
+                self.note("the validator refused the login", false, String::new());
+                StrategyOutcome::Redirect { url: url.clone(), status: Some(302) }
+            }
+            None => StrategyOutcome::Fail { challenge: None, status: None },
+        }
     }
 
     /// The login: a new flow stored, then the redirect to the provider.
@@ -439,6 +490,17 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             Storage::Cookie(cookie) => self.options.pkce.then(|| state::derive_verifier(&cookie.keys, V::NAME, &flow.state, flow.issued)),
             Storage::Session => self.options.pkce.then(|| flow.verifier.clone()).flatten(),
         };
+        // A client address holds a limited share of the in-flight slots for the whole exchange. The slot is taken before
+        // the state is claimed, so a refusal here burns nothing of the flow.
+        let Some(slot) = self.slots.acquire(client_key(req)) else {
+            self.note("one client address holds its share of the requests to the provider", true, String::new());
+            return StrategyOutcome::Error(ServiceUnavailableException::empty());
+        };
+        // Only a state that verified reaches this point; it is redeemed once, so a replay (or a concurrent copy of the
+        // same callback) costs no token request.
+        if !self.redeemed.claim(&flow.state, Self::now()) {
+            return self.fail("state mismatch", None, true);
+        }
         let host = self.provider.token_host();
         let token = match self.provider.token(Grant::AuthorizationCode { code, verifier: verifier.as_deref() }).await {
             Ok(token) => token,
@@ -464,13 +526,16 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             }
             Err(error) => return self.internal("the profile request failed", format!(": {error}")),
         };
+        drop(slot);
         let grant = OAuth2Grant { access_token: token.access_token, refresh_token: token.refresh_token, params: token.response, profile };
         match self.validator.validate(req, grant).await {
             Err(e) => StrategyOutcome::Error(e),
-            Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
+            Ok(None) => self.refused(),
             Ok(Some(user)) => {
                 let info = self.validator.info(&user);
                 match AuthenticatedUser::new(user) {
+                    // The authenticator turns this into a 401; with a failure page configured the callback goes there.
+                    Ok(user) if user.is_empty() && self.options.failure_redirect.is_some() => self.refused(),
                     Ok(user) if user.is_empty() => StrategyOutcome::Success { user, info },
                     Ok(user) => {
                         if let Some(path) = flow.return_to {

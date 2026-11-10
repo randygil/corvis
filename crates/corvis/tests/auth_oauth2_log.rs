@@ -47,14 +47,57 @@ async fn unsafe_choices_are_logged_once_at_startup_naming_the_strategy() {
     let cfg = Cfg::new(google_options(&mock).pkce(false).state_cookie_secure(false));
     let _app = AppBuilder::default().google(&cfg).logger().build().await;
     let notes = lines(&captured, "OAuth2Strategy");
-    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert_eq!(notes.len(), 3, "{notes:?}");
     assert!(notes.iter().any(|n| n.contains("\"google\"") && n.contains("PKCE is turned off")), "{notes:?}");
     assert!(notes.iter().any(|n| n.contains("\"google\"") && n.contains("not Secure")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("\"google\"") && n.contains("\"oauth2.google\"") && n.contains("__Host-")), "{notes:?}");
 
     captured.lock().unwrap().clear();
     let cfg = Cfg::new(google_options(&mock));
     let _app = AppBuilder::default().google(&cfg).logger().build().await;
     assert!(lines(&captured, "OAuth2Strategy").is_empty(), "the safe defaults log nothing");
+}
+
+#[tokio::test]
+async fn a_state_cookie_without_the_host_prefix_warns_naming_the_strategy_and_the_cookie() {
+    let _g = SERIAL.lock().await;
+    let captured = capture();
+    let mock = Mock::start(standard).await;
+    let cfg = Cfg::new(google_options(&mock).state_cookie_name("oauth_state"));
+    let _app = AppBuilder::default().google(&cfg).logger().build().await;
+    let notes = lines(&captured, "OAuth2Strategy");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let note = &notes[0];
+    assert!(note.contains("\"google\"") && note.contains("\"oauth_state\""), "{note}");
+    assert!(note.contains("sibling subdomain") && note.contains("login CSRF") && note.contains("__Host-"), "{note}");
+
+    // a prefixed custom name is the safe choice and says nothing; the cookie value is never printed
+    captured.lock().unwrap().clear();
+    let cfg = Cfg::new(google_options(&mock).state_cookie_name("__Host-my-state"));
+    let _app = AppBuilder::default().google(&cfg).logger().build().await;
+    assert!(lines(&captured, "OAuth2Strategy").is_empty());
+}
+
+#[tokio::test]
+async fn state_in_the_session_warns_when_the_session_cookie_has_no_host_prefix() {
+    use corvis::auth::session::{SessionCookie, SessionOptions};
+    let _g = SERIAL.lock().await;
+    let captured = capture();
+    let mock = Mock::start(standard).await;
+    let session = |name: &str| {
+        SessionOptions::with_secrets(["oauth2-test-session-secret-0123456789abcdef"]).unwrap().name(name).cookie(SessionCookie::default())
+    };
+    let cfg = Cfg::new(google_options(&mock).state_in_session());
+    let _app = AppBuilder::default().google(&cfg).session(session("connect.sid")).logger().build().await;
+    let notes = lines(&captured, "OAuth2Strategy");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("\"google\"") && notes[0].contains("\"connect.sid\"") && notes[0].contains("sibling subdomain"), "{notes:?}");
+    assert!(notes[0].contains("__Host-"), "{notes:?}");
+
+    captured.lock().unwrap().clear();
+    let cfg = Cfg::new(google_options(&mock).state_in_session());
+    let _app = AppBuilder::default().google(&cfg).session(session("__Host-sid")).logger().build().await;
+    assert!(lines(&captured, "OAuth2Strategy").is_empty());
 }
 
 #[tokio::test]

@@ -22,6 +22,7 @@ mod client;
 mod json;
 mod options;
 mod profile;
+mod redeem;
 mod secret;
 mod state;
 mod strategy;
@@ -29,8 +30,8 @@ mod strategy;
 pub use client::{OAuth2Client, OAuth2Error, OAuth2TokenResponse, OAuth2TokenSet};
 pub use options::{
     ClientAuth, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_CODE_BYTES, DEFAULT_MAX_IN_FLIGHT, DEFAULT_MAX_PROFILE_BYTES, DEFAULT_MAX_TOKEN_BYTES,
-    DEFAULT_STATE_TTL, DEFAULT_TIMEOUT, MAX_AUTHORIZATION_PARAMS, MAX_RELATIVE_PATH_BYTES, MAX_SCOPES, OAuth2Endpoints, OAuth2HttpOptions,
-    OAuth2Options, OAuth2OptionsError, is_safe_relative_path,
+    DEFAULT_REDEEMED_STATES_MAX, DEFAULT_STATE_TTL, DEFAULT_TIMEOUT, MAX_AUTHORIZATION_PARAMS, MAX_RELATIVE_PATH_BYTES, MAX_SCOPES,
+    OAuth2Endpoints, OAuth2HttpOptions, OAuth2Options, OAuth2OptionsError, is_safe_relative_path,
 };
 pub use profile::{OAuth2Email, OAuth2Name, OAuth2Profile};
 pub use secret::OAuth2Token;

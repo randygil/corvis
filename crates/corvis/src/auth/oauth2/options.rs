@@ -34,6 +34,10 @@ pub const MAX_MAX_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_MAX_IN_FLIGHT: usize = 32;
 pub const MIN_MAX_IN_FLIGHT: usize = 1;
 pub const MAX_MAX_IN_FLIGHT: usize = 1024;
+/// The default of [`OAuth2Options::redeemed_states_max`] and its bounds.
+pub const DEFAULT_REDEEMED_STATES_MAX: usize = 100_000;
+pub const MIN_REDEEMED_STATES_MAX: usize = 16;
+pub const MAX_REDEEMED_STATES_MAX: usize = 10_000_000;
 
 /// The most scope values and extra authorization parameters accepted.
 pub const MAX_SCOPES: usize = 64;
@@ -88,6 +92,13 @@ pub struct OAuth2Endpoints {
 }
 
 impl OAuth2Endpoints {
+    fn same_as(&self, other: &OAuth2Endpoints) -> bool {
+        self.authorization_url == other.authorization_url
+            && self.token_url == other.token_url
+            && self.userinfo_url == other.userinfo_url
+            && self.emails_url == other.emails_url
+    }
+
     /// The authorization and token endpoints.
     pub fn new(authorization_url: impl Into<String>, token_url: impl Into<String>) -> Self {
         OAuth2Endpoints { authorization_url: authorization_url.into(), token_url: token_url.into(), userinfo_url: None, emails_url: None }
@@ -115,7 +126,16 @@ pub struct OAuth2HttpOptions {
     pub(crate) max_token_bytes: usize,
     pub(crate) max_profile_bytes: usize,
     pub(crate) max_in_flight: usize,
+    pub(crate) max_in_flight_per_client: Option<usize>,
     pub(crate) extra_roots: Vec<Vec<u8>>,
+}
+
+impl OAuth2HttpOptions {
+    /// The slots one client address may hold at once: the configured share, or a quarter of `max_in_flight` (at
+    /// least 1).
+    pub(crate) fn per_client_slots(&self) -> usize {
+        self.max_in_flight_per_client.unwrap_or(self.max_in_flight / 4).max(1)
+    }
 }
 
 impl Default for OAuth2HttpOptions {
@@ -126,6 +146,7 @@ impl Default for OAuth2HttpOptions {
             max_token_bytes: DEFAULT_MAX_TOKEN_BYTES,
             max_profile_bytes: DEFAULT_MAX_PROFILE_BYTES,
             max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            max_in_flight_per_client: None,
             extra_roots: Vec::new(),
         }
     }
@@ -139,6 +160,7 @@ impl std::fmt::Debug for OAuth2HttpOptions {
             .field("max_token_bytes", &self.max_token_bytes)
             .field("max_profile_bytes", &self.max_profile_bytes)
             .field("max_in_flight", &self.max_in_flight)
+            .field("max_in_flight_per_client", &self.per_client_slots())
             .field("extra_roots", &self.extra_roots.len())
             .finish()
     }
@@ -178,6 +200,14 @@ impl OAuth2HttpOptions {
     /// that finds the limit reached is answered 503 without contacting the provider.
     pub fn max_in_flight(mut self, max: usize) -> Self {
         self.max_in_flight = max;
+        self
+    }
+
+    /// The most callbacks of one client address (the address the application sees, honouring `trust proxy`, IPv6
+    /// reduced to its /64) that may be waiting on the provider at once: a quarter of `max_in_flight` by default, at
+    /// least 1 (1 to 1024). A client over its share is answered 503 while other clients proceed.
+    pub fn max_in_flight_per_client(mut self, max: usize) -> Self {
+        self.max_in_flight_per_client = Some(max);
         self
     }
 
@@ -233,6 +263,7 @@ pub struct OAuth2Options {
     pub(crate) return_to_param: Option<String>,
     pub(crate) failure_redirect: Option<String>,
     pub(crate) max_code_bytes: usize,
+    pub(crate) redeemed_states_max: usize,
     pub(crate) http: OAuth2HttpOptions,
 }
 
@@ -289,6 +320,7 @@ impl OAuth2Options {
             return_to_param: None,
             failure_redirect: None,
             max_code_bytes: DEFAULT_MAX_CODE_BYTES,
+            redeemed_states_max: DEFAULT_REDEEMED_STATES_MAX,
             http: OAuth2HttpOptions::default(),
         }
     }
@@ -307,18 +339,13 @@ impl OAuth2Options {
     /// Google: the endpoints of `passport-google-oauth20` 2.0.0 and its OpenID userinfo profile. A scope is required
     /// (`["openid", "email", "profile"]` is the usual one).
     pub fn google(client_id: impl Into<String>, client_secret: impl Into<String>, redirect_uri: impl Into<String>) -> Self {
-        let endpoints = OAuth2Endpoints::new("https://accounts.google.com/o/oauth2/v2/auth", "https://www.googleapis.com/oauth2/v4/token")
-            .userinfo_url("https://www.googleapis.com/oauth2/v3/userinfo");
-        Self::base(ProfileKind::Google, endpoints, client_id, client_secret, redirect_uri)
+        Self::base(ProfileKind::Google, Self::google_endpoints(), client_id, client_secret, redirect_uri)
     }
 
     /// GitHub: the endpoints of `passport-github2` 0.1.12. Scope values are joined with a comma, as that package does.
     /// Ask for `user:email` to get the verified e-mail addresses.
     pub fn github(client_id: impl Into<String>, client_secret: impl Into<String>, redirect_uri: impl Into<String>) -> Self {
-        let endpoints = OAuth2Endpoints::new("https://github.com/login/oauth/authorize", "https://github.com/login/oauth/access_token")
-            .userinfo_url("https://api.github.com/user")
-            .emails_url("https://api.github.com/user/emails");
-        let mut options = Self::base(ProfileKind::GitHub, endpoints, client_id, client_secret, redirect_uri);
+        let mut options = Self::base(ProfileKind::GitHub, Self::github_endpoints(), client_id, client_secret, redirect_uri);
         options.scope_separator = ',';
         options
     }
@@ -452,6 +479,47 @@ impl OAuth2Options {
     }
 
     /// What the effective scope of a request is: the guard's, when it set one.
+    /// How many redeemed `state` values each strategy instance remembers (for `state_ttl`) to refuse a replayed
+    /// callback before it reaches the token endpoint, 100000 by default (16 to 10000000). When the set is full the
+    /// oldest entries are forgotten. It is a cost control of one instance, not a guarantee across instances.
+    pub fn redeemed_states_max(mut self, max: usize) -> Self {
+        self.redeemed_states_max = max;
+        self
+    }
+
+    /// The `provider` value of this strategy's profiles: the preset's name only when the preset's own endpoints are
+    /// in use; the strategy's name when any endpoint was changed and for a generic strategy. A strategy name is unique
+    /// in the application, so `(provider, id)` never collides across instances of one provider.
+    ///
+    /// This is the preset's name when the preset's own endpoints are in use unchanged, `None` otherwise.
+    pub(crate) fn preset_name(&self) -> Option<&'static str> {
+        let (name, own) = match self.kind {
+            ProfileKind::Google => ("google", Self::google_endpoints()),
+            ProfileKind::GitHub => ("github", Self::github_endpoints()),
+            ProfileKind::Generic => return None,
+        };
+        self.endpoints.same_as(&own).then_some(name)
+    }
+
+    /// The authorization endpoint's host (with the port when there is one), the `issuer` of the profiles.
+    pub(crate) fn issuer(&self) -> String {
+        url::Url::parse(&self.endpoints.authorization_url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| u.port().map_or_else(|| h.to_string(), |p| format!("{h}:{p}"))))
+            .unwrap_or_default()
+    }
+
+    fn google_endpoints() -> OAuth2Endpoints {
+        OAuth2Endpoints::new("https://accounts.google.com/o/oauth2/v2/auth", "https://www.googleapis.com/oauth2/v4/token")
+            .userinfo_url("https://www.googleapis.com/oauth2/v3/userinfo")
+    }
+
+    fn github_endpoints() -> OAuth2Endpoints {
+        OAuth2Endpoints::new("https://github.com/login/oauth/authorize", "https://github.com/login/oauth/access_token")
+            .userinfo_url("https://api.github.com/user")
+            .emails_url("https://api.github.com/user/emails")
+    }
+
     pub(crate) fn can_read_emails(scope: &[String]) -> bool {
         scope.iter().any(|s| s == "user" || s == "user:email")
     }
@@ -523,6 +591,10 @@ impl OAuth2Options {
         check_range(&mut out, "max_token_bytes", self.http.max_token_bytes, MIN_MAX_TOKEN_BYTES, MAX_MAX_TOKEN_BYTES);
         check_range(&mut out, "max_profile_bytes", self.http.max_profile_bytes, MIN_MAX_PROFILE_BYTES, MAX_MAX_PROFILE_BYTES);
         check_range(&mut out, "max_in_flight", self.http.max_in_flight, MIN_MAX_IN_FLIGHT, MAX_MAX_IN_FLIGHT);
+        if let Some(per_client) = self.http.max_in_flight_per_client {
+            check_range(&mut out, "max_in_flight_per_client", per_client, MIN_MAX_IN_FLIGHT, MAX_MAX_IN_FLIGHT);
+        }
+        check_range(&mut out, "redeemed_states_max", self.redeemed_states_max, MIN_REDEEMED_STATES_MAX, MAX_REDEEMED_STATES_MAX);
         if self.http.extra_roots.len() > MAX_EXTRA_ROOTS || self.http.extra_roots.iter().any(|r| r.is_empty() || r.len() > MAX_ROOT_BYTES) {
             out.push(format!(
                 "extra_root_certificate: at most {MAX_EXTRA_ROOTS} certificates of 1 to {MAX_ROOT_BYTES} DER bytes each are accepted"
@@ -691,6 +763,45 @@ mod tests {
 
     fn problems(options: OAuth2Options) -> String {
         options.problems().join("; ")
+    }
+
+    #[test]
+    fn the_preset_names_the_provider_only_while_its_endpoints_are_unchanged() {
+        let own = OAuth2Options::github("i", "s", "https://a.example/cb");
+        assert_eq!(own.preset_name(), Some("github"));
+        let ghe = OAuth2Options::github("i", "s", "https://a.example/cb").endpoints(
+            OAuth2Endpoints::new("https://ghe.corp.example/login/oauth/authorize", "https://ghe.corp.example/login/oauth/access_token")
+                .userinfo_url("https://ghe.corp.example/api/v3/user")
+                .emails_url("https://ghe.corp.example/api/v3/user/emails"),
+        );
+        assert_eq!(ghe.preset_name(), None, "the strategy's name is the namespace");
+        assert_eq!(ghe.issuer(), "ghe.corp.example");
+        let google = OAuth2Options::google("i", "s", "https://a.example/cb");
+        assert_eq!(google.preset_name(), Some("google"));
+        assert_eq!(google.issuer(), "accounts.google.com");
+        // one endpoint changed is enough
+        let mut one = OAuth2Options::github("i", "s", "https://a.example/cb");
+        one.endpoints.userinfo_url = Some("https://proxy.example/user".into());
+        assert_eq!(one.preset_name(), None);
+        let generic =
+            OAuth2Options::new(OAuth2Endpoints::new("https://a.example/a", "https://a.example/t"), "i", "s", "https://a.example/cb");
+        assert_eq!(generic.preset_name(), None);
+    }
+
+    #[test]
+    fn a_client_address_gets_a_quarter_of_the_slots_and_at_least_one() {
+        let slots = |max: usize, share: Option<usize>| {
+            let mut http = OAuth2HttpOptions::new().max_in_flight(max);
+            if let Some(share) = share {
+                http = http.max_in_flight_per_client(share);
+            }
+            http.per_client_slots()
+        };
+        assert_eq!(slots(32, None), 8);
+        assert_eq!(slots(1, None), 1);
+        assert_eq!(slots(3, None), 1);
+        assert_eq!(slots(1024, None), 256);
+        assert_eq!(slots(32, Some(5)), 5);
     }
 
     #[test]

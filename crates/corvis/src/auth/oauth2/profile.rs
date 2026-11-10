@@ -27,7 +27,8 @@ pub struct OAuth2Name {
     pub given_name: Option<String>,
 }
 
-/// The normalized profile the provider's user endpoint returned. Identify a user by `(provider, id)`; link an existing
+/// The normalized profile the provider's user endpoint returned. Identify a user by `(provider, id)`, never by e-mail
+/// alone; link an existing
 /// account by e-mail only through [`verified_email`](OAuth2Profile::verified_email): an unverified address is
 /// something anyone can claim.
 ///
@@ -36,9 +37,15 @@ pub struct OAuth2Name {
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct OAuth2Profile {
-    /// `"google"`, `"github"`, or the strategy name for a generic provider.
+    /// The namespace of `id`: `"google"` or `"github"` when the strategy uses that preset's own endpoints unchanged,
+    /// otherwise the strategy's name (unique in the application), which is also what a generic strategy gets. An
+    /// instance of the same software at another address (GitHub Enterprise) therefore never shares the namespace
+    /// of the public service. Key accounts by `(provider, id)`.
     pub provider: String,
-    /// The subject: Google's `sub`, GitHub's numeric `id` as a string. Never empty.
+    /// The host (with the port, when there is one) of the authorization endpoint the profile came from.
+    pub issuer: String,
+    /// The subject: Google's `sub`, GitHub's numeric `id`, as a string, exactly as the provider gave it (`"00012"`
+    /// and `"12"` differ): store and compare it as it is. Never empty.
     pub id: String,
     pub display_name: Option<String>,
     pub username: Option<String>,
@@ -133,6 +140,7 @@ fn text(map: &Map<String, Value>, key: &str) -> Option<String> {
 fn empty_profile(provider: &str, id: String, raw: Value) -> OAuth2Profile {
     OAuth2Profile {
         provider: provider.to_string(),
+        issuer: String::new(),
         id,
         display_name: None,
         username: None,

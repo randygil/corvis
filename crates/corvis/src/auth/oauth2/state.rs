@@ -23,7 +23,7 @@ pub(crate) const TOKEN_CHARS: usize = 43;
 /// The most logins in progress kept per browser and strategy.
 pub(crate) const MAX_FLOWS: usize = 4;
 /// A record from the future (clock skew between instances) is accepted up to this many seconds ahead.
-const MAX_SKEW_SECONDS: i64 = 60;
+pub(crate) const MAX_SKEW_SECONDS: i64 = 60;
 /// A signed cookie value is kept under this size so the whole `Set-Cookie` stays within what browsers accept.
 const MAX_COOKIE_VALUE: usize = 3500;
 
@@ -96,7 +96,12 @@ impl FlowSet {
 
     /// Drops the flows that are older than `ttl` seconds or more than a minute ahead of `now`.
     pub(crate) fn prune(&mut self, now: i64, ttl: i64) {
-        self.flows.retain(|f| f.issued <= now + MAX_SKEW_SECONDS && now - f.issued <= ttl);
+        // A timestamp that cannot be compared without overflow is not a time this server issued: the flow is invalid.
+        self.flows.retain(|f| {
+            let not_ahead = now.checked_add(MAX_SKEW_SECONDS).is_some_and(|limit| f.issued <= limit);
+            let age = now.checked_sub(f.issued);
+            not_ahead && age.is_some_and(|age| age <= ttl)
+        });
     }
 
     /// Removes and returns the flow whose state equals `state`. Every stored state is compared in constant time and
@@ -346,6 +351,22 @@ mod tests {
         assert_eq!(set.flows.len(), 1);
         assert!(set.take("").is_none());
         assert!(set.take(&format!("{}x", flow(2, 0).state)).is_none(), "different length");
+    }
+
+    #[test]
+    fn an_impossible_timestamp_is_an_invalid_flow_and_never_overflows() {
+        for issued in [i64::MIN, i64::MIN + 1, i64::MAX, i64::MAX - 1] {
+            for now in [0, 1_700_000_000, i64::MAX, i64::MIN, -1] {
+                let mut set = FlowSet::default();
+                set.push(flow(1, issued));
+                set.prune(now, 600);
+                assert!(set.is_empty() || now.checked_sub(issued).is_some(), "issued {issued}, now {now}");
+            }
+        }
+        let mut set = FlowSet::default();
+        set.push(flow(1, i64::MIN));
+        set.prune(1_700_000_000, 600);
+        assert!(set.is_empty(), "an ancient flow is not accepted, whatever the arithmetic wraps to");
     }
 
     #[test]

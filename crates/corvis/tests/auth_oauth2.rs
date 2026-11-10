@@ -7,7 +7,7 @@
 mod oauth2_common;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -499,22 +499,15 @@ async fn the_state_cookie_is_deleted_on_success_failure_and_error() {
 }
 
 #[tokio::test]
-async fn a_replay_with_the_cookie_is_refused_by_the_provider() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let c = calls.clone();
-    let mock = Mock::start(move |r| match r.path() {
-        "/token" if c.fetch_add(1, Ordering::SeqCst) > 0 => {
-            Reply::json(400, r#"{"error":"invalid_grant","error_description":"code reused"}"#)
-        }
-        _ => standard(r),
-    })
-    .await;
+async fn a_replay_with_the_cookie_is_refused_by_this_instance_without_the_provider() {
+    let mock = Mock::start(standard).await;
     let (app, _) = google_app(&mock).await;
     let l = login(&app, "/auth/google").await;
     assert_eq!(callback(&app, "/auth/google/callback", &l, "c").await.status, 200);
+    // the browser ignored the clearing cookie and presents the same record again: the state was already redeemed
     let again = callback(&app, "/auth/google/callback", &l, "c").await;
     assert_eq!((again.status, again.json_value()), (401, unauthorized()));
-    assert_eq!(mock.hits_to("/token").len(), 2);
+    assert_eq!(mock.hits_to("/token").len(), 1, "the replay cost no token request");
 }
 
 // ---- concurrent logins ----

@@ -172,6 +172,25 @@ No compilation is needed to review this plan; every task below ends with how to 
   every default of the limits table. Verify every finding is fixed with a regression test or recorded as a new issue,
   and list the findings in the archive notes
 
+## 10. Security review (round 1) fixes
+
+- [x] 10.1 M1a: a bounded per-instance set of redeemed states (`state_ttl` retention, `redeemed_states_max` option),
+  claimed before the token request; verify with "Concurrent replays of one flow", "Forged states do not enter the
+  set" and "The set is bounded"
+- [x] 10.2 M1b: per-client-address share of the in-flight slots (`max_in_flight_per_client`, a quarter by default);
+  verify with "Share reached" and "Slots are given back"
+- [x] 10.3 M2: `provider` is the preset's name only for unchanged preset endpoints, otherwise the strategy name;
+  `issuer` on the profile; verify with "Three namespaces for one subject" and "Issuer"
+- [x] 10.4 L1: startup warnings for a state cookie and a session cookie without the `__Host-` prefix; verify with the
+  scenarios of "Cookies without the host prefix warn at startup"
+- [x] 10.5 L2: the cats example answers `redacted_url()` in error bodies; verify with its test
+- [x] 10.6 I1: overflow-safe flow expiry; verify with the unit test and "Extreme timestamps"
+- [x] 10.7 I2: the validator's refusal goes to `failure_redirect`; verify with "Validator refusal"
+- [x] 10.8 Docs in English and Spanish (callback throttling, in-flight cap and per-address share, `(provider, id)`
+  with the rule and the warning against e-mail alone, the string `id`, the cookie-name warnings); `npm run docs:check`
+  passes
+- [ ] 10.9 Maintainer: re-run the security review over the fixes (task 9.8 stays open until then)
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

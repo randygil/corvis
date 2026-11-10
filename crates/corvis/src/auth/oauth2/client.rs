@@ -461,6 +461,8 @@ pub(crate) struct Provider {
     max_token_bytes: usize,
     max_profile_bytes: usize,
     kind: super::options::ProfileKind,
+    preset: Option<&'static str>,
+    issuer: String,
 }
 
 impl Provider {
@@ -481,6 +483,8 @@ impl Provider {
             max_token_bytes: options.http.max_token_bytes,
             max_profile_bytes: options.http.max_profile_bytes,
             kind: options.kind,
+            preset: options.preset_name(),
+            issuer: options.issuer(),
         })
     }
 
@@ -553,7 +557,7 @@ impl Provider {
         let accept = if self.kind == super::options::ProfileKind::GitHub { "application/vnd.github+json" } else { "application/json" };
         let answer = self.http.execute(get_call(url, &auth, accept, max)).await?;
         let document = json_answer(answer)?;
-        match self.kind {
+        let mut profile = match self.kind {
             super::options::ProfileKind::GitHub => {
                 let mut profile = profile::github_user(&document).ok_or(OAuth2Error::InvalidResponse)?;
                 if OAuth2Options::can_read_emails(scope)
@@ -563,13 +567,16 @@ impl Provider {
                     let emails = json_answer_any(answer)?;
                     profile::github_emails(&mut profile, &emails).ok_or(OAuth2Error::InvalidResponse)?;
                 }
-                Ok(Some(profile))
+                profile
             }
-            super::options::ProfileKind::Google => Ok(Some(profile::openid(&document, "google").ok_or(OAuth2Error::InvalidResponse)?)),
-            super::options::ProfileKind::Generic => {
-                Ok(Some(profile::openid(&document, provider_name).ok_or(OAuth2Error::InvalidResponse)?))
+            super::options::ProfileKind::Google | super::options::ProfileKind::Generic => {
+                profile::openid(&document, provider_name).ok_or(OAuth2Error::InvalidResponse)?
             }
-        }
+        };
+        // The namespace of the id: the preset's name only while the preset's own endpoints are in use.
+        profile.provider = self.preset.map_or_else(|| provider_name.to_string(), str::to_string);
+        profile.issuer = self.issuer.clone();
+        Ok(Some(profile))
     }
 }
 
