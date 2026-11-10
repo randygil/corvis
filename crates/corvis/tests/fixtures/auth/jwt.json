@@ -1,0 +1,2076 @@
+{
+  "versions": {
+    "passport-jwt": "4.0.1",
+    "jsonwebtoken": "9.0.3",
+    "@nestjs/passport": "12.0.1"
+  },
+  "cases": [
+    {
+      "name": "payload passed through",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "validator returns no user",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "nobody",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "no token",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {}
+      },
+      "token": null,
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "wrong secret",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "other",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "algorithm none",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "raw": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiI3Iiwicm9sZSI6ImFkbWluIiwiZXhwIjo0MTAyNDQ0ODAwfQ."
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "algorithm NONE",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "raw": "eyJhbGciOiJOT05FIiwidHlwIjoiSldUIn0.eyJzdWIiOiI3Iiwicm9sZSI6ImFkbWluIiwiZXhwIjo0MTAyNDQ0ODAwfQ."
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "empty signature with HS256",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "raw": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3Iiwicm9sZSI6ImFkbWluIiwiZXhwIjo0MTAyNDQ0ODAwfQ."
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "not a token",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "raw": "abc"
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "HS512 with the default list",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS512",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "HS512 with an explicit HS256 list",
+      "request": {
+        "method": "GET",
+        "path": "/hs256",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS512",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "HS256 with an explicit HS256 list",
+      "request": {
+        "method": "GET",
+        "path": "/hs256",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "tab between scheme and token",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer\t{{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "extra words after the token",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}} extra"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "lowercase scheme",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "other scheme",
+      "request": {
+        "method": "GET",
+        "path": "/scheme",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "configured scheme",
+      "request": {
+        "method": "GET",
+        "path": "/scheme",
+        "headers": {
+          "authorization": "JWT {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "scheme without a token",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer"
+        }
+      },
+      "token": null,
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "basic scheme",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Basic {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "custom header",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-token": "{{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "uppercase header name",
+      "request": {
+        "method": "GET",
+        "path": "/header-upper",
+        "headers": {
+          "x-token": "{{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": {
+        "reason": "the header name is matched case-insensitively; the original only finds names written in lowercase",
+        "status": 200
+      }
+    },
+    {
+      "name": "repeated custom header",
+      "request": {
+        "method": "GET",
+        "path": "/header",
+        "headers": {
+          "x-token": "{{token}}, {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "cookie",
+      "request": {
+        "method": "GET",
+        "path": "/cookie",
+        "headers": {
+          "cookie": "jwt={{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query parameter",
+      "request": {
+        "method": "GET",
+        "path": "/query?token={{token}}",
+        "headers": {}
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "body field",
+      "request": {
+        "method": "POST",
+        "path": "/body",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "token": "{{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 201,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "non-string body field",
+      "request": {
+        "method": "POST",
+        "path": "/body",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "token": 5
+        }
+      },
+      "token": null,
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "token in a place that is not configured",
+      "request": {
+        "method": "GET",
+        "path": "/bearer?token={{token}}",
+        "headers": {
+          "cookie": "jwt={{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "extractors: only the header",
+      "request": {
+        "method": "GET",
+        "path": "/extractors",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "extractors: the cookie",
+      "request": {
+        "method": "GET",
+        "path": "/extractors",
+        "headers": {
+          "cookie": "jwt={{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "extractors: the first non-empty one wins",
+      "request": {
+        "method": "GET",
+        "path": "/extractors",
+        "headers": {
+          "cookie": "jwt={{wrong}}",
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": {
+        "alg": "HS256",
+        "key": "other",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "oversized token",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        },
+        "pad": 9000
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": {
+        "reason": "the original has no token length limit; the default limit is 8192 bytes",
+        "status": 401
+      }
+    },
+    {
+      "name": "raised limit",
+      "request": {
+        "method": "GET",
+        "path": "/big",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        },
+        "pad": 10000
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "expired token",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "exp": {
+            "$now": -10
+          }
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "expired within the tolerance",
+      "request": {
+        "method": "GET",
+        "path": "/tolerance",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "exp": {
+            "$now": -10
+          }
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "expired beyond the tolerance",
+      "request": {
+        "method": "GET",
+        "path": "/tolerance",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "exp": {
+            "$now": -60
+          }
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "not yet valid",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "exp": 4102444800,
+          "nbf": {
+            "$now": 3600
+          }
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "not yet valid within the tolerance",
+      "request": {
+        "method": "GET",
+        "path": "/tolerance",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "exp": 4102444800,
+          "nbf": {
+            "$now": 10
+          }
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "ignore_expiration",
+      "request": {
+        "method": "GET",
+        "path": "/ignore-exp",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "exp": {
+            "$now": -3600
+          }
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "non-numeric exp",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "exp": "2099-01-01"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "token without exp",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": {
+        "reason": "exp is required by default; the original accepts tokens without exp, which never expire",
+        "status": 401
+      }
+    },
+    {
+      "name": "string iat",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "exp": 4102444800,
+          "iat": "yesterday"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7"
+          }
+        }
+      },
+      "divergence": {
+        "reason": "a non-numeric iat fails; the original checks iat only with maxAge",
+        "status": 401
+      }
+    },
+    {
+      "name": "audience in the list",
+      "request": {
+        "method": "GET",
+        "path": "/audience",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "aud": "mobile"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "audience not in the list",
+      "request": {
+        "method": "GET",
+        "path": "/audience",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "aud": "admin"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "audience missing",
+      "request": {
+        "method": "GET",
+        "path": "/audience",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "audience array in the token",
+      "request": {
+        "method": "GET",
+        "path": "/audience-web",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "aud": [
+            "admin",
+            "web"
+          ]
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "audience array without a match",
+      "request": {
+        "method": "GET",
+        "path": "/audience-web",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "aud": [
+            "admin",
+            "ops"
+          ]
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "issuer matches",
+      "request": {
+        "method": "GET",
+        "path": "/issuer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "iss": "https://auth.example"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "wrong issuer",
+      "request": {
+        "method": "GET",
+        "path": "/issuer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "iss": "https://evil.example"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "issuer missing",
+      "request": {
+        "method": "GET",
+        "path": "/issuer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "key chosen by the issuer",
+      "request": {
+        "method": "GET",
+        "path": "/provider",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "sa",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "iss": "a"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "key chosen by another issuer",
+      "request": {
+        "method": "GET",
+        "path": "/provider",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "sb",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "iss": "b"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "token signed with the other issuer key",
+      "request": {
+        "method": "GET",
+        "path": "/provider",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "sb",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "iss": "a"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "key provider error",
+      "request": {
+        "method": "GET",
+        "path": "/provider",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "sa",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800,
+          "iss": "unknown"
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "key provider that always fails",
+      "request": {
+        "method": "GET",
+        "path": "/provider-error",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "provider returns an RSA key for an HMAC token",
+      "request": {
+        "method": "GET",
+        "path": "/provider-rsa",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "provider returns an RSA key for an RSA token",
+      "request": {
+        "method": "GET",
+        "path": "/provider-rsa",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "RS256",
+        "key": "rsa",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "RS256",
+      "request": {
+        "method": "GET",
+        "path": "/rs256",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "RS256",
+        "key": "rsa",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "PS256",
+      "request": {
+        "method": "GET",
+        "path": "/rs256",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "PS256",
+        "key": "rsa",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "HMAC token signed with the RSA public key",
+      "request": {
+        "method": "GET",
+        "path": "/rs256",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "rsa-public",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "HMAC token against an RSA key",
+      "request": {
+        "method": "GET",
+        "path": "/rs256",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "ES256",
+      "request": {
+        "method": "GET",
+        "path": "/es256",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "ES256",
+        "key": "ec",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "RS256 token against an EC key",
+      "request": {
+        "method": "GET",
+        "path": "/es256",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "RS256",
+        "key": "rsa",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "string payload",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "payloadText": "\"hello\""
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {}
+        }
+      },
+      "divergence": {
+        "reason": "a payload that is not an object fails; the original passes the string to validate()",
+        "status": 401
+      }
+    },
+    {
+      "name": "two strategies: the second secret on the second name",
+      "request": {
+        "method": "GET",
+        "path": "/refresh",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s2",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "user": {
+            "id": "7",
+            "role": "admin"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "two strategies: the first secret on the second name",
+      "request": {
+        "method": "GET",
+        "path": "/refresh",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s1",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "two strategies: the second secret on the first name",
+      "request": {
+        "method": "GET",
+        "path": "/bearer",
+        "headers": {
+          "authorization": "Bearer {{token}}"
+        }
+      },
+      "token": {
+        "alg": "HS256",
+        "key": "s2",
+        "claims": {
+          "sub": "7",
+          "role": "admin",
+          "exp": 4102444800
+        }
+      },
+      "wrong": null,
+      "response": {
+        "status": 401,
+        "headers": {
+          "www-authenticate": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    }
+  ]
+}

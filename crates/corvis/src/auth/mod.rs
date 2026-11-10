@@ -10,8 +10,8 @@
 //! [`HttpArgumentsHost::respond_with`](crate::common::context::HttpArgumentsHost::respond_with) and
 //! [`append_response_header`](crate::common::context::HttpArgumentsHost::append_response_header).
 //!
-//! The module is always compiled and has no dependencies of its own; the strategy kinds that need crates (JWT,
-//! password hashing, ...) come with their own features.
+//! The module is always compiled and has no dependencies of its own; the strategy kinds that need crates (password
+//! hashing, ...) come with their own features. The JWT strategy, `corvis::auth::jwt`, comes with the `jwt` feature (a default one).
 //!
 //! ```ignore
 //! #[module(
@@ -31,6 +31,9 @@ mod guard;
 mod module;
 mod strategy;
 mod user;
+
+#[cfg(feature = "jwt")]
+pub mod jwt;
 
 pub use authenticator::{AuthFailure, AuthResult, Authenticator};
 pub use guard::AuthGuard;

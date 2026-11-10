@@ -36,12 +36,18 @@ MUST NOT be called for a token that fails extraction or verification.
 
 ### Requirement: Extractor and key options are checked at startup
 The application MUST NOT start, with an error naming the strategy and the problem, when a JWT strategy has no
-extractor, both a static key and a key provider, or neither, an empty HMAC secret, or a key that does not parse.
+extractor, both a static key and a key provider, or neither, an HMAC secret that is empty or shorter than 32 bytes (RFC 7518 section
+3.2; `JwtService` is unchanged), or a key that does not parse. A key provider that returns such a secret MUST make that
+request fail.
 
 #### Scenario: No extractor
 - **WHEN** a JWT strategy is configured with a secret and no extractor
 - **THEN** the application does not start and the error names the strategy and the missing extractor, as
   `passport-jwt` throws `JwtStrategy requires a function to retrieve jwt from requests`
+
+#### Scenario: Short secret
+- **WHEN** a JWT strategy uses the secret `"changeme"`
+- **THEN** the application does not start and the error names the strategy and the secret length, not the secret
 
 #### Scenario: Both a key and a key provider
 - **WHEN** a JWT strategy is configured with a secret and a key provider
@@ -261,13 +267,13 @@ payload to `validate()`.
 - **WHEN** a correctly signed token's payload segment encodes the JSON string `"hello"`
 - **THEN** the response is the 401
 
-### Requirement: Weak or risky configurations are reported at startup
-The framework SHALL log one startup warning per strategy, naming it, when the HMAC secret is shorter than 32 bytes,
-when `ignore_expiration` or `allow_missing_exp()` is configured, and when a query parameter extractor is configured.
+### Requirement: Risky configurations are reported at startup
+The framework SHALL log one startup warning per risky option of a strategy, naming it, when `ignore_expiration` or
+`allow_missing_exp()` is configured and when a query parameter extractor is configured.
 
-#### Scenario: Short secret
-- **WHEN** a JWT strategy uses the secret `"changeme"`
-- **THEN** the application starts and the log has a warning naming the strategy and the secret length
+#### Scenario: Query token extractor
+- **WHEN** a JWT strategy reads its token with `from_url_query_parameter`
+- **THEN** the application starts and the log has a warning naming the strategy and the URL query
 
 ### Requirement: Malformed input never crashes the strategy
 Extracting and verifying any header, cookie, query or body value MUST end in a success or a failure and MUST NOT

@@ -181,6 +181,73 @@ fn decoding_key(alg: Algorithm, key: &str) -> crate::Result<DecodingKey> {
     })
 }
 
+/// How the time claims of a verified token are checked (see [`check_time_claims`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TimeRules {
+    /// Seconds of clock skew allowed on `exp` and `nbf`.
+    pub tolerance: u64,
+    /// Skip `exp` altogether (`ignoreExpiration`).
+    pub ignore_expiration: bool,
+    /// A token without `exp` fails.
+    pub require_exp: bool,
+}
+
+/// Why [`verify_claims`] refused a token.
+#[derive(Debug)]
+pub(crate) enum VerifyError {
+    /// The header, the algorithm, the key or the signature did not pass.
+    Decode(jsonwebtoken::errors::Error),
+    /// A claim did not pass; the text is node-jsonwebtoken's message where one exists.
+    Claim(&'static str),
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::Decode(e) => e.fmt(f),
+            VerifyError::Claim(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
+
+/// The time rules of node-jsonwebtoken's `verify`, with `now` in whole seconds: `iat`, `nbf` and `exp` must be numbers
+/// when present (`exp` is not looked at with `ignore_expiration`), `nbf > now + tolerance` is not active yet and
+/// `now >= exp + tolerance` is expired. A missing `exp` fails when `require_exp` is set.
+pub(crate) fn check_time_claims(claims: &Value, rules: &TimeRules, now: i64) -> Result<(), VerifyError> {
+    let now = now as f64;
+    let tolerance = rules.tolerance as f64;
+    let number = |name: &str, message: &'static str| -> Result<Option<f64>, VerifyError> {
+        match claims.get(name) {
+            None => Ok(None),
+            Some(v) => v.as_f64().map(Some).ok_or(VerifyError::Claim(message)),
+        }
+    };
+    number("iat", "invalid iat value")?;
+    if let Some(nbf) = number("nbf", "invalid nbf value")?
+        && nbf > now + tolerance
+    {
+        return Err(VerifyError::Claim("jwt not active"));
+    }
+    if !rules.ignore_expiration {
+        match number("exp", "invalid exp value")? {
+            Some(exp) if now >= exp + tolerance => return Err(VerifyError::Claim("jwt expired")),
+            None if rules.require_exp => return Err(VerifyError::Claim("exp claim required")),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Decodes `token` with `validation` (algorithms, and `iss`/`aud` when set on it) and checks its time claims against
+/// the clock. Shared by [`JwtService::verify`] and the JWT strategy.
+pub(crate) fn verify_claims(token: &str, key: &DecodingKey, validation: &Validation, rules: &TimeRules) -> Result<Value, VerifyError> {
+    let claims = jsonwebtoken::decode::<Value>(token, key, validation).map_err(VerifyError::Decode)?.claims;
+    check_time_claims(&claims, rules, chrono::Utc::now().timestamp())?;
+    Ok(claims)
+}
+
 /// Signs and verifies JSON Web Tokens.
 #[derive(Clone)]
 pub struct JwtService {
@@ -269,26 +336,7 @@ impl JwtService {
             Some(aud) => validation.set_audience(&[aud]),
             None => validation.validate_aud = false,
         }
-        let data = jsonwebtoken::decode::<Value>(token, &decoding_key(alg, key)?, &validation)?;
-        let claims = data.claims;
-        let now = chrono::Utc::now().timestamp() as f64;
-        let number = |name: &str| -> crate::Result<Option<f64>> {
-            match claims.get(name) {
-                None => Ok(None),
-                Some(v) => v.as_f64().map(Some).ok_or_else(|| anyhow::anyhow!("invalid {name} value")),
-            }
-        };
-        number("iat")?;
-        if let Some(nbf) = number("nbf")?
-            && nbf > now
-        {
-            anyhow::bail!("jwt not active");
-        }
-        if let Some(exp) = number("exp")?
-            && now >= exp
-        {
-            anyhow::bail!("jwt expired");
-        }
+        let claims = verify_claims(token, &decoding_key(alg, key)?, &validation, &TimeRules::default())?;
         Ok(serde_json::from_value(claims)?)
     }
 
@@ -464,6 +512,34 @@ mod tests {
         // An HS256 token "signed" with the public key is not accepted (no algorithm confusion).
         let confused = forge(HS256, &serde_json::json!({ "sub": 7 }), TEST_RSA_PUBLIC.as_bytes());
         assert!(jwt.verify::<Value>(&confused).is_err());
+    }
+
+    #[test]
+    fn time_claims_follow_the_boundaries_of_node_jsonwebtoken() {
+        let rules = TimeRules { tolerance: 30, ..Default::default() };
+        let check = |claims: Value, rules: &TimeRules| check_time_claims(&claims, rules, 1000).map_err(|e| e.to_string());
+        // exp: `now >= exp + tolerance` fails, one second before passes.
+        assert_eq!(check(serde_json::json!({ "exp": 970 }), &rules), Err("jwt expired".into()));
+        assert_eq!(check(serde_json::json!({ "exp": 971 }), &rules), Ok(()));
+        assert_eq!(check(serde_json::json!({ "exp": 1000 }), &TimeRules::default()), Err("jwt expired".into()));
+        assert_eq!(check(serde_json::json!({ "exp": 1001 }), &TimeRules::default()), Ok(()));
+        // nbf: `nbf > now + tolerance` fails, equal passes.
+        assert_eq!(check(serde_json::json!({ "nbf": 1030 }), &rules), Ok(()));
+        assert_eq!(check(serde_json::json!({ "nbf": 1031 }), &rules), Err("jwt not active".into()));
+        assert_eq!(check(serde_json::json!({ "nbf": 1000 }), &TimeRules::default()), Ok(()));
+        assert_eq!(check(serde_json::json!({ "nbf": 1001 }), &TimeRules::default()), Err("jwt not active".into()));
+        // Types.
+        assert_eq!(check(serde_json::json!({ "exp": "2099" }), &rules), Err("invalid exp value".into()));
+        assert_eq!(check(serde_json::json!({ "nbf": null }), &rules), Err("invalid nbf value".into()));
+        assert_eq!(check(serde_json::json!({ "iat": "x" }), &rules), Err("invalid iat value".into()));
+        // require_exp and ignore_expiration.
+        let strict = TimeRules { require_exp: true, ..Default::default() };
+        assert_eq!(check(serde_json::json!({}), &strict), Err("exp claim required".into()));
+        assert_eq!(check(serde_json::json!({ "exp": 2000 }), &strict), Ok(()));
+        let ignore = TimeRules { require_exp: true, ignore_expiration: true, ..Default::default() };
+        assert_eq!(check(serde_json::json!({}), &ignore), Ok(()));
+        assert_eq!(check(serde_json::json!({ "exp": 1 }), &ignore), Ok(()));
+        assert_eq!(check(serde_json::json!({ "exp": "junk" }), &ignore), Ok(()));
     }
 
     const TEST_RSA_PRIVATE: &str = include_str!("../tests/fixtures/jwt_rsa_private.pem");

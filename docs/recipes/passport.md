@@ -6,7 +6,7 @@ status: partial
 
 Corvis has the **strategy model** of Passport and its integration for the original framework: strategies registered by name, an `AuthGuard` that runs them, the user on the request and the `401` the original answers when every strategy fails. Its behavior is checked against the original passport integration (12.0.1) over `passport` 0.7.0 with recorded responses.
 
-What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter. The strategies themselves arrive one by one: JWT, local (username and password), API keys, sessions and OAuth2 are tracked in their own issues (#42, #41, #45, #44 and #43). Until then, [`JwtModule` and a guard of your own](#alternative-jwtmodule-guards) cover the common token case.
+What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy). The other strategies arrive one by one: local (username and password), API keys, sessions and OAuth2 are tracked in their own issues (#41, #45, #44 and #43). A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
 
 ## The model
 
@@ -120,13 +120,145 @@ When every strategy fails, the answer is `401 {"message":"Unauthorized","statusC
 - **No session login.** `AuthGuard` never logs in to a session by itself; sessions come with their own issue.
 - **No `property`, `failureRedirect` or flash messages.** The user is always stored for `User<T>` and `request.user()`.
 
+## The JWT strategy
+
+`corvis::auth::jwt` (under the `jwt` feature, enabled by default) is the port of `passport-jwt` 4.0.1 over `jsonwebtoken` 9. You write the class of the original, `PassportStrategy(Strategy)` with its options and `validate`, as a `JwtValidator`, and register `JwtStrategy<YourValidator>`:
+
+```rust
+use corvis::auth::jwt::{ExtractJwt, JwtAlgorithm, JwtKey, JwtStrategy, JwtStrategyOptions, JwtValidator};
+
+#[injectable]
+pub struct JwtAuth {
+    config: Arc<ConfigService>,
+}
+
+#[async_trait]
+impl JwtValidator for JwtAuth {
+    type User = Claims; // what handlers receive as User<Claims>
+
+    fn options(&self) -> JwtStrategyOptions {
+        JwtStrategyOptions::new()
+            .jwt_from_request(ExtractJwt::from_auth_header_as_bearer_token())
+            .secret_or_key(JwtKey::secret(self.config.get::<String>("JWT_SECRET").unwrap_or_default()))
+            .algorithms([JwtAlgorithm::HS256])
+    }
+
+    async fn validate(&self, _req: &Request, payload: Value) -> Result<Option<Claims>, HttpException> {
+        Ok(serde_json::from_value(payload).ok()) // None answers 401
+    }
+}
+
+#[module(
+    providers = [JwtAuth, Provider::strategy::<JwtStrategy<JwtAuth>>()],
+    controllers = [CatsController],
+)]
+pub struct AuthModule;
+
+// on a controller, a route or globally
+#[use_guards(AuthGuard::new("jwt"))]
+```
+
+`options()` runs once, when the application starts, and every problem in it stops startup with an error that names the strategy (`Error while instantiating JwtStrategy "jwt" (..): invalid JWT strategy options: ..`). `validate` runs only for a token that was found and verified; the payload is a JSON object. It returns the user (`Some`), no user (`None`, a `401`) or an exception (`Err`, passed on unchanged, as `done(err)` does in the original). The strategy is called `"jwt"`; set `const NAME: &'static str = "jwt-refresh";` in a second validator to register another strategy next to it (each with its own key). `fn info(&self, user)` can return the auth info of a success.
+
+`passReqToCallback` does not exist: the request is always the first argument of `validate`.
+
+### Options
+
+| `passport-jwt` | Corvis | Notes |
+|---|---|---|
+| `jwtFromRequest` | `.jwt_from_request(ExtractJwt::..)` | required; there is no default place |
+| `secretOrKey` | `.secret_or_key(JwtKey::..)` | `JwtKey::secret`, `rsa_pem`, `ec_pem`, `ed_pem` |
+| `secretOrKeyProvider` | `.secret_or_key_provider(provider)` | an async `JwtKeyProvider`; give a key or a provider, not both |
+| `issuer` | `.issuer("https://auth.example")` or a list | the token's `iss` must equal one of them |
+| `audience` | `.audience("web")` or a list | the token's `aud` (string or list) must contain one of them |
+| `algorithms` | `.algorithms([..])` | see [Algorithms and keys](#algorithms-and-keys) |
+| `ignoreExpiration` | `.ignore_expiration(true)` | logs a startup warning |
+| `jsonWebTokenOptions.clockTolerance` | `.clock_tolerance(Duration)` | 0 by default, at most 300 s |
+| `passReqToCallback` | | always on |
+| | `.max_token_length(bytes)` | 8192 by default, checked before decoding |
+| | `.allow_missing_exp()` | accept tokens without `exp`; logs a startup warning |
+
+`maxAge`, `subject`, `jwtid`, `nonce`, `complete`, `clockTimestamp` and regular-expression audiences are not supported.
+
+### Where the token is read from
+
+| `ExtractJwt` in `passport-jwt` | Corvis |
+|---|---|
+| `fromAuthHeaderAsBearerToken()` | `ExtractJwt::from_auth_header_as_bearer_token()` |
+| `fromAuthHeaderWithScheme(s)` | `ExtractJwt::from_auth_header_with_scheme(s)` |
+| `fromHeader(name)` | `ExtractJwt::from_header(name)` |
+| `fromUrlQueryParameter(name)` | `ExtractJwt::from_url_query_parameter(name)` |
+| `fromBodyField(name)` | `ExtractJwt::from_body_field(name)` |
+| `fromExtractors([..])` | `ExtractJwt::from_extractors([..])`: the first non-empty token wins |
+| `req => req.cookies?.[name]` | `ExtractJwt::from_cookie(name)` |
+| any function | `ExtractJwt::custom(\|req\| ..)` |
+
+The `Authorization` header is parsed exactly as `passport-jwt` does: the first `Authorization` value is matched with `(\S+)\s+(\S+)` (so a tab can separate the scheme and the token, and words after the token are ignored) and the scheme is compared ignoring case. `extract_bearer_token` keeps its own, stricter behavior. An empty value, or a value that is not a string (a number in a JSON body), is no token. Tokens are read only from the places you configure: a valid token in the query or in a cookie does nothing unless an extractor reads it.
+
+::: warning Tokens in URLs
+A token in the query string ends up in access logs, browser history and `Referer` headers. The strategy logs a warning at startup when `from_url_query_parameter` is configured; prefer the `Authorization` header or a cookie.
+:::
+
+### Algorithms and keys
+
+A token is accepted only when its header `alg` is in the allow-list **and** belongs to the family of the key used for it, so a public key can never be used as an HMAC secret, and `none` (in any letter case) can never be accepted: there is no way to write it.
+
+| Key | Allowed by default |
+|---|---|
+| `JwtKey::secret(..)` | `HS256`, `HS384`, `HS512` |
+| `JwtKey::rsa_pem(..)` | `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512` |
+| `JwtKey::ec_pem(..)` | `ES256`, `ES384` |
+| `JwtKey::ed_pem(..)` | none: write `.algorithms([JwtAlgorithm::EdDSA])` |
+
+With a fixed key, `.algorithms([..])` must be non-empty and belong to the key's family (an HMAC algorithm with an RSA key, or a list that mixes families, stops startup). With a key provider, the list (or every default one) is narrowed to the family of the key each request gets; an empty result is a `401`. `jsonwebtoken` 9 has no `ES512`, so an `ES512` token always fails.
+
+An HMAC secret must be at least 32 bytes (RFC 7518 section 3.2): a shorter one, or an empty one, stops startup, and a key provider that returns one fails that request (`JwtService` itself keeps accepting shorter secrets). Generate one with `openssl rand -hex 32`.
+
+A key provider receives the request and the raw token, which is **not verified yet**: use its `iss` or `kid` only to choose a key, never to trust a value. It runs for every request, so cache what it fetches; an error is a `401`, not a `500`.
+
+```rust
+struct ByIssuer {
+    keys: HashMap<String, JwtKey>,
+}
+
+#[async_trait]
+impl JwtKeyProvider for ByIssuer {
+    async fn key(&self, _req: &Request, raw_token: &str) -> anyhow::Result<JwtKey> {
+        let iss = unverified_issuer(raw_token).ok_or_else(|| anyhow::anyhow!("no issuer"))?;
+        self.keys.get(&iss).cloned().ok_or_else(|| anyhow::anyhow!("unknown issuer"))
+    }
+}
+```
+
+### Claims and time
+
+`exp` and `nbf` follow `jsonwebtoken` 9: with `now` in whole seconds and the tolerance `t`, a token fails when `now >= exp + t` (`jwt expired`) or `nbf > now + t` (`jwt not active`), and when `exp`, `nbf` or `iat` is present and not a number. `ignore_expiration` skips the `exp` check and requirement. The tolerance defaults to 0 s and is capped at 300 s: a larger value stops startup.
+
+### Differences from `passport-jwt`
+
+Each one is on purpose, and the differential test marks it:
+
+- **`exp` is required.** The original accepts a token without `exp`, which then never expires. Add `.allow_missing_exp()` to accept them (it logs a startup warning); tokens from `JwtService::sign` carry `exp` whenever `expires_in` is set.
+- **A non-numeric `iat` fails.** `jsonwebtoken` checks `iat` only with `maxAge`.
+- **The payload must be a JSON object.** The original passes a string payload to `validate`.
+- **Header names are case-insensitive** in `from_header`; the original only finds names written in lowercase.
+- **Tokens are limited to 8192 bytes** by default (`.max_token_length(..)`).
+- **The configuration is checked at startup**: an HMAC secret under 32 bytes, an empty issuer or audience, a tolerance above 300 s and the other combinations above do not start.
+- **`ES512` is not available** (`jsonwebtoken` 9).
+
+A failed attempt keeps its reason as `request.auth_info()` (`{"message": "jwt expired"}`, `invalid signature`, `invalid algorithm`, `jwt malformed`, `No auth token`, `token too long`, ..), never in the response, which is the usual `401`. The reasons never repeat anything from the token.
+
+### Testing against the original
+
+`crates/corvis/tests/fixtures/auth/jwt.mjs` runs `passport-jwt` 4.0.1 (over `jsonwebtoken` 9.0.x) behind the original guard with one route per strategy and records 65 cases (`jwt.json`): extractors, `Authorization` parsing, algorithms (`none`, confusion between families, explicit lists), time claims, audience and issuer, key providers, RS256, PS256 and ES256. `crates/corvis/tests/auth_jwt.rs` replays them against the same routes, signing the tokens again, with no Node needed at test time.
+
 ## Differential testing
 
 Every case above is recorded from the original: `crates/corvis/tests/fixtures/auth/strategies.mjs` runs the original passport integration (12.0.1) over `passport` 0.7.0 with custom `passport-strategy` 1.0.0 strategies driven to each outcome, and `tests/auth_strategies.rs` replays the recorded responses against the same routes in Corvis, with no Node needed at test time. Each strategy kind that arrives later adds its own cases.
 
 ## Alternative: `JwtModule` + guards
 
-Until the JWT strategy arrives, the pieces for authenticating with tokens are in the framework and cover the most common case, an API with JWT:
+The JWT strategy above is the main path. The pieces under it stay available when you prefer to write the guard yourself, and cover the most common case, an API with JWT:
 
 - `JwtModule::register(JwtModuleOptions::new(secret))` or `JwtModule::register_async(global, |ctx| ...)` to configure signing;
 - `JwtService::sign` and `JwtService::verify` (or `verify_or_unauthorized`, which already returns a `401`);

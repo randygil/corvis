@@ -6,15 +6,16 @@ status: documented
 
 Corvis does not impose an authentication strategy, but it ships the pieces for the most common one in APIs:
 JWT tokens signed by the server and verified by a [guard](/guards). This page builds that complete
-flow with `JwtModule`, `JwtService` and a `CanActivate` of your own, following the
-`examples/cats-app` example.
+flow with `JwtModule`, `JwtService` and the [JWT strategy](/recipes/passport#the-jwt-strategy) behind
+`AuthGuard::new("jwt")`, following the `examples/cats-app` example. A `CanActivate` of your own
+[stays an alternative](#with-a-guard-of-your-own).
 
 The flow is as follows:
 
 1. The client sends its credentials to `POST /auth/login`.
 2. A service checks the credentials and signs a JWT with `JwtService::sign`.
 3. On every later request the client sends `Authorization: Bearer <token>`.
-4. A guard extracts the token, verifies it and leaves the *claims* on the request for the handler.
+4. A guard extracts the token, verifies it and leaves the *claims* as the user of the request for the handler.
 
 ::: tip Requirement
 `JwtModule` and `JwtService` are behind the `jwt` feature of the `corvis` crate, which is enabled
@@ -131,6 +132,62 @@ impl AuthController {
 parameter has no attribute: it is resolved with `FromContext` (see below).
 
 ## The authentication guard
+
+### With the JWT strategy
+
+Write the strategy once, as a validator with the options of `passport-jwt` (see [Passport](/recipes/passport#the-jwt-strategy)
+for every option and difference), register it, and put `AuthGuard::new("jwt")` where it is needed:
+
+```rust
+use corvis::auth::jwt::{ExtractJwt, JwtAlgorithm, JwtKey, JwtStrategy, JwtStrategyOptions, JwtValidator};
+
+#[injectable]
+pub struct JwtAuth {
+    config: Arc<ConfigService>,
+}
+
+#[async_trait]
+impl JwtValidator for JwtAuth {
+    type User = JwtPayload;
+
+    fn options(&self) -> JwtStrategyOptions {
+        JwtStrategyOptions::new()
+            .jwt_from_request(ExtractJwt::from_auth_header_as_bearer_token())
+            .secret_or_key(JwtKey::secret(self.config.get::<String>("JWT_SECRET").unwrap_or_default()))
+            .algorithms([JwtAlgorithm::HS256])
+    }
+
+    async fn validate(&self, _req: &Request, payload: Value) -> Result<Option<JwtPayload>, HttpException> {
+        Ok(serde_json::from_value(payload).ok())
+    }
+}
+
+#[module(providers = [JwtAuth, Provider::strategy::<JwtStrategy<JwtAuth>>()])]
+pub struct AuthModule;
+
+// all routes, except the ones marked #[public]
+app.use_global_guards(AuthGuard::new("jwt").skip_public());
+```
+
+The handler reads the user with a `User<JwtPayload>` parameter (or `request.user_as::<JwtPayload>()`). `AuthGuard` is in
+`corvis::auth`. The strategy refuses what the hand-written guard below accepts unless you say so:
+
+- a token without `exp` is a `401` (`.allow_missing_exp()` accepts it and logs a warning); `JwtService::sign` adds
+  `exp` whenever `expires_in` is configured;
+- the secret must be at least 32 bytes, or the application does not start (`openssl rand -hex 32`);
+- the token is read only from the places you configure, with a limit of 8192 bytes;
+- only the algorithms of the key's family are accepted, and `none` never is.
+
+::: warning Tokens in URLs
+`ExtractJwt::from_url_query_parameter` puts the token in the URL, where access logs, browser history and `Referer` headers keep it. The
+strategy logs a warning at startup when it is configured; use the `Authorization` header or a cookie.
+:::
+
+A global `AuthGuard` also runs on WebSocket gateway messages and denies them, even when the gateway is `#[public]`. Either
+authenticate sockets in `handle_connection` and call `apply_global_enhancers_to_gateways(false)`, or wrap the guard in
+one of your own that lets public targets through first, as `examples/cats-app` does (`src/auth/auth_guard.rs`).
+
+### With a guard of your own
 
 The guard reads the header with `extract_bearer_token`, verifies the token and attaches the payload to the
 request:
@@ -254,7 +311,7 @@ Tertulia's same `AuthGuard` works for HTTP and for WebSocket: it checks `ctx.get
 
 ## What Corvis does not include
 
-- There are no Passport-style strategies (local, OAuth, OpenID Connect) or server-side sessions. See
+- Besides JWT, there are no Passport-style strategies yet (local, OAuth, OpenID Connect) or server-side sessions. See
   [Passport](/recipes/passport) and [Session](/http/session).
 - There are no built-in *refresh tokens*: you implement them by signing a second token with a different lifetime
   (`sign_with` with `JwtSignOptions { expires_in: Some("7d".into()), .. }`) and an endpoint that redeems it.

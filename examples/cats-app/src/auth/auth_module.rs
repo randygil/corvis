@@ -1,8 +1,10 @@
+use corvis::auth::jwt::JwtStrategy;
 use corvis::prelude::*;
 use corvis::{JwtModule, JwtModuleOptions};
 
 use super::auth_controller::AuthController;
 use super::auth_service::AuthService;
+use super::jwt_auth::JwtAuth;
 use crate::users::UsersModule;
 
 #[module(
@@ -17,7 +19,7 @@ use crate::users::UsersModule;
         }),
     ],
     controllers = [AuthController],
-    providers = [AuthService],
+    providers = [AuthService, JwtAuth, Provider::strategy::<JwtStrategy<JwtAuth>>()],
     exports = [AuthService],
 )]
 pub struct AuthModule;

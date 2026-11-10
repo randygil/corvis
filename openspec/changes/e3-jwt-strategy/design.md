@@ -227,3 +227,76 @@ wrapper, whichever keeps the example's tests unchanged); its `posture.rs` and `s
 3. `max_token_length` 8192 bytes is confirmed.
 4. Implemented after #136 lands: start by comparing the design with the API #136 shipped, and record the adjustments
    in Implementation notes.
+
+## Implementation notes
+
+Written while implementing, after comparing the design with what #136 shipped (`corvis::auth`, archived change
+`2026-11-10-e3-strategy-core-and-guard-responses`).
+
+### Adjustments to the API of #136
+
+1. **`Strategy::name` is a method, not a constant.** `JwtStrategy<V>` returns `V::NAME` from it, so a validator still
+   chooses the name with `const NAME`. `Strategy::authenticate(&ExecutionContext, &AuthenticateOptions)` is as the
+   design assumed, `AuthenticatedUser::new` returns a `Result` (a user that does not serialize is an `Error` outcome)
+   and `Provider::strategy::<S>()` needs `S: Injectable + Strategy`, which `JwtStrategy<V>` implements by hand
+   (`ResolveCtx::get_or_construct::<V>()`).
+2. **The typed user lives in a private slot** read only by `User<T>`: the validator's `User` type needs no
+   registration, and handlers read it with `User<T>` (or `request.user_as::<T>()` for the JSON form), never with
+   `Request::get::<T>()`.
+3. **Failures carry the reason as the challenge** (`{"message": ..}`), which `AuthGuard` keeps as `request.auth_info()`
+   and never sends; no `Fail` carries a status.
+4. **No `auth-jwt` feature** (decision 1 of the design stands): the module is `#[cfg(feature = "jwt")]`, so the CI
+   feature loop needed no change. The three new integration test files are `#![cfg(feature = "jwt")]`.
+5. **Warnings run in `on_module_init`**, not in the constructor, so a logger installed with `use_logger` after
+   `CorvisFactory::create` sees them. Startup errors are `DiError::Factory` errors raised by the constructor
+   (`Error while instantiating JwtStrategy "jwt" (<validator type>): invalid JWT strategy options: <problem>`), so
+   they surface from `CorvisFactory::create`.
+
+### Decisions
+
+6. **HMAC secrets under 32 bytes are a startup error** (Review note 2), also for a secret a key provider returns: that
+   request fails with `key provider error` and the reason goes to the debug log. The spec requirements were rewritten
+   accordingly (the warning scenario became "Short secret" under the startup checks; the warnings requirement keeps
+   `ignore_expiration`, `allow_missing_exp` and the query extractor).
+7. **Shape of the verification core** (tasks 1.1 and 1.2): `verify_claims(token, &DecodingKey, &Validation,
+   &TimeRules)` returns `VerifyError` (`Decode(jsonwebtoken::errors::Error)` or `Claim(&'static str)`) so the strategy
+   maps reasons without parsing text; the time rules are the pure function `check_time_claims(&Value, &TimeRules,
+   now)`, which unit tests call with a fixed `now`. `JwtService::verify` passes `TimeRules::default()` (tolerance 0,
+   `exp` optional, not ignored) and keeps its messages unchanged.
+8. **`JwtKey` keeps the key material and parses it on demand.** A static key is parsed once, when the strategy is
+   built; a key a provider returns is parsed per request. The `Debug` of `JwtKey`, `JwtStrategyOptions` and
+   `JwtExtractor` prints kinds and sizes, never values, and parse errors never include key text.
+9. **`issuer` and `audience` take one value or a list** through `StringList` (`From<&str>`, `String`, `[&str; N]`,
+   `Vec<String>`, `Vec<&str>`).
+10. **`from_header` mirrors Node beyond `", "`**: the headers Node keeps once (`authorization`, `user-agent`, ...) give
+    their first value and `cookie` joins with `"; "`. `from_cookie` uses `Request::cookie`, which parses like
+    cookie-parser.
+11. **The `Authorization` header parser** takes the first two runs of non-space characters, which is what
+    `/(\S+)\s+(\S+)/` yields at its first match; JavaScript whitespace in the latin1 range is `\t \n \v \f \r`, space
+    and `\xa0` (the design list omitted the line breaks, which a header cannot contain anyway).
+12. **Token and key never reach a log or a message.** Failure reasons are fixed strings; `jwt audience invalid` and
+    `jwt issuer invalid` do not repeat the configured values (node's do), and the key provider's own error text is
+    logged at debug level only. `tests/auth_jwt_log.rs` captures every log level while bad tokens are sent.
+
+### Fixture and tests
+
+13. **Fixture shape.** Cases carry a token spec instead of fixed tokens (`{alg, key, claims}`, `{payloadText}`, `{pad}`
+    or `{raw}`; a claim `{"$now": n}` is `now + n`), signed by `jws` in the generator and again by `jsonwebtoken` in
+    the Rust test. Every case, time-dependent or not, is replayed this way. `jwt.json` has 65 cases and two runs of
+    `jwt.mjs` give identical files. The time cases keep at least 20 s between the claim and the boundary that
+    would flip the result (offsets of 10, 60 and 3600 s against a tolerance of 0 or 30 s); no assertion measures
+    elapsed time.
+14. **Repeated custom header** is recorded as one header `x-token: <t>, <t>` (what Node's `fetch` sends and Node's
+    server joins); two real headers, the no-break space and non-UTF-8 bytes are unit tests of the extractor, because
+    `TestRequest` sends neither.
+15. **Divergent cases (5):** uppercase `from_header` name, oversized token, token without `exp`, string `iat`, string
+    payload. Each records the status Corvis answers (`divergence.status`); the replay asserts it.
+16. **Extra test files:** `tests/auth_jwt_options.rs` (startup errors, opt-outs, limits, validator results, a proptest
+    of random credentials through HTTP) and `tests/auth_jwt_log.rs` (its own binary: the logger is process-wide).
+17. **Example.** `examples/cats-app` keeps a global guard named `AuthGuard` that skips `#[public]` targets and delegates
+    to `corvis::auth::AuthGuard::new("jwt")`: the framework's guard denies every WebSocket message, even with
+    `skip_public`, and the chat gateway is public. The wrapper does not override `CanActivate::as_any`, so its strategy
+    name is not checked at startup (and the gateway warning of `corvis::auth` does not fire for a guard that lets
+    public targets through). `JwtAuth` reads `JWT_SECRET` like `JwtModule` does; the existing startup tests still see
+    the `JWT_SECRET` error first because `JwtService` resolves before the strategy. A new `tests/jwt_auth.rs` covers
+    login, profile, bad tokens and a public route.
