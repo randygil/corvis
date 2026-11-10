@@ -90,7 +90,7 @@
 - [x] 6.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
 - [ ] 6.6 Framework runtime code changed (router, `init`, `Provider`): run the corvis-parity check; verify the three
   port apps (consi, facten, houseplan) keep 0 apidiff differences
-- [ ] 6.7 Run the security-reviewer agent over the router changes and `corvis::auth` (header injection through
+- [x] 6.7 Run the security-reviewer agent over the router changes and `corvis::auth` (header injection through
   appended headers and redirect URLs, short-circuit bypassing guards, fail-closed paths); verify every finding is fixed
   or recorded as a new issue
 
