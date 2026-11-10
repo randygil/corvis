@@ -98,7 +98,7 @@ The strategy model almost every app uses: `AuthGuard("jwt")`, strategies with `v
 | #40 | Strategy module design _(spike)_ | S | `e3-strategy-module-design` |
 | #41 | Local strategy and password hashing | M | `e3-local-strategy-and-password-hashing` |
 | #42 | JWT strategy | M | `e3-jwt-strategy` |
-| #43 | Generic OAuth2, Google and GitHub | L | `e3-generic-oauth2-google-and-github` |
+| #43 | Generic OAuth2, Google and GitHub | L | `e3-oauth2-strategies` |
 | #44 | Sessions and signed cookies | M | `e3-sessions-and-signed-cookies` |
 | #45 | API key strategy and custom strategies | S | `e3-api-key-strategy-and-custom-strategies` |
 | #46 | Authentication security review | S | `e3-authentication-security-review` |
