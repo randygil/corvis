@@ -120,6 +120,28 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
 - [ ] 9.7 Security review of the change (`security-reviewer`) before archiving, with its findings fixed or recorded in
   design.md
 
+## 10. Security review fixes (round 1)
+
+- [x] 10.1 Empty messages charged `len + 64` on both transports (`empty_messages_are_charged_over_polling`,
+  `empty_messages_stop_being_read_over_websocket`, unit `a_message_is_charged_its_length_plus_the_overhead_to_both_gauges`)
+- [x] 10.2 Handshake flood: `max_sessions_per_ip` (`sessions_per_address_are_capped`, `the_address_cap_follows_trust_proxy`,
+  unit `ipv6_addresses_are_counted_per_slash_64_and_mapped_ones_as_ipv4`), `allow_request`
+  (`allow_request_runs_before_a_session_is_created`), `first_request_timeout`
+  (`a_polling_session_that_never_makes_a_second_request_is_closed`,
+  `a_second_request_or_a_websocket_first_session_is_not_closed_by_the_first_request_timer`, paused-clock units in
+  `review_tests`); harness presets `ipcap` and `first` with three expected differences; handshake retention noted in design.md
+- [x] 10.3 Transport confusion refused with code 3 (`transport_confusion_is_a_bad_request`)
+- [x] 10.4 Duration validation and `checked_add` (`huge_durations_are_refused_at_startup`, units
+  `durations_above_a_day_are_refused_by_name`, `a_delay_that_does_not_fit_in_an_instant_does_not_panic`)
+- [x] 10.5 Wake every waiter of the Engine.IO gauges (unit `a_release_wakes_every_waiter_and_the_parent_wakes_the_children`)
+- [x] 10.6 `closed` checked under the lock that inserts (units `no_session_is_opened_after_close`; integration
+  `handshakes_racing_a_close_leave_no_session_behind`)
+- [x] 10.7 `max_total_unread_bytes` (`two_sessions_share_the_total_unread_budget`,
+  `the_total_budget_pauses_websocket_readers_too`)
+- [x] 10.8 `listen_until_in_background` runs the lifecycle hooks as `listen` does (`graceful_shutdown_with_a_pending_poll`)
+- [x] 10.9 Spec delta, design notes, bounds table in docs (English and Spanish) and rustdoc updated; full definition of
+  done rerun; rebased on `origin/dev`
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` (its `ws/engine-io` delta is applied).

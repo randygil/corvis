@@ -331,7 +331,7 @@ async fn closing_a_socket_writes_what_is_queued_then_closes() {
 
 #[tokio::test]
 async fn graceful_shutdown_with_a_pending_poll() {
-    let mut app = CorvisFactory::create::<AppModule>().await.unwrap();
+    let app = CorvisFactory::create::<AppModule>().await.unwrap();
     let engine = EngineServer::new(EngineOptions::new()).unwrap();
     let (tx, mut sockets) = tokio::sync::mpsc::unbounded_channel();
     engine.on_connection(move |s| {
@@ -355,7 +355,7 @@ async fn graceful_shutdown_with_a_pending_poll() {
     let resp = tokio::time::timeout(Duration::from_secs(5), pending).await.expect("answered within 5 s").unwrap();
     assert_eq!(resp.text(), "1");
     assert_eq!(socket.closed().await, CloseReason::ForcedClose);
-    tokio::time::timeout(Duration::from_secs(10), serving).await.expect("the server drains").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), serving).await.expect("the server drains").unwrap().unwrap();
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(engine.session_count(), 0);
 }

@@ -8,4 +8,4 @@
 #[doc(hidden)]
 pub mod engine;
 
-pub use engine::options::{EngineOptions, EngineOptionsError};
+pub use engine::options::{Admission, EngineOptions, EngineOptionsError};

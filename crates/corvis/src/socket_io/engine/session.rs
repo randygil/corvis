@@ -22,6 +22,17 @@ use crate::ws::{OutQueue, PushError, QueueItem, UnreadGauge, UnreadTicket};
 /// Interval of the noop packets sent on polling while an upgrade is pending (Node's `check`).
 pub(crate) const UPGRADE_NOOP_INTERVAL: Duration = Duration::from_millis(100);
 
+/// What every received message is charged against `max_unread_bytes`, on top of its length. A message that is
+/// waiting for the application costs memory whatever its size (an empty `4` packet is a few dozen bytes of queue
+/// entry, ticket and allocation), so the length alone would let empty messages through unbounded.
+pub(crate) const UNREAD_MESSAGE_OVERHEAD: usize = 64;
+
+/// `now + delay`, without the overflow panic of `Instant + Duration`: a delay that does not fit becomes 30 years
+/// (options are validated, so this only guards against a future caller).
+pub(crate) fn after(now: Instant, delay: Duration) -> Instant {
+    now.checked_add(delay).or_else(|| now.checked_add(Duration::from_secs(30 * 365 * 24 * 60 * 60))).unwrap_or(now)
+}
+
 /// Why a session ended, with the strings Node's `engine.io` reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseReason {
@@ -97,7 +108,7 @@ pub(crate) enum Due {
 
 impl Heartbeat {
     pub(crate) fn new(now: Instant, interval: Duration, timeout: Duration) -> Self {
-        Heartbeat { interval, timeout, next_ping: Some(now + interval), pong_deadline: None, refreshed: false }
+        Heartbeat { interval, timeout, next_ping: Some(after(now, interval)), pong_deadline: None, refreshed: false }
     }
 
     /// The next instant something is due.
@@ -115,7 +126,7 @@ impl Heartbeat {
         }
         if self.next_ping.is_some_and(|d| d <= now) {
             self.next_ping = None;
-            self.pong_deadline = Some(now + self.timeout);
+            self.pong_deadline = Some(after(now, self.timeout));
             self.refreshed = false;
             return Some(Due::Ping);
         }
@@ -125,14 +136,14 @@ impl Heartbeat {
     /// A pong arrived: stop waiting and ping again `interval` from now.
     pub(crate) fn pong(&mut self, now: Instant) {
         self.pong_deadline = None;
-        self.next_ping = Some(now + self.interval);
+        self.next_ping = Some(after(now, self.interval));
     }
 
     /// Any other packet arrived: while a pong is awaited, the wait is extended once (Node's
     /// `hasRefreshedPingTimeout`), since the client is evidently alive.
     pub(crate) fn activity(&mut self, now: Instant) {
         if self.pong_deadline.is_some() && !self.refreshed {
-            self.pong_deadline = Some(now + self.timeout);
+            self.pong_deadline = Some(after(now, self.timeout));
             self.refreshed = true;
         }
     }
@@ -173,6 +184,9 @@ struct State {
     post_active: bool,
     cmd: Option<PollCmd>,
     closing_deadline: Option<Instant>,
+    /// A polling session that gets no request after its handshake by this instant is closed (see
+    /// `first_request_timeout`). `None` once any request arrived, or for WebSocket-first sessions.
+    first_request_deadline: Option<Instant>,
     next_candidate: u64,
 }
 
@@ -222,6 +236,7 @@ impl Session {
         transport: TransportKind,
         handshake: Request,
         options: Arc<EngineOptions>,
+        total_unread: Option<Arc<UnreadGauge>>,
     ) -> Arc<Session> {
         let (inbox, rx) = mpsc::unbounded_channel();
         let ip = handshake.ip();
@@ -233,7 +248,7 @@ impl Session {
             handshake,
             ip,
             outbox: Arc::new(OutQueue::new(options.max_buffered_amount)),
-            unread: Arc::new(UnreadGauge::new(options.max_unread_bytes)),
+            unread: Arc::new(UnreadGauge::new(options.max_unread_bytes, total_unread)),
             inbox: Mutex::new(Some(inbox)),
             inbox_rx: Mutex::new(Some(rx)),
             state: Mutex::new(State {
@@ -245,6 +260,7 @@ impl Session {
                 post_active: false,
                 cmd: None,
                 closing_deadline: None,
+                first_request_deadline: None,
                 next_candidate: 1,
             }),
             timer: Notify::new(),
@@ -267,6 +283,17 @@ impl Session {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Starts the first-request timer of a polling session, right after its handshake response was produced. Any
+    /// later request (`GET`, `POST` or an upgrade candidate) stops it.
+    pub(crate) fn arm_first_request(&self) {
+        let mut s = self.lock();
+        if s.ready == Ready::Open && s.transport == TransportKind::Polling {
+            s.first_request_deadline = Some(after(Instant::now(), self.options.effective_first_request_timeout()));
+        }
+        drop(s);
+        self.timer.notify_waiters();
     }
 
     pub(crate) fn transport(&self) -> TransportKind {
@@ -341,7 +368,7 @@ impl Session {
             // v4: only the server pings.
             Packet::Ping(_) => self.close(CloseReason::TransportError),
             Packet::Message(m) => {
-                let ticket = UnreadTicket::new(&self.unread, m.len());
+                let ticket = UnreadTicket::new(&self.unread, m.len() + UNREAD_MESSAGE_OVERHEAD);
                 if let Some(tx) = self.inbox.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                     let _ = tx.send((m, ticket));
                 }
@@ -360,6 +387,7 @@ impl Session {
     /// Marks a `POST` as being read. `None` when another one is (the session is then closed, as Node does).
     pub(crate) fn begin_post(self: &Arc<Self>) -> Option<PostGuard> {
         let mut s = self.lock();
+        s.first_request_deadline = None;
         if s.ready == Ready::Closed {
             return None;
         }
@@ -376,6 +404,7 @@ impl Session {
     pub(crate) async fn poll(self: &Arc<Self>) -> Polled {
         {
             let mut s = self.lock();
+            s.first_request_deadline = None;
             if s.get_pending {
                 drop(s);
                 self.close(CloseReason::TransportError);
@@ -441,13 +470,14 @@ impl Session {
     /// progress or done: the new WebSocket is then closed.
     pub(crate) fn begin_candidate(&self) -> Option<Candidate> {
         let mut s = self.lock();
+        s.first_request_deadline = None;
         if s.ready != Ready::Open || !matches!(s.upgrade, Upgrade::None) {
             return None;
         }
         let id = s.next_candidate;
         s.next_candidate += 1;
         let (cancel, rx) = watch::channel(false);
-        s.upgrade = Upgrade::Probing { id, deadline: Instant::now() + self.options.upgrade_timeout, next_noop: None, cancel };
+        s.upgrade = Upgrade::Probing { id, deadline: after(Instant::now(), self.options.upgrade_timeout), next_noop: None, cancel };
         drop(s);
         self.timer.notify_waiters();
         Some(Candidate { id, cancel: rx })
@@ -501,7 +531,7 @@ impl Session {
             return;
         }
         s.ready = Ready::Closing;
-        s.closing_deadline = Some(Instant::now() + self.options.close_timeout);
+        s.closing_deadline = Some(after(Instant::now(), self.options.close_timeout));
         drop(s);
         self.outbox.seal(false);
         self.timer.notify_waiters();
@@ -562,6 +592,7 @@ impl Session {
             consider(*next_noop);
         }
         consider(s.closing_deadline);
+        consider(s.first_request_deadline);
         next
     }
 
@@ -605,6 +636,10 @@ impl Session {
             }
             if s.closing_deadline.is_some_and(|t| t <= now) {
                 acts.push(Act::Forced);
+            }
+            if s.first_request_deadline.is_some_and(|t| t <= now) {
+                s.first_request_deadline = None;
+                acts.push(Act::Timeout);
             }
         }
         for act in acts {
@@ -748,7 +783,7 @@ mod session_tests {
         let remote = "127.0.0.1:1".parse().unwrap();
         let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
         // No server: removing the session from the store is a no-op.
-        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options))
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), None)
     }
 
     fn drain(session: &Session) -> Vec<Packet> {
@@ -838,5 +873,102 @@ mod session_tests {
             advance(1).await;
             assert!(matches!(poller.await.unwrap(), Polled::Noop));
         }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    fn open(options: EngineOptions, transport: TransportKind, total: Option<Arc<UnreadGauge>>) -> Arc<Session> {
+        let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
+        let remote = "127.0.0.1:1".parse().unwrap();
+        let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), total)
+    }
+
+    async fn advance(ms: u64) {
+        tokio::time::advance(Duration::from_millis(ms)).await;
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_first_request_timer_closes_a_silent_polling_session_at_the_exact_time() {
+        let options = EngineOptions::new().first_request_timeout(Duration::from_secs(10));
+        let session = open(options, TransportKind::Polling, None);
+        session.arm_first_request();
+        advance(9_999).await;
+        assert_eq!(session.close_reason(), None);
+        advance(1).await;
+        assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn any_request_stops_the_first_request_timer() {
+        let options = EngineOptions::new().first_request_timeout(Duration::from_secs(10));
+        let session = open(options, TransportKind::Polling, None);
+        // The handshake's own poll, then the timer, then the client's next poll.
+        assert!(matches!(session.poll().await, Polled::Packets(_)));
+        session.arm_first_request();
+        advance(5_000).await;
+        let poller = {
+            let session = session.clone();
+            tokio::spawn(async move { session.poll().await })
+        };
+        advance(1).await;
+        advance(20_000).await;
+        // 25 s in: past the timer, before the ping interval's pong deadline matters.
+        assert_eq!(session.close_reason(), None);
+        poller.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_timer_is_not_armed_for_websocket_first_sessions() {
+        let options = EngineOptions::new().first_request_timeout(Duration::from_secs(1));
+        let session = open(options, TransportKind::WebSocket, None);
+        session.arm_first_request();
+        advance(5_000).await;
+        assert_eq!(session.close_reason(), None);
+    }
+
+    #[test]
+    fn a_delay_that_does_not_fit_in_an_instant_does_not_panic() {
+        let now = Instant::now();
+        let later = after(now, Duration::MAX);
+        assert!(later >= now);
+        assert!(after(now, Duration::from_secs(1)) > now);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_release_wakes_every_waiter_and_the_parent_wakes_the_children() {
+        let total = Arc::new(UnreadGauge::new(1000, None));
+        let session = open(EngineOptions::new().max_unread_bytes(100), TransportKind::WebSocket, Some(total.clone()));
+        // Two waiters on the same gauge (a held POST and the WebSocket reader).
+        let a = session.unread.changed();
+        let b = session.unread.changed();
+        let ticket = UnreadTicket::new(&session.unread, 10);
+        drop(ticket);
+        tokio::time::timeout(Duration::from_millis(10), a).await.expect("the first waiter wakes");
+        tokio::time::timeout(Duration::from_millis(10), b).await.expect("the second waiter wakes");
+        // A release charged to another session of the same engine wakes this one: its own gauge never changed.
+        let other = open(EngineOptions::new(), TransportKind::WebSocket, Some(total.clone()));
+        let waiting = session.unread.changed();
+        let ticket = UnreadTicket::new(&other.unread, 10);
+        drop(ticket);
+        tokio::time::timeout(Duration::from_millis(10), waiting).await.expect("woken through the total");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_message_is_charged_its_length_plus_the_overhead_to_both_gauges() {
+        let total = Arc::new(UnreadGauge::new(10_000, None));
+        let session = open(EngineOptions::new().max_unread_bytes(1000), TransportKind::WebSocket, Some(total.clone()));
+        session.on_packet(Packet::Message(EngineMessage::Text(String::new())));
+        session.on_packet(Packet::Message(EngineMessage::Binary(bytes::Bytes::from_static(b"abc"))));
+        assert_eq!(session.unread.unread(), 2 * UNREAD_MESSAGE_OVERHEAD + 3);
+        assert_eq!(total.unread(), 2 * UNREAD_MESSAGE_OVERHEAD + 3);
+        drop(session.take_inbox());
+        assert_eq!(total.unread(), 0, "dropping the queued tickets releases the total");
     }
 }

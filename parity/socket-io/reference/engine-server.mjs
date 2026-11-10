@@ -15,6 +15,8 @@
 //   burst    /burst/     sends 100 messages as soon as a session opens
 //   small    /small/     maxHttpBufferSize 1000
 //   cap      /cap/       Node defaults (Corvis caps this one at 2 sessions; Node has no cap, see expected-differences.json)
+//   ipcap    /ipcap/     Node defaults (Corvis allows 2 sessions per address here; Node has no such cap)
+//   first    /first/     Node defaults (Corvis closes a polling session that makes no second request within 400 ms)
 //
 // Every session echoes what it receives (text and binary), and understands these text messages:
 //   burst        queues three messages, one of them binary
@@ -35,6 +37,8 @@ const PRESETS = [
   { name: "burst", path: "/burst/", options: {}, burst: true },
   { name: "small", path: "/small/", options: { maxHttpBufferSize: 1000 } },
   { name: "cap", path: "/cap/", options: {} },
+  { name: "ipcap", path: "/ipcap/", options: {} },
+  { name: "first", path: "/first/", options: {} },
 ];
 
 const suite = process.argv.includes("--suite");

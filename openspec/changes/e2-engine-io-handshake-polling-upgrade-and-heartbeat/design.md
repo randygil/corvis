@@ -348,3 +348,51 @@ served with `listen_in_background`.
    feature stays free of warnings.
 8. Upgrade ordering was checked in 20 consecutive runs of the harness scenario "Upgrade with queued packets" (official
    `engine.io-client` against the `burst` preset) and of the upgrade tests: no message lost, duplicated or reordered.
+
+### Security review fixes
+
+Findings of the first `security-reviewer` round, each with a regression test (names in tasks.md group 10).
+
+1. Empty messages bypassed `max_unread_bytes`: every received message is now charged `len + UNREAD_MESSAGE_OVERHEAD`
+   (64, a named constant in `session.rs`; the gateway path keeps its own +16 in `ws.rs`), text and binary, on both
+   transports. `EngineSocket::unread_bytes()` reports the charged bytes.
+2. Handshake flood against `max_sessions`:
+   - `max_sessions_per_ip` (default 256) is keyed by `ip()` (so `set_trust_proxy` is honored), with IPv6 counted per
+     `/64` and IPv4-mapped addresses as IPv4. The per-address map, the session map and the `closed` flag are one `Store`
+     under one `RwLock`; a session releases its place in `ServerInner::remove`. Over the cap the answer is the global
+     cap's `503` body. Trade-off: clients behind one NAT or a CDN that is not a trusted proxy share a count, so raise it
+     (or configure `set_trust_proxy`); documented.
+   - `allow_request`: `Fn(&Request) -> impl Future<Output = Admission>`, type-erased, run in `dispatch` after the
+     origin allowlist for polling handshakes and WebSocket-first connections only (Node runs `allowRequest` for every
+     request; here existing sessions are not asked again, a divergence on the permissive side since the sid already
+     proves a past admission). A rejection or a panic answers `403 {"code":4,"message":"Forbidden"}`. The hook has no
+     timeout of its own: it is application code that holds a connection, bounded by the server's own timeouts.
+   - `first_request_timeout`: armed right after the handshake response is produced, cleared by any poll, `POST` or
+     upgrade candidate, never armed for WebSocket-first sessions. The default is 10 s, or `ping_interval + ping_timeout`
+     when that is shorter, so the fast presets (300/200 ms) keep validating; an explicit value is validated against
+     `ping_interval + ping_timeout`. The close reason is `ping timeout`.
+   - What a session retains of its handshake: the `Request` (method, URI, headers, parsed query, peer address, no body)
+     because `EngineSocket::handshake()` exposes it. Its size is bounded by the server's `max_header_size` (32 KiB by
+     default), so the worst case is `max_sessions` times that, and `max_sessions_per_ip` limits one address to 256 of
+     them.
+3. Transport confusion: without an upgrade only `transport=polling` on a session that is still on polling is served
+   (`dispatch`); everything else is code 3.
+4. Overflow: `validate` refuses `ping_interval`, `ping_timeout`, `upgrade_timeout` and `close_timeout` above one day with
+   a `Range` error naming the option (`first_request_timeout` is bounded by their sum), and every `Instant + Duration`
+   of the session goes through `after()`, which falls back to 30 years and never panics.
+5. Lost wakeup: the Engine.IO gauges release with `notify_waiters` (a held `POST` and the WebSocket reader can both
+   wait) and waiters register through `UnreadGauge::changed()` before reading the limit, since `notify_waiters` stores
+   nothing. The gateway gauge keeps `notify_one`: its only waiter is the read loop, which checks the limit before
+   waiting, and a stored permit is exactly what protects that order.
+6. Close race: the `closed` flag moved into the `Store`; `open_session` checks it, both caps and inserts under the write
+   lock that `close()` takes to set it and take its snapshot, so no session is inserted after a close.
+7. `max_total_unread_bytes` (default 256 MiB, at least `max_unread_bytes`): one gauge per engine that every session gauge
+   chains to; `over_limit` is true when either is, and `changed()` waits on both. Trade-off: while the total is exceeded
+   innocent sessions pause too, until the application drains the hogs.
+8. `listen_until_in_background` takes the application by value and runs `close_with_signal(None)` after `serve` returns,
+   like `listen`: the same lifecycle hooks and engine close. There is no clean way to restrict it to tests (integration
+   tests cannot see `cfg(test)` items and a Cargo feature would add public surface), so it stays `#[doc(hidden)]`.
+
+Harness: presets `ipcap` and `first` (Node defaults on the reference side) and two blocks in `engine-io/bounds`, with
+three new entries in `expected-differences.json`. Empty-message accounting, the total budget, `allow_request`,
+transport confusion and the close race have no Node counterpart to differ from, so they are covered by tests only.

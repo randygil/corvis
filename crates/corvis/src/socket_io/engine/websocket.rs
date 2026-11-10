@@ -99,6 +99,9 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
         if session.is_closed() {
             break Exit::Session;
         }
+        // Registered before the limit is read, so a release in between wakes this loop (`notify_waiters` stores
+        // nothing for a waiter that is not registered yet).
+        let unread_changed = session.unread.changed();
         let paused = active && session.unread.over_limit();
         let cancelled = async {
             match candidate.as_mut() {
@@ -139,7 +142,7 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
                     break Exit::Protocol(code);
                 }
             },
-            _ = session.unread.notify.notified(), if paused => {}
+            _ = unread_changed, if paused => {}
             _ = closed.changed() => break Exit::Session,
             _ = cancelled => break Exit::CandidateEnded,
             end = writer_done => {

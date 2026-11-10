@@ -154,7 +154,7 @@ pub(super) async fn post(
     // Received data waits within a bound: the answer is held until the application takes some of it.
     let mut closed = session.closed_watch();
     loop {
-        let notified = session.unread.notify.notified();
+        let notified = session.unread.changed();
         if !session.unread.over_limit() || session.is_closed() {
             break;
         }

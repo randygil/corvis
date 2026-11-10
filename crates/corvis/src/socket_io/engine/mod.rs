@@ -35,7 +35,7 @@ mod fuzz;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -43,7 +43,7 @@ use futures::{Stream, StreamExt};
 use http::{HeaderValue, StatusCode};
 use hyper::body::Incoming;
 
-pub use options::{EngineOptions, EngineOptionsError};
+pub use options::{Admission, EngineOptions, EngineOptionsError};
 pub use packet::EngineMessage;
 pub use session::{CloseReason, SendError};
 
@@ -52,6 +52,7 @@ use crate::http::Request;
 use crate::http_adapter::HttpServer;
 use crate::logger::Logger;
 use crate::server::ResBody;
+use crate::ws::UnreadGauge;
 
 /// The transport a session is currently using.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,19 +76,65 @@ type ConnectionCallback = Arc<dyn Fn(EngineSocket) + Send + Sync + 'static>;
 pub(crate) struct ServerInner {
     options: Arc<EngineOptions>,
     path: String,
-    sessions: RwLock<HashMap<String, Arc<Session>>>,
-    closed: AtomicBool,
+    /// The sessions, the per-address counts and the `closed` flag live under one lock: a handshake checks the
+    /// flag, both caps and inserts atomically with respect to `close()`'s snapshot and to `remove`.
+    sessions: RwLock<Store>,
+    /// Received bytes waiting for the application, across every session.
+    total_unread: Arc<UnreadGauge>,
     on_connection: RwLock<Option<ConnectionCallback>>,
     last_cap_warning: Mutex<Option<std::time::Instant>>,
 }
 
 impl ServerInner {
     pub(crate) fn remove(&self, id: &str) {
-        self.sessions.write().unwrap_or_else(|e| e.into_inner()).remove(id);
+        let mut store = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(session) = store.map.remove(id) {
+            let key = ip_key(&session.ip);
+            if let Some(count) = store.per_ip.get_mut(&key) {
+                *count -= 1;
+                if *count == 0 {
+                    store.per_ip.remove(&key);
+                }
+            }
+        }
     }
 
     fn get(&self, id: &str) -> Option<Arc<Session>> {
-        self.sessions.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
+        self.sessions.read().unwrap_or_else(|e| e.into_inner()).map.get(id).cloned()
+    }
+
+    fn is_closed(&self) -> bool {
+        self.sessions.read().unwrap_or_else(|e| e.into_inner()).closed
+    }
+}
+
+#[derive(Default)]
+struct Store {
+    map: HashMap<String, Arc<Session>>,
+    per_ip: HashMap<String, usize>,
+    closed: bool,
+}
+
+/// Why a session could not be opened.
+enum OpenError {
+    Closing,
+    TooManySessions,
+    TooManyFromAddress,
+}
+
+/// The key sessions are counted under: the address as `ip()` resolved it (so `set_trust_proxy` is honored), with
+/// IPv6 addresses reduced to their `/64` (one subscriber gets at least that much) and IPv4-mapped ones to IPv4.
+fn ip_key(ip: &str) -> String {
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let o = v6.octets();
+                format!("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}/64", o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7])
+            }
+        },
+        Ok(addr) => addr.to_string(),
+        Err(_) => ip.to_string(),
     }
 }
 
@@ -102,12 +149,13 @@ impl EngineServer {
     pub fn new(options: EngineOptions) -> Result<EngineServer, EngineOptionsError> {
         options.validate()?;
         let path = options.normalized_path();
+        let total_unread = Arc::new(UnreadGauge::new(options.max_total_unread_bytes, None));
         Ok(EngineServer {
             inner: Arc::new(ServerInner {
                 options: Arc::new(options),
                 path,
-                sessions: RwLock::new(HashMap::new()),
-                closed: AtomicBool::new(false),
+                sessions: RwLock::new(Store::default()),
+                total_unread,
                 on_connection: RwLock::new(None),
                 last_cap_warning: Mutex::new(None),
             }),
@@ -139,14 +187,18 @@ impl EngineServer {
 
     /// The number of open sessions.
     pub fn session_count(&self) -> usize {
-        self.inner.sessions.read().unwrap_or_else(|e| e.into_inner()).len()
+        self.inner.sessions.read().unwrap_or_else(|e| e.into_inner()).map.len()
     }
 
     /// Closes every session with `forced close`, answers each pending poll with a close packet, and refuses new
     /// handshakes with `503`. Idempotent.
     pub fn close(&self) {
-        self.inner.closed.store(true, Ordering::SeqCst);
-        let sessions: Vec<Arc<Session>> = self.inner.sessions.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+        // The flag and the snapshot are taken under the lock that inserts sessions: none can appear after it.
+        let sessions: Vec<Arc<Session>> = {
+            let mut store = self.inner.sessions.write().unwrap_or_else(|e| e.into_inner());
+            store.closed = true;
+            store.map.values().cloned().collect()
+        };
         for s in sessions {
             s.close(CloseReason::ForcedClose);
         }
@@ -177,30 +229,73 @@ impl EngineServer {
         resp
     }
 
-    /// Creates a session (checking `max_sessions` under the same lock that inserts it).
-    fn open_session(&self, transport: TransportKind, handshake: Request) -> Option<Arc<Session>> {
-        let mut sessions = self.inner.sessions.write().unwrap_or_else(|e| e.into_inner());
-        if sessions.len() >= self.inner.options.max_sessions {
-            return None;
+    /// Creates a session. The `closed` flag, `max_sessions` and `max_sessions_per_ip` are checked and the session
+    /// inserted under the one lock that `close()` and `remove` take, so a handshake cannot slip in after a close
+    /// and the counts cannot be overshot by concurrent handshakes.
+    fn open_session(&self, transport: TransportKind, handshake: Request) -> Result<Arc<Session>, OpenError> {
+        let mut store = self.inner.sessions.write().unwrap_or_else(|e| e.into_inner());
+        if store.closed {
+            return Err(OpenError::Closing);
+        }
+        if store.map.len() >= self.inner.options.max_sessions {
+            return Err(OpenError::TooManySessions);
+        }
+        let key = ip_key(&handshake.ip());
+        if store.per_ip.get(&key).copied().unwrap_or(0) >= self.inner.options.max_sessions_per_ip {
+            return Err(OpenError::TooManyFromAddress);
         }
         let mut id = sid::generate();
-        while sessions.contains_key(&id) {
+        while store.map.contains_key(&id) {
             id = sid::generate();
         }
-        let session = Session::open(Arc::downgrade(&self.inner), id.clone(), transport, handshake, self.inner.options.clone());
-        sessions.insert(id, session.clone());
-        Some(session)
+        let session = Session::open(
+            Arc::downgrade(&self.inner),
+            id.clone(),
+            transport,
+            handshake,
+            self.inner.options.clone(),
+            Some(self.inner.total_unread.clone()),
+        );
+        *store.per_ip.entry(key).or_insert(0) += 1;
+        store.map.insert(id, session.clone());
+        Ok(session)
     }
 
-    fn warn_session_cap(&self) {
+    /// The response for a handshake that could not open a session.
+    fn open_refused(&self, handshake: &Request, upgrade: bool, error: OpenError) -> hyper::Response<ResBody> {
+        match error {
+            OpenError::Closing => self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Server is closing"),
+            OpenError::TooManySessions => {
+                self.warn_session_cap(format!("max_sessions ({})", self.inner.options.max_sessions));
+                self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
+            }
+            OpenError::TooManyFromAddress => {
+                self.warn_session_cap(format!("max_sessions_per_ip ({})", self.inner.options.max_sessions_per_ip));
+                self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
+            }
+        }
+    }
+
+    /// Runs the `allow_request` hook, if any. A panic in it rejects the request.
+    async fn admitted(&self, handshake: &Request) -> bool {
+        let Some(hook) = &self.inner.options.allow_request else { return true };
+        use futures::FutureExt;
+        let future = std::panic::AssertUnwindSafe(async { (hook.0)(handshake).await });
+        match future.catch_unwind().await {
+            Ok(decision) => decision == options::Admission::Allow,
+            Err(_) => {
+                Logger::new("EngineIO").error("the allow_request hook panicked: the request was refused");
+                false
+            }
+        }
+    }
+
+    fn warn_session_cap(&self, which: String) {
         let mut last = self.inner.last_cap_warning.lock().unwrap_or_else(|e| e.into_inner());
         let now = std::time::Instant::now();
         if last.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(60)) {
             *last = Some(now);
-            Logger::new("EngineIO").warn(format!(
-                "the Engine.IO server reached max_sessions ({}): new handshakes are answered 503",
-                self.inner.options.max_sessions
-            ));
+            Logger::new("EngineIO").warn(format!("the Engine.IO server reached {which}: new handshakes are answered 503"));
         }
     }
 
@@ -284,7 +379,10 @@ impl EngineServer {
                 // The shape is checked before any lookup: an attacker-sized string never reaches the map.
                 let found = if sid::has_valid_shape(sid) { self.inner.get(sid) } else { None };
                 let Some(session) = found else { return abort(1) };
-                if !upgrade && session.transport() != transport {
+                // Without an upgrade, only the polling transport of a session that still uses it is served: a
+                // `transport=websocket` request that is no upgrade, or any polling request on a session that
+                // moved to WebSocket, is a bad request and delivers nothing.
+                if !upgrade && (transport != TransportKind::Polling || session.transport() != TransportKind::Polling) {
                     return abort(3);
                 }
                 if query.get("EIO") != Some("4") {
@@ -330,16 +428,21 @@ impl EngineServer {
         if query.get("EIO") != Some("4") {
             return polling::abort_request(5);
         }
-        if self.inner.closed.load(Ordering::SeqCst) {
-            return self.handshake_refused(&handshake, false, StatusCode::SERVICE_UNAVAILABLE, 3, "Server is closing");
+        if self.inner.is_closed() {
+            return self.open_refused(&handshake, false, OpenError::Closing);
         }
-        let Some(session) = self.open_session(TransportKind::Polling, handshake.clone()) else {
-            self.warn_session_cap();
-            return self.handshake_refused(&handshake, false, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions");
+        if !self.admitted(&handshake).await {
+            return self.handshake_refused(&handshake, false, StatusCode::FORBIDDEN, 4, "Forbidden");
+        }
+        let session = match self.open_session(TransportKind::Polling, handshake.clone()) {
+            Ok(session) => session,
+            Err(error) => return self.open_refused(&handshake, false, error),
         };
         // The handshake request is the session's first poll: it carries the open packet, and what the connection
         // callback sends goes out with the next poll.
         let response = polling::get(&session).await;
+        // From here the client has `first_request_timeout` to make its next request.
+        session.arm_first_request();
         self.notify_connection(&session);
         response
     }
@@ -379,12 +482,15 @@ impl EngineServer {
                 if query.get("EIO") != Some("4") {
                     return polling::abort_upgrade(5);
                 }
-                if self.inner.closed.load(Ordering::SeqCst) {
-                    return self.handshake_refused(&handshake, true, StatusCode::SERVICE_UNAVAILABLE, 3, "Server is closing");
+                if self.inner.is_closed() {
+                    return self.open_refused(&handshake, true, OpenError::Closing);
                 }
-                let Some(session) = self.open_session(TransportKind::WebSocket, handshake.clone()) else {
-                    self.warn_session_cap();
-                    return self.handshake_refused(&handshake, true, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions");
+                if !self.admitted(&handshake).await {
+                    return self.handshake_refused(&handshake, true, StatusCode::FORBIDDEN, 4, "Forbidden");
+                }
+                let session = match self.open_session(TransportKind::WebSocket, handshake.clone()) {
+                    Ok(session) => session,
+                    Err(error) => return self.open_refused(&handshake, true, error),
                 };
                 (session, websocket::Role::First)
             }
@@ -509,5 +615,31 @@ impl EngineSocket {
     /// Bytes received and not yet taken from [`messages`](Self::messages).
     pub fn unread_bytes(&self) -> usize {
         self.session.unread.unread()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_addresses_are_counted_per_slash_64_and_mapped_ones_as_ipv4() {
+        assert_eq!(ip_key("203.0.113.7"), "203.0.113.7");
+        assert_eq!(ip_key("2001:db8:1:2:3:4:5:6"), ip_key("2001:db8:1:2:ffff::1"));
+        assert_ne!(ip_key("2001:db8:1:2::1"), ip_key("2001:db8:1:3::1"));
+        assert_eq!(ip_key("::ffff:203.0.113.7"), "203.0.113.7");
+        assert_eq!(ip_key("not an address"), "not an address");
+    }
+
+    #[tokio::test]
+    async fn no_session_is_opened_after_close() {
+        let server = EngineServer::new(EngineOptions::new()).unwrap();
+        let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
+        let handshake = Request::for_upgrade(parts, "127.0.0.1:1".parse().unwrap(), &Default::default()).unwrap();
+        assert!(server.open_session(TransportKind::Polling, handshake.clone()).is_ok());
+        server.close();
+        assert!(matches!(server.open_session(TransportKind::Polling, handshake), Err(OpenError::Closing)));
+        assert_eq!(server.session_count(), 0);
+        assert!(server.inner.sessions.read().unwrap().per_ip.is_empty(), "the address counts are released with the sessions");
     }
 }

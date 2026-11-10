@@ -191,10 +191,23 @@ motivo en el arnés.
 | `ping_interval` / `ping_timeout` | 25 s / 20 s | igual | `ping timeout` |
 | `upgrade_timeout`, upgrades en curso | 10 s, uno por sesión | igual | se cierra el candidato, la sesión sigue |
 | `max_buffered_amount` (en cola para el cliente) | 8 MiB | ninguno | el envío falla, se descarta la cola, `transport error` |
-| `max_unread_bytes` (recibido, aún sin leer) | 16 MiB | ninguno | se pausa la lectura del WebSocket; la respuesta del `POST` espera |
+| `max_unread_bytes` (recibido, aún sin leer; cada mensaje cuenta su longitud más 64 bytes, también los vacíos) | 16 MiB | ninguno | se pausa la lectura del WebSocket; la respuesta del `POST` espera |
+| `max_total_unread_bytes` (lo mismo, entre todas las sesiones; al menos `max_unread_bytes`) | 256 MiB | ninguno | todos los WebSocket se pausan y todos los `POST` esperan hasta que la aplicación lea |
 | `max_sessions` | 10.000 | ninguno | handshake con `503` y `{"code":3,"message":"Too many sessions"}` |
+| `max_sessions_per_ip` (por `ip()`, IPv6 por `/64`) | 256 | ninguno | el mismo `503` |
+| `first_request_timeout` (sesión de polling sin ninguna petición tras su handshake) | 10 s, como máximo `ping_interval + ping_timeout` | ninguno | sesión cerrada con `ping timeout`, su lugar se libera |
+| `allow_request` | desactivado | desactivado | `403` con `{"code":4,"message":"Forbidden"}` antes de que exista una sesión |
 | `close_timeout` | 30 s | 30 s | se cierra la conexión |
 | `cors`, `allowed_origins` | desactivado | desactivado (`allowed_origins` no existe) | sin cabeceras CORS, o `403` con código 4 |
+
+Las peticiones bajo la ruta del motor nunca llegan a guards ni a throttlers, así que usa `EngineOptions::allow_request`
+para conectar un limitador de tasa o una comprobación de autenticación al handshake: recibe la petición del handshake
+(`ip()` sigue a `set_trust_proxy`) y devuelve `Admission::Allow` o `Admission::Reject`. Se ejecuta para los handshakes de
+polling y las conexiones WebSocket directas, no para las peticiones de una sesión existente. `max_sessions_per_ip` cuenta
+como una sola dirección a los clientes detrás de un mismo NAT o de un CDN que no es un proxy de confianza: súbelo con
+`EngineOptions::max_sessions_per_ip(n)` en esos despliegues, o configura `set_trust_proxy` para que se use la dirección
+real del cliente. Un id de sesión entregado por un handshake que el cliente nunca usa se libera tras
+`first_request_timeout`.
 
 Las respuestas de polling no se comprimen (Node comprime por encima de 1 KiB cuando el cliente acepta gzip). Engine.IO
 v3, las cookies y WebTransport no están soportados. El

@@ -336,26 +336,73 @@ pub(crate) fn guarded(context: &str, f: impl FnOnce()) -> bool {
 
 /// Bytes received and not yet taken from the `messages()` streams; the read loop stops
 /// reading from the socket while it is above the limit (TCP backpressure).
+///
+/// The Engine.IO sessions chain their gauge to one shared by the whole engine (`parent`): a session is over its
+/// limit when either is.
 pub(crate) struct UnreadGauge {
     bytes: AtomicUsize,
     pub(crate) notify: Notify,
     limit: usize,
+    /// `true`: a release wakes every waiter (a held `POST` and the WebSocket reader can both wait). The gateway
+    /// has a single waiter, the read loop, and keeps `notify_one`, which cannot lose a release that happens
+    /// between its check and its wait.
+    wake_all: bool,
+    parent: Option<Arc<UnreadGauge>>,
 }
 
 impl UnreadGauge {
+    pub(crate) fn gateway(limit: usize) -> Self {
+        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: false, parent: None }
+    }
+
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
-    pub(crate) fn new(limit: usize) -> Self {
-        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit }
+    pub(crate) fn new(limit: usize, parent: Option<Arc<UnreadGauge>>) -> Self {
+        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: true, parent }
     }
 
     pub(crate) fn over_limit(&self) -> bool {
-        self.bytes.load(Ordering::SeqCst) > self.limit
+        self.bytes.load(Ordering::SeqCst) > self.limit || self.parent.as_ref().is_some_and(|p| p.over_limit())
     }
 
     /// Bytes received and not yet taken.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn unread(&self) -> usize {
         self.bytes.load(Ordering::SeqCst)
+    }
+
+    /// Resolves at the next release of this gauge or its parent. The notifications are registered when this is
+    /// called, before the caller checks `over_limit`, so a release in between is not lost.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn changed(&self) -> impl std::future::Future<Output = ()> + '_ {
+        let own = self.notify.notified();
+        let parent = self.parent.as_ref().map(|p| p.notify.notified());
+        async move {
+            match parent {
+                Some(parent) => {
+                    tokio::select! { _ = own => {}, _ = parent => {} }
+                }
+                None => own.await,
+            }
+        }
+    }
+
+    fn charge(&self, size: usize) {
+        self.bytes.fetch_add(size, Ordering::SeqCst);
+        if let Some(parent) = &self.parent {
+            parent.charge(size);
+        }
+    }
+
+    fn release(&self, size: usize) {
+        self.bytes.fetch_sub(size, Ordering::SeqCst);
+        if self.wake_all {
+            self.notify.notify_waiters();
+        } else {
+            self.notify.notify_one();
+        }
+        if let Some(parent) = &self.parent {
+            parent.release(size);
+        }
     }
 }
 
@@ -367,15 +414,14 @@ pub(crate) struct UnreadTicket {
 
 impl UnreadTicket {
     pub(crate) fn new(gauge: &Arc<UnreadGauge>, size: usize) -> Self {
-        gauge.bytes.fetch_add(size, Ordering::SeqCst);
+        gauge.charge(size);
         UnreadTicket { gauge: gauge.clone(), size }
     }
 }
 
 impl Drop for UnreadTicket {
     fn drop(&mut self) {
-        self.gauge.bytes.fetch_sub(self.size, Ordering::SeqCst);
-        self.gauge.notify.notify_one();
+        self.gauge.release(self.size);
     }
 }
 
@@ -1025,7 +1071,7 @@ impl WebSocketServer {
                     request,
                     queue: Arc::new(OutQueue::new(options.max_buffered_amount)),
                     control,
-                    unread: Arc::new(UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit: options.max_unread_bytes }),
+                    unread: Arc::new(UnreadGauge::gateway(options.max_unread_bytes)),
                     listeners: Mutex::new(Listeners::default()),
                     closed: watch::channel(None).0,
                 }),

@@ -217,9 +217,28 @@ Messages received and not yet taken by the application SHALL be bounded per sess
 16 MiB). Above it, the WebSocket transport MUST stop reading from the socket, and a polling `POST` MUST NOT be
 answered until the backlog falls below the bound (the session's heartbeat still applies).
 
+Every received message, whatever its length (empty ones included, text or binary), MUST be charged its length plus a
+fixed per-message overhead (64 bytes) against that bound, since a queued message costs memory that its payload does not
+measure. Messages received and not yet taken SHALL also be bounded across every session of an Engine.IO server by
+`max_total_unread_bytes` (default 256 MiB, at least `max_unread_bytes`): while the total is exceeded, every WebSocket
+MUST stop being read and every polling `POST` MUST be held, exactly as for the per-session bound. A release of either
+bound MUST wake every waiter (a held `POST` and the WebSocket reader of the same session can both wait).
+
 #### Scenario: Application that does not read
 - **WHEN** a client sends 64 MiB of messages over WebSocket to a session whose messages are never taken
 - **THEN** the server holds at most `max_unread_bytes` plus one message of that session
+
+#### Scenario: Empty messages are charged
+- **WHEN** a client sends thousands of empty messages (`4` packets in polling `POST`s, empty text and one-byte binary
+  WebSocket messages) to a session whose messages are never taken
+- **THEN** the `POST` is held and the WebSocket reader paused once the charged bytes pass `max_unread_bytes`, instead of
+  the queue growing without bound
+
+#### Scenario: Total unread budget
+- **WHEN** `max_total_unread_bytes` is 3,000 and `max_unread_bytes` 2,000, and two sessions each receive a 1,500-byte
+  message that the application does not read
+- **THEN** the second `POST` is held although its own session is under its limit, and is answered once the application
+  reads the first session's message
 
 ### Requirement: Send buffers are bounded
 Packets queued for a session and not yet written SHALL be bounded by `max_buffered_amount` (default 8 MiB, the
@@ -240,6 +259,47 @@ upgrade happens, and a warning MUST be logged at most once per minute.
 - **WHEN** `max_sessions` is 2, two sessions are open and a third handshake arrives
 - **THEN** the third is answered `503`; after one session closes, a new handshake succeeds
 
+A server SHALL also hold at most `max_sessions_per_ip` open sessions per client address (default 256, zero refused),
+keyed by the request's `ip()` so that `set_trust_proxy` is honored and IPv6 addresses counted per `/64`. A handshake
+over it, on either transport, MUST be answered like the global cap (`503`, the same body). The per-address count, the
+global count and the closed flag of the server MUST be checked and updated under one lock, and a session MUST release
+its place when it ends. The limit MUST be configurable, and the documentation MUST state the NAT trade-off.
+
+#### Scenario: Sessions per address
+- **WHEN** `max_sessions_per_ip` is 3 and one address holds three sessions (any transport) and handshakes again
+- **THEN** the fourth is answered `503` with `{"code":3,"message":"Too many sessions"}`; after one of the three closes a
+  new handshake from the address succeeds, and with a trusted proxy two forwarded clients are counted separately
+
+A polling session that makes no request within `first_request_timeout` after its handshake MUST be closed and its
+place released. The timeout defaults to 10 s (or `ping_interval + ping_timeout` when shorter), MUST be above zero and at
+most `ping_interval + ping_timeout`. Any request of the session (poll, `POST`, upgrade) stops the timer, and
+WebSocket-first sessions are not subject to it.
+
+#### Scenario: Silent polling session
+- **WHEN** a client completes a polling handshake and sends nothing else
+- **THEN** the session closes at `first_request_timeout`, not before it, and the harness lists this as an expected
+  difference from Node; a session that polls, or that connects over WebSocket, is not closed by it
+
+### Requirement: Handshakes can be refused by the application
+An Engine.IO server SHALL accept an `allow_request` hook that receives the handshake request (with the application's
+request settings) and runs, before any session is created, for polling handshakes and WebSocket-first connections.
+When it rejects, or panics, the server MUST answer `403` with `{"code":4,"message":"Forbidden"}` and create no session.
+Requests of existing sessions MUST NOT run it.
+
+#### Scenario: Hook rejects
+- **WHEN** the hook rejects a polling handshake and a WebSocket-first connection
+- **THEN** both are answered `403` (code 4), no session exists, and a request the hook allows opens a session
+
+### Requirement: Transport confusion is refused
+Without an upgrade, only the polling transport of a session that still uses it SHALL be served. A request with
+`transport=websocket` that is not a WebSocket upgrade, and any polling request for a session that moved to WebSocket,
+MUST be answered `400` with code 3 (`Bad request`) and deliver nothing to the session.
+
+#### Scenario: Polling on a WebSocket session
+- **WHEN** a client sends a polling `GET` and a `POST` with a message, with `transport=websocket` and with
+  `transport=polling`, for a session that is on WebSocket
+- **THEN** every one is answered `400` with code 3 and the message is never delivered
+
 ### Requirement: Close and shutdown
 A close packet `1` from the client SHALL end the session with reason `transport close`. Closing the Engine.IO server
 MUST close every session with reason `forced close`, answer each pending poll with a close packet and refuse new
@@ -257,11 +317,18 @@ handshakes; it MUST happen when the HTTP server starts its graceful shutdown and
 ### Requirement: Options are validated
 Attaching an Engine.IO server SHALL fail, with an error naming the option, on a zero `ping_interval`, `ping_timeout`,
 `upgrade_timeout`, `max_http_buffer_size`, `max_payload_packets`, `max_buffered_amount`, `max_unread_bytes` or
-`max_sessions`, and on a path that does not start with `/`.
+`max_sessions`, `max_sessions_per_ip`, `max_total_unread_bytes` or `first_request_timeout`, on a path that does not
+start with `/`, on any of `ping_interval`, `ping_timeout`, `upgrade_timeout`, `close_timeout` above one day (the timers
+add them to the clock, and the arithmetic MUST NOT panic whatever the value), on a `first_request_timeout` above
+`ping_interval + ping_timeout`, and on a `max_total_unread_bytes` below `max_unread_bytes`.
 
 #### Scenario: Zero ping timeout
 - **WHEN** an Engine.IO server is attached with `ping_timeout(Duration::ZERO)`
 - **THEN** attaching fails with an error naming `ping_timeout`
+
+#### Scenario: Huge duration
+- **WHEN** an Engine.IO server is attached with `ping_interval(Duration::MAX)`
+- **THEN** attaching fails with an error naming `ping_interval`, and no timer arithmetic overflows
 
 ### Requirement: Security divergences are explicit
 Every bound Corvis keeps where Node has none (packets per `POST`, bytes per `GET` response, send buffer, received

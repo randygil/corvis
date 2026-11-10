@@ -661,21 +661,24 @@ impl CorvisApplication {
         self.listen_in_background_with(addr, Transport::Tls(tls.settings())).await
     }
 
-    /// Like [`listen_in_background`](Self::listen_in_background), but the server stops accepting when `shutdown`
-    /// resolves and drains its connections as `listen` does on SIGINT. The returned handle ends when the drain has
-    /// finished. For tests of the graceful shutdown; the application's lifecycle hooks are not run.
+    /// [`listen`](Self::listen) with the stop signal supplied by the caller instead of SIGINT/SIGTERM, running in
+    /// the background: when `shutdown` resolves the server stops accepting, drains its connections and the
+    /// application closes exactly as `listen` does (Engine.IO sessions closed, lifecycle hooks run, with no
+    /// signal name). The application is consumed; the handle ends with the result once all of that has finished.
+    /// Hidden: it exists so tests can drive the graceful shutdown without sending a process signal.
     #[doc(hidden)]
     pub async fn listen_until_in_background(
-        &mut self,
+        mut self,
         addr: impl ListenAddr,
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-    ) -> crate::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    ) -> crate::Result<(SocketAddr, tokio::task::JoinHandle<crate::Result<()>>)> {
         let listener = self.bind(addr, &Transport::Plain).await?;
         let shared = self.shared.clone().expect("initialized");
         let local = listener.local_addr()?;
         let server = self.config.server.clone();
         let handle = tokio::spawn(async move {
-            let _ = crate::server::serve(listener, shared, server, Transport::Plain, shutdown).await;
+            crate::server::serve(listener, shared, server, Transport::Plain, shutdown).await?;
+            self.close_with_signal(None).await
         });
         Ok((local, handle))
     }

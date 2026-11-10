@@ -25,20 +25,38 @@
   },
   {
     "scenario": "engine-io/bounds",
-    "path": "$.entries[4].data.status",
+    "path": "$.entries[5].data.status",
     "reason": "Node accepts any number of packets in one POST; Corvis refuses a body of more than max_payload_packets (10,000) with 400 before delivering any packet",
     "spec": "ws/engine-io: Polling batches are bounded (Packet flood in one POST)"
   },
   {
     "scenario": "engine-io/bounds",
-    "path": "$.entries[5].data.reason",
+    "path": "$.entries[6].data.reason",
     "reason": "the same bound: Node keeps the session open, Corvis closes it with parse error",
     "spec": "ws/engine-io: Polling batches are bounded (Packet flood in one POST)"
   },
   {
     "scenario": "engine-io/bounds",
-    "path": "$.entries[6].data.reason",
+    "path": "$.entries[9].data.reason",
     "reason": "Node buffers any amount for a client that does not poll; Corvis closes the session with transport error when the send buffer passes max_buffered_amount (8 MiB)",
     "spec": "ws/engine-io: Send buffers are bounded (Slow consumer)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[4].data.reason",
+    "reason": "Node leaves a polling session that never polls open until its first ping times out (45 s by default); Corvis closes it after first_request_timeout (preset first: 400 ms) and releases its slot",
+    "spec": "ws/engine-io: Open sessions are bounded (Silent polling session)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[7].data.status",
+    "reason": "Node has no per-address limit; Corvis answers 503 over max_sessions_per_ip (preset ipcap: 2)",
+    "spec": "ws/engine-io: Open sessions are bounded (Sessions per address)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[7].data.body",
+    "reason": "the same bound: the 503 body is {\"code\":3,\"message\":\"Too many sessions\"}, as for max_sessions",
+    "spec": "ws/engine-io: Open sessions are bounded (Sessions per address)"
   }
 ]

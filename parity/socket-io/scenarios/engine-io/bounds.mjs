@@ -69,6 +69,24 @@ export default {
       await closeSession(step, url, "/cap/", second.sid);
     }
 
+    // Sessions per address (preset `ipcap`: 2): every request here comes from 127.0.0.1.
+    {
+      const first = await openPolling(step, url, "/ipcap/");
+      const second = await openPolling(step, url, "/ipcap/");
+      const third = await raw(step, "third handshake from the address", polling(url, "/ipcap/"));
+      record("ip-cap", "third", { status: third.status, body: third.status === 503 ? third.text : null });
+      await closeSession(step, url, "/ipcap/", first.sid);
+      const fourth = await raw(step, "fourth handshake from the address", polling(url, "/ipcap/"));
+      record("ip-cap", "fourth", { status: fourth.status });
+      await closeSession(step, url, "/ipcap/", second.sid);
+    }
+
+    // A polling session that never makes a second request (preset `first`: Corvis closes it after 400 ms).
+    {
+      const { sid } = await openPolling(step, url, "/first/");
+      record("first-request", "silent", { reason: await closeReason(step, url, sid, { waitMs: 1500 }) });
+    }
+
     // Compression: a 2,000-byte polling response to a client that accepts gzip.
     {
       const { sid } = await openPolling(step, url);

@@ -187,10 +187,22 @@ created. Where Node has no bound, Corvis differs on purpose; each difference is 
 | `ping_interval` / `ping_timeout` | 25 s / 20 s | same | `ping timeout` |
 | `upgrade_timeout`, upgrades in progress | 10 s, one per session | same | the candidate is closed, the session stays |
 | `max_buffered_amount` (queued for the client) | 8 MiB | none | the send fails, the queue is discarded, `transport error` |
-| `max_unread_bytes` (received, not yet read) | 16 MiB | none | WebSocket reads pause; the `POST` answer waits |
+| `max_unread_bytes` (received, not yet read; each message counts its length plus 64 bytes, empty ones too) | 16 MiB | none | WebSocket reads pause; the `POST` answer waits |
+| `max_total_unread_bytes` (the same, across all sessions; at least `max_unread_bytes`) | 256 MiB | none | every WebSocket pauses and every `POST` waits until the application reads |
 | `max_sessions` | 10,000 | none | handshake answered `503` with `{"code":3,"message":"Too many sessions"}` |
+| `max_sessions_per_ip` (per `ip()`, IPv6 per `/64`) | 256 | none | the same `503` |
+| `first_request_timeout` (polling session with no request after its handshake) | 10 s, at most `ping_interval + ping_timeout` | none | session closed with `ping timeout`, place released |
+| `allow_request` | off | off | `403` with `{"code":4,"message":"Forbidden"}` before any session exists |
 | `close_timeout` | 30 s | 30 s | the connection is closed |
 | `cors`, `allowed_origins` | off | off (`allowed_origins` does not exist) | no CORS headers, or `403` with code 4 |
+
+Requests under the engine path never reach guards or throttlers, so use `EngineOptions::allow_request` to plug a rate
+limiter or an authentication check into the handshake: it receives the handshake request (`ip()` follows
+`set_trust_proxy`) and returns `Admission::Allow` or `Admission::Reject`. It runs for polling handshakes and
+WebSocket-first connections, not for requests of an existing session. `max_sessions_per_ip` counts clients behind one
+NAT or one CDN that is not a trusted proxy as a single address: raise it with `EngineOptions::max_sessions_per_ip(n)`
+for such deployments, or configure `set_trust_proxy` so the real client address is used. A session id handed out by a
+handshake the client never uses is released after `first_request_timeout`.
 
 Polling responses are not compressed (Node compresses above 1 KiB when the client accepts gzip). Engine.IO v3, cookies and
 WebTransport are not supported. The server's [`send_timeout`](/http/performance#clients-that-stop-reading-send-timeout)
