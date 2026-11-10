@@ -95,6 +95,13 @@ pub(crate) fn build_registry(container: &Container) -> crate::Result<()> {
     Ok(())
 }
 
+/// The query parameters the registered strategies read credentials from, for the log lines of every request.
+pub(crate) fn credential_query_params(container: &Container) -> Vec<String> {
+    let Some(authenticator) = container.instances_of::<Authenticator>().first().cloned() else { return Vec::new() };
+    let Some(registry) = authenticator.registry() else { return Vec::new() };
+    registry.by_name.values().flat_map(|s| s.credential_query_params()).collect()
+}
+
 /// The longest strategy name accepted.
 const MAX_NAME_BYTES: usize = 128;
 

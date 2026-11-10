@@ -267,6 +267,163 @@
           }
         }
       }
+    },
+    {
+      "name": "falsy user: done(null, false)",
+      "request": {
+        "method": "GET",
+        "path": "/falsy",
+        "headers": {
+          "x-falsy": "false"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "falsy user: done(null, 0)",
+      "request": {
+        "method": "GET",
+        "path": "/falsy",
+        "headers": {
+          "x-falsy": "zero"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "falsy user: done(null, '')",
+      "request": {
+        "method": "GET",
+        "path": "/falsy",
+        "headers": {
+          "x-falsy": "empty"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "falsy user: done(null, null)",
+      "request": {
+        "method": "GET",
+        "path": "/falsy",
+        "headers": {
+          "x-falsy": "null"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "falsy user: done(null, undefined)",
+      "request": {
+        "method": "GET",
+        "path": "/falsy",
+        "headers": {
+          "x-falsy": "undefined"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "falsy user: done(null, NaN)",
+      "request": {
+        "method": "GET",
+        "path": "/falsy",
+        "headers": {
+          "x-falsy": "nan"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
+    },
+    {
+      "name": "a real user is the control",
+      "request": {
+        "method": "GET",
+        "path": "/falsy",
+        "headers": {
+          "x-falsy": "truthy"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "falsy-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "falsy user then a device that exists: the chain goes on",
+      "request": {
+        "method": "GET",
+        "path": "/falsy-chain",
+        "headers": {
+          "x-falsy": "false",
+          "x-device-id": "dev-1"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "dev-1",
+            "name": "device dev-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "falsy user then no device",
+      "request": {
+        "method": "GET",
+        "path": "/falsy-chain",
+        "headers": {
+          "x-falsy": "zero"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      }
     }
   ]
 }

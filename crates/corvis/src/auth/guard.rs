@@ -166,27 +166,30 @@ impl CanActivate for AuthGuard {
             .ok_or_else(|| internal("the Authenticator provider was not found"))?;
         let names = self.names(&authenticator).map_err(internal)?;
         let req = ctx.request();
-        match authenticator.authenticate(ctx, &names, &self.options).await? {
+        let failures = match authenticator.authenticate(ctx, &names, &self.options).await? {
+            // The user is stored only when it is a real value; the authenticator already turns an empty one into a
+            // failure, and this refuses it again for a result built by other means.
             result @ AuthResult::Success { .. } => {
-                result.store_user(req);
-                Ok(true)
+                if result.store_user(req) {
+                    return Ok(true);
+                }
+                Vec::new()
             }
             AuthResult::Pass => {
                 req.clear_user();
-                Ok(true)
+                return Ok(true);
             }
-            AuthResult::Redirected => Ok(true),
-            AuthResult::Failed { failures } => {
-                if self.optional {
-                    req.clear_user();
-                    return Ok(true);
-                }
-                Err(match &self.on_failure {
-                    Some(f) => f(&failures),
-                    None => UnauthorizedException::empty(),
-                })
-            }
+            AuthResult::Redirected => return Ok(true),
+            AuthResult::Failed { failures } => failures,
+        };
+        if self.optional {
+            req.clear_user();
+            return Ok(true);
         }
+        Err(match &self.on_failure {
+            Some(f) => f(&failures),
+            None => UnauthorizedException::empty(),
+        })
     }
 
     fn controls_access(&self) -> bool {

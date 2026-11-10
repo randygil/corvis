@@ -102,6 +102,28 @@ impl Strategy for BearerUser {
     }
 }
 
+/// `done(null, <what x-falsy names>)`: the validators that return what they computed instead of `None`.
+#[injectable]
+pub struct Falsy;
+
+#[async_trait]
+impl Strategy for Falsy {
+    fn name(&self) -> &str {
+        "falsy"
+    }
+    async fn authenticate(&self, ctx: &ExecutionContext, _: &AuthenticateOptions) -> StrategyOutcome {
+        let user = match ctx.request().header("x-falsy") {
+            Some("false") => json!(false),
+            Some("zero") => json!(0),
+            Some("empty") => json!(""),
+            Some("null" | "undefined" | "nan") => Value::Null,
+            Some("truthy") => json!({ "id": "falsy-1" }),
+            _ => return StrategyOutcome::Fail { challenge: None, status: None },
+        };
+        StrategyOutcome::Success { user: AuthenticatedUser::new(user).unwrap(), info: None }
+    }
+}
+
 // ---- strategies that misbehave ----
 
 /// Returns an error whatever the request.
@@ -174,6 +196,24 @@ impl Routes {
         json!({ "user": req.user().unwrap_or(Value::Null) })
     }
 
+    #[get("falsy")]
+    #[use_guards(AuthGuard::new("falsy"))]
+    fn falsy(&self, req: Request) -> Value {
+        json!({ "user": req.user().unwrap_or(Value::Null) })
+    }
+
+    #[get("falsy-chain")]
+    #[use_guards(AuthGuard::chain(["falsy", "device"]))]
+    fn falsy_chain(&self, req: Request) -> Value {
+        json!({ "user": req.user().unwrap_or(Value::Null) })
+    }
+
+    #[get("falsy-optional")]
+    #[use_guards(AuthGuard::new("falsy").optional())]
+    fn falsy_optional(&self, req: Request) -> Value {
+        json!({ "user": req.user() })
+    }
+
     #[get("erroring")]
     #[use_guards(AuthGuard::new("erroring"))]
     fn erroring(&self) -> Value {
@@ -215,6 +255,7 @@ impl Routes {
         Provider::class::<DevicesService>(),
         Provider::strategy::<DeviceStrategy>(),
         Provider::strategy::<BearerUser>(),
+        Provider::strategy::<Falsy>(),
         Provider::strategy::<Erroring>(),
         Provider::strategy::<Panicking>(),
         Provider::strategy::<Succeeding>(),
@@ -299,6 +340,26 @@ async fn a_panic_in_a_strategy_is_a_uniform_500_and_never_a_way_in() {
     assert_eq!(HANDLER_RUNS.load(Ordering::SeqCst), before, "no handler ran");
     // The application keeps serving.
     assert_eq!(get(&app, "/device", &[("x-device-id", "dev-1")]).await.status, 200);
+}
+
+#[corvis::test]
+async fn an_empty_user_is_a_failure_of_the_strategy_and_never_a_way_in() {
+    let app = app().await;
+    for pick in ["false", "zero", "empty", "null", "undefined", "nan"] {
+        let r = get(&app, "/falsy", &[("x-falsy", pick)]).await;
+        assert_eq!((r.status, r.json_value()), (401, json!({ "statusCode": 401, "message": "Unauthorized" })), "{pick}");
+        // The chain goes on to the next strategy, as for any failure.
+        let r = get(&app, "/falsy-chain", &[("x-falsy", pick), ("x-device-id", "dev-1")]).await;
+        assert_eq!(r.status, 200, "{pick}");
+        assert_eq!(r.json_value()["user"]["id"], "dev-1", "{pick}");
+        let r = get(&app, "/falsy-chain", &[("x-falsy", pick)]).await;
+        assert_eq!(r.status, 401, "{pick}");
+        // An optional guard lets the request through with no user at all: not the empty one.
+        let r = get(&app, "/falsy-optional", &[("x-falsy", pick)]).await;
+        assert_eq!((r.status, r.json_value()), (200, json!({ "user": null })), "{pick}");
+    }
+    let r = get(&app, "/falsy", &[("x-falsy", "truthy")]).await;
+    assert_eq!((r.status, r.json_value()), (200, json!({ "user": { "id": "falsy-1" } })));
 }
 
 // ---- startup checks ----

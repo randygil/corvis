@@ -241,6 +241,14 @@ impl<V: LocalValidator> Strategy for LocalStrategy<V> {
         V::NAME
     }
 
+    fn credential_query_params(&self) -> Vec<String> {
+        if !self.resolved.allow_query {
+            return Vec::new();
+        }
+        // The first segment of `user[name]` is the parameter the query parser files the pair under.
+        [&self.resolved.username, &self.resolved.password].into_iter().filter_map(|path| path.first().cloned()).collect()
+    }
+
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
         // Without `allow_query_credentials` only the body is read: an empty query never yields a value.

@@ -68,7 +68,9 @@ pub trait ApiKeyValidator: Injectable {
         ApiKeyStrategyOptions::default()
     }
 
-    /// `validate(request, key)`: the user, `None` to refuse the key (401), or an exception. A 4xx exception is
+    /// `validate(request, key)`: the user, `None` to refuse the key (401), or an exception. A user that is `false`,
+    /// `null`, `0` or `""` once serialized is not a user: it is a failure like `None` (and logs a warning), so write
+    /// `Ok(matches.then_some(user))`, never `Ok(Some(matches))`. A 4xx exception is
     /// passed on as it is (use it only for a deliberate answer: it tells the client about the key); a status of 500
     /// or above, or below 400, is replaced by the plain exception of that status, so no key-specific text reaches the
     /// client. A validator that runs longer than the `validator_timeout` of the options is a 503.
@@ -143,9 +145,35 @@ fn has_control(bytes: &[u8]) -> bool {
     bytes.iter().any(|&b| b < 0x20 || b == 0x7f)
 }
 
+/// `true` when the value of the header `name` as [`read_header`] joins it starts with `prefix`. Reads the first
+/// `prefix.len()` bytes at most and copies nothing.
+fn joined_starts_with(headers: &HeaderMap, name: &http::HeaderName, prefix: &[u8]) -> bool {
+    let mut matched = 0;
+    let mut first = true;
+    for value in headers.get_all(name) {
+        let separator: &[u8] = if first { b"" } else { b", " };
+        first = false;
+        for &byte in separator.iter().chain(value.as_bytes()) {
+            if matched == prefix.len() {
+                return true;
+            }
+            if prefix[matched] != byte {
+                return false;
+            }
+            matched += 1;
+        }
+    }
+    matched == prefix.len()
+}
+
 /// The value of the header `name` as Node shows it (repeated values joined with `", "`), read without ever holding
 /// more than `prefix + max` bytes, so a request with thousands of values cannot make this scan or copy them.
 fn read_header(headers: &HeaderMap, name: &http::HeaderName, prefix: Option<&str>, max: usize) -> Read {
+    // A value that does not start with the prefix is not ours, whatever its length or content: it is checked before
+    // the limits, so an unrelated header cannot make a valid key in another source fail.
+    if prefix.is_some_and(|prefix| !joined_starts_with(headers, name, prefix.as_bytes())) {
+        return Read::Absent;
+    }
     let limit = prefix.map_or(0, str::len) + max;
     let mut joined: Vec<u8> = Vec::new();
     let mut first = true;
@@ -303,9 +331,14 @@ impl<V: ApiKeyValidator> Strategy for ApiKeyStrategy<V> {
         V::NAME
     }
 
+    fn credential_query_params(&self) -> Vec<String> {
+        self.resolved.query_names.clone()
+    }
+
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
-        // Marked first, so the log line hides the key whatever happens below.
+        // The names are also registered for the whole application at startup; the mark stays so a request that
+        // reaches here is covered when the strategy is used outside an application (tests of a guard).
         for name in &self.resolved.query_names {
             req.redact_query_param(name);
         }
@@ -522,6 +555,65 @@ mod tests {
         assert_eq!(r.extract(&request("/", &[("authorization", b"Api-Key abc")])).as_deref(), Ok("abc"));
         assert_eq!(r.extract(&request("/", &[("authorization", b"Bearer abc")])).as_deref(), Ok("abc"));
         assert_eq!(r.extract(&request("/", &[("authorization", b"Basic abc")])), Err(MISSING));
+    }
+
+    fn prefixed_and_plain() -> Resolved {
+        resolved(
+            ApiKeyStrategyOptions::new()
+                .source(ApiKeySource::header("X-Api-Key"))
+                .source(ApiKeySource::header("Authorization").prefix("Api-Key ")),
+        )
+    }
+
+    #[test]
+    fn a_value_without_the_prefix_is_absent_whatever_its_length_or_content() {
+        let r = prefixed_and_plain();
+        let long = format!("Bearer {}", "k".repeat(600));
+        for other in [long.as_bytes(), b"Bearer a\tb", b"Basic \xff\xfe", b"", b"Api-Key", b"Api-", b"api-key abc"] {
+            let req = request("/", &[("x-api-key", KEY.as_bytes()), ("authorization", other)]);
+            assert_eq!(r.extract(&req).as_deref(), Ok(KEY), "{}", String::from_utf8_lossy(other));
+        }
+        // Many values and a huge one: still absent, and nothing is copied or scanned past the prefix.
+        let mut headers: Vec<(&str, &[u8])> = vec![("x-api-key", KEY.as_bytes())];
+        for _ in 0..5000 {
+            headers.push(("authorization", b"Bearer xx"));
+        }
+        assert_eq!(r.extract(&request("/", &headers)).as_deref(), Ok(KEY));
+        let huge = vec![b'x'; 60_000];
+        assert_eq!(r.extract(&request("/", &[("x-api-key", KEY.as_bytes()), ("authorization", &huge)])).as_deref(), Ok(KEY));
+        // Only the prefixed source: a value that is not ours is a missing key.
+        let only = resolved(ApiKeyStrategyOptions::new().source(ApiKeySource::header("Authorization").prefix("Api-Key ")));
+        assert_eq!(only.extract(&request("/", &[("authorization", long.as_bytes())])), Err(MISSING));
+        assert_eq!(only.extract(&request("/", &[("authorization", b"Bearer a\tb")])), Err(MISSING));
+    }
+
+    #[test]
+    fn a_value_with_the_prefix_is_still_checked_for_length_and_characters() {
+        let r = prefixed_and_plain();
+        let long = format!("Api-Key {}", "k".repeat(600));
+        assert_eq!(r.extract(&request("/", &[("x-api-key", KEY.as_bytes()), ("authorization", long.as_bytes())])), Err(TOO_LONG));
+        assert_eq!(r.extract(&request("/", &[("x-api-key", KEY.as_bytes()), ("authorization", b"Api-Key a\tb")])), Err(BAD_CHARACTERS));
+        assert_eq!(
+            r.extract(&request("/", &[("x-api-key", KEY.as_bytes()), ("authorization", format!("Api-Key {KEY}").as_bytes())])).as_deref(),
+            Ok(KEY)
+        );
+        assert_eq!(
+            r.extract(&request("/", &[("x-api-key", KEY.as_bytes()), ("authorization", format!("Api-Key {OTHER}").as_bytes())])),
+            Err(CONFLICT)
+        );
+    }
+
+    #[test]
+    fn the_prefix_is_matched_on_the_joined_value_like_the_key_is_read() {
+        let r = resolved(ApiKeyStrategyOptions::new().source(ApiKeySource::header("X-Key").prefix("A, b")));
+        assert_eq!(r.extract(&request("/", &[("x-key", b"A"), ("x-key", b"bc")])).as_deref(), Ok("c"));
+        assert_eq!(r.extract(&request("/", &[("x-key", b"A"), ("x-key", b"xc")])), Err(MISSING));
+        assert_eq!(r.extract(&request("/", &[("x-key", b"A")])), Err(MISSING));
+    }
+
+    #[test]
+    fn credential_query_params_lists_the_query_sources() {
+        assert_eq!(both().query_names, ["api_key"]);
     }
 
     #[test]

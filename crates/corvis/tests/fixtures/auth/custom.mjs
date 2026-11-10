@@ -6,7 +6,9 @@
 // The `device` strategy reads the header `x-device-id` and asks `DevicesService.find(id)`: a device is a success (the
 // device `dev-info` also reports info), no device is a failure, `dev-blocked` is a ForbiddenException ("Device
 // blocked") and `dev-broken` a plain Error. Routes: `GET /device` (AuthGuard('device')) and `GET /chain`
-// (AuthGuard(['bearer-user', 'device']): a strategy that accepts one bearer token, then the device strategy).
+// (AuthGuard(['bearer-user', 'device']): a strategy that accepts one bearer token, then the device strategy). The
+// `falsy` strategy hands whatever `x-falsy` names to `done` as the user (false, 0, '', null, undefined, NaN or a real
+// user), alone on `GET /falsy` and before the device strategy on `GET /falsy-chain`.
 import 'reflect-metadata';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -54,10 +56,25 @@ passport.use(
   }),
 );
 
+// A validator written as `return isValid`: the header `x-falsy` picks what `done` receives. A falsy user is a failure
+// of the strategy (`if (!user) return self.fail()` in passport-custom), and the guard's `handleRequest` throws a 401
+// for a missing user, so none of them authenticates.
+const FALSY = { false: false, zero: 0, empty: '', null: null, undefined: undefined, nan: NaN, truthy: { id: 'falsy-1' } };
+passport.use(
+  'falsy',
+  new CustomStrategy((req, done) => {
+    const pick = req.headers['x-falsy'];
+    if (!Object.hasOwn(FALSY, pick)) return done(null, false);
+    done(null, FALSY[pick]);
+  }),
+);
+
 class Routes {}
 for (const [route, strategy] of [
   ['device', 'device'],
   ['chain', ['bearer-user', 'device']],
+  ['falsy', 'falsy'],
+  ['falsy-chain', ['falsy', 'device']],
 ]) {
   Routes.prototype[route] = function (req) {
     return { user: req.user ?? null };
@@ -86,6 +103,15 @@ const CASES = [
   ['chain, device blocked', '/chain', { 'x-device-id': 'dev-blocked' }],
   ['chain, devices store fails', '/chain', { 'x-device-id': 'dev-broken' }],
   ['chain, bearer user and a failing device store', '/chain', { ...BEARER, 'x-device-id': 'dev-broken' }],
+  ['falsy user: done(null, false)', '/falsy', { 'x-falsy': 'false' }],
+  ['falsy user: done(null, 0)', '/falsy', { 'x-falsy': 'zero' }],
+  ["falsy user: done(null, '')", '/falsy', { 'x-falsy': 'empty' }],
+  ['falsy user: done(null, null)', '/falsy', { 'x-falsy': 'null' }],
+  ['falsy user: done(null, undefined)', '/falsy', { 'x-falsy': 'undefined' }],
+  ['falsy user: done(null, NaN)', '/falsy', { 'x-falsy': 'nan' }],
+  ['a real user is the control', '/falsy', { 'x-falsy': 'truthy' }],
+  ['falsy user then a device that exists: the chain goes on', '/falsy-chain', { 'x-falsy': 'false', 'x-device-id': 'dev-1' }],
+  ['falsy user then no device', '/falsy-chain', { 'x-falsy': 'zero' }],
 ];
 
 async function main() {

@@ -216,6 +216,10 @@ impl<V: JwtValidator> Strategy for JwtStrategy<V> {
         V::NAME
     }
 
+    fn credential_query_params(&self) -> Vec<String> {
+        self.resolved.extractor.query_names()
+    }
+
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
         let Some(token) = self.resolved.extractor.extract(req) else { return fail("No auth token") };

@@ -122,6 +122,15 @@ impl JwtExtractor {
             _ => false,
         }
     }
+
+    /// The names of the query parameters this extractor, or one it combines, reads (a custom function is opaque).
+    pub(crate) fn query_names(&self) -> Vec<String> {
+        match &self.0 {
+            Kind::Query { name } => vec![name.clone()],
+            Kind::First(list) => list.iter().flat_map(JwtExtractor::query_names).collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// JavaScript's `\s` inside the latin1 range (headers are latin1 in Node): tab, line feeds, form feed, space and the

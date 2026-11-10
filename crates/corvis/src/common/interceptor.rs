@@ -83,11 +83,14 @@ pub struct LoggingInterceptor;
 impl CorvisInterceptor for LoggingInterceptor {
     async fn intercept(&self, context: &ExecutionContext, next: CallHandler) -> HandlerResult {
         let start = std::time::Instant::now();
-        // In a gateway the request is the handshake, whose URL may carry a token in its query: log
-        // the handler instead.
-        let line = if context.get_type() == super::context::ContextType::Http {
+        // Not built when the level is off: the URL of a request is client controlled and can be long.
+        let line = if !crate::logger::level_enabled(crate::logger::LogLevel::Log) {
+            String::new()
+        } else if context.get_type() == super::context::ContextType::Http {
+            // In a gateway the request is the handshake, whose URL may carry a token in its query: log
+            // the handler instead.
             let req = context.request();
-            // The URL with the values of the parameters a strategy marked as credentials hidden.
+            // The URL with the values of the parameters marked as credentials hidden.
             format!("{} {}", req.method(), req.redacted_url())
         } else {
             format!("WS {}.{}", context.get_class().name, context.get_handler().name)

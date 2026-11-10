@@ -75,6 +75,26 @@ impl Routes {
     fn both(&self, service: User<Service>) -> Value {
         json!({ "name": service.name })
     }
+
+    /// The header strategy succeeds first, so the query strategy never runs.
+    #[get("header-first")]
+    #[use_guards(AuthGuard::chain(["header-only", "in-query"]))]
+    fn header_first(&self, service: User<Service>) -> Value {
+        json!({ "name": service.name })
+    }
+
+    /// No guard at all: no strategy runs.
+    #[get("open")]
+    fn open(&self) -> Value {
+        json!({ "ok": true })
+    }
+
+    /// A guard whose strategy has no query source.
+    #[get("header-only")]
+    #[use_guards(AuthGuard::new("header-only"))]
+    fn header_only(&self, service: User<Service>) -> Value {
+        json!({ "name": service.name })
+    }
 }
 
 #[module(
@@ -155,6 +175,71 @@ async fn the_request_log_hides_the_key_of_a_query_source() {
 }
 
 #[tokio::test]
+async fn query_key_logged_when_the_query_strategy_does_not_run() {
+    let _g = SERIAL.lock().await;
+    let captured = capture();
+    let app = start().await;
+    // An earlier strategy of the chain succeeds, the route has a guard without the query strategy, or no guard.
+    let calls = [
+        request(&app).get(&format!("/header-first?api_key={KEY}")).header("x-api-key", KEY),
+        request(&app).get(&format!("/header-only?api_key={KEY}")).header("x-api-key", KEY),
+        request(&app).get(&format!("/open?api_key={KEY}")),
+        request(&app).get(&format!("/open?x=1&api%5Fkey={KEY}&api_key=other")),
+        request(&app).get(&format!("/nowhere?api_key={KEY}")),
+    ];
+    for call in calls {
+        let _ = call.send().await;
+    }
+    let logged = lines(&captured, "LoggingInterceptor");
+    assert!(logged.iter().any(|l| l.contains("GET /header-first?api_key=REDACTED 200")), "{logged:?}");
+    assert!(logged.iter().any(|l| l.contains("GET /header-only?api_key=REDACTED 200")), "{logged:?}");
+    assert!(logged.iter().any(|l| l.contains("GET /open?api_key=REDACTED 200")), "{logged:?}");
+    assert!(logged.iter().any(|l| l.contains("GET /open?x=1&api%5Fkey=REDACTED&api_key=REDACTED 200")), "{logged:?}");
+    assert!(!logged.join("\n").contains("secretmarker"), "{logged:?}");
+}
+
+#[tokio::test]
+async fn an_application_without_a_query_source_logs_the_url_untouched() {
+    let _g = SERIAL.lock().await;
+    let captured = capture();
+    let mut app = CorvisFactory::create::<NoQueryModule>().await.unwrap();
+    app.silence_route_logs();
+    app.use_global_interceptors(LoggingInterceptor);
+    app.init().await.unwrap();
+    let r = request(&app).get("/plain?api_key=visible&x=1").header("x-api-key", KEY).send().await;
+    assert_eq!(r.status, 200);
+    let logged = lines(&captured, "LoggingInterceptor");
+    assert!(logged[0].contains("GET /plain?api_key=visible&x=1 200"), "{logged:?}");
+}
+
+#[controller("")]
+pub struct PlainRoutes;
+
+#[routes]
+impl PlainRoutes {
+    #[get("plain")]
+    #[use_guards(AuthGuard::new("header-only"))]
+    fn plain(&self) -> Value {
+        json!({ "ok": true })
+    }
+}
+
+#[module(providers = [Provider::strategy::<ApiKeyStrategy<HeaderOnly>>()], controllers = [PlainRoutes])]
+pub struct NoQueryModule;
+
+#[tokio::test]
+async fn the_request_line_is_not_built_when_the_level_is_off() {
+    let _g = SERIAL.lock().await;
+    let captured = capture();
+    let app = start().await;
+    corvis::logger::set_log_levels(&[LogLevel::Error]);
+    let r = request(&app).get(&format!("/open?api_key={KEY}")).send().await;
+    assert_eq!(r.status, 200);
+    corvis::logger::set_log_levels(&LogLevel::all());
+    assert!(lines(&captured, "LoggingInterceptor").is_empty());
+}
+
+#[tokio::test]
 async fn no_log_line_holds_a_key_whatever_the_outcome() {
     let _g = SERIAL.lock().await;
     let captured = capture();
@@ -203,6 +288,8 @@ async fn a_panicking_validator_logs_at_most_one_warning_a_minute_and_never_its_m
     let warnings: Vec<String> = lines(&captured, "Authenticator");
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("\"header-only\"") && warnings[0].contains("panicked"), "{warnings:?}");
+    // The default exception filter does not write one more line per request.
+    assert!(lines(&captured, "ExceptionsHandler").is_empty(), "{:?}", lines(&captured, "ExceptionsHandler"));
     let all = captured.lock().unwrap().iter().map(|(_, m, _)| m.clone()).collect::<Vec<_>>().join("\n");
     assert!(!all.contains("secretmarker"), "a log line holds a key:\n{all}");
 }
