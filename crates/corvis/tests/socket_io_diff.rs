@@ -2,8 +2,8 @@
 //!
 //! The harness runs the same scenarios against a Node `socket.io` / `engine.io` server and against Corvis, and fails on
 //! any difference. With the `socket-io` feature the Corvis target is the Engine.IO server of the harness application
-//! (`engine_support/harness_app.rs`), started in-process on 127.0.0.1:0 with the capability `engine-io`; scenarios that
-//! need Socket.IO run on Node only. The test needs Node 22 or later, so it is opt in: without `CORVIS_NODE_DIFF=1` it
+//! (`engine_support/harness_app.rs`), with the Socket.IO scenario app (`engine_support/io_app.rs`) beside it, started in-process on 127.0.0.1:0 with the capabilities `engine-io` and `socket-io`; scenarios that
+//! need `redis` run on Node only. The test needs Node 22 or later, so it is opt in: without `CORVIS_NODE_DIFF=1` it
 //! prints a notice and passes. With it, a missing Node or a missing install fails the test. This test never installs
 //! packages: run `npm ci` in `parity/socket-io/` first (see CONTRIBUTING.md).
 
@@ -108,7 +108,7 @@ async fn socket_io_differential_harness() {
         let url = format!("http://{addr}");
         let runner_dir = dir.clone();
         let runner = tokio::task::spawn_blocking(move || {
-            run_node(&runner_dir, &["run.mjs", "--corvis", &url, "--corvis-capabilities", "engine-io"])
+            run_node(&runner_dir, &["run.mjs", "--corvis", &url, "--corvis-capabilities", "engine-io,socket-io"])
         })
         .await
         .unwrap();

@@ -13,6 +13,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 pub mod harness_app;
+pub mod io_app;
 
 #[module]
 pub struct AppModule;

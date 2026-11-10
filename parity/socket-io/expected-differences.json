@@ -58,5 +58,41 @@
     "path": "$.entries[7].data.body",
     "reason": "the same bound: the 503 body is {\"code\":3,\"message\":\"Too many sessions\"}, as for max_sessions",
     "spec": "ws/engine-io: Open sessions are bounded (Sessions per address)"
+  },
+  {
+    "scenario": "socket-io/wire/pending-connect",
+    "path": "$.entries[0].data.connects",
+    "reason": "Node starts one pending socket per CONNECT packet and answers all three; Corvis runs the middleware once and closes the connection at the second CONNECT for a namespace whose attempt is still pending",
+    "spec": "ws/socket-io: One socket per namespace per connection (CONNECT flood during slow middleware)"
+  },
+  {
+    "scenario": "socket-io/wire/pending-connect",
+    "path": "$.entries[0].data.closed",
+    "reason": "the same bound: Node keeps the connection open, Corvis closes it (the sockets still joined would report forced server close)",
+    "spec": "ws/socket-io: One socket per namespace per connection (CONNECT flood during slow middleware)"
+  },
+  {
+    "scenario": "socket-io/wire/ack-id",
+    "path": "$.entries[1].data.answered",
+    "reason": "Node reads an acknowledgement id of any length as a float and answers with the rounded id; Corvis accepts at most 16 digits and 2^53 - 1 (the largest id is echoed exactly by both)",
+    "spec": "ws/socket-io: Client acknowledgement ids are bounded (Oversized ack id)"
+  },
+  {
+    "scenario": "socket-io/wire/ack-id",
+    "path": "$.entries[1].data.closed",
+    "reason": "the same bound: an id above 2^53 - 1 is an undecodable packet, Corvis closes the connection and Node keeps it open",
+    "spec": "ws/socket-io: Client acknowledgement ids are bounded (Oversized ack id)"
+  },
+  {
+    "scenario": "socket-io/wire/depth",
+    "path": "$.entries[1].data.answered",
+    "reason": "Node has no limit on the nesting of JSON arguments and answers; Corvis refuses JSON nested deeper than 127 levels",
+    "spec": "ws/socket-io: Nesting depth is bounded (Nesting above the limit)"
+  },
+  {
+    "scenario": "socket-io/wire/depth",
+    "path": "$.entries[1].data.closed",
+    "reason": "the same bound: the packet is undecodable, Corvis closes the connection and Node keeps it open",
+    "spec": "ws/socket-io: Nesting depth is bounded (Nesting above the limit)"
   }
 ]

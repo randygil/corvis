@@ -62,11 +62,12 @@ export function modeOf(scenario) {
 }
 
 /** Starts a Node reference server and resolves once it has reported its port. */
-export function startNodeTarget(name, { ackDelay = 0, root = ROOT, mode = "socket-io" } = {}) {
+export function startNodeTarget(name, { ackDelay = 0, root = ROOT, mode = "socket-io", args: extraArgs = [] } = {}) {
   hookCleanup();
   const script = mode === "engine-io" ? "engine-server.mjs" : "socket-server.mjs";
   const args = [join(root, "reference", script)];
   if (ackDelay > 0) args.push("--ack-delay", String(ackDelay));
+  args.push(...extraArgs);
   const child = spawn(process.execPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   children.add(child);
   let stderr = "";
