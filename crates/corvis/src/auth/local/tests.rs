@@ -197,7 +197,6 @@ async fn hashing_an_oversized_password_fails() {
     let too_long = "a".repeat(1025);
     assert!(h.hash(&ok).await.is_ok());
     assert_eq!(h.hash(&too_long).await, Err(PasswordError::TooLong { max: 1024 }));
-    assert_eq!(h.hash_blocking(&too_long), Err(PasswordError::TooLong { max: 1024 }));
 }
 
 #[tokio::test]
@@ -206,7 +205,6 @@ async fn verifying_an_oversized_password_is_false_without_derivation() {
     let hash = h.hash("secret").await.unwrap();
     let before = derivations(&h);
     assert_eq!(h.verify("a".repeat(1025), &hash).await, Ok(false));
-    assert_eq!(h.verify_blocking("a".repeat(1025), &hash), Ok(false));
     assert_eq!(derivations(&h), before);
 }
 
@@ -260,8 +258,6 @@ async fn an_unknown_user_costs_one_derivation_like_a_known_one() {
         assert_eq!(h.verify_or_dummy("secret", None).await, Ok(false));
         let unknown = derivations(&h) - before;
         assert_eq!((known, unknown), (1, 1));
-        assert_eq!(h.verify_or_dummy_blocking("secret", None), Ok(false));
-        assert_eq!(derivations(&h) - before, 2);
     }
 }
 
@@ -306,8 +302,8 @@ async fn a_refused_stored_hash_answers_false_after_one_derivation() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_refused_stored_hash_answers_false_in_the_blocking_variant_too() {
+#[test]
+fn a_refused_stored_hash_answers_false_in_the_blocking_variant_too() {
     let h = small_argon();
     for stored in REFUSED {
         let before = derivations(&h);
@@ -447,55 +443,155 @@ fn the_blocking_variants_fail_fast_with_busy_too() {
 fn busy_is_a_503_and_everything_else_a_500() {
     assert_eq!(PasswordError::Busy.into_http_exception().get_status(), 503);
     assert_eq!(PasswordError::Internal.into_http_exception().get_status(), 500);
-    assert_eq!(PasswordError::CurrentThreadRuntime.into_http_exception().get_status(), 500);
+    assert_eq!(PasswordError::InsideRuntime.into_http_exception().get_status(), 500);
 }
 
-#[tokio::test]
-async fn blocking_variants_refuse_to_run_on_a_current_thread_runtime() {
-    let h = small_argon();
-    let stored = "$argon2id$v=19$m=8,t=1,p=1$c29tZXNhbHRzb21lc2FsdA$RdescudvJCsgt3ub+b+dWRWJTmaaJObG";
-    assert_eq!(h.hash_blocking("secret"), Err(PasswordError::CurrentThreadRuntime));
-    assert_eq!(h.verify_blocking("secret", stored), Err(PasswordError::CurrentThreadRuntime));
-    assert_eq!(h.verify_or_dummy_blocking("secret", None), Err(PasswordError::CurrentThreadRuntime));
+/// Every blocking method, called from `where`; each must answer `InsideRuntime` and derive nothing.
+fn assert_blocking_refused(h: &PasswordHasher, stored: &str) {
+    let before = derivations(h);
+    assert_eq!(h.hash_blocking("secret"), Err(PasswordError::InsideRuntime));
+    assert_eq!(h.verify_blocking("secret", stored), Err(PasswordError::InsideRuntime));
+    assert_eq!(h.verify_dummy_blocking("secret"), Err(PasswordError::InsideRuntime));
+    assert_eq!(h.verify_or_dummy_blocking("secret", None), Err(PasswordError::InsideRuntime));
+    assert_eq!(h.verify_or_dummy_blocking("secret", Some(stored)), Err(PasswordError::InsideRuntime));
+    // Not even the cheap checks run first: an oversized password is an error too, not `Ok(false)` or `TooLong`.
+    assert_eq!(h.hash_blocking("a".repeat(5000)), Err(PasswordError::InsideRuntime));
+    assert_eq!(h.verify_blocking("a".repeat(5000), stored), Err(PasswordError::InsideRuntime));
+    assert_eq!(derivations(h), before, "no derivation ran");
+    assert_eq!(h.waiting(), 0, "nothing waited");
 }
 
-/// The proof of concept of the review: 8 async verifications queue on one slot while 2 synchronous handlers call the
-/// blocking variant, on a runtime with 2 workers. It used to deadlock.
+const ARGON_SMALL_HASH: &str = "$argon2id$v=19$m=8,t=1,p=1$c29tZXNhbHRzb21lc2FsdA$RdescudvJCsgt3ub+b+dWRWJTmaaJObG";
+
 #[test]
-fn blocking_variants_on_the_workers_of_a_multi_thread_runtime_do_not_deadlock() {
+fn blocking_variants_refuse_to_run_inside_any_runtime() {
+    let h = small_argon();
+    let base = derivations(&h);
+    // Multi-thread runtime: a worker, a block_on thread, a spawn_blocking thread and a LocalSet.
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let h = PasswordHasher::new(PasswordHasherOptions::argon2id(SMALL).allow_weak_parameters().max_concurrent(1)).unwrap();
-    let stored = h.hash_blocking("secret").unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    rt.spawn(async move {
-        let mut tasks = Vec::new();
-        for _ in 0..8 {
-            let (h, s) = (h.clone(), stored.clone());
-            tasks.push(tokio::spawn(async move { h.verify("secret", &s).await }));
-        }
-        tokio::task::yield_now().await;
-        for _ in 0..2 {
-            let (h, s) = (h.clone(), stored.clone());
-            tasks.push(tokio::spawn(async move { h.verify_blocking("secret", &s) }));
-        }
-        let mut oks = 0;
-        for t in tasks {
-            if t.await.unwrap() == Ok(true) {
-                oks += 1;
-            }
-        }
-        let _ = tx.send(oks);
+    let hh = h.clone();
+    rt.block_on(async {
+        assert_blocking_refused(&hh, ARGON_SMALL_HASH);
+        let on_worker = hh.clone();
+        tokio::spawn(async move { assert_blocking_refused(&on_worker, ARGON_SMALL_HASH) }).await.unwrap();
+        let on_blocking = hh.clone();
+        tokio::task::spawn_blocking(move || assert_blocking_refused(&on_blocking, ARGON_SMALL_HASH)).await.unwrap();
+        let local = tokio::task::LocalSet::new();
+        let on_local = hh.clone();
+        local
+            .run_until(async move {
+                tokio::task::spawn_local(async move { assert_blocking_refused(&on_local, ARGON_SMALL_HASH) }).await.unwrap()
+            })
+            .await;
     });
-    assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(60)), Ok(10), "no deadlock and every verification succeeded");
+    // Current-thread runtime, with and without a LocalSet.
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let hh = h.clone();
+    rt.block_on(async {
+        assert_blocking_refused(&hh, ARGON_SMALL_HASH);
+        let local = tokio::task::LocalSet::new();
+        let on_local = hh.clone();
+        local
+            .run_until(async move {
+                tokio::task::spawn_local(async move { assert_blocking_refused(&on_local, ARGON_SMALL_HASH) }).await.unwrap()
+            })
+            .await;
+        let on_blocking = hh.clone();
+        tokio::task::spawn_blocking(move || assert_blocking_refused(&on_blocking, ARGON_SMALL_HASH)).await.unwrap();
+    });
+    assert_eq!(derivations(&h), base);
+    // The same hasher works from a thread without a runtime.
+    let hash = std::thread::scope(|s| s.spawn(|| h.hash_blocking("secret")).join().unwrap()).unwrap();
+    assert!(std::thread::scope(|s| s.spawn(|| h.verify_blocking("secret", &hash)).join().unwrap()).unwrap());
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn blocking_variants_work_from_a_spawn_blocking_thread() {
-    let h = small_argon();
-    let hash = h.hash("secret").await.unwrap();
-    let h2 = h.clone();
-    let ok = tokio::task::spawn_blocking(move || h2.verify_blocking("secret", &hash)).await.unwrap();
-    assert_eq!(ok, Ok(true));
+#[test]
+fn blocking_variants_give_busy_after_the_acquire_timeout_outside_a_runtime() {
+    let timeout = std::time::Duration::from_millis(100);
+    let options = PasswordHasherOptions::argon2id(SMALL).allow_weak_parameters().max_concurrent(1).acquire_timeout(timeout);
+    let h = PasswordHasher::new(options).unwrap();
+    let stored = h.hash_blocking("secret").unwrap();
+    let base = derivations(&h);
+    let gate = Arc::new(Gate::default());
+    *h.probe().gate.lock().unwrap() = Some(gate.clone());
+    std::thread::scope(|s| {
+        let holder = s.spawn(|| h.verify_blocking("secret", &stored));
+        while h.probe().running.load(Ordering::SeqCst) < 1 {
+            std::thread::yield_now();
+        }
+        let started = std::time::Instant::now();
+        assert_eq!(h.verify_blocking("secret", &stored), Err(PasswordError::Busy));
+        assert!(started.elapsed() >= timeout, "it waited for the whole timeout");
+        assert_eq!(h.hash_blocking("secret"), Err(PasswordError::Busy));
+        assert_eq!(h.verify_or_dummy_blocking("secret", Some("")), Err(PasswordError::Busy));
+        assert_eq!(h.waiting(), 0, "the timed out waiters left the queue");
+        assert_eq!(derivations(&h) - base, 1, "Busy ran no derivation");
+        gate.open();
+        assert_eq!(holder.join().unwrap(), Ok(true));
+    });
+    // Once the slot is free the same call succeeds.
+    *h.probe().gate.lock().unwrap() = None;
+    assert_eq!(h.verify_blocking("secret", &stored), Ok(true));
+}
+
+#[test]
+fn a_blocking_waiter_gets_the_slot_when_it_frees_before_the_timeout() {
+    let options = PasswordHasherOptions::argon2id(SMALL).allow_weak_parameters().max_concurrent(1);
+    let h = PasswordHasher::new(options).unwrap();
+    let stored = h.hash_blocking("secret").unwrap();
+    let gate = Arc::new(Gate::default());
+    *h.probe().gate.lock().unwrap() = Some(gate.clone());
+    std::thread::scope(|s| {
+        let holder = s.spawn(|| h.verify_blocking("secret", &stored));
+        while h.probe().running.load(Ordering::SeqCst) < 1 {
+            std::thread::yield_now();
+        }
+        let waiter = s.spawn(|| h.verify_blocking("secret", &stored));
+        while h.waiting() < 1 {
+            std::thread::yield_now();
+        }
+        gate.open();
+        assert_eq!(holder.join().unwrap(), Ok(true));
+        assert_eq!(waiter.join().unwrap(), Ok(true));
+    });
+}
+
+/// The review's mixed load: many async verifications and hashes at once on a small multi-thread runtime, with a queue
+/// that overflows. Every call ends with `Ok` or `Busy`, and a timer keeps firing while it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mixed_async_load_finishes_with_ok_or_busy_and_the_timer_keeps_firing() {
+    let options = PasswordHasherOptions::argon2id(SMALL)
+        .allow_weak_parameters()
+        .max_concurrent(2)
+        .max_waiting(16)
+        .acquire_timeout(std::time::Duration::from_secs(30));
+    let h = PasswordHasher::new(options).unwrap();
+    let stored = h.hash("secret").await.unwrap();
+    let probe = tokio::spawn(async {
+        for _ in 0..5 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+    let tasks: Vec<_> = (0..400)
+        .map(|i| {
+            let (h, stored) = (h.clone(), stored.clone());
+            tokio::spawn(
+                async move { if i % 3 == 0 { h.hash("new password").await.map(|_| true) } else { h.verify("secret", &stored).await } },
+            )
+        })
+        .collect();
+    let (mut ok, mut busy) = (0, 0);
+    for t in tasks {
+        match t.await.unwrap() {
+            Ok(_) => ok += 1,
+            Err(PasswordError::Busy) => busy += 1,
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(ok + busy, 400);
+    assert!(ok >= 1);
+    tokio::time::timeout(std::time::Duration::from_secs(60), probe).await.expect("the timer kept firing").unwrap();
+    assert_eq!(h.waiting(), 0);
 }
 
 #[tokio::test]
@@ -527,11 +623,86 @@ async fn at_most_max_concurrent_derivations_run_at_once() {
     assert_eq!(h.probe().peak.load(Ordering::SeqCst), 2);
 }
 
-#[tokio::test]
-async fn blocking_variants_work_on_threads_outside_the_runtime() {
+#[test]
+fn the_blocking_variants_check_lengths_outside_a_runtime() {
     let h = small_argon();
-    let hash = std::thread::scope(|s| s.spawn(|| h.hash_blocking("secret")).join().unwrap()).unwrap();
-    assert!(std::thread::scope(|s| s.spawn(|| h.verify_blocking("secret", &hash)).join().unwrap()).unwrap());
+    assert_eq!(h.hash_blocking("a".repeat(1025)), Err(PasswordError::TooLong { max: 1024 }));
+    let hash = h.hash_blocking("secret").unwrap();
+    let before = derivations(&h);
+    assert_eq!(h.verify_blocking("a".repeat(1025), &hash), Ok(false));
+    assert_eq!(derivations(&h), before);
+}
+
+#[tokio::test]
+async fn a_refused_hash_warns_only_after_the_dummy_ran() {
+    let options = PasswordHasherOptions::argon2id(SMALL)
+        .allow_weak_parameters()
+        .max_concurrent(1)
+        .acquire_timeout(std::time::Duration::from_millis(50));
+    let h = PasswordHasher::new(options).unwrap();
+    let stored = h.hash("secret").await.unwrap();
+    let gate = Arc::new(Gate::default());
+    *h.probe().gate.lock().unwrap() = Some(gate.clone());
+    let (hh, ss) = (h.clone(), stored.clone());
+    let running = tokio::spawn(async move { hh.verify("secret", &ss).await });
+    until(|| h.probe().running.load(Ordering::SeqCst) == 1).await;
+    // The only slot is taken: the dummy cannot run, so nothing is reported for the refused hash.
+    assert_eq!(h.verify_or_dummy("pw", Some("")).await, Err(PasswordError::Busy));
+    assert_eq!(h.verify_or_dummy("pw", Some("$scrypt$x")).await, Err(PasswordError::Busy));
+    assert_eq!(h.refused_reports(), 0);
+    gate.open();
+    assert_eq!(running.await.unwrap(), Ok(true));
+    *h.probe().gate.lock().unwrap() = None;
+    assert_eq!(h.verify_or_dummy("pw", Some("")).await, Ok(false));
+    assert_eq!(h.refused_reports(), 1, "reported once the dummy verification ran");
+}
+
+#[test]
+fn refusal_warnings_are_limited_to_one_per_reason_per_minute() {
+    let h = small_argon();
+    let t0 = std::time::Instant::now();
+    let at = |secs: u64| t0 + std::time::Duration::from_secs(secs);
+    let first = h.refused_message_at(&PasswordError::Malformed, at(0)).expect("the first one is written");
+    assert!(!first.contains("not logged"), "{first}");
+    for second in 1..=3 {
+        assert_eq!(h.refused_message_at(&PasswordError::Malformed, at(second)), None);
+    }
+    // Another reason has its own allowance.
+    assert!(h.refused_message_at(&PasswordError::Unsupported, at(4)).is_some());
+    assert!(h.refused_message_at(&PasswordError::OverLimit { what: "bcrypt cost" }, at(4)).is_some());
+    assert_eq!(h.refused_message_at(&PasswordError::Malformed, at(59)), None);
+    let next = h.refused_message_at(&PasswordError::Malformed, at(61)).expect("a minute later it is written again");
+    assert!(next.contains("4 more of this kind"), "{next}");
+    assert_eq!(h.refused_message_at(&PasswordError::Malformed, at(62)), None);
+    assert!(!next.contains('$'));
+}
+
+#[tokio::test]
+async fn an_argon2_hash_with_a_short_salt_is_refused_before_any_slot_is_taken() {
+    let h = small_argon();
+    let short = "$argon2id$v=19$m=8,t=1,p=1$YWJjZGVmZw$RdescudvJCsgt3ub+b+dWRWJTmaaJObG"; // 7-byte salt
+    let enough = "$argon2id$v=19$m=8,t=1,p=1$YWJjZGVmZ2g$RdescudvJCsgt3ub+b+dWRWJTmaaJObG"; // 8-byte salt
+    let base = derivations(&h);
+    assert_eq!(h.verify("secret", short).await, Err(PasswordError::Malformed));
+    assert!(h.needs_rehash(short));
+    assert_eq!(derivations(&h), base, "no derivation and no slot for the short salt");
+    assert_eq!(h.verify("secret", enough).await, Ok(false));
+    assert_eq!(derivations(&h) - base, 1);
+    // A login with it costs exactly the dummy verification.
+    let base = derivations(&h);
+    assert_eq!(h.verify_or_dummy("secret", Some(short)).await, Ok(false));
+    assert_eq!(derivations(&h) - base, 1);
+}
+
+#[test]
+fn the_default_max_concurrent_is_capped_so_the_defaults_never_warn() {
+    let h = PasswordHasher::new(PasswordHasherOptions::default()).unwrap();
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    assert_eq!(h.slot_count(), cores.min(16));
+    assert!(h.slot_count() as u64 * u64::from(VerifyLimits::default().max_argon2_memory_kib) <= 1_048_576);
+    // An explicit setting is still honoured.
+    let more = PasswordHasher::new(PasswordHasherOptions::default().max_concurrent(32)).unwrap();
+    assert_eq!(more.slot_count(), 32);
 }
 
 #[test]

@@ -257,7 +257,7 @@ constants, with a comment on how they were made), `LocalAuth` implements `LocalV
   `Injectable` implementation runs it with `spawn_blocking`.
 - **Concurrency.** A `tokio::sync::Semaphore` with `max_concurrent` permits; the permit moves into the blocking task, so
   the number of running derivations stays bounded even when the caller stops waiting. The blocking variants wait for a
-  permit with `futures::executor::block_on` and run on the calling thread. Waiters are not bounded: a login flood queues
+  permit with `futures::executor::block_on` and run on the calling thread (round 2 replaced this, see below). Waiters are not bounded: a login flood queues
   futures of a few hundred bytes each, which is why the docs point to the throttler.
 - **bcryptjs comparison.** No byte preparation was needed: `bcrypt::verify` gave the result of `compareSync` for every
   case of the fixture (NUL characters, 71, 72 and 73 byte passwords, 100 bytes, multibyte at the boundary, `$2a$`,
@@ -312,7 +312,7 @@ implementation notes above where they differ.
    a startup warning when on). Without it only the body is read. The `passport-local` fixture marks the four cases
    that need the query as deliberate divergences (default: 401, validator not called) and the replay runs them again
    against a strategy with the option, where they match the recorded original.
-6. **Blocking variants are safe on async workers.** Inside a multi-thread runtime `hash_blocking`, `verify_blocking`,
+6. **Blocking variants are safe on async workers (overridden by round 2).** Inside a multi-thread runtime `hash_blocking`, `verify_blocking`,
    `verify_dummy_blocking` and `verify_or_dummy_blocking` run through `tokio::task::block_in_place` (the wait for the
    slot uses the runtime's timer through `Handle::block_on`); inside a current-thread runtime they return the new
    `PasswordError::CurrentThreadRuntime` before waiting; outside any runtime they block, with a small runtime of their
@@ -322,3 +322,37 @@ implementation notes above where they differ.
    them at the cost of a derivation); that is item 1's path.
 
 Not changed: the `LoggingInterceptor`, the dummy design (one real verification, no sleeping).
+
+## Security review (round 2)
+
+The second security review found five items. The maintainer decided the following; item 1 overrides round 1's item 6.
+
+1. **The blocking variants are for code outside a runtime.** `block_in_place` let callers parked on workers consume the
+   blocking pool, so async callers holding a permit found no blocking thread, no worker drove the timer and
+   `acquire_timeout` never fired (1000 synchronous logins plus 500 async hashes with default options hung the server);
+   it also panics inside a `LocalSet`. Now, inside any Tokio runtime context (`Handle::try_current()` succeeds: worker,
+   `block_on`, `spawn_blocking` thread, `LocalSet`), `hash_blocking`, `verify_blocking`, `verify_dummy_blocking` and
+   `verify_or_dummy_blocking` return `PasswordError::InsideRuntime` (renamed from `CurrentThreadRuntime`) before
+   anything else: no wait, no derivation, no length check. There is no `block_in_place` and no `Handle::block_on`.
+   Outside a runtime the slot is acquired by polling the semaphore's acquire future with a waker that unparks the
+   thread and sleeping with `std::thread::park_timeout` until the `acquire_timeout` deadline, with the same
+   `max_waiting` queue as the async path (`Busy` on overflow or timeout); the derivation runs on the calling thread.
+   `Provider::class::<PasswordHasher>()` builds the hasher with `spawn_blocking(PasswordHasher::new)`, which never calls
+   a blocking variant. Handlers, synchronous ones included, must use the async methods. The tests that hashed inside a
+   runtime now make their hashes on a plain thread.
+2. **The refusal warning follows the dummy and is rate limited.** `verify_or_dummy` logs after the dummy verification
+   ran, never on `Busy`, at most one warning per reason (`malformed`, `unsupported`, or the name of the exceeded limit)
+   per minute; the next one adds how many were not logged. A map of `reason -> (last written, suppressed)` behind a
+   mutex does it; the keys are a fixed set. The module has no other per-request warning (the dummy mismatch warning is
+   once per hasher, the rest run at startup).
+3. **Early refusal of what the crate would refuse late.** `parse_argon2` refuses a salt under 8 bytes
+   (`argon2::MIN_SALT_LEN`) and an output length under the crate's minimum before any slot is taken (the other
+   parameter rules, such as memory against parallelism, zero iterations and zero lanes, are already enforced by
+   `Params`, and the output of a PHC string is at least 10 bytes). `verify_or_dummy` runs the verification and, when a
+   refusal still appears inside the task, the dummy inside the same permit.
+4. **The default `max_concurrent` is capped at 16** (`available_parallelism().min(16)`), so with the default limits (64
+   MiB each) the startup warning (above 1 GiB) never appears with default options. An explicit value is honoured up to
+   1024.
+5. **bcrypt cap stays at 14.** Lowering it would lock out migrated users with cost 13 or 14 hashes. The limits table
+   (EN and ES) says a cost-14 hash costs about 60 times the default dummy verification and that an application whose
+   stored hashes are all cost 12 or less can lower `VerifyLimits` accordingly.

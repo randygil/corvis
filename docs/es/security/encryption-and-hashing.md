@@ -61,7 +61,7 @@ let hasher = PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params {
 | `verify_or_dummy(password, Option<&str>).await` | `verify` cuando hay hash guardado, y una verificación de relleno cuando no lo hay. Un hash guardado rechazado (una cadena vacía, `$2x$`, sobre un límite) da `Ok(false)` tras una verificación de relleno, como un usuario desconocido |
 | `verify_dummy(password).await` | Una verificación contra un hash de relleno; `Ok(false)` |
 | `needs_rehash(&stored)` | `true` cuando el hash debería sustituirse (no ejecuta ninguna derivación de clave) |
-| `hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking`, `verify_dummy_blocking` | Lo mismo, para código síncrono. Bloquean el hilo que llama; ver [hilos bloqueantes](#hilos-bloqueantes) |
+| `hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking`, `verify_dummy_blocking` | Lo mismo, para código **fuera** de un runtime de Tokio (herramientas de línea de comandos, seeders, migraciones, tests). Dentro de un runtime devuelven `PasswordError::InsideRuntime`; ver [hilos bloqueantes](#hilos-bloqueantes) |
 
 ### Valores por defecto
 
@@ -72,11 +72,11 @@ let hasher = PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params {
 | Sal, salida | 16 bytes, 32 bytes | RFC 9106; la sal sale del generador del sistema operativo |
 | Coste de bcrypt (si se elige) | 10 | El valor por defecto de `bcryptjs` |
 | `max_password_bytes` | 1024 | Una contraseña larga no sirve para quemar CPU; hashearla da `PasswordError::TooLong`, y verificarla responde `false` sin ninguna derivación de clave |
-| `max_concurrent` | `available_parallelism()` | Como máximo esta cantidad de derivaciones de clave a la vez, cada una en un hilo bloqueante y nunca en un worker async; las demás esperan un hueco. Cada derivación por defecto usa unos 19 MiB |
+| `max_concurrent` | `available_parallelism()`, como máximo 16 | Como máximo esta cantidad de derivaciones de clave a la vez, cada una en un hilo bloqueante y nunca en un worker async; las demás esperan un hueco. Cada derivación por defecto usa unos 19 MiB. El valor por defecto se limita a 16 para que los valores por defecto nunca lleguen al aviso de 1 GiB al arrancar; un valor explícito se respeta hasta 1024 |
 | `max_waiting` | `32 * max_concurrent` (al menos 1) | Cuántas llamadas pueden esperar un hueco. La siguiente falla de inmediato con `PasswordError::Busy`, sin ninguna derivación de clave |
 | `acquire_timeout` | 10 s (de 1 ms a 300 s) | Lo máximo que una llamada espera un hueco; después falla con `PasswordError::Busy` |
 | Longitud del hash guardado | 512 bytes | Una cadena PHC con estos parámetros mide unos 100 bytes |
-| `max_bcrypt_cost` | 14 | Un hash `$2b$31$` plantado costaría 2^31 rondas |
+| `max_bcrypt_cost` | 14 | Un hash `$2b$31$` plantado costaría 2^31 rondas. Un hash de coste 14 cuesta unas 60 veces la verificación de relleno por defecto (argon2id con 19456 KiB y 2 iteraciones) y se mantiene para que los usuarios migrados con hashes de coste 13 o 14 puedan seguir entrando. Si todos los hashes guardados tienen coste 12 o menos, bájalo con `VerifyLimits::max_bcrypt_cost(12)` |
 | Límites de argon2 al verificar | 65536 KiB, 8 iteraciones, paralelismo 16 | Un hash plantado en la base de datos cuesta lo que pide en cada intento de login; estos topes lo dejan en una fracción de segundo y 64 MiB. Se suben a los parámetros del propio hasher cuando estos son mayores, así que sus hashes siempre se verifican |
 
 Todo hash guardado se comprueba contra los límites **antes** de cualquier derivación de clave. Un hash que supera un límite es un error de `verify` (`PasswordError::OverLimit { what }` dice cuál) y un login rechazado en `verify_or_dummy`; sube el límite con `VerifyLimits` si una base de datos heredada tiene hashes más costosos:
@@ -136,7 +136,7 @@ let ok = hasher
 let user = user.filter(|_| ok);
 ```
 
-Cuando se rechaza el hash guardado (mal formado, no compatible, sobre un límite: una cadena vacía en una cuenta creada con login social, un hash `$2x$` de una importación antigua) la respuesta es `Ok(false)` tras la verificación de relleno, así que el login da el mismo `401` que un usuario desconocido y una fila rota no responde más rápido ni distinto. Una advertencia por cada caso nombra el motivo (nunca el hash, el usuario ni la contraseña), de modo que una fila rota sigue visible en los logs. `verify` sigue devolviendo el rechazo como un error.
+Cuando se rechaza el hash guardado (mal formado, no compatible, sobre un límite: una cadena vacía en una cuenta creada con login social, un hash `$2x$` de una importación antigua) la respuesta es `Ok(false)` tras la verificación de relleno, así que el login da el mismo `401` que un usuario desconocido y una fila rota no responde más rápido ni distinto. Una advertencia nombra el motivo (nunca el hash, el usuario ni la contraseña), de modo que una fila rota sigue visible en los logs. Se escribe después de que la verificación de relleno se ejecutó, y como máximo una vez por minuto por motivo: la siguiente dice cuántas no se registraron. `verify` sigue devolviendo el rechazo como un error.
 
 Las diferencias de tiempo que quedan son las que controlas tú. Los hashes guardados con otro algoritmo o coste se verifican a su propio precio: en una migración, [iguala el hash de relleno](#conservar-los-hashes-bcrypt) a ellos con `dummy_algorithm`, y deja que `needs_rehash` cierre la brecha con el tiempo. Tu propia búsqueda de usuario puede tardar distinto cuando la fila no existe.
 
@@ -152,7 +152,7 @@ Limita además los intentos de login (el [throttler](/es/security/rate-limiting)
 
 ### Hilos bloqueantes
 
-`hash_blocking`, `verify_blocking` y los demás métodos `*_blocking` son para código síncrono, y un handler síncrono es justo eso: se ejecuta en un hilo worker async. Allí son seguros. Dentro de un runtime Tokio multi-hilo se ejecutan con `tokio::task::block_in_place`, que pasa las demás tareas del worker a otro hilo mientras dura el hashing. Fuera de cualquier runtime simplemente bloquean. Dentro de un runtime de **un solo hilo** (por ejemplo `#[tokio::test]` sin `flavor = "multi_thread"`) devuelven `PasswordError::CurrentThreadRuntime` en lugar de arriesgar un bloqueo permanente: allí usa los métodos async.
+`hash_blocking`, `verify_blocking` y los demás métodos `*_blocking` son para código **fuera** de un runtime de Tokio: herramientas de línea de comandos, seeders, migraciones y tests. Esperan un hueco en el hilo que llama, respetando `acquire_timeout` y `max_waiting` como los métodos async (`Busy` si se desborda la cola o vence el plazo), y ejecutan allí la derivación. Dentro de cualquier runtime de Tokio (un worker async, un hilo de `block_on` o de `spawn_blocking`, un `LocalSet`) devuelven `PasswordError::InsideRuntime` de inmediato, sin esperar ni derivar nada: bloquear un hilo del runtime mientras espera un hueco puede dejarlo sin respuesta. Los handlers de peticiones, también los síncronos, deben usar los métodos async: haz el handler `async`.
 
 La comparación de los valores derivados es de tiempo constante: `argon2` y `password-hash` comparan las salidas con `subtle`, y `bcrypt` también. `PasswordError` y la salida de `Debug` nunca contienen una contraseña ni un hash.
 

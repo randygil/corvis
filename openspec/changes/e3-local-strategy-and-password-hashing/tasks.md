@@ -107,6 +107,19 @@ fixture package) and update the artifacts if it differs.
   characters and the derivation counter
 - [x] 7.8 Spec deltas updated; `openspec validate e3-local-strategy-and-password-hashing --strict` has no warnings
 
+## 8. Security review (round 2)
+
+- [x] 8.1 Blocking variants: `InsideRuntime` inside any runtime (no `block_in_place`, no `Handle::block_on`), slot wait
+  with `park_timeout` outside; verify with tests on multi-thread, current-thread, `spawn_blocking` and `LocalSet`
+  contexts, contention giving `Busy` after `acquire_timeout`, and a mixed async load with a timer probe
+- [x] 8.2 Refusal warning after the dummy ran, not on `Busy`, one per reason per minute with the suppressed count;
+  verify with the `Busy` test and the rate limit test
+- [x] 8.3 Refuse argon2 salts under 8 bytes (and short outputs) in the parser; dummy in the same permit for late
+  refusals; verify with a 7-byte and an 8-byte salt and the derivation counter
+- [x] 8.4 Cap the default `max_concurrent` at 16; verify with the slot count
+- [x] 8.5 Docs (EN, ES): blocking methods outside a runtime only, default cap, bcrypt cap note, warning rate limit
+- [x] 8.6 Spec deltas updated; `openspec validate e3-local-strategy-and-password-hashing --strict` has no warnings
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

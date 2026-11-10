@@ -175,9 +175,9 @@ lower bcrypt cost), or cannot be parsed.
 - **THEN** `needs_rehash` reports `true`; for a hash made with the configured parameters it reports `false`
 
 ### Requirement: Stored hashes cannot exhaust resources
-Before any key derivation, verification MUST refuse a hash longer than 512 bytes, a bcrypt hash with cost above
-`max_bcrypt_cost` (14), and an argon2 hash with memory above 65536 KiB, more than 8 iterations or parallelism above
-16. Each limit is overridable with `VerifyLimits` and raised to the hasher's own hashing parameters when those are
+Before any slot is taken or any key derivation, verification MUST refuse a hash longer than 512 bytes, a bcrypt hash
+with cost above `max_bcrypt_cost` (14), an argon2 hash with memory above 65536 KiB, more than 8 iterations or
+parallelism above 16, and an argon2 hash with a salt under 8 bytes. Each limit is overridable with `VerifyLimits` and raised to the hasher's own hashing parameters when those are
 higher.
 
 #### Scenario: Planted high-cost bcrypt hash
@@ -187,6 +187,10 @@ higher.
 #### Scenario: Planted high-memory argon2 hash
 - **WHEN** a password is verified against `$argon2id$v=19$m=4194304,t=1,p=1$...`
 - **THEN** an error is returned and no key derivation ran
+
+#### Scenario: Short argon2 salt
+- **WHEN** a password is verified against an argon2 hash whose salt is 7 bytes
+- **THEN** the hash is malformed, and neither a slot nor a key derivation was used
 
 #### Scenario: Own parameters above the default limits
 - **WHEN** a hasher is configured with 100000 KiB and 9 iterations and verifies its own hash
@@ -212,7 +216,8 @@ malformed before any key derivation: no bcrypt implementation writes such a hash
 
 ### Requirement: Hash computations are bounded and off the async workers
 The hasher SHALL run key derivations on blocking threads, never on the async workers, and at most `max_concurrent`
-at a time, `std::thread::available_parallelism()` by default. Further calls wait for a slot.
+at a time, `std::thread::available_parallelism()` capped at 16 by default (an explicit value is honoured up to
+1024, so the defaults never reach the memory warning). Further calls wait for a slot.
 
 #### Scenario: Concurrency limit
 - **WHEN** the hasher has `max_concurrent(2)` and five verifications start together
@@ -236,18 +241,24 @@ At most `max_waiting` calls (default 32 times `max_concurrent`, at least 1) SHAL
 - **WHEN** the only slot is held and a known and an unknown user log in through the documented validator
 - **THEN** both get the same 503 response
 
-### Requirement: Blocking variants are safe on async workers
-`hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking` and `verify_dummy_blocking` SHALL run through
-`tokio::task::block_in_place` inside a multi-thread runtime, return an error inside a current-thread runtime instead
-of blocking, and block the calling thread outside any runtime.
+### Requirement: Blocking variants are for code outside a runtime
+`hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking` and `verify_dummy_blocking` MUST return
+`PasswordError::InsideRuntime` at once, without waiting or deriving, inside any Tokio runtime context. Outside one they
+wait for a slot without a Tokio timer, honouring `acquire_timeout` and `max_waiting` (`Busy`), and derive on the
+calling thread.
 
-#### Scenario: Synchronous handlers under load
-- **WHEN** eight async verifications queue on one slot while two blocking calls run on a two-worker runtime
-- **THEN** all ten complete
+#### Scenario: Inside a runtime
+- **WHEN** a blocking variant is called on a multi-thread or current-thread runtime, a `spawn_blocking` thread or a
+  `LocalSet`
+- **THEN** it returns `InsideRuntime` at once, nothing panics and no key derivation ran
 
-#### Scenario: Current-thread runtime
-- **WHEN** a blocking variant is called on a current-thread runtime
-- **THEN** it returns `PasswordError::CurrentThreadRuntime`
+#### Scenario: Contention outside a runtime
+- **WHEN** the only slot is held and a blocking variant is called on a plain thread
+- **THEN** it returns `Busy` after `acquire_timeout`, and succeeds when the slot frees earlier
+
+#### Scenario: Mixed async load
+- **WHEN** hundreds of async `verify` and `hash` calls run at once and the queue overflows
+- **THEN** every call ends with `Ok` or `Busy`, and a timer on the same runtime keeps firing
 
 ### Requirement: Unknown users cost a real verification
 The hasher SHALL provide `verify_dummy(password)`, one verification against a hash created at construction with the
@@ -265,12 +276,21 @@ verifies against the stored hash when there is one and runs `verify_dummy` other
 
 ### Requirement: A refused stored hash answers like an unknown user
 When a stored hash is malformed, unsupported or over a limit, `verify_or_dummy` MUST run the dummy verification and
-return `Ok(false)`, logging one warning per occurrence that names the reason and never the hash or the user input.
-`verify` keeps returning the error.
+return `Ok(false)`. The warning naming the reason (never the hash or the user input) MUST be logged only after the
+dummy ran (not on `Busy`), at most once a minute per reason with the count of those suppressed. A refusal found only
+inside the task is answered with the dummy in the same slot. `verify` keeps returning the error.
 
 #### Scenario: Malformed stored hash
 - **WHEN** `verify_or_dummy(password, Some("not-a-hash"))` is called
 - **THEN** `Ok(false)` is returned and exactly one key derivation ran
+
+#### Scenario: Saturated hasher
+- **WHEN** the only slot is held and `verify_or_dummy` gets a refused hash
+- **THEN** `Busy` is returned and no warning was logged
+
+#### Scenario: Warning rate limit
+- **WHEN** the same refusal reason happens repeatedly within a minute
+- **THEN** one warning is logged, and the next one after the minute states how many were not logged
 
 #### Scenario: Refused hashes over HTTP
 - **WHEN** users with an empty hash, a `$2b$15$` hash, a `$2x$` hash and a `$scrypt$` hash log in through the documented

@@ -61,7 +61,7 @@ let hasher = PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params {
 | `verify_or_dummy(password, Option<&str>).await` | `verify` when there is a stored hash, and one dummy verification when there is none. A stored hash that is refused (an empty string, `$2x$`, over a limit) is `Ok(false)` after one dummy verification, like an unknown user |
 | `verify_dummy(password).await` | One verification against a dummy hash; `Ok(false)` |
 | `needs_rehash(&stored)` | `true` when the hash should be replaced (no key derivation runs) |
-| `hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking`, `verify_dummy_blocking` | The same, for synchronous code. They block the calling thread; see [blocking threads](#blocking-threads) |
+| `hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking`, `verify_dummy_blocking` | The same, for code **outside** a Tokio runtime (command-line tools, seeders, migrations, tests). Inside a runtime they return `PasswordError::InsideRuntime`; see [blocking threads](#blocking-threads) |
 
 ### Defaults
 
@@ -72,11 +72,11 @@ let hasher = PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params {
 | Salt, output | 16 bytes, 32 bytes | RFC 9106; the salt comes from the operating system's generator |
 | bcrypt cost (when chosen) | 10 | The `bcryptjs` default |
 | `max_password_bytes` | 1024 | A long password cannot be used to burn CPU; a hash of one is refused with `PasswordError::TooLong`, and verifying one answers `false` without any key derivation |
-| `max_concurrent` | `available_parallelism()` | At most this many key derivations run at once, each on a blocking thread, never on an async worker; the others wait for a slot. Each default derivation uses about 19 MiB |
+| `max_concurrent` | `available_parallelism()`, at most 16 | At most this many key derivations run at once, each on a blocking thread, never on an async worker; the others wait for a slot. Each default derivation uses about 19 MiB. The default is capped at 16 so the defaults never reach the 1 GiB startup warning; an explicit value is honoured up to 1024 |
 | `max_waiting` | `32 * max_concurrent` (at least 1) | How many calls may wait for a slot. The next one fails at once with `PasswordError::Busy`, without any key derivation |
 | `acquire_timeout` | 10 s (1 ms to 300 s) | The longest a call waits for a slot; then it fails with `PasswordError::Busy` |
 | Stored hash length | 512 bytes | A PHC string with these parameters is about 100 bytes |
-| `max_bcrypt_cost` | 14 | A planted `$2b$31$` hash would cost 2^31 rounds |
+| `max_bcrypt_cost` | 14 | A planted `$2b$31$` hash would cost 2^31 rounds. A cost-14 hash costs about 60 times the default dummy verification (argon2id at 19456 KiB, 2 iterations) and is kept so that migrated users with cost 13 or 14 hashes can still log in. If every stored hash has cost 12 or less, lower it with `VerifyLimits::max_bcrypt_cost(12)` |
 | argon2 limits when verifying | 65536 KiB, 8 iterations, parallelism 16 | A hash planted in the database costs what it asks for on every login attempt; these caps keep that to a fraction of a second and 64 MiB. They are raised to the hasher's own parameters when those are higher, so its own hashes always verify |
 
 Every stored hash is checked against the limits **before** any key derivation. A hash over a limit is an error from `verify` (`PasswordError::OverLimit { what }` says which one) and a refused login from `verify_or_dummy`; raise the limit with `VerifyLimits` if a legacy database has costlier hashes:
@@ -136,7 +136,7 @@ let ok = hasher
 let user = user.filter(|_| ok);
 ```
 
-When the stored hash is refused (malformed, unsupported, over a limit: an empty string for an account created through social login, a `$2x$` hash from an old import) the answer is `Ok(false)` after the dummy verification, so the login is the same `401` as for an unknown user and a broken row does not answer faster or differently. One warning per occurrence names the reason (never the hash, the username or the password), so a broken row is still visible in the logs. `verify` keeps returning the refusal as an error.
+When the stored hash is refused (malformed, unsupported, over a limit: an empty string for an account created through social login, a `$2x$` hash from an old import) the answer is `Ok(false)` after the dummy verification, so the login is the same `401` as for an unknown user and a broken row does not answer faster or differently. A warning names the reason (never the hash, the username or the password), so a broken row is still visible in the logs. It is written after the dummy verification ran, and at most once a minute per reason: the next one says how many were not logged. `verify` keeps returning the refusal as an error.
 
 The remaining timing differences are the ones you control. Stored hashes with another algorithm or cost verify at their own price: during a migration, [match the dummy hash](#keeping-bcrypt-hashes) to them with `dummy_algorithm`, and let `needs_rehash` close the gap over time. Your own user lookup may take a different time for a missing row.
 
@@ -152,7 +152,7 @@ Also limit login attempts (the [throttler](/security/rate-limiting) and the plan
 
 ### Blocking threads
 
-`hash_blocking`, `verify_blocking` and the other `*_blocking` methods are for synchronous code, and a synchronous handler is exactly that: it runs on an async worker thread. They are safe there. Inside a multi-thread Tokio runtime they run through `tokio::task::block_in_place`, which hands the worker's other tasks to another thread while the hashing runs. Outside any runtime they just block. Inside a **current-thread** runtime (`#[tokio::test]` without `flavor = "multi_thread"`, for example) they return `PasswordError::CurrentThreadRuntime` instead of risking a deadlock: use the async methods there.
+`hash_blocking`, `verify_blocking` and the other `*_blocking` methods are for code **outside** a Tokio runtime: command-line tools, seeders, migrations and tests. They wait for a slot on the calling thread, honouring `acquire_timeout` and `max_waiting` like the async methods (`Busy` on overflow or timeout), and run the derivation there. Inside any Tokio runtime (an async worker, a `block_on` or `spawn_blocking` thread, a `LocalSet`) they return `PasswordError::InsideRuntime` at once, without waiting or deriving anything: parking a thread of the runtime while it waits for a slot can starve the runtime. Request handlers, including synchronous ones, must use the async methods: make the handler `async`.
 
 The comparison of the derived values is constant-time: `argon2` and `password-hash` compare outputs with `subtle`, and so does `bcrypt`. `PasswordError` and the `Debug` output never contain a password or a hash.
 

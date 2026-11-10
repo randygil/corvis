@@ -327,7 +327,8 @@ fn small_hasher() -> PasswordHasher {
 
 fn account(username: &str) -> Option<Account> {
     static HASH: OnceLock<String> = OnceLock::new();
-    let hash = HASH.get_or_init(|| small_hasher().hash_blocking("secret").unwrap());
+    // The blocking methods fail inside a runtime, so the hash is made on a thread of its own.
+    let hash = HASH.get_or_init(|| std::thread::spawn(|| small_hasher().hash_blocking("secret").unwrap()).join().unwrap());
     let password_hash = match username {
         "ana" => hash.clone(),
         // An account created through social login, with no password set.
@@ -430,7 +431,11 @@ fn slow_hasher() -> &'static PasswordHasher {
 /// A bcrypt hash of cost 13, about 200 ms to verify: long enough to hold the only slot while a request arrives.
 fn slow_hash() -> &'static str {
     static HASH: OnceLock<String> = OnceLock::new();
-    HASH.get_or_init(|| PasswordHasher::new(PasswordHasherOptions::bcrypt(13)).unwrap().hash_blocking("secret").unwrap())
+    HASH.get_or_init(|| {
+        std::thread::spawn(|| PasswordHasher::new(PasswordHasherOptions::bcrypt(13)).unwrap().hash_blocking("secret").unwrap())
+            .join()
+            .unwrap()
+    })
 }
 
 #[injectable]

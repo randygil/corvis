@@ -1,10 +1,13 @@
 //! `PasswordHasher`: argon2id hashes for new passwords, verification of argon2 and bcrypt hashes, and the bounds that
 //! keep a login flood or a planted hash from burning the server.
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Wake, Waker};
+use std::time::{Duration, Instant};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString};
 use futures::FutureExt;
@@ -46,6 +49,12 @@ pub const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 
 const DEFAULT_MAX_PASSWORD_BYTES: usize = 1024;
 const MAX_CONCURRENT_CAP: usize = 1024;
+/// The default of `max_concurrent` never exceeds this, so the default options never reach the memory warning.
+const DEFAULT_MAX_CONCURRENT_CAP: usize = 16;
+/// At most one warning per reason in this period; the next one carries the count of those suppressed.
+const WARN_INTERVAL: Duration = Duration::from_secs(60);
+/// The smallest salt (bytes) the argon2 crate accepts.
+const MIN_ARGON2_SALT_BYTES: usize = argon2::MIN_SALT_LEN;
 const MAX_WAITING_CAP: usize = 1_000_000;
 const MIN_ACQUIRE_TIMEOUT: Duration = Duration::from_millis(1);
 const MAX_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -80,10 +89,10 @@ pub enum PasswordError {
     /// `503 Service Unavailable` (see [`into_http_exception`](PasswordError::into_http_exception)).
     #[error("the password hasher is busy")]
     Busy,
-    /// A blocking method was called on a current-thread Tokio runtime, where waiting for a slot could block the only
-    /// thread that releases it. Use the async method.
-    #[error("blocking password methods cannot run on a current-thread runtime; use the async methods")]
-    CurrentThreadRuntime,
+    /// A blocking method was called inside a Tokio runtime (a worker, a `block_on` or `spawn_blocking` thread, a
+    /// `LocalSet`), where waiting could starve the runtime. Nothing waited and nothing was derived. Use the async method.
+    #[error("blocking password methods cannot run inside a Tokio runtime; use the async methods")]
+    InsideRuntime,
 }
 
 impl PasswordError {
@@ -250,7 +259,8 @@ impl PasswordHasherOptions {
         self
     }
 
-    /// The most key derivations running at once, `available_parallelism()` by default.
+    /// The most key derivations running at once, `available_parallelism()` capped at 16 by default (an explicit value
+    /// is honoured up to 1024).
     pub fn max_concurrent(mut self, max: usize) -> Self {
         self.max_concurrent = Some(max);
         self
@@ -306,12 +316,75 @@ struct Inner {
     dummy_hash: String,
     dummy: Algorithm,
     mismatch_warned: AtomicBool,
+    warnings: WarnLimiter,
     #[cfg(test)]
     probe: probe::Probe,
+    #[cfg(test)]
+    refused_reports: AtomicUsize,
+}
+
+/// At most one warning per reason per interval, counting the ones suppressed in between.
+struct WarnLimiter {
+    interval: Duration,
+    state: Mutex<HashMap<&'static str, (Instant, u64)>>,
+}
+
+impl WarnLimiter {
+    fn new(interval: Duration) -> Self {
+        WarnLimiter { interval, state: Mutex::new(HashMap::new()) }
+    }
+
+    /// `Some(suppressed)` when a warning for `reason` may be written now (`suppressed` is the count since the last
+    /// one), `None` when it must be dropped.
+    fn allow(&self, reason: &'static str, now: Instant) -> Option<u64> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        match state.get_mut(reason) {
+            None => {
+                state.insert(reason, (now, 0));
+                Some(0)
+            }
+            Some((last, suppressed)) if now.saturating_duration_since(*last) >= self.interval => {
+                let count = *suppressed;
+                (*last, *suppressed) = (now, 0);
+                Some(count)
+            }
+            Some((_, suppressed)) => {
+                *suppressed += 1;
+                None
+            }
+        }
+    }
+}
+
+/// What a verification against a stored hash found, after the dummy ran when the hash was refused.
+enum Verified {
+    Matched(bool),
+    Refused(PasswordError),
+}
+
+/// Wakes a thread that waits for a slot without a Tokio timer.
+struct ThreadWaker(std::thread::Thread);
+
+impl Wake for ThreadWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Fails inside any Tokio runtime context: the blocking methods are for code outside a runtime.
+fn ensure_outside_runtime() -> Result<(), PasswordError> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(_) => Err(PasswordError::InsideRuntime),
+        Err(_) => Ok(()),
+    }
 }
 
 /// Hashes and verifies passwords. Cloning is cheap (shared state). Key derivations run on blocking threads, at most
-/// `max_concurrent` at a time; construction hashes one dummy password, so create it once (it is a singleton when
+/// `max_concurrent` at a time. The `*_blocking` methods are for code outside any Tokio runtime and return
+/// [`PasswordError::InsideRuntime`] inside one; construction hashes one dummy password, so create it once (it is a singleton when
 /// registered with `Provider::class::<PasswordHasher>()` or `Provider::use_value`).
 ///
 /// ```ignore
@@ -469,7 +542,7 @@ impl PasswordHasher {
         let concurrent = match max_concurrent {
             Some(0) => return Err(PasswordError::Config("max_concurrent must be at least 1")),
             Some(n) => n.min(MAX_CONCURRENT_CAP),
-            None => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(MAX_CONCURRENT_CAP),
+            None => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(DEFAULT_MAX_CONCURRENT_CAP),
         };
         let waiting = match max_waiting {
             Some(0) => return Err(PasswordError::Config("max_waiting must be at least 1")),
@@ -518,8 +591,11 @@ impl PasswordHasher {
                 dummy_hash,
                 dummy,
                 mismatch_warned: AtomicBool::new(false),
+                warnings: WarnLimiter::new(WARN_INTERVAL),
                 #[cfg(test)]
                 probe: probe::Probe::default(),
+                #[cfg(test)]
+                refused_reports: AtomicUsize::new(0),
             }),
         })
     }
@@ -559,20 +635,33 @@ impl PasswordHasher {
     ///
     /// A stored hash that is refused (malformed, unsupported, over the verification limits: an empty string for an
     /// account without a password, a hash of another system) answers `Ok(false)` after the dummy verification, so it
-    /// costs and answers like an unknown user; one warning naming the reason (never the hash or the password) is
-    /// logged each time. `Err` is for a busy hasher ([`PasswordError::Busy`]) and for internal failures.
-    /// [`verify`](Self::verify) keeps returning the refusal as an error.
+    /// costs and answers like an unknown user. A warning naming the reason (never the hash or the password) is logged
+    /// after the dummy ran, at most once a minute per reason with the count of those suppressed. `Err` is for a busy
+    /// hasher ([`PasswordError::Busy`]) and for internal failures. [`verify`](Self::verify) keeps returning the
+    /// refusal as an error.
     pub async fn verify_or_dummy(&self, password: impl AsRef<[u8]>, stored: Option<&str>) -> Result<bool, PasswordError> {
         let password = password.as_ref();
         let Some(hash) = stored else { return self.verify_dummy(password).await };
         self.inner.note_dummy_mismatch(hash);
-        match self.verify(password, hash).await {
-            Err(e) if e.is_refused_hash() => {
-                self.inner.warn_refused(&e);
+        if password.len() > self.inner.max_password_bytes {
+            return Ok(false);
+        }
+        match self.inner.parse(hash) {
+            Err(e) => {
                 self.verify_dummy(password).await?;
+                self.inner.warn_refused(&e);
                 Ok(false)
             }
-            other => other,
+            Ok(_) => {
+                let (password, stored) = (password.to_vec(), hash.to_string());
+                match self.run(move |inner| inner.verify_or_dummy_now(&password, &stored)).await? {
+                    Verified::Matched(matched) => Ok(matched),
+                    Verified::Refused(e) => {
+                        self.inner.warn_refused(&e);
+                        Ok(false)
+                    }
+                }
+            }
         }
     }
 
@@ -595,20 +684,23 @@ impl PasswordHasher {
         }
     }
 
-    /// [`hash`](Self::hash) for code outside an async context. It blocks the calling thread.
+    /// [`hash`](Self::hash) for code outside any Tokio runtime (command-line tools, seeders, migrations, tests). It
+    /// blocks the calling thread, waiting for a slot like the async method does (`Busy` after `acquire_timeout` or
+    /// when `max_waiting` calls already wait).
     ///
-    /// Inside a multi-thread Tokio runtime it runs through `tokio::task::block_in_place`, so a synchronous handler may
-    /// call it; inside a current-thread runtime it fails with [`PasswordError::CurrentThreadRuntime`]; outside any
-    /// runtime it just blocks.
+    /// Inside a Tokio runtime (a worker, a `block_on` or `spawn_blocking` thread, a `LocalSet`) it returns
+    /// [`PasswordError::InsideRuntime`] at once, without waiting or deriving anything: a handler, even a synchronous
+    /// one, must use the async methods.
     pub fn hash_blocking(&self, password: impl AsRef<[u8]>) -> Result<String, PasswordError> {
+        ensure_outside_runtime()?;
         let password = password.as_ref();
         self.inner.check_hash_length(password)?;
         self.run_blocking(|inner| inner.hash_now(password))
     }
 
-    /// [`verify`](Self::verify) for code outside an async context; see [`hash_blocking`](Self::hash_blocking) for
-    /// where it may be called.
+    /// [`verify`](Self::verify) for code outside any Tokio runtime; see [`hash_blocking`](Self::hash_blocking).
     pub fn verify_blocking(&self, password: impl AsRef<[u8]>, stored: &str) -> Result<bool, PasswordError> {
+        ensure_outside_runtime()?;
         let password = password.as_ref();
         if password.len() > self.inner.max_password_bytes {
             return Ok(false);
@@ -617,25 +709,37 @@ impl PasswordHasher {
         self.run_blocking(|inner| inner.verify_now(password, stored))
     }
 
-    /// [`verify_dummy`](Self::verify_dummy) for code outside an async context.
+    /// [`verify_dummy`](Self::verify_dummy) for code outside any Tokio runtime; see
+    /// [`hash_blocking`](Self::hash_blocking).
     pub fn verify_dummy_blocking(&self, password: impl AsRef<[u8]>) -> Result<bool, PasswordError> {
+        ensure_outside_runtime()?;
         self.verify_blocking(password, &self.inner.dummy_hash)?;
         Ok(false)
     }
 
-    /// [`verify_or_dummy`](Self::verify_or_dummy) for code outside an async context; see
-    /// [`hash_blocking`](Self::hash_blocking) for where it may be called.
+    /// [`verify_or_dummy`](Self::verify_or_dummy) for code outside any Tokio runtime; see
+    /// [`hash_blocking`](Self::hash_blocking).
     pub fn verify_or_dummy_blocking(&self, password: impl AsRef<[u8]>, stored: Option<&str>) -> Result<bool, PasswordError> {
+        ensure_outside_runtime()?;
         let password = password.as_ref();
         let Some(hash) = stored else { return self.verify_dummy_blocking(password) };
         self.inner.note_dummy_mismatch(hash);
-        match self.verify_blocking(password, hash) {
-            Err(e) if e.is_refused_hash() => {
-                self.inner.warn_refused(&e);
+        if password.len() > self.inner.max_password_bytes {
+            return Ok(false);
+        }
+        match self.inner.parse(hash) {
+            Err(e) => {
                 self.verify_dummy_blocking(password)?;
+                self.inner.warn_refused(&e);
                 Ok(false)
             }
-            other => other,
+            Ok(_) => match self.run_blocking(|inner| inner.verify_or_dummy_now(password, hash))? {
+                Verified::Matched(matched) => Ok(matched),
+                Verified::Refused(e) => {
+                    self.inner.warn_refused(&e);
+                    Ok(false)
+                }
+            },
         }
     }
 
@@ -658,16 +762,10 @@ impl PasswordHasher {
             .map_err(|_| PasswordError::Internal)?
     }
 
+    /// Waits for a slot without any Tokio machinery, then runs `work` on the calling thread holding it.
     fn run_blocking<T>(&self, work: impl FnOnce(&Inner) -> Result<T, PasswordError>) -> Result<T, PasswordError> {
-        let go = || {
-            let _permit = self.inner.acquire_blocking()?;
-            catch_unwind(AssertUnwindSafe(|| work(&self.inner))).unwrap_or(Err(PasswordError::Internal))
-        };
-        match tokio::runtime::Handle::try_current() {
-            Err(_) => go(),
-            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(go),
-            Ok(_) => Err(PasswordError::CurrentThreadRuntime),
-        }
+        let _permit = self.inner.acquire_blocking()?;
+        catch_unwind(AssertUnwindSafe(|| work(&self.inner))).unwrap_or(Err(PasswordError::Internal))
     }
 }
 
@@ -706,8 +804,9 @@ impl Inner {
         }
     }
 
-    /// [`acquire`](Self::acquire) for a thread that may block: inside a runtime (only after `block_in_place`) it uses
-    /// the runtime's timer, outside one it uses a small runtime of its own.
+    /// [`acquire`](Self::acquire) for a thread outside any runtime: the same queue and the same deadline, but the wait
+    /// polls the semaphore with a waker that unparks this thread and sleeps with `park_timeout`, so no Tokio timer is
+    /// needed.
     fn acquire_blocking(&self) -> Result<OwnedSemaphorePermit, PasswordError> {
         match self.slots.clone().try_acquire_owned() {
             Ok(permit) => return Ok(permit),
@@ -715,25 +814,47 @@ impl Inner {
             Err(TryAcquireError::NoPermits) => {}
         }
         let _place = Waiting::enter(&self.waiting, self.max_waiting).ok_or(PasswordError::Busy)?;
-        // The timer is created inside the future, where a runtime is running.
-        let (slots, timeout) = (self.slots.clone(), self.acquire_timeout);
-        let wait = async move { tokio::time::timeout(timeout, slots.acquire_owned()).await };
-        let waited = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle.block_on(wait),
-            Err(_) => {
-                tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|_| PasswordError::Internal)?.block_on(wait)
+        let deadline = Instant::now() + self.acquire_timeout;
+        let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+        let mut cx = Context::from_waker(&waker);
+        let mut acquire = Box::pin(self.slots.clone().acquire_owned());
+        loop {
+            match acquire.as_mut().poll(&mut cx) {
+                Poll::Ready(Ok(permit)) => return Ok(permit),
+                Poll::Ready(Err(_)) => return Err(PasswordError::Internal),
+                Poll::Pending => {}
             }
-        };
-        match waited {
-            Ok(Ok(permit)) => Ok(permit),
-            Ok(Err(_)) => Err(PasswordError::Internal),
-            Err(_) => Err(PasswordError::Busy),
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(PasswordError::Busy);
+            }
+            std::thread::park_timeout(deadline - now);
         }
     }
 
+    /// Logs that a stored hash was refused, after the dummy verification ran. At most one warning per reason per
+    /// minute; the next one says how many were dropped.
     fn warn_refused(&self, reason: &PasswordError) {
-        Logger::new("PasswordHasher")
-            .warn(format!("a stored password hash was refused ({reason}); the login is answered as a wrong password"));
+        #[cfg(test)]
+        self.refused_reports.fetch_add(1, Ordering::SeqCst);
+        if let Some(message) = self.refused_message(reason, Instant::now()) {
+            Logger::new("PasswordHasher").warn(message);
+        }
+    }
+
+    fn refused_message(&self, reason: &PasswordError, now: Instant) -> Option<String> {
+        let key = match reason {
+            PasswordError::Malformed => "malformed",
+            PasswordError::Unsupported => "unsupported",
+            PasswordError::OverLimit { what } => what,
+            _ => "other",
+        };
+        let suppressed = self.warnings.allow(key, now)?;
+        let mut message = format!("a stored password hash was refused ({reason}); the login is answered as a wrong password");
+        if suppressed > 0 {
+            message.push_str(&format!(" ({suppressed} more of this kind in the last minute were not logged)"));
+        }
+        Some(message)
     }
 
     /// Warns once when a stored hash that parses costs something else than the dummy verification, which makes the
@@ -843,7 +964,24 @@ impl Inner {
         let (Some(salt), Some(_)) = (hash.salt, hash.hash) else { return Err(PasswordError::Malformed) };
         let mut buf = [0u8; 64];
         let salt_len = salt.decode_b64(&mut buf).map_err(|_| PasswordError::Malformed)?.len();
+        // What the argon2 crate would refuse after allocating the memory is refused here, before any slot is taken.
+        if salt_len < MIN_ARGON2_SALT_BYTES || params.output_len().is_some_and(|len| len < argon2::Params::MIN_OUTPUT_LEN) {
+            return Err(PasswordError::Malformed);
+        }
         Ok(Parsed::Argon2 { hash: Box::new(hash), algorithm, version, params, salt_len })
+    }
+
+    /// One verification of a stored hash that parsed. A refusal that only shows up here is answered with the dummy
+    /// verification inside the same slot.
+    fn verify_or_dummy_now(&self, password: &[u8], stored: &str) -> Result<Verified, PasswordError> {
+        match self.verify_now(password, stored) {
+            Ok(matched) => Ok(Verified::Matched(matched)),
+            Err(e) if e.is_refused_hash() => {
+                self.verify_now(password, &self.dummy_hash)?;
+                Ok(Verified::Refused(e))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn verify_now(&self, password: &[u8], stored: &str) -> Result<bool, PasswordError> {
@@ -906,6 +1044,21 @@ impl PasswordHasher {
     /// Whether the one-time warning about a stored hash that differs from the dummy was logged.
     pub(crate) fn mismatch_warned(&self) -> bool {
         self.inner.mismatch_warned.load(Ordering::SeqCst)
+    }
+
+    /// How many times a refused hash reached the warning (after the dummy ran).
+    pub(crate) fn refused_reports(&self) -> usize {
+        self.inner.refused_reports.load(Ordering::SeqCst)
+    }
+
+    /// The warning text a refusal would log at `now`, or `None` when it is rate limited.
+    pub(crate) fn refused_message_at(&self, reason: &PasswordError, now: Instant) -> Option<String> {
+        self.inner.refused_message(reason, now)
+    }
+
+    /// The number of slots when nothing runs.
+    pub(crate) fn slot_count(&self) -> usize {
+        self.inner.slots.available_permits()
     }
 }
 
