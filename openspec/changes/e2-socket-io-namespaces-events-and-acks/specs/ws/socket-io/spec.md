@@ -334,10 +334,7 @@ charged. A small slice MUST NOT keep a large buffer alive.
 - **THEN** the live heap per kept attachment is at most an eighth above its length plus its accounting, not twice it
 
 ### Requirement: A wait caused by others does not close the session
-While a session's reads are paused because the server-wide budget is exceeded, and it is over neither its own limit
-nor its address's share, its pong deadline SHALL be held for at most `admission_timeout` (default 30 s) and restart
-with a fresh interval when reads resume. A packet that cannot be admitted within `admission_timeout` MUST close the
-connection with the disconnect reason `admission timeout`. A waiting connection MUST be woken when room appears.
+While reads are paused for the server-wide budget and the session is over neither its own limit nor its address's share, its pong deadline SHALL be held for at most `admission_timeout` in total and resume with what was left of it, so a client that never answers MUST be closed within `ping_interval + ping_timeout + admission_timeout` of its last pong. A packet not admitted within `admission_timeout` MUST close the connection (reason `admission timeout`). A waiter MUST be woken when room appears.
 
 #### Scenario: Handlers return after a delay
 - **WHEN** attackers on several addresses hold the budget with handlers that return after a delay, and an honest
@@ -374,10 +371,14 @@ count against the client address, so reconnecting does not multiply it and other
 - **THEN** the gauge still counts the first packet, the second waits, and it is admitted when the first handler ends
 
 ### Requirement: Handlers do not outlive a client that left
-When the client drops the connection (transport close or error, parse error, ping timeout) the handlers still running
+When the client drops the connection or fails to make progress (transport close or error, parse error, ping timeout, protocol violation, admission timeout) the handlers still running
 MUST be cancelled at once, releasing their charges, unless `finish_handlers_after_client_close` is set. Handlers that
 outlive their connection MUST count per client address, and an address at `max_sessions_per_ip x max_inflight` of them
 MUST be refused new sessions with `503` until some end.
+
+#### Scenario: Client leaves while its packet waits
+- **WHEN** a client with handlers running parks a packet for room and closes the TCP connection
+- **THEN** its handlers are cancelled at `admission_timeout` at the latest, not after `close_timeout`
 
 #### Scenario: Reconnect churn
 - **WHEN** eight connections of one address each start 32 blocked handlers and drop, 25 times over

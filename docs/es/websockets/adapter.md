@@ -300,7 +300,7 @@ espacios siguen: el paquete se lee, se mide y se carga como cualquier otro, sus 
 nuevo CONNECT a ese espacio vuelve a unirlo.
 
 Manejadores y la conexión del cliente: cuando el cliente cierra la conexión (el transporte se cierra o falla, o deja de
-responder a los pings) los manejadores que siguen en ejecución se cancelan de inmediato, así que un manejador no debe
+responder a los pings, o no avanza: una violación del protocolo, un paquete que esperó más de `admission_timeout`) los manejadores que siguen en ejecución se cancelan de inmediato, así que un manejador no debe
 suponer que llega a terminar cuando su cliente ya no está (el trabajo que debe sobrevivir va en una tarea que el manejador
 lanza, o lo que retiene se libera en un `Drop`). Un cliente que reconecta en bucle no puede dejar así una multitud de
 manejadores. Cuando el servidor cierra la conexión, o se apaga, los manejadores tienen `close_timeout` para terminar;
@@ -364,7 +364,9 @@ están en «Memoria del transporte WebSocket fuera del presupuesto», arriba.
 
 Mientras otros agotan el presupuesto, un paquete mayor que la parte justa de la sesión espera sitio, y la sesión no se lee
 entretanto. Esa espera no es obra de la sesión, así que su latido se retiene (no se cierra con `ping timeout` por una memoria
-que no retuvo) como mucho `admission_timeout`; un paquete que no se puede admitir en ese tiempo cierra la conexión con el
+que no retuvo) como mucho `admission_timeout` en total, y un pong que ya se esperaba se reanuda con lo que quedaba de su espera (nunca un
+`ping_timeout` nuevo entero), así que un cliente que nunca responde se cierra dentro de `ping_interval + ping_timeout +
+admission_timeout` de su último pong, aparezca y desaparezca la presión como sea; un paquete que no se puede admitir en ese tiempo cierra la conexión con el
 motivo `admission timeout`. Una sesión que supera sus propios límites, o cuya dirección supera su parte, conserva el latido
 ordinario. Un paquete que espera se admite en cuanto termina un manejador de otra conexión. Los bytes de los mensajes que
 esperan detrás de un paquete que no se puede admitir siguen cargados hasta que se admite o se cierra la conexión.

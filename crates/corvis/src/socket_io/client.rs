@@ -219,6 +219,7 @@ pub(crate) async fn run(
             match flow {
                 Flow::Continue => {}
                 Flow::Close(reason) => {
+                    client_dropped = true;
                     shared.terminate(reason, false, true);
                     break;
                 }
@@ -251,16 +252,19 @@ pub(crate) async fn run(
             _ = connect_wait => {
                 connect_deadline = None;
                 if !shared.joined_once.load(Ordering::SeqCst) {
+                    client_dropped = true;
                     shared.terminate(DisconnectReason::ForcedServerClose, false, true);
                     break;
                 }
             }
             _ = reassembly_wait => {
+                client_dropped = true;
                 shared.terminate(DisconnectReason::ForcedServerClose, false, true);
                 break;
             }
             // A packet waited for room longer than the limit: the wait is bounded and visible.
             _ = admission_wait => {
+                client_dropped = true;
                 shared.terminate(DisconnectReason::AdmissionTimeout, false, true);
                 break;
             }
@@ -275,6 +279,7 @@ pub(crate) async fn run(
                 match flow {
                     Flow::Continue => {}
                     Flow::Close(reason) => {
+                        client_dropped = true;
                         shared.terminate(reason, false, true);
                         break;
                     }
@@ -290,8 +295,9 @@ pub(crate) async fn run(
     if inflight.is_empty() {
         return;
     }
-    // The client dropped the connection: nobody is left to answer, and a client that reconnects in a loop would leave
-    // a crowd of handlers behind, so they are cancelled (dropped, which releases their charges) unless the
+    // The client dropped the connection or failed to make progress (a protocol violation, a packet that waited too long
+    // for room, a silence the heartbeat ended): nobody is left to answer, and a client that reconnects in a loop would
+    // leave a crowd of handlers behind, so they are cancelled (dropped, which releases their charges) unless the
     // application asked for them to finish.
     if client_dropped && !options.finish_handlers_after_client_close {
         return;

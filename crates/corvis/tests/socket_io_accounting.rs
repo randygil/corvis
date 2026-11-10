@@ -349,6 +349,17 @@ fn pressure(admission: Duration) -> Pressure {
     Pressure { options, attack_packet, honest_packet }
 }
 
+/// Handlers of the honest namespace that are running (`block` never returns).
+static HONEST_RUNNING: AtomicIsize = AtomicIsize::new(0);
+
+struct RunningGuard;
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        HONEST_RUNNING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 struct Siege {
     fx: engine_support::io_client::IoFixture,
     clients: Vec<Raw>,
@@ -367,6 +378,11 @@ async fn lay_siege(p: &Pressure, handlers: &Handlers) -> Siege {
                 if let Some(ack) = ack {
                     let _ = ack.send(());
                 }
+            });
+            socket.on("block", |_socket, _args, _ack| async move {
+                HONEST_RUNNING.fetch_add(1, Ordering::SeqCst);
+                let _running = RunningGuard;
+                futures::future::pending::<()>().await
             });
             socket.on_disconnect(move |_socket, reason| seen.lock().unwrap().push(reason));
         });
@@ -475,6 +491,42 @@ async fn when_handlers_never_return_the_waiting_session_is_closed_at_the_admissi
     assert!(waited < admission + Duration::from_secs(5), "closed after {waited:?}");
     handlers.gate.notify_waiters();
     drop(honest);
+    siege.end();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_goes_away_while_its_packet_waits_for_room_loses_its_handlers_at_the_admission_timeout() {
+    let _guard = ONE_AT_A_TIME.lock().await;
+    HONEST_RUNNING.store(0, Ordering::SeqCst);
+    let admission = Duration::from_secs(3);
+    let p = pressure(admission);
+    let handlers = Handlers::new(None);
+    let siege = lay_siege(&p, &handlers).await;
+    let mut honest = honest_joins(&siege).await;
+    // Two handlers of the honest session are in flight, then a packet that needs room the attackers hold parks.
+    honest.msg_str(r#"2/honest,["block"]"#).await.unwrap();
+    honest.msg_str(r#"2/honest,["block"]"#).await.unwrap();
+    for _ in 0..100 {
+        if HONEST_RUNNING.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(HONEST_RUNNING.load(Ordering::SeqCst), 2);
+    honest.msg_str(&p.honest_packet).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The client goes away: its reader is paused, so the close is not read.
+    let gone = Instant::now();
+    drop(honest);
+    while HONEST_RUNNING.load(Ordering::SeqCst) != 0 && gone.elapsed() < Duration::from_secs(25) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let cancelled_after = gone.elapsed();
+    // Bound: the admission timeout (from the parked packet) plus slack, and far from `close_timeout` (30 s).
+    assert_eq!(HONEST_RUNNING.load(Ordering::SeqCst), 0, "handlers still running {cancelled_after:?} after the client left");
+    assert!(cancelled_after < admission + Duration::from_secs(4), "cancelled {cancelled_after:?} after the client left");
+    assert_eq!(*siege.reasons.lock().unwrap(), [DisconnectReason::AdmissionTimeout]);
+    handlers.gate.notify_waiters();
     siege.end();
 }
 

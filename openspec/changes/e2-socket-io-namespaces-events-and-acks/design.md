@@ -754,7 +754,7 @@ exhaust the budget and the need for `trust_proxy` behind a proxy (EN and ES limi
 `No`, `Own` or `Pressure`. While a session is paused for `Pressure` the engine holds its pong deadline
 (`Heartbeat::suspend`; `Session::set_pressure_pause`, called by the WebSocket loop and by the polling `POST` that holds
 its answer) for at most `pressure_pause_timeout`, which `IoServer` sets to `admission_timeout`; when reading resumes, or
-the grace ends, a pong still awaited is awaited for a fresh `ping_timeout`. A session over its own limit, or whose
+the grace ends, a pong still awaited is awaited for what was left of its deadline (round 4: it was a fresh `ping_timeout`, which chained suspensions). A session over its own limit, or whose
 address is over its share, keeps the ordinary heartbeat. The wait itself is bounded by `admission_timeout` (default
 30 s, validated, above zero and at most a day): the connection task keeps the deadline of the message it parked and, when
 it passes, closes the connection with the new disconnect reason `admission timeout`
@@ -905,7 +905,7 @@ clock: `Heartbeat::the_allowance_is_per_session_since_the_last_pong_and_not_per_
 
 Eight churning connections from one address reached about 86,000 lingering futures and 50 MB for `close_timeout`.
 Now: when the client drops the connection (transport close or error, parse error, ping timeout, any reason except the
-server's own `forced close`) the handlers still running are dropped at once, which releases their charges, unless
+server's own `forced close`; round 4 adds the closes the server takes because the client failed to make progress) the handlers still running are dropped at once, which releases their charges, unless
 `IoOptions::finish_handlers_after_client_close(true)`. A close by the server, and a shutdown, keep the grace of
 `close_timeout`, and the handlers that linger are counted per client address (`EngineSocket::linger`, a guard that gives
 the count back as each ends or when dropped). An address at `max_sessions_per_ip x max_inflight` of them
@@ -947,3 +947,48 @@ that `trust_proxy` only helps behind a proxy the operator controls. EN and ES.
 - The transit bytes are not charged (item A, considered and left).
 - The harness `expected-differences.json` gains nothing: the dropped packet for a left namespace is now what Node does,
   and the cancelled handlers are not observable by a client.
+
+## Security review (round 4)
+
+### Corrections to round 3
+
+- Item D said the suspension could not be chained. It could: every resume granted a whole new `ping_timeout`, so a
+  WebSocket client that never answered lived 38.5 s against a bound of about 5 s.
+- Item C said a rolled-back reservation wakes the siblings that were refused. A refusal counted after the decision, and
+  an observer that only paused, could still be missed.
+- Item E said handlers are cancelled as soon as the client leaves. A close the server took because the client failed to
+  make progress (`admission timeout`, a protocol violation, the connect or reassembly timeouts) got the whole
+  `close_timeout`.
+
+### Item 1 (Low): the heartbeat suspension chained
+
+`Heartbeat` remembers how much of the pong deadline was left when the suspension began (`pong_left`); `resume` restores
+`now + left`. Only a ping sent while suspended, whose deadline had not started, gets a fresh `ping_timeout`, once per
+ping. The heartbeat is the session's, so the fix holds for WebSocket and polling alike. Bound for a client that never
+answers: `ping_interval + ping_timeout + admission_timeout` after its last pong, whatever the pattern of pressure. Paused
+clock tests (`engine/session.rs`): a thousand short suspensions close a silent client at the tick (800 ms for a bound of
+1,200 ms), a client that answers is never closed, an honest paused client that answers within what was left stays.
+
+### Item 2 (Low): lost wakeups after a rollback
+
+A refusal was counted after the decision and `roll_back` read the counter after its subtraction, so a refusal in
+between woke nobody; `pause()` counted nothing, so a reader that saw a sibling's transient peak was never woken. Now the
+refusing side increments the level's refusal counter FIRST, re-reads the level's bytes and decides again if they changed;
+the rollback subtracts and THEN reads the counter. With sequentially consistent ordering at least one side sees the other
+(the ordering argument is in `try_add_up_to`). `UnreadGauge::observe` applies the same to a caller that reports
+"paused": it counts at the level it found over and re-reads. One reading of the chain also classifies the pause (`Own`
+or `Pressure`), where `over_limit` and `at_fault` read twice. Unchanged: an asker's own rollback does not wake it, and
+idle connections make no attempts (nothing is counted for a level that is not over). Tests (`ws.rs::gauge_tests`):
+explicit interleavings through the budget API for the refusal and for the observer, one reading for the
+classification, and a stress test that ends only if no waiter is left parked while room exists.
+
+### Item 3 (Low): a client that leaves while its reader is paused
+
+A paused WebSocket reader does not read the socket, so the peer's close is not seen, and the session ended as
+`admission timeout`, which was treated as a server close: the handlers got `close_timeout`. Now every close caused by the
+client's failure to make progress (`admission timeout`, protocol violations, the connect and reassembly timeouts) cancels
+the in-flight handlers at once, like a client drop; only an application or server close (`disconnect`, `IoServer::close`,
+shutdown) keeps the grace, unless `finish_handlers_after_client_close(true)`. Reading the paused socket to see the close
+would buffer application data past the pause, so it is not done: the bound is `admission_timeout` after the packet
+parked (the ping deadline can come sooner), and the address quota is back when the handlers are dropped. Test:
+`socket_io_accounting.rs::a_client_that_goes_away_while_its_packet_waits_for_room_loses_its_handlers_at_the_admission_timeout`.

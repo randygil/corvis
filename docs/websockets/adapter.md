@@ -296,7 +296,7 @@ packet is read, measured and charged like any other, its attachments are consume
 for that namespace joins it again.
 
 Handlers and the client's connection: when the client drops the connection (the transport closes or fails, or it stops
-answering pings) the handlers that are still running are cancelled at once, so a handler must not assume it runs to
+answering pings, or it fails to make progress: a protocol violation, a packet that waited longer than `admission_timeout`) the handlers that are still running are cancelled at once, so a handler must not assume it runs to
 completion after its client is gone (do the work that has to survive in a task the handler spawns, or release what it
 holds in a `Drop`). A client that reconnects in a loop therefore cannot leave a crowd of handlers behind. When the server
 closes the connection, or shuts down, the handlers get `close_timeout` to finish; `IoOptions::finish_handlers_after_client_close(true)`
@@ -356,7 +356,9 @@ them, are in "Memory of the WebSocket transport outside the budget" above.
 
 While the budget is exhausted by others a packet bigger than the session's fair share waits for room, and the session is
 not read meanwhile. That wait is not the session's doing, so its heartbeat is held (it is not closed with `ping timeout`
-for memory it did not hold) for at most `admission_timeout`; a packet that cannot be admitted in that time closes the
+for memory it did not hold) for at most `admission_timeout` in total, and a pong already awaited resumes with what was left of its wait (never a whole
+new `ping_timeout`), so a client that never answers is closed within `ping_interval + ping_timeout + admission_timeout` of its
+last pong however the pressure comes and goes; a packet that cannot be admitted in that time closes the
 connection with the reason `admission timeout`. A session that is over its own limit, or whose address is over its share,
 keeps the ordinary heartbeat. A waiting packet is admitted as soon as a handler of another connection returns. Bytes of
 messages that wait behind a packet that cannot be admitted stay charged until it is admitted or the connection closes.

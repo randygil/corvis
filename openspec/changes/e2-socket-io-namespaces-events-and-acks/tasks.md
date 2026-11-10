@@ -197,6 +197,13 @@ the configured value, "within" bounds are generous, timer logic runs on Tokio's 
 - [x] 8c.7 Docs (EN and ES): acknowledgements at `max_inflight`, shared-address quota, handlers and the client's drop,
   transit memory; spec delta updated and `openspec validate e2-socket-io-namespaces-events-and-acks --strict` passes
 
+## 8d. Security review, round 4
+
+- [x] 8d.1 Heartbeat: a resumed pong wait keeps only what was left of it; paused-clock tests
+- [x] 8d.2 Rollback wakeups: refusals and observers count first and re-read; interleaving tests and a stress test
+- [x] 8d.3 A close caused by the client's failure to make progress cancels its handlers at once; test
+- [x] 8d.4 Docs (EN and ES), spec delta and design updated; `openspec validate ... --strict` passes
+
 ## 9. Definition of done
 
 - [x] 9.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`
