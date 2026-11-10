@@ -37,6 +37,13 @@ pub trait CanActivate: Send + Sync + 'static {
     fn guard_name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
+
+    /// The guard as [`Any`](std::any::Any), so startup checks can look inside it. Only guards that opt in return
+    /// `Some(self)`: [`AuthGuard`](crate::auth::AuthGuard) does, so the application can verify its strategy names
+    /// when it initializes. A guard that wraps an `AuthGuard` can return the inner guard to get the same check.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -247,8 +247,22 @@ impl Request {
             self.insert(RequestUser(v));
         }
     }
+    /// Stores an already serialized user (see [`Request::set_user`]).
+    pub(crate) fn set_user_value(&self, user: Value) {
+        self.insert(RequestUser(user));
+    }
+    /// Removes the user stored with [`Request::set_user`].
+    pub(crate) fn clear_user(&self) {
+        self.remove::<RequestUser>();
+    }
     pub fn user(&self) -> Option<Value> {
         self.get::<RequestUser>().map(|u| u.0)
+    }
+    /// The info the last authentication attempt of an [`AuthGuard`](crate::auth::AuthGuard) produced
+    /// (`req.authInfo`): the info of a successful strategy, or the challenge of a failed one (the list of the
+    /// challenges, `null` for a failure without one, when several strategies failed).
+    pub fn auth_info(&self) -> Option<Value> {
+        self.get::<crate::auth::AuthInfo>().map(|i| i.0)
     }
     pub fn user_as<T: DeserializeOwned>(&self) -> Option<T> {
         self.user().and_then(|u| serde_json::from_value(u).ok())

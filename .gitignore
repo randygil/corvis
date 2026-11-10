@@ -29,6 +29,7 @@ docs/.vitepress/dist
 crates/corvis/tests/fixtures/terminus/node_modules
 crates/corvis/tests/fixtures/ws_gateways/node_modules
 crates/corvis/tests/fixtures/throttler/node_modules
+crates/corvis/tests/fixtures/auth/node_modules
 crates/corvis/tests/fixtures/empty_results/node_modules
 crates/corvis/tests/fixtures/http_filter_order/node_modules
 

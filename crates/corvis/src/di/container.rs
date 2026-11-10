@@ -252,6 +252,8 @@ impl Container {
         scanner.modules[core].exports.push(ResolvedExport::Token(Token::of::<crate::common::reflector::Reflector>()));
         scanner.add_provider(core, Provider::value(crate::http_adapter::HttpAdapterHost::new()));
         scanner.modules[core].exports.push(ResolvedExport::Token(Token::of::<crate::http_adapter::HttpAdapterHost>()));
+        scanner.add_provider(core, Provider::value(crate::auth::Authenticator::new()));
+        scanner.modules[core].exports.push(ResolvedExport::Token(Token::of::<crate::auth::Authenticator>()));
         for p in std::mem::take(&mut scanner.overrides.enhancers) {
             let t = p.token.clone();
             scanner.add_provider(core, p);
