@@ -1,1 +1,44 @@
-[]
+[
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[0].data.polls",
+    "reason": "Node sends the whole write buffer in one polling response; Corvis caps a response at maxHttpBufferSize bytes of packets and sends the rest on the next poll",
+    "spec": "ws/engine-io: Polling batches are bounded (Large backlog)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[0].data.withinLimit",
+    "reason": "the same bound: Node's single response is 3 MB, Corvis' responses stay within maxHttpBufferSize plus one packet",
+    "spec": "ws/engine-io: Polling batches are bounded (Large backlog)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[1].data.status",
+    "reason": "Node has no limit on open sessions; Corvis answers 503 over max_sessions (preset cap: 2)",
+    "spec": "ws/engine-io: Open sessions are bounded (Session cap)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[3].data.contentEncoding",
+    "reason": "Node compresses polling responses above 1 KiB for clients that accept gzip (httpCompression); Corvis does not compress them",
+    "spec": "ws/engine-io: Security divergences are explicit (compression)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[4].data.status",
+    "reason": "Node accepts any number of packets in one POST; Corvis refuses a body of more than max_payload_packets (10,000) with 400 before delivering any packet",
+    "spec": "ws/engine-io: Polling batches are bounded (Packet flood in one POST)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[5].data.reason",
+    "reason": "the same bound: Node keeps the session open, Corvis closes it with parse error",
+    "spec": "ws/engine-io: Polling batches are bounded (Packet flood in one POST)"
+  },
+  {
+    "scenario": "engine-io/bounds",
+    "path": "$.entries[6].data.reason",
+    "reason": "Node buffers any amount for a client that does not poll; Corvis closes the session with transport error when the send buffer passes max_buffered_amount (8 MiB)",
+    "spec": "ws/engine-io: Send buffers are bounded (Slow consumer)"
+  }
+]

@@ -56,6 +56,7 @@ pub fn presets() -> Vec<Preset> {
         },
         Preset { name: "burst", options: EngineOptions::new().path("/burst/"), burst: true },
         Preset { name: "small", options: EngineOptions::new().path("/small/").max_http_buffer_size(1000), burst: false },
+        Preset { name: "cap", options: EngineOptions::new().path("/cap/").max_sessions(2), burst: false },
     ]
 }
 

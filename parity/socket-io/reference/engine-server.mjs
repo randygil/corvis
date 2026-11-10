@@ -13,7 +13,8 @@
 //   fast     /fast/      pingInterval 300 ms, pingTimeout 200 ms
 //   cors     /cors/      cors: origin https://app.example
 //   burst    /burst/     sends 100 messages as soon as a session opens
-//   small    /small/     maxHttpBufferSize 1000 (Corvis also bounds the send buffer; see expected-differences.json)
+//   small    /small/     maxHttpBufferSize 1000
+//   cap      /cap/       Node defaults (Corvis caps this one at 2 sessions; Node has no cap, see expected-differences.json)
 //
 // Every session echoes what it receives (text and binary), and understands these text messages:
 //   burst        queues three messages, one of them binary
@@ -33,6 +34,7 @@ const PRESETS = [
   { name: "cors", path: "/cors/", options: { cors: { origin: "https://app.example" } } },
   { name: "burst", path: "/burst/", options: {}, burst: true },
   { name: "small", path: "/small/", options: { maxHttpBufferSize: 1000 } },
+  { name: "cap", path: "/cap/", options: {} },
 ];
 
 const suite = process.argv.includes("--suite");

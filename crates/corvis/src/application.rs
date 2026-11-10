@@ -661,6 +661,25 @@ impl CorvisApplication {
         self.listen_in_background_with(addr, Transport::Tls(tls.settings())).await
     }
 
+    /// Like [`listen_in_background`](Self::listen_in_background), but the server stops accepting when `shutdown`
+    /// resolves and drains its connections as `listen` does on SIGINT. The returned handle ends when the drain has
+    /// finished. For tests of the graceful shutdown; the application's lifecycle hooks are not run.
+    #[doc(hidden)]
+    pub async fn listen_until_in_background(
+        &mut self,
+        addr: impl ListenAddr,
+        shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> crate::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+        let listener = self.bind(addr, &Transport::Plain).await?;
+        let shared = self.shared.clone().expect("initialized");
+        let local = listener.local_addr()?;
+        let server = self.config.server.clone();
+        let handle = tokio::spawn(async move {
+            let _ = crate::server::serve(listener, shared, server, Transport::Plain, shutdown).await;
+        });
+        Ok((local, handle))
+    }
+
     async fn listen_in_background_with(&mut self, addr: impl ListenAddr, transport: Transport) -> crate::Result<SocketAddr> {
         let listener = self.bind(addr, &transport).await?;
         let shared = self.shared.clone().expect("initialized");

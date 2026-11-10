@@ -1,9 +1,14 @@
 //! Entry point of the Socket.IO differential harness (`parity/socket-io/`).
 //!
-//! The harness runs the same scenarios against a Node `socket.io` server and, once Corvis implements Engine.IO and
-//! Socket.IO, against Corvis, and fails on any difference. It needs Node 22 or later, so it is opt in: without
-//! `CORVIS_NODE_DIFF=1` this test prints a notice and passes. With it, a missing Node or a missing install fails the
-//! test. This test never installs packages: run `npm ci` in `parity/socket-io/` first (see CONTRIBUTING.md).
+//! The harness runs the same scenarios against a Node `socket.io` / `engine.io` server and against Corvis, and fails on
+//! any difference. With the `socket-io` feature the Corvis target is the Engine.IO server of the harness application
+//! (`engine_support/harness_app.rs`), started in-process on 127.0.0.1:0 with the capability `engine-io`; scenarios that
+//! need Socket.IO run on Node only. The test needs Node 22 or later, so it is opt in: without `CORVIS_NODE_DIFF=1` it
+//! prints a notice and passes. With it, a missing Node or a missing install fails the test. This test never installs
+//! packages: run `npm ci` in `parity/socket-io/` first (see CONTRIBUTING.md).
+
+#[cfg(feature = "socket-io")]
+mod engine_support;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -74,8 +79,8 @@ fn node_major_version() -> u32 {
         .unwrap_or_else(|| panic!("cannot read the Node version from `{}`", text.trim()))
 }
 
-#[test]
-fn socket_io_differential_harness() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socket_io_differential_harness() {
     if std::env::var("CORVIS_NODE_DIFF").as_deref() != Ok("1") {
         println!("skipping socket_io_diff: set CORVIS_NODE_DIFF=1 (see CONTRIBUTING.md)");
         return;
@@ -90,13 +95,30 @@ fn socket_io_differential_harness() {
         "the Socket.IO harness is not installed: run `npm ci` in parity/socket-io/ (cargo never installs packages)"
     );
 
-    let selftests = run_node(&dir, &["--test", "test/*.test.mjs"]);
+    // Node blocks its caller: run it off the runtime so the in-process Corvis server keeps serving.
+    let selftest_dir = dir.clone();
+    let selftests = tokio::task::spawn_blocking(move || run_node(&selftest_dir, &["--test", "test/*.test.mjs"])).await.unwrap();
     println!("{}", selftests.output);
     assert!(selftests.success, "the harness self-tests failed (output above)");
 
-    // From the Engine.IO change on, this is where the Corvis server is started in-process on 127.0.0.1:0 and
-    // `--corvis <url> --corvis-capabilities <list>` is passed to the runner.
-    let runner = run_node(&dir, &["run.mjs"]);
+    // The Corvis target is started in-process on 127.0.0.1:0.
+    #[cfg(feature = "socket-io")]
+    let (_app, runner) = {
+        let (app, addr, _engines) = engine_support::harness_app::start().await;
+        let url = format!("http://{addr}");
+        let runner_dir = dir.clone();
+        let runner = tokio::task::spawn_blocking(move || {
+            run_node(&runner_dir, &["run.mjs", "--corvis", &url, "--corvis-capabilities", "engine-io"])
+        })
+        .await
+        .unwrap();
+        (app, runner)
+    };
+    #[cfg(not(feature = "socket-io"))]
+    let runner = {
+        let runner_dir = dir.clone();
+        tokio::task::spawn_blocking(move || run_node(&runner_dir, &["run.mjs"])).await.unwrap()
+    };
     println!("{}", runner.output);
     assert!(runner.success, "the differential runner reported a difference or an error:\n{}", runner.output);
 }

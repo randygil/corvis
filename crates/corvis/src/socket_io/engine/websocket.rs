@@ -247,21 +247,24 @@ async fn on_frame(
 
 /// Closes the WebSocket: the close frame (a reply when the peer sent one first), then waits at most
 /// `close_timeout` for the peer's.
-async fn finish_socket(mut sink: Sink, mut read: Stream, frame: Option<CloseFrame<'static>>, peer_closed: bool, close_timeout: Duration) {
+async fn finish_socket(mut sink: Sink, read: Stream, frame: Option<CloseFrame<'static>>, peer_closed: bool, close_timeout: Duration) {
     if peer_closed {
         // tungstenite queued the reply to the peer's close frame; flushing writes it.
         let _ = tokio::time::timeout(close_timeout, sink.flush()).await;
         return;
     }
-    if tokio::time::timeout(close_timeout, sink.send(Message::Close(frame))).await.is_err() {
+    if !matches!(tokio::time::timeout(close_timeout, sink.send(Message::Close(frame))).await, Ok(Ok(()))) {
         return;
     }
+    // Wait for the peer to close its side. The raw stream is read and discarded (a protocol error leaves the
+    // WebSocket reader unusable): dropping a socket that still has unread data makes the operating system reset the
+    // connection, and the peer could lose the close frame we just wrote.
+    let Ok(mut ws) = sink.reunite(read) else { return };
+    let io = ws.get_mut();
+    let mut scratch = [0u8; 8192];
     let _ = tokio::time::timeout(close_timeout, async {
-        while let Some(next) = read.next().await {
-            if matches!(next, Ok(Message::Close(_)) | Err(_)) {
-                break;
-            }
-        }
+        use tokio::io::AsyncReadExt;
+        while matches!(io.read(&mut scratch).await, Ok(n) if n > 0) {}
     })
     .await;
 }
