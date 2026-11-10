@@ -103,23 +103,16 @@ impl AuthService {
 }
 ```
 
-<<<<<<< ours
 ::: warning Error text
 The `Display` text of a verification error can quote parts of the token (for example a header or claim value),
 never key material. Log it if you need to, but do not return it to clients verbatim.
 :::
 
-::: warning Passwords
-The example compares passwords in plain text so as not to distract from the flow. In a real application,
-store a hash and compare it with a slow derivation function; see
-[Encryption and hashing](/security/encryption-and-hashing).
-=======
 ::: tip Passwords
 The example stores a hash (argon2id by default) and verifies it with `PasswordHasher`, a feature of Corvis
 (`auth-local`); see [Encryption and hashing](/security/encryption-and-hashing). With the `local` strategy the
 guard does the credential reading and this validation for you: see
 [Passport](/recipes/passport#local-strategy-username-and-password).
->>>>>>> theirs
 :::
 
 For per-call options there is `sign_with(&payload, JwtSignOptions { .. })`, with `expires_in`,

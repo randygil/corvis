@@ -103,23 +103,16 @@ impl AuthService {
 }
 ```
 
-<<<<<<< ours
 ::: warning Texto del error
 El texto `Display` de un error de verificación puede citar partes del token (por ejemplo el valor de una cabecera o
 de un claim), nunca material de claves. Puedes registrarlo, pero no lo devuelvas a los clientes tal cual.
 :::
 
-::: warning Contraseñas
-El ejemplo compara contraseñas en texto plano para no distraer del flujo. En una aplicación real
-guarda un hash y compáralo con una función de derivación lenta; ver
-[Cifrado y hashing](/es/security/encryption-and-hashing).
-=======
 ::: tip Contraseñas
 El ejemplo guarda un hash (argon2id por defecto) y lo verifica con `PasswordHasher`, una pieza de Corvis
 (`auth-local`); ver [Cifrado y hashing](/es/security/encryption-and-hashing). Con la estrategia `local` el
 guard hace por ti la lectura de las credenciales y esta validación: ver
 [Passport](/es/recipes/passport#estrategia-local-usuario-y-contrasena).
->>>>>>> theirs
 :::
 
 Para opciones por llamada existe `sign_with(&payload, JwtSignOptions { .. })`, con `expires_in`,
