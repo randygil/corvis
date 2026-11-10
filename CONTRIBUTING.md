@@ -224,7 +224,7 @@ The upstream `engine.io-protocol` suite runs against the Corvis Engine.IO server
 control, with `node scripts/fetch-suites.mjs` run once and then
 `CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test engine_io_conformance`. One test of that suite
 ("forcefully closes the session", HTTP long-polling) sends a `GET` and a `POST` of the close packet at the same
-time and expects the `GET` to arrive first; it fails in about one run in twenty when the `POST` wins the race.
+time and expects the `GET` to arrive first; it fails now and then (one run in twenty on an idle machine, one in eight under load, against the Node reference as well) when the `POST` wins the race.
 
 or directly, in `parity/socket-io/`:
 
