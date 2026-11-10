@@ -104,12 +104,21 @@ A strategy can also set cookies or end the request itself with `ctx.switch_to_ht
 | `this.pass()` | `StrategyOutcome::Pass` (`passport-custom` cannot reach it) |
 | a `PassportStrategy(CustomStrategy, 'device')` class with injected services | a type that implements `Strategy`, with the services as fields |
 
-The responses are checked against `passport-custom` 1.2.1 behind the original guard (`crates/corvis/tests/fixtures/auth/custom.mjs`, 15 cases: success with info, no user, `ForbiddenException`, a plain `Error`, alone and second in a chain).
+The responses are checked against `passport-custom` 1.2.1 behind the original guard (`crates/corvis/tests/fixtures/auth/custom.mjs`, 24 cases: success with info, no user, `ForbiddenException`, a plain `Error`, alone and second in a chain, and a user that is `false`, `0`, `""`, `null`, `undefined` or `NaN`).
+
+::: danger The user must be a real value
+A strategy that succeeds with a user that is JSON `null`, `false`, the number `0` (also `-0` and `0.0`) or the empty string is **not authenticated**. `Authenticator::authenticate` turns that `Success` into a failure of the strategy (the chain goes on, the `auth_info` is `{"message":"The strategy returned an empty user"}`, and the answer is the usual `401`) and logs a warning, at most one per minute per strategy, that says the validator should have returned `None`. This applies to every strategy: JWT, local, API key and your own. The originals fail closed the same way (`if (!user) return self.fail()` in the strategies, and `handleRequest` throws a `401` for a falsy user).
+
+The usual way to hit it is a validator that returns what it computed. `type User = bool; Ok(Some(expected.matches(key)))` and `type User = Option<Service>; Ok(Some(repo.find(id)))` look right, but they say "found" for every key, and the user is `false` or `null` when the key is wrong. Return `Ok(None)` for "no user": `Ok(expected.matches(key).then_some(service))`, `Ok(repo.find(id))`.
+
+If an application's users can legitimately be `0` or `""` (a numeric id as the whole user), wrap them in a struct: `struct Account { id: u64 }` serializes to an object and is never empty. An empty object `{}`, an empty array and the strings `"0"` and `"false"` are real users, as in JavaScript.
+:::
 
 ### What the framework guarantees around a strategy
 
 - **An error never lets a request through.** `Error(..)` ends the chain and is the answer, also behind `.optional()`: an optional guard lets a request through only when every strategy *failed*.
-- **A panic is an error.** A panic inside `authenticate` is caught and answered as a `500 {"statusCode":500,"message":"Internal server error"}`, the same for every request, behind an optional guard too and without running later strategies of the chain. The panic payload is never read, so a credential in a panic message is not copied anywhere by the framework. The application logs one warning per minute per strategy (with the count of the ones skipped), never the message.
+- **A panic is an error.** A panic inside `authenticate` is caught and answered as a `500 {"statusCode":500,"message":"Internal server error"}`, the same for every request, behind an optional guard too and without running later strategies of the chain. Corvis never reads the panic payload and never logs it. It is not hidden from everything else: the default panic hook of the standard library prints the panic message to stderr, so a credential in a panic message ends up in your process logs. A strategy must not put credentials in panic messages (`unwrap`, `expect` and `panic!` on a value that holds one) or in errors. Corvis logs one warning per minute per strategy (with the count of the ones skipped), and the default exception filter does not add a line per request.
+- **An empty user is a failure.** See the warning below.
 - **Names are checked at startup.** `AuthGuard::new("devise")` for a strategy named `device` stops `init()`, also inside a guard that lists its inner guards in `CanActivate::inner_guards`.
 - **Responses during the guard phase.** A strategy ends a request itself only through `Redirect` (3xx statuses only) and, for cookies, `append_response_header`. `respond_with` stores a response that wins over everything else the chain does: do not call it from a strategy to say "no".
 - **There is no timeout around a strategy.** A strategy that waits for a database or a service must bound the wait itself (`tokio::time::timeout`), or one slow dependency holds every request. The [API key strategy](#api-keys) does it for its validator.
@@ -132,9 +141,12 @@ app.init().await?;
 
 - **Fail, never pass.** Return `Fail` (or `Error`) when credentials are missing, malformed or wrong. `Pass` lets the request through with no user: use it only for a strategy that is meant to skip authentication.
 - **Compare secrets in constant time.** `==` stops at the first different byte. With the `auth-api-key` feature, `corvis::auth::api_key::constant_time_eq(a, b)` compares SHA-256 digests with a constant-time primitive; store secrets hashed.
+- **Refuse an empty or unset secret before you compare.** `constant_time_eq(b"", b"")` is `true`: an expected secret that is missing from the configuration (an unset environment variable read as `""`) would accept a request with an empty credential. Check that the expected secret is not empty (and long enough) at startup or before the comparison, and fail when it is.
+- **Return `None`, not an empty user.** `Ok(Some(false))`, `Ok(Some(None))`, `0` and `""` are treated as a failure with a warning (see above); say "no user" with `None` or `Fail`.
+- **Keep credentials out of panic messages.** The default panic hook prints the message to stderr, which Corvis cannot intercept.
 - **Keep request data out of errors and logs.** An `Error` message, a `Fail` challenge and a log line all end up somewhere. Fixed strings only, and never a credential or part of one.
 - **Bound what you read.** Check the length of a credential before you hash it, compare it or send it to a database, and read only the headers, parameters or cookies you document. Read one place, or define which wins and fail when two disagree.
-- **Mark credentials read from the URL** with `request.redact_query_param("name")` before you read them, so `LoggingInterceptor` hides them (see [API keys](#api-keys)). Prefer a header: a URL is written to proxy and access logs.
+- **Register credentials read from the URL.** A strategy lists the query parameters it reads in `Strategy::credential_query_params`, and `LoggingInterceptor` hides their values on every request (see [API keys](#api-keys)); a guard of your own marks one with `request.redact_query_param("name")` before it reads it. Prefer a header: a URL is written to proxy and access logs, and nothing outside Corvis hides it.
 - **Never build a redirect target from request data** (see the warning above).
 - **Treat a slow or failing dependency as an error**, with the same answer for every credential: the client must not learn from the status or the body which key or user it was.
 
@@ -466,7 +478,7 @@ fn options(&self) -> ApiKeyStrategyOptions {
 | Source | Reads | Same as |
 |---|---|---|
 | `ApiKeySource::header(name)` | every value of the header, read as latin1 and joined with `", "` as Node does; the name is case-insensitive | `passport-headerapikey` (`header`) |
-| `.prefix("Api-Key ")` on a header source | the value must start with the prefix (compared literally, case-sensitively), which is removed | `passport-headerapikey` (`prefix`), but literal |
+| `.prefix("Api-Key ")` on a header source | the value must start with the prefix (compared literally, case-sensitively), which is removed; a value that does not start with it is absent, whatever its length or content, so an unrelated `Authorization` header never fails a key found elsewhere | `passport-headerapikey` (`prefix`), but literal |
 | `ApiKeySource::bearer()` | the first `Authorization` value, parsed like `passport-jwt`'s bearer extractor: `(\S+)\s+(\S+)`, the scheme compared ignoring case | a `passport-custom` strategy with `ExtractJwt.fromAuthHeaderAsBearerToken()` |
 | `ApiKeySource::query(name)` | the query parameter, when it is a single string | a `passport-custom` strategy reading `req.query[name]` |
 
@@ -475,7 +487,11 @@ There is no default for the bearer or query sources, and the request body and co
 Every configured source is read. A source whose value is **present but unusable** (too long, with a control character, a repeated query parameter, or a bracketed one when the application uses the extended query parser) fails the attempt, and **two sources that carry different keys fail it too**, without calling the validator. That closes the case where a proxy or a firewall authenticates or rate-limits by one place and the application trusts another. A source that finds nothing (no header, an empty value, another scheme, a value without the prefix) is skipped, and the same key in two places is one key. At most 8 sources.
 
 ::: warning Keys in URLs
-`ApiKeySource::query("api_key")` writes keys to proxy logs, access logs, browser history and `Referer` headers, none of which Corvis controls. It is off by default and the strategy logs a warning at startup for each query parameter. Corvis hides the value in the URL that `LoggingInterceptor` logs (`GET /data?page=2&api_key=REDACTED 200`), but a middleware that logs `request.url()` before the guards run, your reverse proxy and your CDN still see it. Prefer a header.
+`ApiKeySource::query("api_key")` puts the key in the URL, and **we recommend against it**: use a header. It is off by default and the strategy logs a warning at startup for each query parameter.
+
+What is hidden: when the application starts, every strategy that reads a query parameter registers its name, and `LoggingInterceptor` and `Request::redacted_url()` replace the value of that parameter with `REDACTED` on **every** request, whether or not that strategy runs for it (`GET /data?page=2&api_key=REDACTED 200`), including percent-encoded names and, with the extended query parser, `api_key[x]=`. A query string with more than 1000 pairs has every value hidden.
+
+What is not: anything outside Corvis (the access logs of your reverse proxy, load balancer and CDN, the browser history, the `Referer` header that the page sends to other sites) and anything inside it that prints `request.url()`, `request.uri()` or the query itself (a middleware, your own logging, an error report) instead of `redacted_url()`.
 :::
 
 ### Limits
@@ -523,7 +539,7 @@ Without an id, store the digest in an indexed column and look the digest of the 
 
 ### Failures
 
-Missing, malformed, unknown, revoked and expired keys all answer the same `401 {"message":"Unauthorized","statusCode":401}` through `AuthGuard`, with no `WWW-Authenticate` header. Return `Ok(None)` from the validator for every key that is not valid, whatever the reason. The reason is kept as `request.auth_info()` and never sent: `Missing API Key`, `Conflicting API keys`, `API key too long`, `Invalid API key characters` or `Ambiguous API key` (a repeated or bracketed query parameter). A key the validator refused has no reason. None of them repeats request data.
+Missing, malformed, unknown, revoked and expired keys all answer the same `401 {"message":"Unauthorized","statusCode":401}` through `AuthGuard`, with no `WWW-Authenticate` header. Return `Ok(None)` from the validator for every key that is not valid, whatever the reason. The reason is kept as `request.auth_info()` and never sent: `Missing API Key`, `Conflicting API keys`, `API key too long`, `Invalid API key characters` or `Ambiguous API key` (a repeated or bracketed query parameter). A key the validator refused has no reason. None of them repeats request data. A validator that answers `Ok(Some(user))` with an empty user (`false`, `null`, `0`, `""`) is a failure too, with the reason `The strategy returned an empty user`: answer `Ok(None)` instead (see [the user must be a real value](#writing-a-strategy)).
 
 #### Failures of the validator
 

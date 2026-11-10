@@ -105,6 +105,28 @@ if it differs; record the adjustments under "Implementation notes" in `design.md
   and their startup checks; latin1 and percent-decoding edge cases. Verify every finding is fixed or recorded as a new
   issue, and list the findings in the archive notes
 
+## 8. Security review (round 1)
+
+- [x] 8.1 Empty user (design note 18): `AuthenticatedUser::is_empty`, `Authenticator::authenticate` turns the `Success`
+  into a failure with the fixed reason and a limited warning, `install`/`store_user`/`AuthGuard` refuse it; verify with
+  the unit tests of `authenticator.rs` and `tests/auth_empty_user.rs` (API key with `bool` and `Option<Service>`, JWT,
+  local, custom; optional guards; chains)
+- [x] 8.2 `custom.mjs` records `done(null, false | 0 | '' | null | undefined | NaN)` and the chain case, `custom.json`
+  has 24 cases, and `tests/auth_custom.rs` replays them; verify two runs of the generator give the same file
+- [x] 8.3 Application-wide redaction (note 19): `Strategy::credential_query_params`, `AppRedaction` in
+  `BodyParserOptions`, collected in `init()`; API key, JWT and local register their names; verify with
+  `query_key_logged_when_the_query_strategy_does_not_run` and the no-query-source application test
+- [x] 8.4 Cheap `redacted_url` (note 20): allocation-free scan, name decoding on the fly, parser only for bracketed names
+  under the extended parser, hide-all above 1000 pairs, no line built when the level is off; verify with the corpus
+  test against the previous implementation, `tests/redact_allocations.rs` and the logger-off test
+- [x] 8.5 Prefix checked before the limits (note 21); verify with the unit tests for an unrelated long or odd
+  `Authorization` next to a valid `X-Api-Key`
+- [x] 8.6 Docs (note 22) and the danger block about the user, EN and ES, `docs/interceptors.md` and its copy; verify
+  `npm run docs:check` in `docs/`
+- [x] 8.7 Panic line through the limiter, no per-request `ExceptionsHandler` line (note 23); verify with the log test
+  that counts the lines for forty panics
+- [ ] 8.8 Maintainer: rerun the security review and the corvis-parity check over this round
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

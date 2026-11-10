@@ -54,9 +54,9 @@ validator.
 
 ### Requirement: Header prefix is compared literally
 A header source MAY have a prefix. The value MUST start with the prefix, compared byte by byte and case-sensitively,
-and the prefix SHALL be removed before the key reaches the validator; a value without the prefix MUST make the
-strategy fail without calling the validator. Documented divergence: `passport-headerapikey` 1.2.2 builds an unescaped
-regular expression from the prefix.
+and the prefix SHALL be removed before the key reaches the validator. A value without the prefix is absent, whatever
+its length or content (checked before the length and character limits), so it fails only when no other source has a
+key. Divergence: `passport-headerapikey` 1.2.2 builds an unescaped regular expression from the prefix.
 
 #### Scenario: Prefix removed
 - **WHEN** the source is the `Authorization` header with the prefix `"Api-Key "` and the header is
@@ -66,6 +66,15 @@ regular expression from the prefix.
 #### Scenario: Prefix absent
 - **WHEN** the same source receives `Authorization: <key>`
 - **THEN** the validator is not called and the response is the 401
+
+#### Scenario: Unrelated long or odd value in the prefixed header
+- **WHEN** the sources are `header("X-Api-Key")` and `header("Authorization").prefix("Api-Key ")`, and the request has a
+  valid `X-Api-Key` and `Authorization: Bearer <600 bytes>` (or a value with a tab)
+- **THEN** the key of `X-Api-Key` reaches the validator
+
+#### Scenario: Prefixed value over the limit
+- **WHEN** the value starts with the prefix and the key after it is over `max_key_bytes`
+- **THEN** the attempt fails with `API key too long` without calling the validator
 
 #### Scenario: Prefix with a regular expression character
 - **WHEN** the prefix is `"Key+"` and the header value is `Key+abc`, and in another request `Keyyabc`
@@ -243,11 +252,11 @@ output that does not contain key material, and MUST NOT implement `Display` or `
 - **THEN** no captured line contains any of the fixture's keys
 
 ### Requirement: Query keys are redacted in request logs
-`Request::redact_query_param(name)` SHALL mark a query parameter of the current request as sensitive (at most 16 names
-per request), and `Request::redacted_url()` SHALL return the request URL with the value of every occurrence of a
-marked parameter replaced by `REDACTED`, and the unchanged URL when nothing is marked. The API key strategy MUST mark
-every configured query parameter before it reads the request, whatever the outcome. `LoggingInterceptor` SHALL log
-`redacted_url()`.
+Each strategy that reads a query parameter SHALL register its name at startup (`Strategy::credential_query_params`);
+`Request::redacted_url()` SHALL replace the value of every occurrence of a registered or request-marked
+(`redact_query_param`, 16 names) parameter with `REDACTED` on every request, whether or not the strategy runs, and
+return the plain URL when none is. `LoggingInterceptor` SHALL log it. Its work MUST be bounded: no allocation per pair,
+every value hidden above 1000 pairs.
 
 #### Scenario: Logged URL
 - **WHEN** a route with a query-source API key strategy and `LoggingInterceptor` receives
@@ -263,8 +272,27 @@ every configured query parameter before it reads the request, whatever the outco
 - **THEN** `redacted_url()` hides the value of every parameter rather than leave a marked one visible
 
 #### Scenario: Nothing marked
-- **WHEN** no parameter was marked
-- **THEN** `redacted_url()` equals `url()` and the line `LoggingInterceptor` logs is the same as before this change
+- **WHEN** no parameter was marked and no strategy registered one
+- **THEN** `redacted_url()` equals `url()`, the query string is not parsed, and the line `LoggingInterceptor` logs is the
+  same as before this change
+
+#### Scenario: The query strategy does not run
+- **WHEN** an earlier strategy of the chain succeeds, or the route has a guard without the query strategy, or no guard,
+  and the URL carries `?api_key=<key>`
+- **THEN** the logged line contains `api_key=REDACTED` and not `<key>`
+
+#### Scenario: Query string full of pairs
+- **WHEN** a query string has thousands of pairs on a route where the name is registered
+- **THEN** `redacted_url()` makes a handful of allocations whatever the number of pairs (measured with a counting
+  allocator), and above 1000 pairs every value is hidden without parsing
+
+#### Scenario: Same output as the per-pair parse
+- **WHEN** a corpus of random pairs, encoded names, bracketed forms, repeated names and `+` is redacted
+- **THEN** the output equals that of the implementation that parsed every pair, for the simple and the extended parser
+
+#### Scenario: Logger off
+- **WHEN** the `log` level is disabled
+- **THEN** `LoggingInterceptor` does not build the line
 
 ### Requirement: The API key strategy is verified against the original
 The API key strategy SHALL be covered by a differential test: a generator in the fixture package of `auth/strategies`

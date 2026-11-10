@@ -61,7 +61,8 @@ A testing module SHALL be able to replace a registered strategy with another imp
 An error returned by a strategy SHALL end the request with that error, also behind an optional guard. A panic inside
 a strategy SHALL be contained and answered as the plain 500 `{"statusCode":500,"message":"Internal server error"}`,
 also behind an optional guard, without running later strategies of a chain and without reading the panic payload.
-The warning about a panic SHALL be rate limited per strategy.
+The log line about a panic SHALL be rate limited per strategy, and the default exception filter SHALL NOT add one per
+request.
 
 #### Scenario: Error behind an optional guard
 - **WHEN** a strategy returns an error and the route uses `AuthGuard::new(..).optional()`
@@ -70,6 +71,36 @@ The warning about a panic SHALL be rate limited per strategy.
 #### Scenario: Panic in a chain
 - **WHEN** the first strategy of `AuthGuard::chain(["panicking", "succeeding"])` panics with a credential in its message
 - **THEN** the response is the plain 500 without the credential and the second strategy does not run
+
+#### Scenario: Panic log lines are limited
+- **WHEN** a strategy panics on forty requests
+- **THEN** one warning for that strategy is logged in the minute, with no panic payload, and no `ExceptionsHandler` line
+
+### Requirement: An empty user never authenticates
+A `Success` whose user serializes to JSON `null`, `false`, the number `0` (integer, float or `-0`) or the empty string
+SHALL be treated by `Authenticator::authenticate` as a failure of that strategy, for every strategy kind: the chain
+goes on, the auth info says the strategy returned an empty user, and a warning (at most one per strategy per minute,
+with a suppressed count) tells the author to return `None`. No path stores such a user. `"0"`, `{}` and `[]` are users.
+
+#### Scenario: Boolean user
+- **WHEN** an API key validator with `type User = bool` returns `Ok(Some(false))`
+- **THEN** the response is the 401 and the handler does not run
+
+#### Scenario: Empty value of each kind
+- **WHEN** the user is `null`, `false`, `0`, `0.0`, `-0.0` or `""` in a JWT, local, API key or custom strategy
+- **THEN** the response is the 401, and behind an optional guard the request runs with no user
+
+#### Scenario: Chain continues
+- **WHEN** the first strategy of a chain succeeds with an empty user and the second succeeds with a real one
+- **THEN** the second strategy's user is stored
+
+#### Scenario: Matches the original
+- **WHEN** a `passport-custom` strategy calls `done(null, false)`, `done(null, 0)`, `done(null, '')` or `done(null, null)`
+- **THEN** the recorded response is the 401, and so is Corvis's, alone and in a chain
+
+#### Scenario: Truthy values
+- **WHEN** the user is `"0"`, `"false"`, `{}`, `[]` or `true`
+- **THEN** the request is authenticated
 
 ### Requirement: Strategy names are checked at startup
 A strategy with an empty name, a name over 128 bytes or a name with a control character MUST stop the application at
@@ -86,9 +117,9 @@ startup, and a guard that names a strategy nobody registered MUST stop it too, a
 
 ### Requirement: The guide states the security rules for strategies
 The documentation SHALL include a guide to writing a strategy with the mapping from the original's outcomes and a
-checklist: fail (never pass) when credentials are missing or wrong; compare secrets in constant time; keep request
-data out of error messages and logs; bound what is read from the request; mark credentials read from the URL with
-`Request::redact_query_param`; never build a redirect target from request data.
+checklist: fail (never pass); the user must be a real value; compare secrets in constant time and refuse an empty
+expected secret; keep request data out of errors, logs and panic messages (the default panic hook prints them);
+bound what is read; register URL credentials; never build a redirect target from request data.
 
 #### Scenario: Guide content
 - **WHEN** the "Writing a strategy" section of `docs/recipes/passport.md` and its Spanish copy are read

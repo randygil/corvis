@@ -427,3 +427,60 @@ shipped, including the "Security review" sections of the archived designs.
     Tests: `service_key.rs` and `startup_short_service_key.rs`.
 17. **Left to the maintainer's session:** the corvis-parity check (task 7.6), the security review (7.8), archiving and the
     CI run of the pull request (task 1.2's last verification).
+
+## Security review (round 1)
+
+The first security review found six items. The maintainer decided each one as below; the notes continue the numbering
+of "Implementation notes".
+
+18. **An empty user never authenticates (Medium).** `ApiKeyStrategy` turned every `Ok(Some(user))` into a `Success`, and
+    the core accepted a `Success` whose user serialized to `false`, `null`, `0` or `""`: a validator written as
+    `type User = bool; Ok(Some(expected.matches(key)))` or `type User = Option<Service>; Ok(Some(repo.find(id)))`
+    authenticated every request. The originals fail closed twice (`if (!user) return self.fail()` in the strategies,
+    and `handleRequest` throws a 401 for `!user`). The fix is in the core, so it covers JWT, local, API key and custom
+    strategies: `AuthenticatedUser::is_empty()` is true for JSON `null`, `false`, the number `0` (integer, float,
+    `-0`) and `""` (not for `"0"`, `{}`, `[]`, which are truthy in JavaScript); `Authenticator::authenticate` turns such
+    a `Success` into a `Fail` of that strategy (the chain goes on; the challenge, hence the auth info, is
+    `{"message":"The strategy returned an empty user"}`) and logs a warning through a second `WarnLimiter` (one per
+    strategy name per minute, with the suppressed count) that says the validator should return `None`. Defense in depth:
+    `AuthenticatedUser::install` (so `AuthResult::store_user`) refuses an empty user and `AuthGuard` treats a
+    `Success` that does not store as a failure, so even an `AuthResult` built by hand cannot reach the handler. Other
+    paths: the WebSocket path never runs a strategy (the guard denies), an optional guard clears the user on a failure,
+    and `Request::set_user` is the application's own guard writing its own user, which no `AuthGuard` reads. A user
+    that is legitimately `0` or `""` is wrapped in a struct; the docs say so in a `danger` block. The `custom` fixture
+    gained nine cases (`done(null, false | 0 | '' | null | undefined | NaN)`, a real user as the control, and the
+    `falsy` strategy before `device` in a chain): 24 cases in all, same output on two runs.
+19. **Query keys are redacted application-wide (Low).** The mark was set inside `authenticate`, so a chain whose earlier
+    strategy succeeded, or a route without the query strategy, logged `?api_key=<key>`. `Strategy` has a new method
+    `credential_query_params() -> Vec<String>` (empty by default). After the registry is built, `init()` collects the
+    names of every strategy into an `AppRedaction` stored in `BodyParserOptions` (so every `Request` made by the server,
+    the gateways and the testing client carries an `Arc` to it, `None` when nothing is registered) and
+    `redacted_url()` applies it in addition to the per-request marks. The API key strategy, the JWT strategy
+    (`from_url_query_parameter`) and the local strategy (`allow_query_credentials`) register their names; the per
+    request mark in `authenticate` stays for a strategy used without an application. There is no global state: two
+    applications in one process do not share names. With nothing registered or marked, `redacted_url()` is `url()` with
+    no parsing. The docs sentence now says exactly what is hidden (the log line and `redacted_url()`, on every request)
+    and what is not (reverse-proxy and CDN logs, browser history, `Referer`, anything that prints `url()`), and
+    recommends against query keys.
+20. **`redacted_url()` is cheap (Low).** It used to call the query parser once per pair (14 to 27 times the cost of the
+    request for a query full of pairs, reachable by an unauthenticated client). Now it scans the pairs without
+    allocating: the NAME is percent-decoded on the fly and compared byte by byte with the registered names, the value
+    is never looked at, and the output is one `String`. The application's parser is called only for a pair whose name
+    holds `[`, `]`, `%5B` or `%5D` and only when the extended parser is active (the simple parser keeps brackets
+    literal, so the comparison is exact). Above 1000 pairs, or when more than 16 request names (64 application names) or
+    a name over 256 bytes were registered, every value is hidden without parsing, and a pair whose name has brackets is
+    printed as `param=REDACTED` rather than echoed. `LoggingInterceptor` does not build the line when the `log` level is
+    off (`logger::level_enabled`). Tests: the output equals the previous implementation's (kept in the test module as
+    the reference) over 3000 random cases and three parsers, and `tests/redact_allocations.rs` bounds the work with a
+    counting allocator (at most 20 allocations for 20 000 pairs, and no growth with the number of pairs).
+21. **The prefix is checked first (Low).** For a prefixed header source, a value that does not start with the prefix is
+    `Absent` whatever its length or content; `joined_starts_with` compares at most `prefix.len()` bytes of the joined
+    value (it follows the same `", "` joining) and copies nothing. A valid `X-Api-Key` next to
+    `Authorization: Bearer <600 bytes>` or a value with a tab is no longer failed by that header.
+22. **Docs.** The panic paragraph says the default panic hook of the standard library prints the message to stderr and
+    that a strategy must not put credentials in panic messages or errors; the checklist warns that
+    `constant_time_eq(b"", b"")` is `true`, so a strategy refuses an empty or unset expected secret before comparing.
+23. **The panic line is rate limited (Info).** The warning of the authenticator was already limited per strategy, but
+    the 500 it returns is an internal error and the default filter wrote an `ExceptionsHandler` line for each request.
+    `HttpException::already_logged()` (crate-private) marks an exception whose raiser logged it, and
+    `BaseExceptionFilter` skips the line for it. The panic payload is still never read.
