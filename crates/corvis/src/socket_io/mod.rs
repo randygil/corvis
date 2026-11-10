@@ -55,6 +55,8 @@ mod value;
 mod warn;
 
 #[cfg(test)]
+mod fuzz_adapter;
+#[cfg(test)]
 mod fuzz_parser;
 
 pub use adapter::{AdapterError, HandshakeInfo, RoomError, SocketInfo};

@@ -435,18 +435,78 @@ pub trait Adapter: Send + Sync + 'static {
     async fn del_sockets(&self, opts: BroadcastOptions, rooms: Vec<Room>) -> Result<(), AdapterError>;
     /// Disconnects the selected sockets, closing their connection when `close`.
     async fn disconnect_sockets(&self, opts: BroadcastOptions, close: bool) -> Result<(), AdapterError>;
+
+    /// What the local maps hold, for the tests that check nothing is left behind. `None` when the adapter has no such
+    /// maps.
+    #[doc(hidden)]
+    fn membership_size(&self) -> Option<MembershipSize> {
+        None
+    }
+
+    /// The invariants of the local maps (they mirror each other, no empty room), for the tests.
+    #[doc(hidden)]
+    fn check_invariants(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Whether the local maps hold anything for this socket, for the tests.
+    #[doc(hidden)]
+    fn has_socket(&self, _id: &str) -> bool {
+        false
+    }
 }
 
 // -------------------------------------------------------------------------------------- the in-memory adapter
 
+/// The two maps of the in-memory adapter: the sockets of each room, and the rooms of each socket. They mirror each
+/// other; no room and no socket is ever kept with an empty set.
 #[derive(Default)]
-struct Membership {
-    rooms: HashMap<Room, HashSet<SocketId>>,
-    sids: HashMap<SocketId, HashSet<Room>>,
+pub(crate) struct Membership {
+    pub(crate) rooms: HashMap<Room, HashSet<SocketId>>,
+    pub(crate) sids: HashMap<SocketId, HashSet<Room>>,
 }
 
 impl Membership {
-    fn remove(&mut self, id: &str, room: &str) {
+    /// Joins `id` to `rooms`, all or nothing: refused when the socket would be in more than `max_rooms`.
+    pub(crate) fn add(&mut self, id: &str, rooms: &[Room], max_rooms: usize) -> Result<(), RoomError> {
+        let current = self.sids.get(id);
+        let mut fresh: HashSet<&Room> = HashSet::new();
+        for room in rooms {
+            if !current.is_some_and(|set| set.contains(&**room)) {
+                fresh.insert(room);
+            }
+        }
+        if current.map_or(0, HashSet::len) + fresh.len() > max_rooms {
+            return Err(RoomError::TooManyRooms { max: max_rooms });
+        }
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let key: SocketId = match self.sids.get_key_value(id) {
+            Some((key, _)) => key.clone(),
+            None => Arc::from(id),
+        };
+        let fresh: Vec<Room> = fresh.into_iter().cloned().collect();
+        for room in fresh {
+            self.rooms.entry(room.clone()).or_default().insert(key.clone());
+            self.sids.entry(key.clone()).or_default().insert(room);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_all(&mut self, id: &str) {
+        let Some(rooms) = self.sids.remove(id) else { return };
+        for room in rooms {
+            if let Some(members) = self.rooms.get_mut(&room) {
+                members.remove(id);
+                if members.is_empty() {
+                    self.rooms.remove(&room);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn remove(&mut self, id: &str, room: &str) {
         if let Some(set) = self.sids.get_mut(id) {
             set.remove(room);
             if set.is_empty() {
@@ -461,10 +521,35 @@ impl Membership {
         }
     }
 
+    /// The invariants: the maps mirror each other, and hold no empty room and no empty entry.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        for (room, members) in &self.rooms {
+            if members.is_empty() {
+                return Err(format!("empty room {room}"));
+            }
+            for id in members {
+                if !self.sids.get(id).is_some_and(|rooms| rooms.contains(room)) {
+                    return Err(format!("{id} is in {room} but its entry does not say so"));
+                }
+            }
+        }
+        for (id, rooms) in &self.sids {
+            if rooms.is_empty() {
+                return Err(format!("empty entry for {id}"));
+            }
+            for room in rooms {
+                if !self.rooms.get(room).is_some_and(|members| members.contains(id)) {
+                    return Err(format!("{id} claims {room} but the room does not have it"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The ids `opts` selects (`apply` of Node's in-memory adapter): the union of the rooms, each socket once, or
     /// every socket without rooms, minus the members of the except rooms. Linear in the sockets reached plus the
     /// cheaper of the two ways of testing the except rooms.
-    fn select(&self, opts: &BroadcastOptions) -> Vec<SocketId> {
+    pub(crate) fn select(&self, opts: &BroadcastOptions) -> Vec<SocketId> {
         let except: Vec<&HashSet<SocketId>> = opts.except.iter().filter_map(|r| self.rooms.get(r)).collect();
         let except_members: usize = except.iter().map(|s| s.len()).sum();
         let mut candidates: Vec<&SocketId> = Vec::new();
@@ -561,39 +646,6 @@ impl InMemoryAdapter {
         MembershipSize { rooms: m.rooms.len(), sockets: m.sids.len(), memberships: from_rooms }
     }
 
-    /// Checks the invariants of the maps: they mirror each other, and hold no empty room and no empty entry.
-    #[doc(hidden)]
-    pub fn check_invariants(&self) -> Result<(), String> {
-        let m = self.read();
-        for (room, members) in &m.rooms {
-            if members.is_empty() {
-                return Err(format!("empty room {room}"));
-            }
-            for id in members {
-                if !m.sids.get(id).is_some_and(|rooms| rooms.contains(room)) {
-                    return Err(format!("{id} is in {room} but its entry does not say so"));
-                }
-            }
-        }
-        for (id, rooms) in &m.sids {
-            if rooms.is_empty() {
-                return Err(format!("empty entry for {id}"));
-            }
-            for room in rooms {
-                if !m.rooms.get(room).is_some_and(|members| members.contains(id)) {
-                    return Err(format!("{id} claims {room} but the room does not have it"));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Whether the adapter holds any membership for this socket.
-    #[doc(hidden)]
-    pub fn has_socket(&self, id: &str) -> bool {
-        self.read().sids.contains_key(id)
-    }
-
     async fn deliver(&self, sockets: &[IoSocket], encoded: &parser::SharedEncoded) {
         for (i, socket) in sockets.iter().enumerate() {
             if i > 0 && i % YIELD_EVERY == 0 {
@@ -608,6 +660,18 @@ impl InMemoryAdapter {
 
 #[async_trait]
 impl Adapter for InMemoryAdapter {
+    fn membership_size(&self) -> Option<MembershipSize> {
+        Some(self.size())
+    }
+
+    fn check_invariants(&self) -> Result<(), String> {
+        self.read().check()
+    }
+
+    fn has_socket(&self, id: &str) -> bool {
+        self.read().sids.contains_key(id)
+    }
+
     async fn init(&self) -> Result<(), AdapterError> {
         Ok(())
     }
@@ -636,29 +700,7 @@ impl Adapter for InMemoryAdapter {
         if !self.local.is_live(id) {
             return Ok(());
         }
-        let current = m.sids.get(id);
-        let mut fresh: HashSet<&Room> = HashSet::new();
-        for room in rooms {
-            if !current.is_some_and(|set| set.contains(&**room)) {
-                fresh.insert(room);
-            }
-        }
-        if current.map_or(0, HashSet::len) + fresh.len() > max_rooms {
-            return Err(RoomError::TooManyRooms { max: max_rooms });
-        }
-        if fresh.is_empty() {
-            return Ok(());
-        }
-        let key: SocketId = match m.sids.get_key_value(id) {
-            Some((key, _)) => key.clone(),
-            None => Arc::from(id),
-        };
-        let fresh: Vec<Room> = fresh.into_iter().cloned().collect();
-        for room in fresh {
-            m.rooms.entry(room.clone()).or_default().insert(key.clone());
-            m.sids.entry(key.clone()).or_default().insert(room);
-        }
-        Ok(())
+        m.add(id, rooms, max_rooms)
     }
 
     fn del(&self, id: &str, room: &str) {
@@ -666,16 +708,7 @@ impl Adapter for InMemoryAdapter {
     }
 
     fn del_all(&self, id: &str) {
-        let mut m = self.write();
-        let Some(rooms) = m.sids.remove(id) else { return };
-        for room in rooms {
-            if let Some(members) = m.rooms.get_mut(&room) {
-                members.remove(id);
-                if members.is_empty() {
-                    m.rooms.remove(&room);
-                }
-            }
-        }
+        self.write().remove_all(id);
     }
 
     fn socket_rooms(&self, id: &str) -> Vec<Room> {
