@@ -1,4 +1,4 @@
-use corvis::auth::local::{LocalValidator, PasswordHasher};
+use corvis::auth::local::{LocalValidator, PasswordError, PasswordHasher};
 use corvis::prelude::*;
 use serde::Serialize;
 
@@ -32,7 +32,7 @@ impl LocalValidator for LocalAuth {
             .hasher
             .verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str()))
             .await
-            .map_err(|_| InternalServerErrorException::empty())?;
+            .map_err(PasswordError::into_http_exception)?;
         Ok(user.filter(|_| ok).map(|u| LoginUser { user_id: u.user_id, username: u.username, roles: u.roles }))
     }
 }

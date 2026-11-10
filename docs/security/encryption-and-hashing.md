@@ -58,10 +58,10 @@ let hasher = PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params {
 |---|---|
 | `hash(password).await` | A PHC string for argon2id, or a `$2b$` hash when configured for bcrypt |
 | `verify(password, &stored).await` | `Ok(true)`, `Ok(false)`, or an error for a stored hash that is malformed, unsupported or over the limits. The algorithm comes from the stored hash |
-| `verify_or_dummy(password, Option<&str>).await` | `verify` when there is a stored hash, and one dummy verification when there is none |
-| `verify_dummy(password).await` | One verification against a dummy hash; always `false` |
+| `verify_or_dummy(password, Option<&str>).await` | `verify` when there is a stored hash, and one dummy verification when there is none. A stored hash that is refused (an empty string, `$2x$`, over a limit) is `Ok(false)` after one dummy verification, like an unknown user |
+| `verify_dummy(password).await` | One verification against a dummy hash; `Ok(false)` |
 | `needs_rehash(&stored)` | `true` when the hash should be replaced (no key derivation runs) |
-| `hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking` | The same, for code outside an async context. They block the calling thread |
+| `hash_blocking`, `verify_blocking`, `verify_or_dummy_blocking`, `verify_dummy_blocking` | The same, for synchronous code. They block the calling thread; see [blocking threads](#blocking-threads) |
 
 ### Defaults
 
@@ -73,11 +73,13 @@ let hasher = PasswordHasher::new(PasswordHasherOptions::argon2id(Argon2Params {
 | bcrypt cost (when chosen) | 10 | The `bcryptjs` default |
 | `max_password_bytes` | 1024 | A long password cannot be used to burn CPU; a hash of one is refused with `PasswordError::TooLong`, and verifying one answers `false` without any key derivation |
 | `max_concurrent` | `available_parallelism()` | At most this many key derivations run at once, each on a blocking thread, never on an async worker; the others wait for a slot. Each default derivation uses about 19 MiB |
+| `max_waiting` | `32 * max_concurrent` (at least 1) | How many calls may wait for a slot. The next one fails at once with `PasswordError::Busy`, without any key derivation |
+| `acquire_timeout` | 10 s (1 ms to 300 s) | The longest a call waits for a slot; then it fails with `PasswordError::Busy` |
 | Stored hash length | 512 bytes | A PHC string with these parameters is about 100 bytes |
 | `max_bcrypt_cost` | 14 | A planted `$2b$31$` hash would cost 2^31 rounds |
-| argon2 limits when verifying | 262144 KiB, 16 iterations, parallelism 16 | A planted hash cannot ask for gigabytes or minutes |
+| argon2 limits when verifying | 65536 KiB, 8 iterations, parallelism 16 | A hash planted in the database costs what it asks for on every login attempt; these caps keep that to a fraction of a second and 64 MiB. They are raised to the hasher's own parameters when those are higher, so its own hashes always verify |
 
-Every stored hash is checked against the limits **before** any key derivation. A hash over a limit is an error (`PasswordError::OverLimit { what }` says which one); raise the limit with `VerifyLimits` if a legacy database has costlier hashes:
+Every stored hash is checked against the limits **before** any key derivation. A hash over a limit is an error from `verify` (`PasswordError::OverLimit { what }` says which one) and a refused login from `verify_or_dummy`; raise the limit with `VerifyLimits` if a legacy database has costlier hashes:
 
 ```rust
 use corvis::auth::local::{PasswordHasherOptions, VerifyLimits};
@@ -85,24 +87,35 @@ use corvis::auth::local::{PasswordHasherOptions, VerifyLimits};
 PasswordHasherOptions::default().verify_limits(VerifyLimits::default().max_bcrypt_cost(15))
 ```
 
+The limits have upper bounds: 1048576 KiB of argon2 memory, 64 argon2 iterations and bcrypt cost 20. A `VerifyLimits` above one stops `PasswordHasher::new` with an error, and so do hashing parameters above them. At startup the hasher logs a warning when `max_concurrent` times the largest argon2 memory a stored hash may ask for exceeds 1 GiB: lower `max_concurrent` or the limits.
+
 #### A floor for new hashes
 
-The parameters of new hashes have a floor: argon2id with at least 19456 KiB and 2 iterations (or 47104 KiB and 1), bcrypt cost at least 10. `PasswordHasher::new` returns an error for anything weaker, unless the options say `.allow_weak_parameters()`, which logs a warning. Use that in tests only, where a hash of 8 KiB makes a suite fast. Parameters above the verification limits are an error too, because the hasher could not verify its own hashes.
+The parameters of new hashes have a floor: argon2id with at least 19456 KiB and 2 iterations (or 47104 KiB and 1), bcrypt cost at least 10. `PasswordHasher::new` returns an error for anything weaker, unless the options say `.allow_weak_parameters()`, which logs a warning. Use that in tests only, where a hash of 8 KiB makes a suite fast. The verification limits are raised to the parameters of the hasher's own hashes (and of its dummy hash), so it can always verify what it made.
 
 ### Keeping bcrypt hashes
 
 A database with `bcryptjs` hashes keeps working: verification reads the prefix (`$2a$`, `$2b$`, `$2y$` or `$argon2...`), whatever the configured algorithm is. The results are those of `bcryptjs.compareSync` for every password, including non-ASCII ones, ones with a NUL character and ones over 72 bytes (bcrypt only reads the first 72 bytes, and so does `bcryptjs`). The behavior is checked against `bcryptjs` 3.0.3 in both directions with recorded results.
 
-To move users to argon2id as they log in, check `needs_rehash` after a successful verification:
+To move users to argon2id as they log in, verify with `verify_or_dummy` and check `needs_rehash` after a successful verification:
 
 ```rust
-if hasher.verify(password, &user.password_hash).await? {
+let ok = hasher
+    .verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str()))
+    .await
+    .map_err(PasswordError::into_http_exception)?;
+if let Some(user) = user.filter(|_| ok) {
     if hasher.needs_rehash(&user.password_hash) {
-        users.update_hash(user.id, hasher.hash(password).await?).await;
+        let new_hash = hasher.hash(password).await.map_err(PasswordError::into_http_exception)?;
+        users.update_hash(user.id, new_hash).await;
     }
     // ... the login succeeds
 }
 ```
+
+::: danger During a migration, match the dummy hash to the stored hashes
+The dummy verification runs with the **configured** algorithm (argon2id by default). While the database still holds bcrypt hashes, a known user with a bcrypt hash verifies faster or slower than the dummy (about 27 ms against 45 ms at cost 10, 179 ms at cost 12, on one machine), so response times tell known usernames from unknown ones. Set `dummy_algorithm` to the **algorithm and cost of the hashes actually stored**, for example `.dummy_algorithm(DummyAlgorithm::Bcrypt { cost: 10 })`, and rehash on login so the old hashes disappear; remove the option when they have. The hasher logs a warning, once, the first time it verifies a stored hash that differs from the dummy hash in algorithm or cost.
+:::
 
 `needs_rehash` is `true` for another algorithm or argon2 variant, lower memory, iterations, output or salt length, a lower bcrypt cost, and for a hash that cannot be read. While the Node side still has to read new hashes (a migration in progress), configure bcrypt instead: `PasswordHasherOptions::bcrypt(10)` creates `$2b$` hashes that `bcryptjs.compareSync` accepts.
 
@@ -119,13 +132,27 @@ let user = users.find_by_username(username).await;
 let ok = hasher
     .verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str()))
     .await
-    .map_err(|_| InternalServerErrorException::empty())?;
+    .map_err(PasswordError::into_http_exception)?;
 let user = user.filter(|_| ok);
 ```
 
-When the stored hash is refused (malformed, unsupported, over a limit), the dummy verification runs before the error is returned, so a broken row does not answer faster either. The remaining timing differences are the ones you control: stored hashes with older parameters or another algorithm verify at their own cost (`needs_rehash` closes that gap over time, and `.dummy_algorithm(DummyAlgorithm::Bcrypt { cost: 10 })` matches a database that is mostly bcrypt), and your own user lookup may take a different time for a missing row.
+When the stored hash is refused (malformed, unsupported, over a limit: an empty string for an account created through social login, a `$2x$` hash from an old import) the answer is `Ok(false)` after the dummy verification, so the login is the same `401` as for an unknown user and a broken row does not answer faster or differently. One warning per occurrence names the reason (never the hash, the username or the password), so a broken row is still visible in the logs. `verify` keeps returning the refusal as an error.
 
-Argon2 costs memory and time on purpose: a flood of logins queues behind `max_concurrent` slots. Limit login attempts (the [throttler](/security/rate-limiting) and the planned login lockout) so a flood cannot keep the slots busy.
+The remaining timing differences are the ones you control. Stored hashes with another algorithm or cost verify at their own price: during a migration, [match the dummy hash](#keeping-bcrypt-hashes) to them with `dummy_algorithm`, and let `needs_rehash` close the gap over time. Your own user lookup may take a different time for a missing row.
+
+### A busy hasher
+
+Argon2 costs memory and time on purpose, and a flood of logins queues behind the `max_concurrent` slots. The queue is bounded: at most `max_waiting` calls wait, each for at most `acquire_timeout`. A call that finds the queue full, or waits too long, fails with `PasswordError::Busy` without any key derivation. A login validator turns that into `503 Service Unavailable`, the same for every user so it reveals nothing about the account, with `PasswordError::into_http_exception` (any other error becomes an empty `500`):
+
+```rust
+.map_err(PasswordError::into_http_exception)?
+```
+
+Also limit login attempts (the [throttler](/security/rate-limiting) and the planned login lockout) so a flood does not keep the slots busy in the first place.
+
+### Blocking threads
+
+`hash_blocking`, `verify_blocking` and the other `*_blocking` methods are for synchronous code, and a synchronous handler is exactly that: it runs on an async worker thread. They are safe there. Inside a multi-thread Tokio runtime they run through `tokio::task::block_in_place`, which hands the worker's other tasks to another thread while the hashing runs. Outside any runtime they just block. Inside a **current-thread** runtime (`#[tokio::test]` without `flavor = "multi_thread"`, for example) they return `PasswordError::CurrentThreadRuntime` instead of risking a deadlock: use the async methods there.
 
 The comparison of the derived values is constant-time: `argon2` and `password-hash` compare outputs with `subtle`, and so does `bcrypt`. `PasswordError` and the `Debug` output never contain a password or a hash.
 

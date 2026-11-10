@@ -3,14 +3,17 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
 use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString};
 use futures::FutureExt;
 use rand::RngCore;
 use rand::rngs::OsRng;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use crate::di::{DiError, Injectable, ResolveCtx};
+use crate::http::{HttpException, InternalServerErrorException, ServiceUnavailableException};
 use crate::logger::Logger;
 
 /// The lowest argon2 memory (KiB) accepted without [`allow_weak_parameters`](PasswordHasherOptions::allow_weak_parameters):
@@ -29,8 +32,25 @@ pub const BCRYPT_MAX_PASSWORD_BYTES: usize = 72;
 /// by this cap so a misconfiguration cannot turn the hasher into a memory sink.
 pub const MAX_PASSWORD_BYTES_CAP: usize = 65536;
 
+/// The highest `max_argon2_memory_kib` a [`VerifyLimits`] may have (1 GiB), also the highest argon2 memory a hasher may
+/// be configured with.
+pub const MAX_VERIFY_ARGON2_MEMORY_KIB: u32 = 1_048_576;
+/// The highest `max_argon2_iterations` a [`VerifyLimits`] may have.
+pub const MAX_VERIFY_ARGON2_ITERATIONS: u32 = 64;
+/// The highest `max_bcrypt_cost` a [`VerifyLimits`] may have.
+pub const MAX_VERIFY_BCRYPT_COST: u32 = 20;
+/// The default of `max_waiting` is this many waiting calls per `max_concurrent` slot.
+pub const DEFAULT_WAITING_PER_SLOT: usize = 32;
+/// The default of `acquire_timeout`.
+pub const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
+
 const DEFAULT_MAX_PASSWORD_BYTES: usize = 1024;
 const MAX_CONCURRENT_CAP: usize = 1024;
+const MAX_WAITING_CAP: usize = 1_000_000;
+const MIN_ACQUIRE_TIMEOUT: Duration = Duration::from_millis(1);
+const MAX_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Above this many KiB (1 GiB) of memory for the verifications that may run at once, a warning is logged at startup.
+const MEMORY_WARNING_KIB: u64 = 1_048_576;
 const BCRYPT_HASH_LEN: usize = 60;
 const BCRYPT_ALPHABET_OK: fn(u8) -> bool = |b| b == b'.' || b == b'/' || b.is_ascii_alphanumeric();
 
@@ -56,6 +76,30 @@ pub enum PasswordError {
     /// The operating system, the hashing crate or a blocking task failed.
     #[error("password hashing failed")]
     Internal,
+    /// Every hashing slot is taken and the waiting queue is full or the wait timed out. No key derivation ran: answer
+    /// `503 Service Unavailable` (see [`into_http_exception`](PasswordError::into_http_exception)).
+    #[error("the password hasher is busy")]
+    Busy,
+    /// A blocking method was called on a current-thread Tokio runtime, where waiting for a slot could block the only
+    /// thread that releases it. Use the async method.
+    #[error("blocking password methods cannot run on a current-thread runtime; use the async methods")]
+    CurrentThreadRuntime,
+}
+
+impl PasswordError {
+    /// `true` for the errors that say the stored hash itself is refused: malformed, unsupported or over a limit.
+    pub fn is_refused_hash(&self) -> bool {
+        matches!(self, PasswordError::Malformed | PasswordError::Unsupported | PasswordError::OverLimit { .. })
+    }
+
+    /// The response a login validator gives for this error: `503 Service Unavailable` for [`Busy`](Self::Busy), the
+    /// same for every user, and an empty `500` for anything else. The text never says which account was involved.
+    pub fn into_http_exception(self) -> HttpException {
+        match self {
+            PasswordError::Busy => ServiceUnavailableException::empty(),
+            _ => InternalServerErrorException::empty(),
+        }
+    }
 }
 
 /// Argon2 cost parameters. The default is the OWASP minimum, which is also the `argon2` crate's default.
@@ -99,15 +143,20 @@ pub enum DummyAlgorithm {
 }
 
 /// What a stored hash may ask for before it is refused without any key derivation.
+///
+/// The defaults are low on purpose: a hash planted in the database costs what it asks for on every login attempt. The
+/// hasher raises each limit to its own hashing parameters when those are higher, so its own hashes always verify. The
+/// limits have upper bounds ([`MAX_VERIFY_ARGON2_MEMORY_KIB`], [`MAX_VERIFY_ARGON2_ITERATIONS`],
+/// [`MAX_VERIFY_BCRYPT_COST`]); a value above one makes [`PasswordHasher::new`] fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VerifyLimits {
     /// Longest stored hash in bytes (512).
     pub max_hash_bytes: usize,
     /// Highest bcrypt cost (14).
     pub max_bcrypt_cost: u32,
-    /// Highest argon2 memory in KiB (262144).
+    /// Highest argon2 memory in KiB (65536).
     pub max_argon2_memory_kib: u32,
-    /// Highest argon2 iterations (16).
+    /// Highest argon2 iterations (8).
     pub max_argon2_iterations: u32,
     /// Highest argon2 parallelism (16).
     pub max_argon2_parallelism: u32,
@@ -118,8 +167,8 @@ impl Default for VerifyLimits {
         VerifyLimits {
             max_hash_bytes: 512,
             max_bcrypt_cost: 14,
-            max_argon2_memory_kib: 262_144,
-            max_argon2_iterations: 16,
+            max_argon2_memory_kib: 65_536,
+            max_argon2_iterations: 8,
             max_argon2_parallelism: 16,
         }
     }
@@ -153,11 +202,17 @@ impl VerifyLimits {
 /// Parameters below the documented floor ([`MIN_ARGON2_MEMORY_KIB`] with [`MIN_ARGON2_ITERATIONS`], or
 /// [`ARGON2_MEMORY_FOR_ONE_ITERATION_KIB`] with one iteration; bcrypt [`MIN_BCRYPT_COST`]) make `new` fail unless
 /// [`allow_weak_parameters`](Self::allow_weak_parameters) is set (tests do), which logs a warning.
+///
+/// At most [`max_concurrent`](Self::max_concurrent) derivations run at once. A call that finds every slot taken waits,
+/// up to [`max_waiting`](Self::max_waiting) calls for at most [`acquire_timeout`](Self::acquire_timeout); beyond that
+/// it fails with [`PasswordError::Busy`] without deriving anything.
 #[derive(Debug, Clone)]
 pub struct PasswordHasherOptions {
     algorithm: Algorithm,
     max_password_bytes: usize,
     max_concurrent: Option<usize>,
+    max_waiting: Option<usize>,
+    acquire_timeout: Duration,
     verify_limits: VerifyLimits,
     dummy_algorithm: DummyAlgorithm,
     allow_weak: bool,
@@ -176,6 +231,8 @@ impl PasswordHasherOptions {
             algorithm: Algorithm::Argon2id(params),
             max_password_bytes: DEFAULT_MAX_PASSWORD_BYTES,
             max_concurrent: None,
+            max_waiting: None,
+            acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
             verify_limits: VerifyLimits::default(),
             dummy_algorithm: DummyAlgorithm::Configured,
             allow_weak: false,
@@ -196,6 +253,20 @@ impl PasswordHasherOptions {
     /// The most key derivations running at once, `available_parallelism()` by default.
     pub fn max_concurrent(mut self, max: usize) -> Self {
         self.max_concurrent = Some(max);
+        self
+    }
+
+    /// The most calls waiting for a slot, `32 * max_concurrent` by default (at least 1). The next call fails with
+    /// [`PasswordError::Busy`].
+    pub fn max_waiting(mut self, max: usize) -> Self {
+        self.max_waiting = Some(max);
+        self
+    }
+
+    /// The longest a call waits for a slot, 10 seconds by default (between 1 ms and 300 s). Then it fails with
+    /// [`PasswordError::Busy`].
+    pub fn acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.acquire_timeout = timeout;
         self
     }
 
@@ -229,7 +300,12 @@ struct Inner {
     max_password_bytes: usize,
     limits: VerifyLimits,
     slots: Arc<Semaphore>,
+    waiting: AtomicUsize,
+    max_waiting: usize,
+    acquire_timeout: Duration,
     dummy_hash: String,
+    dummy: Algorithm,
+    mismatch_warned: AtomicBool,
     #[cfg(test)]
     probe: probe::Probe,
 }
@@ -274,6 +350,17 @@ impl Injectable for PasswordHasher {
     }
 }
 
+/// The value of a character of the bcrypt alphabet `./A-Za-z0-9` (already checked to belong to it).
+fn bcrypt_value(c: u8) -> u8 {
+    match c {
+        b'.' => 0,
+        b'/' => 1,
+        b'A'..=b'Z' => c - b'A' + 2,
+        b'a'..=b'z' => c - b'a' + 28,
+        _ => c - b'0' + 54,
+    }
+}
+
 fn random_bytes<const N: usize>() -> Result<[u8; N], PasswordError> {
     let mut bytes = [0u8; N];
     OsRng.try_fill_bytes(&mut bytes).map_err(|_| PasswordError::Internal)?;
@@ -308,31 +395,57 @@ fn check_floor(algorithm: &Algorithm) -> Result<(), PasswordError> {
     }
 }
 
-fn check_algorithm_range(algorithm: &Algorithm, limits: &VerifyLimits) -> Result<(), PasswordError> {
+/// The parameters must be accepted by the hashing crates and stay within the upper bounds of the verification limits.
+fn check_algorithm_range(algorithm: &Algorithm) -> Result<(), PasswordError> {
     match algorithm {
         Algorithm::Argon2id(p) => {
             argon2_params(p)?;
-            if p.memory_kib > limits.max_argon2_memory_kib
-                || p.iterations > limits.max_argon2_iterations
-                || p.parallelism > limits.max_argon2_parallelism
-            {
-                return Err(PasswordError::Config(
-                    "argon2 parameters are above the verification limits, the hasher could not verify its own hashes",
-                ));
+            if p.memory_kib > MAX_VERIFY_ARGON2_MEMORY_KIB || p.iterations > MAX_VERIFY_ARGON2_ITERATIONS {
+                return Err(PasswordError::Config("argon2 parameters are above the supported maximum (1048576 KiB, 64 iterations)"));
             }
         }
         Algorithm::Bcrypt { cost } => {
-            if !(4..=31).contains(cost) {
-                return Err(PasswordError::Config("bcrypt cost must be between 4 and 31"));
-            }
-            if *cost > limits.max_bcrypt_cost {
-                return Err(PasswordError::Config(
-                    "bcrypt cost is above the verification limit, the hasher could not verify its own hashes",
-                ));
+            if !(4..=MAX_VERIFY_BCRYPT_COST).contains(cost) {
+                return Err(PasswordError::Config("bcrypt cost must be between 4 and 20"));
             }
         }
     }
     Ok(())
+}
+
+fn check_limit_bounds(limits: &VerifyLimits) -> Result<(), PasswordError> {
+    if limits.max_hash_bytes < 64 || limits.max_hash_bytes > 4096 {
+        return Err(PasswordError::Config("max_hash_bytes must be between 64 and 4096"));
+    }
+    if limits.max_argon2_memory_kib > MAX_VERIFY_ARGON2_MEMORY_KIB {
+        return Err(PasswordError::Config("max_argon2_memory_kib is above the upper bound of 1048576"));
+    }
+    if limits.max_argon2_iterations > MAX_VERIFY_ARGON2_ITERATIONS {
+        return Err(PasswordError::Config("max_argon2_iterations is above the upper bound of 64"));
+    }
+    if limits.max_bcrypt_cost > MAX_VERIFY_BCRYPT_COST {
+        return Err(PasswordError::Config("max_bcrypt_cost is above the upper bound of 20"));
+    }
+    Ok(())
+}
+
+/// Raises each limit to the parameters of a hash this hasher makes itself, so its own hashes always verify.
+fn raise_to(limits: &mut VerifyLimits, algorithm: &Algorithm) {
+    match algorithm {
+        Algorithm::Argon2id(p) => {
+            limits.max_argon2_memory_kib = limits.max_argon2_memory_kib.max(p.memory_kib);
+            limits.max_argon2_iterations = limits.max_argon2_iterations.max(p.iterations);
+            limits.max_argon2_parallelism = limits.max_argon2_parallelism.max(p.parallelism);
+        }
+        Algorithm::Bcrypt { cost } => limits.max_bcrypt_cost = limits.max_bcrypt_cost.max(*cost),
+    }
+}
+
+fn describe(algorithm: &Algorithm) -> String {
+    match algorithm {
+        Algorithm::Argon2id(p) => format!("argon2id m={} t={} p={}", p.memory_kib, p.iterations, p.parallelism),
+        Algorithm::Bcrypt { cost } => format!("bcrypt cost {cost}"),
+    }
 }
 
 impl PasswordHasher {
@@ -340,7 +453,16 @@ impl PasswordHasher {
     /// Fails when the parameters are below the floor (unless weak ones are allowed), above the verification limits,
     /// or out of range.
     pub fn new(options: PasswordHasherOptions) -> Result<Self, PasswordError> {
-        let PasswordHasherOptions { algorithm, max_password_bytes, max_concurrent, verify_limits, dummy_algorithm, allow_weak } = options;
+        let PasswordHasherOptions {
+            algorithm,
+            max_password_bytes,
+            max_concurrent,
+            max_waiting,
+            acquire_timeout,
+            verify_limits,
+            dummy_algorithm,
+            allow_weak,
+        } = options;
         if max_password_bytes == 0 || max_password_bytes > MAX_PASSWORD_BYTES_CAP {
             return Err(PasswordError::Config("max_password_bytes must be between 1 and 65536"));
         }
@@ -349,10 +471,16 @@ impl PasswordHasher {
             Some(n) => n.min(MAX_CONCURRENT_CAP),
             None => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(MAX_CONCURRENT_CAP),
         };
-        if verify_limits.max_hash_bytes < 64 || verify_limits.max_hash_bytes > 4096 {
-            return Err(PasswordError::Config("max_hash_bytes must be between 64 and 4096"));
+        let waiting = match max_waiting {
+            Some(0) => return Err(PasswordError::Config("max_waiting must be at least 1")),
+            Some(n) => n.min(MAX_WAITING_CAP),
+            None => concurrent.saturating_mul(DEFAULT_WAITING_PER_SLOT).min(MAX_WAITING_CAP),
+        };
+        if !(MIN_ACQUIRE_TIMEOUT..=MAX_ACQUIRE_TIMEOUT).contains(&acquire_timeout) {
+            return Err(PasswordError::Config("acquire_timeout must be between 1 ms and 300 s"));
         }
-        check_algorithm_range(&algorithm, &verify_limits)?;
+        check_limit_bounds(&verify_limits)?;
+        check_algorithm_range(&algorithm)?;
         match check_floor(&algorithm) {
             Ok(()) => {}
             Err(PasswordError::Config(why)) if allow_weak => {
@@ -365,15 +493,31 @@ impl PasswordHasher {
             DummyAlgorithm::Bcrypt { cost } => Algorithm::Bcrypt { cost },
             DummyAlgorithm::Argon2id(p) => Algorithm::Argon2id(p),
         };
-        check_algorithm_range(&dummy, &verify_limits)?;
+        check_algorithm_range(&dummy)?;
+        let mut limits = verify_limits;
+        raise_to(&mut limits, &algorithm);
+        raise_to(&mut limits, &dummy);
+        let worst_kib = concurrent as u64 * u64::from(limits.max_argon2_memory_kib);
+        if worst_kib > MEMORY_WARNING_KIB {
+            Logger::new("PasswordHasher").warn(format!(
+                "max_concurrent ({concurrent}) times the largest argon2 memory a stored hash may ask for ({} KiB) is {} MiB; lower max_concurrent or the verification limits",
+                limits.max_argon2_memory_kib,
+                worst_kib / 1024
+            ));
+        }
         let dummy_hash = hash_with(&dummy, random_bytes::<32>()?.as_slice(), None)?;
         Ok(PasswordHasher {
             inner: Arc::new(Inner {
                 algorithm,
                 max_password_bytes,
-                limits: verify_limits,
+                limits,
                 slots: Arc::new(Semaphore::new(concurrent)),
+                waiting: AtomicUsize::new(0),
+                max_waiting: waiting,
+                acquire_timeout,
                 dummy_hash,
+                dummy,
+                mismatch_warned: AtomicBool::new(false),
                 #[cfg(test)]
                 probe: probe::Probe::default(),
             }),
@@ -403,27 +547,32 @@ impl PasswordHasher {
     }
 
     /// One verification against the hash made when the hasher was built, with the configured (or dummy) algorithm.
-    /// Always `false`. Use it when the user does not exist so the answer costs the same as for a known user.
-    pub async fn verify_dummy(&self, password: impl AsRef<[u8]>) -> bool {
+    /// Always `Ok(false)`; an error only when the hasher is busy. Use it when the user does not exist so the answer
+    /// costs the same as for a known user.
+    pub async fn verify_dummy(&self, password: impl AsRef<[u8]>) -> Result<bool, PasswordError> {
         let dummy = self.inner.dummy_hash.clone();
-        let _ = self.verify(password, &dummy).await;
-        false
+        self.verify(password, &dummy).await?;
+        Ok(false)
     }
 
-    /// Verifies against `stored` when there is one and runs [`verify_dummy`](Self::verify_dummy) otherwise. When the
-    /// stored hash is refused, the dummy verification runs before the error is returned, so a broken stored hash
-    /// does not answer faster than an unknown user.
+    /// Verifies against `stored` when there is one and runs [`verify_dummy`](Self::verify_dummy) otherwise.
+    ///
+    /// A stored hash that is refused (malformed, unsupported, over the verification limits: an empty string for an
+    /// account without a password, a hash of another system) answers `Ok(false)` after the dummy verification, so it
+    /// costs and answers like an unknown user; one warning naming the reason (never the hash or the password) is
+    /// logged each time. `Err` is for a busy hasher ([`PasswordError::Busy`]) and for internal failures.
+    /// [`verify`](Self::verify) keeps returning the refusal as an error.
     pub async fn verify_or_dummy(&self, password: impl AsRef<[u8]>, stored: Option<&str>) -> Result<bool, PasswordError> {
         let password = password.as_ref();
-        match stored {
-            None => Ok(self.verify_dummy(password).await),
-            Some(hash) => match self.verify(password, hash).await {
-                Err(e) => {
-                    self.verify_dummy(password).await;
-                    Err(e)
-                }
-                ok => ok,
-            },
+        let Some(hash) = stored else { return self.verify_dummy(password).await };
+        self.inner.note_dummy_mismatch(hash);
+        match self.verify(password, hash).await {
+            Err(e) if e.is_refused_hash() => {
+                self.inner.warn_refused(&e);
+                self.verify_dummy(password).await?;
+                Ok(false)
+            }
+            other => other,
         }
     }
 
@@ -447,13 +596,18 @@ impl PasswordHasher {
     }
 
     /// [`hash`](Self::hash) for code outside an async context. It blocks the calling thread.
+    ///
+    /// Inside a multi-thread Tokio runtime it runs through `tokio::task::block_in_place`, so a synchronous handler may
+    /// call it; inside a current-thread runtime it fails with [`PasswordError::CurrentThreadRuntime`]; outside any
+    /// runtime it just blocks.
     pub fn hash_blocking(&self, password: impl AsRef<[u8]>) -> Result<String, PasswordError> {
         let password = password.as_ref();
         self.inner.check_hash_length(password)?;
         self.run_blocking(|inner| inner.hash_now(password))
     }
 
-    /// [`verify`](Self::verify) for code outside an async context. It blocks the calling thread.
+    /// [`verify`](Self::verify) for code outside an async context; see [`hash_blocking`](Self::hash_blocking) for
+    /// where it may be called.
     pub fn verify_blocking(&self, password: impl AsRef<[u8]>, stored: &str) -> Result<bool, PasswordError> {
         let password = password.as_ref();
         if password.len() > self.inner.max_password_bytes {
@@ -463,24 +617,25 @@ impl PasswordHasher {
         self.run_blocking(|inner| inner.verify_now(password, stored))
     }
 
-    /// [`verify_or_dummy`](Self::verify_or_dummy) for code outside an async context.
+    /// [`verify_dummy`](Self::verify_dummy) for code outside an async context.
+    pub fn verify_dummy_blocking(&self, password: impl AsRef<[u8]>) -> Result<bool, PasswordError> {
+        self.verify_blocking(password, &self.inner.dummy_hash)?;
+        Ok(false)
+    }
+
+    /// [`verify_or_dummy`](Self::verify_or_dummy) for code outside an async context; see
+    /// [`hash_blocking`](Self::hash_blocking) for where it may be called.
     pub fn verify_or_dummy_blocking(&self, password: impl AsRef<[u8]>, stored: Option<&str>) -> Result<bool, PasswordError> {
         let password = password.as_ref();
-        let dummy = || {
-            let _ = self.verify_blocking(password, &self.inner.dummy_hash);
-        };
-        match stored {
-            None => {
-                dummy();
+        let Some(hash) = stored else { return self.verify_dummy_blocking(password) };
+        self.inner.note_dummy_mismatch(hash);
+        match self.verify_blocking(password, hash) {
+            Err(e) if e.is_refused_hash() => {
+                self.inner.warn_refused(&e);
+                self.verify_dummy_blocking(password)?;
                 Ok(false)
             }
-            Some(hash) => match self.verify_blocking(password, hash) {
-                Err(e) => {
-                    dummy();
-                    Err(e)
-                }
-                ok => ok,
-            },
+            other => other,
         }
     }
 
@@ -492,7 +647,7 @@ impl PasswordHasher {
         F: FnOnce(&Inner) -> Result<T, PasswordError> + Send + 'static,
     {
         let handle = tokio::runtime::Handle::try_current().map_err(|_| PasswordError::Internal)?;
-        let permit: OwnedSemaphorePermit = self.inner.slots.clone().acquire_owned().await.map_err(|_| PasswordError::Internal)?;
+        let permit = self.inner.acquire().await?;
         let inner = self.inner.clone();
         handle
             .spawn_blocking(move || {
@@ -504,12 +659,109 @@ impl PasswordHasher {
     }
 
     fn run_blocking<T>(&self, work: impl FnOnce(&Inner) -> Result<T, PasswordError>) -> Result<T, PasswordError> {
-        let _permit = futures::executor::block_on(self.inner.slots.clone().acquire_owned()).map_err(|_| PasswordError::Internal)?;
-        catch_unwind(AssertUnwindSafe(|| work(&self.inner))).unwrap_or(Err(PasswordError::Internal))
+        let go = || {
+            let _permit = self.inner.acquire_blocking()?;
+            catch_unwind(AssertUnwindSafe(|| work(&self.inner))).unwrap_or(Err(PasswordError::Internal))
+        };
+        match tokio::runtime::Handle::try_current() {
+            Err(_) => go(),
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(go),
+            Ok(_) => Err(PasswordError::CurrentThreadRuntime),
+        }
+    }
+}
+
+/// Counts a call that waits for a slot; the place is freed when the call is dropped, even when its future is cancelled.
+struct Waiting<'a>(&'a AtomicUsize);
+
+impl<'a> Waiting<'a> {
+    fn enter(counter: &'a AtomicUsize, max: usize) -> Option<Self> {
+        if counter.fetch_add(1, Ordering::SeqCst) >= max {
+            counter.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Waiting(counter))
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
 impl Inner {
+    /// A free slot at once; otherwise a place in the waiting queue (`Busy` when it is full) and a bounded wait.
+    async fn acquire(&self) -> Result<OwnedSemaphorePermit, PasswordError> {
+        match self.slots.clone().try_acquire_owned() {
+            Ok(permit) => return Ok(permit),
+            Err(TryAcquireError::Closed) => return Err(PasswordError::Internal),
+            Err(TryAcquireError::NoPermits) => {}
+        }
+        let _place = Waiting::enter(&self.waiting, self.max_waiting).ok_or(PasswordError::Busy)?;
+        match tokio::time::timeout(self.acquire_timeout, self.slots.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(PasswordError::Internal),
+            Err(_) => Err(PasswordError::Busy),
+        }
+    }
+
+    /// [`acquire`](Self::acquire) for a thread that may block: inside a runtime (only after `block_in_place`) it uses
+    /// the runtime's timer, outside one it uses a small runtime of its own.
+    fn acquire_blocking(&self) -> Result<OwnedSemaphorePermit, PasswordError> {
+        match self.slots.clone().try_acquire_owned() {
+            Ok(permit) => return Ok(permit),
+            Err(TryAcquireError::Closed) => return Err(PasswordError::Internal),
+            Err(TryAcquireError::NoPermits) => {}
+        }
+        let _place = Waiting::enter(&self.waiting, self.max_waiting).ok_or(PasswordError::Busy)?;
+        // The timer is created inside the future, where a runtime is running.
+        let (slots, timeout) = (self.slots.clone(), self.acquire_timeout);
+        let wait = async move { tokio::time::timeout(timeout, slots.acquire_owned()).await };
+        let waited = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.block_on(wait),
+            Err(_) => {
+                tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|_| PasswordError::Internal)?.block_on(wait)
+            }
+        };
+        match waited {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(PasswordError::Internal),
+            Err(_) => Err(PasswordError::Busy),
+        }
+    }
+
+    fn warn_refused(&self, reason: &PasswordError) {
+        Logger::new("PasswordHasher")
+            .warn(format!("a stored password hash was refused ({reason}); the login is answered as a wrong password"));
+    }
+
+    /// Warns once when a stored hash that parses costs something else than the dummy verification, which makes the
+    /// response time tell a user with such a hash from an unknown one.
+    fn note_dummy_mismatch(&self, stored: &str) {
+        let Ok(parsed) = self.parse(stored) else { return };
+        let (same, found) = match (&parsed, &self.dummy) {
+            (Parsed::Bcrypt { cost }, Algorithm::Bcrypt { cost: want }) => (cost == want, format!("bcrypt cost {cost}")),
+            (Parsed::Argon2 { algorithm, params, .. }, Algorithm::Argon2id(want)) => (
+                *algorithm == argon2::Algorithm::Argon2id
+                    && params.m_cost() == want.memory_kib
+                    && params.t_cost() == want.iterations
+                    && params.p_cost() == want.parallelism,
+                format!("argon2 m={} t={} p={}", params.m_cost(), params.t_cost(), params.p_cost()),
+            ),
+            (Parsed::Bcrypt { cost }, _) => (false, format!("bcrypt cost {cost}")),
+            (Parsed::Argon2 { params, .. }, _) => {
+                (false, format!("argon2 m={} t={} p={}", params.m_cost(), params.t_cost(), params.p_cost()))
+            }
+        };
+        if !same && !self.mismatch_warned.swap(true, Ordering::SeqCst) {
+            Logger::new("PasswordHasher").warn(format!(
+                "a stored password hash ({found}) differs from the dummy hash ({}): logins of unknown users take a different time than logins of known ones. Set dummy_algorithm to the algorithm and cost of the stored hashes and rehash on login (needs_rehash)",
+                describe(&self.dummy)
+            ));
+        }
+    }
+
     fn check_hash_length(&self, password: &[u8]) -> Result<(), PasswordError> {
         if password.len() > self.max_password_bytes {
             return Err(PasswordError::TooLong { max: self.max_password_bytes });
@@ -554,6 +806,11 @@ impl Inner {
             return Err(PasswordError::Malformed);
         }
         if !b[7..].iter().copied().all(BCRYPT_ALPHABET_OK) {
+            return Err(PasswordError::Malformed);
+        }
+        // The 22-character salt carries 128 bits and the 31-character digest 184: the unused low bits of the last
+        // character of each must be zero, as the hashing functions write them. Anything else is not a hash they made.
+        if bcrypt_value(b[28]) & 0x0f != 0 || bcrypt_value(b[59]) & 0x03 != 0 {
             return Err(PasswordError::Malformed);
         }
         let cost = u32::from(b[4] - b'0') * 10 + u32::from(b[5] - b'0');
@@ -639,6 +896,16 @@ fn hash_with(algorithm: &Algorithm, password: &[u8], max_password: Option<usize>
 impl PasswordHasher {
     pub(crate) fn probe(&self) -> &probe::Probe {
         &self.inner.probe
+    }
+
+    /// Calls waiting for a slot right now.
+    pub(crate) fn waiting(&self) -> usize {
+        self.inner.waiting.load(Ordering::SeqCst)
+    }
+
+    /// Whether the one-time warning about a stored hash that differs from the dummy was logged.
+    pub(crate) fn mismatch_warned(&self) -> bool {
+        self.inner.mismatch_warned.load(Ordering::SeqCst)
     }
 }
 

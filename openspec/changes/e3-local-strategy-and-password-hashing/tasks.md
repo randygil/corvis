@@ -82,9 +82,30 @@ fixture package) and update the artifacts if it differs.
 - [ ] 6.6 corvis-parity check: run it if any framework runtime code outside the `auth-local` feature changed; otherwise
   record in the archive notes that the ports do not enable the feature and nothing else changed
 - [x] 6.7 `cargo deny check` passes with the new crates
-- [ ] 6.8 Run the security-reviewer agent over `corvis::auth::local` (timing of unknown users and refused hashes,
+- [x] 6.8 Run the security-reviewer agent over `corvis::auth::local` (timing of unknown users and refused hashes,
   planted hashes, long passwords, concurrency bound, panics, the example's validator); verify every finding is fixed or
   recorded as a new issue
+
+## 7. Security review (round 1)
+
+- [x] 7.1 Refused stored hashes: `verify_or_dummy` and `verify_or_dummy_blocking` return `Ok(false)` after the dummy
+  verification and log one warning naming the reason; `verify_dummy` returns a `Result`; fix the rehash recipe (EN, ES);
+  verify through HTTP that unknown user, wrong password and each refused-hash form give the same status and body
+- [x] 7.2 One-time warning when a parsed stored hash differs from the dummy in algorithm or cost; prominent
+  `dummy_algorithm` section in the hashing docs and the migration notes (EN, ES); verify with a unit test of the
+  warning flag
+- [x] 7.3 `max_waiting` and `acquire_timeout`, `PasswordError::Busy`, `PasswordError::into_http_exception` (503) in the
+  documented validator, the cats example and the tests; verify with `max_concurrent(1)`, `max_waiting(2)` and held
+  slots (fails fast, cancelled waiter frees its place), the timeout, and a 503 over HTTP for a known and an unknown user
+- [x] 7.4 Lower default verification limits raised to the hasher's own parameters, upper bounds, 1 GiB startup
+  warning; verify with the own-parameters and upper-bound tests
+- [x] 7.5 `allow_query_credentials()`, startup warning, fixture divergences replayed both ways, docs differences list
+  (EN, ES); verify with the replay and `the_query_string_is_ignored_unless_allowed`
+- [x] 7.6 Blocking variants through `block_in_place`, an error on a current-thread runtime; verify with the PoC (8
+  async plus 2 blocking verifications on 2 workers), the current-thread error and a `spawn_blocking` caller
+- [x] 7.7 Refuse non-canonical bcrypt trailing bits before any derivation; verify with altered salt and digest
+  characters and the derivation counter
+- [x] 7.8 Spec deltas updated; `openspec validate e3-local-strategy-and-password-hashing --strict` has no warnings
 
 ## Workflow follow-up
 

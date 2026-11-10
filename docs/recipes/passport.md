@@ -268,7 +268,7 @@ A failed attempt keeps its reason as `request.auth_info()` (`{"message": "jwt ex
 The local strategy is the port of `passport-local` 1.0.0. It needs the `auth-local` cargo feature, which also brings [`PasswordHasher`](/security/encryption-and-hashing). You write the validator, the class `PassportStrategy(Strategy)` is in the original, and register `LocalStrategy<YourValidator>`:
 
 ```rust
-use corvis::auth::local::{LocalStrategy, LocalValidator, PasswordHasher};
+use corvis::auth::local::{LocalStrategy, LocalValidator, PasswordError, PasswordHasher};
 use corvis::auth::{AuthGuard, User};
 use corvis::prelude::*;
 
@@ -289,7 +289,7 @@ impl LocalValidator for LocalAuth {
             .hasher
             .verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str()))
             .await
-            .map_err(|_| InternalServerErrorException::empty())?;
+            .map_err(PasswordError::into_http_exception)?; // Busy is a 503, the same for every user
         Ok(user.filter(|_| ok).map(PublicUser::from))
     }
 }
@@ -325,16 +325,18 @@ impl AuthController {
 | `passwordField` (`password`) | `.password_field("pass")` |
 | `passReqToCallback` | `validate` always receives the `Request` |
 | none | `.max_username_bytes(1024)`, `.max_password_bytes(1024)` |
+| reading the query string | `.allow_query_credentials()`, off by default |
 
-Credentials are read like `passport-local` does: each field is looked up in the parsed body (JSON or `application/x-www-form-urlencoded`) and then, if the body has no value, in the query string. A field name like `user[email]` is a path (`body.user.email`); a segment of an array is an index; a string met before the end of the path is the value; an object or array at the end gives no value. A value that is absent, empty, or not a string is missing, and when either credential is missing the strategy fails without calling `validate`. `AuthGuard` answers the same `401` for every failure; the failure itself (`{"message":"Missing credentials"}`, status `400`) is available to `.on_failure(..)`. An empty field name stops the application at startup.
+Credentials are read like `passport-local` does: each field is looked up in the parsed body (JSON or `application/x-www-form-urlencoded`). Unlike the original, the query string is read only with `.allow_query_credentials()`; then a field the body has no value for is looked up there too. A field name like `user[email]` is a path (`body.user.email`); a segment of an array is an index; a string met before the end of the path is the value; an object or array at the end gives no value. A value that is absent, empty, or not a string is missing, and when either credential is missing the strategy fails without calling `validate`. `AuthGuard` answers the same `401` for every failure; the failure itself (`{"message":"Missing credentials"}`, status `400`) is available to `.on_failure(..)`. An empty field name stops the application at startup.
 
-Do not send credentials in the query string unless you have to: URLs end up in logs. The query is read because the original reads it.
+Do not send credentials in the query string unless you have to: URLs end up in access logs, browser history and `Referer` headers. That is why reading them is opt-in, and a warning is logged at startup when it is on.
 
 ### Differences from passport-local
 
+- **The query string is not read by default.** The original takes the username and the password from the query when the body has none; Corvis does so only with `.allow_query_credentials()`, because a password in a URL is written to logs. The recorded fixture replays these cases both ways.
 - **Non-string credentials are missing.** The original passes a number or a boolean to `validate()`; Corvis treats them as missing, so a user lookup never sees a type it did not expect.
 - **Credentials are bounded.** A username or a password over 1024 bytes (configurable) fails without calling `validate`. The original has no limit besides the body size. Raise the limits with `.max_password_bytes(4096)` if your users need it; the hasher has its own `max_password_bytes`.
-- **Failures are uniform.** Missing credentials, wrong passwords and unknown users all give the same `401`, and the validator above spends one hash verification in every case.
+- **Failures are uniform.** Missing credentials, wrong passwords and unknown users all give the same `401`, and the validator above spends one hash verification in every case. A stored hash the hasher refuses (an account without a password, an unsupported format) is a wrong password too, not a `500`. When the hasher is saturated (`PasswordError::Busy`) the answer is `503 Service Unavailable` for every user; see [a busy hasher](/security/encryption-and-hashing#a-busy-hasher).
 - **Login throttling is separate.** Pair the login route with the [throttler](/security/rate-limiting) (the cats example allows five attempts a minute per client); hashing is expensive on purpose, and a flood queues behind the hasher's `max_concurrent` slots.
 
 

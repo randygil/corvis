@@ -276,3 +276,49 @@ constants, with a comment on how they were made), `LocalAuth` implements `LocalV
   `PassportGuard` because the app has an `AuthGuard` of its own. The route keeps `#[body] SignInDto` (validation and
   OpenAPI) after the guard, so a bad body is a `401`, not a `400`. `tests/login.rs` is new.
 - **Not done in this session:** the parity check, the security review, the CI run of the pull request, archiving.
+
+## Security review (round 1)
+
+The first security review found seven items. The maintainer decided the following; it overrides the design and the
+implementation notes above where they differ.
+
+1. **Refused stored hashes are a wrong password, not a 500.** `verify_or_dummy` (and its blocking variant) returns
+   `Ok(false)` after the dummy verification when the stored hash is malformed, unsupported or over the verification
+   limits (an empty string of a social-login account, `$2b$15$`, `$2x$`, `$scrypt$`), and logs one warning per
+   occurrence that names the reason and never the hash or the user input. `verify` keeps returning the error. Errors
+   that remain for `verify_or_dummy` are `Busy` and `Internal`. The rehash recipe in the hashing docs uses
+   `verify_or_dummy` and then `needs_rehash`. `verify_dummy` now returns `Result<bool, PasswordError>` (always
+   `Ok(false)`, `Err(Busy)` when saturated), and `verify_dummy_blocking` was added.
+2. **Dummy hash versus migrated hashes.** No sleeping (the design stands). The hasher logs a warning, once, when a
+   stored hash that parses differs from the dummy in algorithm or cost parameters, pointing to `dummy_algorithm`; the
+   hashing docs and the bcrypt migration notes (EN and ES) say prominently to set `dummy_algorithm` to the algorithm
+   and cost of the hashes actually stored and to rehash on login.
+3. **The wait for a slot is bounded.** New options `max_waiting` (default 32 times `max_concurrent`, at least 1) and
+   `acquire_timeout` (default 10 s, between 1 ms and 300 s). A free slot is taken at once; otherwise the call takes a
+   place in a counted queue (a drop guard frees it, so a cancelled waiter gives it back) and waits at most
+   `acquire_timeout`. A full queue or a timeout is the new `PasswordError::Busy`, without any key derivation. The
+   strategy validator returns `Result<_, HttpException>`, so no core change was needed:
+   `PasswordError::into_http_exception` maps `Busy` to `503 Service Unavailable` (an empty exception, the same body for
+   every user) and anything else to an empty `500`; the documented validator, the cats example and the tests use
+   `.map_err(PasswordError::into_http_exception)?`. A blanket `From<PasswordError> for HttpException` already exists
+   (any `std::error::Error`) and cannot be specialised, hence the method.
+4. **Lower verification caps.** Defaults: argon2 memory 65536 KiB, 8 iterations, parallelism 16; bcrypt cost 14
+   unchanged. Each limit is raised to the hasher's own hashing parameters (and its dummy's) when those are higher, so
+   its own hashes always verify; the former construction error for parameters above the limits is gone. Limits are
+   overridable through `VerifyLimits` and bounded above (argon2 memory 1048576 KiB, iterations 64, bcrypt cost 20: a
+   value above fails construction, as do own parameters above them). Startup warning when `max_concurrent` times the
+   effective argon2 memory limit exceeds 1 GiB. The argon2 parallelism limit has no upper bound beyond the crate's own.
+5. **Credentials in the query string are opt-in.** `LocalStrategyOptions::allow_query_credentials()` (off by default,
+   a startup warning when on). Without it only the body is read. The `passport-local` fixture marks the four cases
+   that need the query as deliberate divergences (default: 401, validator not called) and the replay runs them again
+   against a strategy with the option, where they match the recorded original.
+6. **Blocking variants are safe on async workers.** Inside a multi-thread runtime `hash_blocking`, `verify_blocking`,
+   `verify_dummy_blocking` and `verify_or_dummy_blocking` run through `tokio::task::block_in_place` (the wait for the
+   slot uses the runtime's timer through `Handle::block_on`); inside a current-thread runtime they return the new
+   `PasswordError::CurrentThreadRuntime` before waiting; outside any runtime they block, with a small runtime of their
+   own for the timed wait when the slot is contended. Documented in the hashing pages.
+7. **Non-canonical bcrypt hashes are malformed.** `parse_bcrypt` refuses, before any derivation, a last salt character
+   whose low 4 bits are not zero and a last digest character whose low 2 bits are not zero (the bcrypt crate accepted
+   them at the cost of a derivation); that is item 1's path.
+
+Not changed: the `LoggingInterceptor`, the dummy design (one real verification, no sleeping).

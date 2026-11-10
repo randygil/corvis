@@ -87,7 +87,7 @@
           }
         }
       },
-      "divergence": null
+      "divergence": "the original also reads credentials from the query string; Corvis does so only with allow_query_credentials() (URLs end up in logs), so by default the credential is missing"
     },
     {
       "name": "query string with an empty JSON body",
@@ -109,7 +109,7 @@
           }
         }
       },
-      "divergence": null
+      "divergence": "the original also reads credentials from the query string; Corvis does so only with allow_query_credentials() (URLs end up in logs), so by default the credential is missing"
     },
     {
       "name": "body value wins over the query",
@@ -153,7 +153,7 @@
           }
         }
       },
-      "divergence": null
+      "divergence": "the original also reads credentials from the query string; Corvis does so only with allow_query_credentials() (URLs end up in logs), so by default the credential is missing"
     },
     {
       "name": "validator returns no user",
@@ -366,7 +366,7 @@
           }
         }
       },
-      "divergence": null
+      "divergence": "the original also reads credentials from the query string; Corvis does so only with allow_query_credentials() (URLs end up in logs), so by default the credential is missing"
     },
     {
       "name": "username is an array",

@@ -268,7 +268,7 @@ Un intento fallido conserva su motivo como `request.auth_info()` (`{"message": "
 La estrategia local es el port de `passport-local` 1.0.0. Necesita la feature de cargo `auth-local`, que también trae [`PasswordHasher`](/es/security/encryption-and-hashing). Tú escribes el validador, la clase `PassportStrategy(Strategy)` del original, y registras `LocalStrategy<TuValidador>`:
 
 ```rust
-use corvis::auth::local::{LocalStrategy, LocalValidator, PasswordHasher};
+use corvis::auth::local::{LocalStrategy, LocalValidator, PasswordError, PasswordHasher};
 use corvis::auth::{AuthGuard, User};
 use corvis::prelude::*;
 
@@ -289,7 +289,7 @@ impl LocalValidator for LocalAuth {
             .hasher
             .verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str()))
             .await
-            .map_err(|_| InternalServerErrorException::empty())?;
+            .map_err(PasswordError::into_http_exception)?; // Busy es un 503, igual para todos los usuarios
         Ok(user.filter(|_| ok).map(PublicUser::from))
     }
 }
@@ -325,16 +325,18 @@ impl AuthController {
 | `passwordField` (`password`) | `.password_field("pass")` |
 | `passReqToCallback` | `validate` siempre recibe la `Request` |
 | ninguna | `.max_username_bytes(1024)`, `.max_password_bytes(1024)` |
+| leer el query string | `.allow_query_credentials()`, desactivado por defecto |
 
-Las credenciales se leen como lo hace `passport-local`: cada campo se busca en el body ya parseado (JSON o `application/x-www-form-urlencoded`) y, si el body no tiene valor, en el query string. Un nombre de campo como `user[email]` es una ruta (`body.user.email`); un segmento de un array es un índice; una cadena que aparece antes del final de la ruta es el valor; un objeto o un array al final no da valor. Un valor ausente, vacío o que no es una cadena cuenta como ausente, y cuando falta cualquiera de las dos credenciales la estrategia falla sin llamar a `validate`. `AuthGuard` responde el mismo `401` para cualquier fallo; el fallo en sí (`{"message":"Missing credentials"}`, estado `400`) está disponible en `.on_failure(..)`. Un nombre de campo vacío detiene la aplicación al arrancar.
+Las credenciales se leen como lo hace `passport-local`: cada campo se busca en el body ya parseado (JSON o `application/x-www-form-urlencoded`). A diferencia del original, el query string se lee solo con `.allow_query_credentials()`; entonces un campo sin valor en el body se busca también allí. Un nombre de campo como `user[email]` es una ruta (`body.user.email`); un segmento de un array es un índice; una cadena que aparece antes del final de la ruta es el valor; un objeto o un array al final no da valor. Un valor ausente, vacío o que no es una cadena cuenta como ausente, y cuando falta cualquiera de las dos credenciales la estrategia falla sin llamar a `validate`. `AuthGuard` responde el mismo `401` para cualquier fallo; el fallo en sí (`{"message":"Missing credentials"}`, estado `400`) está disponible en `.on_failure(..)`. Un nombre de campo vacío detiene la aplicación al arrancar.
 
-No envíes credenciales en el query string salvo que no haya otra opción: las URL acaban en los logs. Se lee el query porque el original lo lee.
+No envíes credenciales en el query string salvo que no haya otra opción: las URL acaban en los logs de acceso, el historial del navegador y las cabeceras `Referer`. Por eso leerlas es opcional, y se registra una advertencia al arrancar cuando está activado.
 
 ### Diferencias con passport-local
 
+- **El query string no se lee por defecto.** El original toma el usuario y la contraseña del query cuando el body no los tiene; Corvis solo lo hace con `.allow_query_credentials()`, porque una contraseña en una URL queda escrita en los logs. El fixture grabado reproduce estos casos de las dos formas.
 - **Las credenciales que no son cadenas cuentan como ausentes.** El original pasa un número o un booleano a `validate()`; Corvis los trata como ausentes, de modo que una búsqueda de usuario nunca recibe un tipo que no espera.
 - **Las credenciales tienen un límite.** Un usuario o una contraseña de más de 1024 bytes (configurable) falla sin llamar a `validate`. El original no tiene más límite que el tamaño del body. Sube los límites con `.max_password_bytes(4096)` si tus usuarios lo necesitan; el hasher tiene su propio `max_password_bytes`.
-- **Los fallos son uniformes.** Credenciales ausentes, contraseñas incorrectas y usuarios desconocidos dan el mismo `401`, y el validador de arriba gasta una verificación de hash en todos los casos.
+- **Los fallos son uniformes.** Credenciales ausentes, contraseñas incorrectas y usuarios desconocidos dan el mismo `401`, y el validador de arriba gasta una verificación de hash en todos los casos. Un hash guardado que el hasher rechaza (una cuenta sin contraseña, un formato no compatible) también es una contraseña incorrecta, no un `500`. Cuando el hasher está saturado (`PasswordError::Busy`) la respuesta es `503 Service Unavailable` para todos los usuarios; ver [un hasher ocupado](/es/security/encryption-and-hashing#un-hasher-ocupado).
 - **El límite de intentos de login es aparte.** Combina la ruta de login con el [throttler](/es/security/rate-limiting) (el ejemplo de gatos permite cinco intentos por minuto y cliente); el hashing es caro a propósito, y una avalancha hace cola en los huecos `max_concurrent` del hasher.
 
 

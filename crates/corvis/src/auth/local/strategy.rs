@@ -13,6 +13,7 @@ use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutc
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Injectable, ResolveCtx};
 use crate::http::{HttpException, Request};
+use crate::logger::Logger;
 
 /// The default of `max_username_bytes` and `max_password_bytes`.
 pub const DEFAULT_MAX_CREDENTIAL_BYTES: usize = 1024;
@@ -25,6 +26,7 @@ pub struct LocalStrategyOptions {
     password_field: String,
     max_username_bytes: usize,
     max_password_bytes: usize,
+    allow_query_credentials: bool,
 }
 
 impl Default for LocalStrategyOptions {
@@ -34,6 +36,7 @@ impl Default for LocalStrategyOptions {
             password_field: "password".to_string(),
             max_username_bytes: DEFAULT_MAX_CREDENTIAL_BYTES,
             max_password_bytes: DEFAULT_MAX_CREDENTIAL_BYTES,
+            allow_query_credentials: false,
         }
     }
 }
@@ -66,6 +69,14 @@ impl LocalStrategyOptions {
         self.max_password_bytes = max;
         self
     }
+
+    /// Also reads the username and the password from the query string when the body has none, as `passport-local`
+    /// does. Off by default (a deliberate divergence): URLs end up in access logs, browser history and `Referer`
+    /// headers. A warning is logged at startup when it is on.
+    pub fn allow_query_credentials(mut self) -> Self {
+        self.allow_query_credentials = true;
+        self
+    }
 }
 
 /// The class `PassportStrategy(Strategy)` of `passport-local` is written as: the options and `validate`.
@@ -81,7 +92,7 @@ impl LocalStrategyOptions {
 ///     async fn validate(&self, _: &Request, username: &str, password: &str) -> Result<Option<PublicUser>, HttpException> {
 ///         let user = self.users.find_by_username(username).await;
 ///         let ok = self.hasher.verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str())).await
-///             .map_err(|_| InternalServerErrorException::empty())?;
+///             .map_err(PasswordError::into_http_exception)?; // Busy is a 503, the same for every user
 ///         Ok(user.filter(|_| ok).map(PublicUser::from))
 ///     }
 /// }
@@ -115,6 +126,7 @@ struct Resolved {
     password: Vec<String>,
     max_username_bytes: usize,
     max_password_bytes: usize,
+    allow_query: bool,
 }
 
 /// `field.split(']').join('').split('[')` of `utils.lookup`.
@@ -138,6 +150,7 @@ impl Resolved {
             password: split_path(&options.password_field),
             max_username_bytes: options.max_username_bytes,
             max_password_bytes: options.max_password_bytes,
+            allow_query: options.allow_query_credentials,
         })
     }
 }
@@ -172,7 +185,7 @@ fn lookup<'a>(root: &'a Value, path: &[String]) -> Found<'a> {
     Found::Nothing
 }
 
-/// `lookup(req.body, field) || lookup(req.query, field)`.
+/// `lookup(req.body, field) || lookup(req.query, field)`, the second only when the query is read (`Null` otherwise).
 fn credential<'a>(body: &'a Value, query: &'a Value, path: &[String]) -> Option<&'a str> {
     match lookup(body, path) {
         Found::Text(s) => Some(s),
@@ -201,7 +214,14 @@ impl<V: LocalValidator> Injectable for LocalStrategy<V> {
     fn construct(ctx: ResolveCtx) -> BoxFuture<'static, Result<Self, DiError>> {
         async move {
             let validator = ctx.get_or_construct::<V>().await?;
-            let resolved = Resolved::new(&validator.options()).map_err(|problem| DiError::Factory {
+            let options = validator.options();
+            if options.allow_query_credentials {
+                Logger::new("LocalStrategy").warn(format!(
+                    "strategy \"{}\" reads credentials from the query string (allow_query_credentials): URLs end up in access logs, browser history and Referer headers",
+                    V::NAME
+                ));
+            }
+            let resolved = Resolved::new(&options).map_err(|problem| DiError::Factory {
                 token: format!("LocalStrategy \"{}\" ({})", V::NAME, std::any::type_name::<V>()),
                 cause: Arc::new(anyhow::anyhow!("invalid local strategy options: {problem}")),
             })?;
@@ -223,7 +243,8 @@ impl<V: LocalValidator> Strategy for LocalStrategy<V> {
 
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
-        let query = Value::Object(req.query().clone());
+        // Without `allow_query_credentials` only the body is read: an empty query never yields a value.
+        let query = if self.resolved.allow_query { Value::Object(req.query().clone()) } else { Value::Null };
         let (Some(username), Some(password)) =
             (credential(req.body(), &query, &self.resolved.username), credential(req.body(), &query, &self.resolved.password))
         else {
@@ -293,5 +314,7 @@ mod tests {
         assert!(Resolved::new(&LocalStrategyOptions::default().username_field("")).is_err());
         assert!(Resolved::new(&LocalStrategyOptions::default().password_field("")).is_err());
         assert!(Resolved::new(&LocalStrategyOptions::default().max_password_bytes(0)).is_err());
+        assert!(!Resolved::new(&LocalStrategyOptions::default()).unwrap().allow_query);
+        assert!(Resolved::new(&LocalStrategyOptions::default().allow_query_credentials()).unwrap().allow_query);
     }
 }

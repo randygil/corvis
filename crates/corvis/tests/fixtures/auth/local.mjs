@@ -61,16 +61,18 @@ const JSON_H = { 'content-type': 'application/json' };
 const FORM_H = { 'content-type': 'application/x-www-form-urlencoded' };
 const j = (v) => JSON.stringify(v);
 const long = (n) => 'p'.repeat(n);
+// Cases whose divergence starts with this text are replayed twice: refused by default, accepted with allow_query_credentials().
+const QDIV = 'the original also reads credentials from the query string; Corvis does so only with allow_query_credentials() (URLs end up in logs), so by default the credential is missing';
 
 const CASES = [
   // [name, path, headers, body, divergence]
   ['json body', '/login', JSON_H, j({ username: 'ana', password: 'secret' })],
   ['form body', '/login', FORM_H, 'username=ana&password=secret'],
   ['form body with percent-encoding', '/login', FORM_H, 'username=ana%40x.io&password=p%C3%A4ss+word%26'],
-  ['query string only', '/login?username=ana&password=secret', {}, undefined],
-  ['query string with an empty JSON body', '/login?username=ana&password=secret', JSON_H, j({})],
+  ['query string only', '/login?username=ana&password=secret', {}, undefined, QDIV],
+  ['query string with an empty JSON body', '/login?username=ana&password=secret', JSON_H, j({}), QDIV],
   ['body value wins over the query', '/login?username=eve', JSON_H, j({ username: 'ana', password: 'secret' })],
-  ['username in the body, password in the query', '/login?password=secret', JSON_H, j({ username: 'ana' })],
+  ['username in the body, password in the query', '/login?password=secret', JSON_H, j({ username: 'ana' }), QDIV],
   ['validator returns no user', '/login', { ...JSON_H, 'x-validate': 'null' }, j({ username: 'ana', password: 'bad' })],
   ['validator throws', '/login', { ...JSON_H, 'x-validate': 'throw' }, j({ username: 'ana', password: 'secret' })],
   ['missing password', '/login', JSON_H, j({ username: 'ana' })],
@@ -81,7 +83,7 @@ const CASES = [
   ['password zero', '/login', JSON_H, j({ username: 'ana', password: 0 })],
   ['password false', '/login', JSON_H, j({ username: 'ana', password: false })],
   ['password null', '/login', JSON_H, j({ username: 'ana', password: null })],
-  ['empty body password falls back to the query', '/login?password=secret', JSON_H, j({ username: 'ana', password: '' })],
+  ['empty body password falls back to the query', '/login?password=secret', JSON_H, j({ username: 'ana', password: '' }), QDIV],
   ['username is an array', '/login', JSON_H, j({ username: ['ana'], password: 'secret' })],
   ['username is an object', '/login', JSON_H, j({ username: { name: 'ana' }, password: 'secret' })],
   [

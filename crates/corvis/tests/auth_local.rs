@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use corvis::auth::local::{LocalStrategy, LocalStrategyOptions, LocalValidator, PasswordHasher, PasswordHasherOptions};
+use corvis::auth::local::{LocalStrategy, LocalStrategyOptions, LocalValidator, PasswordError, PasswordHasher, PasswordHasherOptions};
 use corvis::auth::{AuthGuard, User};
 use corvis::prelude::*;
 use corvis::testing::request;
@@ -68,6 +68,7 @@ validator!(Nested, "nested", LocalStrategyOptions::default().username_field("use
 validator!(UserObject, "userobj", LocalStrategyOptions::default().username_field("user"));
 validator!(Indexed, "indexed", LocalStrategyOptions::default().username_field("names[1]"));
 validator!(Raised, "raised", LocalStrategyOptions::default().max_password_bytes(4096));
+validator!(Querying, "query", LocalStrategyOptions::default().allow_query_credentials());
 validator!(Renamed, "renamed", LocalStrategyOptions::default().username_field("email").password_field("pass"));
 validator!(NoUsernameField, "broken", LocalStrategyOptions::default().username_field(""));
 
@@ -100,6 +101,12 @@ impl Routes {
         json!({ "user": req.user().unwrap_or(Value::Null) })
     }
 
+    #[post("query")]
+    #[use_guards(AuthGuard::new("query"))]
+    fn query(&self, req: Request) -> Value {
+        json!({ "user": req.user().unwrap_or(Value::Null) })
+    }
+
     #[post("raised")]
     #[use_guards(AuthGuard::new("raised"))]
     fn raised(&self, req: Request) -> Value {
@@ -129,6 +136,7 @@ impl Routes {
         Provider::strategy::<LocalStrategy<Nested>>(),
         Provider::strategy::<LocalStrategy<UserObject>>(),
         Provider::strategy::<LocalStrategy<Indexed>>(),
+        Provider::strategy::<LocalStrategy<Querying>>(),
         Provider::strategy::<LocalStrategy<Raised>>(),
         Provider::strategy::<LocalStrategy<Renamed>>(),
     ],
@@ -176,25 +184,51 @@ async fn every_recorded_case_is_replayed() {
         assert_eq!(r.status as u64, recorded["status"].as_u64().unwrap(), "{name}: status, body {}", r.text());
         assert_eq!(r.json_value(), recorded["body"], "{name}: body");
     }
-    assert_eq!(diverged, 4);
+    assert_eq!(diverged, 8, "four credential limits and four reads of the query string");
+}
+
+fn headers_of(case: &Value) -> Vec<(String, String)> {
+    case["request"]["headers"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect()
 }
 
 #[corvis::test]
 async fn divergences_follow_the_specification() {
     let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
     let app = app().await;
-    let json = [("content-type", "application/json")];
     for case in fixture["cases"].as_array().unwrap().iter().filter(|c| !c["divergence"].is_null()) {
         let name = case["name"].as_str().unwrap();
-        // The original answered with a user: it called validate() with a non-string or an oversized credential.
+        // The original answered with a user: it called validate() with a non-string or an oversized credential, or
+        // read the credential from the query string.
         assert_eq!(case["response"]["status"], 201, "{name}");
         let id = format!("divergence-{name}");
         let req = &case["request"];
-        let r = post(&app, req["path"].as_str().unwrap(), &[json[0], ("x-test-id", &id)], req["body"].as_str().unwrap()).await;
+        let mut headers = headers_of(case);
+        headers.push(("x-test-id".to_string(), id.clone()));
+        let headers: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let r = post(&app, req["path"].as_str().unwrap(), &headers, req["body"].as_str().unwrap_or("")).await;
         assert_eq!(r.status, 401, "{name}");
         assert_eq!(r.json_value(), json!({ "message": "Unauthorized", "statusCode": 401 }), "{name}");
         assert_eq!(calls_of(&id), 0, "{name}: the validator must not run");
+        if case["divergence"].as_str().unwrap().contains("allow_query_credentials") {
+            // With the option, the strategy behaves as the original did.
+            let path = req["path"].as_str().unwrap().replacen("/login", "/query", 1);
+            let r = post(&app, &path, &headers, req["body"].as_str().unwrap_or("")).await;
+            assert_eq!(r.status as u64, case["response"]["status"].as_u64().unwrap(), "{name}: with allow_query_credentials");
+            assert_eq!(r.json_value(), case["response"]["body"], "{name}: with allow_query_credentials");
+        }
     }
+}
+
+#[corvis::test]
+async fn the_query_string_is_ignored_unless_allowed() {
+    let app = app().await;
+    let r = post(&app, "/login?username=ana&password=secret", &[], "").await;
+    assert_eq!(r.status, 401);
+    let r = post(&app, "/query?username=ana&password=secret", &[], "").await;
+    assert_eq!(r.status, 201);
+    // The body still wins over the query when it is read.
+    let r = post(&app, "/query?username=eve", &[("content-type", "application/json")], r#"{"username":"ana","password":"secret"}"#).await;
+    assert_eq!(r.json_value()["user"]["username"], "ana");
 }
 
 #[corvis::test]
@@ -294,7 +328,19 @@ fn small_hasher() -> PasswordHasher {
 fn account(username: &str) -> Option<Account> {
     static HASH: OnceLock<String> = OnceLock::new();
     let hash = HASH.get_or_init(|| small_hasher().hash_blocking("secret").unwrap());
-    (username == "ana").then(|| Account { password_hash: hash.clone() })
+    let password_hash = match username {
+        "ana" => hash.clone(),
+        // An account created through social login, with no password set.
+        "social" => String::new(),
+        // A legacy hash with a cost above the verification limit.
+        "legacy" => "$2b$15$EGdrhbKUv8Oc9vGiXX0HQOxSg445d458Muh7DAHskb6QbtCvdxcie".to_string(),
+        // Imports from other systems.
+        "php" => "$2x$04$EGdrhbKUv8Oc9vGiXX0HQOxSg445d458Muh7DAHskb6QbtCvdxcie".to_string(),
+        "scrypt" => "$scrypt$ln=16,r=8,p=1$aM15713r3Xsvxbi31lqr1Q$nFNh2CVHVjNldFVKDHDlm4CbdRSCdEBsjjJxD+iCs5E".to_string(),
+        "short" => "$2b$04$".to_string(),
+        _ => return None,
+    };
+    Some(Account { password_hash })
 }
 
 #[async_trait]
@@ -308,7 +354,7 @@ impl LocalValidator for Hashed {
             .hasher
             .verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str()))
             .await
-            .map_err(|_| InternalServerErrorException::empty())?;
+            .map_err(PasswordError::into_http_exception)?;
         Ok(user.filter(|_| ok).map(|_| Public { username: username.to_string() }))
     }
 }
@@ -347,4 +393,92 @@ async fn a_validator_with_the_hasher_answers_the_same_for_unknown_users_and_wron
     let unknown = post(&app, "/hashed", &json, r#"{"username":"eve","password":"nope"}"#).await;
     assert_eq!((wrong.status, wrong.text()), (401, r#"{"message":"Unauthorized","statusCode":401}"#.to_string()));
     assert_eq!((unknown.status, unknown.text()), (wrong.status, wrong.text()));
+}
+
+#[corvis::test]
+async fn a_refused_stored_hash_answers_like_an_unknown_user() {
+    let mut app = CorvisFactory::create::<HashedModule>().await.unwrap();
+    app.silence_route_logs();
+    app.init().await.unwrap();
+    let json = [("content-type", "application/json")];
+    let unknown = post(&app, "/hashed", &json, r#"{"username":"nobody","password":"nope"}"#).await;
+    let wrong = post(&app, "/hashed", &json, r#"{"username":"ana","password":"nope"}"#).await;
+    assert_eq!(unknown.status, 401);
+    assert_eq!((wrong.status, wrong.text()), (unknown.status, unknown.text()));
+    for user in ["social", "legacy", "php", "scrypt", "short"] {
+        let body = format!(r#"{{"username":"{user}","password":"nope"}}"#);
+        let r = post(&app, "/hashed", &json, &body).await;
+        assert_eq!((r.status, r.text()), (unknown.status, unknown.text()), "{user}");
+    }
+}
+
+// A hasher that is busy answers 503, the same for every user, and not 401 or 500.
+
+fn slow_hasher() -> &'static PasswordHasher {
+    static H: OnceLock<PasswordHasher> = OnceLock::new();
+    H.get_or_init(|| {
+        let params = corvis::auth::local::Argon2Params { memory_kib: 8, iterations: 1, parallelism: 1 };
+        let options = PasswordHasherOptions::argon2id(params)
+            .allow_weak_parameters()
+            .max_concurrent(1)
+            .acquire_timeout(std::time::Duration::from_millis(1))
+            .verify_limits(corvis::auth::local::VerifyLimits::default().max_bcrypt_cost(14));
+        PasswordHasher::new(options).unwrap()
+    })
+}
+
+/// A bcrypt hash of cost 13, about 200 ms to verify: long enough to hold the only slot while a request arrives.
+fn slow_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| PasswordHasher::new(PasswordHasherOptions::bcrypt(13)).unwrap().hash_blocking("secret").unwrap())
+}
+
+#[injectable]
+pub struct Slow;
+
+#[async_trait]
+impl LocalValidator for Slow {
+    const NAME: &'static str = "slow";
+    type User = Public;
+    async fn validate(&self, _req: &Request, username: &str, password: &str) -> Result<Option<Public>, HttpException> {
+        let stored = (username == "ana").then_some("$2b$04$iQJJhVONs/5UD7Hw1ADyBusLeIrz/tMsKqJxw7KFBLjqJm.Of4IyK");
+        let ok = slow_hasher().verify_or_dummy(password, stored).await.map_err(PasswordError::into_http_exception)?;
+        Ok(stored.filter(|_| ok).map(|_| Public { username: username.to_string() }))
+    }
+}
+
+#[controller("")]
+pub struct SlowRoutes;
+
+#[routes]
+impl SlowRoutes {
+    #[post("slow")]
+    #[use_guards(AuthGuard::new("slow"))]
+    fn slow(&self, user: User<Public>) -> Value {
+        json!({ "username": user.username })
+    }
+}
+
+#[module(providers = [Provider::class::<Slow>(), Provider::strategy::<LocalStrategy<Slow>>()], controllers = [SlowRoutes])]
+pub struct SlowModule;
+
+#[corvis::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_busy_hasher_answers_503_for_every_user() {
+    let mut app = CorvisFactory::create::<SlowModule>().await.unwrap();
+    app.silence_route_logs();
+    app.init().await.unwrap();
+    let hash = slow_hash().to_string();
+    let json = [("content-type", "application/json")];
+    // Free: a known user logs in.
+    let ok = post(&app, "/slow", &json, r#"{"username":"ana","password":"secret"}"#).await;
+    assert_eq!(ok.status, 201, "{}", ok.text());
+    // Hold the only slot with a slow verification, then log in while it runs.
+    let holder = std::thread::spawn(move || slow_hasher().verify_blocking("secret", &hash));
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let known = post(&app, "/slow", &json, r#"{"username":"ana","password":"secret"}"#).await;
+    let unknown = post(&app, "/slow", &json, r#"{"username":"nobody","password":"secret"}"#).await;
+    assert_eq!(holder.join().unwrap(), Ok(true));
+    assert_eq!(known.status, 503, "{}", known.text());
+    assert_eq!((unknown.status, unknown.text()), (known.status, known.text()), "the same answer for every user");
+    assert_eq!(known.json_value()["message"], "Service Unavailable");
 }

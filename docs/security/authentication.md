@@ -75,7 +75,7 @@ if you configured `expires_in`) and returns the token:
 use corvis::JwtService;
 use corvis::prelude::*;
 
-use corvis::auth::local::PasswordHasher;
+use corvis::auth::local::{PasswordError, PasswordHasher};
 
 #[injectable]
 pub struct AuthService {
@@ -92,7 +92,7 @@ impl AuthService {
             .hasher
             .verify_or_dummy(pass, user.as_ref().map(|u| u.password_hash.as_str()))
             .await
-            .map_err(|_| InternalServerErrorException::empty())?;
+            .map_err(PasswordError::into_http_exception)?;
         let Some(user) = user.filter(|_| ok) else {
             return Err(UnauthorizedException.into());
         };
