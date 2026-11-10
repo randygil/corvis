@@ -8,7 +8,7 @@ import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { diff, evaluate, formatReport, loadExpected } from "./lib/compare.mjs";
 import { normalize } from "./lib/normalize.mjs";
-import { ALL_CAPABILITIES, ROOT, checkInstalledVersions, corvisTarget, plan, runScenario, startNodeTarget } from "./lib/targets.mjs";
+import { ALL_CAPABILITIES, ROOT, checkInstalledVersions, corvisTarget, modeOf, plan, runScenario, startNodeTarget } from "./lib/targets.mjs";
 
 function parseArgs(argv) {
   const options = { corvis: null, capabilities: [], filter: null };
@@ -67,22 +67,33 @@ async function main() {
 
   const started = [];
   try {
-    const node = await startNodeTarget("node");
-    started.push(node);
-    const second = options.corvis
-      ? corvisTarget(options.corvis, options.capabilities)
-      : await startNodeTarget("node-2");
-    started.push(second);
-    const targets = { [node.name]: node, [second.name]: second };
+    // The reference servers of a mode (socket.io, engine.io) start when the first scenario of that mode runs.
+    const corvis = options.corvis ? corvisTarget(options.corvis, options.capabilities) : null;
+    const byMode = new Map();
+    async function targetsOf(mode) {
+      if (!byMode.has(mode)) {
+        const node = await startNodeTarget("node", { mode });
+        started.push(node);
+        let second = corvis;
+        if (!second) {
+          second = await startNodeTarget("node-2", { mode });
+          started.push(second);
+        }
+        byMode.set(mode, { second, targets: { [node.name]: node, [second.name]: second } });
+      }
+      return byMode.get(mode);
+    }
+    const secondFor = corvis ?? { name: "node-2", capabilities: ALL_CAPABILITIES };
 
     const results = [];
     let failed = false;
     for (const scenario of scenarios) {
-      const where = plan(scenario, { second });
+      const where = plan(scenario, { second: secondFor });
       for (const skip of where.skipped) {
         line(scenario.name, skip.target, `skipped (${skip.reason})`);
       }
       if (where.run.length === 0) continue;
+      const { targets } = await targetsOf(modeOf(scenario));
 
       const transcripts = {};
       for (const name of where.run) {
@@ -107,7 +118,7 @@ async function main() {
     }
 
     const outcome = evaluate(results, expected);
-    const names = results[0]?.names ?? { left: "node", right: second.name };
+    const names = results[0]?.names ?? { left: "node", right: secondFor.name };
     const report = formatReport(outcome, names);
     if (report) console.log(report);
     const compared = results.length;

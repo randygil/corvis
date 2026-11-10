@@ -319,3 +319,135 @@ served with `listen_in_background`.
 7. Every timing test runs on Tokio's paused clock or asserts only lower bounds with generous margins: CI runners are
    slow and shared (a Windows SSE test failed on a timing race on 2026-11-09).
 8. Security review (task 9.7) is mandatory; run `security-reviewer` rounds until closed, as for the WebSocket work.
+
+## Implementation notes
+
+1. Test layout. The handshake, polling and error scenarios are in `tests/engine_io.rs`; the WebSocket transport, upgrade,
+   CORS and origin allowlist, heartbeat, close and shutdown scenarios are in `tests/engine_io_ws.rs`; every bound of
+   Decision 8 that is not a wire behavior of Node is in `tests/engine_io_security.rs`. `tests/engine_support/` holds the
+   shared client helpers and the harness application. The session state machine has unit tests on the paused clock
+   (`session::tests`, `session::session_tests`): exact ping and pong times, `upgrade_timeout`, one upgrade at a time,
+   and the 100 ms noop of a pending poll while probing.
+2. `CorvisApplication::listen_until_in_background(addr, shutdown)` (hidden) exists so a test can trigger the graceful
+   shutdown of `serve` without a signal; it does not run the lifecycle hooks.
+3. A single configured CORS origin is sent as is whatever the request's `Origin` says: that is what the `cors` package
+   does and the `engine-io/cors` scenario confirms against Node. It is not a divergence.
+4. An I/O error on the WebSocket (a reset, or the connection cut by the server's `send_timeout`) closes the session with
+   `transport error`; an end of stream or a close frame is `transport close`. Before, a read-side error could win the
+   race against the writer's failure and report `transport close` for a peer that never reads.
+5. `expected-differences.json` has no entry for `max_unread_bytes` (the harness application always reads, so no wire
+   difference is observable; the bound is covered by `engine_io_security.rs`), for the session id (same length and
+   alphabet, normalized by the harness) or for `max_http_buffer_size` (same behavior as Node).
+6. The upstream protocol suite runs against Corvis and, as a control, against the Node reference
+   (`tests/engine_io_conformance.rs`). The suite test "forcefully closes the session" (HTTP long-polling) sends a `GET`
+   and a `POST` carrying the close packet concurrently and expects the `GET` to arrive first; on a multi-threaded
+   runtime the `POST` wins that race in about one run in twenty (1 of 21 measured) and the `GET` then correctly
+   answers `400`, as Node would if the requests arrived in that order. The behavior was not changed to hide the race.
+7. `OutQueue::seal`, `is_drained`, `take_batch`, `wait_ready` and `UnreadGauge::new`/`unread` are used only by the
+   Engine.IO session; they carry `cfg_attr(not(feature = "socket-io"), allow(dead_code))` so the build without the
+   feature stays free of warnings.
+8. Upgrade ordering was checked in 20 consecutive runs of the harness scenario "Upgrade with queued packets" (official
+   `engine.io-client` against the `burst` preset) and of the upgrade tests: no message lost, duplicated or reordered.
+
+### Security review fixes
+
+Findings of the first `security-reviewer` round, each with a regression test (names in tasks.md group 10).
+
+1. Empty messages bypassed `max_unread_bytes`: every received message is now charged `len + UNREAD_MESSAGE_OVERHEAD`
+   (64, a named constant in `session.rs`; the gateway path keeps its own +16 in `ws.rs`), text and binary, on both
+   transports. `EngineSocket::unread_bytes()` reports the charged bytes.
+2. Handshake flood against `max_sessions`:
+   - `max_sessions_per_ip` (default 256) is keyed by `ip()` (so `set_trust_proxy` is honored), with IPv6 counted per
+     `/64` and IPv4-mapped addresses as IPv4. The per-address map, the session map and the `closed` flag are one `Store`
+     under one `RwLock`; a session releases its place in `ServerInner::remove`. Over the cap the answer is the global
+     cap's `503` body. Trade-off: clients behind one NAT or a CDN that is not a trusted proxy share a count, so raise it
+     (or configure `set_trust_proxy`); documented.
+   - `allow_request`: `Fn(&Request) -> impl Future<Output = Admission>`, type-erased, run in `dispatch` after the
+     origin allowlist for polling handshakes and WebSocket-first connections only (Node runs `allowRequest` for every
+     request; here existing sessions are not asked again, a divergence on the permissive side since the sid already
+     proves a past admission). A rejection or a panic answers `403 {"code":4,"message":"Forbidden"}`. The hook has no
+     timeout of its own: it is application code that holds a connection, bounded by the server's own timeouts.
+   - `first_request_timeout`: armed right after the handshake response is produced, cleared by any poll, `POST` or
+     upgrade candidate, never armed for WebSocket-first sessions. The default is 10 s, or `ping_interval + ping_timeout`
+     when that is shorter, so the fast presets (300/200 ms) keep validating; an explicit value is validated against
+     `ping_interval + ping_timeout`. The close reason is `ping timeout`.
+   - What a session retains of its handshake: the `Request` (method, URI, headers, parsed query, peer address, no body)
+     because `EngineSocket::handshake()` exposes it. Its size is bounded by the server's `max_header_size` (32 KiB by
+     default), so the worst case is `max_sessions` times that, and `max_sessions_per_ip` limits one address to 256 of
+     them.
+3. Transport confusion: without an upgrade only `transport=polling` on a session that is still on polling is served
+   (`dispatch`); everything else is code 3.
+4. Overflow: `validate` refuses `ping_interval`, `ping_timeout`, `upgrade_timeout` and `close_timeout` above one day with
+   a `Range` error naming the option (`first_request_timeout` is bounded by their sum), and every `Instant + Duration`
+   of the session goes through `after()`, which falls back to 30 years and never panics.
+5. Lost wakeup: the Engine.IO gauges release with `notify_waiters` (a held `POST` and the WebSocket reader can both
+   wait) and waiters register through `UnreadGauge::changed()` before reading the limit, since `notify_waiters` stores
+   nothing. The gateway gauge keeps `notify_one`: its only waiter is the read loop, which checks the limit before
+   waiting, and a stored permit is exactly what protects that order.
+6. Close race: the `closed` flag moved into the `Store`; `open_session` checks it, both caps and inserts under the write
+   lock that `close()` takes to set it and take its snapshot, so no session is inserted after a close.
+7. `max_total_unread_bytes` (default 256 MiB, at least `max_unread_bytes`): one gauge per engine that every session gauge
+   chains to; `over_limit` is true when either is, and `changed()` waits on both. Trade-off: while the total is exceeded
+   innocent sessions pause too, until the application drains the hogs.
+8. `listen_until_in_background` takes the application by value and runs `close_with_signal(None)` after `serve` returns,
+   like `listen`: the same lifecycle hooks and engine close. There is no clean way to restrict it to tests (integration
+   tests cannot see `cfg(test)` items and a Cargo feature would add public surface), so it stays `#[doc(hidden)]`.
+
+Harness: presets `ipcap` and `first` (Node defaults on the reference side) and two blocks in `engine-io/bounds`, with
+three new entries in `expected-differences.json`. Empty-message accounting, the total budget, `allow_request`,
+transport confusion and the close race have no Node counterpart to differ from, so they are covered by tests only.
+
+### Security review fixes, second round
+
+- N1 (fix 7 starved innocent sessions): `UnreadGauge::over_limit` is now `own > limit || (own > fair && parent over)`.
+  `fair = max(16 KiB, max_total_unread_bytes / max_sessions)` (`EngineOptions::fair_unread_share`, computed once when the
+  session opens). A drained session is never paused by what others hold; a session above its fair share is paused or
+  held while the total is exceeded and resumes when it drops (its own release or the total's wakes it through
+  `changed()`). Worst case: `max_total_unread_bytes + max_sessions * fair` plus one message per session; stated in the
+  docs. Unread messages are released when the application takes them or drops the socket and its stream, not when the
+  session closes (what was received stays readable), so a closed hoarder whose socket the application keeps still
+  counts; it only affects sessions above the fair share.
+- N2: `address_key(ip, peer)` strips brackets, port and zone, maps IPv4-mapped IPv6 to IPv4, counts IPv6 per `/64`, and
+  falls back to the socket peer when the resolved value is no address. The key is computed once per session
+  (`Session::addr_key`) so release always matches the count. Behind `TrustProxy::All` the client picks a well-formed
+  address, so the cap is ineffective there; documented.
+- R1: `check_caps` (closed flag, `max_sessions`, `max_sessions_per_ip`, read lock) runs before `allow_request`;
+  `open_session` repeats the checks under the write lock. The hook runs under `allow_request_timeout` (default 5 s,
+  validated: zero and above a day refused); a timeout answers 403 and logs a warning at most once a minute.
+- R2: Node 6.6.11 (`engine.io/build/socket.js`, `onPacket`, case `pong`) clears the ping timeout timer and refreshes the
+  ping interval timer whatever the state, so a pong with no ping pending postpones the next ping, and a client posting
+  `3` forever keeps its session alive. `Heartbeat::pong` now ignores a pong when no ping is pending. Because a pong that
+  follows a ping is accepted whether or not the client received that ping (the engine cannot tell), the divergence is
+  only visible through timing (the ping arrives earlier than on Node), which scenarios do not record, so there is no
+  expected-differences entry; the paused-clock unit test `an_unsolicited_pong_does_not_postpone_the_ping_or_the_timeout`
+  pins it.
+- R3: `listen_until_in_background` runs `close_with_signal` after `serve` whatever it returned, then reports the serve
+  error first.
+- R4: the preview docs state the many-address limit, edge rate limiting, `allow_request` and sizing `max_sessions`.
+- Harness: no wire-visible change in this round (fair share, address normalization and the hook order have no Node
+  counterpart), so `expected-differences.json` is unchanged.
+
+### Security review fixes, third round
+
+- Blind pongs over polling (medium): a session that never issued a GET kept itself alive with `POST 3`, retaining its
+  outbound queue (up to `max_buffered_amount`) with no open connection. The heartbeat now records whether the pending
+  ping was delivered: `try_poll` marks it when the batch it drains contains the ping. Over polling a pong counts only
+  after that; a pong for an undelivered ping is ignored and the session dies by ping timeout. The WebSocket transport
+  accepts every pong that answers a pending ping (a connection is open), so the upgrade path keeps working: a ping
+  delivered over polling is answered over the new transport, and a ping queued while a GET is parked is delivered by
+  that GET. A ping that waits behind a large backlog is delivered only when the backlog drains, as before.
+- A global outbound budget (across sessions, like `max_total_unread_bytes`) was considered and left out of scope: the
+  per-session `max_buffered_amount` cap plus this fix bound the queue of a session without a connection to one ping
+  timeout cycle. Candidate follow-up.
+- Caps reserved before the hook (low): `reserve` checks the closed flag and both caps under the write lock and counts a
+  pending reservation (global and per address key) against them, so concurrent handshakes at a cap are answered `503`
+  without running the hook; the hook runs at most `cap - current` times at once. The `Reservation` guard releases the
+  slot on rejection, timeout, panic or a dropped future; `open_session` converts it into the session under the same lock
+  and checks `closed` again. `check_caps` is gone.
+- Docs (info): the worst-case inbound memory in `docs/websockets/adapter.md` and its Spanish page now include the
+  `max_sessions * max_http_buffer_size` term (one message per session), which dominates with the defaults.
+- Spec: the heartbeat and hook requirements state the new rules and three requirements were shortened to the 500
+  character limit (details stay in the scenarios and in this document).
+- Tests: `engine_io_security` has the regression tests for the blind pongs (never polling, legitimate polling client,
+  upgrade) and for the concurrent hook and slot release; unit test `a_dropped_reservation_gives_its_slot_back`.
+

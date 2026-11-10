@@ -679,7 +679,7 @@ pub(crate) fn match_upgrade(shared: &AppShared, headers: &http::HeaderMap, path:
 
 /// Answers a rejected handshake like `ws`' `abortHandshake`: status, `text/html` body with
 /// the message and `Connection: close`.
-fn reject_handshake(status: u16, message: &str, extra: &[(&str, &str)]) -> hyper::Response<ResBody> {
+pub(crate) fn reject_handshake(status: u16, message: &str, extra: &[(&str, &str)]) -> hyper::Response<ResBody> {
     let status = http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_REQUEST);
     let mut resp = Response::bytes(message.to_string(), "text/html").with_status(status);
     for (k, v) in extra {
@@ -690,12 +690,22 @@ fn reject_handshake(status: u16, message: &str, extra: &[(&str, &str)]) -> hyper
     resp
 }
 
-/// The checks of `ws`' `handleUpgrade` plus the gateway's `allowed_origins` and
-/// `verify_client`. `Err` carries the rejection response.
+/// The checks of `ws`' `handleUpgrade` plus the gateway's `allowed_origins`. `Err` carries the rejection response.
 fn validate_handshake(
     headers: &http::HeaderMap,
     method: &http::Method,
     options: &GatewayOptions,
+) -> Result<Vec<u8>, hyper::Response<ResBody>> {
+    validate_ws_handshake(headers, method, options.allowed_origins.as_deref())
+}
+
+/// The RFC 6455 checks of `ws`' `handleUpgrade` (method, `Sec-WebSocket-Key`, `Sec-WebSocket-Version`) and, when
+/// `allowed_origins` is given, the `Origin` allowlist (compared ignoring ASCII case; requests without `Origin` pass).
+/// Returns the client key. Shared by the gateways and the Engine.IO WebSocket transport.
+pub(crate) fn validate_ws_handshake(
+    headers: &http::HeaderMap,
+    method: &http::Method,
+    allowed_origins: Option<&[String]>,
 ) -> Result<Vec<u8>, hyper::Response<ResBody>> {
     if method != http::Method::GET {
         return Err(reject_handshake(405, "Invalid HTTP method", &[]));
@@ -712,7 +722,7 @@ fn validate_handshake(
     if version != Some(13) && version != Some(8) {
         return Err(reject_handshake(400, "Missing or invalid Sec-WebSocket-Version header", &[("Sec-WebSocket-Version", "13, 8")]));
     }
-    if let (Some(allowed), Some(origin)) = (&options.allowed_origins, headers.get(http::header::ORIGIN)) {
+    if let (Some(allowed), Some(origin)) = (allowed_origins, headers.get(http::header::ORIGIN)) {
         let origin = origin.to_str().unwrap_or("");
         if !allowed.iter().any(|a| a.eq_ignore_ascii_case(origin)) {
             return Err(reject_handshake(403, "Forbidden", &[]));

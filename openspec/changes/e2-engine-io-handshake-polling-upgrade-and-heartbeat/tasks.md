@@ -7,99 +7,99 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
 
 ## 1. Feature, options and codec
 
-- [ ] 1.1 Add the `socket-io` feature (`["websockets"]`, not default) to `crates/corvis/Cargo.toml`, the module skeleton
+- [x] 1.1 Add the `socket-io` feature (`["websockets"]`, not default) to `crates/corvis/Cargo.toml`, the module skeleton
   of design.md Decision 1 and `EngineOptions` with the defaults of Decision 8 and validation (spec "Options are
   validated"); unit tests for every default and every rejected zero value; verify
   `cargo test -p corvis --features socket-io --lib socket_io` and `cargo build -p corvis` (feature off) with no warnings
-- [ ] 1.2 `packet.rs`: packet types 0-6, text and `b` + base64 binary, payload split on `\x1e` without allocating every
+- [x] 1.2 `packet.rs`: packet types 0-6, text and `b` + base64 binary, payload split on `\x1e` without allocating every
   packet first, packet counting with the `max_payload_packets` bound, lossy UTF-8 input; unit tests with byte strings
   taken from the Node reference (`engine.io-parser` output recorded by a harness script); verify the unit tests
-- [ ] 1.3 `fuzz.rs`: properties (no panic on any input, encode/decode round trip, decoded size proportional to input,
+- [x] 1.3 `fuzz.rs`: properties (no panic on any input, encode/decode round trip, decoded size proportional to input,
   count bound never exceeded); verify `cargo test -p corvis --features socket-io --lib fuzz` and with
   `PROPTEST_CASES=20000`
-- [ ] 1.4 `sid.rs` (design.md Decision 4): `OsRng` 15 bytes, base64url, shape check; unit tests for spec "Ids differ"
+- [x] 1.4 `sid.rs` (design.md Decision 4): `OsRng` 15 bytes, base64url, shape check; unit tests for spec "Ids differ"
   and the shape check; verify the unit tests
 
 ## 2. Reuse refactors (no behavior change)
 
-- [ ] 2.1 Make `OutQueue` generic (`OutQueue<M: QueueItem = Message>`) and add the encoder variant of `write_loop` in
+- [x] 2.1 Make `OutQueue` generic (`OutQueue<M: QueueItem = Message>`) and add the encoder variant of `write_loop` in
   `crates/corvis/src/ws.rs` (design.md Decision 3); verify `cargo test -p corvis --test ws_security --test websockets
   --test send_timeout_ws --test http_adapter` pass unmodified
-- [ ] 2.2 Split `validate_handshake` in `crates/corvis/src/websockets.rs` into the origin-list form plus the gateway
+- [x] 2.2 Split `validate_handshake` in `crates/corvis/src/websockets.rs` into the origin-list form plus the gateway
   wrapper; verify `tests/ws_security.rs` (`gateway_handshake_is_validated`) and `tests/tls_ws.rs` (with `--features
   tls`) pass unmodified
 
 ## 3. Server, entry point and handshake
 
-- [ ] 3.1 `EngineServer` with the session store and `attach(&HttpServer)` (engines list in `http_adapter.rs`, overlap
+- [x] 3.1 `EngineServer` with the session store and `attach(&HttpServer)` (engines list in `http_adapter.rs`, overlap
   check); the entry in `handle` (`crates/corvis/src/server.rs:551`) before the `websockets` block (design.md
   Decision 2); first tests in `crates/corvis/tests/engine_io.rs` for spec "Polling request is not routed" and "Other
   paths are unchanged"; verify them and `cargo test -p corvis --test websockets --test http_adapter`
-- [ ] 3.2 Handshake and errors: `EIO`/`transport`/`sid` validation in Node's order, duplicate parameters, codes 0-5
+- [x] 3.2 Handshake and errors: `EIO`/`transport`/`sid` validation in Node's order, duplicate parameters, codes 0-5
   with status and JSON body, open packet, handshake request through `Request::for_upgrade` with `ip()` resolved once;
   tests for "Polling handshake", "Oversized sid", "Address behind a trusted proxy" and each error code; verify
   `cargo test -p corvis --features socket-io --test engine_io`
 
 ## 4. Harness: Engine.IO mode and Corvis target
 
-- [ ] 4.1 `parity/socket-io/reference/engine-server.mjs` and the Corvis-side app (design.md Decision 10: echo,
+- [x] 4.1 `parity/socket-io/reference/engine-server.mjs` and the Corvis-side app (design.md Decision 10: echo,
   `flood:<bytes>`, `GET /harness/close-reason/<sid>`, options from arguments); `socket_io_diff.rs` starts the Corvis
   app in-process on `127.0.0.1:0` under `#[cfg(feature = "socket-io")]` and passes `--corvis-capabilities engine-io`;
   verify `CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_diff` runs the #131 scenario
   on Node only and reports it skipped on Corvis
-- [ ] 4.2 Wire scenarios `scenarios/engine-io/handshake.mjs` and `errors.mjs` (spec "Polling handshake",
+- [x] 4.2 Wire scenarios `scenarios/engine-io/handshake.mjs` and `errors.mjs` (spec "Polling handshake",
   "WebSocket-first handshake" once group 6 lands, "Error codes", "Duplicate and mismatched parameters", "Rejected
   upgrade"); verify no unlisted difference
 
 ## 5. Long-polling transport
 
-- [ ] 5.1 Pending `GET`, `POST` reading (cap, `413`, `request_timeout`, `drain`), `ok` answer, headers, overlap rules,
+- [x] 5.1 Pending `GET`, `POST` reading (cap, `413`, `request_timeout`, `drain`), `ok` answer, headers, overlap rules,
   octet-stream `400`, method handling on an existing session as recorded from Node (design.md Decision 5); tests and
   wire scenarios for "Several packets in one poll", "Overlapping polls", "Oversized POST"; verify the tests and no
   unlisted difference
-- [ ] 5.2 Batch bounds: `max_payload_packets` and the per-`GET` byte cap; tests for "Packet flood in one POST" and
+- [x] 5.2 Batch bounds: `max_payload_packets` and the per-`GET` byte cap; tests for "Packet flood in one POST" and
   "Large backlog" in `crates/corvis/tests/engine_io_security.rs`; wire scenarios with entries in
   `expected-differences.json`; verify the tests and that the listed differences occur (none stale)
-- [ ] 5.3 CORS and `allowed_origins` (spec "CORS of the polling transport is off unless configured"): reuse of
+- [x] 5.3 CORS and `allowed_origins` (spec "CORS of the polling transport is off unless configured"): reuse of
   `CorsOptions`, the attach-time warning, `enable_cors` not applied to the engine path; tests and wire scenarios for
   "No CORS by default", "Configured origin", and a test for "Origin allowlist on WebSocket" after group 6; verify both
 
 ## 6. WebSocket transport and upgrade
 
-- [ ] 6.1 WebSocket transport (design.md Decisions 3 and 6): WebSocket-first sessions, outbox drained through the
+- [x] 6.1 WebSocket transport (design.md Decisions 3 and 6): WebSocket-first sessions, outbox drained through the
   encoder `write_loop`, tungstenite limits from `max_http_buffer_size`, close deadline, `protocol_error` codes, unread
   gauge; tests for "WebSocket-first handshake", "Oversized WebSocket message" and "Peer that never reads"
   (`ServerOptions::send_timeout(1 s)`); verify the tests and the wire scenario
-- [ ] 6.2 Upgrade: probe sequence, noop every 100 ms, `5`, single outbox switch, one upgrade at a time,
+- [x] 6.2 Upgrade: probe sequence, noop every 100 ms, `5`, single outbox switch, one upgrade at a time,
   `upgrade_timeout`, non-probe packet on the candidate; unit tests of the upgrade states under paused time, tests for
   "Upgrade never completed" and "Second upgrade", wire scenario "Upgrade with queued packets" with the official
   `engine.io-client`; verify no message lost or reordered in 20 consecutive local runs of that scenario
 
 ## 7. Heartbeat, backpressure, bounds, close
 
-- [ ] 7.1 Heartbeat (design.md Decision 7): ping schedule, `ping timeout`, client ping as `transport error`; unit test
+- [x] 7.1 Heartbeat (design.md Decision 7): ping schedule, `ping timeout`, client ping as `transport error`; unit test
   "Timer logic" under paused time; integration test and wire scenario "Client stops answering pings" with 300/200 ms;
   verify all three
-- [ ] 7.2 `max_unread_bytes` (WebSocket read pause, `POST` held) and `max_buffered_amount` (send fails, outbox
+- [x] 7.2 `max_unread_bytes` (WebSocket read pause, `POST` held) and `max_buffered_amount` (send fails, outbox
   discarded, `transport error`); tests "Application that does not read" and "Slow consumer" measuring queue sizes;
   slow-consumer wire scenario with its expected difference; verify
-- [ ] 7.3 `max_sessions` (`503` before any state or upgrade, warning at most once per minute); test "Session cap" on
+- [x] 7.3 `max_sessions` (`503` before any state or upgrade, warning at most once per minute); test "Session cap" on
   both transports; verify
-- [ ] 7.4 Close and shutdown (design.md Decision 9): client close packet, `EngineServer::close`, call from `serve`
+- [x] 7.4 Close and shutdown (design.md Decision 9): client close packet, `EngineServer::close`, call from `serve`
   after it stops accepting and from `CorvisApplication::close`; tests "Graceful shutdown with a pending poll" (answered
   within 5 s) and "Client close"; wire scenario for the client close; verify
 
 ## 8. Conformance, CI, docs
 
-- [ ] 8.1 `crates/corvis/tests/engine_io_conformance.rs` (design.md Decision 10) running the upstream
+- [x] 8.1 `crates/corvis/tests/engine_io_conformance.rs` (design.md Decision 10) running the upstream
   `engine.io-protocol` suite fetched by #131's script; verify every test passes with `CORVIS_NODE_DIFF=1`, and that the
   same suite passes against `reference/engine-server.mjs` with the suite's options
-- [ ] 8.2 Review `expected-differences.json`: one entry per observable bound of design.md Decision 8 plus compression,
+- [x] 8.2 Review `expected-differences.json`: one entry per observable bound of design.md Decision 8 plus compression,
   each with reason and `ws/engine-io` requirement; verify the full harness run has no unlisted and no stale difference
-- [ ] 8.3 `.github/workflows/ci.yml`: `socket-io` in the per-feature clippy loop, `cargo test -p corvis --features
+- [x] 8.3 `.github/workflows/ci.yml`: `socket-io` in the per-feature clippy loop, `cargo test -p corvis --features
   socket-io --no-fail-fast` in the Linux test job, `cargo test -p corvis --features socket-io --lib fuzz` in the fuzz
   job; update the CI table and the Fuzzing section of `CONTRIBUTING.md`; verify the commands locally
-- [ ] 8.4 Docs: rustdoc of `EngineOptions` (every option, default, Node's value, divergence); a "Socket.IO (preview)"
+- [x] 8.4 Docs: rustdoc of `EngineOptions` (every option, default, Node's value, divergence); a "Socket.IO (preview)"
   section in `docs/websockets/adapter.md` (feature flag, not yet usable from gateways, the bounds table of design.md
   Decision 8, `forced close` on shutdown, engine path takes precedence, no WebSocket over HTTP/2) and its translation
   in `docs/es/websockets/adapter.md`; verify `npm run docs:check` in `docs/` and
@@ -107,18 +107,59 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
 
 ## 9. Definition of done
 
-- [ ] 9.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`
+- [x] 9.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`
   with no warnings
-- [ ] 9.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
+- [x] 9.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
   `cargo clippy -p corvis --no-default-features --features socket-io -- -D warnings`
-- [ ] 9.3 `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
+- [x] 9.3 `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
   `CORVIS_NODE_DIFF=1` the `socket_io_diff` and `engine_io_conformance` tests pass
-- [ ] 9.4 Regression tests: one per spec scenario (unit, integration, security or wire), as listed in groups 1-8
-- [ ] 9.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
+- [x] 9.4 Regression tests: one per spec scenario (unit, integration, security or wire), as listed in groups 1-8
+- [x] 9.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 9.6 Framework runtime code changed (`ws.rs`, `websockets.rs`, `server.rs`, `http_adapter.rs`,
   `application.rs`): run the `corvis-parity` check and verify the three port apps keep 0 apidiff differences
 - [ ] 9.7 Security review of the change (`security-reviewer`) before archiving, with its findings fixed or recorded in
   design.md
+
+## 10. Security review fixes (round 1)
+
+- [x] 10.1 Empty messages charged `len + 64` on both transports (`empty_messages_are_charged_over_polling`,
+  `empty_messages_stop_being_read_over_websocket`, unit `a_message_is_charged_its_length_plus_the_overhead_to_both_gauges`)
+- [x] 10.2 Handshake flood: `max_sessions_per_ip` (`sessions_per_address_are_capped`, `the_address_cap_follows_trust_proxy`,
+  unit `ipv6_addresses_are_counted_per_slash_64_and_mapped_ones_as_ipv4`), `allow_request`
+  (`allow_request_runs_before_a_session_is_created`), `first_request_timeout`
+  (`a_polling_session_that_never_makes_a_second_request_is_closed`,
+  `a_second_request_or_a_websocket_first_session_is_not_closed_by_the_first_request_timer`, paused-clock units in
+  `review_tests`); harness presets `ipcap` and `first` with three expected differences; handshake retention noted in design.md
+- [x] 10.3 Transport confusion refused with code 3 (`transport_confusion_is_a_bad_request`)
+- [x] 10.4 Duration validation and `checked_add` (`huge_durations_are_refused_at_startup`, units
+  `durations_above_a_day_are_refused_by_name`, `a_delay_that_does_not_fit_in_an_instant_does_not_panic`)
+- [x] 10.5 Wake every waiter of the Engine.IO gauges (unit `a_release_wakes_every_waiter_and_the_parent_wakes_the_children`)
+- [x] 10.6 `closed` checked under the lock that inserts (units `no_session_is_opened_after_close`; integration
+  `handshakes_racing_a_close_leave_no_session_behind`)
+- [x] 10.7 `max_total_unread_bytes` (`two_sessions_share_the_total_unread_budget`,
+  `the_total_budget_pauses_websocket_readers_too`)
+- [x] 10.8 `listen_until_in_background` runs the lifecycle hooks as `listen` does (`graceful_shutdown_with_a_pending_poll`)
+- [x] 10.9 Spec delta, design notes, bounds table in docs (English and Spanish) and rustdoc updated; full definition of
+  done rerun; rebased on `origin/dev`
+
+## 11. Security review fixes (round 2)
+
+- [x] 11.1 N1: fair share of the total unread budget (`a_hoarder_filling_the_total_does_not_starve_a_drained_session`,
+  `a_session_above_its_fair_share_waits_while_the_total_is_over_and_resumes_when_it_drops`,
+  `the_total_budget_pauses_only_the_websocket_readers_above_their_fair_share`, units
+  `the_fair_share_is_the_floor_or_the_total_split_among_the_sessions`,
+  `a_session_at_or_below_the_fair_share_is_never_over_its_limit_because_of_the_total`)
+- [x] 11.2 N2: address normalization and peer fallback (`forwarded_address_forms_are_counted_as_one_client`, units
+  `address_keys_are_normalized_whatever_form_a_proxy_wrote`,
+  `a_client_cannot_pick_a_new_key_per_request_with_a_malformed_forwarded_address`)
+- [x] 11.3 R1: `allow_request` after the caps and under `allow_request_timeout`
+  (`allow_request_is_not_invoked_for_a_client_over_a_cap`, `allow_request_that_takes_too_long_refuses_the_request`, unit
+  `allow_request_timeout_has_a_default_and_is_validated_like_the_other_durations`)
+- [x] 11.4 R2: unsolicited pong ignored, Node's behavior recorded (paused-clock unit
+  `an_unsolicited_pong_does_not_postpone_the_ping_or_the_timeout`)
+- [x] 11.5 R3: `listen_until_in_background` closes the application even when `serve` fails
+- [x] 11.6 R4: docs (English and Spanish) for the many-address limit, `TrustProxy::All`, the fair share and its bound;
+  spec delta and design notes updated; full definition of done rerun after rebasing on `origin/dev`
 
 ## Workflow follow-up
 

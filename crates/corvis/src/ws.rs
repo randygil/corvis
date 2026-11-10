@@ -66,40 +66,63 @@ pub(crate) enum PushError {
     Full,
 }
 
-#[derive(Default)]
-struct OutState {
-    items: VecDeque<(Message, usize, Option<Ack>)>,
+/// What a queue holds: it reports the bytes an item counts against the queue's limit.
+pub(crate) trait QueueItem {
+    fn size(&self) -> usize;
+}
+
+impl QueueItem for Message {
+    fn size(&self) -> usize {
+        self.len() + 16
+    }
+}
+
+struct OutState<M> {
+    items: VecDeque<(M, usize, Option<Ack>)>,
     queued: usize,
     writing: usize,
     closed: bool,
 }
 
+impl<M> Default for OutState<M> {
+    fn default() -> Self {
+        OutState { items: VecDeque::new(), queued: 0, writing: 0, closed: false }
+    }
+}
+
 /// The outgoing queue of a connection, bounded in bytes. A single writer task drains it,
 /// so a peer that does not read only blocks its own writer; [`OutQueue::buffered`] is the
 /// `bufferedAmount` of `ws` (queued bytes plus the frame being written).
-pub(crate) struct OutQueue {
-    state: Mutex<OutState>,
+///
+/// It is generic over its item so Engine.IO sessions reuse the same bound: the WebSocket
+/// queues are `OutQueue<Message>` (the default), an Engine.IO session's outbox queues packets.
+pub(crate) struct OutQueue<M: QueueItem = Message> {
+    state: Mutex<OutState<M>>,
     notify: Notify,
+    /// Woken with `notify_waiters` on every change, for consumers that only look at the queue
+    /// (a pending long-poll) and must not take the single wake-up of the writer.
+    watchers: Notify,
     limit: usize,
 }
 
-fn frame_size(m: &Message) -> usize {
-    m.len() + 16
-}
-
-impl OutQueue {
+impl<M: QueueItem> OutQueue<M> {
     pub(crate) fn new(limit: usize) -> Self {
-        OutQueue { state: Mutex::new(OutState::default()), notify: Notify::new(), limit: limit.max(1) }
+        OutQueue { state: Mutex::new(OutState::default()), notify: Notify::new(), watchers: Notify::new(), limit: limit.max(1) }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, OutState> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, OutState<M>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queues a frame. A frame is always accepted when nothing is pending (so one message
+    fn wake(&self) {
+        self.notify.notify_one();
+        self.watchers.notify_waiters();
+    }
+
+    /// Queues an item. An item is always accepted when nothing is pending (so one message
     /// larger than the limit can still be sent); otherwise the total must stay within it.
-    pub(crate) fn push(&self, m: Message, ack: Option<Ack>) -> Result<(), PushError> {
-        let size = frame_size(&m);
+    pub(crate) fn push(&self, m: M, ack: Option<Ack>) -> Result<(), PushError> {
+        let size = m.size();
         let mut s = self.lock();
         if s.closed {
             return Err(PushError::Closed);
@@ -111,13 +134,14 @@ impl OutQueue {
         s.items.push_back((m, size, ack));
         s.queued += size;
         drop(s);
-        self.notify.notify_one();
+        self.wake();
         Ok(())
     }
 
-    /// Queues a close frame after the pending frames (or instead of them with `discard`) and
-    /// rejects any later frame. Returns `false` if the queue was already closed.
-    pub(crate) fn close(&self, frame: Option<CloseFrame<'static>>, discard: bool) -> bool {
+    /// Rejects any later item. The pending ones stay queued for the writer, or are dropped with
+    /// `discard`. Returns `false` if the queue was already closed.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn seal(&self, discard: bool) -> bool {
         let mut s = self.lock();
         if s.closed && !discard {
             return false;
@@ -126,18 +150,56 @@ impl OutQueue {
             s.items.clear();
             s.queued = 0;
         }
-        let m = Message::Close(frame);
-        let size = frame_size(&m);
-        s.items.push_back((m, size, None));
-        s.queued += size;
         s.closed = true;
         drop(s);
-        self.notify.notify_one();
+        self.wake();
         true
     }
 
-    /// Next frame to write; `None` once closed and drained.
-    pub(crate) async fn next(&self) -> Option<(Message, usize, Option<Ack>)> {
+    /// `true` once sealed and every queued item was taken.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn is_drained(&self) -> bool {
+        let s = self.lock();
+        s.closed && s.items.is_empty()
+    }
+
+    /// Takes queued items in order while `cost` of the taken ones stays within `budget`; always at least one
+    /// when any is queued. Taken items no longer count against the limit.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn take_batch(&self, budget: usize, mut cost: impl FnMut(&M) -> usize) -> Vec<M> {
+        let mut s = self.lock();
+        let mut taken = Vec::new();
+        let mut spent = 0usize;
+        while let Some((m, _, _)) = s.items.front() {
+            let c = cost(m);
+            if !taken.is_empty() && spent + c > budget {
+                break;
+            }
+            spent += c;
+            let (m, size, _) = s.items.pop_front().expect("front exists");
+            s.queued -= size;
+            taken.push(m);
+        }
+        taken
+    }
+
+    /// Resolves when an item is queued or the queue is sealed, without taking anything.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) async fn wait_ready(&self) {
+        loop {
+            let notified = self.watchers.notified();
+            {
+                let s = self.lock();
+                if !s.items.is_empty() || s.closed {
+                    return;
+                }
+            }
+            notified.await;
+        }
+    }
+
+    /// Next item to write; `None` once closed and drained.
+    pub(crate) async fn next(&self) -> Option<(M, usize, Option<Ack>)> {
         loop {
             let notified = self.notify.notified();
             {
@@ -173,7 +235,30 @@ impl OutQueue {
         s.queued = 0;
         s.writing = 0;
         drop(s);
-        self.notify.notify_one();
+        self.wake();
+    }
+}
+
+impl OutQueue<Message> {
+    /// Queues a close frame after the pending frames (or instead of them with `discard`) and
+    /// rejects any later frame. Returns `false` if the queue was already closed.
+    pub(crate) fn close(&self, frame: Option<CloseFrame<'static>>, discard: bool) -> bool {
+        let mut s = self.lock();
+        if s.closed && !discard {
+            return false;
+        }
+        if discard {
+            s.items.clear();
+            s.queued = 0;
+        }
+        let m = Message::Close(frame);
+        let size = m.size();
+        s.items.push_back((m, size, None));
+        s.queued += size;
+        s.closed = true;
+        drop(s);
+        self.wake();
+        true
     }
 }
 
@@ -190,11 +275,24 @@ pub(crate) enum WriteEnd {
 
 /// Writes the frames of `queue` to `sink` until a close frame is written, a write fails or
 /// the queue is shut down.
-pub(crate) async fn write_loop<S>(mut sink: S, queue: Arc<OutQueue>) -> WriteEnd
+pub(crate) async fn write_loop<S>(sink: S, queue: Arc<OutQueue>) -> WriteEnd
 where
     S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
+    write_loop_with(sink, queue, |m| m).await.0
+}
+
+/// [`write_loop`] for a queue of any item, with `encode` turning each item into the frame to write. A queue that
+/// ends (sealed and drained) ends the loop with [`WriteEnd::Closed`], like a written close frame. The sink is
+/// handed back so the caller can still write a close frame after a queue that carries no close item.
+pub(crate) async fn write_loop_with<S, M, F>(mut sink: S, queue: Arc<OutQueue<M>>, encode: F) -> (WriteEnd, S)
+where
+    S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+    M: QueueItem,
+    F: Fn(M) -> Message,
+{
     while let Some((m, size, ack)) = queue.next().await {
+        let m = encode(m);
         let close = matches!(m, Message::Close(_));
         let result = sink.send(m).await;
         queue.written(size);
@@ -208,16 +306,16 @@ where
             let _ = a.send(result.map_err(|e| WsError::new(e.to_string(), None)));
         }
         if let Some(kind) = kind {
-            return WriteEnd::Failed(kind);
+            return (WriteEnd::Failed(kind), sink);
         }
         if refused {
-            return WriteEnd::Refused;
+            return (WriteEnd::Refused, sink);
         }
         if close {
             break;
         }
     }
-    WriteEnd::Closed
+    (WriteEnd::Closed, sink)
 }
 
 /// Runs a listener or hook, turning a panic into an error log. Returns `false` if it panicked.
@@ -238,35 +336,103 @@ pub(crate) fn guarded(context: &str, f: impl FnOnce()) -> bool {
 
 /// Bytes received and not yet taken from the `messages()` streams; the read loop stops
 /// reading from the socket while it is above the limit (TCP backpressure).
-struct UnreadGauge {
+///
+/// The Engine.IO sessions chain their gauge to one shared by the whole engine (`parent`): a session is over its
+/// limit when either is.
+pub(crate) struct UnreadGauge {
     bytes: AtomicUsize,
-    notify: Notify,
+    pub(crate) notify: Notify,
     limit: usize,
+    /// `true`: a release wakes every waiter (a held `POST` and the WebSocket reader can both wait). The gateway
+    /// has a single waiter, the read loop, and keeps `notify_one`, which cannot lose a release that happens
+    /// between its check and its wait.
+    wake_all: bool,
+    /// With a parent: while the parent is over its limit this gauge is only over its own when it holds more than
+    /// this many bytes, so a session that is drained is never paused by the hoarding of others.
+    fair: usize,
+    parent: Option<Arc<UnreadGauge>>,
 }
 
 impl UnreadGauge {
-    fn over_limit(&self) -> bool {
-        self.bytes.load(Ordering::SeqCst) > self.limit
+    pub(crate) fn gateway(limit: usize) -> Self {
+        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: false, fair: 0, parent: None }
+    }
+
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn new(limit: usize, parent: Option<Arc<UnreadGauge>>) -> Self {
+        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: true, fair: 0, parent }
+    }
+
+    /// Sets the fair share (see the field). Only meaningful with a parent.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn with_fair_share(mut self, fair: usize) -> Self {
+        self.fair = fair;
+        self
+    }
+
+    pub(crate) fn over_limit(&self) -> bool {
+        let own = self.bytes.load(Ordering::SeqCst);
+        own > self.limit || (own > self.fair && self.parent.as_ref().is_some_and(|p| p.over_limit()))
+    }
+
+    /// Bytes received and not yet taken.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn unread(&self) -> usize {
+        self.bytes.load(Ordering::SeqCst)
+    }
+
+    /// Resolves at the next release of this gauge or its parent. The notifications are registered when this is
+    /// called, before the caller checks `over_limit`, so a release in between is not lost.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn changed(&self) -> impl std::future::Future<Output = ()> + '_ {
+        let own = self.notify.notified();
+        let parent = self.parent.as_ref().map(|p| p.notify.notified());
+        async move {
+            match parent {
+                Some(parent) => {
+                    tokio::select! { _ = own => {}, _ = parent => {} }
+                }
+                None => own.await,
+            }
+        }
+    }
+
+    fn charge(&self, size: usize) {
+        self.bytes.fetch_add(size, Ordering::SeqCst);
+        if let Some(parent) = &self.parent {
+            parent.charge(size);
+        }
+    }
+
+    fn release(&self, size: usize) {
+        self.bytes.fetch_sub(size, Ordering::SeqCst);
+        if self.wake_all {
+            self.notify.notify_waiters();
+        } else {
+            self.notify.notify_one();
+        }
+        if let Some(parent) = &self.parent {
+            parent.release(size);
+        }
     }
 }
 
 /// Accounts one message queued in a `messages()` stream until it is taken (or dropped).
-struct UnreadTicket {
+pub(crate) struct UnreadTicket {
     gauge: Arc<UnreadGauge>,
     size: usize,
 }
 
 impl UnreadTicket {
-    fn new(gauge: &Arc<UnreadGauge>, size: usize) -> Self {
-        gauge.bytes.fetch_add(size, Ordering::SeqCst);
+    pub(crate) fn new(gauge: &Arc<UnreadGauge>, size: usize) -> Self {
+        gauge.charge(size);
         UnreadTicket { gauge: gauge.clone(), size }
     }
 }
 
 impl Drop for UnreadTicket {
     fn drop(&mut self) {
-        self.gauge.bytes.fetch_sub(self.size, Ordering::SeqCst);
-        self.gauge.notify.notify_one();
+        self.gauge.release(self.size);
     }
 }
 
@@ -916,7 +1082,7 @@ impl WebSocketServer {
                     request,
                     queue: Arc::new(OutQueue::new(options.max_buffered_amount)),
                     control,
-                    unread: Arc::new(UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit: options.max_unread_bytes }),
+                    unread: Arc::new(UnreadGauge::gateway(options.max_unread_bytes)),
                     listeners: Mutex::new(Listeners::default()),
                     closed: watch::channel(None).0,
                 }),

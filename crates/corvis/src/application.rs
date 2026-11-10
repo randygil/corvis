@@ -661,6 +661,31 @@ impl CorvisApplication {
         self.listen_in_background_with(addr, Transport::Tls(tls.settings())).await
     }
 
+    /// [`listen`](Self::listen) with the stop signal supplied by the caller instead of SIGINT/SIGTERM, running in
+    /// the background: when `shutdown` resolves the server stops accepting, drains its connections and the
+    /// application closes exactly as `listen` does (Engine.IO sessions closed, lifecycle hooks run, with no
+    /// signal name). The application is consumed; the handle ends with the result once all of that has finished.
+    /// Hidden: it exists so tests can drive the graceful shutdown without sending a process signal.
+    #[doc(hidden)]
+    pub async fn listen_until_in_background(
+        mut self,
+        addr: impl ListenAddr,
+        shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> crate::Result<(SocketAddr, tokio::task::JoinHandle<crate::Result<()>>)> {
+        let listener = self.bind(addr, &Transport::Plain).await?;
+        let shared = self.shared.clone().expect("initialized");
+        let local = listener.local_addr()?;
+        let server = self.config.server.clone();
+        let handle = tokio::spawn(async move {
+            // The close path runs whatever `serve` returned: its error (if any) is reported after the hooks ran.
+            let served = crate::server::serve(listener, shared, server, Transport::Plain, shutdown).await;
+            let closed = self.close_with_signal(None).await;
+            served?;
+            closed
+        });
+        Ok((local, handle))
+    }
+
     async fn listen_in_background_with(&mut self, addr: impl ListenAddr, transport: Transport) -> crate::Result<SocketAddr> {
         let listener = self.bind(addr, &transport).await?;
         let shared = self.shared.clone().expect("initialized");
@@ -720,6 +745,8 @@ impl CorvisApplication {
             return Ok(());
         }
         self.closed = true;
+        #[cfg(feature = "socket-io")]
+        self.get_http_server().close_engines();
         self.container.call_hook(HookKind::OnModuleDestroy, None).await?;
         crate::modules::stop_scheduler(&self.container);
         self.container.call_hook(HookKind::BeforeApplicationShutdown, signal.clone()).await?;
