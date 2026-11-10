@@ -347,3 +347,23 @@ The first security review found the points below. The maintainer's decisions ove
    element equal to it; non-string elements are ignored, as in the Node library (EN and ES).
 4. **Docs, error text** (Info): the `Display` text of a verification error can quote parts of the token, never key
    material, so it should not be returned to clients verbatim (EN and ES).
+
+## Security review (round 3)
+
+1. **No `serde_json::Value` on unverified bytes** (Low). `check_header` parsed the header with `Value`, before the key
+   provider and the signature. With `serde_json/raw_value` enabled by any crate of the build (sqlx does, so any app with
+   the ORM on Postgres), `Value` treats `{"$serde_json::private::RawValue":"<json>"}` specially and parses the inner
+   string again with a fresh recursion budget of 128: eight nested levels of 125 `[` (about 4.5 KB, under the default
+   `max_token_length`) overflow a 2 MiB stack in an unoptimized build, and the acceptance of a header varied with the
+   feature. `check_header` and `JwtService::decode` (which is unverified by contract) now deserialize into
+   `PlainJson`, a private type with a hand-written visitor that builds a `Value` itself: no special keys, no re-entrant
+   parsing, so the text parser's limit of 128 is the only depth budget and the result does not depend on features.
+   Numbers, escapes, surrogates and UTF-8 are still validated by the text parser, so the round 2 headers stay refused.
+   A header that used the magic key is now an ordinary object with that key (accepted unless it has `crit`).
+   Tests in `tests/auth_jwt_header.rs`, which turns `raw_value` on through a dev-dependency of `corvis` (dev builds
+   only; resolver 2 keeps it out of normal builds). The nested token of the finding is now a valid, signed header
+   (about 126 levels, under the limit), so its test asserts it is handled on a 2 MiB stack without a crash (accepted
+   by both paths), and a second test asserts that 200 levels are refused.
+2. **Audit of the rest.** `verify_claims` parses the payload into `Value` through `jsonwebtoken::decode`, which does so
+   only after the signature verified; that is fine. The key provider receives the raw token and does its own parsing.
+   Nothing else in `jwt.rs` or `auth/jwt/` deserializes unverified bytes.

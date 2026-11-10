@@ -282,21 +282,82 @@ pub(crate) fn has_three_segments(token: &str) -> bool {
 /// What is wrong with the protected header of a token, found before any key is looked up.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum HeaderProblem {
-    /// The first segment is not base64url of a JSON object that `serde_json::Value` parses.
+    /// The first segment is not base64url of a JSON object that the strict text parser accepts.
     Malformed,
     /// The header has a `crit` member (RFC 7515 section 4.1.11); Corvis supports no critical extensions.
     Crit,
 }
 
-/// Checks the protected header and fails closed: a header that is not a JSON object readable as a `serde_json::Value`
+/// A JSON value built by the text parser alone. `serde_json::Value`'s own deserializer is not used on bytes an
+/// attacker controls: with the `raw_value` feature (which another crate of the build may enable) it treats the key
+/// `$serde_json::private::RawValue` specially and parses the inner string again with a fresh recursion budget, so
+/// nested keys could exhaust the stack. This visitor has no special keys and no re-entrant parsing: the parser's
+/// recursion limit of 128 is the only depth budget, whatever features are enabled.
+pub(crate) struct PlainJson(pub(crate) Value);
+
+impl<'de> serde::Deserialize<'de> for PlainJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{MapAccess, SeqAccess, Visitor};
+        struct Plain;
+        impl<'de> Visitor<'de> for Plain {
+            type Value = Value;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+                Ok(Value::Bool(v))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+                Ok(Value::from(v))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+                Ok(Value::from(v))
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+                Ok(Value::from(v))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+                Ok(Value::String(v.to_owned()))
+            }
+            fn visit_string<E>(self, v: String) -> Result<Value, E> {
+                Ok(Value::String(v))
+            }
+            fn visit_unit<E>(self) -> Result<Value, E> {
+                Ok(Value::Null)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+                let mut items = Vec::new();
+                while let Some(PlainJson(item)) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(Value::Array(items))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+                let mut out = serde_json::Map::new();
+                while let Some((key, PlainJson(value))) = map.next_entry::<String, PlainJson>()? {
+                    out.insert(key, value);
+                }
+                Ok(Value::Object(out))
+            }
+        }
+        deserializer.deserialize_any(Plain).map(PlainJson)
+    }
+}
+
+/// Parses untrusted JSON bytes with [`PlainJson`].
+pub(crate) fn parse_untrusted(bytes: &[u8]) -> Option<Value> {
+    serde_json::from_slice::<PlainJson>(bytes).ok().map(|p| p.0)
+}
+
+/// Checks the protected header and fails closed: a header that is not a JSON object parsed by [`parse_untrusted`]
 /// is refused, because the decoder skips unknown members without validating them and would let such a header
 /// carry a `crit` member unseen. Only the exact member name `crit` counts.
 pub(crate) fn check_header(token: &str) -> Option<HeaderProblem> {
     use base64::Engine as _;
     let header = token.split('.').next().unwrap_or("");
     let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(header) else { return Some(HeaderProblem::Malformed) };
-    match serde_json::from_slice::<Value>(&bytes) {
-        Ok(Value::Object(map)) => map.contains_key("crit").then_some(HeaderProblem::Crit),
+    match parse_untrusted(&bytes) {
+        Some(Value::Object(map)) => map.contains_key("crit").then_some(HeaderProblem::Crit),
         _ => Some(HeaderProblem::Malformed),
     }
 }
@@ -419,7 +480,7 @@ impl JwtService {
         let payload = token.split('.').nth(1)?;
         use base64::Engine;
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        parse_untrusted(&bytes)
     }
 }
 

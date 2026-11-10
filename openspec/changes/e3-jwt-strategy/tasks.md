@@ -101,6 +101,8 @@ artifacts if it differs.
   five bypass headers tested; verify the key provider is not called
 - [x] 8.7 Round 2: cap guard nesting at 32 in `auth_guards_in` with a startup error naming the route, and a test
 - [x] 8.8 Round 2: docs EN/ES (`aud` wording, `Display` of verification errors) and spec deltas
+- [x] 8.9 Round 3: `check_header` and `JwtService::decode` parse untrusted bytes with a plain visitor, not
+  `serde_json::Value`; tests with `raw_value` on (nested token on a 2 MiB stack, feature-dependent header)
 
 ## Workflow follow-up
 
