@@ -365,6 +365,56 @@ async fn token_in_a_place_that_is_not_configured() {
     assert_eq!(h.probe.runs("jwt"), 0);
 }
 
+// ---- an OAuth2 strategy ends a chain ----
+
+#[tokio::test]
+async fn an_oauth2_strategy_in_a_chain_redirects_instead_of_falling_through() {
+    // The OAuth2 strategy starts a login for any request that is not a callback, so a chain that lists it first never
+    // reaches the strategies after it, and one that lists it last turns every anonymous request into a login start.
+    // The threat model tells applications to give OAuth2 its two routes and keep it out of chains.
+    let h = Harness::new().await;
+    let r = h.get("/chain-oauth-key", &[("x-api-key", API_KEY)]).await;
+    assert_eq!(r.status, 302, "a valid key does not help: {}", r.text());
+    assert!(r.header("location").unwrap().starts_with(&h.mock.url("/authorize")));
+    assert_eq!(Probe::count(&h.probe.key), 0, "the API key validator did not run");
+    assert_eq!(h.probe.runs("chain-oauth-key"), 0);
+}
+
+// ---- what an anonymous request costs ----
+
+#[tokio::test]
+async fn unauthenticated_cost_of_each_route_shape() {
+    let h = Harness::new().await;
+    let garbage = [
+        vec![],
+        vec![("authorization", "Bearer not-a-token".to_string())],
+        vec![("authorization", bearer(&forged_token("1")))],
+        vec![("authorization", bearer(&expired_token("1")))],
+        vec![("cookie", "connect.sid=s%3Aunknown.unknown".to_string())],
+        vec![("cookie", format!("jwt={}", forged_token("1")))],
+    ];
+    for route in ["jwt", "jwt-opt", "session", "chain-jwt-session", "default", "open", "roles", "skip-public", "skip-private"] {
+        for headers in &garbage {
+            let borrowed: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            h.get(&format!("/{route}"), &borrowed).await;
+        }
+    }
+    // A token or a cookie that does not verify costs no validator call, no session user lookup, no store access and no
+    // provider request: the signature is checked first and the store is never asked for an unsigned identifier.
+    assert_eq!(h.calls(), 0, "a validator or a lookup ran for a request without a valid credential");
+    assert!(h.store.take_ops().is_empty(), "the session store was used");
+    assert_eq!(h.mock.count(), 0);
+    // The cases that do cost something, by design: the API key validator runs for any well-formed key (it decides), the
+    // local strategy derives a key for any username and password (a dummy hash for an unknown user), and a login
+    // started with the state in the session writes a record.
+    h.get("/key", &[("x-api-key", "anything")]).await;
+    assert_eq!(Probe::count(&h.probe.key), 1);
+    h.post_json("/login", &[], json!({ "username": "nobody", "password": "x" })).await;
+    assert_eq!(Probe::count(&h.probe.local), 1);
+    h.get("/oauth-s", &[]).await;
+    assert_eq!(h.store.len(), 1);
+}
+
 // ---- sockets ----
 
 #[tokio::test]
