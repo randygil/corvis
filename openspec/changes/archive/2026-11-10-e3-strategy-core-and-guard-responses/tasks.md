@@ -17,7 +17,7 @@
   "Rate limit headers on a redirect", plus CORS headers on a stored response
 - [x] 1.4 Regression: run the existing `response_headers.rs`, `enhancer_order.rs`, `enhancers_routing.rs`,
   `res.rs` and `express_parity.rs` suites and add the "Plain guard denies" test; verify they pass unchanged
-- [ ] 1.5 Run the corvis-parity check (parity-verifier agent) after group 1, before building on it; verify the three
+- [x] 1.5 Run the corvis-parity check (parity-verifier agent) after group 1, before building on it; verify the three
   port apps keep 0 apidiff differences
 
 ## 2. Strategy contract and registry
@@ -88,7 +88,7 @@
   `auth_strategies.rs` (no Node needed)
 - [x] 6.4 Regression tests exist for every scenario of `auth/strategies` and `http/guard-responses`
 - [x] 6.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 6.6 Framework runtime code changed (router, `init`, `Provider`): run the corvis-parity check; verify the three
+- [x] 6.6 Framework runtime code changed (router, `init`, `Provider`): run the corvis-parity check; verify the three
   port apps (consi, facten, houseplan) keep 0 apidiff differences
 - [x] 6.7 Run the security-reviewer agent over the router changes and `corvis::auth` (header injection through
   appended headers and redirect URLs, short-circuit bypassing guards, fail-closed paths); verify every finding is fixed
@@ -105,3 +105,19 @@
 
 - Archive the change with `/opsx:archive` after review.
 - Close issue #136, tick it in epic #39, and move its card to Done (see the `corvis-task` skill).
+
+## Verification
+
+Checked on `dev` at fc3c6fa (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test -p corvis` | 1040 passed, 0 failed, 49 ignored |
+| Security review, first round | 3 low findings (B1 to B3) and 5 notes (I1 to I5), all fixed (group 7) |
+| Security review, second round | all eight closed; 3 informative notes (N1 to N3) fixed in the same change |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; databases equivalent |
+| Parity, houseplan | 598 checks equal (quiet hours), 0 different; databases equivalent |
+
+The parity check ran once, after the whole change, and covers tasks 1.5 and 6.6.
