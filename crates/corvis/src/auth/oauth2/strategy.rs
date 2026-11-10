@@ -370,7 +370,10 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
                 let verifier = self.options.pkce.then(|| state::derive_verifier(&cookie.keys, V::NAME, &state, issued));
                 let mut set = cookie.read(req, V::NAME);
                 set.prune(issued, self.ttl());
-                set.push(Flow { state: state.clone(), verifier: None, issued, return_to });
+                // Tied to the session the browser has now (or to having none): the callback must arrive under the
+                // same one, so a logout and another user's login in between cancel the flow.
+                let binding = state::session_binding(&cookie.keys, V::NAME, &state, req.session().as_ref());
+                set.push(Flow { state: state.clone(), verifier: None, issued, return_to, binding });
                 (verifier, Some(cookie.write(&set, V::NAME)))
             }
             Storage::Session => {
@@ -379,7 +382,7 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
                 };
                 let mut set = state::read_session(&session, V::NAME);
                 set.prune(issued, self.ttl());
-                set.push(Flow { state: state.clone(), verifier: Some(random_verifier.clone()), issued, return_to });
+                set.push(Flow { state: state.clone(), verifier: Some(random_verifier.clone()), issued, return_to, binding: None });
                 if !state::write_session(&session, V::NAME, &set) {
                     return self.internal("the session refused the state record", String::new());
                 }
@@ -486,6 +489,15 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
         let Some(flow) = taken else {
             return self.fail("state mismatch", None, true);
         };
+        // A flow that started under a session (or under none) completes under the same one only: with the state in a
+        // cookie, a logout and another user's login on a shared browser would otherwise let the pending callback finish
+        // as the new user. The flow is already taken out of the cookie, so a refusal burns it.
+        if let Storage::Cookie(cookie) = &self.storage {
+            let current = state::session_binding(&cookie.keys, V::NAME, &flow.state, req.session().as_ref());
+            if !state::binding_matches(&flow, current.as_deref()) {
+                return self.fail("state mismatch", None, true);
+            }
+        }
         if let Some(error) = error {
             let code = super::client::sanitize_error_code(error);
             return if error == "access_denied" { self.fail("access denied", None, true) } else { self.fail("provider error", code, true) };

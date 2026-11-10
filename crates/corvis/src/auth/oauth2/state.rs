@@ -64,6 +64,43 @@ pub(crate) struct Flow {
     /// Seconds since the epoch when the login started.
     pub(crate) issued: i64,
     pub(crate) return_to: Option<String>,
+    /// The session the flow started under (see [`session_binding`]): `None` when no session is in use for the
+    /// application, so the callback does not check one.
+    pub(crate) binding: Option<String>,
+}
+
+/// The binding of a flow that started without a session.
+const NO_SESSION: &str = "-";
+
+/// What ties a cookie-stored flow to the browser session it started under: a keyed digest of the session identifier
+/// (of the state and the strategy too, so it is useless anywhere else), or [`NO_SESSION`] when the request had no
+/// session that will be kept. `None` when no `SessionModule` runs for the request. The identifier cannot be recovered from the digest: it is a SHA-256 of an HMAC made with a cookie
+/// secret.
+#[cfg(feature = "auth-session")]
+pub(crate) fn session_binding(
+    keys: &CookieKeys,
+    strategy: &str,
+    state: &str,
+    session: Option<&crate::auth::session::Session>,
+) -> Option<String> {
+    let session = session?;
+    // A new session is not kept unless `save_uninitialized` is on: the browser has none yet, and the callback will not
+    // have one either. With it on, the session of this request is written with the response and the callback carries it.
+    if session.is_new() && !session.manager().options.save_uninitialized {
+        return Some(NO_SESSION.to_string());
+    }
+    let signed = keys.sign(&format!("corvis-oauth2-session-v1|{strategy}|{state}|{}", session.id()));
+    let signature = signed.rsplit('.').next().unwrap_or("");
+    Some(URL_SAFE_NO_PAD.encode(Sha256::digest(signature.as_bytes())))
+}
+
+/// `true` when the callback's binding (see [`session_binding`]) is the one the flow was started with. A flow without a
+/// binding, and a callback that has no session machinery, are not checked.
+pub(crate) fn binding_matches(flow: &Flow, current: Option<&str>) -> bool {
+    match (&flow.binding, current) {
+        (Some(started), Some(now)) => ct_eq(started.as_bytes(), now.as_bytes()),
+        _ => true,
+    }
 }
 
 /// Prints nothing: a flow holds a state and a verifier.
@@ -135,6 +172,9 @@ impl FlowSet {
                 if let Some(r) = &f.return_to {
                     m.insert("r".into(), json!(r));
                 }
+                if let Some(b) = &f.binding {
+                    m.insert("b".into(), json!(b));
+                }
                 Value::Object(m)
             })
             .collect();
@@ -160,7 +200,14 @@ impl FlowSet {
                 None
             };
             let return_to = entry.get("r").and_then(Value::as_str).filter(|r| is_safe_relative_path(r)).map(str::to_string);
-            set.flows.push(Flow { state: state.to_string(), verifier, issued, return_to });
+            // A binding that is not one this module writes is a malformed entry (a record with no binding is a flow
+            // that was not bound).
+            let binding = match entry.get("b") {
+                None => None,
+                Some(Value::String(b)) if b == NO_SESSION || is_state_shape(b) => Some(b.clone()),
+                Some(_) => continue,
+            };
+            set.flows.push(Flow { state: state.to_string(), verifier, issued, return_to, binding });
         }
         set
     }
@@ -255,7 +302,7 @@ mod tests {
     }
 
     fn flow(n: u8, issued: i64) -> Flow {
-        Flow { state: format!("{:0>43}", n), verifier: Some(format!("{:0>43}", n + 100)), issued, return_to: None }
+        Flow { state: format!("{:0>43}", n), verifier: Some(format!("{:0>43}", n + 100)), issued, return_to: None, binding: None }
     }
 
     #[test]

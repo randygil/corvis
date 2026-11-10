@@ -285,6 +285,69 @@ async fn failed_oauth2_callback() {
     assert_eq!(r.status, 200, "{}", r.text());
 }
 
+/// Review finding: a flow whose state is in a cookie is bound to the session the browser had when it started (or to
+/// having none), so a logout and another user's login on a shared browser cancel the pending callback.
+#[tokio::test]
+async fn oauth2_cookie_state_is_bound_to_the_session_it_started_under() {
+    let jar = |pairs: &[&str]| pairs.join("; ");
+    // Ana starts an account link, logs out, bob logs in, and ana's callback arrives: refused, nothing reaches the
+    // provider or the validator.
+    let h = Harness::new().await;
+    let ana = h.login("ana").await;
+    let login = oauth2_common::login_with_cookie(&h.app, "/oauth", Some(&ana)).await;
+    let state_cookie = login.cookie.clone().unwrap();
+    let out = h.post_json("/logout", &[("cookie", &ana)], json!({})).await;
+    assert_eq!(out.status, 200, "{}", out.text());
+    let bob = h.login("bob").await;
+    let callback = format!("/oauth?code=c&state={}", login.state());
+    let r = h.get(&callback, &[("cookie", &jar(&[&bob, &state_cookie]))]).await;
+    assert_eq!((r.status, r.json_value()), (401, unauthorized()), "{}", r.text());
+    assert_eq!(h.mock.count(), 0, "the provider was not contacted");
+    assert_eq!(Probe::count(&h.probe.oauth), 0, "the validator did not run");
+    // The refusal burned the flow: not even the right session can finish it now.
+    let r = h.get(&callback, &[("cookie", &jar(&[&bob, &state_cookie]))]).await;
+    assert_eq!(r.status, 401);
+
+    // The same session finishes its own flow.
+    let h = Harness::new().await;
+    let ana = h.login("ana").await;
+    let login = oauth2_common::login_with_cookie(&h.app, "/oauth", Some(&ana)).await;
+    let r = h.get(&format!("/oauth?code=c&state={}", login.state()), &[("cookie", &jar(&[&ana, login.cookie.as_deref().unwrap()]))]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+
+    // Started with no session, finished under one: refused. Started under one, finished with none: refused.
+    let h = Harness::new().await;
+    let login = oauth2_common::login(&h.app, "/oauth").await;
+    let bob = h.login("bob").await;
+    let r = h.get(&format!("/oauth?code=c&state={}", login.state()), &[("cookie", &jar(&[&bob, login.cookie.as_deref().unwrap()]))]).await;
+    assert_eq!(r.status, 401, "{}", r.text());
+    let h = Harness::new().await;
+    let ana = h.login("ana").await;
+    let login = oauth2_common::login_with_cookie(&h.app, "/oauth", Some(&ana)).await;
+    let r = h.get(&format!("/oauth?code=c&state={}", login.state()), &[("cookie", login.cookie.as_deref().unwrap())]).await;
+    assert_eq!(r.status, 401, "{}", r.text());
+    assert_eq!(h.mock.count(), 0);
+
+    // Started with no session and finished with none: the ordinary anonymous login.
+    let h = Harness::new().await;
+    let login = oauth2_common::login(&h.app, "/oauth").await;
+    let r = oauth2_common::callback(&h.app, "/oauth", &login, "c").await;
+    assert_eq!(r.status, 200, "{}", r.text());
+
+    // The state cookie holds a digest of the session, never its identifier.
+    let h = Harness::new().await;
+    let ana = h.login("ana").await;
+    let session_value = ana.split_once('=').unwrap().1.replace("%3A", ":");
+    let id = session_value.trim_start_matches("s:").split('.').next().unwrap().to_string();
+    assert!(id.len() > 16, "{id}");
+    let login = oauth2_common::login_with_cookie(&h.app, "/oauth", Some(&ana)).await;
+    let value = login.cookie.unwrap().split_once('=').unwrap().1.replace("%3A", ":");
+    let encoded = value.trim_start_matches("s:").split('.').next().unwrap().to_string();
+    let record = String::from_utf8(base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &encoded).unwrap()).unwrap();
+    assert!(record.contains("\"b\":\""), "the flow carries a binding: {record}");
+    assert!(!record.contains(&id), "the state cookie does not hold the session identifier: {record}");
+}
+
 // ---- public routes and guard order ----
 
 #[tokio::test]
