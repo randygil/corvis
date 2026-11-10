@@ -571,3 +571,118 @@ async fn allow_request_that_takes_too_long_refuses_the_request() {
     assert!(started.elapsed() < Duration::from_secs(10));
     assert_eq!(fx.engine.session_count(), 0);
 }
+
+#[tokio::test]
+async fn blind_pongs_do_not_keep_a_polling_session_that_never_polls() {
+    let options = EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(200));
+    let mut fx = start(options).await;
+    let (sid, _) = open_polling(fx.addr).await;
+    let socket = fx.socket().await;
+    // Queued data the client never collects: it must not be retained for as long as the pongs keep coming.
+    for _ in 0..8 {
+        socket.send("y".repeat(1024)).unwrap();
+    }
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(5) && socket.close_reason().is_none() {
+        let _ = post(fx.addr, &sid, "3").await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(socket.close_reason(), Some(CloseReason::PingTimeout), "closed by the ping timeout, not kept by blind pongs");
+    assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+    eventually("the session to be removed", || fx.engine.session_count() == 0).await;
+}
+
+#[tokio::test]
+async fn a_polling_client_that_receives_the_ping_and_answers_stays_alive() {
+    let options = EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(200));
+    let mut fx = start(options).await;
+    let (sid, _) = open_polling(fx.addr).await;
+    let socket = fx.socket().await;
+    // The GET is parked when each ping is queued; the client answers every ping it receives.
+    let started = std::time::Instant::now();
+    let mut pings = 0;
+    while started.elapsed() < Duration::from_millis(1500) {
+        let resp = poll(fx.addr, &sid).await;
+        assert_eq!(resp.status, 200);
+        if packets(&resp.text()).iter().any(|p| p == "2") {
+            pings += 1;
+            assert_eq!(post(fx.addr, &sid, "3").await.status, 200);
+        }
+    }
+    assert!(pings >= 3, "{pings}");
+    assert_eq!(socket.close_reason(), None);
+}
+
+#[tokio::test]
+async fn a_ping_delivered_over_polling_is_answered_over_the_upgraded_transport() {
+    let options = EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(400));
+    let mut fx = start(options).await;
+    let (sid, _) = open_polling(fx.addr).await;
+    let socket = fx.socket().await;
+    let resp = poll(fx.addr, &sid).await;
+    assert!(packets(&resp.text()).iter().any(|p| p == "2"), "{}", resp.text());
+    let mut ws = ws_connect(fx.addr, Some(&sid)).await;
+    probe(&mut ws).await;
+    send_text(&mut ws, "5").await;
+    send_text(&mut ws, "3").await;
+    // The next pings arrive over the WebSocket and are answered there.
+    for _ in 0..3 {
+        while next_text(&mut ws).await != "2" {}
+        send_text(&mut ws, "3").await;
+    }
+    assert_eq!(socket.close_reason(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_handshakes_from_an_address_at_its_cap_do_not_all_run_the_hook() {
+    use corvis::socket_io::Admission;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let fx = start(EngineOptions::new().max_sessions_per_ip(2).allow_request(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            Admission::Allow
+        }
+    }))
+    .await;
+    let addr = fx.addr;
+    let tasks: Vec<_> = (0..50).map(|_| tokio::spawn(async move { http(addr, "GET", POLLING, &[], b"").await.status })).collect();
+    let mut ok = 0;
+    let mut refused = 0;
+    for t in tasks {
+        match t.await.unwrap() {
+            200 => ok += 1,
+            503 => refused += 1,
+            other => panic!("unexpected status {other}"),
+        }
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "the hook runs at most cap - current times");
+    assert_eq!((ok, refused), (2, 48));
+    assert_eq!(fx.engine.session_count(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_or_failed_hook_gives_its_slot_back() {
+    use corvis::socket_io::Admission;
+    let fx = start(EngineOptions::new().max_sessions_per_ip(1).allow_request_timeout(Duration::from_millis(200)).allow_request(|req| {
+        let mode = req.headers().get("x-mode").and_then(|v| v.to_str().ok()).unwrap_or("allow").to_string();
+        async move {
+            match mode.as_str() {
+                "hang" => futures::future::pending::<Admission>().await,
+                "panic" => panic!("hook failure"),
+                "reject" => Admission::Reject,
+                _ => Admission::Allow,
+            }
+        }
+    }))
+    .await;
+    for mode in ["hang", "panic", "reject", "hang", "panic", "reject"] {
+        assert_eq!(http(fx.addr, "GET", POLLING, &[("X-Mode", mode)], b"").await.status, 403, "{mode}");
+    }
+    // The slot is free: the one allowed session fits, a second does not.
+    assert_eq!(http(fx.addr, "GET", POLLING, &[], b"").await.status, 200);
+    assert_eq!(http(fx.addr, "GET", POLLING, &[], b"").await.status, 503);
+}

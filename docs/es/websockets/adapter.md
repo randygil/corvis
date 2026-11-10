@@ -192,7 +192,7 @@ motivo en el arnés.
 | `upgrade_timeout`, upgrades en curso | 10 s, uno por sesión | igual | se cierra el candidato, la sesión sigue |
 | `max_buffered_amount` (en cola para el cliente) | 8 MiB | ninguno | el envío falla, se descarta la cola, `transport error` |
 | `max_unread_bytes` (recibido, aún sin leer; cada mensaje cuenta su longitud más 64 bytes, también los vacíos) | 16 MiB | ninguno | se pausa la lectura del WebSocket; la respuesta del `POST` espera |
-| `max_total_unread_bytes` (lo mismo, entre todas las sesiones; al menos `max_unread_bytes`) | 256 MiB | ninguno | mientras se excede, las sesiones con más de una cuota justa (`max(16 KiB, total / max_sessions)`) se pausan y sus `POST` esperan; las demás siguen leyendo. Peor caso: `max_total_unread_bytes + max_sessions * cuota justa` |
+| `max_total_unread_bytes` (lo mismo, entre todas las sesiones; al menos `max_unread_bytes`) | 256 MiB | ninguno | mientras se excede, las sesiones con más de una cuota justa (`max(16 KiB, total / max_sessions)`) se pausan y sus `POST` esperan; las demás siguen leyendo. Peor caso: `max_total_unread_bytes + max_sessions * cuota justa + max_sessions * max_http_buffer_size` (un mensaje por sesión, que domina con los valores por defecto) |
 | `max_sessions` | 10.000 | ninguno | handshake con `503` y `{"code":3,"message":"Too many sessions"}` |
 | `max_sessions_per_ip` (por `ip()`, IPv6 por `/64`) | 256 | ninguno | el mismo `503` |
 | `first_request_timeout` (sesión de polling sin ninguna petición tras su handshake) | 10 s, como máximo `ping_interval + ping_timeout` | ninguno | sesión cerrada con `ping timeout`, su lugar se libera |

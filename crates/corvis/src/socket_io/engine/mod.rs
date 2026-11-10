@@ -109,7 +109,45 @@ impl ServerInner {
 struct Store {
     map: HashMap<String, Arc<Session>>,
     per_ip: HashMap<String, usize>,
+    /// Handshakes that passed the caps and wait for the `allow_request` hook: counted against both caps so
+    /// concurrent handshakes cannot all reach the hook past a cap.
+    pending: usize,
+    pending_ip: HashMap<String, usize>,
     closed: bool,
+}
+
+/// A slot reserved for a handshake while the hook runs. Dropped (rejection, timeout, panic, cancelled request)
+/// it gives the slot back; `open_session` turns it into the real session under the same lock.
+struct Reservation {
+    inner: Arc<ServerInner>,
+    key: String,
+    done: bool,
+}
+
+impl Reservation {
+    fn release(&mut self, store: &mut Store) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        store.pending = store.pending.saturating_sub(1);
+        if let Some(count) = store.pending_ip.get_mut(&self.key) {
+            *count -= 1;
+            if *count == 0 {
+                store.pending_ip.remove(&self.key);
+            }
+        }
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if !self.done {
+            let inner = self.inner.clone();
+            let mut store = inner.sessions.write().unwrap_or_else(|e| e.into_inner());
+            self.release(&mut store);
+        }
+    }
 }
 
 /// Why a session could not be opened.
@@ -246,13 +284,27 @@ impl EngineServer {
         resp
     }
 
-    /// Creates a session. The `closed` flag, `max_sessions` and `max_sessions_per_ip` are checked and the session
-    /// inserted under the one lock that `close()` and `remove` take, so a handshake cannot slip in after a close
-    /// and the counts cannot be overshot by concurrent handshakes.
-    fn open_session(&self, transport: TransportKind, handshake: Request) -> Result<Arc<Session>, OpenError> {
+    /// Reserves a slot for a handshake under the lock that `close()` and `remove` take, checking the `closed`
+    /// flag and both caps against the sessions and the other reservations: a client over a cap is answered `503`
+    /// without the `allow_request` hook running, and concurrent handshakes cannot overshoot a cap.
+    fn reserve(&self, handshake: &Request) -> Result<Reservation, OpenError> {
         let mut store = self.inner.sessions.write().unwrap_or_else(|e| e.into_inner());
         let key = address_key(&handshake.ip(), handshake.remote_addr());
         self.caps_ok(&store, &key)?;
+        store.pending += 1;
+        *store.pending_ip.entry(key.clone()).or_insert(0) += 1;
+        Ok(Reservation { inner: self.inner.clone(), key, done: false })
+    }
+
+    /// Creates a session from a reservation. The `closed` flag is checked again and the session inserted under
+    /// the one lock that `close()` and `remove` take, so a handshake cannot slip in after a close.
+    fn open_session(&self, transport: TransportKind, handshake: Request, mut reservation: Reservation) -> Result<Arc<Session>, OpenError> {
+        let mut store = self.inner.sessions.write().unwrap_or_else(|e| e.into_inner());
+        let key = reservation.key.clone();
+        reservation.release(&mut store);
+        if store.closed {
+            return Err(OpenError::Closing);
+        }
         let mut id = sid::generate();
         while store.map.contains_key(&id) {
             id = sid::generate();
@@ -274,20 +326,14 @@ impl EngineServer {
         if store.closed {
             return Err(OpenError::Closing);
         }
-        if store.map.len() >= self.inner.options.max_sessions {
+        if store.map.len() + store.pending >= self.inner.options.max_sessions {
             return Err(OpenError::TooManySessions);
         }
-        if store.per_ip.get(key).copied().unwrap_or(0) >= self.inner.options.max_sessions_per_ip {
+        let held = store.per_ip.get(key).copied().unwrap_or(0) + store.pending_ip.get(key).copied().unwrap_or(0);
+        if held >= self.inner.options.max_sessions_per_ip {
             return Err(OpenError::TooManyFromAddress);
         }
         Ok(())
-    }
-
-    /// The same checks as `open_session` without inserting: run before the `allow_request` hook so a client over a
-    /// cap is answered `503` without the hook being invoked. `open_session` checks again under the write lock.
-    fn check_caps(&self, handshake: &Request) -> Result<(), OpenError> {
-        let store = self.inner.sessions.read().unwrap_or_else(|e| e.into_inner());
-        self.caps_ok(&store, &address_key(&handshake.ip(), handshake.remote_addr()))
     }
 
     /// The response for a handshake that could not open a session.
@@ -467,14 +513,16 @@ impl EngineServer {
         if query.get("EIO") != Some("4") {
             return polling::abort_request(5);
         }
-        // Before the hook: a client over a cap is answered without invoking it.
-        if let Err(error) = self.check_caps(&handshake) {
-            return self.open_refused(&handshake, false, error);
-        }
+        // Before the hook: a client over a cap is answered without invoking it, and the slot stays reserved while
+        // the hook runs.
+        let reservation = match self.reserve(&handshake) {
+            Ok(reservation) => reservation,
+            Err(error) => return self.open_refused(&handshake, false, error),
+        };
         if !self.admitted(&handshake).await {
             return self.handshake_refused(&handshake, false, StatusCode::FORBIDDEN, 4, "Forbidden");
         }
-        let session = match self.open_session(TransportKind::Polling, handshake.clone()) {
+        let session = match self.open_session(TransportKind::Polling, handshake.clone(), reservation) {
             Ok(session) => session,
             Err(error) => return self.open_refused(&handshake, false, error),
         };
@@ -522,13 +570,14 @@ impl EngineServer {
                 if query.get("EIO") != Some("4") {
                     return polling::abort_upgrade(5);
                 }
-                if let Err(error) = self.check_caps(&handshake) {
-                    return self.open_refused(&handshake, true, error);
-                }
+                let reservation = match self.reserve(&handshake) {
+                    Ok(reservation) => reservation,
+                    Err(error) => return self.open_refused(&handshake, true, error),
+                };
                 if !self.admitted(&handshake).await {
                     return self.handshake_refused(&handshake, true, StatusCode::FORBIDDEN, 4, "Forbidden");
                 }
-                let session = match self.open_session(TransportKind::WebSocket, handshake.clone()) {
+                let session = match self.open_session(TransportKind::WebSocket, handshake.clone(), reservation) {
                     Ok(session) => session,
                     Err(error) => return self.open_refused(&handshake, true, error),
                 };
@@ -696,10 +745,28 @@ mod tests {
         let server = EngineServer::new(EngineOptions::new()).unwrap();
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
         let handshake = Request::for_upgrade(parts, "127.0.0.1:1".parse().unwrap(), &Default::default()).unwrap();
-        assert!(server.open_session(TransportKind::Polling, handshake.clone()).is_ok());
+        let reservation = server.reserve(&handshake).ok().unwrap();
+        assert!(server.open_session(TransportKind::Polling, handshake.clone(), reservation).is_ok());
+        let late = server.reserve(&handshake).ok().unwrap();
         server.close();
-        assert!(matches!(server.open_session(TransportKind::Polling, handshake), Err(OpenError::Closing)));
+        // A reservation taken before the close does not open a session after it.
+        assert!(matches!(server.open_session(TransportKind::Polling, handshake.clone(), late), Err(OpenError::Closing)));
+        assert!(matches!(server.reserve(&handshake), Err(OpenError::Closing)));
         assert_eq!(server.session_count(), 0);
         assert!(server.inner.sessions.read().unwrap().per_ip.is_empty(), "the address counts are released with the sessions");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_reservation_gives_its_slot_back() {
+        let server = EngineServer::new(EngineOptions::new().max_sessions_per_ip(1)).unwrap();
+        let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
+        let handshake = Request::for_upgrade(parts, "127.0.0.1:1".parse().unwrap(), &Default::default()).unwrap();
+        let held = server.reserve(&handshake).ok().unwrap();
+        assert!(matches!(server.reserve(&handshake), Err(OpenError::TooManyFromAddress)));
+        drop(held);
+        let again = server.reserve(&handshake).ok().unwrap();
+        drop(again);
+        let store = server.inner.sessions.read().unwrap();
+        assert!(store.pending == 0 && store.pending_ip.is_empty());
     }
 }

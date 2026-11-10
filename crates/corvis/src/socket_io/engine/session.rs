@@ -95,6 +95,8 @@ pub(crate) struct Heartbeat {
     next_ping: Option<Instant>,
     pong_deadline: Option<Instant>,
     refreshed: bool,
+    /// The pending ping left the outbox in a poll response.
+    delivered: bool,
 }
 
 /// What a heartbeat deadline means.
@@ -108,7 +110,7 @@ pub(crate) enum Due {
 
 impl Heartbeat {
     pub(crate) fn new(now: Instant, interval: Duration, timeout: Duration) -> Self {
-        Heartbeat { interval, timeout, next_ping: Some(after(now, interval)), pong_deadline: None, refreshed: false }
+        Heartbeat { interval, timeout, next_ping: Some(after(now, interval)), pong_deadline: None, refreshed: false, delivered: false }
     }
 
     /// The next instant something is due.
@@ -128,9 +130,20 @@ impl Heartbeat {
             self.next_ping = None;
             self.pong_deadline = Some(after(now, self.timeout));
             self.refreshed = false;
+            self.delivered = false;
             return Some(Due::Ping);
         }
         None
+    }
+
+    /// The pending ping was handed to the client by a poll response.
+    pub(crate) fn ping_delivered(&mut self) {
+        self.delivered = true;
+    }
+
+    /// Whether a pong over polling answers a ping the client has actually received.
+    pub(crate) fn pong_is_earned(&self) -> bool {
+        self.delivered
     }
 
     /// A pong arrived: stop waiting and ping again `interval` from now.
@@ -365,7 +378,11 @@ impl Session {
             }
             match &packet {
                 Packet::Pong(_) => {
-                    s.heartbeat.pong(now);
+                    // Over polling a pong counts only for a ping a GET delivered: a client that never polls
+                    // cannot keep its session (and its queue) alive by posting `3` blindly.
+                    if s.transport != TransportKind::Polling || s.heartbeat.pong_is_earned() {
+                        s.heartbeat.pong(now);
+                    }
                     drop(s);
                     self.timer.notify_waiters();
                     return;
@@ -455,6 +472,9 @@ impl Session {
         }
         let max = self.options.max_http_buffer_size;
         let mut batch = self.outbox.take_batch(max, |p| p.polling_len() + 1);
+        if batch.iter().any(|p| matches!(p, Packet::Ping(_))) {
+            s.heartbeat.ping_delivered();
+        }
         if batch.is_empty() {
             if self.outbox.is_drained() {
                 // Closing and nothing left: the client is told to close.

@@ -198,11 +198,14 @@ a closing handshake. A panic in application code reached from a session MUST be 
 - **THEN** the connection is closed within 10 s and the session leaves the server's session count
 
 ### Requirement: Heartbeat matches Node
-The server SHALL send a ping packet `2` every `pingInterval` after the last pong, and MUST close the session with
-reason `ping timeout` when no pong `3` arrives within `pingTimeout` after a ping. A ping sent by the client (other than
-the upgrade probe) MUST close the session with reason `transport error`, as Node's "invalid heartbeat direction". A pong
-that arrives while no ping is pending MUST NOT change the schedule (Node lets it postpone the next ping, so a client
-that only posts `3` could keep a session alive; this is a deliberate divergence, not observable without timing).
+The server SHALL send a ping `2` every `pingInterval` after the last pong and MUST close the session with reason
+`ping timeout` when no pong `3` arrives within `pingTimeout`. A client ping (other than the upgrade probe) MUST close it
+with `transport error`. A pong with no ping pending MUST NOT change the schedule, and over polling a pong counts only
+after a poll response delivered the ping (deliberate divergence from Node).
+
+#### Scenario: Blind pongs over polling
+- **WHEN** a polling client never sends a GET and posts `3` every 50 ms
+- **THEN** the session is closed with reason `ping timeout` and its queue is released
 
 #### Scenario: Client stops answering pings
 - **WHEN** a raw client stops answering pings, with `ping_interval` 300 ms and `ping_timeout` 200 ms on both servers
@@ -216,15 +219,9 @@ that only posts `3` could keep a session alive; this is a deliberate divergence,
 
 ### Requirement: Received data waits within a bound
 Messages received and not yet taken by the application SHALL be bounded per session by `max_unread_bytes` (default
-16 MiB). Above it, the WebSocket transport MUST stop reading from the socket, and a polling `POST` MUST NOT be
-answered until the backlog falls below the bound (the session's heartbeat still applies).
-
-Every received message, whatever its length (empty ones included, text or binary), MUST be charged its length plus a
-fixed per-message overhead (64 bytes) against that bound, since a queued message costs memory that its payload does not
-measure. Messages received and not yet taken SHALL also be bounded across every session of an Engine.IO server by
-`max_total_unread_bytes` (default 256 MiB, at least `max_unread_bytes`): while the total is exceeded, every WebSocket
-MUST stop being read and every polling `POST` MUST be held, exactly as for the per-session bound. A release of either
-bound MUST wake every waiter (a held `POST` and the WebSocket reader of the same session can both wait).
+16 MiB) and across the server by `max_total_unread_bytes` (default 256 MiB, at least `max_unread_bytes`). Above either,
+the WebSocket MUST stop being read and a polling `POST` MUST be held (the heartbeat still applies). Every message, empty
+ones included, MUST be charged its length plus 64 bytes. A release MUST wake every waiter.
 
 #### Scenario: Application that does not read
 - **WHEN** a client sends 64 MiB of messages over WebSocket to a session whose messages are never taken
@@ -298,12 +295,16 @@ WebSocket-first sessions are not subject to it.
   difference from Node; a session that polls, or that connects over WebSocket, is not closed by it
 
 ### Requirement: Handshakes can be refused by the application
-An Engine.IO server SHALL accept an `allow_request` hook that receives the handshake request (with the application's
-request settings) and runs, before any session is created, for polling handshakes and WebSocket-first connections.
-When it rejects, panics, or takes longer than `allow_request_timeout` (default 5 s, validated like the other durations;
-a warning at most once per minute for timeouts), the server MUST answer `403` with `{"code":4,"message":"Forbidden"}`
-and create no session. It MUST run after the session caps are checked: a client over a cap is answered `503` without
-the hook being invoked. Requests of existing sessions MUST NOT run it.
+An Engine.IO server SHALL accept an `allow_request` hook that runs before any session is created. When it rejects,
+panics or exceeds `allow_request_timeout` (default 5 s), the server MUST answer `403` with
+`{"code":4,"message":"Forbidden"}` and create no session. It MUST run after the caps are checked, with a slot reserved
+against both caps while it runs, so a client over a cap gets `503` without the hook. Existing sessions' requests MUST NOT
+run it.
+
+#### Scenario: Concurrent handshakes at a cap
+- **WHEN** 50 handshakes from one address arrive at once with `max_sessions_per_ip` 2 and a slow hook
+- **THEN** the hook runs twice, two sessions open and the other 48 are answered `503`; a slot freed by a rejection,
+  timeout, panic or cancelled request is reusable
 
 #### Scenario: Hook rejects
 - **WHEN** the hook rejects a polling handshake and a WebSocket-first connection
@@ -334,12 +335,9 @@ handshakes; it MUST happen when the HTTP server starts its graceful shutdown and
 - **THEN** the session ends with reason `transport close` on both servers
 
 ### Requirement: Options are validated
-Attaching an Engine.IO server SHALL fail, with an error naming the option, on a zero `ping_interval`, `ping_timeout`,
-`upgrade_timeout`, `max_http_buffer_size`, `max_payload_packets`, `max_buffered_amount`, `max_unread_bytes` or
-`max_sessions`, `max_sessions_per_ip`, `max_total_unread_bytes`, `first_request_timeout` or `allow_request_timeout`, on a path that does not
-start with `/`, on any of `ping_interval`, `ping_timeout`, `upgrade_timeout`, `close_timeout`, `allow_request_timeout` above one day (the timers
-add them to the clock, and the arithmetic MUST NOT panic whatever the value), on a `first_request_timeout` above
-`ping_interval + ping_timeout`, and on a `max_total_unread_bytes` below `max_unread_bytes`.
+Attaching an Engine.IO server SHALL fail, with an error naming the option, on a zero duration, size or count option
+(`close_timeout` excepted), a path without a leading `/`, a timer option above one day (the arithmetic MUST NOT panic),
+a `first_request_timeout` above `ping_interval + ping_timeout`, or a `max_total_unread_bytes` below `max_unread_bytes`.
 
 #### Scenario: Zero ping timeout
 - **WHEN** an Engine.IO server is attached with `ping_timeout(Duration::ZERO)`

@@ -188,7 +188,7 @@ created. Where Node has no bound, Corvis differs on purpose; each difference is 
 | `upgrade_timeout`, upgrades in progress | 10 s, one per session | same | the candidate is closed, the session stays |
 | `max_buffered_amount` (queued for the client) | 8 MiB | none | the send fails, the queue is discarded, `transport error` |
 | `max_unread_bytes` (received, not yet read; each message counts its length plus 64 bytes, empty ones too) | 16 MiB | none | WebSocket reads pause; the `POST` answer waits |
-| `max_total_unread_bytes` (the same, across all sessions; at least `max_unread_bytes`) | 256 MiB | none | while exceeded, sessions holding more than a fair share (`max(16 KiB, total / max_sessions)`) pause and their `POST`s wait; the others keep reading. Worst case: `max_total_unread_bytes + max_sessions * fair share` |
+| `max_total_unread_bytes` (the same, across all sessions; at least `max_unread_bytes`) | 256 MiB | none | while exceeded, sessions holding more than a fair share (`max(16 KiB, total / max_sessions)`) pause and their `POST`s wait; the others keep reading. Worst case: `max_total_unread_bytes + max_sessions * fair share + max_sessions * max_http_buffer_size` (one message per session, which dominates with the defaults) |
 | `max_sessions` | 10,000 | none | handshake answered `503` with `{"code":3,"message":"Too many sessions"}` |
 | `max_sessions_per_ip` (per `ip()`, IPv6 per `/64`) | 256 | none | the same `503` |
 | `first_request_timeout` (polling session with no request after its handshake) | 10 s, at most `ping_interval + ping_timeout` | none | session closed with `ping timeout`, place released |

@@ -426,3 +426,28 @@ transport confusion and the close race have no Node counterpart to differ from, 
 - R4: the preview docs state the many-address limit, edge rate limiting, `allow_request` and sizing `max_sessions`.
 - Harness: no wire-visible change in this round (fair share, address normalization and the hook order have no Node
   counterpart), so `expected-differences.json` is unchanged.
+
+### Security review fixes, third round
+
+- Blind pongs over polling (medium): a session that never issued a GET kept itself alive with `POST 3`, retaining its
+  outbound queue (up to `max_buffered_amount`) with no open connection. The heartbeat now records whether the pending
+  ping was delivered: `try_poll` marks it when the batch it drains contains the ping. Over polling a pong counts only
+  after that; a pong for an undelivered ping is ignored and the session dies by ping timeout. The WebSocket transport
+  accepts every pong that answers a pending ping (a connection is open), so the upgrade path keeps working: a ping
+  delivered over polling is answered over the new transport, and a ping queued while a GET is parked is delivered by
+  that GET. A ping that waits behind a large backlog is delivered only when the backlog drains, as before.
+- A global outbound budget (across sessions, like `max_total_unread_bytes`) was considered and left out of scope: the
+  per-session `max_buffered_amount` cap plus this fix bound the queue of a session without a connection to one ping
+  timeout cycle. Candidate follow-up.
+- Caps reserved before the hook (low): `reserve` checks the closed flag and both caps under the write lock and counts a
+  pending reservation (global and per address key) against them, so concurrent handshakes at a cap are answered `503`
+  without running the hook; the hook runs at most `cap - current` times at once. The `Reservation` guard releases the
+  slot on rejection, timeout, panic or a dropped future; `open_session` converts it into the session under the same lock
+  and checks `closed` again. `check_caps` is gone.
+- Docs (info): the worst-case inbound memory in `docs/websockets/adapter.md` and its Spanish page now include the
+  `max_sessions * max_http_buffer_size` term (one message per session), which dominates with the defaults.
+- Spec: the heartbeat and hook requirements state the new rules and three requirements were shortened to the 500
+  character limit (details stay in the scenarios and in this document).
+- Tests: `engine_io_security` has the regression tests for the blind pongs (never polling, legitimate polling client,
+  upgrade) and for the concurrent hook and slot release; unit test `a_dropped_reservation_gives_its_slot_back`.
+
