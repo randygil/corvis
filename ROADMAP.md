@@ -84,8 +84,8 @@ Gateways compatible with socket.io (the default WebSocket adapter of the origina
 | #32 | Engine.IO: handshake, polling, upgrade and heartbeat | L | `e2-engine-io-handshake-polling-upgrade-and-heartbeat` |
 | #33 | Socket.IO: namespaces, events and acks | M | `e2-socket-io-namespaces-events-and-acks` |
 | #34 | Rooms and broadcast | M | `e2-socket-io-rooms-and-broadcast` |
-| #35 | IoAdapter for gateways | M | `e2-ioadapter-for-gateways` |
-| #36 | Redis adapter for multiple instances | M | `e2-redis-adapter-for-multiple-instances` |
+| #35 | IoAdapter for gateways | M | `e2-socket-io-gateway-adapter` |
+| #36 | Redis adapter for multiple instances | M | `e2-socket-io-redis-adapter` |
 | #37 | Differential tests against Node socket.io | M | `e2-differential-tests-against-node-socket-io` |
 | #38 | Socket.IO docs and example | S | `e2-socket-io-docs-and-example` |
 
