@@ -86,6 +86,15 @@ Not considered: an attacker who controls the server process, the operating syste
 Each table lists the threat, what the module does about it, the test or specification scenario that proves it, and what is
 left. "Spec" means the scenario of the OpenSpec capability named, kept in `openspec/specs/` once the change is archived.
 
+::: warning Do not register `CacheInterceptor` for the whole application when it has authenticated `GET` routes
+`CacheInterceptor` keys a `GET` response by its URL alone and replays it to whoever passes the route's guards. Registered
+globally (`Provider::app_interceptor::<CacheInterceptor>()`, as the [caching page](/data/caching) shows for a plain
+application), it serves the first user's response to every other authenticated user, and to anonymous clients on routes
+whose guard is optional or that have no guard (the session user is restored on those). The authentication modules cannot fix
+this: the cache is a separate module and its keys have no per-request part. It is filed as #177. Until it is fixed, apply
+`#[use_interceptors(CacheInterceptor)]` only to routes whose body is the same for everyone.
+:::
+
 ### Strategy core
 
 | Threat | Mitigation | Verified by | Residual risk |
@@ -95,6 +104,7 @@ left. "Spec" means the scenario of the OpenSpec capability named, kept in `opens
 | A reason for the failure reaches the client | the answer is the plain `401 {"message":"Unauthorized","statusCode":401}`; the reason is in `Request::auth_info()` only | `crates/corvis/tests/auth_invariants.rs` (`reasons_are_indistinguishable`, `chain_position_is_not_revealed`) | an `on_failure` closure that echoes the failure is the application's choice |
 | A guard response is used outside the guard phase | `respond_with` works only inside `can_activate` | `crates/corvis/tests/auth_hardening.rs` | none |
 | A strategy name is misspelled or hidden behind a wrapper guard | names are checked at startup, also through `CanActivate::inner_guards` | `crates/corvis/tests/auth_guard.rs` | a wrapper that exposes neither `as_any` nor `inner_guards` is not checked until its first request |
+| An application callback never answers and holds the request | the JWT key provider (which runs for any well-formed token, forged ones included), the JWT validator, the local validator and the API key validator each have a deadline, 5 s by default (`key_provider_timeout`, `validator_timeout`); a callback that misses it is dropped (its future is cancelled) and every caller gets the same `503`, with one warning a minute that names the strategy | `crates/corvis/tests/auth_callback_timeouts.rs`, `crates/corvis/tests/auth_api_key_options.rs` | a callback that blocks its thread instead of awaiting cannot be cancelled; the session store and the OAuth2 provider have their own deadlines |
 | Credentials in a query string reach the logs | strategies declare their credential parameters; the request log, `Debug` of a request and the router's 404 message hide them | `crates/corvis/tests/auth_api_key_log.rs`, `crates/corvis/tests/auth_oauth2_log.rs`, `crates/corvis/tests/fuzz_auth.rs` (`canary_secrets`) | parameters your own code reads are not known to the framework |
 
 ### JWT
@@ -105,9 +115,10 @@ left. "Spec" means the scenario of the OpenSpec capability named, kept in `opens
 | Weak HMAC secret | a secret under 32 bytes stops the application at startup | `crates/corvis/tests/auth_jwt_options.rs`, `crates/corvis/tests/auth_defaults.rs` (`secret_minimum`) | a long secret that is guessable |
 | Token without expiry, expired or not yet valid | `exp` is required, `nbf` honored, `clock_tolerance` is zero by default and capped at 300 s | `crates/corvis/tests/auth_jwt.rs` | a token stays valid until `exp`: there is no revocation |
 | Oversized or deeply nested unverified input | `max_token_length` 8192; the unverified header and payload are parsed without `serde_json::Value` | `crates/corvis/tests/auth_jwt_header.rs` | none |
-| Token in a cookie is an ambient credential | extractors are explicit; a cookie extractor is documented as a CSRF surface | `crates/corvis/tests/auth_jwt.rs` | `SameSite` and CSRF protection are the application's |
+| Token in a cookie is an ambient credential, and a cookie planted from a sibling subdomain | extractors are explicit; a cookie name that appears more than once in the request yields no token (the uniform `401`), as the session cookie does; a startup warning names a cookie extractor whose cookie has no `__Host-` prefix | `crates/corvis/tests/auth_invariants.rs` (`a_jwt_cookie_sent_twice_is_no_token`), `crates/corvis/tests/auth_jwt_log.rs` | a planted cookie that is the only one still authenticates as its owner: name the cookie `__Host-...`. `SameSite` and CSRF protection are the application's, and a cookie token issued without `SameSite` authenticates cross-site `POST`s in browsers that do not default to `Lax` |
 | Credential in the URL | the query extractor is opt-in and logs a startup warning | `crates/corvis/tests/auth_jwt_log.rs` | the URL is still in proxies' logs |
 | `JwtService` (the older module) is looser than the strategy | `verify` applies `iss` and `aud` strictly when configured and refuses `crit`; secrets under 32 bytes and a missing `exp` are still accepted there | `crates/corvis/tests/auth_jwt.rs` | tracked in #174; use the JWT strategy for authentication |
+| The key provider is down | a provider that fails is a failed attempt (`401`, and a chain goes on to the next strategy), as `secretOrKeyProvider` does in the original; the next strategy still needs its own valid credential | `crates/corvis/tests/auth_invariants.rs` (`failing_dependency_before_a_weaker_strategy`) | other dependency outages (API key validator, hasher, session store, OAuth2 provider) are `5xx` errors that end the chain: the difference is deliberate parity, not a way in |
 
 ### Passwords and local login
 
@@ -135,24 +146,27 @@ left. "Spec" means the scenario of the OpenSpec capability named, kept in `opens
 |---|---|---|---|
 | Forged or tampered cookie | HMAC-SHA256 with keys of at least 32 bytes, constant-time verification, up to 8 keys for rotation | `crates/corvis/tests/signed_cookies.rs`, `crates/corvis/tests/auth_session.rs` | the cookie name is not part of the signature: use separate keys per cookie |
 | Session fixation | a new identifier at login and logout; the old record is destroyed | `crates/corvis/tests/auth_session.rs`, `crates/corvis/tests/auth_invariants.rs` (`callback_that_logs_in`) | none |
-| A failed request creates or renews a session | a failed login writes nothing and sets no cookie; deleting cookies and `rolling` renewal are allowed | `crates/corvis/tests/auth_invariants.rs` (`failed_login_with_an_anonymous_session`) | none |
+| A failed request creates or renews a session | a failed login writes nothing and sets no cookie while `save_uninitialized` is off (the default); deleting cookies and `rolling` renewal are allowed | `crates/corvis/tests/auth_invariants.rs` (`failed_login_with_an_anonymous_session`) | with `save_uninitialized(true)` a failed login gets a new anonymous session and cookie, which carry no authority |
 | A login that a later guard rejects stays logged in | a guard login is kept only when the request is not rejected | `crates/corvis/tests/auth_session_review.rs`, `crates/corvis/tests/auth_session_review2.rs` | a handler that logs in itself decides |
+| A rejected request leaves cookies a strategy appended | the rejection mark discards the session login only; a cookie a strategy appends with `append_response_header` is sent on every later `4xx` and `5xx`, as in Express | not mitigated: by design | a custom strategy must not append a cookie that carries authority; log in through the session |
 | Session stolen from the store or the cookie | `HttpOnly`, `Secure`, `SameSite=Lax`; idle 24 h and absolute 7 day timeouts | `crates/corvis/tests/auth_defaults.rs` (`cookies_set_by_the_module`) | the cookie is an ambient credential: CSRF protection is yours |
 | Store outage or a hostile record | every call is bounded by `store_timeout`; records are size and depth limited; a failed load is a `500` | `crates/corvis/tests/auth_session_http.rs`, `crates/corvis/tests/auth_session_contention.rs` | with the store down, every request that carries a session cookie fails, public routes and health checks included |
 | Memory store flood | `max_sessions`, per-user limits and a total byte budget | `crates/corvis/tests/auth_session_memory_heap.rs` | an anonymous flood can evict anonymous sessions; use a shared store in production |
-| Login CSRF | not stopped by `SameSite=Lax` | `docs/security/csrf.md` | the application adds a same-origin check or a token to login routes |
+| Login CSRF | not stopped by `SameSite=Lax`: a cross-site urlencoded form post to a login route logs the victim in as the attacker. `SameOriginGuard` exists only in `examples/cats-app`, not in the framework, and is a candidate to move into `corvis::auth` | `docs/security/csrf.md` | the application adds a same-origin check or a token to login routes |
 
 ### OAuth2
 
 | Threat | Mitigation | Verified by | Residual risk |
 |---|---|---|---|
 | Login CSRF and a forged callback | `state` bound to the browser (signed `__Host-` cookie or the session), checked before any provider request, used once | `crates/corvis/tests/auth_oauth2.rs`, `crates/corvis/tests/auth_invariants.rs` (`failed_oauth2_callback`, `forged_callback_on_an_authenticated_session`) | none |
+| A pending flow completes under another user (a shared browser: A starts an account link, logs out, B logs in, A's callback arrives) | with the state in a cookie, the flow records a keyed digest of the session identifier (or that there was none) and the callback is refused with the uniform failure when its session differs: another session, a session where there was none, none where there was one; with `state_in_session()` the flow dies with the session. The digest is a SHA-256 of an HMAC made with a state cookie key, so the identifier cannot be recovered from the cookie | `crates/corvis/tests/auth_invariants.rs` (`oauth2_cookie_state_is_bound_to_the_session_it_started_under`) | the binding is skipped when no `SessionModule` runs; a session created during the start request itself (anything the handler writes to it) makes a flow that began without one fail; a key rotation between the redirect and the callback fails that login once. Account linking should use `state_in_session()` or rely on the binding, and compare provider accounts with `Request::user()` only after it |
 | Code interception | PKCE `S256` is always on | `crates/corvis/tests/auth_oauth2.rs` | none |
 | Replay of a callback | a redeemed state is refused, also while the first request is in flight and after logout | `crates/corvis/tests/auth_invariants.rs` (`callback_in_flight_twice_reaches_the_provider_once`, `callback_replayed_after_logout`) | none |
 | Open redirect through `return_to` or `failure_redirect` | only a relative path under a fixed rule, or a configured absolute `https` URL | `crates/corvis/tests/auth_oauth2.rs`, `crates/corvis/tests/fuzz_auth.rs` (`redirect_targets`) | the redirect URI allow-list is tracked in #172 |
 | A hostile provider answers with huge, slow or redirecting documents | no redirects, no proxy variables, deadlines and size limits, TLS verification | `crates/corvis/tests/auth_oauth2.rs`, `crates/corvis/tests/auth_oauth2_review.rs` | none |
 | Tokens in logs, errors or `Debug` | `Debug` of grants and tokens prints names only; provider text never reaches a response | `crates/corvis/tests/auth_oauth2_log.rs`, `crates/corvis/tests/auth_invariants.rs` (`debug_of_every_public_type`) | the validator receives the tokens: store them encrypted |
 | Starting logins costs the server | a login start with the state in the session writes a record; the in-flight request count is bounded | `crates/corvis/tests/auth_login_throttle.rs` (`oauth2_login_start_over_the_limit`) | rate limit the login route |
+| A cross-site page cancels a victim's pending login | none: a browser keeps four flows per strategy, and four forced starts (top-level `GET`s to the start route) push out the victim's | `crates/corvis/tests/auth_oauth2.rs` | a nuisance, the victim retries |
 | State and session regeneration disagree | the state record is removed before the provider is contacted, the identifier changes at login, no `oauth2:` key survives | `crates/corvis/tests/auth_invariants.rs` (`callback_that_logs_in`) | none |
 
 ### Combinations of strategies
@@ -176,10 +190,11 @@ These are the interactions no single strategy sees.
 
 | Threat | Mitigation | Verified by | Residual risk |
 |---|---|---|---|
-| A throttler that runs after an `AuthGuard` limits nothing | a throttled request runs no strategy, no key derivation, no store write and no provider request when the throttler is first; startup logs a warning for an `AuthGuard` that runs before a `ThrottlerGuard` on a route | `crates/corvis/tests/auth_login_throttle.rs`, `crates/corvis/tests/auth_guard_order_log.rs` | a wrapper guard that hides both guards hides the warning |
+| A throttler that runs after an `AuthGuard` limits nothing | a throttled request runs no strategy, no key derivation, no store write and no provider request when the throttler is first; startup logs a warning for a route whose guards, flattened in order through `inner_guards`, run an `AuthGuard` before a `ThrottlerGuard` | `crates/corvis/tests/auth_login_throttle.rs`, `crates/corvis/tests/auth_guard_order_log.rs` | a wrapper guard that exposes neither guard through `as_any` or `inner_guards` hides the warning |
 | `#[public]` opens a route that needed authentication | `#[public]` is honored only by a guard built with `.skip_public()`; a guard built without it authenticates public routes too | `crates/corvis/tests/auth_invariants.rs` (`invalid_credentials_on_a_public_route`, `controller_marked_public_handler_not_marked`) | a global `.skip_public()` guard trusts every `#[public]` mark |
 | A route with only an optional guard counts as protected | an optional guard does not count as access control for route posture | `crates/corvis/tests/auth_invariants.rs` (`posture_with_only_an_optional_guard`), `crates/corvis/tests/route_posture.rs` | a hand-written guard counts unless it overrides `controls_access` |
-| Anonymous requests are expensive | a token that does not verify or a cookie that does not verify costs no validator call, no lookup, no store access and no provider request | `crates/corvis/tests/auth_invariants.rs` (`unauthenticated_cost_of_each_route_shape`) | the API key validator, the password derivation and a login start with the state in the session cost something by design |
+| Anonymous requests are expensive | a token that does not verify or a cookie that does not verify costs no validator call, no lookup, no store access and no provider request | `crates/corvis/tests/auth_invariants.rs` (`unauthenticated_cost_of_each_route_shape`) | the API key validator, the password derivation and a login start with the state in the session cost something by design; a request that carries a session cookie of the client's own costs two store calls (and a user lookup when it is logged in) even on a `404` or a `429`, because the session middleware runs before every guard: only a limiter ahead of `SessionModule` shields the store |
+| A shared cache serves one user's response to another | not mitigated here: `CacheInterceptor` keys by URL, so a global registration replays the first user's `GET` response on authenticated routes (see the warning at the top of this section) | not mitigated: filed as #177 | do not register `CacheInterceptor` for the whole application when it has authenticated `GET` routes |
 
 ### WebSocket and Socket.IO handshakes
 
@@ -191,7 +206,9 @@ These are the interactions no single strategy sees.
 | Cross-site WebSocket hijacking | `GatewayOptions::allowed_origins` | `crates/corvis/tests/ws_security.rs` | opt-in |
 | Token in the handshake query reaches logs | the request line log is written by `LoggingInterceptor`, which runs for HTTP routes: a handshake is not logged by it | by construction (`crates/corvis/src/common/interceptor.rs`) | proxies and your own handshake code can still log the URL: prefer a header or the first message |
 | Engine.IO handshake | Engine.IO requests are dispatched before the router, so no middleware, session or guard runs for them | by construction (`crates/corvis/src/server.rs`); `crates/corvis/tests/engine_io.rs` shows the handshake request the callback receives | authenticate in the connection handler |
-| Socket.IO handshake | pending: the Socket.IO layer is not merged yet (#33) | none yet | reviewed when it lands; strategies at the handshake are #173 |
+| Socket.IO handshake | the layer was reviewed: a session cookie never reaches a handshake (no user and no session on it, even with a valid cookie), events for a pending or refused namespace close the connection, and the log lines carry no URL, `auth` payload or panic text | reviewed by hand (see Findings); `crates/corvis/tests/auth_invariants.rs` (`session_cookie_on_an_upgrade_request`) covers the plain upgrade | authenticate in the connect handler; strategies at the handshake are #173 |
+| A connect middleware does not cover every Socket.IO namespace | none: `IoServer::use_middleware` registers on the main namespace only, as `io.use` does in Node, so a client that sends a CONNECT for `/admin` reaches its handlers without the middleware, and nothing warns | not mitigated: filed as #178 | register the middleware on every namespace that has handlers |
+| `Debug` of a Socket.IO `Handshake` prints credentials | none: it prints the whole CONNECT `auth` payload and the handshake URL, query string included | not mitigated: filed as #178 | never format a handshake with `{:?}` |
 
 ### Login rate limiting
 
@@ -238,6 +255,9 @@ compares each line with the code, so a default that changes in one place only fa
 | JWT `exp` | required | `JwtStrategyOptions::allow_missing_exp` | optional |
 | API key length | 512 bytes (at most 4096) | `ApiKeyStrategyOptions::max_key_bytes` | none |
 | API key validator timeout | 5 s | `ApiKeyStrategyOptions::validator_timeout` | none |
+| JWT key provider timeout | 5 s (1 ms to 300 s) | `JwtStrategyOptions::key_provider_timeout` | none |
+| JWT validator timeout | 5 s (1 ms to 300 s) | `JwtStrategyOptions::validator_timeout` | none |
+| Local validator timeout | 5 s (1 ms to 300 s) | `LocalStrategyOptions::validator_timeout` | none |
 | API key source | the `X-Api-Key` header | `ApiKeyStrategyOptions` | the header |
 | Username and password length | 1024 bytes each | `LocalStrategyOptions` | none |
 | New password hashes | argon2id, 19456 KiB, 2 iterations, 1 lane; bcrypt cost at least 10 | `PasswordHasherOptions` | bcrypt, no minimum |
@@ -258,6 +278,8 @@ jwt.max_token_length = 8192
 jwt.clock_tolerance_seconds = 0
 jwt.max_clock_tolerance_seconds = 300
 jwt.require_exp = true
+jwt.key_provider_timeout_seconds = 5
+jwt.validator_timeout_seconds = 5
 api_key.min_secret_bytes = 32
 api_key.max_key_bytes = 512
 api_key.validator_timeout_seconds = 5
@@ -265,6 +287,7 @@ api_key.default_source = X-Api-Key
 cookie_keys.min_secret_bytes = 32
 cookie_keys.max_secrets = 8
 local.max_credential_bytes = 1024
+local.validator_timeout_seconds = 5
 local.argon2_memory_kib = 19456
 local.argon2_iterations = 2
 local.argon2_parallelism = 1
@@ -302,8 +325,9 @@ url_credentials.jwt = off
 ```
 
 Known differences between strategies, each with its reason: the OAuth2 client secret has no minimum length (the provider issues
-it); the JWT cookie extractor has no startup warning while the query extractor has one (a cookie is not in a URL, but see the
-CSRF row of the JWT table); `JwtService` accepts what the JWT strategy refuses (#174).
+it); the JWT `from_body_field` extractor, `SessionCookie::without_same_site()` and the largest `clock_tolerance` log no startup
+warning while the query extractor, a cookie extractor without `__Host-` and a non-`Secure` cookie do (an ambient cookie
+weakness is in the tables above; the others are choices the application makes on purpose); `JwtService` accepts what the JWT strategy refuses (#174).
 
 ## Dependencies
 
@@ -371,6 +395,13 @@ deferred.
 | #174 | Low | `JwtService` defaults: secrets under 32 bytes and tokens without `exp` are accepted | Issue filed; use the JWT strategy for authentication |
 | #172 | Low | redirect URI allow-list for OAuth2 | Issue filed |
 | #170, #171 | Info | Redis and ORM session stores | Issues filed; the memory store is per process |
+| R-7 | Low | `from_cookie` in the JWT extractors read the first of several cookies of one name, so a cookie planted from a sibling subdomain in front of the victim's own authenticated as the attacker, also through `chain(["jwt", "session"])` | Fixed: a name that appears more than once yields no token, and a startup warning names a cookie extractor without `__Host-`. Test: `a_jwt_cookie_sent_twice_is_no_token` in `crates/corvis/tests/auth_invariants.rs` |
+| R-8 | Low | the guard-order warning looked for a throttler only in guards after the one where it saw the `AuthGuard`: a composite guard exposing `[AuthGuard, ThrottlerGuard]` through `inner_guards` got no warning and limited nothing | Fixed: the guards are flattened in order through `inner_guards`. Test: `crates/corvis/tests/auth_guard_order_log.rs` |
+| R-9 | Low | an OAuth2 flow whose state is in a cookie survived a logout and another user's login on a shared browser, and completed with `Request::user()` set to the new user | Fixed: the flow is bound to the session it started under. Test: `oauth2_cookie_state_is_bound_to_the_session_it_started_under` in `crates/corvis/tests/auth_invariants.rs` |
+| R-10 | Low | the JWT key provider (reachable by any well-formed token), the JWT validator and the local validator had no deadline, while the API key validator had one | Fixed: `key_provider_timeout` and `validator_timeout`, 5 s, `503`. Tests: `crates/corvis/tests/auth_callback_timeouts.rs` |
+| R-11 | Info | a guard that passed cleared the user but kept the auth info of an earlier guard | Fixed. Test: `a_later_pass_clears_the_auth_info_of_an_earlier_guard_too` in `crates/corvis/tests/auth_hardening.rs` |
+| #177 | Medium | `CacheInterceptor` registered globally serves one user's `GET` response to others on authenticated routes | Issue filed (cache module, outside this change); see the warning at the top of the threats section |
+| #178 | Low | Socket.IO: a connect middleware on the main namespace does not cover the others, and `Debug` of `Handshake` prints the `auth` payload | Issue filed |
 
 Proposed issues from this review, for the maintainer to file: a session store outage fails public routes and health checks
 for browsers that carry a session cookie (low, availability: restore the session user lazily or skip loading on `#[public]`

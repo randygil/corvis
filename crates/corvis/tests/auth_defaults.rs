@@ -15,7 +15,9 @@ use std::time::Duration;
 use auth_common::*;
 use corvis::auth::api_key::{self, ApiKeyStrategyOptions, ExpectedApiKey};
 use corvis::auth::jwt::{self, JwtStrategyOptions};
-use corvis::auth::local::{Argon2Params, DEFAULT_ACQUIRE_TIMEOUT, DEFAULT_MAX_CREDENTIAL_BYTES, MIN_BCRYPT_COST, VerifyLimits};
+use corvis::auth::local::{
+    Argon2Params, DEFAULT_ACQUIRE_TIMEOUT, DEFAULT_MAX_CREDENTIAL_BYTES, LocalStrategyOptions, MIN_BCRYPT_COST, VerifyLimits,
+};
 use corvis::auth::oauth2::{
     DEFAULT_MAX_CODE_BYTES, DEFAULT_REDEEMED_STATES_MAX, DEFAULT_STATE_TTL, OAuth2Endpoints, OAuth2HttpOptions, OAuth2Options,
 };
@@ -92,6 +94,8 @@ async fn actual() -> BTreeMap<String, String> {
     put("jwt.clock_tolerance_seconds", seconds(&field(&jwt_options, "clock_tolerance")));
     put("jwt.max_clock_tolerance_seconds", secs(jwt::MAX_CLOCK_TOLERANCE));
     put("jwt.require_exp", (field(&jwt_options, "allow_missing_exp") == "false").to_string());
+    put("jwt.key_provider_timeout_seconds", seconds(&field(&jwt_options, "key_provider_timeout")));
+    put("jwt.validator_timeout_seconds", seconds(&field(&jwt_options, "validator_timeout")));
 
     let key_options = format!("{:?}", ApiKeyStrategyOptions::default());
     put("api_key.min_secret_bytes", api_key::MIN_SECRET_BYTES.to_string());
@@ -108,6 +112,7 @@ async fn actual() -> BTreeMap<String, String> {
     let params = Argon2Params::default();
     let limits = VerifyLimits::default();
     put("local.max_credential_bytes", DEFAULT_MAX_CREDENTIAL_BYTES.to_string());
+    put("local.validator_timeout_seconds", seconds(&field(&format!("{:?}", LocalStrategyOptions::default()), "validator_timeout")));
     put("local.argon2_memory_kib", params.memory_kib.to_string());
     put("local.argon2_iterations", params.iterations.to_string());
     put("local.argon2_parallelism", params.parallelism.to_string());

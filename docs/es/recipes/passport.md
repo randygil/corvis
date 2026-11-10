@@ -337,6 +337,8 @@ pub struct AuthModule;
 | `passReqToCallback` | | siempre activa |
 | | `.max_token_length(bytes)` | 8192 por defecto, se comprueba antes de decodificar |
 | | `.allow_missing_exp()` | acepta tokens sin `exp`; registra un aviso al arrancar |
+| | `.key_provider_timeout(Duration)` | 5 s por defecto, de 1 ms a 300 s: un provider de claves que tarda más es un `503` |
+| | `.validator_timeout(Duration)` | 5 s por defecto, de 1 ms a 300 s: un validador que tarda más es un `503` |
 
 `maxAge`, `subject`, `jwtid`, `nonce`, `complete`, `clockTimestamp` y las audiencias con expresiones regulares no están soportadas.
 
@@ -360,7 +362,9 @@ Solo se prueba el primer token no vacío: si falla, no se consultan los extracto
 :::
 
 ::: warning Un token en una cookie es una credencial ambiental
-El navegador envía la cookie por sí solo, así que un token en cookie necesita las protecciones de cualquier sesión por cookie: mitiga CSRF (un token o una cabecera propia en las peticiones que cambian estado, o una comprobación de `Origin`) y usa `SameSite=Lax` o `Strict`, `Secure` y `HttpOnly` al emitirla.
+El navegador envía la cookie por sí solo, así que un token en cookie necesita las protecciones de cualquier sesión por cookie: mitiga CSRF (un token o una cabecera propia en las peticiones que cambian estado, o una comprobación de `Origin`) y usa `SameSite=Lax` o `Strict`, `Secure` y `HttpOnly` al emitirla. Una cookie emitida sin `SameSite` se envía en `POST` entre sitios en los navegadores que no usan `Lax` por defecto.
+
+Una página de un subdominio hermano puede poner una cookie para todo el dominio, delante de la tuya. Cuando el nombre de la cookie aparece más de una vez en una petición, `from_cookie` no da ningún token (el `401` de siempre), igual que la cookie de sesión, en lugar de fiarse del primer valor. Una cookie plantada que es la única sigue autenticando como su dueño, así que dale a la cookie el prefijo `__Host-` (`Secure`, `Path=/`, sin `Domain`) para que el navegador rechace una puesta desde un subdominio hermano. La estrategia registra una advertencia al arrancar, con el nombre de la estrategia y de la cookie, cuando el nombre de un extractor de cookie no tiene el prefijo `__Host-`.
 :::
 
 ::: warning Tokens en URLs
@@ -382,7 +386,7 @@ Con una clave fija, `.algorithms([..])` no puede estar vacía y debe pertenecer 
 
 Un secreto HMAC debe tener al menos 32 bytes (RFC 7518, sección 3.2): uno más corto, o vacío, detiene el arranque, y un provider de claves que devuelve uno hace fallar esa request (`JwtService` sigue aceptando secretos más cortos). Genera uno con `openssl rand -hex 32`.
 
-Un provider de claves recibe la request y el token en bruto, que **todavía no está verificado**: usa su `iss` o su `kid` solo para elegir una clave, nunca para confiar en un valor. Se ejecuta en cada request, así que guarda en caché lo que obtengas; un error es un `401`, no un `500`. El texto del error se registra en nivel debug, así que un provider nunca debe poner el token en bruto en su error. Antes de que el provider se ejecute, la estrategia rechaza un token más largo que `max_token_length`, uno con cabecera `crit` (RFC 7515, sección 4.1.11; Corvis no soporta extensiones críticas) y uno que no sean exactamente tres segmentos base64url no vacíos.
+Un provider de claves recibe la request y el token en bruto, que **todavía no está verificado**: usa su `iss` o su `kid` solo para elegir una clave, nunca para confiar en un valor. Se ejecuta en cada request, así que guarda en caché lo que obtengas; un error es un `401`, no un `500`. El texto del error se registra en nivel debug, así que un provider nunca debe poner el token en bruto en su error. El provider se ejecuta para cualquier token bien formado, también los falsificados, así que tiene un plazo: `key_provider_timeout` (5 s por defecto); uno que tarda más se descarta (su future se cancela) y la petición se responde con un `503 Service Unavailable` igual para todo token, con una advertencia por minuto. Un provider que falla, en cambio, es un intento fallido, así que una cadena sigue con la siguiente estrategia. Antes de que el provider se ejecute, la estrategia rechaza un token más largo que `max_token_length`, uno con cabecera `crit` (RFC 7515, sección 4.1.11; Corvis no soporta extensiones críticas) y uno que no sean exactamente tres segmentos base64url no vacíos.
 
 ```rust
 struct ByIssuer {
@@ -411,6 +415,8 @@ Cada una es a propósito, y el test diferencial la marca:
 - **El payload debe ser un objeto JSON.** El original pasa un payload de tipo cadena a `validate`.
 - **Los nombres de cabecera no distinguen mayúsculas** en `from_header`; el original solo encuentra nombres escritos en minúsculas.
 - **Los tokens están limitados a 8192 bytes** por defecto (`.max_token_length(..)`).
+- **Un token en cookie enviado dos veces no es un token.** `from_cookie` rechaza un nombre que aparece más de una vez en la petición, en lugar de leer el primer valor (ver el aviso de arriba).
+- **Los callbacks tienen plazos.** El provider de claves y el validador se cortan tras `key_provider_timeout` y `validator_timeout` (5 s) con un `503`; el original los espera para siempre.
 - **La configuración se comprueba al arrancar**: un secreto HMAC de menos de 32 bytes, un issuer o una audience vacíos, una tolerancia superior a 300 s y las demás combinaciones de arriba no arrancan.
 - **`ES512` no está disponible** (`jsonwebtoken` 9).
 - **Un token con cabecera `crit`, o que no sean tres segmentos base64url, falla** antes de que se ejecute el provider de claves.
@@ -486,6 +492,7 @@ impl AuthController {
 | `passReqToCallback` | `validate` siempre recibe la `Request` |
 | ninguna | `.max_username_bytes(1024)`, `.max_password_bytes(1024)` |
 | leer el query string | `.allow_query_credentials()`, desactivado por defecto |
+| ninguno | `.validator_timeout(Duration)`, 5 s por defecto (de 1 ms a 300 s): un validador que tarda más se descarta y se responde con un `503` igual para todo cliente, con una advertencia por minuto |
 
 Las credenciales se leen como lo hace `passport-local`: cada campo se busca en el body ya parseado (JSON o `application/x-www-form-urlencoded`). A diferencia del original, el query string se lee solo con `.allow_query_credentials()`; entonces un campo sin valor en el body se busca también allí. Un nombre de campo como `user[email]` es una ruta (`body.user.email`); un segmento de un array es un índice; una cadena que aparece antes del final de la ruta es el valor; un objeto o un array al final no da valor. Un valor ausente, vacío o que no es una cadena cuenta como ausente, y cuando falta cualquiera de las dos credenciales la estrategia falla sin llamar a `validate`. `AuthGuard` responde el mismo `401` para cualquier fallo; el fallo en sí (`{"message":"Missing credentials"}`, estado `400`) está disponible en `.on_failure(..)`. Un nombre de campo vacío detiene la aplicación al arrancar.
 
@@ -761,6 +768,8 @@ Tú **eliges dónde vive el estado de un login**; no elegir nada detiene `init()
 La cookie de estado es `__Host-oauth2.<name>`, `Path=/`, `HttpOnly`, `Secure`, `SameSite=Lax` (el callback es una navegación de nivel superior entre sitios, así que `Strict` nunca se enviaría), sin `Domain`, y vive tanto como el estado (600 s por defecto). El prefijo `__Host-` hace que un navegador rechace una cookie puesta por un subdominio hermano, lo que cierra el CSRF de login por cookie tossing. `.state_cookie_secure(false)` (desarrollo en HTTP plano) quita `Secure` y el prefijo y registra una advertencia al arrancar. Un `state_cookie_name(..)` sin el prefijo `__Host-` pierde esa protección y registra al arrancar una advertencia que nombra la estrategia y la cookie (no es un error: el desarrollo en HTTP plano y las aplicaciones sin subdominios no confiables son legítimos). Tras una rotación de claves, un login iniciado antes falla una vez (el verificador se deriva con la primera clave).
 
 Con la sesión como almacén, el mismo ataque necesita que la cookie de sesión la ponga otra persona (un subdominio hermano, o un atacante de red en HTTP plano): asigna a la cookie de sesión el prefijo `__Host-` (`SessionOptions::name("__Host-sid")`) y mantenla `Secure`. Con el nombre por defecto `connect.sid` la estrategia registra al arrancar una advertencia que lo dice.
+
+**Un flujo queda ligado a la sesión bajo la que empezó.** Con el state en una cookie, un navegador puede ser compartido: la usuaria A inicia una vinculación de cuenta, cierra sesión, el usuario B inicia sesión y llega el callback pendiente de A. Por eso el flujo guarda un resumen con clave del identificador de sesión de la petición que lo inició (o una marca de que no había ninguna), y el callback se rechaza con el fallo uniforme cuando la sesión con la que llega difiere: otra sesión, una sesión donde no había ninguna, o ninguna donde había una. El resumen es un SHA-256 de un HMAC hecho con una clave de la cookie de state, así que el identificador no se puede recuperar de la cookie. La comprobación se omite cuando no se ejecuta ningún `SessionModule`, una sesión que crea la propia petición de inicio (cualquier cosa que tu handler escriba en ella, o `save_uninitialized(false)` activado) hace fallar un flujo que empezó sin sesión, y una rotación de claves entre la redirección y el callback hace fallar ese login una vez. Una aplicación que vincula la cuenta del proveedor a `Request::user()` debe seguir usando `state_in_session()`, donde el flujo muere con la sesión, o apoyarse en esta vinculación y comparar cuentas solo después de que el guard haya autenticado la petición.
 
 **Un `state` se canjea una sola vez por instancia.** Con el almacén en cookie, un cliente que ignora la cookie que borra el registro puede presentar el mismo registro una y otra vez. Por eso cada instancia de la estrategia guarda un conjunto acotado de los `state` verificados que ya presentó al endpoint de tokens (durante la vigencia del estado, `redeemed_states_max(..)` entradas, 100000 por defecto; cuando se llena se olvidan las más antiguas). Un callback cuyo state está en el conjunto, o se está canjeando en ese momento, recibe el 401 uniforme antes de cualquier petición al proveedor, así que las repeticiones concurrentes de un mismo flujo cuestan una sola petición de token. Solo entran los estados que coincidieron con el registro del navegador, así que los callbacks falsificados no hacen crecer nada. Es un control de costo por instancia, no una garantía entre instancias: un balanceador envía la repetición a una instancia que no ha visto el state, y allí solo la detiene el rechazo del código usado por parte del proveedor. El almacén en sesión elimina el registro por sí mismo, y varias instancias necesitan un almacén de sesiones compartido para hacerlo de forma coherente.
 
