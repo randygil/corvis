@@ -412,15 +412,20 @@ pertenecen a un espacio de nombres (`r` en `/` y `r` en `/admin` son dos salas),
 nombre de su propio id desde que se conecta, antes de que corran sus manejadores de conexión, así que emitir a un id llega a
 ese socket. Una sala se elimina cuando sale su último socket. Un socket que se desconecta sigue en sus salas mientras corren
 los manejadores `on_disconnecting` (un manejador puede leer `socket.rooms()` y despedirse de quienes están en ellas) y en
-ninguna en `on_disconnect`; unir a una sala un socket que ya se desconectó no hace nada.
+ninguna en `on_disconnect`; unir a una sala un socket que ya se desconectó no hace nada. Un cliente no puede lograr que el
+servidor lo ponga en la sala de otro socket nombrando su id: `join` rechaza una sala que se llama como el id de otro socket
+del espacio de nombres (`RoomError::SocketIdRoom`, y `sockets_join` omite a ese socket), un socket no puede salir de la sala
+que lleva su propio id, y el id que se asigna al conectarse un socket nunca es el nombre de una sala existente. Node permite
+las tres cosas; son diferencias declaradas.
 
 Los broadcasts parten de un servidor, un espacio de nombres o un socket y encadenan `to`, `within` (el `in` de Node, una
 palabra clave en Rust), `except`, `local` y `timeout`. Cada llamada devuelve un operador nuevo, así que un operador base se
 puede reutilizar. Seleccionan los sockets que selecciona el adaptador en memoria de Node: `to` recibe una o más salas y llega
 a la unión, cada socket una vez; `except` recibe salas, ids de socket incluidos, y quita a sus miembros; sin `to`, un
-broadcast llega a todos los sockets del espacio de nombres; una sala en la que no hay nadie no selecciona a nadie. Un
-broadcast que parte de un socket (`socket.broadcast()`, `socket.to(...)`, `socket.within(...)`, `socket.except(...)`) excluye a
-ese socket.
+broadcast llega a todos los sockets del espacio de nombres; una sala en la que no hay nadie no selecciona a nadie, y tampoco
+un `to` o `within` con una lista vacía (Node llega a todos, lo que dejaría que una lista vacía que vino de un cliente
+signifique "todos"; `except` con una lista vacía no cambia nada, y sin `to` son todos). Un broadcast que parte de un socket
+(`socket.broadcast()`, `socket.to(...)`, `socket.within(...)`, `socket.except(...)`) excluye a ese socket.
 
 ```rust
 use corvis::socket_io::{IoOptions, IoServer};
@@ -451,7 +456,11 @@ Las operaciones terminales (`emit`, `emit_with_ack`, `fetch_sockets`, `sockets_j
 mismo código funciona cuando se cambia el adaptador. Con el adaptador en memoria por defecto terminan sin esperar a ningún
 cliente. Un nombre de sala por encima del límite nunca provoca un pánico y nunca se descarta (quitarlo de `to` podría dejar
 la lista vacía, que significa todos): el operador guarda el error y toda operación terminal devuelve `EmitError::InvalidRoom`
-sin enviar ni cambiar nada. Los nombres de evento reservados se rechazan, igual que en un emit directo.
+sin enviar ni cambiar nada. Un operador nombra como mucho `max_rooms_per_socket` salas en total (`to`, `within` y `except`
+juntos): pasado eso toda operación terminal devuelve `EmitError::InvalidRoom(RoomError::TooManyTargets)`. Encadenar es
+lineal: cada llamada cuesta las salas que añade, por larga que sea la cadena. Una llamada al adaptador hecha por un operador,
+y el `init` del adaptador, están acotados por `adapter_timeout` (5 s por defecto): un adaptador que nunca responde hace
+fallar la llamada con `AdapterError::Timeout`. Los nombres de evento reservados se rechazan, igual que en un emit directo.
 
 #### Qué cuesta un broadcast
 
@@ -463,15 +472,21 @@ bytes cada uno), no `N x E`. Nunca espera a un destinatario: la cola de cada des
 y los demás destinatarios siguen (el broadcast devuelve `Ok`; no dice qué destinatarios se cerraron). Aún no hay un
 presupuesto de salida para todo el servidor (issue #176), así que un broadcast a `S` clientes que no leen puede dejar
 `S x max_buffered_amount` en cola, más un marco en vuelo por sesión como en cualquier emit; dimensiona
-`max_buffered_amount` y `max_sessions` con ese producto en mente. Los transportes copian el texto compartido a un marco
-cuando lo escriben, una sesión a la vez.
+`max_buffered_amount` y `max_sessions` con ese producto en mente. Una sesión WebSocket copia el texto compartido a su propio
+marco cuando arranca su escritor, así que `S` destinatarios WebSocket que no leen retienen `S` marcos a la vez, no uno: un
+texto de 1 MiB a 100 de ellos retuvo 104,85 MB (medido), mientras que los destinatarios de long polling retienen solo la
+referencia compartida. Una sola dirección puede fijar hasta 256 x (8 MiB + un marco) de memoria de salida con los valores por
+defecto, porque ningún presupuesto de salida de todo el servidor acota las sesiones en conjunto (issues #175 y #176).
 
 La pertenencia a salas no se bloquea mientras se entregan los paquetes: un broadcast selecciona a sus destinatarios con un
 bloqueo de lectura, lo suelta y después entrega, así que un manejador puede entrar, salir y hacer broadcast durante un
 broadcast y un abanico grande no bloquea las entradas. La selección es el momento del broadcast: un socket que salió de una
 sala antes de que empezara no lo recibe, uno que se desconectó nunca recibe un paquete, y un socket que entra o sale mientras
 se entrega un broadcast puede recibir ese o no. Los paquetes que una tarea emite a un socket, por broadcast o directamente,
-llegan en el orden en que se emitieron. Un abanico muy grande cede el turno al runtime cada 512 destinatarios.
+llegan en el orden en que se emitieron: dos broadcasts de un mismo llamador, el segundo esperado después de que el primero
+volvió, llegan a cada destinatario que tienen en común en ese orden. Los broadcasts de tareas concurrentes no tienen orden
+entre sí (los manejadores de una conexión corren de forma concurrente, así que dos retransmisiones de un mismo cliente son dos
+tareas). Un abanico muy grande cede el turno al runtime cada 512 destinatarios.
 
 #### Confirmaciones
 
@@ -485,7 +500,11 @@ espera `max_pending_acks` respuestas recibe el evento pero no se le espera. En e
 ningún destinatario conserva una confirmación pendiente de ella. La respuesta de cada destinatario cuenta una vez y solo
 responden los destinatarios del broadcast. Node conserva solo el primer valor de cada respuesta; Corvis devuelve todos
 (`Args`). Mientras espera, un broadcast con confirmaciones retiene como mucho `max_broadcast_ack_bytes` (16 MiB) de
-respuestas más una entrada pendiente (una referencia y un id) por destinatario.
+respuestas más una entrada pendiente (una referencia y un id) por destinatario. Además, cada respuesta sigue cargada al
+presupuesto de lectura de la conexión que la envió (su sesión, su dirección y el servidor) hasta que la llamada termina, sea
+como sea, así que un manejador que inicia muchas llamadas no puede lograr que una dirección retenga más que su cuota: las
+lecturas de esa conexión se pausan en su cuota como con cualquier otro paquete retenido, y la carga sobrevive a la sesión de
+la conexión cuando la llamada sigue.
 
 #### Operaciones en bloque
 
@@ -494,8 +513,12 @@ operador: `io.to("r1").sockets_join("r2").await?` hace que todos los sockets de 
 `io.to("r").disconnect_sockets(false)` hace que salgan del espacio de nombres (reciben `io server disconnect`) sin cerrar sus
 conexiones. Un socket en su tope de salas se omite y se registra un aviso; los demás entran. `fetch_sockets()` devuelve
 `RemoteSocket` con `id()`, `handshake()`, `rooms()` y `data()`, y `emit`, `join`, `leave` y `disconnect` que funcionan esté o
-no el socket conectado a este proceso (pasan por el adaptador); `local()` da el `IoSocket` cuando lo está. El resultado es
-una instantánea y su coste es proporcional a la selección, no al servidor.
+no el socket conectado a este proceso: para un socket de este proceso actúan directamente sobre ese socket, para uno que
+tiene otro proceso pasan por el adaptador dirigidas al id de ese socket y a nada más; `local()` da el `IoSocket` cuando es
+local. El resultado es una instantánea y su coste es proporcional a la selección, no al servidor: el handshake de un socket
+local se comparte, no se copia, así que un resultado reserva unos cientos de bytes por socket sea cual sea el tamaño del
+handshake. `Debug` de `RemoteSocket`, `SocketInfo` y `HandshakeInfo` nunca imprime cookies, cabeceras de autorización, valores
+de `auth` ni una cadena de consulta.
 
 #### Límites de las salas
 
@@ -504,7 +527,11 @@ una instantánea y su coste es proporcional a la selección, no al servidor.
 | `max_rooms_per_socket` (la sala de su propio id incluida) | 1.000 | ninguno | `RoomError::TooManyRooms`; la llamada no une ninguna de sus salas |
 | `max_room_name_length` (en `join`, `to`, `within`, `except`) | 256 bytes, al menos 20 | cualquier valor | `RoomError::NameTooLong`; en un operador, `EmitError::InvalidRoom` y no se envía nada |
 | Salas de un espacio de nombres | como mucho sockets x `max_rooms_per_socket`; las salas vacías se eliminan, y un socket que sale o se desconecta no deja pertenencia atrás | sin límite | derivado |
-| Salas nombradas en una cadena `to` / `except` | sin tope: la lista es de la propia aplicación y el coste es lineal en ella | sin tope | n/a |
+| Memoria de las pertenencias | unos 475 bytes cada una, fuera de todo presupuesto: 121,6 MB por espacio de nombres para una dirección con los valores por defecto (256 sesiones x 1.000 salas), 4,75 GB por espacio de nombres en todo el servidor (10.000 sesiones x 1.000 salas) | sin límite | derivado; baja `max_rooms_per_socket`, `max_room_name_length`, `max_sessions_per_ip` o `max_sessions` |
+| Nombres en un `join` / `sockets_join` | como mucho `max_rooms_per_socket`, rechazado antes de tomar ningún bloqueo | sin tope | `RoomError::TooManyRooms` |
+| Salas nombradas en una cadena `to` / `within` / `except` | `max_rooms_per_socket` en total | sin tope | `EmitError::InvalidRoom(RoomError::TooManyTargets)`; no se envía nada |
+| `adapter_timeout` (una llamada al adaptador hecha por un operador, y `init`) | 5 s | ninguno | `AdapterError::Timeout` |
+| Respuestas retenidas por un broadcast con confirmaciones | cargadas al presupuesto de lectura de la conexión que envió cada una, hasta que la llamada termina | ninguno | las lecturas de esa conexión se pausan en su cuota |
 | Codificaciones por broadcast | una, compartida por todos los destinatarios | una | n/a |
 | Búfer de envío por destinatario | `max_buffered_amount`, 8 MiB | ninguno | esa sesión se cierra con `transport error`; el emisor y los demás no se ven afectados |
 | El emisor esperando a los destinatarios | nunca | nunca | n/a |
@@ -512,14 +539,16 @@ una instantánea y su coste es proporcional a la selección, no al servidor.
 | `max_broadcast_ack_bytes` (respuestas reunidas por un broadcast) | 16 MiB | ninguno | se descartan las respuestas siguientes; `ResponsesTooLarge` |
 
 Diferencias que un cliente puede ver, cada una declarada en el arnés con el escenario que la ejercita: la sala 1.001 de un
-socket y un nombre de sala de 257 bytes se rechazan (Node los acepta), y una confirmación de broadcast sin `timeout()` espera
-`ack_timeout` (Node falla antes de que ningún cliente responda). Las demás filas son iguales a Node o solo las ve el código
-del servidor.
+socket y un nombre de sala de 257 bytes se rechazan (Node los acepta), unirse al id de otro socket se rechaza y salir de la
+sala del propio id no hace nada (Node permite ambas cosas), un `to` con una lista vacía no llega a nadie (Node llega a
+todos), y una confirmación de broadcast sin `timeout()` espera `ack_timeout` (Node falla antes de que ningún cliente
+responda). Las demás filas son iguales a Node o solo las ve el código del servidor.
 
 #### El adaptador
 
 Las salas y los broadcasts pasan por un adaptador, uno por espacio de nombres: `IoOptions::adapter(fábrica)` reemplaza el
-adaptador en memoria por defecto (el `io.adapter(...)` de Node). Su trait tiene pertenencia síncrona de los sockets locales
+adaptador en memoria por defecto (el `io.adapter(...)` de Node); al cerrar el servidor se cierra una vez el adaptador de cada
+espacio de nombres. Su trait tiene pertenencia síncrona de los sockets locales
 y operaciones `async` y falibles para todo lo que abarca un clúster (broadcast, broadcast con confirmaciones, sockets de
 salas, fetch, añadir y quitar sockets, desconectar, número de servidores), el paquete le llega antes de codificarse, y las
 opciones de broadcast llevan las salas, las salas excluidas y las banderas, como los mensajes de `@socket.io/redis-adapter`.
