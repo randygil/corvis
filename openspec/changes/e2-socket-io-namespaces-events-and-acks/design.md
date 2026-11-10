@@ -398,3 +398,87 @@ These settle the open questions and override the design where they differ.
    accounting, `on_closing`) are made against the code #32 merged: the first task compares this design with it and
    records the adjustments in Implementation notes.
 6. The security review is mandatory before the merge (parser, attachment reassembly, ack tracking, limits).
+
+## Implementation notes
+
+Recorded while implementing, against `origin/dev` at `cabeb57` (#32 merged).
+
+### The design against the merged Engine.IO module (task 1.1)
+
+- Names that held: `EngineServer::{new, attach, on_connection, close, session_count}`, `EngineSocket::{id, handshake, ip,
+  transport, send, messages, close, closed, close_reason}`, `CloseReason` (`transport close`, `transport error`,
+  `ping timeout`, `parse error`, `forced close`), `sid::generate`, `EngineOptions` re-exported by `corvis::socket_io`.
+- `messages()` already queued `(message, UnreadTicket)` internally and dropped the ticket when the message was taken, as
+  the design said. The addition is `EngineSocket::messages_held()`, a stream of `(EngineMessage, Held)` where `Held` is a
+  public wrapper of the ticket, and `EngineSocket::hold(bytes) -> Held`, which charges the session's gauge (and the
+  server-wide one) for something the layer keeps: the decoded structure. Both share the single inbox with `messages()`.
+- `send_all(Vec<EngineMessage>)` is `OutQueue::push_group` (new, in `ws.rs`) under one lock with `push`'s rule applied to
+  the sum of the sizes; `Session::send` and `send_all` share the full-buffer handling (`transport error`).
+- `EngineServer::on_closing(callback)`: `close()` sets the `closed` flag and takes its snapshot under the sessions lock
+  (as before), then runs the hooks (each under `guarded`, so a panic does not stop the close), then closes the sessions.
+  Putting the flag first means no session can open between the hook and the close.
+- Test helpers behind `#[cfg(test)]`: `EngineServer::open_test_socket` (a WebSocket-first session with no transport),
+  `EngineSocket::{feed, take_sent, is_closing}`. They let `src/socket_io/tests.rs` test the layer on Tokio's paused clock
+  without a network.
+- `tests/engine_io.rs`, `tests/engine_io_security.rs`, `tests/engine_io_ws.rs` and the Engine.IO conformance test pass
+  unmodified.
+
+### Decisions and deviations
+
+- **More options than the design lists**, each a bound on something a client can make the server hold or wait for:
+  `max_decoded_bytes` (a decoded packet, 16 MiB; the design only bounded the text), `max_auth_bytes` (16 KiB: the `auth`
+  object lives as long as the socket, so 1 MB of it times 10,000 sessions was 10 GB), `max_event_name_len` (256),
+  `max_args` (128), `attachment_timeout` (30 s: the design bounded the bytes of a half-sent binary packet but a client
+  that answers pings could hold them forever), `middleware_timeout` (10 s). All validated; `max_decoded_bytes` must be at
+  least the engine's `max_http_buffer_size` and `max_auth_bytes` at most `max_decoded_bytes`.
+- **Charging decoded structures.** `IoValue` is `Object(Box<IndexMap>)` so every node is 40 bytes; the cost model is 48
+  bytes per value, plus the text of strings and keys, plus 64 per object entry, whatever the value holds (an empty array
+  costs as much as a number). The decoder spends from a budget while it reads, so a 1 MB packet of `[]` is refused before
+  the 500,000 arrays exist. The charge is taken from the session's gauge (`hold`) when the packet is decoded and released
+  when its handler ends; a binary packet holds its header's cost and every attachment's message ticket until the packet
+  is handed over. The connection task takes the next message only while `held < max_unread_bytes` and a handler slot is
+  free (a reassembling packet is always completed), so what the layer holds stays inside the Engine.IO budget and no queue
+  of its own exists.
+- **JSON reader.** The decoder has its own visitor (`parser.rs`) instead of `jwt.rs`'s `PlainJson`: it has to spend a
+  budget and build `IoValue`, which `PlainJson` (a `serde_json::Value` builder) cannot do. It has no special keys, never
+  uses `IgnoredAny`, never builds a `Value`, and checks the depth itself. Conversion out of `IoValue` is guarded too:
+  `deserialize_into::<Value>()`, `Args::get::<Value>`, `to_json()` and `TryFrom<IoValue> for Value` refuse an object with a
+  key under `$serde_json::private::` (`IoValueError::ReservedKey`), because `Value`'s deserializer re-enters the parser for
+  `RawValue` when `raw_value` is on (sqlx turns it on); the value stays reachable as an `IoValue`.
+- **Depth is 127, not 128.** `serde_json` refuses the 128th nested container, and the decoder sits on it, so 127 is the
+  effective limit (`MAX_DEPTH`); the encoder and the conversions use the same number so a packet this server writes can
+  always be read back. The spec text says "deeper than 128 levels"; 127 is stricter by one level, invisible to a client.
+- **Stricter than Node, all fail-closed, listed in `fixtures/parser.json` tests as `STRICTER`:** an event or
+  acknowledgement without a payload, an acknowledgement without an id, an id on CONNECT / DISCONNECT / CONNECT_ERROR, an
+  empty string or a first character that is not a decimal digit (Node reads `Number(" ")` as CONNECT), an attachment
+  count with anything but digits, a placeholder `num` that is not a non-negative integer (Node indexes with
+  `buffers[0.5]`), a namespace in a packet longer than 256 bytes, an ack id above 2^53 - 1 or with more than 16 digits.
+  Only the last and the depth have a scenario and an expected difference (the official client sends none of the others).
+- **Handlers run inside the connection task**, in a `FuturesUnordered`, as the gateways do: they start in arrival order and
+  run concurrently, but on one thread per connection; the engine's WebSocket and polling tasks are separate. When the
+  connection ends, handlers already running get `close_timeout` (30 s) to finish and are then dropped. An ACK or a
+  DISCONNECT queued behind `max_inflight` blocked handlers waits too (reads stop at the limit), so a handler that waits for
+  `emit_with_ack` while the connection is at the limit gets the answer when a slot frees, or `operation has timed out`.
+- **Connection state.** CONNECT is queued while the connection's namespace table is locked and before the socket is marked
+  connected, so nothing the application emits can precede it. A packet that arrives right behind CONNECT, before the
+  connection handlers have run, waits for them (`ready`). A packet for a namespace whose middleware is still running is a
+  packet for a namespace not joined: the connection closes, as in Node.
+- **Lifetimes.** The connection callback of the engine holds the `IoServer` strongly (an application may drop its handle
+  after `attach`, as Node keeps `io` alive through the HTTP server); `IoServer::close` and the engine hook replace the
+  callback, which breaks the cycle. Sockets drop their handlers when they disconnect.
+- **Pending acknowledgements** expire in two ways: the call's own timeout, and a purge of expired entries each time a
+  call registers (an abandoned future that is never polled again still frees its slot at its deadline). A call whose
+  future is dropped removes its entry.
+- **Logging.** A panic in a handler or middleware is logged with the namespace only; undecodable packets and timeouts of a
+  connection are not logged at all, so a client cannot write to the log at the rate it sends.
+- **Harness.** The scenario servers live on `/sio/` and `/sio-short/`, not `/socket.io/`: on Corvis the Engine.IO scenario
+  presets own the default path, so `socket-io/handshake-and-ack` moved to `/sio/`. `emitWithAck` of Node resolves with the
+  first value of the answer only, so the Node scenario app logs the callback form to compare all values. The upstream
+  suite expects `/socket.io/`, so the conformance test starts its own server.
+- **`max_args` and the repeated placeholder.** With 128 arguments as the default the spec scenario "Repeated placeholder"
+  (10,000 values sharing one buffer) puts the 10,000 placeholders in one array argument instead of 10,000 arguments.
+- **API.** `IoNamespace::use_middleware`, `on_connection` and the disconnect handlers are synchronous or async as the
+  design says; `IoSocket::disconnect(close: bool)` mirrors Node's `disconnect(close)`; `IoServer::{main, on_connection,
+  use_middleware}` delegate to the main namespace. `IntoArgs` requires `Send` so an acknowledged emit can be awaited in a
+  spawned task.
+- Task 8.5 (security review), 9.6 (parity) and 9.7 belong to the maintainer's session and are not done here.

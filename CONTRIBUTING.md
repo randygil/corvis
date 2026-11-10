@@ -78,6 +78,7 @@ Hostile input is checked with property-based tests (`proptest`, stable Rust, run
 - `crates/corvis/src/fuzz_tests.rs` and `crates/corvis/src/multer/fuzz.rs`: the JSON, query string, body and
   multipart parsers, JWT verification, route paths and trust proxy.
 - `crates/corvis/src/socket_io/engine/fuzz.rs` (feature `socket-io`): the Engine.IO packet and payload codec.
+- `crates/corvis/src/socket_io/fuzz_parser.rs` (feature `socket-io`): the Socket.IO packet codec.
 - `crates/corvis/tests/fuzz_static.rs`: static file serving end to end, with generated request paths against a
   served folder that has a secret file next to it.
 - `crates/corvis-orm/tests/fuzz_filters.rs`: `where` filters on in-memory SQLite.
@@ -199,10 +200,21 @@ crate, then the crate that uses it. `rust-version` in `[workspace.package]` is t
 
 `parity/socket-io/` runs the same scenarios against a Node `socket.io` server (the reference) and, once Corvis
 implements Engine.IO and Socket.IO, against Corvis, records what each client observes and fails on any difference. It
-is Node tooling outside every crate and is not published. The Corvis target is the Engine.IO server of
-`crates/corvis/tests/engine_support/harness_app.rs`, started in-process when the test is built with `--features
-socket-io`; without the feature, or for scenarios that need Socket.IO, the runner compares Node with itself, which
-checks the scenarios and the normalizer on real transcripts.
+is Node tooling outside every crate and is not published. The Corvis target is the Engine.IO presets of
+`crates/corvis/tests/engine_support/harness_app.rs` plus the Socket.IO scenario app of
+`crates/corvis/tests/engine_support/io_app.rs`, started in-process when the test is built with `--features
+socket-io`; without the feature the runner compares Node with itself, which checks the scenarios and the normalizer on
+real transcripts.
+
+The Socket.IO scenario app is written twice and the two must change together: `parity/socket-io/reference/socket-server.mjs`
+(Node) and `io_app.rs` (`IoServer`). It serves the paths `/sio/` (namespaces `/`, `/admin` with an `auth.token` check,
+`/slow` with a one-second middleware, `/denied` that always refuses) and `/sio-short/` (`connectTimeout` 1000 ms), with the
+handlers `echo`, `sum`, `emit-update`, `ask`, `ask-timeout`, `bin-emit`, `leave`, `kick` and `emit-reserved`. What
+happened on the server side (connections with their `auth`, disconnect reasons, outcomes of acknowledged emits) is kept in
+a log that a scenario reads with `GET /harness/log` and clears with `POST /harness/reset` (`lib/socket-client.mjs`
+wraps both, with a bounded poll, and has a raw Socket.IO client over WebSocket for the scenarios that send bytes the
+official client never would). `node scripts/record-parser.mjs` prints what `socket.io-parser` produces for the packets
+the codec tests use; its output is committed as `crates/corvis/src/socket_io/fixtures/parser.json`.
 
 Prerequisites: Node 22 or later and git. Packages are installed only by an explicit `npm ci` (install scripts are
 disabled by the harness's `.npmrc`; `cargo test` never installs anything):
@@ -219,6 +231,10 @@ when Node 22+ or the install is missing):
 CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_diff     # Bash
 $env:CORVIS_NODE_DIFF = "1"; cargo test -p corvis --features socket-io --test socket_io_diff     # PowerShell
 ```
+
+The upstream `socket.io-protocol` suite (which includes the Engine.IO half) runs against the Corvis Socket.IO server, and
+against the Node reference started with `--suite` as a control, with
+`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_conformance`.
 
 The upstream `engine.io-protocol` suite runs against the Corvis Engine.IO server, and against the Node reference as a
 control, with `node scripts/fetch-suites.mjs` run once and then

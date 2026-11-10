@@ -150,11 +150,12 @@ do not, and a connection with nothing to send is never closed by it, so use a he
 
 ## Socket.IO (preview)
 
-The `socket-io` Cargo feature (off by default, it enables `websockets`) adds an Engine.IO v4 server, the transport layer
-of Socket.IO, written for Corvis and checked against Node's `engine.io` 6.6.x with a differential harness and the
-official protocol test suite. It is a preview: there is no Socket.IO server yet and it cannot be used from gateways, so
-the Engine.IO API is hidden from the documentation and may change. `corvis::socket_io::EngineOptions` is the part you
-can rely on; Socket.IO servers will take it as their engine options.
+The `socket-io` Cargo feature (off by default, it enables `websockets`) adds a Socket.IO v5 server and the Engine.IO v4
+server under it, written for Corvis and checked against Node's `socket.io` 4.8.4 and `engine.io` 6.6.x with a
+differential harness and the official protocol test suite. It is a preview with a low-level API (`IoServer`,
+`IoNamespace`, `IoSocket`): rooms and broadcast, gateways over Socket.IO and a Redis adapter come in later changes. The
+Engine.IO API under it is hidden from the documentation and may change; `EngineOptions` (embedded in `IoOptions`) is the
+part you can rely on.
 
 ```toml
 corvis = { version = "0.1", features = ["socket-io"] }
@@ -214,6 +215,98 @@ that address, so the per-address cap protects nothing there: trust only the prox
 Polling responses are not compressed (Node compresses above 1 KiB when the client accepts gzip). Engine.IO v3, cookies and
 WebTransport are not supported. The server's [`send_timeout`](/http/performance#clients-that-stop-reading-send-timeout)
 applies to the WebSocket transport like to any other upgraded connection.
+
+### The Socket.IO server
+
+An `IoServer` is created with `IoOptions`, given namespaces, middleware and handlers, and attached to the HTTP server.
+The namespace `/` exists from the start; every other namespace is registered by the application with `io.of("/admin")`,
+because a client cannot create one (dynamic namespaces are not supported). A name gets a leading `/` and may not be
+longer than 256 bytes or contain `,` or a control character.
+
+```rust
+use corvis::socket_io::{ConnectError, IoOptions, IoServer};
+
+let io = IoServer::new(IoOptions::new())?;
+
+// Middleware runs before the socket joins the namespace; `auth` is what the client sent.
+io.of("/admin")?.use_middleware(|socket| async move {
+    match socket.handshake().auth().get("token").and_then(|t| t.as_str()) {
+        Some("secret") => Ok(()),
+        _ => Err(ConnectError::new("not authorized").data(serde_json::json!({ "content": "retry later" }))),
+    }
+});
+
+io.main().on_connection(|socket| {
+    // Handlers are registered per socket, in the connection handler, so no event is missed.
+    socket.on("sum", |_socket, args, ack| async move {
+        let total: i64 = args.iter().filter_map(|a| a.as_i64()).sum();
+        if let Some(ack) = ack {
+            let _ = ack.send((total, "ok")); // the client's callback receives (3, "ok")
+        }
+    });
+    let _ = socket.emit("hello", ("world", 1)); // the arguments are a tuple of `Serialize` values
+    socket.on_disconnect(|socket, reason| println!("{} left: {reason}", socket.id()));
+});
+
+io.attach(&app.get_http_server())?;
+```
+
+A server emit that waits for the client's answer is `socket.emit_with_ack("ask", ("question",)).await`, with
+`socket.timeout(Duration::from_millis(200))` to choose the deadline; it fails with `operation has timed out`, or at once
+when the socket disconnects. Binary values (`corvis::socket_io::Binary`, or `IoValue::Binary`) may sit anywhere in the
+arguments and travel as attachments; `args.get::<T>(i)` deserializes an argument into any `serde` type, a field of type
+`Binary` takes a buffer. `disconnect(false)` leaves one namespace and `disconnect(true)` leaves all of them and closes the
+connection. Each socket reports `client namespace disconnect`, `server namespace disconnect`, `transport close`,
+`transport error`, `ping timeout`, `parse error`, `forced close`, `forced server close` or `server shutting down`
+(`io.close()` and the application's shutdown report the last one before the sessions close), first to the
+`on_disconnecting` handlers, while the socket is still in its namespace, and then to the `on_disconnect` handlers.
+Reserved event names (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`) cannot
+be emitted by the server, and a packet from a client that uses one is undecodable.
+
+A packet that cannot be decoded, a second CONNECT for a namespace the connection joined (or is joining), a packet for a
+namespace it has not joined and a CONNECT_ERROR from a client close the connection, as in Node.
+
+#### Socket.IO bounds
+
+Everything a client can make the server hold has a bounded default and a validated option (`IoServer::new` refuses a zero
+value and names the option). Where Node has no bound, Corvis differs on purpose.
+
+| Bound | Default | Node `socket.io` 4.8.4 | When exceeded |
+|---|---|---|---|
+| Packet size (a text packet, and each attachment) | the engine's `max_http_buffer_size`, 1,000,000 bytes | same | `413` or close code `1009` (Engine.IO) |
+| `max_attachments` per binary packet, both directions | 10 | 10 when decoding, none when encoding | a received packet that declares more closes the connection before any attachment is read; an emit fails with `TooManyAttachments` |
+| Bytes held while a binary packet is reassembled | at most `(max_attachments + 1) x max_http_buffer_size`, counted in `max_unread_bytes`; options that cannot fit are refused | not counted | reads pause |
+| `attachment_timeout` (time for the attachments after the header) | 30 s | none | the connection is closed, whatever the heartbeat says |
+| `max_decoded_bytes` (a decoded packet: every JSON value costs at least 48 bytes, empty ones included) | 16 MiB | none | the connection is closed while decoding; charged to `max_unread_bytes` until the handler ends |
+| `max_auth_bytes` (the `auth` of a CONNECT, kept as long as the socket lives) | 16 KiB | none | the connection is closed |
+| JSON nesting | 127 levels | none | the connection is closed |
+| `max_event_name_len`, `max_args` (from a client) | 256 bytes, 128 | none | the connection is closed |
+| Acknowledgement id from a client | at most 16 digits and 2^53 - 1 | any digit run, read as a float | the connection is closed |
+| Namespaces per connection | one socket per registered namespace, attempts in middleware included | the same once joined; pending attempts are unbounded | the connection is closed (`forced server close`) |
+| `middleware_timeout` | 10 s | none | CONNECT_ERROR `Internal server error` |
+| `connect_timeout` | 45 s | 45 s | the connection is closed |
+| `max_inflight` handlers per connection | 32, started in arrival order | none | the connection is not read until one finishes |
+| `max_pending_acks` per socket | 1,000 | none | the call fails with `TooManyPending` and sends nothing |
+| `ack_timeout` (default deadline of `emit_with_ack`) | 30 s | none | `operation has timed out` |
+| Namespace name | 256 bytes, no `,`, no control characters | none | `of` returns an error |
+| Socket id | 120 random bits, never the Engine.IO session id | 96 bits plus a counter | n/a |
+
+A packet whose JSON holds an object with a key `serde_json` reads as an instruction (`$serde_json::private::RawValue`) is
+delivered, but only as an `IoValue`: `args.get::<serde_json::Value>(i)` and `to_json()` refuse it, because `serde_json`
+would parse its value again with a fresh recursion budget when another crate of the build enables `raw_value`. Handlers
+that wait for the client's answers (`emit_with_ack`) while the connection is at `max_inflight` get the answer only once a
+slot frees, or fail with `operation has timed out`: keep the number of handlers that wait for answers below the limit.
+
+Differences the client can observe, each listed in the harness with the scenario that exercises it: a second CONNECT while
+the middleware of that namespace still runs closes the connection (Node starts another pending socket for each packet),
+an acknowledgement id above 2^53 - 1 closes the connection (Node answers with a rounded id), and JSON nested deeper than
+127 levels closes the connection (Node delivers it). Also stricter, with no scenario because the official client never
+does them: a packet type that is not a digit, an event or acknowledgement without a payload, an acknowledgement without an
+id, an id on a CONNECT, a placeholder index that is not an integer.
+
+Not supported: rooms and broadcast, gateways over Socket.IO, a Redis adapter (later changes); dynamic namespaces, connection
+state recovery, `volatile` and `compress` flags, catch-all listeners, custom parsers, Engine.IO v3 clients and serving the
+client bundle.
 
 ## Security
 

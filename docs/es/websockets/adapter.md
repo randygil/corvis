@@ -150,12 +150,12 @@ límite. Ver [gateways](/es/websockets/gateways#pares-que-dejan-de-leer).
 
 ## Socket.IO (vista previa)
 
-La feature de Cargo `socket-io` (desactivada por defecto, activa `websockets`) añade un servidor Engine.IO v4, la capa de
-transporte de Socket.IO, escrito para Corvis y comprobado contra `engine.io` 6.6.x de Node con un arnés diferencial y la
-suite oficial de pruebas del protocolo. Es una vista previa: todavía no hay servidor Socket.IO y no se puede usar desde
-los gateways, así que la API de Engine.IO está oculta en la documentación y puede cambiar.
-`corvis::socket_io::EngineOptions` es la parte en la que puedes confiar; los servidores Socket.IO la tomarán como sus
-opciones de motor.
+La feature de Cargo `socket-io` (desactivada por defecto, activa `websockets`) añade un servidor Socket.IO v5 y, debajo,
+el servidor Engine.IO v4, escritos para Corvis y comprobados contra `socket.io` 4.8.4 y `engine.io` 6.6.x de Node con un
+arnés diferencial y la suite oficial de pruebas del protocolo. Es una vista previa con una API de bajo nivel (`IoServer`,
+`IoNamespace`, `IoSocket`): las salas y el broadcast, los gateways sobre Socket.IO y un adaptador de Redis llegan en
+cambios posteriores. La API de Engine.IO que hay debajo está oculta en la documentación y puede cambiar; `EngineOptions`
+(incluido en `IoOptions`) es la parte en la que puedes confiar.
 
 ```toml
 corvis = { version = "0.1", features = ["socket-io"] }
@@ -221,6 +221,99 @@ Las respuestas de polling no se comprimen (Node comprime por encima de 1 KiB cua
 v3, las cookies y WebTransport no están soportados. El
 [`send_timeout`](/es/http/performance#clientes-que-dejan-de-leer-send-timeout) del servidor se aplica al transporte
 WebSocket como a cualquier otra conexión actualizada.
+
+### El servidor Socket.IO
+
+Un `IoServer` se crea con `IoOptions`, se le dan espacios de nombres, middleware y manejadores, y se adjunta al servidor
+HTTP. El espacio `/` existe desde el principio; cualquier otro lo registra la aplicación con `io.of("/admin")`, porque un
+cliente no puede crearlo (los espacios dinámicos no están soportados). Un nombre recibe una `/` inicial y no puede tener
+más de 256 bytes ni contener `,` ni caracteres de control.
+
+```rust
+use corvis::socket_io::{ConnectError, IoOptions, IoServer};
+
+let io = IoServer::new(IoOptions::new())?;
+
+// El middleware corre antes de que el socket entre al espacio; `auth` es lo que envió el cliente.
+io.of("/admin")?.use_middleware(|socket| async move {
+    match socket.handshake().auth().get("token").and_then(|t| t.as_str()) {
+        Some("secret") => Ok(()),
+        _ => Err(ConnectError::new("not authorized").data(serde_json::json!({ "content": "retry later" }))),
+    }
+});
+
+io.main().on_connection(|socket| {
+    // Los manejadores se registran por socket, en el manejador de conexión, así no se pierde ningún evento.
+    socket.on("sum", |_socket, args, ack| async move {
+        let total: i64 = args.iter().filter_map(|a| a.as_i64()).sum();
+        if let Some(ack) = ack {
+            let _ = ack.send((total, "ok")); // el callback del cliente recibe (3, "ok")
+        }
+    });
+    let _ = socket.emit("hello", ("world", 1)); // los argumentos son una tupla de valores `Serialize`
+    socket.on_disconnect(|socket, reason| println!("{} se fue: {reason}", socket.id()));
+});
+
+io.attach(&app.get_http_server())?;
+```
+
+Un emit del servidor que espera la respuesta del cliente es `socket.emit_with_ack("ask", ("question",)).await`, con
+`socket.timeout(Duration::from_millis(200))` para elegir el plazo; falla con `operation has timed out`, o de inmediato si
+el socket se desconecta. Los valores binarios (`corvis::socket_io::Binary` o `IoValue::Binary`) pueden estar en cualquier
+parte de los argumentos y viajan como adjuntos; `args.get::<T>(i)` deserializa un argumento a cualquier tipo de `serde`, y
+un campo de tipo `Binary` recibe un buffer. `disconnect(false)` sale de un espacio y `disconnect(true)` sale de todos y
+cierra la conexión. Cada socket informa `client namespace disconnect`, `server namespace disconnect`, `transport close`,
+`transport error`, `ping timeout`, `parse error`, `forced close`, `forced server close` o `server shutting down`
+(`io.close()` y el apagado de la aplicación informan el último antes de cerrar las sesiones), primero a los manejadores
+`on_disconnecting`, mientras el socket sigue en su espacio, y luego a los `on_disconnect`. Los nombres de evento reservados
+(`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`) no los puede emitir el
+servidor, y un paquete de un cliente que use uno no se puede decodificar.
+
+Un paquete que no se puede decodificar, un segundo CONNECT a un espacio al que la conexión ya entró (o está entrando), un
+paquete para un espacio al que no entró y un CONNECT_ERROR de un cliente cierran la conexión, como en Node.
+
+#### Límites de Socket.IO
+
+Todo lo que un cliente puede hacer que el servidor retenga tiene un valor por defecto acotado y una opción validada
+(`IoServer::new` rechaza un valor cero y nombra la opción). Donde Node no tiene límite, Corvis difiere a propósito.
+
+| Límite | Por defecto | `socket.io` 4.8.4 de Node | Al superarlo |
+|---|---|---|---|
+| Tamaño de paquete (un paquete de texto y cada adjunto) | el `max_http_buffer_size` del motor, 1.000.000 bytes | igual | `413` o código de cierre `1009` (Engine.IO) |
+| `max_attachments` por paquete binario, en ambos sentidos | 10 | 10 al decodificar, ninguno al codificar | un paquete recibido que declara más cierra la conexión antes de leer ningún adjunto; un emit falla con `TooManyAttachments` |
+| Bytes retenidos mientras se reensambla un paquete binario | como mucho `(max_attachments + 1) x max_http_buffer_size`, contados en `max_unread_bytes`; las opciones que no caben se rechazan | no se cuentan | se pausan las lecturas |
+| `attachment_timeout` (tiempo para los adjuntos tras la cabecera) | 30 s | ninguno | se cierra la conexión, diga lo que diga el latido |
+| `max_decoded_bytes` (un paquete decodificado: cada valor JSON cuesta al menos 48 bytes, también los vacíos) | 16 MiB | ninguno | se cierra la conexión al decodificar; se carga a `max_unread_bytes` hasta que termina el manejador |
+| `max_auth_bytes` (el `auth` de un CONNECT, que se conserva mientras vive el socket) | 16 KiB | ninguno | se cierra la conexión |
+| Anidamiento de JSON | 127 niveles | ninguno | se cierra la conexión |
+| `max_event_name_len`, `max_args` (de un cliente) | 256 bytes, 128 | ninguno | se cierra la conexión |
+| Id de confirmación de un cliente | como mucho 16 dígitos y 2^53 - 1 | cualquier racha de dígitos, leída como float | se cierra la conexión |
+| Espacios por conexión | un socket por espacio registrado, contando los intentos en middleware | igual una vez unido; los intentos pendientes no tienen límite | se cierra la conexión (`forced server close`) |
+| `middleware_timeout` | 10 s | ninguno | CONNECT_ERROR `Internal server error` |
+| `connect_timeout` | 45 s | 45 s | se cierra la conexión |
+| `max_inflight` manejadores por conexión | 32, iniciados en orden de llegada | ninguno | no se lee la conexión hasta que uno termina |
+| `max_pending_acks` por socket | 1.000 | ninguno | la llamada falla con `TooManyPending` y no envía nada |
+| `ack_timeout` (plazo por defecto de `emit_with_ack`) | 30 s | ninguno | `operation has timed out` |
+| Nombre de espacio | 256 bytes, sin `,` ni caracteres de control | ninguno | `of` devuelve un error |
+| Id de socket | 120 bits aleatorios, nunca el id de sesión de Engine.IO | 96 bits más un contador | n/a |
+
+Un paquete cuyo JSON tenga un objeto con una clave que `serde_json` lee como instrucción
+(`$serde_json::private::RawValue`) se entrega, pero solo como `IoValue`: `args.get::<serde_json::Value>(i)` y `to_json()` lo
+rechazan, porque `serde_json` volvería a parsear su valor con un presupuesto de recursión nuevo cuando otro crate de la
+compilación activa `raw_value`. Los manejadores que esperan respuestas del cliente (`emit_with_ack`) mientras la conexión
+está en `max_inflight` reciben la respuesta solo cuando se libera una plaza, o fallan con `operation has timed out`:
+mantén el número de manejadores que esperan respuestas por debajo del límite.
+
+Diferencias que el cliente puede observar, cada una listada en el arnés con el escenario que la ejercita: un segundo
+CONNECT mientras el middleware de ese espacio sigue corriendo cierra la conexión (Node inicia otro socket pendiente por
+cada paquete), un id de confirmación superior a 2^53 - 1 cierra la conexión (Node responde con un id redondeado) y un JSON
+anidado a más de 127 niveles cierra la conexión (Node lo entrega). También más estricto, sin escenario porque el cliente
+oficial nunca lo hace: un tipo de paquete que no es un dígito, un evento o confirmación sin payload, una confirmación sin
+id, un id en un CONNECT, un índice de marcador que no es un entero.
+
+No soportado: salas y broadcast, gateways sobre Socket.IO, un adaptador de Redis (cambios posteriores); espacios dinámicos,
+recuperación del estado de la conexión, las banderas `volatile` y `compress`, oyentes globales, parsers personalizados,
+clientes de Engine.IO v3 y servir el bundle del cliente.
 
 ## Seguridad
 
