@@ -223,8 +223,23 @@ impl GuardPhase {
         self.0.store(active, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Turns the phase on until the returned scope is dropped, also when the guard panics.
+    pub(crate) fn enter(&self) -> GuardPhaseScope {
+        self.set(true);
+        GuardPhaseScope(self.clone())
+    }
+
     fn is_active(request: &Request) -> bool {
         request.get::<GuardPhase>().is_some_and(|p| p.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// Ends the guard phase on drop.
+pub(crate) struct GuardPhaseScope(GuardPhase);
+
+impl Drop for GuardPhaseScope {
+    fn drop(&mut self) {
+        self.0.set(false);
     }
 }
 

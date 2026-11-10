@@ -371,3 +371,9 @@ the router, `context.rs` and `application.rs` had moved by a few lines only).
       challenge.
     - Docs (English and Spanish): open-redirect warning, a line that appended headers are also sent on a later
       401/403, and the guard-phase rule of `respond_with`.
+12. **Re-review follow-ups.** `Request::set_user` drops the private typed-user slot, so `request.user()` and `User<T>`
+    never disagree after a later guard replaces the user (`User<T>` then answers 401 unless that guard is an
+    `AuthGuard`; `AuthGuard` itself fills the slot and the JSON user through a crate-private path that does not clear
+    it). The guard-phase flag is cleared by an RAII scope (`GuardPhase::enter`), so a panicking guard does not leave it
+    on for exception filters. The return-to rule in the docs also excludes backslashes (a browser reads `/\evil.com`
+    as `//evil.com`).

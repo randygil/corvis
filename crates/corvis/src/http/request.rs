@@ -241,9 +241,13 @@ impl Request {
         self.extensions.write().unwrap().remove::<T>()
     }
 
-    /// `req.user` convention used by passport-like guards: stores a JSON value.
+    /// `req.user` convention used by passport-like guards: stores a JSON value. It also drops the typed user an
+    /// [`AuthGuard`](crate::auth::AuthGuard) stored earlier, so `request.user()` and `User<T>` never disagree:
+    /// after this call `User<T>` answers 401, because it reflects only what an `AuthGuard` stored. A value that
+    /// does not serialize leaves both users as they were.
     pub fn set_user(&self, user: impl serde::Serialize) {
         if let Ok(v) = serde_json::to_value(user) {
+            self.remove::<crate::auth::AuthUserSlot>();
             self.insert(RequestUser(v));
         }
     }

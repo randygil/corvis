@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 static HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
 static INTERCEPTOR_RESPOND_WITH: AtomicBool = AtomicBool::new(true);
+static FILTER_RESPOND_WITH: AtomicBool = AtomicBool::new(true);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Payload {
@@ -75,6 +76,41 @@ impl CorvisInterceptor for RespondWithInInterceptor {
     }
 }
 
+/// Replaces the user the way a hand-written guard does.
+#[injectable]
+pub struct SetUserGuard;
+
+#[async_trait]
+impl CanActivate for SetUserGuard {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        ctx.request().set_user(json!({ "id": 99 }));
+        Ok(true)
+    }
+}
+
+#[injectable]
+pub struct PanicGuard;
+
+#[async_trait]
+impl CanActivate for PanicGuard {
+    async fn can_activate(&self, _: &ExecutionContext) -> Result<bool, HttpException> {
+        panic!("guard panic");
+    }
+}
+
+/// Tries to end the request from an exception filter after a guard panicked.
+#[injectable]
+pub struct RespondingFilter;
+
+#[async_trait]
+impl ExceptionFilter for RespondingFilter {
+    async fn catch(&self, _e: HttpException, host: &ArgumentsHost) -> Response {
+        let stored = host.switch_to_http().respond_with(Response::new().with_status(302u16).with_header("Location", "/x"));
+        FILTER_RESPOND_WITH.store(stored, Ordering::SeqCst);
+        Response::json(json!({ "by": "filter" })).with_status(418)
+    }
+}
+
 #[controller("h")]
 pub struct HardeningController;
 
@@ -108,6 +144,25 @@ impl HardeningController {
     #[use_guards(AuthGuard::new("one"), AuthGuard::new("pass"))]
     fn passed_typed(&self, user: User<Payload>) -> Value {
         json!({ "user": user.0 })
+    }
+
+    #[get("replaced-json")]
+    #[use_guards(AuthGuard::new("one"), SetUserGuard)]
+    fn replaced_json(&self, req: Request) -> Value {
+        json!({ "user": req.user() })
+    }
+
+    #[get("replaced-typed")]
+    #[use_guards(AuthGuard::new("one"), SetUserGuard)]
+    fn replaced_typed(&self, user: User<Payload>) -> Value {
+        json!({ "user": user.0 })
+    }
+
+    #[get("panic")]
+    #[use_guards(PanicGuard)]
+    #[use_filters(RespondingFilter)]
+    fn panics(&self) -> Value {
+        json!({ "ok": true })
     }
 
     #[get("authenticated")]
@@ -224,4 +279,18 @@ async fn a_later_pass_clears_the_json_and_the_typed_user_alike() {
     let app = started().await;
     request(&app).get("/h/passed-json").send().await.expect_status(200).expect_json(json!({ "user": null }));
     request(&app).get("/h/passed-typed").send().await.expect_status(401).expect_json(UNAUTHORIZED());
+}
+
+#[corvis::test]
+async fn set_user_drops_the_typed_user_so_both_users_agree() {
+    let app = started().await;
+    request(&app).get("/h/replaced-json").send().await.expect_status(200).expect_json(json!({ "user": { "id": 99 } }));
+    request(&app).get("/h/replaced-typed").send().await.expect_status(401).expect_json(UNAUTHORIZED());
+}
+
+#[corvis::test]
+async fn a_panicking_guard_does_not_leave_the_guard_phase_on_for_exception_filters() {
+    let app = started().await;
+    request(&app).get("/h/panic").send().await.expect_status(418).expect_json(json!({ "by": "filter" }));
+    assert!(!FILTER_RESPOND_WITH.load(Ordering::SeqCst));
 }
