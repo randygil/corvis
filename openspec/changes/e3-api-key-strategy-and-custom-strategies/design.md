@@ -331,3 +331,156 @@ These settle the open questions and override the design where they differ.
    lives in a private slot that `User<T>` reads, `respond_with` only works in the guard phase, redirects are 3xx
    only) and records the adjustments in Implementation notes.
 7. The security review is mandatory before the merge.
+
+## Implementation notes
+
+Written after comparing this design with what the auth core (#136), the JWT strategy (#42) and the local strategy (#41)
+shipped, including the "Security review" sections of the archived designs.
+
+### Adjustments to the merged code
+
+1. **API as merged matches the design** except as listed here: `Strategy::name` is a method (the validator adapter
+   returns `V::NAME`), `AuthenticatedUser::new` returns a `Result`, the typed user lives in a private slot read by
+   `User<T>`, `Provider::strategy::<S>()` needs `S: Injectable + Strategy`, and `ApiKeyStrategy<V>` implements
+   `Injectable` by hand like `JwtStrategy<V>` and `LocalStrategy<V>` (`get_or_construct::<V>()`, options validated in
+   `construct`, a `DiError::Factory` that names the strategy and the validator type).
+2. **Warnings run in `on_module_init`** (as the JWT strategy), so a logger installed after `create` sees them.
+3. **The bearer parser is not shared with `auth::jwt`.** It is private there and behind the `jwt` feature, and the API
+   key strategy needs a bounded variant (it must not scan an unbounded header), so `api_key` has its own byte-level
+   parser with the same grammar (`(\S+)\s+(\S+)`, JavaScript whitespace in latin1, first `Authorization` value only).
+4. **No override mechanism existed.** `Provider::strategy` stores a tag that already accepts `Arc<dyn Strategy>`, but a
+   provider override dropped the tag (the strategy left the registry) and the token of a strategy provider is a named
+   one, so `override_provider::<S>()` never matched. `Container::add_provider` now keeps `strategy` like it keeps
+   `enhancer`, and `TestingModuleBuilder::override_strategy::<S>(stub)` was added.
+5. **Name `"api-key"`** (Review note 3), so the spec scenarios and the guide say `api-key`; the docs mention
+   `headerapikey` once, for configurations that are ported.
+6. **Facts about the original corrected after reading the sources** (`passport-headerapikey` 1.2.2 `Strategy.js`): the
+   constructor is `Strategy(header, passReqToCallback, verify)`; the prefix check is `_.startsWith` (literal), and only
+   the removal uses the unescaped `RegExp('^' + prefix)`. So the divergence is `Key+<key>` (the original's `verify`
+   receives `+<key>`, Corvis's the key), while `Keyyabc` fails in both; the design said the original accepts `Keyyabc`.
+   A prefix mismatch is `fail(BadRequestError('Invalid API Key prefix...'))` and a missing header
+   `fail(BadRequestError('Missing API Key'))`; through the original guard both are the plain 401.
+   The `PassportStrategy` mixin of the original integration passes `done` as the last callback argument, which is
+   incompatible with `passReqToCallback: true` of this package, so the generator registers the strategies with
+   `passport.use(name, strategy)` directly, as `strategies.mjs` does.
+
+### Decisions beyond the design (hardening, from the review brief)
+
+7. **A present but unusable source fails the whole attempt** (design: "yields no key"). Each source reads as `Absent`
+   (no value, empty, other scheme, value without the prefix), `Key` or `Invalid` (too long, control character, repeated
+   or, with the extended query parser, bracketed query parameter: reason `Ambiguous API key`, a fifth fixed string).
+   Any `Invalid` fails with its reason before the other sources are consulted, so one place cannot be made to look
+   empty so that another decides. A wrong prefix stays `Absent` so that `header("Authorization").prefix(..)` and
+   `bearer()` can read the same header. The candidates that remain are compared without an early exit.
+8. **Bounds before work.** The joined header value is never held past `prefix + max_key_bytes` bytes (the loop over
+   repeated values stops at the first one that crosses it), the bearer scan reads at most `max_key_bytes + 128` bytes
+   of leading space, scheme and separator and at most `max_key_bytes + 1` of key, the query value is checked by length
+   before its characters, and only then is the key hashed. Header prefixes are printable ASCII (1 to 64 bytes) so that
+   the raw and the decoded length agree; a `Cookie` header source is refused at startup.
+9. **Validator failures** (design: `Err(e)` passes through). A 4xx passes unchanged (the recorded `ForbiddenException`
+   case needs it); a status of 500 or above, or below 400, becomes the plain exception of that status (the generic
+   internal-error body for 500), so a database error that quotes the key or differs per key never reaches the client.
+   New option `validator_timeout` (default 5 s, 1 ms to 300 s): a validator that is slower is a plain 503. Panics are
+   caught by the core (note 10). The warnings are rate limited (one per reason per minute) with the status only, never
+   the message.
+10. **The core contains a panic in any strategy.** `Authenticator::authenticate` catches a panic inside
+    `Strategy::authenticate` and returns an internal error (500, fixed body), which ends the chain and is not a failure,
+    so an optional guard cannot let the request through. The payload is never read; a warning per strategy name per
+    minute (a new `auth::warn_limit::WarnLimiter`, a copy of the one in `auth/local/hasher.rs` that keys by string and
+    is bounded to 64 reasons; the hasher keeps its own). A strategy name that is empty, over 128 bytes or holds a control
+    character stops startup. The names of guards are checked through `CanActivate::inner_guards` since #42; a test
+    covers a custom strategy behind a wrapper.
+11. **Lookup helpers lead to hashed storage.** Added beyond the design: `ApiKey::id(delimiter)` (the public id of
+    `<id><delimiter><secret>`, validated so it is safe to log and to use as a database key),
+    `ExpectedApiKey::matches_or_dummy(Option<&ExpectedApiKey>, &ApiKey)` (an unknown id costs the same comparison),
+    and `ApiKeySet::lookup` picks the entry with `subtle` selection instead of a branch. `ApiKey` has no `Clone`.
+    `ApiKey::new` is public so that validators can be tested. `ExpectedApiKey::new` also refuses secrets over 4096
+    bytes. The docs state how to store keys (digest plus public id) and how to generate them.
+12. **`Request::redact_query_param` keeps the query parser.** `Request` now records the `query parser` setting it was
+    built with, and `redacted_url` splits the raw query on `&` and parses each pair with that parser, so a pair is hidden
+    exactly when the application files it under a marked name (percent escapes in any case, `[name]` and `name[x]` under
+    the extended parser). Past 16 names, or a name over 256 bytes, every value is hidden instead of leaving a marked
+    one visible (the design silently dropped the extra name). A bracketed or oddly encoded name is not echoed.
+13. **Not done, as the design said:** no body or cookie source, no zeroizing, no redaction of the `404` body or the cache
+    key.
+
+### Fixtures and tests
+
+14. **`api_key.json`** has 55 cases over 8 routes (the design listed fewer; the header-only cases were added for the
+    ignored key places: query, `Authorization`, cookie). Five are divergences, each asserted from the specification: an
+    oversized key in a header and in the bearer source, a control character in a query key, conflicting keys in two
+    places (the original's `two-places` strategy lets the header win) and the literal prefix. The non-ASCII header byte
+    case is a unit test (`header_bytes_are_read_as_latin1`) because `TestRequest` cannot send raw bytes. A header
+    repeated twice is recorded as the joined value `a, b`, as Node's `fetch` sends it; real repeated headers are unit
+    tests (`repeated_values_are_joined_like_node_does`, a 5000-value case for the bound). `custom.json` has 15 cases.
+    Both generators give identical output on two runs.
+15. **Test files:** `tests/auth_api_key.rs` (replay and the spec scenarios), `tests/auth_api_key_options.rs` (startup
+    checks, limits, configured keys, uniform answers, validator failures, timeouts and panics), `tests/auth_api_key_log.rs`
+    (its own binary because the logger is process-wide: startup warnings, the redacted request log, no key in any log
+    line, rate-limited warnings), `tests/auth_custom.rs` (no feature gate; builds and passes with
+    `--no-default-features`). Unit tests live next to `key.rs`, `options.rs` and `strategy.rs`; the fuzz properties are
+    `fuzz_random_bytes_never_panic_and_stay_within_the_limits` (needs the feature; CI and nightly fuzz jobs got a step
+    for it) and `redacted_urls_never_hold_a_marked_value` (always compiled).
+16. **Example.** `cats-app` enables `auth-api-key`; `GET /api/v1/cats/export` is `#[public]` (it only keeps the global
+    JWT guard out of the way) and guarded by `corvis::auth::AuthGuard::chain(["jwt", "api-key"])`. `SERVICE_API_KEY` is
+    optional (without it no key works); a value under 32 bytes stops startup with a message that does not repeat it.
+    Tests: `service_key.rs` and `startup_short_service_key.rs`.
+17. **Left to the maintainer's session:** the corvis-parity check (task 7.6), the security review (7.8), archiving and the
+    CI run of the pull request (task 1.2's last verification).
+
+## Security review (round 1)
+
+The first security review found six items. The maintainer decided each one as below; the notes continue the numbering
+of "Implementation notes".
+
+18. **An empty user never authenticates (Medium).** `ApiKeyStrategy` turned every `Ok(Some(user))` into a `Success`, and
+    the core accepted a `Success` whose user serialized to `false`, `null`, `0` or `""`: a validator written as
+    `type User = bool; Ok(Some(expected.matches(key)))` or `type User = Option<Service>; Ok(Some(repo.find(id)))`
+    authenticated every request. The originals fail closed twice (`if (!user) return self.fail()` in the strategies,
+    and `handleRequest` throws a 401 for `!user`). The fix is in the core, so it covers JWT, local, API key and custom
+    strategies: `AuthenticatedUser::is_empty()` is true for JSON `null`, `false`, the number `0` (integer, float,
+    `-0`) and `""` (not for `"0"`, `{}`, `[]`, which are truthy in JavaScript); `Authenticator::authenticate` turns such
+    a `Success` into a `Fail` of that strategy (the chain goes on; the challenge, hence the auth info, is
+    `{"message":"The strategy returned an empty user"}`) and logs a warning through a second `WarnLimiter` (one per
+    strategy name per minute, with the suppressed count) that says the validator should return `None`. Defense in depth:
+    `AuthenticatedUser::install` (so `AuthResult::store_user`) refuses an empty user and `AuthGuard` treats a
+    `Success` that does not store as a failure, so even an `AuthResult` built by hand cannot reach the handler. Other
+    paths: the WebSocket path never runs a strategy (the guard denies), an optional guard clears the user on a failure,
+    and `Request::set_user` is the application's own guard writing its own user, which no `AuthGuard` reads. A user
+    that is legitimately `0` or `""` is wrapped in a struct; the docs say so in a `danger` block. The `custom` fixture
+    gained nine cases (`done(null, false | 0 | '' | null | undefined | NaN)`, a real user as the control, and the
+    `falsy` strategy before `device` in a chain): 24 cases in all, same output on two runs.
+19. **Query keys are redacted application-wide (Low).** The mark was set inside `authenticate`, so a chain whose earlier
+    strategy succeeded, or a route without the query strategy, logged `?api_key=<key>`. `Strategy` has a new method
+    `credential_query_params() -> Vec<String>` (empty by default). After the registry is built, `init()` collects the
+    names of every strategy into an `AppRedaction` stored in `BodyParserOptions` (so every `Request` made by the server,
+    the gateways and the testing client carries an `Arc` to it, `None` when nothing is registered) and
+    `redacted_url()` applies it in addition to the per-request marks. The API key strategy, the JWT strategy
+    (`from_url_query_parameter`) and the local strategy (`allow_query_credentials`) register their names; the per
+    request mark in `authenticate` stays for a strategy used without an application. There is no global state: two
+    applications in one process do not share names. With nothing registered or marked, `redacted_url()` is `url()` with
+    no parsing. The docs sentence now says exactly what is hidden (the log line and `redacted_url()`, on every request)
+    and what is not (reverse-proxy and CDN logs, browser history, `Referer`, anything that prints `url()`), and
+    recommends against query keys.
+20. **`redacted_url()` is cheap (Low).** It used to call the query parser once per pair (14 to 27 times the cost of the
+    request for a query full of pairs, reachable by an unauthenticated client). Now it scans the pairs without
+    allocating: the NAME is percent-decoded on the fly and compared byte by byte with the registered names, the value
+    is never looked at, and the output is one `String`. The application's parser is called only for a pair whose name
+    holds `[`, `]`, `%5B` or `%5D` and only when the extended parser is active (the simple parser keeps brackets
+    literal, so the comparison is exact). Above 1000 pairs, or when more than 16 request names (64 application names) or
+    a name over 256 bytes were registered, every value is hidden without parsing, and a pair whose name has brackets is
+    printed as `param=REDACTED` rather than echoed. `LoggingInterceptor` does not build the line when the `log` level is
+    off (`logger::level_enabled`). Tests: the output equals the previous implementation's (kept in the test module as
+    the reference) over 3000 random cases and three parsers, and `tests/redact_allocations.rs` bounds the work with a
+    counting allocator (at most 20 allocations for 20 000 pairs, and no growth with the number of pairs).
+21. **The prefix is checked first (Low).** For a prefixed header source, a value that does not start with the prefix is
+    `Absent` whatever its length or content; `joined_starts_with` compares at most `prefix.len()` bytes of the joined
+    value (it follows the same `", "` joining) and copies nothing. A valid `X-Api-Key` next to
+    `Authorization: Bearer <600 bytes>` or a value with a tab is no longer failed by that header.
+22. **Docs.** The panic paragraph says the default panic hook of the standard library prints the message to stderr and
+    that a strategy must not put credentials in panic messages or errors; the checklist warns that
+    `constant_time_eq(b"", b"")` is `true`, so a strategy refuses an empty or unset expected secret before comparing.
+23. **The panic line is rate limited (Info).** The warning of the authenticator was already limited per strategy, but
+    the 500 it returns is an internal error and the default filter wrote an `ExceptionsHandler` line for each request.
+    `HttpException::already_logged()` (crate-private) marks an exception whose raiser logged it, and
+    `BaseExceptionFilter` skips the line for it. The panic payload is still never read.

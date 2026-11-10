@@ -6,7 +6,7 @@ status: partial
 
 Corvis has the **strategy model** of Passport and its integration for the original framework: strategies registered by name, an `AuthGuard` that runs them, the user on the request and the `401` the original answers when every strategy fails. Its behavior is checked against the original passport integration (12.0.1) over `passport` 0.7.0 with recorded responses.
 
-What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy) and the [local strategy](#local-strategy-username-and-password) (username and password, with the `auth-local` feature). The other strategies arrive one by one: API keys, sessions and OAuth2 are tracked in their own issues (#45, #44 and #43). A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
+What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy), the [local strategy](#local-strategy-username-and-password) (username and password, with the `auth-local` feature) and [API keys](#api-keys) (the `auth-api-key` feature), plus the guide to [writing a strategy](#writing-a-strategy) of your own. The other strategies arrive one by one: sessions and OAuth2 are tracked in their own issues (#44 and #43). A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
 
 ## The model
 
@@ -31,36 +31,48 @@ A strategy turns the credentials of a request into a user. It is a normal provid
 
 ```rust
 #[injectable]
-pub struct HeaderStrategy {
-    users: Arc<UsersService>,
+pub struct DeviceStrategy {
+    devices: Arc<DevicesService>,
 }
 
 #[async_trait]
-impl Strategy for HeaderStrategy {
+impl Strategy for DeviceStrategy {
     fn name(&self) -> &str {
-        "header"
+        "device"
     }
 
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
-        let Some(user) = ctx.request().header("x-user").and_then(|id| self.users.find(id)) else {
+        // Read the credential, bounded, from the places this strategy accepts and no other.
+        let Some(id) = ctx.request().header("x-device-id").filter(|id| !id.is_empty() && id.len() <= 64) else {
             return StrategyOutcome::Fail { challenge: None, status: None };
         };
-        match AuthenticatedUser::new(user) {
-            Ok(user) => StrategyOutcome::Success { user, info: None },
-            Err(error) => StrategyOutcome::Error(error),
+        match self.devices.find(id).await {
+            Ok(Some(device)) => {
+                let info = (id == "dev-info").then(|| json!({ "scope": "telemetry" }));
+                match AuthenticatedUser::new(device) {
+                    Ok(user) => StrategyOutcome::Success { user, info },
+                    Err(e) => StrategyOutcome::Error(e),
+                }
+            }
+            Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
+            // An error ends the request: it is never a way in.
+            Err(DevicesError::Blocked) => StrategyOutcome::Error(ForbiddenException::new("Device blocked")),
+            Err(e) => StrategyOutcome::Error(HttpException::internal(e)),
         }
     }
 }
 
 #[module(
-    imports = [PassportModule::register(PassportModuleOptions::new().default_strategy("header"))],
-    providers = [Provider::strategy::<HeaderStrategy>()],
-    controllers = [CatsController],
+    imports = [PassportModule::register(PassportModuleOptions::new().default_strategy("device"))],
+    providers = [Provider::class::<DevicesService>(), Provider::strategy::<DeviceStrategy>()],
+    controllers = [DevicesController],
 )]
 pub struct AppModule;
 ```
 
-`Provider::strategy::<S>()` registers the strategy under the name `S::name()`. The application collects every strategy when it initializes; two strategies with the same name stop startup with an error that names both types (the original keeps the last one silently).
+This is the code of `crates/corvis/tests/auth_custom.rs`, which a test replays against a `passport-custom` strategy of the original. No cargo feature is needed.
+
+`Provider::strategy::<S>()` registers the strategy under the name `S::name()`. The application collects every strategy when it initializes; two strategies with the same name stop startup with an error that names both types (the original keeps the last one silently), and so does an empty name, one over 128 bytes or one with a control character.
 
 A strategy ends an attempt in one of five ways, the calls a Passport strategy can make:
 
@@ -79,6 +91,64 @@ A strategy ends an attempt in one of five ways, the calls a Passport strategy ca
 Headers a strategy or guard appended with `append_response_header` are sent on every response of that request, including a later `401` or `403` from the same chain or another guard. Append a cookie only once the attempt succeeded.
 
 A strategy can also set cookies or end the request itself with `ctx.switch_to_http().append_response_header(..)` and `respond_with(..)`, see [Guards](/guards#ending-the-request-and-appending-headers).
+
+### Coming from `passport-custom` and `passport-strategy`
+
+| Original | Corvis |
+|---|---|
+| `done(null, user, info)` in a `passport-custom` callback | `StrategyOutcome::Success { user, info }` |
+| `done(null, false)` | `StrategyOutcome::Fail { challenge: None, status: None }`: the `401` |
+| `done(err)` with a `ForbiddenException` | `StrategyOutcome::Error(ForbiddenException::new(..))`: that exception's response |
+| `done(err)` with any other error, or a callback that throws | `StrategyOutcome::Error(HttpException::internal(err))`: the `500`, the same body for every request |
+| `this.redirect(url, status)` of a `passport-strategy` subclass | `StrategyOutcome::Redirect { url, status }` (`passport-custom` cannot reach it) |
+| `this.pass()` | `StrategyOutcome::Pass` (`passport-custom` cannot reach it) |
+| a `PassportStrategy(CustomStrategy, 'device')` class with injected services | a type that implements `Strategy`, with the services as fields |
+
+The responses are checked against `passport-custom` 1.2.1 behind the original guard (`crates/corvis/tests/fixtures/auth/custom.mjs`, 24 cases: success with info, no user, `ForbiddenException`, a plain `Error`, alone and second in a chain, and a user that is `false`, `0`, `""`, `null`, `undefined` or `NaN`).
+
+::: danger The user must be a real value
+A strategy that succeeds with a user that is JSON `null`, `false`, the number `0` (also `-0` and `0.0`) or the empty string is **not authenticated**. `Authenticator::authenticate` turns that `Success` into a failure of the strategy (the chain goes on, the `auth_info` is `{"message":"The strategy returned an empty user"}`, and the answer is the usual `401`) and logs a warning, at most one per minute per strategy, that says the validator should have returned `None`. This applies to every strategy: JWT, local, API key and your own. The originals fail closed the same way (`if (!user) return self.fail()` in the strategies, and `handleRequest` throws a `401` for a falsy user).
+
+The usual way to hit it is a validator that returns what it computed. `type User = bool; Ok(Some(expected.matches(key)))` and `type User = Option<Service>; Ok(Some(repo.find(id)))` look right, but they say "found" for every key, and the user is `false` or `null` when the key is wrong. Return `Ok(None)` for "no user": `Ok(expected.matches(key).then_some(service))`, `Ok(repo.find(id))`.
+
+If an application's users can legitimately be `0` or `""` (a numeric id as the whole user), wrap them in a struct: `struct Account { id: u64 }` serializes to an object and is never empty. An empty object `{}`, an empty array and the strings `"0"` and `"false"` are real users, as in JavaScript.
+:::
+
+### What the framework guarantees around a strategy
+
+- **An error never lets a request through.** `Error(..)` ends the chain and is the answer, also behind `.optional()`: an optional guard lets a request through only when every strategy *failed*.
+- **A panic is an error.** A panic inside `authenticate` is caught and answered as a `500 {"statusCode":500,"message":"Internal server error"}`, the same for every request, behind an optional guard too and without running later strategies of the chain. Corvis never reads the panic payload and never logs it. It is not hidden from everything else: the default panic hook of the standard library prints the panic message to stderr, so a credential in a panic message ends up in your process logs. A strategy must not put credentials in panic messages (`unwrap`, `expect` and `panic!` on a value that holds one) or in errors. Corvis logs one warning per minute per strategy (with the count of the ones skipped), and the default exception filter does not add a line per request.
+- **An empty user is a failure.** See the warning below.
+- **Names are checked at startup.** `AuthGuard::new("devise")` for a strategy named `device` stops `init()`, also inside a guard that lists its inner guards in `CanActivate::inner_guards`.
+- **Responses during the guard phase.** A strategy ends a request itself only through `Redirect` (3xx statuses only) and, for cookies, `append_response_header`. `respond_with` stores a response that wins over everything else the chain does: do not call it from a strategy to say "no".
+- **There is no timeout around a strategy.** A strategy that waits for a database or a service must bound the wait itself (`tokio::time::timeout`), or one slow dependency holds every request. The [API key strategy](#api-keys) does it for its validator.
+
+### Testing a route that uses a strategy
+
+`override_strategy` replaces a registered strategy in a testing module. Give the stub the name of the strategy it replaces, so the routes and the startup checks stay the same:
+
+```rust
+let module = Test::create_testing_module()
+    .import::<DevicesModule>()
+    .override_strategy::<DeviceStrategy>(StubDevice) // StubDevice::name() is "device"
+    .compile()
+    .await?;
+let mut app = module.create_corvis_application();
+app.init().await?;
+```
+
+### Security checklist for a strategy
+
+- **Fail, never pass.** Return `Fail` (or `Error`) when credentials are missing, malformed or wrong. `Pass` lets the request through with no user: use it only for a strategy that is meant to skip authentication.
+- **Compare secrets in constant time.** `==` stops at the first different byte. With the `auth-api-key` feature, `corvis::auth::api_key::constant_time_eq(a, b)` compares SHA-256 digests with a constant-time primitive; store secrets hashed.
+- **Refuse an empty or unset secret before you compare.** `constant_time_eq(b"", b"")` is `true`: an expected secret that is missing from the configuration (an unset environment variable read as `""`) would accept a request with an empty credential. Check that the expected secret is not empty (and long enough) at startup or before the comparison, and fail when it is.
+- **Return `None`, not an empty user.** `Ok(Some(false))`, `Ok(Some(None))`, `0` and `""` are treated as a failure with a warning (see above); say "no user" with `None` or `Fail`.
+- **Keep credentials out of panic messages.** The default panic hook prints the message to stderr, which Corvis cannot intercept.
+- **Keep request data out of errors and logs.** An `Error` message, a `Fail` challenge and a log line all end up somewhere. Fixed strings only, and never a credential or part of one.
+- **Bound what you read.** Check the length of a credential before you hash it, compare it or send it to a database, and read only the headers, parameters or cookies you document. Read one place, or define which wins and fail when two disagree.
+- **Register credentials read from the URL.** A strategy lists the query parameters it reads in `Strategy::credential_query_params`, and `LoggingInterceptor` hides their values on every request (see [API keys](#api-keys)); a guard of your own marks one with `request.redact_query_param("name")` before it reads it. Prefer a header: a URL is written to proxy and access logs, and nothing outside Corvis hides it.
+- **Never build a redirect target from request data** (see the warning above).
+- **Treat a slow or failing dependency as an error**, with the same answer for every credential: the client must not learn from the status or the body which key or user it was.
 
 ## `AuthGuard`
 
@@ -338,6 +408,166 @@ Do not send credentials in the query string unless you have to: URLs end up in a
 - **Credentials are bounded.** A username or a password over 1024 bytes (configurable) fails without calling `validate`. The original has no limit besides the body size. Raise the limits with `.max_password_bytes(4096)` if your users need it; the hasher has its own `max_password_bytes`.
 - **Failures are uniform.** Missing credentials, wrong passwords and unknown users all give the same `401`, and the validator above spends one hash verification in every case. A stored hash the hasher refuses (an account without a password, an unsupported format) is a wrong password too, not a `500`. When the hasher is saturated (`PasswordError::Busy`) the answer is `503 Service Unavailable` for every user; see [a busy hasher](/security/encryption-and-hashing#a-busy-hasher).
 - **Login throttling is separate.** Pair the login route with the [throttler](/security/rate-limiting) (the cats example allows five attempts a minute per client); hashing is expensive on purpose, and a flood queues behind the hasher's `max_concurrent` slots.
+
+## API keys
+
+The API key strategy is the port of `passport-headerapikey` 1.2.2 for machine clients (webhooks, internal services, partner integrations). It needs the `auth-api-key` cargo feature (one extra dependency, `subtle`). You write the validator, the `verify` callback of the original, and register `ApiKeyStrategy<YourValidator>`:
+
+```toml
+corvis = { version = "0.1", features = ["auth-api-key"] }
+```
+
+```rust
+use corvis::auth::api_key::{ApiKey, ApiKeySet, ApiKeyStrategy, ApiKeyValidator, ExpectedApiKey};
+use corvis::auth::{AuthGuard, User};
+use corvis::prelude::*;
+
+/// The keys of the services that call this application, from configuration.
+pub struct ServiceKeys(ApiKeySet<Service>);
+
+#[injectable]
+pub struct ServiceKeyAuth {
+    keys: Arc<ServiceKeys>,
+}
+
+#[async_trait]
+impl ApiKeyValidator for ServiceKeyAuth {
+    type User = Service; // Serialize + Clone; leave the key out of it
+
+    async fn validate(&self, _req: &Request, key: &ApiKey) -> Result<Option<Service>, HttpException> {
+        Ok(self.keys.0.lookup(key).cloned()) // None answers 401
+    }
+}
+
+#[module(
+    providers = [
+        // a key shorter than 32 bytes is an error here, and the application does not start
+        Provider::use_factory(Token::of::<ServiceKeys>(), |ctx| async move {
+            let config = ctx.get_or_construct::<ConfigService>().await?;
+            let mut keys = ApiKeySet::new();
+            keys.insert(ExpectedApiKey::new(config.get::<String>("BILLING_API_KEY").unwrap_or_default())?, Service::billing());
+            Ok(ServiceKeys(keys))
+        }),
+        Provider::strategy::<ApiKeyStrategy<ServiceKeyAuth>>(),
+    ],
+    controllers = [DataController],
+)]
+pub struct MachineModule;
+
+#[get("data")]
+#[use_guards(AuthGuard::new("api-key"))]
+fn data(&self, service: User<Service>) -> Value { /* .. */ }
+```
+
+The strategy is named `"api-key"` (the original names it `headerapikey`: set `const NAME: &'static str = "headerapikey";` in the validator to port a configuration unchanged, or another name to have several API key strategies). `validate` runs only for a key that was found in the configured places and is within the limits. It returns the user (`Some`), no user (`None`, a `401`) or an exception (passed on, see [failures](#failures-of-the-validator)). `fn info(&self, user)` can return the auth info of a success: never put the key in it.
+
+A route for people and machines tries the user strategy first: `AuthGuard::chain(["jwt", "api-key"])`.
+
+### Where the key is read from
+
+`ApiKeyStrategyOptions::default()` reads the `X-Api-Key` header and nothing else. Add the places you accept with `fn options(&self)`:
+
+```rust
+fn options(&self) -> ApiKeyStrategyOptions {
+    ApiKeyStrategyOptions::new()
+        .source(ApiKeySource::header("X-Api-Key"))
+        .source(ApiKeySource::header("Authorization").prefix("Api-Key "))
+}
+```
+
+| Source | Reads | Same as |
+|---|---|---|
+| `ApiKeySource::header(name)` | every value of the header, read as latin1 and joined with `", "` as Node does; the name is case-insensitive | `passport-headerapikey` (`header`) |
+| `.prefix("Api-Key ")` on a header source | the value must start with the prefix (compared literally, case-sensitively), which is removed; a value that does not start with it is absent, whatever its length or content, so an unrelated `Authorization` header never fails a key found elsewhere | `passport-headerapikey` (`prefix`), but literal |
+| `ApiKeySource::bearer()` | the first `Authorization` value, parsed like `passport-jwt`'s bearer extractor: `(\S+)\s+(\S+)`, the scheme compared ignoring case | a `passport-custom` strategy with `ExtractJwt.fromAuthHeaderAsBearerToken()` |
+| `ApiKeySource::query(name)` | the query parameter, when it is a single string | a `passport-custom` strategy reading `req.query[name]` |
+
+There is no default for the bearer or query sources, and the request body and cookies are never a source (a cookie is an ambient credential, and CSRF comes with it; write a [strategy of your own](#writing-a-strategy) if you need one). Other places are not read even when the key is there: a key in the query is ignored unless a query source is configured.
+
+Every configured source is read. A source whose value is **present but unusable** (too long, with a control character, a repeated query parameter, or a bracketed one when the application uses the extended query parser) fails the attempt, and **two sources that carry different keys fail it too**, without calling the validator. That closes the case where a proxy or a firewall authenticates or rate-limits by one place and the application trusts another. A source that finds nothing (no header, an empty value, another scheme, a value without the prefix) is skipped, and the same key in two places is one key. At most 8 sources.
+
+::: warning Keys in URLs
+`ApiKeySource::query("api_key")` puts the key in the URL, and **we recommend against it**: use a header. It is off by default and the strategy logs a warning at startup for each query parameter.
+
+What is hidden: when the application starts, every strategy that reads a query parameter registers its name, and `LoggingInterceptor` and `Request::redacted_url()` replace the value of that parameter with `REDACTED` on **every** request, whether or not that strategy runs for it (`GET /data?page=2&api_key=REDACTED 200`), including percent-encoded names and, with the extended query parser, `api_key[x]=`. A query string with more than 1000 pairs has every value hidden.
+
+What is not: anything outside Corvis (the access logs of your reverse proxy, load balancer and CDN, the browser history, the `Referer` header that the page sends to other sites) and anything inside it that prints `request.url()`, `request.uri()` or the query itself (a middleware, your own logging, an error report) instead of `redacted_url()`.
+:::
+
+### Limits
+
+| Limit | Default | Notes |
+|---|---|---|
+| `max_key_bytes` | 512 | 1 to 4096, else startup fails. A longer key fails before it is hashed, compared or given to the validator. The prefix of a header source does not count |
+| Characters | no byte `0x00` to `0x1F` or `0x7F` | a key with one fails; a tab in a header counts |
+| Sources | at most 8, none by default for `ApiKeyStrategyOptions::new()` | an empty list stops startup |
+| `validator_timeout` | 5 s | 1 ms to 300 s. A validator that takes longer is a `503` |
+| Source names and prefixes | not empty; header names valid; `Cookie` refused; prefixes 1 to 64 printable ASCII characters | each problem stops startup with an error that names the strategy and the option |
+
+Repeated header values are not copied past the limit (a request with thousands of `X-Api-Key` headers stops at the first one that crosses it), and the bearer source reads at most `max_key_bytes + 128` bytes of leading space, scheme and separator before the key.
+
+### Keeping keys
+
+An API key is a long-lived bearer secret, so store only a digest of it and compare digests:
+
+1. **Generate** at least 32 random bytes per key: `openssl rand -hex 32`, with a public id in front if you have many keys (`ck_live_3f9a.<secret>`). `ExpectedApiKey::new` refuses a secret under 32 bytes; a key you generate yourself is yours to get right, so make the generator long enough.
+2. **Store** `ApiKey::sha256_hex()` of the key, not the key. A digest of a random 32-byte secret cannot be turned back into the key, and it needs no slow hash (argon2 and bcrypt are for passwords). Show the key to its owner once.
+3. **Compare** with the helpers, never with `==`:
+
+| Helper | Use |
+|---|---|
+| `ExpectedApiKey::new(secret)` | one key from configuration; only its digest is kept in memory |
+| `ExpectedApiKey::from_sha256_hex(hex)` | one key from a stored digest |
+| `ExpectedApiKey::matches(&key)` | one comparison |
+| `ApiKeySet::lookup(&key)` | a handful of keys with their owners; compares every entry with no early exit, so the time depends on how many keys there are, not on which one matched |
+| `ApiKey::ct_eq(bytes)` and `constant_time_eq(a, b)` | any other secret: both sides are hashed with SHA-256 and the digests compared with `subtle`, so neither the position of the first different byte nor the length of the stored secret shows in the time |
+
+For **many keys** in a database, look the key up by a public id, then compare the digest. An unknown id costs one lookup and a dummy comparison, so unknown and wrong keys take the same time:
+
+```rust
+async fn validate(&self, _req: &Request, key: &ApiKey) -> Result<Option<Service>, HttpException> {
+    let Some(id) = key.id('.') else { return Ok(None) }; // `<id>.<secret>`, id 1 to 64 of A-Za-z0-9_-, public
+    let record = self.keys.find(id).await.map_err(|_| ServiceUnavailableException::empty())?;
+    let stored = record.as_ref().map(|r| &r.expected); // ExpectedApiKey::from_sha256_hex(&row.digest)
+    Ok(ExpectedApiKey::matches_or_dummy(stored, key).then(|| record.map(|r| r.service)).flatten())
+}
+```
+
+Without an id, store the digest in an indexed column and look the digest of the presented key up: `self.keys.find_by_digest(&key.sha256_hex())`. That lookup is not constant-time, but what it can leak is a prefix of the digest of a random secret, which does not help to find the key.
+
+`ApiKey`, `ExpectedApiKey` and `ApiKeySet` print `<redacted>` with `{:?}`, so a derived `Debug` on a struct that holds them cannot write a key to a log; they have no `Display`, `Serialize`, `Clone` or `PartialEq` (an `==` between keys is the comparison that leaks). Call `key.expose()` only to pass the key to something that needs the text, and never log it, put it in an error message, a response or the auth info.
+
+### Failures
+
+Missing, malformed, unknown, revoked and expired keys all answer the same `401 {"message":"Unauthorized","statusCode":401}` through `AuthGuard`, with no `WWW-Authenticate` header. Return `Ok(None)` from the validator for every key that is not valid, whatever the reason. The reason is kept as `request.auth_info()` and never sent: `Missing API Key`, `Conflicting API keys`, `API key too long`, `Invalid API key characters` or `Ambiguous API key` (a repeated or bracketed query parameter). A key the validator refused has no reason. None of them repeats request data. A validator that answers `Ok(Some(user))` with an empty user (`false`, `null`, `0`, `""`) is a failure too, with the reason `The strategy returned an empty user`: answer `Ok(None)` instead (see [the user must be a real value](#writing-a-strategy)).
+
+#### Failures of the validator
+
+- An exception with a **4xx** status is passed on as it is, like `done(err)` in the original (`ForbiddenException::new("Key suspended")` gives the `403`). Use it only for an answer you want the client to see; it tells the client something about the key.
+- An exception with a status of **500 or above** (or below 400) is replaced by the plain exception of that status: `{"statusCode":503,"message":"Service Unavailable"}`, `{"statusCode":500,"message":"Internal server error"}`. A database error that quotes the key in its text, or a message that differs per key, never reaches the client. The application logs one warning per minute with the status, never the message.
+- A validator that runs longer than `validator_timeout` is a `503` with that same body, and a **panic** in the validator is a `500`: both for every key, also behind `.optional()`. Neither is a way in.
+
+An infrastructure failure (the database is down) should be an error, not `Ok(None)`: a `401` tells the machine client its key is wrong, a `503` tells it to retry.
+
+### Differences from passport-headerapikey
+
+Each one is on purpose and the differential test marks it:
+
+- **The name is `"api-key"`**, not `headerapikey`, and the key can come from more places than a header.
+- **The default reads one header and nothing else.** The query is a source only when configured, with a warning.
+- **A prefix is a literal string.** The original builds an unescaped regular expression from it: with the prefix `Key+`, `Key+<key>` reaches its `verify` as `+<key>`.
+- **Different keys in two sources, or an unusable value in one, fail** (the original has one source).
+- **Keys over `max_key_bytes` (512) or with control characters fail** before the validator (the original has no limit besides the header size).
+- **An empty key, or a prefix with nothing after it, never reaches the validator.**
+- **A validator failure of status 500 or above has a fixed body, and a slow validator is a `503`.**
+
+`passport-headerapikey` answers a missing header with a `BadRequestError('Missing API Key')` challenge; through the original guard that is the same `401`, which is what is recorded.
+
+The `404` for a route that does not exist is `Cannot GET /x?api_key=...` with the URL as sent, as in the original; no strategy runs for it and it goes only to the sender.
+
+### Testing against the original
+
+`crates/corvis/tests/fixtures/auth/api_key.mjs` runs `passport-headerapikey` 1.2.2, and `passport-custom` 1.2.1 strategies for the query and bearer variants, behind the original guard and records 55 cases (`api_key.json`): header names, prefixes, repeated values, wrong, missing and empty keys, the validator returning no user, an exception and a plain error, chains. `crates/corvis/tests/auth_api_key.rs` replays them against the same routes with no Node needed at test time; the five marked divergences (an oversized key twice, a control character, conflicting keys, the literal prefix) are asserted from the specification.
 
 
 ## Differential testing

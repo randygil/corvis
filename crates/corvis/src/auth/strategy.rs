@@ -41,6 +41,14 @@ pub trait Strategy: Send + Sync + 'static {
     /// [`append_response_header`](crate::common::context::HttpArgumentsHost::append_response_header) for cookies it
     /// has to set.
     async fn authenticate(&self, ctx: &ExecutionContext, options: &AuthenticateOptions) -> StrategyOutcome;
+
+    /// The query parameters this strategy reads credentials from, none by default. They are collected once when the
+    /// application starts, and `LoggingInterceptor` and [`Request::redacted_url`] hide their values on every
+    /// request, whether or not the strategy runs for it. A strategy that reads a credential from the URL must list
+    /// it here.
+    fn credential_query_params(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// How an authentication attempt ended, the five calls a passport strategy can make.
@@ -130,10 +138,27 @@ impl AuthenticatedUser {
         &self.json
     }
 
-    /// Stores the user on the request: the typed value and the JSON user.
-    pub(crate) fn install(&self, req: &Request) {
+    /// `true` when the user is an empty value: JSON `null`, `false`, the number `0` (also `-0` and `0.0`) or the empty
+    /// string, what a JavaScript `!user` test rejects. Such a user never authenticates a request: the
+    /// [`Authenticator`](super::Authenticator) turns it into a failure of the strategy and nothing stores it. A
+    /// strategy whose users can legitimately be one of these wraps them in a struct.
+    pub fn is_empty(&self) -> bool {
+        match &self.json {
+            Value::Null | Value::Bool(false) => true,
+            Value::Number(n) => n.as_f64() == Some(0.0),
+            Value::String(s) => s.is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Stores the user on the request: the typed value and the JSON user. An empty user is not stored (`false`).
+    pub(crate) fn install(&self, req: &Request) -> bool {
+        if self.is_empty() {
+            return false;
+        }
         req.insert(AuthUserSlot(self.typed.clone()));
         req.set_user_value(self.json.clone());
+        true
     }
 }
 

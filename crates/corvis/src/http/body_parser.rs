@@ -47,6 +47,8 @@ pub struct BodyParserOptions {
     /// Express' `trust proxy` setting used by `req.ip()`, `req.ips()` and `req.hostname()`
     /// (default: trust no proxy, the socket address is the client).
     pub trust_proxy: super::proxy_addr::TrustProxy,
+    /// The query parameters whose values every request log hides, set at startup from the strategies.
+    pub(crate) redacted_params: Option<std::sync::Arc<super::redact::AppRedaction>>,
 }
 
 /// `app.set('query parser', ...)`.
@@ -70,6 +72,7 @@ impl Default for BodyParserOptions {
             query_parser: QueryParser::Simple,
             max_depth: json_parse::DEFAULT_MAX_DEPTH,
             trust_proxy: super::proxy_addr::TrustProxy::default(),
+            redacted_params: None,
         }
     }
 }

@@ -7,6 +7,8 @@ pub mod exception;
 pub mod express;
 pub mod json_parse;
 pub mod proxy_addr;
+mod redact;
+pub(crate) use redact::AppRedaction;
 pub mod request;
 pub mod res;
 pub mod response;

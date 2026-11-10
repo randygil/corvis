@@ -26,6 +26,8 @@
 //! pub struct CatsController;
 //! ```
 
+#[cfg(feature = "auth-api-key")]
+pub mod api_key;
 mod authenticator;
 mod guard;
 #[cfg(feature = "auth-local")]
@@ -33,6 +35,7 @@ pub mod local;
 mod module;
 mod strategy;
 mod user;
+mod warn_limit;
 
 #[cfg(feature = "jwt")]
 pub mod jwt;
@@ -66,6 +69,9 @@ pub(crate) fn build_registry(container: &Container) -> crate::Result<()> {
             None => anyhow::bail!("strategy {token} could not be registered: the provider has no instance or its value is not a strategy"),
         };
         let name = strategy.name().to_string();
+        if let Err(problem) = check_name(&name) {
+            anyhow::bail!("strategy {token} has an invalid name: {problem}");
+        }
         if let Some((first, _)) = by_name.get(&name) {
             anyhow::bail!("two strategies are named \"{name}\": {first} and {token}");
         }
@@ -86,6 +92,31 @@ pub(crate) fn build_registry(container: &Container) -> crate::Result<()> {
         }
     }
     authenticator.set_registry(StrategyRegistry { by_name: by_name.into_iter().map(|(k, (_, s))| (k, s)).collect(), default });
+    Ok(())
+}
+
+/// The query parameters the registered strategies read credentials from, for the log lines of every request.
+pub(crate) fn credential_query_params(container: &Container) -> Vec<String> {
+    let Some(authenticator) = container.instances_of::<Authenticator>().first().cloned() else { return Vec::new() };
+    let Some(registry) = authenticator.registry() else { return Vec::new() };
+    registry.by_name.values().flat_map(|s| s.credential_query_params()).collect()
+}
+
+/// The longest strategy name accepted.
+const MAX_NAME_BYTES: usize = 128;
+
+/// A strategy name is not empty, at most 128 bytes and holds no control character (names are written to logs and
+/// startup errors, and an empty one could be matched by a guard built from a blank string).
+fn check_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("the name is empty".to_string());
+    }
+    if name.len() > MAX_NAME_BYTES {
+        return Err(format!("the name is longer than {MAX_NAME_BYTES} bytes"));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("the name contains a control character".to_string());
+    }
     Ok(())
 }
 

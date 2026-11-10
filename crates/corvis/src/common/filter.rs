@@ -49,7 +49,7 @@ pub struct BaseExceptionFilter;
 
 impl BaseExceptionFilter {
     pub fn handle(exception: &HttpException) -> Response {
-        if exception.is_internal() {
+        if exception.is_internal() && !exception.is_already_logged() {
             let logger = Logger::new("ExceptionsHandler");
             let mut msg = exception.message().to_string();
             if let Some(cause) = exception.cause() {

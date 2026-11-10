@@ -181,6 +181,12 @@ pub fn set_logging_enabled(enabled: bool) {
     STATE.write().unwrap().enabled = enabled;
 }
 
+/// `true` when a message of `level` would be written, so a caller can skip building an expensive message.
+pub(crate) fn level_enabled(level: LogLevel) -> bool {
+    let s = STATE.read().unwrap();
+    s.enabled && s.levels.contains(&level)
+}
+
 fn emit(level: LogLevel, message: &str, context: Option<&str>) {
     let (service, ok) = {
         let s = STATE.read().unwrap();

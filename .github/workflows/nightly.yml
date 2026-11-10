@@ -58,6 +58,9 @@ jobs:
       - name: Engine.IO codec
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test -p corvis --features socket-io --lib fuzz
+      - name: API key extraction
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis --features auth-api-key --lib fuzz
       - name: Static file serving
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test -p corvis --test fuzz_static

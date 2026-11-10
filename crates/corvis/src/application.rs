@@ -551,6 +551,12 @@ impl CorvisApplication {
         self.config.router.global_filters.reverse();
         self.config.router.global_filters.extend(provider_filters.into_iter().rev());
         crate::auth::build_registry(&self.container)?;
+        // The strategies that read a credential from the query string register its name for the whole application, so
+        // every request log hides it whether or not the strategy runs for that request.
+        let credential_params = crate::http::AppRedaction::new(crate::auth::credential_query_params(&self.container));
+        if !credential_params.is_empty() {
+            self.config.http_settings.body_parser.redacted_params = Some(Arc::new(credential_params));
+        }
         let router = build_router(&self.container, &self.config.router, self.log_routes).await?;
         if let Some(warning) = self.config.cors.as_ref().and_then(CorsOptions::startup_warning) {
             Logger::new("CorsOptions").warn(warning);

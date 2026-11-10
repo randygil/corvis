@@ -1,8 +1,11 @@
 //! `Authenticator`: runs named strategies in order, the port of `passport.authenticate(names, options, callback)`.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
+use futures::FutureExt;
 use serde_json::Value;
 
 use super::strategy::{AuthInfo, AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
@@ -52,13 +55,11 @@ impl std::fmt::Debug for AuthResult {
 
 impl AuthResult {
     /// Stores the user of a [`AuthResult::Success`] on the request (typed value and JSON user, as `AuthGuard` does)
-    /// and returns `true`; any other result stores nothing.
+    /// and returns `true`; any other result stores nothing, and neither does a success with an empty user (see
+    /// [`AuthenticatedUser::is_empty`]), which the authenticator never returns.
     pub fn store_user(&self, req: &Request) -> bool {
         match self {
-            AuthResult::Success { user, .. } => {
-                user.install(req);
-                true
-            }
+            AuthResult::Success { user, .. } => user.install(req),
             _ => false,
         }
     }
@@ -89,11 +90,47 @@ pub(crate) fn internal(message: impl Into<String>) -> HttpException {
 /// It has no public constructor, so a module cannot shadow the core provider with an empty one.
 pub struct Authenticator {
     registry: OnceLock<StrategyRegistry>,
+    /// Limits the warning about a strategy that panics: a client can trigger it on every request.
+    panics: super::warn_limit::WarnLimiter,
+    /// Limits the warning about a strategy that succeeds with an empty user: a client can trigger it on every request.
+    empty_users: super::warn_limit::WarnLimiter,
 }
+
+/// The reason in the auth info of a strategy that succeeded with an empty user. Fixed: it repeats nothing.
+const EMPTY_USER: &str = "The strategy returned an empty user";
 
 impl Authenticator {
     pub(crate) fn new() -> Self {
-        Authenticator { registry: OnceLock::new() }
+        let limiter = || super::warn_limit::WarnLimiter::new(Duration::from_secs(60));
+        Authenticator { registry: OnceLock::new(), panics: limiter(), empty_users: limiter() }
+    }
+
+    /// The text of the warning about a strategy that panicked at `now`, at most once a minute per strategy. The panic
+    /// payload is never read: it can hold request data.
+    fn panic_warning(&self, name: &str, now: Instant) -> Option<String> {
+        let suppressed = self.panics.allow(name, now)?;
+        Some(format!("the strategy \"{name}\" panicked; the request was answered with a 500{}", more(suppressed)))
+    }
+
+    /// The text of the warning about a strategy that returned an empty user, at most once a minute per strategy.
+    fn empty_user_warning(&self, name: &str, now: Instant) -> Option<String> {
+        let suppressed = self.empty_users.allow(name, now)?;
+        Some(format!(
+            "the strategy \"{name}\" returned an empty user (null, false, 0 or \"\") and the attempt was treated as a failure; a validator that finds no user must return None{}",
+            more(suppressed)
+        ))
+    }
+
+    fn warn_panic(&self, name: &str) {
+        if let Some(line) = self.panic_warning(name, Instant::now()) {
+            crate::logger::Logger::new("Authenticator").warn(line);
+        }
+    }
+
+    fn warn_empty_user(&self, name: &str) {
+        if let Some(line) = self.empty_user_warning(name, Instant::now()) {
+            crate::logger::Logger::new("Authenticator").warn(line);
+        }
     }
 
     pub(crate) fn set_registry(&self, registry: StrategyRegistry) {
@@ -140,7 +177,25 @@ impl Authenticator {
             let Some(strategy) = registry.by_name.get(name) else {
                 return Err(internal(format!("Unknown authentication strategy \"{name}\"")));
             };
-            match strategy.authenticate(ctx, options).await {
+            // A panic inside a strategy is an error, never a failure: an optional guard lets a failed attempt
+            // through, and a panic must not. The router would also answer a 500, but only for the whole request;
+            // here it ends the chain too.
+            let outcome = match AssertUnwindSafe(strategy.authenticate(ctx, options)).catch_unwind().await {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    self.warn_panic(name);
+                    // The warning above is the log line, rate limited; the default filter does not add one per request.
+                    return Err(internal(format!("the authentication strategy \"{name}\" panicked")).already_logged());
+                }
+            };
+            match outcome {
+                // A user that a `!user` test rejects in the original never authenticates: it is a failure of this
+                // strategy, and the chain goes on as for any other.
+                StrategyOutcome::Success { user, .. } if user.is_empty() => {
+                    self.warn_empty_user(name);
+                    let challenge = Some(serde_json::json!({ "message": EMPTY_USER }));
+                    failures.push(AuthFailure { strategy: name.clone(), challenge, status: None });
+                }
                 StrategyOutcome::Success { user, info } => {
                     AuthInfo::store(ctx.request(), info.clone());
                     return Ok(AuthResult::Success { user, info });
@@ -167,6 +222,11 @@ impl Authenticator {
         AuthInfo::store(ctx.request(), info);
         Ok(AuthResult::Failed { failures })
     }
+}
+
+/// The suffix of a rate-limited warning that says how many were dropped since the last one.
+fn more(suppressed: u64) -> String {
+    if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() }
 }
 
 /// What passport's `strategy.redirect(url, status)` writes: the status (302 by default), `Location` as given,
@@ -385,6 +445,160 @@ mod tests {
         // Reached only after "a" succeeded: never looked up.
         let (a, _) = authenticator(vec![("a", success(None))]);
         assert!(matches!(run(&a, &ctx(), &["a", "typo"]).await.unwrap(), AuthResult::Success { .. }));
+    }
+
+    struct Panics;
+
+    #[async_trait]
+    impl Strategy for Panics {
+        fn name(&self) -> &str {
+            "panics"
+        }
+        async fn authenticate(&self, _: &ExecutionContext, _: &AuthenticateOptions) -> StrategyOutcome {
+            panic!("secret-credential-in-a-panic-message")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_strategy_is_a_500_that_ends_the_chain() {
+        let calls = [Arc::new(AtomicUsize::new(0))];
+        let mut registry = StrategyRegistry::default();
+        registry.by_name.insert("panics".into(), Arc::new(Panics));
+        registry
+            .by_name
+            .insert("after".into(), Arc::new(Fake { name: "after", outcome: Mutex::new(Some(success(None))), calls: calls[0].clone() }));
+        let a = Authenticator::new();
+        a.set_registry(registry);
+        let c = ctx();
+        let e = run(&a, &c, &["panics", "after"]).await.unwrap_err();
+        assert!(e.is_internal());
+        assert_eq!(e.get_response(), &json!({ "statusCode": 500, "message": "Internal server error" }));
+        assert!(!e.message().contains("secret-credential"), "{}", e.message());
+        assert_eq!(calls[0].load(Ordering::SeqCst), 0, "the chain stops at the panic");
+        assert!(c.request().user().is_none());
+    }
+
+    fn user_outcome(user: Value) -> StrategyOutcome {
+        StrategyOutcome::Success { user: AuthenticatedUser::new(user).unwrap(), info: Some(json!("info of the empty user")) }
+    }
+
+    #[test]
+    fn exactly_the_values_a_not_test_rejects_are_empty_users() {
+        let empty = [json!(null), json!(false), json!(0), json!(0.0), json!(-0.0), json!(""), json!(0u64), json!(-0i64)];
+        for v in empty {
+            assert!(AuthenticatedUser::new(v.clone()).unwrap().is_empty(), "{v}");
+        }
+        // Truthy in JavaScript too: authenticates.
+        let real = [
+            json!(true),
+            json!(1),
+            json!(-1),
+            json!(0.1),
+            json!(" "),
+            json!("0"),
+            json!("false"),
+            json!("null"),
+            json!({}),
+            json!([]),
+            json!([0]),
+            json!({ "id": 0 }),
+        ];
+        for v in real {
+            assert!(!AuthenticatedUser::new(v.clone()).unwrap().is_empty(), "{v}");
+        }
+        // The types an application writes for `return isValid` and `return repo.find(id)`.
+        assert!(AuthenticatedUser::new(false).unwrap().is_empty());
+        assert!(AuthenticatedUser::new(Option::<u8>::None).unwrap().is_empty());
+        assert!(AuthenticatedUser::new(0u32).unwrap().is_empty());
+        assert!(AuthenticatedUser::new(String::new()).unwrap().is_empty());
+        assert!(AuthenticatedUser::new(f64::NAN).unwrap().is_empty(), "NaN serializes to null");
+        assert!(!AuthenticatedUser::new(Some(7u8)).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_success_with_an_empty_user_is_a_failure_of_that_strategy() {
+        for user in [json!(null), json!(false), json!(0), json!(0.0), json!(-0.0), json!("")] {
+            let (a, _) = authenticator(vec![("a", user_outcome(user.clone()))]);
+            let c = ctx();
+            let AuthResult::Failed { failures } = run(&a, &c, &["a"]).await.unwrap() else { panic!("{user}: expected a failure") };
+            assert_eq!(failures.len(), 1, "{user}");
+            assert_eq!(failures[0].strategy, "a");
+            assert_eq!(failures[0].challenge, Some(json!({ "message": "The strategy returned an empty user" })), "{user}");
+            // The reason is the auth info; the info of the discarded success is not, and no user is stored.
+            assert_eq!(c.request().auth_info(), Some(json!({ "message": "The strategy returned an empty user" })), "{user}");
+            assert!(c.request().user().is_none(), "{user}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_chain_goes_on_after_an_empty_user() {
+        let (a, calls) = authenticator(vec![("a", user_outcome(json!(false))), ("b", success(None)), ("c", success(None))]);
+        let c = ctx();
+        assert!(matches!(run(&a, &c, &["a", "b", "c"]).await.unwrap(), AuthResult::Success { .. }));
+        let runs: Vec<usize> = calls.iter().map(|n| n.load(Ordering::SeqCst)).collect();
+        assert_eq!(runs, [1, 1, 0]);
+        // All of them empty: the auth info lists each reason.
+        let (a, _) = authenticator(vec![("a", user_outcome(json!(0))), ("b", user_outcome(json!("")))]);
+        let c = ctx();
+        assert!(matches!(run(&a, &c, &["a", "b"]).await.unwrap(), AuthResult::Failed { .. }));
+        let reason = json!({ "message": "The strategy returned an empty user" });
+        assert_eq!(c.request().auth_info(), Some(json!([reason, reason])));
+    }
+
+    #[tokio::test]
+    async fn a_real_user_that_looks_empty_in_another_language_authenticates() {
+        for user in [json!("0"), json!({}), json!([]), json!(true), json!(1), json!({ "id": 0 })] {
+            let (a, _) = authenticator(vec![("a", user_outcome(user.clone()))]);
+            assert!(matches!(run(&a, &ctx(), &["a"]).await.unwrap(), AuthResult::Success { .. }), "{user}");
+        }
+    }
+
+    #[test]
+    fn nothing_stores_an_empty_user() {
+        let c = ctx();
+        let result = AuthResult::Success { user: AuthenticatedUser::new(json!(false)).unwrap(), info: None };
+        assert!(!result.store_user(c.request()));
+        assert!(c.request().user().is_none());
+        assert!(crate::auth::AuthUserSlot::read::<Value>(c.request()).is_none());
+    }
+
+    #[test]
+    fn the_warnings_are_limited_per_strategy_and_count_what_they_suppressed() {
+        let a = Authenticator::new();
+        let start = Instant::now();
+        for (first, again, later) in [
+            (
+                a.empty_user_warning("s", start),
+                a.empty_user_warning("s", start + Duration::from_secs(1)),
+                a.empty_user_warning("s", start + Duration::from_secs(61)),
+            ),
+            (
+                a.panic_warning("s", start),
+                a.panic_warning("s", start + Duration::from_secs(1)),
+                a.panic_warning("s", start + Duration::from_secs(61)),
+            ),
+        ] {
+            let first = first.expect("the first one is written");
+            assert!(first.contains("\"s\"") && !first.contains("more since"), "{first}");
+            assert!(again.is_none());
+            assert!(later.expect("one a minute").contains("(1 more since the last warning)"));
+        }
+        // Another strategy has its own allowance.
+        assert!(a.empty_user_warning("t", start + Duration::from_secs(2)).is_some());
+        let line = a.empty_user_warning("u", start).unwrap();
+        assert!(line.contains("empty user") && line.contains("None"), "{line}");
+        assert!(a.panic_warning("u", start).unwrap().contains("panicked"));
+        assert!(!a.panic_warning("v", start).unwrap().contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn the_panic_error_is_not_logged_again_by_the_default_filter() {
+        let mut registry = StrategyRegistry::default();
+        registry.by_name.insert("panics".into(), Arc::new(Panics));
+        let a = Authenticator::new();
+        a.set_registry(registry);
+        let e = run(&a, &ctx(), &["panics"]).await.unwrap_err();
+        assert!(e.is_internal() && e.is_already_logged());
     }
 
     #[tokio::test]

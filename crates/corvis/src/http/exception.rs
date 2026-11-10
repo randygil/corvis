@@ -25,6 +25,9 @@ pub struct HttpException {
     anyhow_cause: Option<Arc<anyhow::Error>>,
     /// `true` when the exception was not intentionally thrown (unknown error).
     internal: bool,
+    /// `true` when whoever raised it already wrote its own (rate-limited) log line, so the default filter does not
+    /// write one more for every request.
+    logged: bool,
 }
 
 /// Something that can be used as the response of an exception: a message or a JSON body.
@@ -102,7 +105,7 @@ impl HttpException {
                 (o, m)
             }
         };
-        HttpException { status, response, message, cause: None, anyhow_cause: None, internal: false }
+        HttpException { status, response, message, cause: None, anyhow_cause: None, internal: false, logged: false }
     }
 
     /// Body built by the built-in exceptions:
@@ -123,7 +126,7 @@ impl HttpException {
                 (o, m)
             }
         };
-        HttpException { status, response, message, cause: None, anyhow_cause: None, internal: false }
+        HttpException { status, response, message, cause: None, anyhow_cause: None, internal: false, logged: false }
     }
 
     /// An `http-errors` error (`err.statusCode` + `err.message`) that is NOT an
@@ -220,6 +223,15 @@ impl HttpException {
     }
     pub fn is_internal(&self) -> bool {
         self.internal
+    }
+    /// Marks the exception as logged by its raiser: [`BaseExceptionFilter`](crate::BaseExceptionFilter) answers it
+    /// without writing the `ExceptionsHandler` line.
+    pub(crate) fn already_logged(mut self) -> Self {
+        self.logged = true;
+        self
+    }
+    pub(crate) fn is_already_logged(&self) -> bool {
+        self.logged
     }
     /// The underlying error, if any.
     pub fn cause(&self) -> Option<&(dyn std::error::Error + Send + Sync + 'static)> {

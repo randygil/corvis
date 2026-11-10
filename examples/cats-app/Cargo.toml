@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-corvis = { path = "../../crates/corvis", features = ["auth-local"] }
+corvis = { path = "../../crates/corvis", features = ["auth-local", "auth-api-key"] }
 corvis-swagger = { path = "../../crates/corvis-swagger" }
 serde = { version = "1", features = ["derive"] }
 

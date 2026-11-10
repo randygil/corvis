@@ -114,7 +114,7 @@ Corvis already includes a complete `CacheInterceptor` with per-route TTL (see [C
 | Interceptor | Use |
 |---|---|
 | `TimeoutInterceptor::new(Duration)` / `TimeoutInterceptor::millis(ms)` | Responds `408 Request Timeout` if the handler takes longer; `Default` is 5 s |
-| `LoggingInterceptor` | Logs `GET /cats 200 - 3ms` with the `LoggingInterceptor` context |
+| `LoggingInterceptor` | Logs `GET /cats 200 - 3ms` with the `LoggingInterceptor` context. The query parameters a guard marked as credentials are hidden: `GET /data?page=2&api_key=REDACTED 200 - 3ms` (see below) |
 | `CacheInterceptor` | Caches `GET` responses (requires `CacheModule`) |
 | `z::ZodSerializerInterceptor` | Validates and shapes the output with a schema (see [Serialization](/application/serialization)) |
 | `FileInterceptor`, `FilesInterceptor`, ... | Read `multipart` bodies (see [File upload](/http/file-upload)) |
@@ -122,6 +122,12 @@ Corvis already includes a complete `CacheInterceptor` with per-route TTL (see [C
 ```rust
 app.use_global_interceptors(TimeoutInterceptor::millis(10_000));
 ```
+
+### Hiding credentials in the logged URL
+
+`LoggingInterceptor` logs `request.redacted_url()`, not `request.url()`. The strategies that read a credential from the query string (the [API key strategy](/recipes/passport#api-keys), the JWT strategy with `from_url_query_parameter`, the local strategy with `allow_query_credentials`) register the parameter names when the application starts, and the value of every occurrence of them is replaced by `REDACTED` on every request, whether or not the strategy runs for it (percent-encoded spellings and, with the extended query parser, `api_key[x]=` too). A strategy of your own lists its names in `Strategy::credential_query_params`; a guard of your own marks one for the current request with `request.redact_query_param("api_key")`, which keeps at most 16 names per request (past that every value of the query is hidden). With nothing registered or marked, `redacted_url()` is exactly `url()`, and the application pays nothing for it. A query string with more than 1000 pairs has every value hidden, without parsing it. The line is not built when the `log` level is off.
+
+Only this log line is covered. `request.url()` itself is unchanged (your handlers, the `404` message for an unmatched route and a middleware that logs the URL before the guards run still see the key), and so does everything outside Corvis: reverse-proxy and CDN access logs, browser history and `Referer` headers. Prefer a header for credentials.
 
 ## Applying interceptors
 

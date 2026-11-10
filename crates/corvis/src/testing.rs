@@ -137,6 +137,14 @@ impl TestingModuleBuilder {
         self.override_enhancer(Provider::use_value_arc(enhancer_override_token::<F>(), Arc::new(mock) as Arc<dyn ExceptionFilter>))
     }
 
+    /// Replaces the strategy registered with `Provider::strategy::<S>()` by `stub`, which keeps the name routes use
+    /// (`AuthGuard::new("device")`) when it reports the same one. Routes can then be tested without the real
+    /// credentials check. The stub's own name is what the registry uses, so the startup checks run against it.
+    pub fn override_strategy<S: 'static>(self, stub: impl crate::auth::Strategy) -> Self {
+        let token = Token::named(format!("STRATEGY:{}", std::any::type_name::<S>()));
+        self.override_provider_token(token).use_value_arc::<dyn crate::auth::Strategy>(Arc::new(stub))
+    }
+
     fn override_enhancer(mut self, provider: Provider) -> Self {
         self.overrides.enhancers.push(provider);
         self

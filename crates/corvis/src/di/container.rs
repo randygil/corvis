@@ -127,6 +127,8 @@ impl Scanner {
                 o.token = provider.token.clone();
                 // An overridden `Provider::app_*` stays a global enhancer of the same kind.
                 o.enhancer = provider.enhancer.clone();
+                // An overridden `Provider::strategy` stays in the strategy registry.
+                o.strategy = provider.strategy.clone();
                 o
             }
             None => provider,
