@@ -20,6 +20,7 @@ use corvis::auth::local::{LocalStrategy, LocalStrategyOptions, LocalValidator, P
 use corvis::auth::oauth2::{OAuth2Grant, OAuth2Options, OAuth2Strategy, OAuth2Validator};
 use corvis::auth::session::{SessionModule, SessionOptions, SessionSerializer, SessionStrategy};
 use corvis::auth::{AuthGuard, Authenticator, PassportModule, PassportModuleOptions};
+use corvis::{ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerStorage};
 use corvis::prelude::*;
 use corvis::testing::{Test, TestResponse, request};
 use serde::{Deserialize, Serialize};
@@ -181,12 +182,20 @@ fn password_hash() -> &'static str {
 pub struct LocalAuth {
     probe: Arc<ProbeRef>,
     hasher: Arc<PasswordHasher>,
+    flags: Arc<LocalFlags>,
 }
+
+/// The options of the local strategy of the application.
+pub struct LocalFlags(pub LocalStrategyOptions);
 
 #[async_trait]
 impl LocalValidator for LocalAuth {
     const NAME: &'static str = "local";
     type User = Account;
+
+    fn options(&self) -> LocalStrategyOptions {
+        self.flags.0.clone()
+    }
 
     async fn validate(&self, _req: &Request, username: &str, password: &str) -> Result<Option<Account>, HttpException> {
         // Each call derives one key (`verify_or_dummy` verifies against a dummy hash for an unknown user), so this
@@ -375,8 +384,11 @@ impl Routes {
         self.hit("skip-private", &req)
     }
 
+    // The login recipe of the rate limiting page: a limit per client on the `default` throttler and one per account on
+    // the `login` throttler (a no-op unless the application has those throttlers).
     #[post("login")]
     #[http_code(200)]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
     #[use_guards(AuthGuard::new("local"))]
     fn login(&self, req: Request) -> Value {
         self.hit("login", &req)
@@ -384,6 +396,7 @@ impl Routes {
 
     #[post("login-session")]
     #[http_code(200)]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
     #[use_guards(AuthGuard::new("local").log_in())]
     fn login_session(&self, req: Request) -> Value {
         self.hit("login-session", &req)
@@ -404,19 +417,23 @@ impl Routes {
         Ok(self.hit("logout", &req))
     }
 
+    // OAuth2 login and callback routes: the per-client throttler only.
     #[get("oauth")]
+    #[apply_decorators(throttle("default").limit(5))]
     #[use_guards(AuthGuard::new("oauth"))]
     fn oauth(&self, req: Request) -> Value {
         self.hit("oauth", &req)
     }
 
     #[get("oauth-s")]
+    #[apply_decorators(throttle("default").limit(5))]
     #[use_guards(AuthGuard::new("oauth-s"))]
     fn oauth_session(&self, req: Request) -> Value {
         self.hit("oauth-s", &req)
     }
 
     #[get("oauth-s-login")]
+    #[apply_decorators(throttle("default").limit(5))]
     #[use_guards(AuthGuard::new("oauth-s").log_in())]
     fn oauth_session_login(&self, req: Request) -> Value {
         self.hit("oauth-s-login", &req)
@@ -485,12 +502,34 @@ pub struct Config {
     pub posture: bool,
     /// A global `AuthGuard::new("jwt").optional()`.
     pub global_guard: bool,
+    /// The throttler storage; when set, `ThrottlerModule` is imported and `ThrottlerGuard` is a global guard, so it
+    /// runs before every `AuthGuard` of the grid.
+    pub throttle: Option<ThrottlerStorage>,
+    pub local: LocalStrategyOptions,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { session: Box::new(|o| o), provider: Box::new(oauth2_common::standard), trust_proxy: false, posture: false, global_guard: false }
+        Config {
+            session: Box::new(|o| o),
+            provider: Box::new(oauth2_common::standard),
+            trust_proxy: false,
+            posture: false,
+            global_guard: false,
+            throttle: None,
+            local: LocalStrategyOptions::default(),
+        }
     }
+}
+
+/// The storage of the login recipe: `default` counts by client (60 s), `login` counts by account (5 min) through the
+/// tracker `login-account`, which reads the username the local strategy configured with `local` will read.
+pub fn recipe_storage(local: LocalStrategyOptions) -> ThrottlerStorage {
+    ThrottlerStorage::new(vec![
+        ThrottlerOptions::new(60_000, 100),
+        ThrottlerOptions { name: "login".into(), ttl: 300_000, limit: 100 },
+    ])
+    .with_named_tracker("login-account", corvis::auth::local::login_tracker(local))
 }
 
 pub fn oauth_options(mock: &Mock) -> OAuth2Options {
@@ -520,12 +559,16 @@ impl Harness {
         let store = RecordingStore::new();
         let probe = Arc::new(Probe::default());
         let session = (config.session)(session_options(&store));
-        let module = Test::create_testing_module()
-            .with_logger(false)
+        let mut builder = Test::create_testing_module().with_logger(false);
+        if let Some(storage) = config.throttle {
+            builder = builder.import_dynamic(ThrottlerModule::for_root_storage(storage)).providers(vec![Provider::app_guard::<ThrottlerGuard>()]);
+        }
+        let module = builder
             .import_dynamic(PassportModule::register(PassportModuleOptions::new().default_strategy("jwt")))
             .import_dynamic(SessionModule::for_root(session))
             .providers(vec![
                 Provider::value(ProbeRef(probe.clone())),
+                Provider::value(LocalFlags(config.local)),
                 Provider::value(OauthOptions(oauth_options(&mock))),
                 Provider::value(OauthSessionOptions(oauth_session_options(&mock))),
                 Provider::use_value(Token::of::<PasswordHasher>(), small_hasher()),
