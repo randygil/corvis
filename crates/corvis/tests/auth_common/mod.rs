@@ -20,9 +20,9 @@ use corvis::auth::local::{LocalStrategy, LocalStrategyOptions, LocalValidator, P
 use corvis::auth::oauth2::{OAuth2Grant, OAuth2Options, OAuth2Strategy, OAuth2Validator};
 use corvis::auth::session::{SessionModule, SessionOptions, SessionSerializer, SessionStrategy};
 use corvis::auth::{AuthGuard, Authenticator, PassportModule, PassportModuleOptions};
-use corvis::{ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerStorage};
 use corvis::prelude::*;
 use corvis::testing::{Test, TestResponse, request};
+use corvis::{ThrottlerGuard, ThrottlerModule, ThrottlerOptions, ThrottlerStorage};
 use serde::{Deserialize, Serialize};
 
 use crate::oauth2_common::{self, Mock};
@@ -531,11 +531,8 @@ impl Default for Config {
 /// The storage of the login recipe: `default` counts by client (60 s), `login` counts by account (5 min) through the
 /// tracker `login-account`, which reads the username the local strategy configured with `local` will read.
 pub fn recipe_storage(local: LocalStrategyOptions) -> ThrottlerStorage {
-    ThrottlerStorage::new(vec![
-        ThrottlerOptions::new(60_000, 100),
-        ThrottlerOptions { name: "login".into(), ttl: 300_000, limit: 100 },
-    ])
-    .with_named_tracker("login-account", corvis::auth::local::login_tracker(local))
+    ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100), ThrottlerOptions { name: "login".into(), ttl: 300_000, limit: 100 }])
+        .with_named_tracker("login-account", corvis::auth::local::login_tracker(local))
 }
 
 pub fn oauth_options(mock: &Mock) -> OAuth2Options {
@@ -567,7 +564,8 @@ impl Harness {
         let session = (config.session)(session_options(&store));
         let mut builder = Test::create_testing_module().with_logger(config.logging);
         if let Some(storage) = config.throttle {
-            builder = builder.import_dynamic(ThrottlerModule::for_root_storage(storage)).providers(vec![Provider::app_guard::<ThrottlerGuard>()]);
+            builder =
+                builder.import_dynamic(ThrottlerModule::for_root_storage(storage)).providers(vec![Provider::app_guard::<ThrottlerGuard>()]);
         }
         let module = builder
             .import_dynamic(PassportModule::register(PassportModuleOptions::new().default_strategy("jwt")))

@@ -120,6 +120,8 @@ jobs:
         run: cargo test -p corvis --features auth-session --no-fail-fast
       - name: Test the auth-oauth2 feature
         run: cargo test -p corvis --features auth-oauth2 --no-fail-fast
+      - name: Test the authentication review (all auth features together)
+        run: cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2" --test auth_invariants --test auth_login_throttle --test auth_defaults --test auth_source_checks --test auth_guard_order_log --no-fail-fast
       - name: Test the socket-io feature
         run: cargo test -p corvis --features socket-io --no-fail-fast
       - name: Test the tls feature
@@ -182,6 +184,9 @@ jobs:
       - name: Signed cookies and sessions
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test -p corvis --features auth-session --lib fuzz
+      - name: Authentication (gate model, sessions, OAuth2 callback, redirects, canary secrets)
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2" --test fuzz_auth
       - name: Static file serving
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo test -p corvis --test fuzz_static

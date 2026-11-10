@@ -358,3 +358,50 @@ These settle the open questions and override the design where they differ.
    created under epic #39 when this change starts. The review of #42 already made `JwtService::verify` strict about
    `iss`/`aud`; the second issue covers what remains after that.
 9. Implemented after #41, #42, #43, #44 and #45 land; task 1.1 reconciles the design with the merged code.
+
+## Implementation notes
+
+Task 1.1 compared this design with the merged code (`dev` at `62df145`). Adjustments, all recorded here:
+
+1. **The strategies are merged and match the design's names**; the differences that mattered:
+   - The mock OAuth2 provider and the recording session store already live in `tests/oauth2_common/` and
+     `tests/session_common/`, so `tests/auth_common/mod.rs` reuses them (the binaries declare `mod oauth2_common;
+     mod session_common;` next to `mod auth_common;`) instead of moving anything.
+   - The session user is kept in a private `SessionUser` extension next to the request's user, so `clear_user()` by an
+     optional guard does not affect the `"session"` strategy. `log_in()` is `AuthGuard::log_in` and the pipeline
+     rejection mark decides if it is kept (earlier reviews).
+   - The OAuth2 state in the session is an `oauth2`-named key of the record; a forged callback in cookie mode sends the
+     browser's own state cookie back unchanged (it does not delete it). The scenario "Failed OAuth2 callback" now says so.
+   - Named throttlers answer `Retry-After-<name>` and `X-RateLimit-*-<name>`; the password guessing scenario says so.
+   - The key derivation counter is the call counter of the local validator: each call derives one key
+     (`verify_or_dummy` verifies a dummy hash for an unknown user), and no hasher accessor was added.
+   - The OAuth2 grant cannot be built from outside, so its `Debug` is formatted inside the validator of the test
+     application (`Probe::grants`).
+2. **The defaults test stays an integration test** (`tests/auth_defaults.rs`) and reads values through public constants,
+   `Debug` of the default options and behavior (renewal, data kept at login, the state cookie, credentials in a URL),
+   so no accessor was added to a public type. The dependency inventory is parsed from the page by
+   `tests/auth_source_checks.rs`, which also checks `deny.toml` and runs the randomness scan.
+3. **`cargo deny`**: `deny-multiple-versions = true` inside `[bans] deny` entries works with cargo-deny 0.20.2 and does not
+   ban the crate itself (checked with `getrandom`, which has three versions). `webpki-roots` 0.26.11 is a shim of 1.0.11, so
+   it is documented and not in the list; `rand` has one version in the graph (0.10 comes from `proptest`).
+4. **Decision on the session user (Review note 4): keep, pin with a test, document.** Reasons are on the threat model
+   page: it adds no authority (same cookie, same user as `AuthGuard::new("session")`, and every `AuthGuard` replaces or
+   clears it), parity with `passport.session()` is the point of the module, and the stricter rule does not remove the real
+   risk (a hand-written guard that trusts `Request::user()`), it only turns it into a deny that depends on guard order. No
+   `MODIFIED` delta was needed. Test: `roles_guard_without_an_auth_guard`.
+5. **Findings.** Fixed here: `Debug` of `JwtModuleOptions` and `JwtSignOptions` printed the HMAC secret and PEM private key
+   (Medium; `crates/corvis/src/jwt.rs`, inside the JWT module, no requirement changed; test
+   `debug_of_every_public_type`). Pinned and documented: an OAuth2 strategy ends a chain with a redirect; the API key bearer
+   reader is stricter than the token reader on more than 640 bytes of leading whitespace. Nothing high or critical was
+   found, so nothing blocks #47.
+6. **The two follow-up issues of decision 9** exist: #173 (strategies at the WebSocket handshake) and #174 (`JwtService`
+   defaults); #170, #171 and #172 are linked in the threat model too. Socket.IO (#33) is not merged: its row is pending.
+   Engine.IO is merged and is dispatched before the router (`server.rs`), so its handshake has no session.
+7. **Sockets**: "Global AuthGuard and a gateway" is tested again in `auth_invariants.rs` next to `tests/auth_ws.rs`, with an
+   optional global guard so the HTTP routes keep working.
+8. **Always-compiled files touched**: `src/auth/mod.rs` (the guard-order warning), `src/modules/throttler.rs` (`as_any`,
+   `ipv6_subnet_prefix`), `src/jwt.rs` (`Debug`); behind `auth-local`: `src/auth/local/strategy.rs` (`login_tracker`, the
+   shared username lookup).
+9. **Left to the maintainer's session**: the corvis-parity check (4.4, 9.6), an external `security-reviewer` run (7.1, 7.2,
+   7.5: the implementer reviewed the scope list himself, turning each suspicion into a test), filing issues (7.4) and the
+   check of the CI log in the pull request (5.3).

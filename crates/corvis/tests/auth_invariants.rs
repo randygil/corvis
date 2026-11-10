@@ -427,7 +427,7 @@ async fn session_cookie_on_an_upgrade_request() {
     assert_eq!(user_id(&h.get("/open", &[("cookie", &cookie)]).await), Some("1".into()), "the session is valid over HTTP");
     let calls = h.probe.strategy_calls();
     let addr = h.app.listen_in_background("127.0.0.1:0").await.unwrap();
-    let mut upgrade =format!("ws://{addr}/ws").into_client_request().unwrap();
+    let mut upgrade = format!("ws://{addr}/ws").into_client_request().unwrap();
     upgrade.headers_mut().insert("cookie", cookie.parse().unwrap());
     upgrade.headers_mut().insert("authorization", bearer(&token("2")).parse().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(upgrade).await.unwrap();
@@ -500,9 +500,14 @@ async fn debug_of_every_public_type() {
     let m = marker("session-secret");
     check("SessionOptions", m.clone(), format!("{:?}", SessionOptions::with_secrets([m]).unwrap()));
     let (secret, state) = (marker("client-secret"), marker("state-keys"));
-    let options = OAuth2Options::new(OAuth2Endpoints::new("https://p.example/a", "https://p.example/t"), "client-id", secret.clone(), "https://app.example/cb")
-        .state_cookie(CookieKeys::new([state.clone()]).unwrap())
-        .http(OAuth2HttpOptions::new());
+    let options = OAuth2Options::new(
+        OAuth2Endpoints::new("https://p.example/a", "https://p.example/t"),
+        "client-id",
+        secret.clone(),
+        "https://app.example/cb",
+    )
+    .state_cookie(CookieKeys::new([state.clone()]).unwrap())
+    .http(OAuth2HttpOptions::new());
     check("OAuth2Options (client secret)", secret, format!("{options:?}"));
     check("OAuth2Options (state keys)", state, format!("{options:?}"));
     let m = marker("module-secret");

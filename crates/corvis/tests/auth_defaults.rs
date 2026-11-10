@@ -15,9 +15,7 @@ use std::time::Duration;
 use auth_common::*;
 use corvis::auth::api_key::{self, ApiKeyStrategyOptions, ExpectedApiKey};
 use corvis::auth::jwt::{self, JwtStrategyOptions};
-use corvis::auth::local::{
-    Argon2Params, DEFAULT_ACQUIRE_TIMEOUT, DEFAULT_MAX_CREDENTIAL_BYTES, MIN_BCRYPT_COST, VerifyLimits,
-};
+use corvis::auth::local::{Argon2Params, DEFAULT_ACQUIRE_TIMEOUT, DEFAULT_MAX_CREDENTIAL_BYTES, MIN_BCRYPT_COST, VerifyLimits};
 use corvis::auth::oauth2::{
     DEFAULT_MAX_CODE_BYTES, DEFAULT_REDEEMED_STATES_MAX, DEFAULT_STATE_TTL, OAuth2Endpoints, OAuth2HttpOptions, OAuth2Options,
 };
@@ -71,7 +69,8 @@ fn secs(d: Duration) -> String {
 
 /// The attributes of a `Set-Cookie` header without its name, value, lifetime and expiry, in the order of the page.
 fn attributes(set_cookie: &str) -> String {
-    let parts: Vec<&str> = set_cookie.split(';').skip(1).map(str::trim).filter(|a| !a.starts_with("Max-Age") && !a.starts_with("Expires")).collect();
+    let parts: Vec<&str> =
+        set_cookie.split(';').skip(1).map(str::trim).filter(|a| !a.starts_with("Max-Age") && !a.starts_with("Expires")).collect();
     let mut ordered = Vec::new();
     for wanted in ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"] {
         if parts.contains(&wanted) {
@@ -134,7 +133,12 @@ async fn actual() -> BTreeMap<String, String> {
 
     let oauth = format!(
         "{:?}",
-        OAuth2Options::new(OAuth2Endpoints::new("https://p.example/a", "https://p.example/t"), "id", "secret-secret", "https://app.example/cb")
+        OAuth2Options::new(
+            OAuth2Endpoints::new("https://p.example/a", "https://p.example/t"),
+            "id",
+            "secret-secret",
+            "https://app.example/cb"
+        )
     );
     let http = format!("{:?}", OAuth2HttpOptions::default());
     put("oauth2.state_ttl_seconds", secs(DEFAULT_STATE_TTL));
@@ -168,7 +172,7 @@ async fn actual() -> BTreeMap<String, String> {
     let r = h.get(&format!("/key?x-api-key={API_KEY}&api_key={API_KEY}&apikey={API_KEY}&key={API_KEY}"), &[]).await;
     put("url_credentials.api_key", if r.status != 401 || Probe::count(&h.probe.key) != 0 { "on" } else { "off" }.to_string());
     let r = h.get(&format!("/jwt?access_token={t}&token={t}&jwt={t}&id_token={t}"), &[]).await;
-    put("url_credentials.jwt", if r.status != 401 || h.probe.jwt_raw.lock().unwrap().len() != 0 { "on" } else { "off" }.to_string());
+    put("url_credentials.jwt", if r.status != 401 || !h.probe.jwt_raw.lock().unwrap().is_empty() { "on" } else { "off" }.to_string());
     rows
 }
 
@@ -234,7 +238,11 @@ async fn jwt_secret_starts(secret: &str) -> bool {
 
     let module = corvis::testing::Test::create_testing_module()
         .with_logger(false)
-        .providers(vec![Provider::value(Secret(secret.to_string())), Provider::class::<Validator>(), Provider::strategy::<JwtStrategy<Validator>>()])
+        .providers(vec![
+            Provider::value(Secret(secret.to_string())),
+            Provider::class::<Validator>(),
+            Provider::strategy::<JwtStrategy<Validator>>(),
+        ])
         .compile()
         .await;
     match module {

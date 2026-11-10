@@ -203,7 +203,7 @@ ThrottlerModule::for_root_storage(
   that chooses the tracker chooses which of those counters it hits.
 
 ::: warning Client-chosen trackers
-For login routes use `login_tracker` and the [recipe above](#protecting-a-login-route) instead of writing the tracker
+For login routes use `login_tracker` and the [recipe below](#protecting-a-login-route) instead of writing the tracker
 yourself: it reads the username the strategy reads, so the counter cannot be dodged by moving the field.
 
 A tracker that reads a header or a body field lets the client choose its counter, so a client that rotates the value

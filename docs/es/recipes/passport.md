@@ -497,8 +497,7 @@ No envíes credenciales en el query string salvo que no haya otra opción: las U
 - **Las credenciales que no son cadenas cuentan como ausentes.** El original pasa un número o un booleano a `validate()`; Corvis los trata como ausentes, de modo que una búsqueda de usuario nunca recibe un tipo que no espera.
 - **Las credenciales tienen un límite.** Un usuario o una contraseña de más de 1024 bytes (configurable) falla sin llamar a `validate`. El original no tiene más límite que el tamaño del body. Sube los límites con `.max_password_bytes(4096)` si tus usuarios lo necesitan; el hasher tiene su propio `max_password_bytes`.
 - **Los fallos son uniformes.** Credenciales ausentes, contraseñas incorrectas y usuarios desconocidos dan el mismo `401`, y el validador de arriba gasta una verificación de hash en todos los casos. Un hash guardado que el hasher rechaza (una cuenta sin contraseña, un formato no compatible) también es una contraseña incorrecta, no un `500`. Cuando el hasher está saturado (`PasswordError::Busy`) la respuesta es `503 Service Unavailable` para todos los usuarios; ver [un hasher ocupado](/es/security/encryption-and-hashing#un-hasher-ocupado).
-- **El límite de intentos de login es aparte.** Combina la ruta de login con el [throttler](/es/security/rate-limiting) (el ejemplo de gatos permite cinco intentos por minuto y cliente); el hashing es caro a propósito, y una avalancha hace cola en los huecos `max_concurrent` del hasher.
-
+- **El límite de intentos de login es aparte.** Combina la ruta de login con el [throttler](/es/security/rate-limiting) (el ejemplo de gatos permite cinco intentos por minuto y cliente); el hashing es caro a propósito, y una avalancha hace cola en los huecos `max_concurrent` del hasher. Para contar también los intentos por cuenta, usa `login_tracker` con la receta de [Proteger una ruta de login](/es/security/rate-limiting#proteger-una-ruta-de-login): el throttler debe ejecutarse antes que el `AuthGuard`, o la contraseña se hashea antes de comprobar el límite.
 
 ## API keys
 
@@ -730,6 +729,10 @@ impl AuthController {
 ```
 
 `validate` devuelve `Ok(Some(user))` para un éxito, `Ok(None)` para un 401 y `Err(exception)` para responder esa excepción, como hace toda estrategia. Unas opciones inválidas detienen `init()` con un error que nombra la estrategia y la opción. Los presets son `OAuth2Options::google(..)` y `OAuth2Options::github(..)`; `OAuth2Options::new(OAuth2Endpoints::new(authorization_url, token_url).userinfo_url(url), ..)` es cualquier otro proveedor (sin una URL de userinfo, el grant no tiene perfil). `OAuth2Options::endpoints(..)` reemplaza las URL de un preset (GitHub Enterprise, un proxy, un doble de pruebas). Registra en el proveedor el redirect URI que configuraste. Google necesita un scope; el `user:email` de GitHub da las direcciones de e-mail verificadas.
+
+::: warning Reserva dos rutas para OAuth2
+Una estrategia OAuth2 inicia un login (una redirección al proveedor) para cualquier petición que no sea un callback. En una cadena, por lo tanto, la termina con esa redirección: `AuthGuard::chain(["github", "api-key"])` nunca llega a la clave, y en el último lugar convierte cada petición anónima en un inicio de login. Mantén las estrategias OAuth2 fuera de las cadenas y limita la tasa de ambas rutas por cliente, ver [Proteger una ruta de login](/es/security/rate-limiting#proteger-una-ruta-de-login). El [modelo de amenazas](/es/security/authentication-threat-model#combinaciones-de-estrategias) lista qué hacen esta y las demás combinaciones de estrategias.
+:::
 
 ### Qué recibe el validador
 

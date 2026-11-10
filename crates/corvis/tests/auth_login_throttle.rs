@@ -129,7 +129,8 @@ async fn username_moved_to_the_query_string() {
         assert_eq!(r.status, 401, "attempt {i}: {}", r.text());
     }
     assert_eq!(Probe::count(&h.probe.local), 5, "the query attempts reached the validator too");
-    let r = corvis::testing::request(&h.app).post("/login?username=ana&password=wrong").header("x-forwarded-for", "198.51.100.77").send().await;
+    let r =
+        corvis::testing::request(&h.app).post("/login?username=ana&password=wrong").header("x-forwarded-for", "198.51.100.77").send().await;
     assert_eq!(r.status, 429, "the same account on one counter: {}", r.text());
     // The body wins over the query, as it does for the strategy: this one is counted for bob.
     let r = corvis::testing::request(&h.app)
@@ -147,9 +148,7 @@ async fn nested_field_name() {
     let h = app(LocalStrategyOptions::default().username_field("user[email]"), true).await;
     let nested = |from: String, name: &'static str| {
         let h = &h;
-        async move {
-            h.post_json("/login", &[("x-forwarded-for", &from)], json!({ "user": { "email": name }, "password": "wrong" })).await
-        }
+        async move { h.post_json("/login", &[("x-forwarded-for", &from)], json!({ "user": { "email": name }, "password": "wrong" })).await }
     };
     for i in 1..=5 {
         assert_eq!(nested(format!("198.51.100.{i}"), "ana").await.status, 401, "attempt {i}");
@@ -231,8 +230,8 @@ async fn storage_keys() {
 // ---- the tracker reads what the strategy reads ----
 
 mod tracker_matches_strategy {
-    use corvis::auth::local::{LocalStrategy, LocalStrategyOptions, LocalValidator, login_tracker};
     use corvis::auth::AuthGuard;
+    use corvis::auth::local::{LocalStrategy, LocalStrategyOptions, LocalValidator, login_tracker};
     use corvis::prelude::*;
     use corvis::testing::request;
     use serde::Serialize;

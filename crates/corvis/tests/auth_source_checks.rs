@@ -51,7 +51,8 @@ fn every_test_file_the_threat_model_names_exists() {
 
 #[test]
 fn the_page_references_are_parsed_as_expected() {
-    let paths = test_paths("see `crates/corvis/tests/auth_jwt.rs` (`name`) and examples/cats-app/tests/login.rs, not crates/corvis/src/jwt.rs");
+    let paths =
+        test_paths("see `crates/corvis/tests/auth_jwt.rs` (`name`) and examples/cats-app/tests/login.rs, not crates/corvis/src/jwt.rs");
     assert_eq!(paths, ["crates/corvis/tests/auth_jwt.rs", "examples/cats-app/tests/login.rs"]);
 }
 
@@ -158,7 +159,8 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-const FORBIDDEN: [&str; 8] = ["thread_rng", "rand::random", "SmallRng", "StdRng", "seed_from_u64", "from_entropy", "ThreadRng", "rand::rng("];
+const FORBIDDEN: [&str; 8] =
+    ["thread_rng", "rand::random", "SmallRng", "StdRng", "seed_from_u64", "from_entropy", "ThreadRng", "rand::rng("];
 
 /// `(file, line, text)` of every use of a generator that is not the operating system's, outside test code.
 fn offenders(files: &[(String, String)]) -> Vec<(String, usize, String)> {
@@ -205,11 +207,9 @@ fn secrets_come_from_the_operating_system_generator() {
     let found = offenders(&files);
     assert!(found.is_empty(), "a generator that is not the operating system's is used: {found:?}");
     // The three places that generate secrets name it.
-    for file in [
-        "crates/corvis/src/auth/session/session.rs",
-        "crates/corvis/src/auth/oauth2/state.rs",
-        "crates/corvis/src/auth/local/hasher.rs",
-    ] {
+    for file in
+        ["crates/corvis/src/auth/session/session.rs", "crates/corvis/src/auth/oauth2/state.rs", "crates/corvis/src/auth/local/hasher.rs"]
+    {
         let text = &files.iter().find(|(n, _)| n == file).unwrap_or_else(|| panic!("{file} was not scanned")).1;
         assert!(text.contains("OsRng"), "{file} no longer uses OsRng");
     }

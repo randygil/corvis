@@ -84,7 +84,8 @@ new session identifier, or stores a new OAuth2 state. Deleting cookies, re-signi
 
 #### Scenario: Failed OAuth2 callback
 - **WHEN** an OAuth2 callback fails its state check
-- **THEN** the only `Set-Cookie` of the response deletes the state cookie
+- **THEN** the only `Set-Cookie` of the response deletes the state cookie or sends back the flows the browser already
+  had, and carries no new state
 
 ### Requirement: Public routes and guard order
 A guard built with `.skip_public()` SHALL run no strategy on a route whose handler or controller is marked
