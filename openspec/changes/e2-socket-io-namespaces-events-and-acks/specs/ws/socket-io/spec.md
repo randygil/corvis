@@ -262,9 +262,9 @@ handler ends.
 
 ### Requirement: A connection waits while the budget has no room
 A connection SHALL NOT take another message from the engine while its session is over its unread limit by the engine's
-own test (its limit, or its fair share while the server-wide budget is exceeded), nor while a measured packet waits for
-room. A packet is admitted when the session stays within its fair share, or when the server-wide budget and the client
-address's quota (a quarter of the budget, at least one packet) have room. Heartbeats MUST still be served.
+own test (its limit, or its fair share while its address is over its share or the server-wide budget is exceeded), nor
+while a measured packet waits for room. A packet is admitted when the session stays within its fair share, or when the
+address's share and the server-wide budget have room, counting the packet net of the message it replaces.
 
 #### Scenario: Many sessions of one address
 - **WHEN** twelve sessions of one address each send a packet that decodes to 7 MB, to a handler that keeps its
@@ -273,14 +273,70 @@ address's quota (a quarter of the budget, at least one packet) have room. Heartb
   session, its fair share and one message, and all twelve are handled once the handlers end
 
 #### Scenario: Honest address
-- **WHEN** one address holds its quota with handlers that do not end, and a session of another address sends a packet
+- **WHEN** one address holds its share with handlers that do not end, and a session of another address sends a packet
   that needs room in the server-wide budget
 - **THEN** that packet is decoded and handled
+
+### Requirement: One address's share covers everything it holds
+Everything the sessions of one client address hold of the unread budget SHALL count against the address's share
+(`max_address_share`: default 1/16 of `max_total_unread_bytes`, at least one maximum packet; an explicit value below
+that floor or above the budget MUST be refused): unread and parked messages, reservations, decoded packets, binary
+attachments before and after delivery, handshake `auth`, and charges of handlers that outlive their session.
+
+#### Scenario: Binary attachments from one address
+- **WHEN** eight sessions of one address send binary events with 0.5 MB attachments to handlers that keep them, with
+  `max_total_unread_bytes` 64 MiB
+- **THEN** the live heap of the server stays within the address's share plus, per session, its fair share and the
+  messages in hand, far below the budget, and a session of another address is answered
+
+#### Scenario: Large text from one address
+- **WHEN** eight sessions of one address send 0.9 MB text events to handlers that keep them
+- **THEN** the same bound holds, including the messages in transit and parked, and an honest session is answered
+
+#### Scenario: Floor of the share
+- **WHEN** a server is created with a `max_address_share` below `max_decoded_bytes` plus the wire bytes of its largest
+  packet
+- **THEN** creation fails with an error naming `max_address_share`
+
+### Requirement: Messages are charged for their allocation
+A message the engine hands up, text or binary, from either transport, SHALL be charged for the allocation behind it, not
+only its length: a buffer holding more than an eighth beyond the length MUST be shrunk, and the remaining capacity
+charged. A small slice MUST NOT keep a large buffer alive.
+
+#### Scenario: Fragmented binary message
+- **WHEN** a client sends a 524,289 byte binary message as frames of 524,288 and 1 byte, and as 513 frames of 1 KiB,
+  to handlers that keep them
+- **THEN** the live heap per kept attachment is at most an eighth above its length plus its accounting, not twice it
+
+### Requirement: A wait caused by others does not close the session
+While a session's reads are paused because the server-wide budget is exceeded, and it is over neither its own limit
+nor its address's share, its pong deadline SHALL be held for at most `admission_timeout` (default 30 s) and restart
+with a fresh interval when reads resume. A packet that cannot be admitted within `admission_timeout` MUST close the
+connection with the disconnect reason `admission timeout`. A waiting connection MUST be woken when room appears.
+
+#### Scenario: Handlers return after a delay
+- **WHEN** attackers on several addresses hold the budget with handlers that return after a delay, and an honest
+  session sends a packet that needs room
+- **THEN** the packet is handled promptly after the first handler returns, and the session is not closed
+
+#### Scenario: Handlers never return
+- **WHEN** the same handlers never return
+- **THEN** the honest session is closed with `admission timeout` at `admission_timeout`, and not with `ping timeout`
+  before it
+
+### Requirement: The handshake auth is charged
+The `auth` kept in a socket's handshake SHALL be charged, at the size of the stored `serde_json::Value`, to the
+session and the address for as long as the handshake lives.
+
+#### Scenario: Many sockets and namespaces
+- **WHEN** sessions join many namespaces with the largest auth the limit allows
+- **THEN** the address holds the sum of the stored values' sizes, which is at most the model's charge under a counting
+  allocator, and releases it as the sockets go
 
 ### Requirement: Charges end with their handlers
 The charge of a decoded packet MUST stay on the server-wide gauge until its handler ends, including after its session
 closed (for at most `close_timeout`, after which the handler is dropped), and MUST count against the client address,
-so reconnecting does not multiply it and sessions of other addresses keep their guaranteed share and the room left.
+so reconnecting does not multiply it and other addresses keep their guaranteed share and the room left.
 
 #### Scenario: Handler running after the close
 - **WHEN** a session closes while its handler keeps a packet, and the address reconnects and sends the same packet
@@ -348,7 +404,7 @@ without a leading `/` gets one, as in Node.
 ### Requirement: Disconnect reasons match Node
 Disconnections SHALL report the same reason as Node on the server side: `client namespace disconnect`,
 `server namespace disconnect`, `transport close`, `transport error`, `ping timeout`, `parse error`, `forced close`,
-`forced server close` and `server shutting down`.
+`forced server close` and `server shutting down`, and `admission timeout` where Node has no equivalent.
 
 #### Scenario: Client leaves one namespace
 - **WHEN** the client calls `socket.disconnect()` on `/admin` while staying on `/`
@@ -388,8 +444,9 @@ before the Engine.IO sessions are closed, and fail their pending acknowledgement
 
 ### Requirement: Options are validated
 Creating a Socket.IO server SHALL fail, with an error naming the option, on a zero `connect_timeout`, `ack_timeout`,
-`max_attachments`, `max_inflight` or `max_pending_acks`, on a `max_decoded_bytes` above the engine's
-`max_total_unread_bytes`, and on any option the Engine.IO layer rejects.
+`max_attachments`, `max_inflight`, `max_pending_acks` or `admission_timeout`, on a `max_decoded_bytes` above the
+engine's `max_total_unread_bytes`, on a `max_address_share` outside its floor and the budget, and on any option the
+Engine.IO layer rejects.
 
 #### Scenario: Zero connect timeout
 - **WHEN** a server is created with `connect_timeout(Duration::ZERO)`
@@ -404,7 +461,8 @@ harness's `expected-differences.json` with the scenario that exercises it.
 - **WHEN** the documentation page and the rustdoc of `IoOptions` are read
 - **THEN** they list, with default and Node's value: one pending socket per namespace, acknowledgement id range,
   nesting depth, attachments when encoding, reassembly accounting, the decoded cost of a packet with its worst-case
-  expansion, the address quota, handlers in flight, pending acknowledgements and their default deadline, namespace
+  expansion, the address share and how many addresses exhaust the budget, the admission timeout, the
+  handlers' panic messages reaching the default panic hook, handlers in flight, pending acknowledgements and their default deadline, namespace
   names and socket id entropy
 
 #### Scenario: Divergences are listed

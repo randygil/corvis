@@ -263,8 +263,9 @@ el socket se desconecta. Los valores binarios (`corvis::socket_io::Binary` o `Io
 parte de los argumentos y viajan como adjuntos; `args.get::<T>(i)` deserializa un argumento a cualquier tipo de `serde`, y
 un campo de tipo `Binary` recibe un buffer. `disconnect(false)` sale de un espacio y `disconnect(true)` sale de todos y
 cierra la conexión. Cada socket informa `client namespace disconnect`, `server namespace disconnect`, `transport close`,
-`transport error`, `ping timeout`, `parse error`, `forced close`, `forced server close` o `server shutting down`
-(`io.close()` y el apagado de la aplicación informan el último antes de cerrar las sesiones), primero a los manejadores
+`transport error`, `ping timeout`, `parse error`, `forced close`, `forced server close`, `server shutting down`
+(`io.close()` y el apagado de la aplicación lo informan antes de cerrar las sesiones) o `admission timeout` (un paquete
+esperó más de `admission_timeout` a que hubiera sitio en el presupuesto; Node no tiene ese motivo), primero a los manejadores
 `on_disconnecting`, mientras el socket sigue en su espacio, y luego a los `on_disconnect`. Los nombres de evento reservados
 (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`) no los puede emitir el
 servidor, y un paquete de un cliente que use uno no se puede decodificar.
@@ -284,8 +285,10 @@ Todo lo que un cliente puede hacer que el servidor retenga tiene un valor por de
 | Bytes retenidos mientras se reensambla un paquete binario | como mucho `(max_attachments + 1) x max_http_buffer_size`, contados en `max_unread_bytes`; las opciones que no caben se rechazan | no se cuentan | se pausan las lecturas |
 | `attachment_timeout` (tiempo para los adjuntos tras la cabecera) | 30 s | ninguno | se cierra la conexión, diga lo que diga el latido |
 | `max_decoded_bytes` (la memoria en que se decodifica un paquete: una casilla de 40 bytes por valor JSON, un objeto añade una caja y una tabla hash, una cadena sus bytes, 24 bytes por asignación) | 32 MiB | ninguno | se cierra la conexión, antes de construir nada; se reserva en el presupuesto del servidor antes de decodificar y se carga hasta que termina el manejador |
-| Presupuesto del servidor `max_total_unread_bytes`, y la parte que puede retener una dirección de cliente | 256 MiB, y una cuarta parte (al menos un paquete); una sesión siempre puede retener su parte justa, `max(16 KiB, presupuesto / max_sessions)` | ninguno | el paquete espera y la conexión no toma otro mensaje; su latido se sigue atendiendo |
-| `max_auth_bytes` (el `auth` de un CONNECT, que se conserva mientras vive el socket) | 16 KiB | ninguno | se cierra la conexión |
+| Presupuesto del servidor `max_total_unread_bytes` | 256 MiB; una sesión siempre puede retener su parte justa, `max(16 KiB, presupuesto / max_sessions)` | ninguno | el paquete espera y la conexión no toma otro mensaje |
+| `max_address_share`: todo lo que retienen las sesiones de una dirección de cliente de ese presupuesto, en cualquier estado (mensajes sin leer por encima de la parte justa, paquetes que esperan sitio, paquetes que se reensamblan, paquetes decodificados y adjuntos hasta que terminan sus manejadores, el `auth` de sus sockets) | 1/16 del presupuesto, nunca menos de un paquete máximo (`max_decoded_bytes` más los bytes en el cable del mayor paquete): con los valores por defecto manda el mínimo, unos 41,5 MiB, así que **siete direcciones en su límite agotan el presupuesto de 256 MiB** (dieciséis donde los límites de paquete son lo bastante pequeños para que mande 1/16); las sesiones que una dirección puede tener abiertas, `max_sessions_per_ip`, conservan sus partes justas además | ninguno | las sesiones de esa dirección por encima de su parte justa no se leen y sus paquetes esperan |
+| `admission_timeout` (cuánto puede esperar un paquete a que haya sitio) | 30 s | ninguno | se cierra la conexión con el motivo de desconexión `admission timeout` |
+| `max_auth_bytes` (el `auth` de un CONNECT, que se conserva mientras vive el socket; el `serde_json::Value` guardado se carga por su tamaño real, que puede ser el doble del que mide este límite) | 16 KiB | ninguno | se cierra la conexión |
 | Anidamiento de JSON | 127 niveles | ninguno | se cierra la conexión |
 | `max_event_name_len`, `max_args` (de un cliente) | 256 bytes, 128 | ninguno | se cierra la conexión |
 | Id de confirmación de un cliente | como mucho 16 dígitos y 2^53 - 1 | cualquier racha de dígitos, leída como float | se cierra la conexión |
@@ -303,11 +306,26 @@ unos pocos campos de texto y número) se decodifica en 11 a 20 veces su tamaño,
 20 MB y se acepta con el valor por defecto. Las peores formas se expanden más: 1 MB de `{}` cuesta 45 MB, y 1 MB de objetos
 anidados con claves vacías cuesta 58 MB (el peor caso, 58 veces). Con 1 MB de texto, los 32 MiB por defecto aceptan hasta 33
 veces; un paquete por encima de `max_decoded_bytes` cierra la conexión y no se reserva nada de él (primero se mide el texto,
-luego se reserva el coste y solo entonces se decodifica). Lo que el servidor retiene por paquetes, buffers de reensamblado y
-mensajes sin leer queda dentro de `max_total_unread_bytes` más, por cada sesión abierta, su parte justa y el único mensaje
-que puede tener en la mano, y dentro de `max_unread_bytes` más un paquete por sesión; los manejadores de una sesión cerrada
-mantienen sus paquetes cargados, al servidor y a la dirección del cliente, hasta que terminan (como mucho `close_timeout`),
-así que reconectar no multiplica lo que retiene una dirección. Otra dirección conserva siempre el resto del presupuesto.
+luego se reserva el coste y solo entonces se decodifica). Todo lo que un cliente puede hacer que el servidor retenga se carga a
+su sesión, a su dirección de cliente y al presupuesto del servidor en una sola cadena, sea cual sea su estado: así una
+dirección retiene como mucho su parte (`max_address_share`) más, por cada sesión que tenga abierta, la parte justa y los
+mensajes en la mano (el transporte deja de leer una sesión por encima de su parte justa mientras su dirección supera su
+parte o el presupuesto está agotado, así que como mucho se ha leído por adelantado un mensaje de a lo sumo
+`max_http_buffer_size`, y otro se está recibiendo), y el servidor retiene como mucho `max_total_unread_bytes` más los mismos
+términos por cada sesión abierta; y dentro de `max_unread_bytes` más un paquete por sesión. Los manejadores de una sesión
+cerrada mantienen sus paquetes cargados, al servidor y a la dirección del cliente, hasta que terminan (como mucho
+`close_timeout`), así que reconectar no multiplica lo que retiene una dirección. Un mensaje se carga por la asignación que
+hay detrás, no solo por su longitud (el mensaje que la biblioteca de WebSocket ensambló a partir de fragmentos se reduce
+cuando su buffer tiene más de un octavo de holgura). Otra dirección conserva el resto del presupuesto, hasta que bastan
+direcciones en su límite para agotarlo (véase la tabla; una aplicación detrás de un proxy inverso debe configurar
+`trust_proxy`, o todos los clientes son la única dirección del proxy).
+
+Mientras otros agotan el presupuesto, un paquete mayor que la parte justa de la sesión espera sitio, y la sesión no se lee
+entretanto. Esa espera no es obra de la sesión, así que su latido se retiene (no se cierra con `ping timeout` por una memoria
+que no retuvo) como mucho `admission_timeout`; un paquete que no se puede admitir en ese tiempo cierra la conexión con el
+motivo `admission timeout`. Una sesión que supera sus propios límites, o cuya dirección supera su parte, conserva el latido
+ordinario. Un paquete que espera se admite en cuanto termina un manejador de otra conexión. Los bytes de los mensajes que
+esperan detrás de un paquete que no se puede admitir siguen cargados hasta que se admite o se cierra la conexión.
 
 Un paquete cuyo JSON tenga un objeto con una clave que `serde_json` lee como instrucción
 (`$serde_json::private::RawValue`) se entrega, pero solo como `IoValue`: `args.get::<serde_json::Value>(i)` y `to_json()` lo
@@ -326,9 +344,14 @@ id, un id en un CONNECT, un índice de marcador que no es un entero.
 
 Un manejador que entra en pánico se contiene y se registra una vez por minuto y por espacio, con el número de los omitidos
 en la línea siguiente; la línea nombra el espacio y nunca el mensaje del pánico ni los datos del cliente (igual el aviso de un
-middleware de conexión que agotó su plazo). No hagas `unwrap()` de la conversión de un argumento (`args.get::<T>(i)?` es un
-`Result`): el cliente elige sus datos, y un manejador que entra en pánico con datos malos es un manejador que el cliente puede
-hacer fallar a voluntad. Los argumentos que un manejador saca de `Args` (`into_vec`) o mueve a una tarea que lanza dejan de
+middleware de conexión que agotó su plazo). Esa línea es la del framework. Contener un pánico no silencia el gancho de pánico
+por defecto de la biblioteca estándar, que corre antes de capturar el desenrollado: escribe el mensaje del pánico en la salida
+de error cada vez, al ritmo al que el cliente envía, y el mensaje contiene lo que el manejador haya formateado en él, datos
+del cliente incluidos. Así que no hagas `unwrap()` ni `expect()` de nada derivado de datos del cliente (`args.get::<T>(i)?` es
+un `Result`; también lo son las conversiones de valores y las búsquedas de claves): el cliente elige sus datos, y un manejador
+que entra en pánico con datos malos es un manejador que el cliente puede hacer fallar a voluntad, y escribir en tu salida de
+error. Una aplicación que quiera silencio instala su propio gancho con `std::panic::set_hook` (el framework no instala
+ninguno, porque un gancho es global al proceso). Los argumentos que un manejador saca de `Args` (`into_vec`) o mueve a una tarea que lanza dejan de
 cargarse cuando el manejador termina: desde entonces son memoria de la aplicación.
 
 No soportado: salas y broadcast, gateways sobre Socket.IO, un adaptador de Redis (cambios posteriores); espacios dinámicos,

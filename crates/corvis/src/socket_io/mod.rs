@@ -86,5 +86,22 @@ pub fn probe_decode(text: &str, max_decoded_bytes: usize) -> Result<DecodeProbe,
     Ok(DecodeProbe { reservation, cost, _keep: keep })
 }
 
+/// Decodes the CONNECT packet `text` (for example `0/chat,{"token":"x"}`) the way a connection does, converts its
+/// `auth` into the `serde_json::Value` a socket keeps for its life, and keeps that value alive in the probe. `cost` is
+/// what the socket's handshake is charged for it, `reservation` what the decoder reserved. Unstable and hidden: for the
+/// allocator-based test of the charge of `auth`.
+#[doc(hidden)]
+pub fn probe_auth(text: &str, max_decoded_bytes: usize) -> Result<DecodeProbe, String> {
+    let options = IoOptions::new().max_decoded_bytes(max_decoded_bytes);
+    let mut decoder = parser::Decoder::new(parser::Limits::from_options(&options));
+    let prepared = decoder.prepare(text.to_owned()).map_err(|e| e.to_string())?;
+    let reservation = prepared.reservation();
+    let packet = decoder.decode(prepared).map_err(|e| e.to_string())?.ok_or("not a CONNECT packet")?;
+    let parser::Body::Connect(Some(auth)) = packet.body else { return Err("a CONNECT packet with auth is expected".to_string()) };
+    let stored = auth.to_json().map_err(|e| e.to_string())?;
+    drop(auth);
+    Ok(DecodeProbe { reservation, cost: value::json_cost(&stored), _keep: Box::new(stored) })
+}
+
 #[cfg(test)]
 mod tests;

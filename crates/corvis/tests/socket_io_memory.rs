@@ -163,7 +163,7 @@ fn a_packet_above_the_budget_is_refused_before_anything_is_built() {
 
 /// A `max_decoded_bytes` and server-wide budget small enough to test with, over the minimum the options allow.
 fn options(total: usize, packet: usize) -> IoOptions {
-    IoOptions::new().max_decoded_bytes(packet).engine(EngineOptions::new().max_total_unread_bytes(total))
+    IoOptions::new().max_decoded_bytes(packet).max_attachments(1).engine(EngineOptions::new().max_total_unread_bytes(total))
 }
 
 /// Registers `hold`: counts the call, then keeps its arguments until `gate` opens.
@@ -216,7 +216,7 @@ async fn many_sessions_of_one_address_hold_a_bounded_amount_while_their_handlers
         client.send(&text).await;
     }
     wait_for("the first handler", || entered.load(Ordering::SeqCst) >= 1).await;
-    // The others cannot have room: a quarter of the budget is 4 MiB, the packet is bigger, so one packet per address
+    // The others cannot have room: the share of an address is one maximum packet (9.4 MB here), the packet is bigger than half of it, so one packet per address
     // beyond the guaranteed shares. Give them time to (wrongly) get in.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let admitted = entered.load(Ordering::SeqCst);

@@ -549,7 +549,9 @@ whatever others hold (the guaranteed share), and anything beyond it needs room i
 compare-and-swap, so concurrent connections cannot overshoot together). Both are limited per client address (the key the
 Engine.IO layer counts sessions under, so `set_trust_proxy` is honored): an address may hold a quarter of the budget
 (never less than one packet, never more than the budget) plus `f` for each session it may have open
-(`max_sessions_per_ip`), counting the handlers still running for sessions it already closed. A binary header whose cost
+(`max_sessions_per_ip`), counting the handlers still running for sessions it already closed. **Wrong in round 1, replaced
+in round 2:** that count covered decoded packets only; the address share is now an option that covers everything an
+address holds, in every state (see "Security review (round 2)", "The accounting rule"). A binary header whose cost
 and attachments could not fit together in `max_unread_bytes` is refused when it arrives (it could never complete: the
 transport stops reading while the session is over its limit). `max_decoded_bytes` is validated to be at most
 `max_total_unread_bytes`, so one packet can always be reserved.
@@ -564,8 +566,9 @@ address quota, `N` = `max_sessions_per_ip` and `S` the number of sessions open o
   most one message in the hand (`W`). With the defaults (`T` 256 MiB, 10,000 sessions) `f` is 26,843 bytes and the
   overshoot term is at most `S x (26 KiB + 1 MB)`, reached only if every session has a message in the hand at once.
 - Per session: `U + D + W` (reads stop above `U`; one more packet is reserved; one message in the hand).
-- Per client address, closed sessions included: `Q + N x f` for decoded packets (default `64 MiB + 256 x 26 KiB`, about
-  71 MiB), plus the wire messages of its open sessions.
+- Per client address, closed sessions included: **wrong in round 1** (it said `Q + N x f` for decoded packets, "plus the
+  wire messages of its open sessions", which were bounded by nothing but the session and server gauges). Corrected in
+  round 2: `A + N x (f + W)` for everything the address holds, with `A` = `max_address_share`.
 - The decoding itself never overshoots its reservation (the peak test above), and a reservation never exceeds `D`.
 
 **(c) Closed sessions.** The charge of a packet lives in the handler's future (`Charge`), which the connection task
@@ -578,7 +581,8 @@ address's cap too (a test reconnects 60 times and the address never holds more t
 affected because every limit above is checked against the session's own gauge and the address's own slot: the fair
 share is the same number for everyone and nobody else's holdings consume it, and an address can use at most `Q + N x f`
 of the shared budget, so an honest address keeps at least `T - Q` for packets that need server-wide room, and its small
-packets are always admitted.
+packets are always admitted. (Round 2: "an honest address keeps at least `T - Q`" holds only while the addresses at
+their share do not add up to the budget; with the defaults seven of them do.)
 Regression tests: `a_decoded_packet_is_charged_at_its_cost_not_at_what_was_reserved_for_it`,
 `a_packet_that_finds_no_room_waits_and_the_connection_takes_nothing_else`,
 `an_honest_address_is_served_while_another_holds_its_maximum`,
@@ -640,3 +644,166 @@ that does not change the default build), and the default test run keeps `raw_val
   application's after the handler returns; their charge ends with the handler. Documented in the limits discussion.
 - The Engine.IO layer's own accounting of one message in the hand per session (`W`) is the pre-existing term of the
   invariant; it is the engine's, not this layer's.
+
+## Security review (round 2)
+
+The second review found that round 1's cost model for JSON text held under ten new shapes, and that the accounting
+around it did not: the per-address quota covered only decoded packets, so everything else an address holds on the
+shared budget (messages in transit or parked, binary attachments, charges of handlers that outlive their session) was
+outside it, a fragmented message occupied up to twice what was charged, an honest packet that needed room waited
+behind a heartbeat that closed it for memory it did not hold, and the stored handshake `auth` was not charged. Where
+this section differs from "Security review (round 1)" and "Implementation notes", this section wins.
+
+### Corrections to round 1
+
+- **The invariant of round 1 was wrong for the address.** It bounded "decoded packets" per address by `Q + N x f` and
+  added "the wire messages of its open sessions" as if they were bounded elsewhere. They were not: wire messages above
+  a session's guaranteed share, parked messages and every binary attachment (`Reservation::plain`) were charged to the
+  session and server gauges only, so one address could hold the whole server budget (69 MB held against a quota of 21 MB
+  with 8 sessions of 127.0.0.1 and 0.5 MB attachments; 68 to 85 MB of text against a 67 MB budget). The formulas below
+  replace it.
+- **"An honest address always keeps at least `T - Q`" was only true while the addresses that could reach their quota
+  did not add up to the budget.** With a quarter of the budget four addresses exhausted it. The share is now an option,
+  defaults to 1/16, and the number of addresses that exhaust the budget is stated (see "Item 3a").
+- **A message was charged for its length, not its allocation.** See "Item 2".
+
+### The accounting rule (one path)
+
+There is one accounting path, in the gauge chain, and `budget.rs` states it. Every byte the Socket.IO layer keeps
+that came from a client is charged to the unread gauge of its Engine.IO session, and a session's gauge is chained to the
+gauge of its client address, which is chained to the server-wide one (`ws.rs`: `UnreadGauge`; `engine/mod.rs`:
+`ServerInner::parent_gauge`). A charge at any level counts at every level above it, so the address gauge holds,
+by construction and in every state, the wire messages the transport received and nobody took, the message a connection
+took and parked, the attachments of a packet being reassembled or already delivered, the reservations and decoded
+packets, the stored `auth` of the sockets, and the charges of handlers that outlive their session (a charge keeps its
+whole chain alive through `Arc`, so nothing is released early and an address's gauge exists as long as anything
+charged through it does). The separate address counter of round 1 (`AddressBudgets`, `AddressSlot`) is gone.
+
+Let `T` = `max_total_unread_bytes`, `U` = `max_unread_bytes`, `D` = `max_decoded_bytes`, `M` =
+`max_http_buffer_size`, `f = max(16 KiB, T / max_sessions)` the fair share, `N` = `max_sessions_per_ip`, `A` =
+`max_address_share`, and `held` the bytes a gauge counts.
+
+- **Admission** of a reservation `R` for the message `W_m` that is being decoded (`credit = W_m`: the message is
+  released once the packet is decoded, so the packet is checked net of it and a message is not counted twice) by session
+  `s` of address `a`:
+  1. *guaranteed share*: `s.held + R <= f + credit` and `a.held + R <= A + N x f + credit`;
+  2. otherwise *shared budget*: `a.held + R <= A + credit` and `total.held + R <= T + credit`.
+  Each test is a compare-and-swap at its level and a failure changes nothing, so concurrent connections cannot
+  overshoot together.
+- **Reading** (the test the transports and the connection task use): a session is paused iff `s.held > U`, or
+  `s.held > f` and (`a.held > A` or `total.held > T`). A session at or below `f` is always read.
+- **Whose doing a pause is**: `Own` when `s.held > U` or `a.held > A`; `Pressure` when only the server-wide budget is
+  exceeded. The heartbeat is held only for `Pressure` (Item 3b).
+- **Floor and default of `A`**: `F = min(T, D + max(max_attachments, 1) x (M + 64))` (one maximum packet: a decoded
+  packet next to the wire bytes of the largest binary packet); `A = max(T / 16, F)`, an explicit value must be in
+  `[F, T]`. With the defaults `F` = 43,555,072 bytes (41.5 MiB) is above `T / 16` (16 MiB), so **`ceil(T / A)` = 7
+  addresses at their share exhaust the 256 MiB budget**; with `max_decoded_bytes` and `max_attachments` small enough for
+  `T / 16` to bind, 16 do.
+- **Bounds.** An address holds at most `A + N x (f + W)` where `W = 3 x M + 64` is what one session adds beyond its
+  share: the message the transport had read when it stopped, the one being received (the WebSocket library buffers an
+  incomplete message in a buffer that can reach twice `M`, uncharged until it is a message) and the first pass's counts.
+  The server holds at most `T + S x (f + W)` for `S` open sessions (and closed ones with handlers running, for their
+  charges). Per session `U + D + W`. `N` and `W` make the address term large with the defaults (`256 x 3 MB`): an
+  operator who wants it tight lowers `max_sessions_per_ip` or `max_http_buffer_size`. The tests assert the live heap of
+  one address against exactly this formula and against `T / 2`.
+- **A charge never fails and nothing is refused beyond what already existed**: wire messages are charged when they
+  arrive (they cannot be refused) and the reading limits above stop the next one; only reservations wait.
+
+For a plain Engine.IO user nothing changes unless they set the two new engine options: `max_address_unread_bytes`
+(default none: no address gauge exists and a session's gauge is chained straight to the server's) and
+`pressure_pause_timeout` (default none: a paused session is closed by the heartbeat). `IoServer` sets both from its own
+options. `engine_io_security.rs` (the fair-share and unread-budget tests) passes unmodified. The engine changes that
+apply to everyone: a binary WebSocket message is charged for its buffer capacity (equal to its length unless the
+WebSocket library over-allocated it, in which case it was a bug), and `UnreadGauge::changed` wakes on a release at any
+gauge above the session's.
+
+### Item 1 (Medium): attachments and wire messages outside the quota
+
+Fixed by the rule above. Wire messages already counted at the address in the chain; attachments no longer use a
+`plain` reservation that skipped the address (`Reservation::from_held` wraps the ticket the engine made, which is
+already on the chain); the credit stops a message from being counted twice at admission. Regression tests:
+`socket_io_accounting.rs`: `binary_attachments_of_one_address_stay_inside_its_share_and_do_not_starve_an_honest_session`
+(the reviewer's case: 8 sessions of 127.0.0.1, `51-["hold",{"_placeholder":true,"num":0}]` and 524,289 bytes, 40 times
+each; live heap against `A + 8 x (f + W) + 2 MiB` and against `T / 2`; an honest session on 127.0.0.200 answered) and
+`large_text_events_of_one_address_stay_inside_its_share_and_do_not_starve_an_honest_session` (0.9 MB strings), with a raw
+client that writes from the caller's buffers so only the server's memory is counted; unit tests in `tests.rs`
+(`binary_attachments_count_against_the_address_in_every_state`) and `engine/session.rs` (the chain: wire messages,
+reservations, guarantee cap, quota, credit, wake-up by a sibling's release).
+
+### Item 2 (Medium/low): fragmented messages occupied up to twice their charge
+
+The WebSocket library builds a fragmented message by extending a buffer, which keeps the capacity of its last doubling
+(a 524,288 byte frame and a 1 byte continuation: a megabyte for half a megabyte). `websocket::fit` shrinks a binary
+buffer whose slack exceeds an eighth of its length and returns the capacity that remains, and
+`Session::on_packet_sized` charges `max(length, allocated) + 64`. What the engine keeps of the other messages is already
+exact: a text message is copied (`to_string`) to a buffer of its own length, a polling record likewise (no slice of the
+request body is kept, so a small record never pins a large buffer), and a base64 binary message keeps at most two bytes
+of capacity beyond its length (a unit test pins both). The buffer of an incomplete fragmented message inside the library
+is not a message yet: it is the transit term of `W` (at most `2 x M` per open session). Regression tests:
+`fragmented_binary_messages_occupy_no_more_than_they_are_charged` (frames of 524,288 + 1 bytes, 513 frames of 1 KiB, and
+300,000 + 224,289 bytes: live heap per kept attachment 1.00 to 1.20, was 2.0), `websocket::tests` (the shrink rule),
+`packet::capacity_tests`, `session::a_message_is_charged_for_the_allocation_behind_it_when_that_is_larger_than_its_length`.
+
+### Item 3: an honest packet waiting for budget others hold
+
+**(a) The share is an option.** `IoOptions::max_address_share` (and `address_share()`, `address_share_floor()` to read
+the values in force): default `max(T / 16, F)`, validated against `[F, T]`; documented with the number of addresses that
+exhaust the budget and the need for `trust_proxy` behind a proxy (EN and ES limits tables).
+
+**(b) A session is not closed for pressure it did not cause.** The transports ask `UnreadGauge::pause()`, which says
+`No`, `Own` or `Pressure`. While a session is paused for `Pressure` the engine holds its pong deadline
+(`Heartbeat::suspend`; `Session::set_pressure_pause`, called by the WebSocket loop and by the polling `POST` that holds
+its answer) for at most `pressure_pause_timeout`, which `IoServer` sets to `admission_timeout`; when reading resumes, or
+the grace ends, a pong still awaited is awaited for a fresh `ping_timeout`. A session over its own limit, or whose
+address is over its share, keeps the ordinary heartbeat. The wait itself is bounded by `admission_timeout` (default
+30 s, validated, above zero and at most a day): the connection task keeps the deadline of the message it parked and, when
+it passes, closes the connection with the new disconnect reason `admission timeout`
+(`DisconnectReason::AdmissionTimeout`, documented, not a Node reason). Messages that wait behind a parked one stay
+charged until it is admitted or the connection closes: an address whose own backlog fills its share with nothing
+running is therefore released by the admission timeout, not before (a unit test shows it). The suspension is
+bounded too, so a session cannot hide behind it: after `pressure_pause_timeout` the heartbeat applies again.
+
+**(c) Wakeups.** A release at any level notifies every gauge above it (`UnreadGauge::release`), and a waiting
+connection registers the notifications of its whole chain (`changed()`, created before it reads the gauges, so there is
+no lost wakeup and no polling loop). `a_parked_packet_is_admitted_as_soon_as_room_is_released_and_its_deadline_is_forgotten`
+(paused clock: admitted with no time passing) and, over real sockets, the delayed-handler test below.
+
+Regression tests: `tests/socket_io_accounting.rs`
+`a_session_waiting_for_room_others_hold_is_not_closed_and_is_served_as_soon_as_a_handler_returns` (eleven addresses of
+four packets each hold the 8 MiB budget with handlers that return after 8 s; heartbeat window 1.5 s; the honest packet
+is answered after more than 2 s, within 3 s of the first handler returning, no disconnect) and
+`when_handlers_never_return_the_waiting_session_is_closed_at_the_admission_timeout_not_by_the_heartbeat` (the disconnect
+reason is `admission timeout`, after at least `admission_timeout`); both fail with `PingTimeout` after 1.5 s when the
+pause is not suspended (checked by disabling it). Unit tests: `Heartbeat::suspend/resume` (fresh interval, bounded
+grace, a ping falling due while suspended), `Session` on the paused clock (not closed in the pause, closed after the
+grace, unchanged without the option), `a_packet_that_waits_longer_than_the_admission_timeout_closes_the_connection_with_its_own_reason`.
+
+### Item 4 (Low): the stored `auth`
+
+Kept as a `serde_json::Value`, because that is the public type of `Handshake::auth()` and `IoValue` would change the API
+of every application that reads it. Its real size is charged instead: `value::json_cost` (the heap a `Value` owns, with
+buffers measured by capacity; the slot itself sits in the socket's structures) is taken with `EngineSocket::hold` when the
+CONNECT is handled and kept in the `Handshake`, so it is charged to the session and the address for the socket's life and
+released when the handshake is dropped. The model follows the compiled `serde_json::Map`: an `IndexMap` when another
+crate of the build enables `preserve_order` (the case in this workspace, so what is measured), a B-tree otherwise (the
+bound for that build is derived from the node layout and not measured here). A small object is up to about twice its
+`IoValue` model (`[{"":0},...]`), so the 16 KiB limit does not bound the stored value; the charge does. The charge is
+taken unconditionally (the CONNECT cannot be refused after it was decoded): a flood of CONNECTs with large auth stops at
+the address share like any other packet, because the reservations behind it wait. Tests: `socket_io_accounting.rs`
+`the_stored_auth_is_charged_at_its_real_size_across_many_sockets_and_namespaces` (five shapes, 200 stored values each,
+live heap <= charged <= 3 x live heap, through `corvis::socket_io::probe_auth`), and in `tests.rs` the address holding
+exactly the sum over 30 sockets in 10 namespaces and releasing it as they go.
+
+### Item 5 (docs): the default panic hook
+
+`catch_unwind` does not silence the standard library's hook: each handler panic still writes its message to standard
+error, at the client's packet rate, and the message may hold client data the handler formatted. Said in the limits
+page (EN and ES) and in the rustdoc of `IoSocket::on`: do not `unwrap()` or `expect()` anything derived from client data;
+an application that wants silence installs its own hook with `std::panic::set_hook`. The framework installs none (it is
+process-wide).
+
+### Not changed by this round
+
+- The memory of the WebSocket library's buffer for an incomplete message (up to `2 x M` per open session) is not
+  charged: it is not a message yet. It is the transit term of `W`, bounded by `max_sessions`.
+- A session whose own backlog is the whole of its address's share waits for the admission timeout (above).

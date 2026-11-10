@@ -153,6 +153,33 @@ the configured value, "within" bounds are generous, timer logic runs on Tokio's 
   and address quota, the invariant, the surrogate difference, log rate limit; spec delta updated and
   `openspec validate e2-socket-io-namespaces-events-and-acks --strict` passes
 
+## 8b. Security review, round 2 (design.md "Security review (round 2)")
+
+- [x] 8b.1 One accounting path: the address gauge sits between the session gauges and the server-wide one, so everything
+  an address holds counts against its share in every state (wire messages, parked messages, reservations, decoded
+  packets, attachments before and after delivery, handler charges after the session, handshake auth); `AddressBudgets`
+  and `Reservation::plain` are gone; the rule and the corrected formulas are in `budget.rs` and design.md; the
+  round 1 invariant is corrected; tests: `socket_io_accounting.rs` binary and large-text floods against the live heap
+  (counting allocator, raw client), the chain tests of `engine/session.rs`, `tests.rs` binary attachments
+- [x] 8b.2 Messages are charged for their allocation: `websocket::fit` shrinks a buffer with more than an eighth of
+  slack and `Session::on_packet_sized` charges the capacity; text and polling records are copies of their own length;
+  tests: fragmented shapes against the live heap, `websocket::tests`, `packet::capacity_tests`, `on_packet_sized`
+- [x] 8b.3 `max_address_share` (default `max(T / 16, one maximum packet)`, validated in `[floor, T]`) and
+  `admission_timeout` (default 30 s, validated); the Engine.IO options `max_address_unread_bytes` and
+  `pressure_pause_timeout` (unset by default, so plain Engine.IO is unchanged); option tests
+- [x] 8b.4 A session paused by the budget's pressure keeps its heartbeat held for at most `admission_timeout` and
+  restarts it fresh when reads resume (WebSocket and polling); a packet that waits longer closes the connection with the
+  reason `admission timeout`; a waiting connection is woken by a release at any level; tests on the paused clock and
+  over real sockets (handlers that return after a delay: served, not closed; handlers that never return: closed with
+  the admission reason, not `ping timeout`, which a control run without the suspension confirms)
+- [x] 8b.5 The stored handshake auth is charged at the size of the stored `serde_json::Value` (`value::json_cost`,
+  following the compiled `Map`) for the socket's life; tests with the counting allocator across many stored values and
+  across many sockets and namespaces
+- [x] 8b.6 Docs (EN and ES): limits table (`max_address_share`, how many addresses exhaust the budget with the defaults,
+  `trust_proxy` behind a proxy, `admission_timeout`, the charged auth), the waiting rules, the `admission timeout`
+  reason, the default panic hook (do not `unwrap()` client data; install your own hook for silence); rustdoc of
+  `IoSocket::on`; spec delta updated and `openspec validate e2-socket-io-namespaces-events-and-acks --strict` passes
+
 ## 9. Definition of done
 
 - [x] 9.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`

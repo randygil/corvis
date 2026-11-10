@@ -111,6 +111,8 @@ pub struct EngineOptions {
     pub(crate) max_sessions: usize,
     pub(crate) max_sessions_per_ip: usize,
     pub(crate) max_total_unread_bytes: usize,
+    pub(crate) max_address_unread_bytes: Option<usize>,
+    pub(crate) pressure_pause_timeout: Option<Duration>,
     pub(crate) first_request_timeout: Option<Duration>,
     pub(crate) allow_request: Option<AllowRequestHook>,
     pub(crate) allow_request_timeout: Duration,
@@ -133,6 +135,8 @@ impl Default for EngineOptions {
             max_sessions: DEFAULT_MAX_SESSIONS,
             max_sessions_per_ip: DEFAULT_MAX_SESSIONS_PER_IP,
             max_total_unread_bytes: DEFAULT_MAX_TOTAL_UNREAD_BYTES,
+            max_address_unread_bytes: None,
+            pressure_pause_timeout: None,
             first_request_timeout: None,
             allow_request: None,
             allow_request_timeout: DEFAULT_ALLOW_REQUEST_TIMEOUT,
@@ -229,6 +233,28 @@ impl EngineOptions {
         self
     }
 
+    /// The most received bytes, and bytes a layer on top holds on their behalf, that the sessions of one client address
+    /// may hold together on the server-wide budget, beyond each session's guaranteed share (the sessions an address
+    /// may have open, `max_sessions_per_ip`, keep their guaranteed shares on top of it). While an address is over it,
+    /// its sessions that hold more than the fair share stop being read. Not set by default: the Engine.IO layer then
+    /// has no per-address share of the budget (the Socket.IO layer sets it, see `IoOptions::max_address_share`). At
+    /// most `max_total_unread_bytes`. Node has no limit.
+    pub fn max_address_unread_bytes(mut self, bytes: usize) -> Self {
+        self.max_address_unread_bytes = Some(bytes);
+        self
+    }
+
+    /// While a session's reading is paused because the server-wide budget is exceeded (and the session is over neither
+    /// its own limit nor its address's), its pong deadline is suspended, for at most this long: it cannot read a pong
+    /// it is not allowed to read, and closing it with `ping timeout` would punish it for memory it did not hold. When
+    /// reading resumes, or this time passes, the wait for the pong starts again with a fresh interval. Not set by
+    /// default: a paused session is then closed by the heartbeat as before (the Socket.IO layer sets it to its
+    /// `admission_timeout`). Above zero and at most a day.
+    pub fn pressure_pause_timeout(mut self, timeout: Duration) -> Self {
+        self.pressure_pause_timeout = Some(timeout);
+        self
+    }
+
     /// How long a polling session may go without any request after its handshake before it is closed and its slot
     /// released. WebSocket-first sessions are not affected. Defaults to 10 s, or `ping_interval + ping_timeout`
     /// when that is shorter; an explicit value must be above zero and at most `ping_interval + ping_timeout`.
@@ -270,6 +296,12 @@ impl EngineOptions {
     /// `max(16 KiB, max_total_unread_bytes / max_sessions)`.
     pub(crate) fn fair_unread_share(&self) -> usize {
         MIN_FAIR_UNREAD_SHARE.max(self.max_total_unread_bytes / self.max_sessions.max(1))
+    }
+
+    /// What the sessions of one address may hold on top of `max_address_unread_bytes`: the guaranteed shares of as
+    /// many sessions as the address may have open.
+    pub(crate) fn address_guarantee(&self) -> usize {
+        self.fair_unread_share().saturating_mul(self.max_sessions_per_ip)
     }
 
     /// The first-request timeout in force.
@@ -349,6 +381,28 @@ impl EngineOptions {
                 option: "max_total_unread_bytes",
                 reason: format!("must be at least max_unread_bytes ({}), got {}", self.max_unread_bytes, self.max_total_unread_bytes),
             });
+        }
+        if let Some(bytes) = self.max_address_unread_bytes {
+            if bytes == 0 {
+                return Err(EngineOptionsError::Zero { option: "max_address_unread_bytes" });
+            }
+            if bytes > self.max_total_unread_bytes {
+                return Err(EngineOptionsError::Range {
+                    option: "max_address_unread_bytes",
+                    reason: format!("must be at most max_total_unread_bytes ({}), got {bytes}", self.max_total_unread_bytes),
+                });
+            }
+        }
+        if let Some(timeout) = self.pressure_pause_timeout {
+            if timeout.is_zero() {
+                return Err(EngineOptionsError::Zero { option: "pressure_pause_timeout" });
+            }
+            if timeout > MAX_DURATION {
+                return Err(EngineOptionsError::Range {
+                    option: "pressure_pause_timeout",
+                    reason: format!("must be at most one day, got {timeout:?}"),
+                });
+            }
         }
         if !self.path.starts_with('/') {
             return Err(EngineOptionsError::Path { path: self.path.clone() });
@@ -462,6 +516,24 @@ mod tests {
             let err = options.validate().unwrap_err();
             assert!(matches!(err, EngineOptionsError::Range { option, .. } if option == name), "{name}: {err}");
         }
+    }
+
+    #[test]
+    fn the_address_share_and_the_pressure_pause_are_off_by_default_and_validated_when_set() {
+        // Plain Engine.IO keeps its behavior: no per-address share of the budget, a paused session is closed by the heartbeat.
+        let defaults = EngineOptions::new();
+        assert_eq!((defaults.max_address_unread_bytes, defaults.pressure_pause_timeout), (None, None));
+        assert!(defaults.validate().is_ok());
+        let zero = EngineOptions::new().max_address_unread_bytes(0);
+        assert_eq!(zero.validate().unwrap_err(), EngineOptionsError::Zero { option: "max_address_unread_bytes" });
+        let above = EngineOptions::new().max_total_unread_bytes(1000).max_unread_bytes(1000).max_address_unread_bytes(1001);
+        assert!(matches!(above.validate().unwrap_err(), EngineOptionsError::Range { option: "max_address_unread_bytes", .. }));
+        assert!(EngineOptions::new().max_total_unread_bytes(1000).max_unread_bytes(1000).max_address_unread_bytes(1000).validate().is_ok());
+        let none = EngineOptions::new().pressure_pause_timeout(Duration::ZERO);
+        assert_eq!(none.validate().unwrap_err(), EngineOptionsError::Zero { option: "pressure_pause_timeout" });
+        let long = EngineOptions::new().pressure_pause_timeout(Duration::from_secs(2 * 24 * 3600));
+        assert!(matches!(long.validate().unwrap_err(), EngineOptionsError::Range { option: "pressure_pause_timeout", .. }));
+        assert!(EngineOptions::new().pressure_pause_timeout(Duration::from_secs(30)).validate().is_ok());
     }
 
     #[test]

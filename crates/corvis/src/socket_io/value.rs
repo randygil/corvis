@@ -52,6 +52,70 @@ pub(crate) const fn text_cost(len: usize) -> usize {
     if len == 0 { 0 } else { len + ALLOC_OVERHEAD }
 }
 
+/// The slot of one `serde_json::Value`, inline in the array or entry that holds it.
+const JSON_SLOT: usize = std::mem::size_of::<Value>();
+/// One leaf of a `BTreeMap<String, Value>` (what `serde_json::Map` is without `preserve_order`): 11 keys and 11
+/// values, the parent pointer, the index and the length, and the allocation's overhead.
+const BTREE_LEAF: usize = 11 * (std::mem::size_of::<String>() + JSON_SLOT) + 16 + ALLOC_OVERHEAD;
+/// An internal node: a leaf plus 12 child pointers.
+const BTREE_INTERNAL: usize = BTREE_LEAF + 12 * std::mem::size_of::<usize>();
+/// Whether `serde_json::Map` is the `preserve_order` build (an `IndexMap`: 72 bytes) and not a `BTreeMap` (24 bytes).
+/// Another crate of the build can turn the feature on, so the model follows the type that was compiled.
+const PRESERVE_ORDER: bool = std::mem::size_of::<serde_json::Map<String, Value>>() > 32;
+
+/// The heap a `BTreeMap` of `entries` entries occupies at most: every node but the root holds at least 5 keys, so there
+/// are at most `entries / 5 + 1` leaves and a fifth as many internal nodes (and one more).
+const fn btree_cost(entries: usize) -> usize {
+    if entries == 0 {
+        return 0;
+    }
+    let leaves = entries / 5 + 1;
+    let internal = if leaves == 1 { 0 } else { leaves / 5 + 1 };
+    leaves * BTREE_LEAF + internal * BTREE_INTERNAL
+}
+
+/// The heap an `IndexMap` of `entries` entries occupies at most: its entry vector (a hash, the key's `String` and the
+/// value per entry, with up to twice the capacity it needs, and at least four, since it grows as entries are inserted) and its hash table
+/// (fewer than `16n/7 + 4` buckets of an index and a control byte, and one control group).
+const fn index_cost(entries: usize) -> usize {
+    if entries == 0 {
+        return 0;
+    }
+    let bucket = std::mem::size_of::<usize>() + std::mem::size_of::<String>() + JSON_SLOT;
+    let buckets = 16 * entries / 7 + 4;
+    let capacity = if entries < 2 { 4 } else { 2 * entries };
+    2 * ALLOC_OVERHEAD + capacity * bucket + buckets * (std::mem::size_of::<usize>() + 1) + 16
+}
+
+/// What the object map of `entries` entries occupies on the heap, in the build that was compiled.
+const fn map_cost(entries: usize) -> usize {
+    if PRESERVE_ORDER { index_cost(entries) } else { btree_cost(entries) }
+}
+
+/// What a `serde_json::Value` owns on the heap, at most, with buffers measured by capacity: the memory the handshake
+/// `auth` occupies for the life of its socket, besides the value's own slot (which sits in the socket's structures).
+/// It is not the size [`IoValue::cost`] gives the same tree (an object is an `IndexMap` or a B-tree here, a box and a hash table there:
+/// a small object can be about twice as large as a `Value`, which is why the limit measured with the `IoValue` model
+/// does not bound it). The recursion is bounded by [`MAX_DEPTH`], which the conversion to a `Value` enforces.
+pub(crate) fn json_cost(value: &Value) -> usize {
+    json_heap(value)
+}
+
+fn json_heap(value: &Value) -> usize {
+    match value {
+        Value::Null | Value::Bool(_) => 0,
+        Value::Number(_) => NUMBER_HEAP,
+        Value::String(s) => text_cost(s.capacity()),
+        Value::Array(items) => {
+            let buffer = if items.capacity() > 0 { ALLOC_OVERHEAD + items.capacity() * JSON_SLOT } else { 0 };
+            items.iter().fold(buffer, |total, v| total.saturating_add(json_heap(v)))
+        }
+        Value::Object(map) => {
+            map.iter().fold(map_cost(map.len()), |total, (k, v)| total.saturating_add(text_cost(k.capacity())).saturating_add(json_heap(v)))
+        }
+    }
+}
+
 /// An error converting to or from an [`IoValue`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IoValueError {

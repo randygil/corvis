@@ -23,7 +23,7 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::time::Instant;
 
-use super::budget::{AddressSlot, Reservation};
+use super::budget::Reservation;
 use super::engine::session::{CloseReason, after};
 use super::engine::{EngineMessage, EngineSocket, Held, SendError};
 use super::namespace::{ConnectError, IoNamespace};
@@ -31,7 +31,7 @@ use super::options::IoOptions;
 use super::parser::{self, Body, Decoder, Encoded, Limits, Packet, Prepared};
 use super::server::ServerInner;
 use super::socket::{AckSender, DisconnectReason, EmitError, Handshake, IoSocket, Phase};
-use super::value::{Args, IoValue};
+use super::value::{Args, IoValue, json_cost};
 use super::warn::WarnLimiter;
 
 enum Slot {
@@ -49,22 +49,18 @@ pub(crate) struct ClientShared {
     /// Set by the first `terminate`: no socket joins afterwards.
     done: AtomicBool,
     joined_once: AtomicBool,
-    /// What the client address holds of the server-wide budget: shared by its connections, past their lifetime.
-    address: Arc<AddressSlot>,
     /// Rate limit of the lines a client can provoke.
     pub(crate) warnings: Arc<WarnLimiter>,
 }
 
 impl ClientShared {
     pub(crate) fn new(engine: EngineSocket, options: Arc<IoOptions>, server: &ServerInner) -> Arc<ClientShared> {
-        let address = server.budgets.slot(engine.address_key());
         Arc::new(ClientShared {
             engine,
             options,
             nsps: Mutex::new(HashMap::new()),
             done: AtomicBool::new(false),
             joined_once: AtomicBool::new(false),
-            address,
             warnings: server.warnings.clone(),
         })
     }
@@ -200,6 +196,8 @@ pub(crate) async fn run(
     let mut connect_deadline = Some(after(Instant::now(), options.connect_timeout));
     let mut reassembly: Option<(Instant, Charge)> = None;
     let mut parked: Option<Parked> = None;
+    // When the parked message gives up waiting: set when it parks, cleared when it is admitted.
+    let mut admission_deadline: Option<Instant> = None;
     let mut stream_done = false;
     let mut closed: Closed<'_> = Box::pin(engine.closed());
     loop {
@@ -219,10 +217,16 @@ pub(crate) async fn run(
                 }
             }
         }
+        if parked.is_none() {
+            admission_deadline = None;
+        } else if admission_deadline.is_none() {
+            admission_deadline = Some(after(Instant::now(), options.admission_timeout));
+        }
         let reassembling = decoder.is_reassembling();
         let over_limit = !reassembling && engine.unread_over_limit();
         let can_read = !stream_done && parked.is_none() && (reassembling || (inflight.len() < options.max_inflight && !over_limit));
         let connect_wait = wait_until(connect_deadline);
+        let admission_wait = wait_until(admission_deadline);
         let reassembly_wait = wait_until(reassembly.as_ref().map(|(deadline, _)| *deadline));
         tokio::select! {
             biased;
@@ -240,6 +244,11 @@ pub(crate) async fn run(
             }
             _ = reassembly_wait => {
                 shared.terminate(DisconnectReason::ForcedServerClose, false, true);
+                break;
+            }
+            // A packet waited for room longer than the limit: the wait is bounded and visible.
+            _ = admission_wait => {
+                shared.terminate(DisconnectReason::AdmissionTimeout, false, true);
                 break;
             }
             // A release of room somewhere: the parked message, or the reads that are paused, may go on.
@@ -294,13 +303,13 @@ async fn handle_message(
             Err(_) => Flow::Close(DisconnectReason::ForcedClose),
             Ok(None) => {
                 if let Some((_, charge)) = reassembly.as_mut() {
-                    charge.add(Reservation::plain(held));
+                    charge.add(Reservation::from_held(held));
                 }
                 Flow::Continue
             }
             Ok(Some(packet)) => {
                 let Some((_, mut charge)) = reassembly.take() else { return Flow::Close(DisconnectReason::ForcedClose) };
-                charge.add(Reservation::plain(held));
+                charge.add(Reservation::from_held(held));
                 handle_packet(server, shared, packet, charge, inflight, closed).await
             }
         },
@@ -320,7 +329,7 @@ async fn admit(
     closed: &mut Closed<'_>,
     waiting: Parked,
 ) -> Flow {
-    let Some(mut reservation) = Reservation::try_new(&shared.engine, &shared.address, waiting.prepared.reservation()) else {
+    let Some(mut reservation) = Reservation::try_new(&shared.engine, waiting.prepared.reservation(), waiting.wire.bytes()) else {
         *parked = Some(waiting);
         return Flow::Continue;
     };
@@ -439,8 +448,12 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
         }
         nsps.insert(name, Slot::Pending);
     }
+    // `auth` stays a `serde_json::Value` (it is the type of `Handshake::auth`), whose size is not the one the decoder
+    // measured against `max_auth_bytes`: the real size of the stored value is charged to the session and its address
+    // for as long as the handshake lives.
     let auth = auth.and_then(|v| v.to_json().ok()).unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-    let handshake = Handshake::new(auth, shared.engine.handshake().clone());
+    let charge = shared.engine.hold(json_cost(&auth));
+    let handshake = Handshake::new(auth, shared.engine.handshake().clone(), Some(charge));
     let socket = IoSocket::new(namespace, shared.clone(), handshake);
     tokio::spawn(connect(shared.clone(), socket));
     Ok(())

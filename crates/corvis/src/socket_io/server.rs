@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
-use super::budget::AddressBudgets;
 use super::client::{self, ClientShared};
 use super::engine::{EngineOptionsError, EngineServer};
 use super::namespace::IoNamespace;
@@ -31,8 +30,6 @@ pub enum NamespaceNameError {
 pub(crate) struct ServerInner {
     pub(crate) options: Arc<IoOptions>,
     pub(crate) engine: EngineServer,
-    /// What each client address holds of the server-wide unread budget (see `budget.rs`).
-    pub(crate) budgets: Arc<AddressBudgets>,
     /// Rate limit of the lines a client can provoke.
     pub(crate) warnings: Arc<WarnLimiter>,
     namespaces: RwLock<HashMap<String, IoNamespace>>,
@@ -111,16 +108,13 @@ impl IoServer {
     /// from the start.
     pub fn new(options: IoOptions) -> Result<IoServer, IoOptionsError> {
         options.validate()?;
-        let engine = EngineServer::new(options.engine.clone())?;
+        let engine = EngineServer::new(options.effective_engine_options())?;
         let options = Arc::new(options);
         let mut namespaces = HashMap::new();
         namespaces.insert("/".to_string(), IoNamespace::new("/".to_string(), options.clone()));
-        let guarantee = options.engine.fair_unread_share().saturating_mul(options.engine.max_sessions_per_ip);
-        let budgets = AddressBudgets::new(options.engine.max_total_unread_bytes, options.max_decoded_bytes, guarantee);
         let inner = Arc::new(ServerInner {
             options,
             engine: engine.clone(),
-            budgets,
             warnings: Arc::new(WarnLimiter::new(WARN_INTERVAL)),
             namespaces: RwLock::new(namespaces),
             closed: AtomicBool::new(false),

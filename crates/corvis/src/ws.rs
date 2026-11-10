@@ -377,16 +377,77 @@ pub(crate) struct UnreadGauge {
     /// this many bytes, so a session that is drained is never paused by the hoarding of others.
     fair: usize,
     parent: Option<Arc<UnreadGauge>>,
+    /// Whether exceeding `limit` is the fault of whoever holds the bytes (a session, an address) and not pressure
+    /// from the pool (the server-wide gauge).
+    blame: bool,
+    /// What a guaranteed charge may bring this gauge to (see `try_charge_share`): an address may hold its quota
+    /// plus the guaranteed shares of the sessions it may have open.
+    guarantee_cap: usize,
+    /// Runs when the gauge is dropped (an address gauge forgets its entry).
+    on_drop: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+/// Why a gauge says to stop reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+pub(crate) enum Pause {
+    /// Reading may go on.
+    No,
+    /// Over a limit of its own: the session's, or its address's.
+    Own,
+    /// Over its fair share while the server-wide budget is exceeded, whoever exceeded it.
+    Pressure,
 }
 
 impl UnreadGauge {
     pub(crate) fn gateway(limit: usize) -> Self {
-        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: false, fair: 0, parent: None }
+        UnreadGauge {
+            bytes: AtomicUsize::new(0),
+            notify: Notify::new(),
+            limit,
+            wake_all: false,
+            fair: 0,
+            parent: None,
+            blame: true,
+            guarantee_cap: usize::MAX,
+            on_drop: None,
+        }
     }
 
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn new(limit: usize, parent: Option<Arc<UnreadGauge>>) -> Self {
-        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: true, fair: 0, parent }
+        UnreadGauge {
+            bytes: AtomicUsize::new(0),
+            notify: Notify::new(),
+            limit,
+            wake_all: true,
+            fair: 0,
+            parent,
+            blame: true,
+            guarantee_cap: usize::MAX,
+            on_drop: None,
+        }
+    }
+
+    /// Marks the gauge as the shared pool: going over its limit is nobody's own fault.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn pooled(mut self) -> Self {
+        self.blame = false;
+        self
+    }
+
+    /// Sets what guaranteed charges may bring this gauge to.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn with_guarantee_cap(mut self, cap: usize) -> Self {
+        self.guarantee_cap = cap;
+        self
+    }
+
+    /// Runs `f` when the gauge is dropped.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn with_on_drop(mut self, f: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_drop = Some(Box::new(f));
+        self
     }
 
     /// Sets the fair share (see the field). Only meaningful with a parent.
@@ -407,19 +468,38 @@ impl UnreadGauge {
         self.bytes.load(Ordering::SeqCst)
     }
 
-    /// Resolves at the next release of this gauge or its parent. The notifications are registered when this is
-    /// called, before the caller checks `over_limit`, so a release in between is not lost.
+    /// Resolves at the next release of this gauge or of any gauge above it (its address, the server-wide one). The
+    /// notifications are registered when this is called, before the caller checks `over_limit`, so a release in
+    /// between is not lost.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn changed(&self) -> impl std::future::Future<Output = ()> + '_ {
-        let own = self.notify.notified();
-        let parent = self.parent.as_ref().map(|p| p.notify.notified());
+        let mut waits = Vec::with_capacity(3);
+        let mut gauge = Some(self);
+        while let Some(g) = gauge {
+            waits.push(Box::pin(g.notify.notified()));
+            gauge = g.parent.as_deref();
+        }
         async move {
-            match parent {
-                Some(parent) => {
-                    tokio::select! { _ = own => {}, _ = parent => {} }
-                }
-                None => own.await,
-            }
+            futures::future::select_all(waits).await;
+        }
+    }
+
+    /// `true` when this gauge, or one above it that holds its bytes responsible, is over a limit that is the holder's
+    /// own doing: the session's `max_unread_bytes`, its address's quota. Going over the server-wide limit is not (it
+    /// is the pool's).
+    fn at_fault(&self) -> bool {
+        (self.blame && self.bytes.load(Ordering::SeqCst) > self.limit) || self.parent.as_ref().is_some_and(|p| p.at_fault())
+    }
+
+    /// Whether reading must stop, and whose doing it is.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn pause(&self) -> Pause {
+        if !self.over_limit() {
+            Pause::No
+        } else if self.at_fault() {
+            Pause::Own
+        } else {
+            Pause::Pressure
         }
     }
 
@@ -430,20 +510,56 @@ impl UnreadGauge {
         }
     }
 
-    /// `true` when `size` more bytes keep this gauge at or below its fair share: what a session may always take, so
-    /// a session that holds little is never starved by the hoarding of others.
+    /// Adds `size` only if this gauge stays at or below its fair share and every gauge above it at or below its
+    /// guarantee cap (an address: its quota plus the guaranteed shares of its sessions; the server-wide one has
+    /// none): what a session may always take, so one that holds little is never starved by the hoarding of others.
+    /// A compare-and-swap at every level; `false` leaves everything unchanged.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
-    pub(crate) fn fits_fair_share(&self, size: usize) -> bool {
-        self.bytes.load(Ordering::SeqCst).saturating_add(size) <= self.fair
+    fn try_charge_share(&self, size: usize, credit: usize) -> bool {
+        if !self.try_add_up_to(size, self.fair.saturating_add(credit)) {
+            return false;
+        }
+        if let Some(parent) = &self.parent
+            && !parent.try_charge_guaranteed(size, credit)
+        {
+            self.bytes.fetch_sub(size, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    fn try_charge_guaranteed(&self, size: usize, credit: usize) -> bool {
+        if !self.try_add_up_to(size, self.guarantee_cap.saturating_add(credit)) {
+            return false;
+        }
+        if let Some(parent) = &self.parent
+            && !parent.try_charge_guaranteed(size, credit)
+        {
+            self.bytes.fetch_sub(size, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    /// Adds `size` here if the total then stays at or below `limit`.
+    fn try_add_up_to(&self, size: usize, limit: usize) -> bool {
+        let mut current = self.bytes.load(Ordering::SeqCst);
+        loop {
+            let Some(next) = current.checked_add(size).filter(|n| *n <= limit) else { return false };
+            match self.bytes.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Adds `size` to this gauge and its ancestors only if every ancestor stays at or below its own limit (a
     /// compare-and-swap, so concurrent callers cannot overshoot together). The gauge's own limit is not applied: it
     /// decides whether a session reads, not what one decoded packet may add. `Err` leaves everything unchanged.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
-    fn try_charge_within_ancestors(&self, size: usize) -> bool {
+    fn try_charge_within_ancestors(&self, size: usize, credit: usize) -> bool {
         if let Some(parent) = &self.parent
-            && !parent.try_charge_within(size)
+            && !parent.try_charge_within(size, credit)
         {
             return false;
         }
@@ -452,17 +568,12 @@ impl UnreadGauge {
     }
 
     /// Adds `size` here and above only if this gauge and its ancestors stay at or below their limits.
-    fn try_charge_within(&self, size: usize) -> bool {
-        let mut current = self.bytes.load(Ordering::SeqCst);
-        loop {
-            let Some(next) = current.checked_add(size).filter(|n| *n <= self.limit) else { return false };
-            match self.bytes.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => break,
-                Err(actual) => current = actual,
-            }
+    fn try_charge_within(&self, size: usize, credit: usize) -> bool {
+        if !self.try_add_up_to(size, self.limit.saturating_add(credit)) {
+            return false;
         }
         if let Some(parent) = &self.parent
-            && !parent.try_charge_within(size)
+            && !parent.try_charge_within(size, credit)
         {
             self.bytes.fetch_sub(size, Ordering::SeqCst);
             return false;
@@ -500,10 +611,17 @@ impl UnreadTicket {
         UnreadTicket { gauge: gauge.clone(), size }
     }
 
+    /// Charges `size` only if the gauge stays within its fair share and its ancestors within their guarantee caps (see
+    /// `UnreadGauge::try_charge_share`).
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn try_new_within_share(gauge: &Arc<UnreadGauge>, size: usize, credit: usize) -> Option<Self> {
+        gauge.try_charge_share(size, credit).then(|| UnreadTicket { gauge: gauge.clone(), size })
+    }
+
     /// Charges `size` only if the gauge's ancestors stay within their limits (see `try_charge_within_ancestors`).
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
-    pub(crate) fn try_new_within_ancestors(gauge: &Arc<UnreadGauge>, size: usize) -> Option<Self> {
-        gauge.try_charge_within_ancestors(size).then(|| UnreadTicket { gauge: gauge.clone(), size })
+    pub(crate) fn try_new_within_ancestors(gauge: &Arc<UnreadGauge>, size: usize, credit: usize) -> Option<Self> {
+        gauge.try_charge_within_ancestors(size, credit).then(|| UnreadTicket { gauge: gauge.clone(), size })
     }
 
     /// Lowers the charge to `size` (never raises it), releasing the difference and waking the waiters.
@@ -518,6 +636,14 @@ impl UnreadTicket {
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn size(&self) -> usize {
         self.size
+    }
+}
+
+impl Drop for UnreadGauge {
+    fn drop(&mut self) {
+        if let Some(f) = self.on_drop.take() {
+            f();
+        }
     }
 }
 

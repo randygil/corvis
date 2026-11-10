@@ -350,3 +350,42 @@ mod tests {
         assert_eq!(back, packets);
     }
 }
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    /// What is kept of a received message must not be larger than it is charged (its length plus the accounting
+    /// overhead): a text message is copied to a buffer of its own length, never a slice of the payload it came in.
+    #[test]
+    fn text_messages_taken_from_a_payload_own_exactly_their_bytes() {
+        let big = "x".repeat(100_000);
+        let payload = format!("4{big}\x1e4a\x1e4{big}\x1e4bc");
+        let decoded = decode_payload(&payload, 10).unwrap();
+        assert_eq!(decoded.len(), 4);
+        for item in decoded {
+            let Incoming::Packet(Packet::Message(EngineMessage::Text(text))) = item else { panic!("a text message") };
+            assert_eq!(text.capacity(), text.len(), "a {}-byte message holds a buffer of {}", text.len(), text.capacity());
+        }
+        let Incoming::Packet(Packet::Message(EngineMessage::Text(text))) = decode_text(&format!("4{big}")) else { panic!() };
+        assert_eq!(text.capacity(), text.len());
+    }
+
+    #[test]
+    fn a_base64_message_keeps_at_most_two_bytes_more_than_it_decodes_to() {
+        // `Bytes` does not expose its capacity: the decoder's own bound is checked on the vector it builds.
+        for n in [0usize, 1, 2, 3, 4, 5, 100, 1_001] {
+            let data = vec![9u8; n];
+            for padded in [true, false] {
+                let mut wire = String::new();
+                STANDARD.encode_string(&data, &mut wire);
+                if !padded {
+                    wire = wire.trim_end_matches('=').to_string();
+                }
+                let v = LENIENT.decode(&wire).unwrap();
+                assert_eq!(v.len(), n);
+                assert!(v.capacity() - v.len() <= 2, "{} bytes in a buffer of {}", v.len(), v.capacity());
+            }
+        }
+    }
+}

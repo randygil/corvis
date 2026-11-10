@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
@@ -82,6 +82,10 @@ pub(crate) struct ServerInner {
     sessions: RwLock<Store>,
     /// Received bytes waiting for the application, across every session.
     total_unread: Arc<UnreadGauge>,
+    /// The gauge of every client address that holds something, when `max_address_unread_bytes` is set: between its
+    /// sessions' gauges and the server-wide one, so everything an address holds counts here, in every state, and
+    /// outlives its sessions for as long as anything charged through them does.
+    addresses: Arc<AddressTable>,
     on_connection: RwLock<Option<ConnectionCallback>>,
     /// Callbacks run at the start of `close()`, before any session is closed.
     on_closing: RwLock<Vec<ClosingCallback>>,
@@ -89,7 +93,36 @@ pub(crate) struct ServerInner {
     last_hook_warning: Mutex<Option<std::time::Instant>>,
 }
 
+type AddressTable = Mutex<HashMap<String, Weak<UnreadGauge>>>;
+
 impl ServerInner {
+    /// What a new session's gauge is chained to: the gauge of its address when the address has a share of the
+    /// budget, the server-wide gauge otherwise.
+    fn parent_gauge(&self, key: &str) -> Arc<UnreadGauge> {
+        let Some(share) = self.options.max_address_unread_bytes else { return self.total_unread.clone() };
+        let mut table = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(gauge) = table.get(key).and_then(Weak::upgrade) {
+            return gauge;
+        }
+        let (forget, owner) = (key.to_string(), Arc::downgrade(&self.addresses));
+        let gauge = Arc::new(
+            UnreadGauge::new(share, Some(self.total_unread.clone()))
+                .with_guarantee_cap(share.saturating_add(self.options.address_guarantee()))
+                .with_on_drop(move || {
+                    // Forget the address once nothing refers to it. A newer gauge of the same address may have replaced
+                    // this one already: only a dead entry is removed.
+                    if let Some(table) = owner.upgrade() {
+                        let mut table = table.lock().unwrap_or_else(|e| e.into_inner());
+                        if table.get(&forget).is_some_and(|w| w.strong_count() == 0) {
+                            table.remove(&forget);
+                        }
+                    }
+                }),
+        );
+        table.insert(key.to_string(), Arc::downgrade(&gauge));
+        gauge
+    }
+
     pub(crate) fn remove(&self, id: &str) {
         let mut store = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = store.map.remove(id) {
@@ -206,13 +239,14 @@ impl EngineServer {
     pub fn new(options: EngineOptions) -> Result<EngineServer, EngineOptionsError> {
         options.validate()?;
         let path = options.normalized_path();
-        let total_unread = Arc::new(UnreadGauge::new(options.max_total_unread_bytes, None));
+        let total_unread = Arc::new(UnreadGauge::new(options.max_total_unread_bytes, None).pooled());
         Ok(EngineServer {
             inner: Arc::new(ServerInner {
                 options: Arc::new(options),
                 path,
                 sessions: RwLock::new(Store::default()),
                 total_unread,
+                addresses: Arc::new(Mutex::new(HashMap::new())),
                 on_connection: RwLock::new(None),
                 on_closing: RwLock::new(Vec::new()),
                 last_cap_warning: Mutex::new(None),
@@ -331,7 +365,7 @@ impl EngineServer {
             transport,
             handshake,
             self.inner.options.clone(),
-            Some(self.inner.total_unread.clone()),
+            Some(self.inner.parent_gauge(&key)),
         );
         *store.per_ip.entry(key).or_insert(0) += 1;
         store.map.insert(id, session.clone());
@@ -714,16 +748,17 @@ impl EngineSocket {
         Held(UnreadTicket::new(&self.session.unread, bytes))
     }
 
-    /// Charges `bytes` only if the session stays at or below its fair share of the server-wide budget: what a session
-    /// may always take, whatever others hold.
-    pub(crate) fn hold_within_share(&self, bytes: usize) -> Option<Held> {
-        self.session.unread.fits_fair_share(bytes).then(|| self.hold(bytes))
+    /// Charges `bytes` only if the session stays at or below its fair share of the server-wide budget (and its address
+    /// at or below its quota plus the guaranteed shares): what a session may always take, whatever others hold. An
+    /// atomic check and charge; `None` leaves every gauge unchanged.
+    pub(crate) fn hold_within_share(&self, bytes: usize, credit: usize) -> Option<Held> {
+        UnreadTicket::try_new_within_share(&self.session.unread, bytes, credit).map(Held)
     }
 
     /// Charges `bytes` only if the server-wide budget keeps room for them (an atomic check and charge, so racing
     /// sessions cannot overshoot it together). `None` leaves every gauge unchanged.
-    pub(crate) fn hold_within_total(&self, bytes: usize) -> Option<Held> {
-        UnreadTicket::try_new_within_ancestors(&self.session.unread, bytes).map(Held)
+    pub(crate) fn hold_within_total(&self, bytes: usize, credit: usize) -> Option<Held> {
+        UnreadTicket::try_new_within_ancestors(&self.session.unread, bytes, credit).map(Held)
     }
 
     /// The test the transports use to stop reading: the session is over its own limit, or over its fair share while
@@ -736,11 +771,6 @@ impl EngineSocket {
     /// [`unread_over_limit`](Self::unread_over_limit), so a release in between is not lost.
     pub(crate) fn unread_changed(&self) -> impl std::future::Future<Output = ()> + '_ {
         self.session.unread.changed()
-    }
-
-    /// The key the session is counted under in the per-address cap (the resolved client address, normalized).
-    pub(crate) fn address_key(&self) -> &str {
-        &self.session.addr_key
     }
 
     /// Like [`messages`](Self::messages), but each message keeps counting against `max_unread_bytes` until its
@@ -807,6 +837,13 @@ impl EngineServer {
     /// Bytes held against the server-wide unread budget by every session.
     pub(crate) fn total_unread_bytes(&self) -> usize {
         self.inner.total_unread.unread()
+    }
+
+    /// Bytes held by every session of `address` together (0 when it holds nothing).
+    pub(crate) fn address_unread_bytes(&self, address: &str) -> usize {
+        let key = address_key(address, None);
+        let table = self.inner.addresses.lock().unwrap_or_else(|e| e.into_inner());
+        table.get(&key).and_then(Weak::upgrade).map_or(0, |gauge| gauge.unread())
     }
 
     /// The same, as if the client connected from `address`.

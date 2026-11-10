@@ -257,8 +257,9 @@ when the socket disconnects. Binary values (`corvis::socket_io::Binary`, or `IoV
 arguments and travel as attachments; `args.get::<T>(i)` deserializes an argument into any `serde` type, a field of type
 `Binary` takes a buffer. `disconnect(false)` leaves one namespace and `disconnect(true)` leaves all of them and closes the
 connection. Each socket reports `client namespace disconnect`, `server namespace disconnect`, `transport close`,
-`transport error`, `ping timeout`, `parse error`, `forced close`, `forced server close` or `server shutting down`
-(`io.close()` and the application's shutdown report the last one before the sessions close), first to the
+`transport error`, `ping timeout`, `parse error`, `forced close`, `forced server close`, `server shutting down`
+(`io.close()` and the application's shutdown report it before the sessions close) or `admission timeout` (a packet waited
+longer than `admission_timeout` for room in the unread budget; Node has no such reason), first to the
 `on_disconnecting` handlers, while the socket is still in its namespace, and then to the `on_disconnect` handlers.
 Reserved event names (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`) cannot
 be emitted by the server, and a packet from a client that uses one is undecodable.
@@ -278,8 +279,10 @@ value and names the option). Where Node has no bound, Corvis differs on purpose.
 | Bytes held while a binary packet is reassembled | at most `(max_attachments + 1) x max_http_buffer_size`, counted in `max_unread_bytes`; options that cannot fit are refused | not counted | reads pause |
 | `attachment_timeout` (time for the attachments after the header) | 30 s | none | the connection is closed, whatever the heartbeat says |
 | `max_decoded_bytes` (the memory a packet decodes to: a 40-byte slot per JSON value, an object adds a box and a hash table, a string its bytes, 24 bytes per allocation) | 32 MiB | none | the connection is closed, before anything is built; reserved in the server-wide budget before decoding and charged until the handler ends |
-| Server-wide budget `max_total_unread_bytes`, and the part of it one client address may hold | 256 MiB, and a quarter of it (at least one packet); a session may always hold its fair share, `max(16 KiB, budget / max_sessions)` | none | the packet waits, and the connection takes no other message; its heartbeat is still served |
-| `max_auth_bytes` (the `auth` of a CONNECT, kept as long as the socket lives) | 16 KiB | none | the connection is closed |
+| Server-wide budget `max_total_unread_bytes` | 256 MiB; a session may always hold its fair share, `max(16 KiB, budget / max_sessions)` | none | the packet waits, and the connection takes no other message |
+| `max_address_share`: everything the sessions of one client address hold of that budget, in every state (unread messages above the fair share, packets waiting for room, packets being reassembled, decoded packets and attachments until their handlers end, the `auth` of their sockets) | 1/16 of the budget, never less than one maximum packet (`max_decoded_bytes` plus the wire bytes of the largest packet): with the defaults the floor binds, about 41.5 MiB, so **seven addresses at their share exhaust the 256 MiB budget** (sixteen where the packet limits are small enough for the 1/16 to bind); the sessions an address may have open, `max_sessions_per_ip`, keep their fair shares on top | none | the sessions of that address above their fair share are not read, and their packets wait |
+| `admission_timeout` (how long a packet may wait for room) | 30 s | none | the connection is closed with the disconnect reason `admission timeout` |
+| `max_auth_bytes` (the `auth` of a CONNECT, kept as long as the socket lives; the stored `serde_json::Value` is charged at its real size, which can be twice the size this limit measures) | 16 KiB | none | the connection is closed |
 | JSON nesting | 127 levels | none | the connection is closed |
 | `max_event_name_len`, `max_args` (from a client) | 256 bytes, 128 | none | the connection is closed |
 | Acknowledgement id from a client | at most 16 digits and 2^53 - 1 | any digit run, read as a float | the connection is closed |
@@ -297,11 +300,24 @@ string and number fields) decodes to 11 to 20 times its size, so a 1 MB packet c
 default. The worst shapes expand more: 1 MB of `{}` costs 45 MB, and 1 MB of objects nested through empty keys costs 58 MB
 (the worst case, 58 times). With 1 MB of text the default 32 MiB therefore accepts anything up to 33 times; a packet above
 `max_decoded_bytes` closes the connection, and nothing of it is allocated (the text is measured first, then the cost is
-reserved and only then is the packet decoded). What a server holds for packets, reassembly buffers and unread messages stays
-within `max_total_unread_bytes` plus, for each open session, its fair share and the one message it may have in hand, and
-within `max_unread_bytes` plus one packet for each session; a closed session's handlers keep their packets charged, to the
-server and to the client address, until they end (at most `close_timeout`), so reconnecting does not multiply what an
-address holds. Another address always keeps the rest of the budget.
+reserved and only then is the packet decoded). Everything a client can make the server hold is charged to its session, to its
+client address and to the server-wide budget in one chain, whatever state it is in: so one address holds at most its share
+(`max_address_share`) plus, for each session it has open, the fair share and the messages in hand (the transport stops
+reading a session above its fair share while its address is above the share or the budget is exhausted, so at most one
+message of at most `max_http_buffer_size` has been read ahead, and one more is being received), and the server holds at most
+`max_total_unread_bytes` plus the same terms for every open session; within `max_unread_bytes` plus one packet for each
+session. A closed session's handlers keep their packets charged, to the server and to the client address, until they end (at
+most `close_timeout`), so reconnecting does not multiply what an address holds. A message is charged for the allocation
+behind it, not only its length (a message the WebSocket library assembled from fragments is shrunk when its buffer holds more
+than an eighth of slack). Another address keeps the rest of the budget, until enough addresses at their share exhaust it
+(see the table; an application behind a reverse proxy must set `trust_proxy`, or every client is the proxy's one address).
+
+While the budget is exhausted by others a packet bigger than the session's fair share waits for room, and the session is
+not read meanwhile. That wait is not the session's doing, so its heartbeat is held (it is not closed with `ping timeout`
+for memory it did not hold) for at most `admission_timeout`; a packet that cannot be admitted in that time closes the
+connection with the reason `admission timeout`. A session that is over its own limit, or whose address is over its share,
+keeps the ordinary heartbeat. A waiting packet is admitted as soon as a handler of another connection returns. Bytes of
+messages that wait behind a packet that cannot be admitted stay charged until it is admitted or the connection closes.
 
 A packet whose JSON holds an object with a key `serde_json` reads as an instruction (`$serde_json::private::RawValue`) is
 delivered, but only as an `IoValue`: `args.get::<serde_json::Value>(i)` and `to_json()` refuse it, because `serde_json`
@@ -319,8 +335,13 @@ id, an id on a CONNECT, a placeholder index that is not an integer.
 
 A handler that panics is contained and logged once a minute per namespace, with the number left out in the next line; the
 line names the namespace and never the panic message or the client's data (so does the warning of a connect middleware that
-timed out). Do not `unwrap()` the conversion of an argument (`args.get::<T>(i)?` is a `Result`): a client chooses its data, and
-a handler that panics on bad input is a handler the client can make fail at will. Arguments a handler moves out of `Args`
+timed out). That line is the framework's. Containing a panic does not silence the standard library's default panic hook,
+which runs before the unwind is caught: it writes the panic message to standard error every time, at the rate the client
+sends, and the message holds whatever the handler formatted into it, client data included. So do not `unwrap()` or `expect()`
+anything derived from client data (`args.get::<T>(i)?` is a `Result`; so are the conversions of values and the lookups of
+keys): a client chooses its data, and a handler that panics on bad input is a handler the client can make fail at will, and
+write to your standard error. An application that wants silence installs its own hook with `std::panic::set_hook` (the
+framework installs none, since a hook is process-wide). Arguments a handler moves out of `Args`
 (`into_vec`) or into a task it spawns stop being charged when the handler returns: they are the application's memory from then on.
 
 Not supported: rooms and broadcast, gateways over Socket.IO, a Redis adapter (later changes); dynamic namespaces, connection

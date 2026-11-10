@@ -97,6 +97,11 @@ pub(crate) struct Heartbeat {
     refreshed: bool,
     /// The pending ping left the outbox in a poll response.
     delivered: bool,
+    /// Reading is paused by pressure the session did not cause: the pong deadline is held until this instant at the
+    /// latest (see `suspend`).
+    suspended_until: Option<Instant>,
+    /// A pong is awaited but its deadline is held while `suspended_until` is set.
+    held_pong: bool,
 }
 
 /// What a heartbeat deadline means.
@@ -110,30 +115,62 @@ pub(crate) enum Due {
 
 impl Heartbeat {
     pub(crate) fn new(now: Instant, interval: Duration, timeout: Duration) -> Self {
-        Heartbeat { interval, timeout, next_ping: Some(after(now, interval)), pong_deadline: None, refreshed: false, delivered: false }
+        Heartbeat {
+            interval,
+            timeout,
+            next_ping: Some(after(now, interval)),
+            pong_deadline: None,
+            refreshed: false,
+            delivered: false,
+            suspended_until: None,
+            held_pong: false,
+        }
     }
 
     /// The next instant something is due.
     pub(crate) fn deadline(&self) -> Option<Instant> {
-        match (self.next_ping, self.pong_deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        [self.next_ping, self.pong_deadline, self.suspended_until].into_iter().flatten().min()
     }
 
     /// What is due at `now`, if anything; sending the ping starts the wait for its pong.
     pub(crate) fn due(&mut self, now: Instant) -> Option<Due> {
+        if self.suspended_until.is_some_and(|t| t <= now) {
+            self.resume(now);
+        }
         if self.pong_deadline.is_some_and(|d| d <= now) {
             return Some(Due::Timeout);
         }
         if self.next_ping.is_some_and(|d| d <= now) {
             self.next_ping = None;
-            self.pong_deadline = Some(after(now, self.timeout));
+            if self.suspended_until.is_some() {
+                self.held_pong = true;
+            } else {
+                self.pong_deadline = Some(after(now, self.timeout));
+            }
             self.refreshed = false;
             self.delivered = false;
             return Some(Due::Ping);
         }
         None
+    }
+
+    /// Reading is paused by pressure the session did not cause: the wait for a pong it cannot read stops, for at most
+    /// `grace`. Idempotent while suspended.
+    pub(crate) fn suspend(&mut self, now: Instant, grace: Duration) {
+        if self.suspended_until.is_some() {
+            return;
+        }
+        self.suspended_until = Some(after(now, grace));
+        if self.pong_deadline.take().is_some() {
+            self.held_pong = true;
+        }
+    }
+
+    /// Reading resumed (or the grace ended): a pong still awaited is awaited for a fresh `timeout`.
+    pub(crate) fn resume(&mut self, now: Instant) {
+        if self.suspended_until.take().is_some() && std::mem::take(&mut self.held_pong) {
+            self.pong_deadline = Some(after(now, self.timeout));
+        }
     }
 
     /// The pending ping was handed to the client by a poll response.
@@ -151,10 +188,11 @@ impl Heartbeat {
     /// A pong with no ping pending is ignored: Node's `engine.io` lets it postpone the next ping, so a client that
     /// only ever posts `3` keeps its session alive without answering anything; here the schedule is unchanged.
     pub(crate) fn pong(&mut self, now: Instant) {
-        if self.pong_deadline.is_none() {
+        if self.pong_deadline.is_none() && !self.held_pong {
             return;
         }
         self.pong_deadline = None;
+        self.held_pong = false;
         self.next_ping = Some(after(now, self.interval));
     }
 
@@ -170,6 +208,8 @@ impl Heartbeat {
     pub(crate) fn stop(&mut self) {
         self.next_ping = None;
         self.pong_deadline = None;
+        self.suspended_until = None;
+        self.held_pong = false;
     }
 }
 
@@ -383,8 +423,34 @@ impl Session {
 
     // ----------------------------------------------------------------- receiving
 
+    /// The transport stopped reading (`true`) because the server-wide budget is exceeded and this session is over
+    /// neither its own limit nor its address's, or resumed (`false`): the pong deadline is held meanwhile, for at most
+    /// `pressure_pause_timeout`. Does nothing when that option is not set.
+    pub(crate) fn set_pressure_pause(&self, paused: bool) {
+        let Some(grace) = self.options.pressure_pause_timeout else { return };
+        {
+            let mut s = self.lock();
+            if s.ready == Ready::Closed {
+                return;
+            }
+            let now = Instant::now();
+            if paused {
+                s.heartbeat.suspend(now, grace);
+            } else {
+                s.heartbeat.resume(now);
+            }
+        }
+        self.timer.notify_waiters();
+    }
+
     /// A packet arrived on the active transport.
     pub(crate) fn on_packet(&self, packet: Packet) {
+        self.on_packet_sized(packet, 0);
+    }
+
+    /// A packet arrived on the active transport; a message is charged for its length or `allocated`, whichever is
+    /// larger: the bytes of the allocation behind it, which can exceed its length (see `websocket::fit`).
+    pub(crate) fn on_packet_sized(&self, packet: Packet, allocated: usize) {
         let now = Instant::now();
         {
             let mut s = self.lock();
@@ -410,7 +476,7 @@ impl Session {
             // v4: only the server pings.
             Packet::Ping(_) => self.close(CloseReason::TransportError),
             Packet::Message(m) => {
-                let ticket = UnreadTicket::new(&self.unread, m.len() + UNREAD_MESSAGE_OVERHEAD);
+                let ticket = UnreadTicket::new(&self.unread, m.len().max(allocated) + UNREAD_MESSAGE_OVERHEAD);
                 if let Some(tx) = self.inbox.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                     let _ = tx.send((m, ticket));
                 }
@@ -811,6 +877,56 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_suspended_pong_wait_restarts_with_a_fresh_interval_when_reading_resumes() {
+        let start = t0();
+        let sec = Duration::from_secs;
+        let mut hb = Heartbeat::new(start, sec(25), sec(20));
+        assert_eq!(hb.due(start + sec(25)), Some(Due::Ping));
+        // Paused at 30 s: the deadline of 45 s no longer counts, however long the pause lasts (up to the grace).
+        hb.suspend(start + sec(30), sec(100));
+        assert_eq!(hb.deadline(), Some(start + sec(130)), "only the end of the suspension is due");
+        assert_eq!(hb.due(start + sec(90)), None, "no timeout while suspended");
+        // Resumed at 90 s: 20 s from then.
+        hb.resume(start + sec(90));
+        assert_eq!(hb.deadline(), Some(start + sec(110)));
+        assert_eq!(hb.due(start + sec(109)), None);
+        assert_eq!(hb.due(start + sec(110)), Some(Due::Timeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_suspension_ends_by_itself_after_its_grace_so_a_session_cannot_hide_behind_it_forever() {
+        let start = t0();
+        let sec = Duration::from_secs;
+        let mut hb = Heartbeat::new(start, sec(25), sec(20));
+        assert_eq!(hb.due(start + sec(25)), Some(Due::Ping));
+        hb.suspend(start + sec(26), sec(30));
+        assert_eq!(hb.due(start + sec(55)), None);
+        // At 56 s the grace is over: the wait starts again, 20 s from then.
+        assert_eq!(hb.due(start + sec(56)), None);
+        assert_eq!(hb.deadline(), Some(start + sec(76)));
+        assert_eq!(hb.due(start + sec(76)), Some(Due::Timeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_ping_that_falls_due_while_suspended_waits_for_its_pong_only_after_resuming() {
+        let start = t0();
+        let sec = Duration::from_secs;
+        let mut hb = Heartbeat::new(start, sec(25), sec(20));
+        hb.suspend(start + sec(10), sec(1000));
+        assert_eq!(hb.due(start + sec(25)), Some(Due::Ping));
+        assert_eq!(hb.due(start + sec(500)), None);
+        hb.resume(start + sec(500));
+        assert_eq!(hb.deadline(), Some(start + sec(520)));
+        // A pong ends the wait, suspended or not.
+        hb.pong(start + sec(501));
+        assert_eq!(hb.deadline(), Some(start + sec(526)));
+        hb.suspend(start + sec(526), sec(10));
+        assert_eq!(hb.due(start + sec(526)), Some(Due::Ping));
+        hb.pong(start + sec(527));
+        assert_eq!(hb.due(start + sec(540)), None, "nothing awaited after the pong");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn activity_without_a_pending_ping_changes_nothing() {
         let start = t0();
         let mut hb = Heartbeat::new(start, Duration::from_secs(25), Duration::from_secs(20));
@@ -857,6 +973,66 @@ mod session_tests {
         assert_eq!(session.close_reason(), None, "no timeout before the pong deadline");
         advance(1).await;
         assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_paused_by_pressure_is_not_closed_by_the_heartbeat_until_the_grace_ends() {
+        let options = EngineOptions::new()
+            .ping_interval(Duration::from_millis(300))
+            .ping_timeout(Duration::from_millis(200))
+            .pressure_pause_timeout(Duration::from_millis(2_000));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        advance(300).await;
+        assert_eq!(drain(&session), vec![Packet::Ping(String::new())]);
+        // Reading stops at 350 ms for the pressure of the budget: the pong cannot be read, and is not awaited.
+        advance(50).await;
+        session.set_pressure_pause(true);
+        advance(1_000).await;
+        assert_eq!(session.close_reason(), None, "well past the pong deadline of 500 ms");
+        // Reading resumes: the pong is awaited for a fresh interval, and a late one is accepted.
+        session.set_pressure_pause(false);
+        advance(199).await;
+        assert_eq!(session.close_reason(), None);
+        session.on_packet(Packet::Pong(String::new()));
+        advance(299).await;
+        assert_eq!(session.close_reason(), None);
+        advance(1).await;
+        assert_eq!(drain(&session), vec![Packet::Ping(String::new())], "the heartbeat goes on as usual");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_suspension_is_bounded_and_a_session_that_stays_paused_is_closed_by_the_heartbeat_after_it() {
+        let options = EngineOptions::new()
+            .ping_interval(Duration::from_millis(300))
+            .ping_timeout(Duration::from_millis(200))
+            .pressure_pause_timeout(Duration::from_millis(1_000));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        advance(300).await;
+        let _ = drain(&session);
+        session.set_pressure_pause(true);
+        advance(999).await;
+        assert_eq!(session.close_reason(), None, "inside the grace");
+        // At 1,000 ms from the pause the grace ends and the pong is awaited for 200 ms more.
+        advance(1).await;
+        assert_eq!(session.close_reason(), None);
+        advance(199).await;
+        assert_eq!(session.close_reason(), None);
+        advance(1).await;
+        assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_the_option_a_paused_session_is_closed_by_the_heartbeat_as_before() {
+        let options = EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(200));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        advance(300).await;
+        let _ = drain(&session);
+        session.set_pressure_pause(true);
+        advance(200).await;
+        assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout), "plain Engine.IO is unchanged");
     }
 
     #[tokio::test(start_paused = true)]
@@ -1021,12 +1197,17 @@ mod review_tests {
 #[cfg(test)]
 mod review_round_two_tests {
     use super::*;
+    use crate::ws::Pause;
 
     fn open(options: EngineOptions, transport: TransportKind) -> Arc<Session> {
+        open_in(options, transport, None)
+    }
+
+    fn open_in(options: EngineOptions, transport: TransportKind, total: Option<Arc<UnreadGauge>>) -> Arc<Session> {
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
         let remote = "127.0.0.1:1".parse().unwrap();
         let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
-        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), None)
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), total)
     }
 
     async fn advance(ms: u64) {
@@ -1080,11 +1261,11 @@ mod review_round_two_tests {
         let total = Arc::new(UnreadGauge::new(1000, None));
         let own = Arc::new(UnreadGauge::new(100, Some(total.clone())).with_fair_share(10));
         // The session's own limit does not apply (it decides who reads); the server-wide one does.
-        let a = UnreadTicket::try_new_within_ancestors(&own, 600).expect("room for 600 of 1000");
+        let a = UnreadTicket::try_new_within_ancestors(&own, 600, 0).expect("room for 600 of 1000");
         assert_eq!((own.unread(), total.unread()), (600, 600));
-        assert!(UnreadTicket::try_new_within_ancestors(&own, 401).is_none(), "one byte too many");
+        assert!(UnreadTicket::try_new_within_ancestors(&own, 401, 0).is_none(), "one byte too many");
         assert_eq!((own.unread(), total.unread()), (600, 600), "a refusal changes nothing");
-        let b = UnreadTicket::try_new_within_ancestors(&own, 400).expect("exactly the rest");
+        let b = UnreadTicket::try_new_within_ancestors(&own, 400, 0).expect("exactly the rest");
         assert_eq!(total.unread(), 1000);
         drop((a, b));
         assert_eq!((own.unread(), total.unread()), (0, 0));
@@ -1094,11 +1275,112 @@ mod review_round_two_tests {
     fn the_fair_share_is_what_a_session_may_always_hold() {
         let total = Arc::new(UnreadGauge::new(1000, None));
         let own = Arc::new(UnreadGauge::new(100, Some(total.clone())).with_fair_share(10));
-        assert!(own.fits_fair_share(10));
-        assert!(!own.fits_fair_share(11));
+        let a = UnreadTicket::try_new_within_share(&own, 10, 0).expect("exactly the share");
+        assert!(UnreadTicket::try_new_within_share(&own, 1, 0).is_none());
+        assert_eq!((own.unread(), total.unread()), (10, 10), "a refusal changes nothing");
+        drop(a);
         let _held = UnreadTicket::new(&own, 6);
-        assert!(own.fits_fair_share(4));
-        assert!(!own.fits_fair_share(5));
+        assert!(UnreadTicket::try_new_within_share(&own, 4, 0).is_some());
+        assert!(UnreadTicket::try_new_within_share(&own, 5, 0).is_none());
+    }
+
+    /// session -> address -> server: the address counts everything its sessions hold, and tells whose fault a pause is.
+    fn chain() -> (Arc<UnreadGauge>, Arc<UnreadGauge>, Arc<UnreadGauge>, Arc<UnreadGauge>) {
+        let total = Arc::new(UnreadGauge::new(1000, None).pooled());
+        let address = Arc::new(UnreadGauge::new(300, Some(total.clone())).with_guarantee_cap(350));
+        let a = Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(25));
+        let b = Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(25));
+        (total, address, a, b)
+    }
+
+    #[test]
+    fn an_address_counts_everything_its_sessions_hold_and_its_quota_limits_reservations_beyond_the_shares() {
+        let (total, address, a, b) = chain();
+        let wire = UnreadTicket::new(&a, 200);
+        assert_eq!((address.unread(), total.unread()), (200, 200), "wire messages count against the address");
+        // Beyond the share: the quota (300) bounds what the address holds in all, whichever session asks.
+        assert!(UnreadTicket::try_new_within_ancestors(&b, 101, 0).is_none());
+        let more = UnreadTicket::try_new_within_ancestors(&b, 100, 0).expect("exactly the quota");
+        assert_eq!((address.unread(), total.unread()), (300, 300));
+        // The guaranteed share still fits above the quota, up to the guarantee cap.
+        // Sessions that hold nothing keep their guaranteed share above the quota, up to the cap of the address (350).
+        let fresh = |address: &Arc<UnreadGauge>| Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(25));
+        let (c, d, e) = (fresh(&address), fresh(&address), fresh(&address));
+        let share_c = UnreadTicket::try_new_within_share(&c, 25, 0).expect("a guaranteed share above the quota");
+        let share_d = UnreadTicket::try_new_within_share(&d, 25, 0).expect("up to the cap");
+        assert_eq!(address.unread(), 350);
+        assert!(UnreadTicket::try_new_within_share(&e, 1, 0).is_none(), "the cap of the address is reached");
+        assert!(UnreadTicket::try_new_within_ancestors(&e, 1, 0).is_none(), "and the quota is long gone");
+        drop((wire, more, share_c, share_d));
+        assert_eq!((address.unread(), total.unread(), a.unread(), b.unread()), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn a_reservation_is_checked_without_the_wire_message_it_replaces() {
+        let (total, address, a, _b) = chain();
+        let wire = UnreadTicket::new(&a, 250);
+        // 250 are held, all of them the message being admitted: 100 more would make 350, above the quota of 300, but the
+        // message is released once the packet is decoded, so the packet is checked at 100.
+        assert!(UnreadTicket::try_new_within_ancestors(&a, 100, 0).is_none());
+        let packet = UnreadTicket::try_new_within_ancestors(&a, 100, 250).expect("net of the message it replaces");
+        assert_eq!((address.unread(), total.unread()), (350, 350), "both are charged until the message is released");
+        // Net of the credit the quota still applies: a packet of 301 would hold 301 once the message is gone.
+        assert!(UnreadTicket::try_new_within_ancestors(&a, 301, 250).is_none());
+        drop((wire, packet));
+        assert_eq!(address.unread(), 0);
+    }
+
+    #[test]
+    fn a_session_over_its_address_quota_is_paused_by_its_own_doing_and_one_over_the_pool_by_pressure() {
+        let (total, _address, a, b) = chain();
+        assert_eq!(a.pause(), Pause::No);
+        let _hold = UnreadTicket::new(&a, 400);
+        assert_eq!(a.pause(), Pause::Own, "the address is over its quota");
+        assert_eq!(b.pause(), Pause::No, "a session within its fair share keeps reading");
+        let _small = UnreadTicket::new(&b, 26);
+        assert_eq!(b.pause(), Pause::Own, "over the fair share of an address that is over its quota");
+        // An address under its quota while the pool is exceeded by others: pressure, not its doing.
+        let other_address = Arc::new(UnreadGauge::new(300, Some(total.clone())));
+        let c = Arc::new(UnreadGauge::new(10_000, Some(other_address)).with_fair_share(25));
+        let _pool = UnreadTicket::new(&c, 100);
+        let _flood = UnreadTicket::new(&Arc::new(UnreadGauge::new(10_000, Some(total.clone()))), 700);
+        assert!(total.over_limit());
+        assert_eq!(c.pause(), Pause::Pressure);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_message_is_charged_for_the_allocation_behind_it_when_that_is_larger_than_its_length() {
+        let total = Arc::new(UnreadGauge::new(1 << 20, None));
+        let session = open_in(EngineOptions::new(), TransportKind::WebSocket, Some(total.clone()));
+        let message = || Packet::Message(EngineMessage::Binary(bytes::Bytes::from(vec![1u8; 100])));
+        session.on_packet(message());
+        assert_eq!(total.unread(), 100 + UNREAD_MESSAGE_OVERHEAD, "by length when nothing else is known");
+        session.on_packet_sized(message(), 112);
+        assert_eq!(total.unread(), 100 + 112 + 2 * UNREAD_MESSAGE_OVERHEAD, "by the allocation when it is larger");
+        session.on_packet_sized(message(), 10);
+        assert_eq!(total.unread(), 100 + 112 + 100 + 3 * UNREAD_MESSAGE_OVERHEAD, "never less than the length");
+    }
+
+    #[tokio::test]
+    async fn a_release_anywhere_up_the_chain_wakes_a_session_that_waits() {
+        let (_total, _address, a, b) = chain();
+        let held = UnreadTicket::new(&a, 100);
+        let changed = b.changed();
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(5), changed).await.expect("woken by a release of a sibling session");
+    }
+
+    #[test]
+    fn an_address_gauge_runs_its_hook_when_the_last_charge_is_gone() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = dropped.clone();
+        let address = Arc::new(UnreadGauge::new(300, None).with_on_drop(move || flag.store(true, Ordering::SeqCst)));
+        let session = Arc::new(UnreadGauge::new(100, Some(address.clone())));
+        let ticket = UnreadTicket::new(&session, 5);
+        drop((address, session));
+        assert!(!dropped.load(Ordering::SeqCst), "the ticket keeps the chain alive");
+        drop(ticket);
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

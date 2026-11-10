@@ -29,6 +29,11 @@ pub const DEFAULT_MAX_ARGS: usize = 128;
 pub const DEFAULT_ATTACHMENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the connect middleware of one connection attempt may run.
 pub const DEFAULT_MIDDLEWARE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a packet may wait for room in the unread budget (see [`IoOptions::admission_timeout`]).
+pub const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
+/// The default share of the server-wide unread budget one client address may hold: one in this many (see
+/// [`IoOptions::max_address_share`]).
+pub const DEFAULT_ADDRESS_SHARE_DIVISOR: usize = 16;
 
 /// Why a set of [`IoOptions`] was refused when creating the server.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -63,6 +68,8 @@ pub enum IoOptionsError {
 /// | [`max_args`](Self::max_args) | 128 | none |
 /// | [`attachment_timeout`](Self::attachment_timeout) | 30 s | none |
 /// | [`middleware_timeout`](Self::middleware_timeout) | 10 s | none |
+/// | [`max_address_share`](Self::max_address_share) | 1/16 of the engine's `max_total_unread_bytes`, at least one maximum packet | none |
+/// | [`admission_timeout`](Self::admission_timeout) | 30 s | none |
 ///
 /// Other differences, fixed rather than configurable: JSON nested deeper than 127 levels is refused; a client
 /// acknowledgement id has at most 16 digits and is at most 2^53 - 1; a connection holds at most one socket per
@@ -84,6 +91,8 @@ pub struct IoOptions {
     pub(crate) max_args: usize,
     pub(crate) attachment_timeout: Duration,
     pub(crate) middleware_timeout: Duration,
+    pub(crate) max_address_share: Option<usize>,
+    pub(crate) admission_timeout: Duration,
 }
 
 impl Default for IoOptions {
@@ -101,6 +110,8 @@ impl Default for IoOptions {
             max_args: DEFAULT_MAX_ARGS,
             attachment_timeout: DEFAULT_ATTACHMENT_TIMEOUT,
             middleware_timeout: DEFAULT_MIDDLEWARE_TIMEOUT,
+            max_address_share: None,
+            admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
         }
     }
 }
@@ -199,6 +210,47 @@ impl IoOptions {
         self
     }
 
+    /// The most of the server-wide unread budget (the engine's `max_total_unread_bytes`) that the sessions of one
+    /// client address may hold together, in every state: received messages, packets waiting for room, packets being
+    /// reassembled, decoded packets and binary attachments until their handlers finish (handlers that outlive their
+    /// session included), and the handshake `auth` of their sockets. Each of the `max_sessions_per_ip` sessions an
+    /// address may have open also keeps its guaranteed share on top of it. Default: 1/16 of
+    /// `max_total_unread_bytes`, but never less than one maximum packet (`max_decoded_bytes` plus the largest binary
+    /// packet's wire bytes), or an address could not complete a single packet; with the default `max_decoded_bytes`
+    /// that floor is the larger number, so see [`address_share`](Self::address_share) for the value in force. An
+    /// explicit value must be between that floor and `max_total_unread_bytes`. How many addresses at their share
+    /// exhaust the budget is `max_total_unread_bytes / share`: an application behind a reverse proxy must set
+    /// `trust_proxy` so that the address is the client's and not the proxy's. Node has no limit.
+    pub fn max_address_share(mut self, bytes: usize) -> Self {
+        self.max_address_share = Some(bytes);
+        self
+    }
+
+    /// How long a packet that found no room in the unread budget may wait before its connection is closed with the
+    /// disconnect reason `admission timeout`. While a connection waits only because the server-wide budget is
+    /// exhausted (not because of what it or its address holds) its heartbeat is held, so it is not closed with `ping
+    /// timeout` for memory it did not hold; this bounds that wait. Default 30 s, above zero, at most a day. Node has
+    /// no limit.
+    pub fn admission_timeout(mut self, timeout: Duration) -> Self {
+        self.admission_timeout = timeout;
+        self
+    }
+
+    /// The least a session's address must be allowed to hold: one maximum packet, a decoded packet (`max_decoded_bytes`)
+    /// next to the wire bytes of the largest packet (`max_attachments` attachments of `max_http_buffer_size`, or the one
+    /// text message), each with its accounting overhead.
+    pub fn address_share_floor(&self) -> usize {
+        let message = self.engine.max_http_buffer_size.saturating_add(super::engine::session::UNREAD_MESSAGE_OVERHEAD);
+        self.max_decoded_bytes.saturating_add(message.saturating_mul(self.max_attachments.max(1))).min(self.engine.max_total_unread_bytes)
+    }
+
+    /// The share of the server-wide unread budget one address may hold: `max_address_share`, or 1/16 of
+    /// `max_total_unread_bytes` raised to [`address_share_floor`](Self::address_share_floor).
+    pub fn address_share(&self) -> usize {
+        self.max_address_share
+            .unwrap_or_else(|| (self.engine.max_total_unread_bytes / DEFAULT_ADDRESS_SHARE_DIVISOR).max(self.address_share_floor()))
+    }
+
     /// Checks the options; the server does this when it is created.
     pub fn validate(&self) -> Result<(), IoOptionsError> {
         self.engine.validate()?;
@@ -207,6 +259,7 @@ impl IoOptions {
             ("ack_timeout", self.ack_timeout),
             ("attachment_timeout", self.attachment_timeout),
             ("middleware_timeout", self.middleware_timeout),
+            ("admission_timeout", self.admission_timeout),
         ];
         for (option, value) in durations {
             if value.is_zero() {
@@ -266,7 +319,36 @@ impl IoOptions {
                 reason: format!("must be at most max_decoded_bytes ({}), got {}", self.max_decoded_bytes, self.max_auth_bytes),
             });
         }
+        if let Some(share) = self.max_address_share {
+            if share == 0 {
+                return Err(IoOptionsError::Zero { option: "max_address_share" });
+            }
+            let floor = self.address_share_floor();
+            if share < floor {
+                return Err(IoOptionsError::Range {
+                    option: "max_address_share",
+                    reason: format!(
+                        "must be at least one maximum packet ({floor} bytes: max_decoded_bytes plus the wire bytes of the largest packet), got {share}"
+                    ),
+                });
+            }
+            if share > self.engine.max_total_unread_bytes {
+                return Err(IoOptionsError::Range {
+                    option: "max_address_share",
+                    reason: format!(
+                        "must be at most the engine's max_total_unread_bytes ({}), got {share}",
+                        self.engine.max_total_unread_bytes
+                    ),
+                });
+            }
+        }
         Ok(())
+    }
+
+    /// The Engine.IO options this layer runs on: the application's, with the address share and the pause grace this
+    /// layer's limits define.
+    pub(crate) fn effective_engine_options(&self) -> EngineOptions {
+        self.engine.clone().max_address_unread_bytes(self.address_share()).pressure_pause_timeout(self.admission_timeout)
     }
 }
 
@@ -360,6 +442,62 @@ mod tests {
         assert!(IoOptions::new().engine(small).max_decoded_bytes(16 * 1024 * 1024).validate().is_ok());
         let exact = EngineOptions::new().max_total_unread_bytes(32 * 1024 * 1024);
         assert!(IoOptions::new().engine(exact).validate().is_ok());
+    }
+
+    #[test]
+    fn the_address_share_defaults_to_a_sixteenth_of_the_budget_but_never_less_than_one_maximum_packet() {
+        // One maximum packet: the decoded packet and the wire bytes of the largest binary packet, 10 attachments of 1 MB
+        // with 64 bytes of accounting each: with the defaults that is the larger number, 32 MiB + 10,000,640 bytes.
+        let defaults = IoOptions::new();
+        assert_eq!(defaults.address_share_floor(), 32 * 1024 * 1024 + 10 * (1_000_000 + 64));
+        assert_eq!(defaults.address_share(), defaults.address_share_floor(), "a sixteenth of 256 MiB (16 MiB) is below it");
+        // With a budget large enough the sixteenth wins.
+        let big = EngineOptions::new().max_total_unread_bytes(2 * 1024 * 1024 * 1024);
+        assert_eq!(IoOptions::new().engine(big).address_share(), 128 * 1024 * 1024);
+        // The floor follows the packet limits and never exceeds the budget.
+        let small = IoOptions::new()
+            .max_decoded_bytes(4 * 1024 * 1024)
+            .max_attachments(1)
+            .engine(EngineOptions::new().max_total_unread_bytes(64 * 1024 * 1024));
+        assert_eq!(small.address_share(), 4 * 1024 * 1024 + 1_000_064);
+        let exact = EngineOptions::new().max_total_unread_bytes(32 * 1024 * 1024);
+        assert_eq!(IoOptions::new().engine(exact).address_share(), 32 * 1024 * 1024);
+        // The share is the engine option the layer sets, and the pause grace is the admission timeout.
+        let engine = defaults.effective_engine_options();
+        assert_eq!(engine.max_address_unread_bytes, Some(defaults.address_share()));
+        assert_eq!(engine.pressure_pause_timeout, Some(DEFAULT_ADMISSION_TIMEOUT));
+        assert!(engine.validate().is_ok());
+    }
+
+    #[test]
+    fn an_explicit_address_share_must_hold_one_maximum_packet_and_fit_the_budget() {
+        let options = IoOptions::new()
+            .max_decoded_bytes(4 * 1024 * 1024)
+            .max_attachments(1)
+            .engine(EngineOptions::new().max_total_unread_bytes(64 * 1024 * 1024));
+        let floor = options.address_share_floor();
+        let err = options.clone().max_address_share(floor - 1).validate().unwrap_err();
+        assert!(matches!(err, IoOptionsError::Range { option: "max_address_share", .. }), "{err}");
+        assert!(err.to_string().contains("max_address_share") && err.to_string().contains("one maximum packet"));
+        assert!(options.clone().max_address_share(floor).validate().is_ok());
+        assert_eq!(options.clone().max_address_share(floor).address_share(), floor);
+        let total = options.engine.max_total_unread_bytes;
+        assert!(options.clone().max_address_share(total).validate().is_ok());
+        let err = options.clone().max_address_share(total + 1).validate().unwrap_err();
+        assert!(matches!(err, IoOptionsError::Range { option: "max_address_share", .. }), "{err}");
+        assert_eq!(options.max_address_share(0).validate().unwrap_err(), IoOptionsError::Zero { option: "max_address_share" });
+    }
+
+    #[test]
+    fn the_admission_timeout_defaults_to_30_seconds_and_is_validated() {
+        assert_eq!(IoOptions::new().admission_timeout, Duration::from_secs(30));
+        assert_eq!(
+            IoOptions::new().admission_timeout(Duration::ZERO).validate().unwrap_err(),
+            IoOptionsError::Zero { option: "admission_timeout" }
+        );
+        let err = IoOptions::new().admission_timeout(Duration::from_secs(2 * 24 * 3600)).validate().unwrap_err();
+        assert!(matches!(err, IoOptionsError::Range { option: "admission_timeout", .. }), "{err}");
+        assert!(IoOptions::new().admission_timeout(Duration::from_secs(1)).validate().is_ok());
     }
 
     #[test]

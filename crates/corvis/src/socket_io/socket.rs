@@ -13,6 +13,7 @@ use tokio::sync::{Notify, oneshot};
 use tokio::time::Instant;
 
 use super::client::ClientShared;
+use super::engine::Held;
 use super::engine::options::MAX_DURATION;
 use super::engine::session::{CloseReason, after};
 use super::namespace::IoNamespace;
@@ -45,6 +46,9 @@ pub enum DisconnectReason {
     ForcedServerClose,
     /// The server is shutting down.
     ServerShuttingDown,
+    /// A packet of the client waited longer than `admission_timeout` for room in the unread budget, so the server
+    /// closed the connection: the budget stayed exhausted by other connections. Not a reason Node has.
+    AdmissionTimeout,
 }
 
 impl DisconnectReason {
@@ -60,6 +64,7 @@ impl DisconnectReason {
             DisconnectReason::ForcedClose => "forced close",
             DisconnectReason::ForcedServerClose => "forced server close",
             DisconnectReason::ServerShuttingDown => "server shutting down",
+            DisconnectReason::AdmissionTimeout => "admission timeout",
         }
     }
 }
@@ -129,11 +134,14 @@ pub struct Handshake {
     auth: Value,
     request: Request,
     issued_at: SystemTime,
+    /// What `auth` occupies, charged to the connection's session and address for as long as the handshake lives (the
+    /// socket's life): `auth` is a `serde_json::Value`, whose size is not the one `max_auth_bytes` measures.
+    _charge: Option<Arc<Held>>,
 }
 
 impl Handshake {
-    pub(crate) fn new(auth: Value, request: Request) -> Self {
-        Handshake { auth, request, issued_at: SystemTime::now() }
+    pub(crate) fn new(auth: Value, request: Request, charge: Option<Held>) -> Self {
+        Handshake { auth, request, issued_at: SystemTime::now(), _charge: charge.map(Arc::new) }
     }
 
     /// The `auth` object of the CONNECT packet (`{}` when the client sent none).
@@ -316,6 +324,11 @@ impl IoSocket {
     /// [`AckSender`] that answers once. Handlers of one connection start in the order their packets arrived and run
     /// concurrently, at most [`IoOptions::max_inflight`](super::IoOptions::max_inflight) at a time; a panic is logged
     /// and the socket stays connected. An event without a handler is ignored. The reserved names never fire.
+    ///
+    /// Do not `unwrap()` or `expect()` anything derived from the client's data: containing the panic does not silence
+    /// the standard library's default panic hook, which writes the message (client data included, if the handler
+    /// formatted it) to standard error every time, at the rate the client sends. An application that wants silence
+    /// installs its own hook with `std::panic::set_hook`; the framework installs none.
     pub fn on<F, Fut>(&self, event: impl Into<String>, handler: F) -> &Self
     where
         F: Fn(IoSocket, Args, Option<AckSender>) -> Fut + Send + Sync + 'static,
