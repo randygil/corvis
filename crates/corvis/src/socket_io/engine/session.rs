@@ -107,6 +107,9 @@ pub(crate) struct Heartbeat {
     suspension_used: Duration,
     /// A pong is awaited but its deadline is held while `suspended_until` is set.
     held_pong: bool,
+    /// How much of the pong deadline was left when the suspension began; `None` for a ping sent while suspended,
+    /// whose deadline had not started.
+    pong_left: Option<Duration>,
 }
 
 /// What a heartbeat deadline means.
@@ -131,6 +134,7 @@ impl Heartbeat {
             suspended_since: None,
             suspension_used: Duration::ZERO,
             held_pong: false,
+            pong_left: None,
         }
     }
 
@@ -175,20 +179,24 @@ impl Heartbeat {
         }
         self.suspended_until = Some(after(now, left));
         self.suspended_since = Some(now);
-        if self.pong_deadline.take().is_some() {
+        if let Some(deadline) = self.pong_deadline.take() {
             self.held_pong = true;
+            self.pong_left = Some(deadline.saturating_duration_since(now));
         }
     }
 
-    /// Reading resumed (or the grace ended): a pong still awaited is awaited for a fresh `timeout`. The time the
-    /// suspension lasted is spent from the allowance.
+    /// Reading resumed (or the grace ended): a pong still awaited is awaited for what was left of its deadline when
+    /// the suspension began, never more, so a chain of suspensions does not hand back a whole `timeout` each time.
+    /// Only a ping sent while suspended, whose deadline had not started, gets a fresh `timeout`, once per ping. The
+    /// time the suspension lasted is spent from the allowance.
     pub(crate) fn resume(&mut self, now: Instant) {
         if self.suspended_until.take().is_some() {
             if let Some(since) = self.suspended_since.take() {
                 self.suspension_used = self.suspension_used.saturating_add(now.saturating_duration_since(since));
             }
+            let left = self.pong_left.take();
             if std::mem::take(&mut self.held_pong) {
-                self.pong_deadline = Some(after(now, self.timeout));
+                self.pong_deadline = Some(after(now, left.unwrap_or(self.timeout)));
             }
         }
     }
@@ -213,6 +221,7 @@ impl Heartbeat {
         }
         self.pong_deadline = None;
         self.held_pong = false;
+        self.pong_left = None;
         self.suspension_used = Duration::ZERO;
         self.next_ping = Some(after(now, self.interval));
     }
@@ -232,6 +241,7 @@ impl Heartbeat {
         self.suspended_until = None;
         self.suspended_since = None;
         self.held_pong = false;
+        self.pong_left = None;
     }
 }
 
@@ -904,7 +914,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_suspended_pong_wait_restarts_with_a_fresh_interval_when_reading_resumes() {
+    async fn a_suspended_pong_wait_resumes_with_what_was_left_of_it() {
         let start = t0();
         let sec = Duration::from_secs;
         let mut hb = Heartbeat::new(start, sec(25), sec(20));
@@ -913,11 +923,11 @@ mod tests {
         hb.suspend(start + sec(30), sec(100));
         assert_eq!(hb.deadline(), Some(start + sec(130)), "only the end of the suspension is due");
         assert_eq!(hb.due(start + sec(90)), None, "no timeout while suspended");
-        // Resumed at 90 s: 20 s from then.
+        // Resumed at 90 s: the 15 s that were left from then, not a whole 20 s.
         hb.resume(start + sec(90));
-        assert_eq!(hb.deadline(), Some(start + sec(110)));
-        assert_eq!(hb.due(start + sec(109)), None);
-        assert_eq!(hb.due(start + sec(110)), Some(Due::Timeout));
+        assert_eq!(hb.deadline(), Some(start + sec(105)));
+        assert_eq!(hb.due(start + sec(104)), None);
+        assert_eq!(hb.due(start + sec(105)), Some(Due::Timeout));
     }
 
     #[tokio::test(start_paused = true)]
@@ -928,10 +938,10 @@ mod tests {
         assert_eq!(hb.due(start + sec(25)), Some(Due::Ping));
         hb.suspend(start + sec(26), sec(30));
         assert_eq!(hb.due(start + sec(55)), None);
-        // At 56 s the grace is over: the wait starts again, 20 s from then.
+        // At 56 s the grace is over: the wait goes on with the 19 s that were left when it was held.
         assert_eq!(hb.due(start + sec(56)), None);
-        assert_eq!(hb.deadline(), Some(start + sec(76)));
-        assert_eq!(hb.due(start + sec(76)), Some(Due::Timeout));
+        assert_eq!(hb.deadline(), Some(start + sec(75)));
+        assert_eq!(hb.due(start + sec(75)), Some(Due::Timeout));
     }
 
     #[tokio::test(start_paused = true)]
@@ -962,15 +972,15 @@ mod tests {
         // 60 s of allowance: 40 s used, then 20 s more, then nothing.
         hb.suspend(start + sec(26), sec(60));
         hb.resume(start + sec(66));
-        assert_eq!(hb.deadline(), Some(start + sec(86)), "a fresh 20 s from the resume");
+        assert_eq!(hb.deadline(), Some(start + sec(85)), "the 19 s that were left, from the resume");
         hb.suspend(start + sec(70), sec(60));
         assert_eq!(hb.deadline(), Some(start + sec(90)), "only the 20 s that remain are held");
         assert_eq!(hb.due(start + sec(90)), None);
         // The allowance is used: the heartbeat applies, and a further pause holds nothing.
-        assert_eq!(hb.deadline(), Some(start + sec(110)));
+        assert_eq!(hb.deadline(), Some(start + sec(105)), "the 15 s that were left when it was held");
         hb.suspend(start + sec(95), sec(60));
-        assert_eq!(hb.deadline(), Some(start + sec(110)), "not suspended again");
-        assert_eq!(hb.due(start + sec(110)), Some(Due::Timeout));
+        assert_eq!(hb.deadline(), Some(start + sec(105)), "not suspended again");
+        assert_eq!(hb.due(start + sec(105)), Some(Due::Timeout));
         // A pong renews it.
         let mut hb = Heartbeat::new(start, sec(25), sec(20));
         assert_eq!(hb.due(start + sec(25)), Some(Due::Ping));
@@ -1046,9 +1056,9 @@ mod session_tests {
         session.set_pressure_pause(true);
         advance(1_000).await;
         assert_eq!(session.close_reason(), None, "well past the pong deadline of 500 ms");
-        // Reading resumes: the pong is awaited for a fresh interval, and a late one is accepted.
+        // Reading resumes: the pong is awaited for the 150 ms that were left, and a late one is accepted.
         session.set_pressure_pause(false);
-        advance(199).await;
+        advance(149).await;
         assert_eq!(session.close_reason(), None);
         session.on_packet(Packet::Pong(String::new()));
         advance(299).await;
@@ -1102,14 +1112,86 @@ mod session_tests {
         session.set_pressure_pause(false);
         advance(50).await;
         session.set_pressure_pause(true);
-        // 200 ms of allowance left, then the heartbeat applies: the pong is awaited for a fresh 200 ms from the end of
-        // the allowance and does not come.
+        // 200 ms of allowance left, then the heartbeat applies with the 100 ms of the pong wait that were left (the
+        // wait was 200 ms and 100 ms of it passed outside the pauses): 300 + 200 + 1,000 ms after the start.
         advance(200).await;
         assert_eq!(session.close_reason(), None);
-        advance(199).await;
+        advance(99).await;
         assert_eq!(session.close_reason(), None);
         advance(1).await;
         assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout), "the chained suspension would still hold it");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_thousand_short_suspensions_do_not_extend_the_life_of_a_client_that_never_answers() {
+        let options = EngineOptions::new()
+            .ping_interval(Duration::from_millis(300))
+            .ping_timeout(Duration::from_millis(200))
+            .pressure_pause_timeout(Duration::from_millis(1_000));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        advance(300).await;
+        let _ = drain(&session);
+        // Pings go out at 300 ms. Each cycle: 3 ms paused, 1 ms of relief. The relief counts against the 200 ms of the
+        // wait, so the session is closed after 200 cycles (800 ms), well inside the bound of 200 + 1,000 ms.
+        let mut elapsed = 0u64;
+        for _ in 0..1_000 {
+            session.set_pressure_pause(true);
+            advance(3).await;
+            elapsed += 3;
+            session.set_pressure_pause(false);
+            advance(1).await;
+            elapsed += 1;
+            if session.close_reason().is_some() {
+                break;
+            }
+        }
+        assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout));
+        assert_eq!(elapsed, 800, "200 ms of wait spent in the reliefs plus 600 ms of allowance, to the tick");
+        assert!(elapsed <= 1_200);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_answers_its_pings_is_never_closed_by_short_suspensions() {
+        let options = EngineOptions::new()
+            .ping_interval(Duration::from_millis(300))
+            .ping_timeout(Duration::from_millis(200))
+            .pressure_pause_timeout(Duration::from_millis(1_000));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        for _ in 0..50 {
+            advance(300).await;
+            assert_eq!(drain(&session), vec![Packet::Ping(String::new())]);
+            for _ in 0..10 {
+                session.set_pressure_pause(true);
+                advance(3).await;
+                session.set_pressure_pause(false);
+                advance(1).await;
+            }
+            session.on_packet(Packet::Pong(String::new()));
+        }
+        assert_eq!(session.close_reason(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_honest_paused_client_that_answers_within_what_was_left_stays() {
+        let options = EngineOptions::new()
+            .ping_interval(Duration::from_millis(300))
+            .ping_timeout(Duration::from_millis(200))
+            .pressure_pause_timeout(Duration::from_millis(1_000));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        advance(300).await;
+        let _ = drain(&session);
+        advance(50).await;
+        session.set_pressure_pause(true);
+        advance(500).await;
+        session.set_pressure_pause(false);
+        advance(149).await;
+        assert_eq!(session.close_reason(), None, "150 ms were left");
+        session.on_packet(Packet::Pong(String::new()));
+        advance(1_000).await;
+        assert_eq!(session.close_reason(), None);
     }
 
     #[tokio::test(start_paused = true)]
