@@ -43,6 +43,11 @@ pub enum IoValueError {
     /// A map key that is not a string (or a number or boolean, written as text).
     #[error("a map key must be a string")]
     KeyNotString,
+    /// An object key that `serde_json` gives a meaning of its own (`$serde_json::private::...`): with some of its
+    /// features enabled, deserializing it makes the parser read the value again. A client can send such a key; the value
+    /// stays available as an `IoValue`, but it is not converted to `serde_json::Value` or deserialized into types.
+    #[error("an object has a key reserved by serde_json")]
+    ReservedKey,
 }
 
 impl ser::Error for IoValueError {
@@ -327,11 +332,20 @@ fn to_json(v: &IoValue, depth: usize) -> Result<Value, IoValueError> {
             }
             let mut map = serde_json::Map::new();
             for (k, x) in o.iter() {
+                reject_reserved_key(k)?;
                 map.insert(k.clone(), to_json(x, depth + 1)?);
             }
             Value::Object(map)
         }
     })
+}
+
+/// `serde_json` reads the keys `$serde_json::private::RawValue` (feature `raw_value`, which `sqlx` enables) and
+/// `$serde_json::private::Number` (feature `arbitrary_precision`) as instructions: deserializing an object that has one
+/// parses its value again, with a fresh recursion budget. A client chooses the keys of the objects it sends, so
+/// objects with such a key are never handed to `serde_json::Value` or to a type's deserializer.
+fn reject_reserved_key(key: &str) -> Result<(), IoValueError> {
+    if key.starts_with("$serde_json::private::") { Err(IoValueError::ReservedKey) } else { Ok(()) }
 }
 
 fn from_json(v: Value, depth: usize) -> Result<IoValue, IoValueError> {
@@ -980,7 +994,12 @@ impl<'de> de::VariantAccess<'de> for VariantDe<'de> {
     }
     fn struct_variant<V: Visitor<'de>>(self, _fields: &'static [&'static str], visitor: V) -> Result<V::Value, IoValueError> {
         match self.value {
-            Some(IoValue::Object(o)) => visitor.visit_map(MapDe { iter: o.iter(), value: None }),
+            Some(IoValue::Object(o)) => {
+                for key in o.keys() {
+                    reject_reserved_key(key)?;
+                }
+                visitor.visit_map(MapDe { iter: o.iter(), value: None })
+            }
             _ => Err(de::Error::custom("expected a struct variant")),
         }
     }
@@ -1004,7 +1023,12 @@ impl<'de> de::Deserializer<'de> for &'de IoValue {
             }
             IoValue::String(s) => visitor.visit_borrowed_str(s),
             IoValue::Array(a) => visitor.visit_seq(SeqDe { iter: a.iter() }),
-            IoValue::Object(o) => visitor.visit_map(MapDe { iter: o.iter(), value: None }),
+            IoValue::Object(o) => {
+                for key in o.keys() {
+                    reject_reserved_key(key)?;
+                }
+                visitor.visit_map(MapDe { iter: o.iter(), value: None })
+            }
             IoValue::Binary(b) => visitor.visit_borrowed_bytes(b.as_bytes()),
         }
     }
@@ -1326,6 +1350,27 @@ mod tests {
         assert_eq!(value.deserialize_into::<Binary>().unwrap().as_bytes(), &[1, 2, 3]);
         assert!(IoValue::from("text").deserialize_into::<Binary>().is_err());
         assert_eq!(IoValue::from(f64::NAN), IoValue::Null);
+    }
+
+    #[test]
+    fn objects_with_a_key_serde_json_reads_as_an_instruction_are_never_deserialized() {
+        // `raw_value` is on in this build (as `sqlx` turns it on): `Value`'s own deserializer would parse the string
+        // under this key again, with a fresh recursion budget.
+        let nested = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
+        let hostile = IoValue::object([("$serde_json::private::RawValue", IoValue::from(nested))]);
+        let wrapped = IoValue::Array(vec![IoValue::object([("a", hostile.clone())])]);
+        for value in [&hostile, &wrapped] {
+            assert_eq!(value.deserialize_into::<Value>(), Err(IoValueError::ReservedKey));
+            assert_eq!(value.to_json(), Err(IoValueError::ReservedKey));
+            assert_eq!(Value::try_from(value), Err(IoValueError::ReservedKey));
+        }
+        assert_eq!(Args::new(vec![hostile.clone()]).get::<Value>(0), Err(IoValueError::ReservedKey));
+        assert_eq!(Args::new(vec![hostile.clone()]).to_json(), Err(IoValueError::ReservedKey));
+        // As an `IoValue` it stays what it is: data (`Args::value`, not a typed `get`).
+        assert!(Args::new(vec![hostile.clone()]).value(0).is_some());
+        assert_eq!(hostile.get("$serde_json::private::Number"), None);
+        let number = IoValue::object([("$serde_json::private::Number", IoValue::from("1"))]);
+        assert_eq!(number.to_json(), Err(IoValueError::ReservedKey));
     }
 
     #[test]

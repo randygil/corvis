@@ -4,7 +4,7 @@
 //! unstable, hidden `engine` module, and on top of it the Socket.IO v5 protocol: namespaces multiplexed over one
 //! session, the connection handshake with `auth`, connect middleware, events and acknowledgements in both
 //! directions, binary attachments and disconnect reasons. The wire behavior follows Node's `socket.io` 4.8.4 for
-//! the official client; every limit a client can make the server hit has a bounded default (see [`IoOptions`]).
+//! the official client; every limit a client can make the server hit has a bounded default (see [`IoOptions`](crate::socket_io::IoOptions)).
 //!
 //! ```no_run
 //! use corvis::prelude::*;

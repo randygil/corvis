@@ -17,7 +17,7 @@ export default {
     } finally {
       main.close();
     }
-    record("server", "log", sortedLog(await waitForLog(step, url, (log) => log.length >= 1)));
+    record("server", "log", sortedLog(await waitForLog(step, url, (log) => log.length >= 2)));
 
     const missing = client(url, "/missing");
     try {

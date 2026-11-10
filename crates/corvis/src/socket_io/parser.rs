@@ -669,6 +669,175 @@ fn restore(value: &mut IoValue, buffers: &[Bytes], depth: usize) -> Result<(), D
     }
 }
 
+/// The codec against the bytes `socket.io-parser` 4.2.7 produced (`fixtures/parser.json`, recorded by
+/// `parity/socket-io/scripts/record-parser.mjs`), in both directions.
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    const FIXTURE: &str = include_str!("fixtures/parser.json");
+
+    /// Inputs the npm decoder accepts and this one refuses (the codec fails closed): see the module docs of `parser`.
+    const STRICTER: [&str; 6] =
+        ["ack without id", "event without payload", "empty string", "id on connect", "ack id above 2^53", "ack id of 22 digits"];
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn from_neutral(v: &Value) -> IoValue {
+        match v {
+            Value::Object(o) if o.len() == 1 && o.contains_key("$binary") => {
+                IoValue::Binary(Binary::from(unhex(o["$binary"].as_str().unwrap())))
+            }
+            Value::Array(a) => IoValue::Array(a.iter().map(from_neutral).collect()),
+            Value::Object(o) => IoValue::object(o.iter().map(|(k, v)| (k.clone(), from_neutral(v)))),
+            other => IoValue::try_from(other.clone()).unwrap(),
+        }
+    }
+
+    fn to_neutral(v: &IoValue) -> Value {
+        match v {
+            IoValue::Binary(b) => json!({ "$binary": hex(b.as_bytes()) }),
+            IoValue::Array(a) => Value::Array(a.iter().map(to_neutral).collect()),
+            IoValue::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), to_neutral(v))).collect()),
+            other => other.to_json().unwrap(),
+        }
+    }
+
+    fn packet_from_case(p: &Value) -> Packet {
+        let nsp = p["nsp"].as_str().unwrap().to_string();
+        let id = p.get("id").and_then(Value::as_u64);
+        let data = p.get("data");
+        let list = || data.and_then(Value::as_array).unwrap().iter().map(from_neutral).collect::<Vec<_>>();
+        let body = match p["type"].as_str().unwrap() {
+            "CONNECT" => Body::Connect(data.map(from_neutral)),
+            "DISCONNECT" => Body::Disconnect,
+            "EVENT" => {
+                let mut items = list();
+                let IoValue::String(name) = items.remove(0) else { panic!("an event name") };
+                Body::Event { id, name, args: items }
+            }
+            "ACK" => Body::Ack { id: id.unwrap(), args: list() },
+            "CONNECT_ERROR" => Body::ConnectError(from_neutral(data.unwrap())),
+            other => panic!("unknown type {other}"),
+        };
+        Packet { nsp, body }
+    }
+
+    fn packet_to_neutral(p: &Packet) -> Value {
+        let mut out = serde_json::Map::new();
+        out.insert("nsp".into(), json!(p.nsp));
+        match &p.body {
+            Body::Connect(data) => {
+                out.insert("type".into(), json!("CONNECT"));
+                if let Some(d) = data {
+                    out.insert("data".into(), to_neutral(d));
+                }
+            }
+            Body::Disconnect => {
+                out.insert("type".into(), json!("DISCONNECT"));
+            }
+            Body::Event { id, name, args } => {
+                out.insert("type".into(), json!("EVENT"));
+                if let Some(id) = id {
+                    out.insert("id".into(), json!(id));
+                }
+                let mut data = vec![json!(name)];
+                data.extend(args.iter().map(to_neutral));
+                out.insert("data".into(), Value::Array(data));
+            }
+            Body::Ack { id, args } => {
+                out.insert("type".into(), json!("ACK"));
+                out.insert("id".into(), json!(id));
+                out.insert("data".into(), Value::Array(args.iter().map(to_neutral).collect()));
+            }
+            Body::ConnectError(data) => {
+                out.insert("type".into(), json!("CONNECT_ERROR"));
+                out.insert("data".into(), to_neutral(data));
+            }
+        }
+        Value::Object(out)
+    }
+
+    /// Node keeps a numeric event name a number; this decoder writes it as text. Compare them as text.
+    fn normalize(mut node: Value) -> Value {
+        if node["type"] == "EVENT"
+            && let Some(first) = node["data"].get_mut(0)
+            && let Some(n) = first.as_i64()
+        {
+            *first = json!(n.to_string());
+        }
+        node
+    }
+
+    #[test]
+    fn the_fixture_is_from_the_pinned_parser_version() {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        assert_eq!(fixture["parser"], "socket.io-parser");
+        assert_eq!(fixture["version"], "4.2.7");
+        assert!(fixture["encode"].as_array().unwrap().len() >= 20 && fixture["decode"].as_array().unwrap().len() >= 50);
+    }
+
+    #[test]
+    fn encoding_is_byte_equal_to_the_npm_encoder() {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        for case in fixture["encode"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let packet = packet_from_case(&case["packet"]);
+            let encoded = encode(&packet, 10).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            let expected = case["encoded"].as_array().unwrap();
+            assert_eq!(encoded.text, expected[0].as_str().unwrap(), "{name}");
+            let attachments: Vec<String> = encoded.attachments.iter().map(|a| hex(a.as_bytes())).collect();
+            let wanted: Vec<String> = expected[1..].iter().map(|e| e["$binary"].as_str().unwrap().to_string()).collect();
+            assert_eq!(attachments, wanted, "{name}");
+        }
+    }
+
+    #[test]
+    fn decoding_equals_the_npm_decoder_or_is_stricter_where_listed() {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        let mut stricter_seen = 0;
+        for case in fixture["decode"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let mut decoder = Decoder::new(Limits::from_options(&IoOptions::new()));
+            let mut packets = Vec::new();
+            let mut failed = false;
+            for frame in case["frames"].as_array().unwrap() {
+                let result = match frame {
+                    Value::String(text) => decoder.add_text(text),
+                    other => decoder.add_binary(Bytes::from(unhex(other["$binary"].as_str().unwrap()))),
+                };
+                match result {
+                    Ok(Some(packet)) => packets.push(packet_to_neutral(&packet)),
+                    Ok(None) => {}
+                    Err(_) => {
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            let node_failed = case.get("error").is_some();
+            if node_failed {
+                assert!(failed, "{name}: the npm decoder refuses this ({}) and so must this one", case["error"]);
+            } else if STRICTER.contains(&name) {
+                assert!(failed, "{name}: listed as stricter, but it decoded");
+                stricter_seen += 1;
+            } else {
+                assert!(!failed, "{name}: the npm decoder accepts this");
+                let expected: Vec<Value> = case["packets"].as_array().unwrap().iter().cloned().map(normalize).collect();
+                assert_eq!(packets, expected, "{name}");
+            }
+        }
+        assert_eq!(stricter_seen, STRICTER.len());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
