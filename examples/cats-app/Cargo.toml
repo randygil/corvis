@@ -5,9 +5,10 @@ edition = "2024"
 publish = false
 
 [dependencies]
-corvis = { path = "../../crates/corvis", features = ["auth-local", "auth-api-key"] }
+corvis = { path = "../../crates/corvis", features = ["auth-local", "auth-api-key", "auth-session"] }
 corvis-swagger = { path = "../../crates/corvis-swagger" }
 serde = { version = "1", features = ["derive"] }
+rand = "0.8"
 
 [features]
 # HTTPS next to the plain listener when CATS_TLS_CERT and CATS_TLS_KEY are set.

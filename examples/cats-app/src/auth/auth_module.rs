@@ -1,6 +1,7 @@
 use corvis::auth::api_key::ApiKeyStrategy;
 use corvis::auth::jwt::JwtStrategy;
 use corvis::auth::local::{LocalStrategy, PasswordHasher};
+use corvis::auth::session::SessionStrategy;
 use corvis::prelude::*;
 use corvis::{JwtModule, JwtModuleOptions};
 
@@ -9,6 +10,8 @@ use super::auth_service::AuthService;
 use super::jwt_auth::JwtAuth;
 use super::local_auth::LocalAuth;
 use super::service_key_auth::{ServiceKeyAuth, ServiceKeys};
+use super::session_auth::MemberSerializer;
+use super::session_controller::SessionController;
 use crate::users::UsersModule;
 
 #[module(
@@ -22,7 +25,7 @@ use crate::users::UsersModule;
             Ok(JwtModuleOptions::new(secret).expires_in(config.get_or("JWT_EXPIRES_IN", "1h".to_string())))
         }),
     ],
-    controllers = [AuthController],
+    controllers = [AuthController, SessionController],
     providers = [
         AuthService,
         JwtAuth,
@@ -33,6 +36,8 @@ use crate::users::UsersModule;
         ServiceKeys::provider(),
         ServiceKeyAuth,
         Provider::strategy::<ApiKeyStrategy<ServiceKeyAuth>>(),
+        MemberSerializer,
+        Provider::strategy::<SessionStrategy<MemberSerializer>>(),
     ],
     exports = [AuthService],
 )]

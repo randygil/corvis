@@ -2,7 +2,7 @@ use corvis::prelude::*;
 
 use crate::app_controller::AppController;
 use crate::app_service::AppService;
-use crate::auth::{AuthGuard, AuthModule};
+use crate::auth::{AuthGuard, AuthModule, session_module};
 use crate::cats::CatsModule;
 use crate::chat::ChatGateway;
 use crate::common::guards::RolesGuard;
@@ -18,6 +18,7 @@ use crate::users::UsersModule;
         CacheModule::register(CacheOptions { is_global: true, ..Default::default() }),
         ThrottlerModule::for_root(vec![ThrottlerOptions::new(60_000, 100)]),
         TerminusModule,
+        session_module(),
         AuthModule,
         UsersModule,
         CatsModule,
