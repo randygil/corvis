@@ -80,9 +80,9 @@ artifacts if it differs.
 - [x] 7.3 `cargo test --workspace` passes, including `auth_jwt.rs` without Node
 - [x] 7.4 Regression tests for every scenario of `auth/jwt-strategy`; the `auth/jwt` tests still pass
 - [x] 7.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 7.6 Framework runtime code changed (`JwtService::verify` refactor): run the corvis-parity check; verify the three
+- [x] 7.6 Framework runtime code changed (`JwtService::verify` refactor): run the corvis-parity check; verify the three
   port apps keep 0 apidiff differences
-- [ ] 7.7 Run the security-reviewer agent over `corvis::auth::jwt` and the refactored `JwtService::verify` (algorithm
+- [x] 7.7 Run the security-reviewer agent over `corvis::auth::jwt` and the refactored `JwtService::verify` (algorithm
   confusion, `none`, oversized and malformed tokens, header parsing, key provider errors); verify every finding is
   fixed or recorded as a new issue
 
@@ -96,7 +96,7 @@ artifacts if it differs.
   verify the key provider is not called
 - [x] 8.4 Docs EN/ES (provider errors, extractor order, cookie CSRF, `typ`, `JwtService` strictness, composite guards) and
   spec deltas; verify `openspec validate e3-jwt-strategy --strict` and `npm run docs:check`
-- [ ] 8.5 Run the corvis-parity check and a new security review round (maintainer's session)
+- [x] 8.5 Run the corvis-parity check and a new security review round (maintainer's session)
 - [x] 8.6 Round 2: `check_header` fails closed (malformed header and `crit`) in the strategy and `verify_claims`, with the
   five bypass headers tested; verify the key provider is not called
 - [x] 8.7 Round 2: cap guard nesting at 32 in `auth_guards_in` with a startup error naming the route, and a test
@@ -106,6 +106,30 @@ artifacts if it differs.
 
 - [x] 8.10 Round 4: `check_header` validates the header with a discarding visitor (no `Value`), verified claims decode
   through `PlainJson`, design note on `arbitrary_precision`; tests in `tests/auth_jwt_header.rs`
+
+## Verification
+
+Checked on `dev` at 71e742f (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test --workspace` | 1472 passed, 0 failed, 74 ignored |
+| Security review, first round | nothing exploitable in the strategy; 1 medium in the older `JwtService::verify` (`iss`/`aud`), 2 low, notes; all fixed |
+| Security review, second round | 1 low (`crit` check bypassed through a parser differential), 3 notes; all fixed |
+| Security review, third round | 1 low (stack use of the header parse with `serde_json/raw_value`); fixed |
+| Security review, fourth round | all fixes hold, 0 bypasses in a 40,000-header grammar fuzz; 1 low and 1 note hardened in 870c3a4 |
+| Acceptance of 870c3a4 | the reviewer's proofs of concept and fuzz, with and without `raw_value`: 0 bypasses, same outcomes |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; databases equivalent (see note) |
+| Parity, houseplan | 598 checks equal (quiet hours), 0 different; databases equivalent |
+
+Note: the first facten run had one difference, the byte size recorded for a generated PDF (3647 against 3648), with
+every HTTP status, header and body equal; the rerun was clean. It is not related to this change.
+
+Known limit, recorded in design.md: `JwtService::verify::<T>` converts the verified claims into the caller's `T`; with
+`T = serde_json::Value` and `serde_json/raw_value` enabled, a signed token with a deeply nested payload is parsed by
+`Value`'s own reader.
 
 ## Workflow follow-up
 
