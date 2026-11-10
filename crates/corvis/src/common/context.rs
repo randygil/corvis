@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::di::ModuleRef;
-use crate::http::Request;
+use crate::http::{Request, Response};
 
 /// A handler or a controller class plus its metadata (`context.getHandler()` / `context.getClass()`).
 #[derive(Debug, Clone, Default)]
@@ -169,6 +169,80 @@ impl EnhancerHeaders {
     }
 }
 
+/// Validates a header an enhancer wants on the response: a valid name that is not a framing header and a value
+/// without a character Node would refuse (anything but tab, visible ASCII and U+0080..U+00FF).
+pub(crate) fn validate_response_header(name: &str, value: &str) -> Option<(http::HeaderName, http::HeaderValue)> {
+    let n = http::HeaderName::from_bytes(name.as_bytes()).ok()?;
+    if RESERVED_RESPONSE_HEADERS.contains(&n.as_str()) {
+        return None;
+    }
+    if !value.chars().all(|c| matches!(c as u32, 0x09 | 0x20..=0x7e | 0x80..=0xff)) {
+        return None;
+    }
+    let v = http::HeaderValue::from_bytes(value.as_bytes()).ok()?;
+    Some((n, v))
+}
+
+/// Values recorded with [`HttpArgumentsHost::append_response_header`], in call order. At most
+/// [`MAX_ENHANCER_HEADERS`] values per request. Created on first use.
+#[derive(Clone, Default)]
+pub(crate) struct AppendedHeaders(pub(crate) Arc<std::sync::Mutex<Vec<(http::HeaderName, http::HeaderValue)>>>);
+
+impl AppendedHeaders {
+    /// A snapshot of the appended values, if any enhancer appended one.
+    pub(crate) fn of(request: &Request) -> Option<Vec<(http::HeaderName, http::HeaderValue)>> {
+        request.get::<AppendedHeaders>().map(|h| h.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+}
+
+/// The response a guard stored with [`HttpArgumentsHost::respond_with`].
+#[derive(Clone, Default)]
+pub(crate) struct PendingResponse(pub(crate) Arc<std::sync::Mutex<Option<Response>>>);
+
+impl PendingResponse {
+    /// Takes the stored response, if a guard stored one.
+    pub(crate) fn take(request: &Request) -> Option<Response> {
+        request.get::<PendingResponse>().and_then(|p| p.0.lock().unwrap_or_else(|e| e.into_inner()).take())
+    }
+}
+
+/// Marks that the guards of the route are running: [`HttpArgumentsHost::respond_with`] is valid only then. The router
+/// creates it before the first guard and sets the flag around each `can_activate` call.
+#[derive(Clone, Default)]
+pub(crate) struct GuardPhase(pub(crate) Arc<std::sync::atomic::AtomicBool>);
+
+impl GuardPhase {
+    /// Creates the marker (flag off) on the request, replacing an earlier one.
+    pub(crate) fn install(request: &Request) -> GuardPhase {
+        let phase = GuardPhase::default();
+        request.insert(phase.clone());
+        phase
+    }
+
+    pub(crate) fn set(&self, active: bool) {
+        self.0.store(active, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Turns the phase on until the returned scope is dropped, also when the guard panics.
+    pub(crate) fn enter(&self) -> GuardPhaseScope {
+        self.set(true);
+        GuardPhaseScope(self.clone())
+    }
+
+    fn is_active(request: &Request) -> bool {
+        request.get::<GuardPhase>().is_some_and(|p| p.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// Ends the guard phase on drop.
+pub(crate) struct GuardPhaseScope(GuardPhase);
+
+impl Drop for GuardPhaseScope {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
 impl<'a> HttpArgumentsHost<'a> {
     /// Records a header for the response of the current HTTP request. It is added to the final response (success,
     /// error and filter responses) only when the response has no header with that name, and written to the `Res` of
@@ -188,14 +262,7 @@ impl<'a> HttpArgumentsHost<'a> {
         if self.ctx.inner.context_type != ContextType::Http {
             return false;
         }
-        let Ok(n) = http::HeaderName::from_bytes(name.as_bytes()) else { return false };
-        if RESERVED_RESPONSE_HEADERS.contains(&n.as_str()) {
-            return false;
-        }
-        if !value.chars().all(|c| matches!(c as u32, 0x09 | 0x20..=0x7e | 0x80..=0xff)) {
-            return false;
-        }
-        let Ok(v) = http::HeaderValue::from_bytes(value.as_bytes()) else { return false };
+        let Some((n, v)) = validate_response_header(name, value) else { return false };
         let req = &self.ctx.inner.request;
         let store = match req.get::<EnhancerHeaders>() {
             Some(s) => s,
@@ -219,6 +286,74 @@ impl<'a> HttpArgumentsHost<'a> {
         {
             res.set_header_value(n, v);
         }
+        true
+    }
+
+    /// Appends a value to a header of the response of the current HTTP request. Unlike
+    /// [`set_response_header`](Self::set_response_header), values recorded for the same name accumulate in call
+    /// order. Every `Set-Cookie` value is added to the final response next to the response's own cookies (recorded
+    /// ones first), on every path: success, exception, filter, `#[res]` and a response stored with
+    /// [`respond_with`](Self::respond_with). Any other name is added only when the response has no header with that
+    /// name, and after the value recorded with `set_response_header` for it.
+    ///
+    /// Returns `false`, recording nothing, for an invalid name or value or a framing header (the rules of
+    /// `set_response_header`), when 128 values are already recorded for the request, and in a WebSocket context.
+    pub fn append_response_header(&self, name: &str, value: &str) -> bool {
+        if self.ctx.inner.context_type != ContextType::Http {
+            return false;
+        }
+        let Some((n, v)) = validate_response_header(name, value) else { return false };
+        let req = &self.ctx.inner.request;
+        let store = match req.get::<AppendedHeaders>() {
+            Some(s) => s,
+            None => {
+                let s = AppendedHeaders::default();
+                req.insert(s.clone());
+                s
+            }
+        };
+        let recorded_before = {
+            let mut list = store.0.lock().unwrap_or_else(|e| e.into_inner());
+            if list.len() >= MAX_ENHANCER_HEADERS {
+                return false;
+            }
+            let before = list.iter().any(|(k, _)| *k == n)
+                || req.get::<EnhancerHeaders>().is_some_and(|h| h.0.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&n));
+            list.push((n.clone(), v.clone()));
+            before
+        };
+        if n != http::header::CONTENT_TYPE
+            && let Some(res) = req.get::<crate::http::Res>()
+            && !res.headers_sent()
+            && (n == http::header::SET_COOKIE || recorded_before || !res.has_header(n.as_str()))
+        {
+            res.append_header_value(n, v);
+        }
+        true
+    }
+
+    /// Ends the request with `response` from a guard: the router sends it right after the current guard returns, without running
+    /// later guards, interceptors, pipes or the handler, and without exception filters, `#[header]` or route
+    /// redirect settings. It still receives the headers recorded with `set_response_header` and
+    /// `append_response_header`. The stored response wins whatever the guard returns (a discarded `Ok(false)` or
+    /// error is logged); a second call replaces the first.
+    ///
+    /// Valid only while a guard runs: called from an interceptor, a handler or a hand-made context it stores nothing
+    /// and returns `false`, because nothing would send the response. It returns `false` too in a WebSocket context.
+    pub fn respond_with(&self, response: Response) -> bool {
+        if self.ctx.inner.context_type != ContextType::Http || !GuardPhase::is_active(&self.ctx.inner.request) {
+            return false;
+        }
+        let req = &self.ctx.inner.request;
+        let store = match req.get::<PendingResponse>() {
+            Some(s) => s,
+            None => {
+                let s = PendingResponse::default();
+                req.insert(s.clone());
+                s
+            }
+        };
+        *store.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(response);
         true
     }
 
@@ -248,5 +383,81 @@ impl<'a> WsArgumentsHost<'a> {
     /// The message payload.
     pub fn get_data(&self) -> Option<&'a Value> {
         self.ctx.inner.ws_data.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn http_ctx() -> ExecutionContext {
+        ExecutionContext::new(Request::empty(), Arc::new(Target::new("C")), Arc::new(Target::new("h")), None)
+    }
+
+    fn ws_ctx() -> ExecutionContext {
+        ExecutionContext::for_ws(Request::empty(), Arc::new(Target::new("G")), Arc::new(Target::new("h")), None, Arc::new(()), Value::Null)
+    }
+
+    #[test]
+    fn append_validates_like_set() {
+        let ctx = http_ctx();
+        let http = ctx.switch_to_http();
+        assert!(http.append_response_header("Link", "</a>"));
+        assert!(!http.append_response_header("bad name", "v"));
+        assert!(!http.append_response_header("X-A", "a\r\nX-B: b"));
+        assert!(!http.append_response_header("X-A", "\u{20ac}"));
+        for reserved in RESERVED_RESPONSE_HEADERS {
+            assert!(!http.append_response_header(reserved, "1"), "{reserved}");
+        }
+        assert_eq!(AppendedHeaders::of(ctx.request()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn append_stops_at_128_values_and_set_still_replaces() {
+        let ctx = http_ctx();
+        let http = ctx.switch_to_http();
+        assert!((0..128).all(|_| http.append_response_header("X-Trace", "v")));
+        assert!(!http.append_response_header("X-Trace", "v"));
+        assert!(!http.append_response_header("X-Other", "v"));
+        assert_eq!(AppendedHeaders::of(ctx.request()).unwrap().len(), 128);
+        assert!(http.set_response_header("X-Trace", "one"));
+        assert!(http.set_response_header("X-Trace", "two"));
+        assert_eq!(EnhancerHeaders::of(ctx.request()).unwrap().get("x-trace").unwrap(), "two");
+    }
+
+    #[test]
+    fn websocket_context_records_nothing() {
+        let ctx = ws_ctx();
+        let http = ctx.switch_to_http();
+        assert!(!http.append_response_header("Set-Cookie", "a=1"));
+        GuardPhase::install(ctx.request()).set(true);
+        assert!(!http.respond_with(Response::new()));
+        assert!(AppendedHeaders::of(ctx.request()).is_none());
+        assert!(PendingResponse::take(ctx.request()).is_none());
+    }
+
+    #[test]
+    fn respond_with_replaces_the_stored_response() {
+        let ctx = http_ctx();
+        let http = ctx.switch_to_http();
+        GuardPhase::install(ctx.request()).set(true);
+        assert!(http.respond_with(Response::new().with_status(302u16)));
+        assert!(http.respond_with(Response::new().with_status(301u16)));
+        assert_eq!(PendingResponse::take(ctx.request()).unwrap().status_code(), 301);
+        assert!(PendingResponse::take(ctx.request()).is_none());
+    }
+
+    #[test]
+    fn respond_with_is_refused_outside_the_guard_phase() {
+        let ctx = http_ctx();
+        let http = ctx.switch_to_http();
+        assert!(!http.respond_with(Response::new().with_status(302u16)), "no phase at all");
+        let phase = GuardPhase::install(ctx.request());
+        assert!(!http.respond_with(Response::new().with_status(302u16)), "phase off");
+        phase.set(true);
+        assert!(http.respond_with(Response::new().with_status(302u16)));
+        phase.set(false);
+        assert!(!http.respond_with(Response::new().with_status(301u16)));
+        assert_eq!(PendingResponse::take(ctx.request()).unwrap().status_code(), 302);
     }
 }

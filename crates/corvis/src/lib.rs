@@ -38,6 +38,7 @@
 extern crate self as corvis;
 
 pub mod application;
+pub mod auth;
 pub mod common;
 pub mod config;
 pub mod di;

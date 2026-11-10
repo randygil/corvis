@@ -80,10 +80,15 @@ challenge and an optional status; redirect with a URL and an optional status; pa
   `fail`, `redirect`, `pass` and `error` behind `AuthGuard` of the original
 
 ### Requirement: Successful authentication exposes the user to the handler
-When a strategy succeeds, `AuthGuard` SHALL store the user on the request both as a typed value (readable with
-`Request::get::<T>()` and through a `User<T>` parameter extractor) and as JSON (readable with `Request::user` and
+When a strategy succeeds, `AuthGuard` SHALL store the user on the request both as a typed value (readable through a
+`User<T>` parameter extractor, which reads only the value an `AuthGuard` stored and never another request extension of
+the same type) and as JSON (readable with `Request::user` and
 `Request::user_as`), SHALL store the strategy's info as the request's auth info (`Request::auth_info()`), and SHALL
 let the route continue.
+
+#### Scenario: Foreign extension is not a user
+- **WHEN** a guard that is not an `AuthGuard` inserts a `String` into the request and the handler takes `User<String>`
+- **THEN** the response is the 401 `Unauthorized` response
 
 #### Scenario: Handler reads the user
 - **WHEN** a strategy succeeds with a user `{ "id": 7, "role": "admin" }` and info `{ "scope": "read" }`
@@ -189,12 +194,21 @@ When a strategy redirects, `AuthGuard` MUST end the request with a response of s
 gives), a `Location` header with the URL exactly as given, `Content-Length: 0` and an empty body, through
 `HttpArgumentsHost::respond_with`, and MUST NOT run later guards, interceptors, pipes or the handler. A URL that is not
 a valid header value MUST make the request fail with the 500 `Internal server error` response, as Node's
-`res.setHeader` throws for it.
+`res.setHeader` throws for it. A status outside 300-399, or a redirect outside the guard phase (see `respond_with`),
+MUST make the request fail the same way.
 
 #### Scenario: Strategy redirects
 - **WHEN** a custom strategy redirects to `https://idp.example/authorize?x=1`
 - **THEN** the response is status 302, `Location: https://idp.example/authorize?x=1`, `Content-Length: 0`, empty
   body, the handler is not called, and the response equals the recorded original
+
+#### Scenario: Redirect status outside 3xx
+- **WHEN** a custom strategy redirects with status 200
+- **THEN** the response is the 500 `Internal server error` response and the handler is not called
+
+#### Scenario: Redirect outside the guard phase
+- **WHEN** an `AuthGuard` whose strategy redirects is run from an interceptor
+- **THEN** the request answers 500 and the handler is not called
 
 #### Scenario: Redirect URL with a line break
 - **WHEN** a custom strategy redirects to `"/a\r\nSet-Cookie: x=1"`
@@ -227,7 +241,8 @@ authenticate public routes like any other route, as the original `AuthGuard` doe
 
 ### Requirement: AuthGuard fails closed outside HTTP
 In a WebSocket context, `AuthGuard` MUST deny the message without running any strategy, and the framework SHALL log
-one warning per guard the first time it happens. Handshake authentication through strategies is not supported.
+one warning per gateway at startup (not per connection or message) naming the gateway and the guard. Handshake
+authentication through strategies is not supported.
 
 #### Scenario: Global AuthGuard applied to a gateway
 - **WHEN** the application calls `use_global_guards(AuthGuard::new("a"))`, global enhancers apply to gateways (the

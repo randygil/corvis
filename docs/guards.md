@@ -235,6 +235,36 @@ ctx.switch_to_http().set_response_header("X-Trace-Id", "abc123");
 
 The recorded headers are added to the final response, on success, on errors (including the `403` the guard itself returns) and on the response of an exception filter, but never replace a header the response already has: `#[header]`, headers of a returned `Response`, of a filter, or set on `Res` by the handler win. Calling it again with the same name replaces the recorded value. `ThrottlerGuard` uses this to send its [rate limit headers](/security/rate-limiting#response-headers).
 
+## Ending the request and appending headers
+
+A guard can do more than allow or deny. Two methods of `ctx.switch_to_http()` cover what Express middleware does with `res`:
+
+- `respond_with(response)` ends the request with a response of your own, typically a redirect.
+- `append_response_header(name, value)` adds a header value that survives the handler, an exception and `#[res]`: the way to set a cookie from a guard.
+
+```rust
+#[async_trait]
+impl CanActivate for LoginGuard {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        let http = ctx.switch_to_http();
+        if http.get_request().cookie("sid").is_none() {
+            http.append_response_header("Set-Cookie", "next=/cats; Path=/; HttpOnly");
+            http.respond_with(Response::redirect("/login", 302u16));
+        }
+        Ok(true)
+    }
+}
+```
+
+`respond_with` works only while a guard runs: from an interceptor, a handler or a context you built yourself it stores nothing and returns `false`. It stores the response and the router sends it as soon as the guard returns: later guards, interceptors, pipes and the handler do not run, and neither do exception filters, `#[header]` or the route's `#[redirect]`. It works for global, controller and route guards. The stored response wins whatever the guard returns: if the guard answered `Ok(false)` or an error after storing, the result is discarded and an `ERR_HTTP_HEADERS_SENT` error is logged, as Express does when something throws after the response ended. A second call replaces the first. The headers recorded with `set_response_header` and `append_response_header`, and the application's CORS headers, are added to the stored response like to any other.
+
+`append_response_header` records values that accumulate in call order, unlike `set_response_header`, which keeps one value per name. It follows the same validation, so a name or value Node would refuse (CR and LF included) and the framing headers return `false` and record nothing, and it also returns `false` once 128 values are recorded for the request and in a WebSocket context. On the response:
+
+- every `Set-Cookie` value is added, before the response's own cookies (the order Express produces when a guard's `res.cookie` runs before the handler's), on success, on errors, on the response of a filter, on `#[res]` routes and on a stored response;
+- any other name is added only when the response has no header with that name, so `#[header]` and the handler's own headers win; a name that was both set and appended gets the set value first.
+
+Both methods return `false` and do nothing in a WebSocket context. A guard that uses neither behaves exactly as before. [`AuthGuard`](/recipes/passport) uses them to redirect to an identity provider and to set cookies.
+
 ## Guards in tests
 
 `Test::create_testing_module().override_guard::<RolesGuard>(AllowAll)` replaces a guard with a test double. See [Testing](/fundamentals/testing).

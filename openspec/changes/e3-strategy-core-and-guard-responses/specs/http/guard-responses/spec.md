@@ -14,7 +14,8 @@ The framework SHALL provide `HttpArgumentsHost::respond_with(Response) -> bool`.
 response for the current request and return `true`. After each guard returns, the router MUST check for a stored
 response and, if there is one, send it without running later guards, interceptors, pipes or the handler, and without
 passing it through exception filters or the route's `#[header]` and redirect settings. This MUST work for global,
-controller and route guards.
+controller and route guards. It MUST be valid only while a guard runs: called from an interceptor, a handler or a
+context the router did not build for a guard, it MUST store nothing and return `false`.
 
 #### Scenario: Guard short-circuits with a redirect
 - **WHEN** the first of two route guards stores a 302 response with `Location: /login` and returns `Ok(true)`

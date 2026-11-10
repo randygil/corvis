@@ -550,6 +550,7 @@ impl CorvisApplication {
         // the controller's own filters are tried before all of these.
         self.config.router.global_filters.reverse();
         self.config.router.global_filters.extend(provider_filters.into_iter().rev());
+        crate::auth::build_registry(&self.container)?;
         let router = build_router(&self.container, &self.config.router, self.log_routes).await?;
         if let Some(warning) = self.config.cors.as_ref().and_then(CorsOptions::startup_warning) {
             Logger::new("CorsOptions").warn(warning);
@@ -562,6 +563,10 @@ impl CorvisApplication {
         let gateway_posture = crate::websockets::posture_gateways(&compiled_gateways);
         #[cfg(not(feature = "websockets"))]
         let gateway_posture = Vec::new();
+        // Strategy names are checked with the route posture, before middleware `configure` and the init hooks.
+        crate::auth::check_routes(&self.container, &router)?;
+        #[cfg(feature = "websockets")]
+        crate::auth::warn_gateways(&gateway_posture);
         // Report mode (CORVIS_ROUTE_POSTURE_REPORT) prints the report, gateways included, and ends the process here,
         // whatever the mode and before the check, so that enforce mode does not swallow the report.
         let static_roots = self

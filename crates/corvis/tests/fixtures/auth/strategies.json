@@ -1,0 +1,782 @@
+{
+  "versions": {
+    "@nestjs/passport": "12.0.1",
+    "passport": "0.7.0"
+  },
+  "cases": [
+    {
+      "name": "success with info",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "success"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": {
+            "id": 7,
+            "role": "admin"
+          },
+          "authInfo": {
+            "scope": "read"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "success without info",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "success-noinfo"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": {
+            "id": 7,
+            "role": "admin"
+          },
+          "authInfo": null
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "fail without arguments",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "fail"
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "fail with a challenge",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "fail-challenge"
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "fail with status 400",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "fail-400"
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "error with an exception",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "error-forbidden"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Account locked",
+          "error": "Forbidden",
+          "statusCode": 403
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "error with an Error",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "error"
+        }
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "statusCode": 500,
+          "message": "Internal server error"
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "redirect",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "redirect"
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "location": "https://idp.example/authorize?x=1",
+          "www-authenticate": null,
+          "set-cookie": null,
+          "content-length": "0"
+        },
+        "body": ""
+      },
+      "divergence": null
+    },
+    {
+      "name": "redirect with status 301",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "redirect-301"
+        }
+      },
+      "response": {
+        "status": 301,
+        "headers": {
+          "location": "/moved",
+          "www-authenticate": null,
+          "set-cookie": null,
+          "content-length": "0"
+        },
+        "body": ""
+      },
+      "divergence": null
+    },
+    {
+      "name": "redirect URL with a line break",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "redirect-crlf"
+        }
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "statusCode": 500,
+          "message": "Internal server error"
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "pass",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "pass"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": null,
+          "authInfo": null
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain second succeeds",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-outcome-a": "fail",
+          "x-outcome-b": "success"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": {
+            "id": 7,
+            "role": "admin"
+          },
+          "authInfo": {
+            "scope": "read"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain first succeeds",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-outcome-a": "success",
+          "x-outcome-b": "fail"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": {
+            "id": 7,
+            "role": "admin"
+          },
+          "authInfo": {
+            "scope": "read"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain first errors",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-outcome-a": "error-forbidden",
+          "x-outcome-b": "success"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Account locked",
+          "error": "Forbidden",
+          "statusCode": 403
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain first passes",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-outcome-a": "pass",
+          "x-outcome-b": "success"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": null,
+          "authInfo": null
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain first redirects",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-outcome-a": "redirect",
+          "x-outcome-b": "success"
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "location": "https://idp.example/authorize?x=1",
+          "www-authenticate": null,
+          "set-cookie": null,
+          "content-length": "0"
+        },
+        "body": ""
+      },
+      "divergence": null
+    },
+    {
+      "name": "chain all fail",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/chain",
+        "headers": {
+          "x-outcome-a": "fail-challenge",
+          "x-outcome-b": "fail-400"
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "optional guard without credentials",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/optional",
+        "headers": {
+          "x-outcome": "fail"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": null,
+          "authInfo": null
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "optional guard with a challenge",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/optional",
+        "headers": {
+          "x-outcome": "fail-challenge"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": null,
+          "authInfo": "no token"
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "optional guard with credentials",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/optional",
+        "headers": {
+          "x-outcome": "success"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": {
+            "id": 7,
+            "role": "admin"
+          },
+          "authInfo": {
+            "scope": "read"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "optional guard still passes errors on",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/optional",
+        "headers": {
+          "x-outcome": "error-forbidden"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Account locked",
+          "error": "Forbidden",
+          "statusCode": 403
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "optional chain all fail",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/optional-chain",
+        "headers": {
+          "x-outcome-a": "fail-challenge",
+          "x-outcome-b": "fail"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": null,
+          "authInfo": [
+            "no token",
+            null
+          ]
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "optional chain single failure with challenge",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/optional-chain",
+        "headers": {
+          "x-outcome-a": "fail",
+          "x-outcome-b": "fail-challenge"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": null,
+          "authInfo": [
+            null,
+            "no token"
+          ]
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "custom failure exception",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/custom",
+        "headers": {
+          "x-outcome": "fail"
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Token required",
+          "error": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "unknown strategy in a guard",
+      "app": "main",
+      "request": {
+        "method": "GET",
+        "path": "/unknown",
+        "headers": {}
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "statusCode": 500,
+          "message": "Internal server error"
+        }
+      },
+      "divergence": "Corvis stops startup with an error naming the route and the strategy; the original answers 500 at request time"
+    },
+    {
+      "name": "global filter catches the 401",
+      "app": "filter",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "fail"
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "error": "login"
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "global filter does not see a redirect",
+      "app": "filter",
+      "request": {
+        "method": "GET",
+        "path": "/single",
+        "headers": {
+          "x-outcome": "redirect"
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "location": "https://idp.example/authorize?x=1",
+          "www-authenticate": null,
+          "set-cookie": null,
+          "content-length": "0"
+        },
+        "body": ""
+      },
+      "divergence": null
+    },
+    {
+      "name": "public route is not authenticated",
+      "app": "public",
+      "request": {
+        "method": "GET",
+        "path": "/open",
+        "headers": {
+          "x-outcome": "fail"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": null,
+          "authInfo": null
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "other route is authenticated",
+      "app": "public",
+      "request": {
+        "method": "GET",
+        "path": "/closed",
+        "headers": {
+          "x-outcome": "fail"
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "public controller",
+      "app": "public",
+      "request": {
+        "method": "GET",
+        "path": "/ctrl/open",
+        "headers": {
+          "x-outcome": "fail"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "user": null,
+          "authInfo": null
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "handler overrides a public controller",
+      "app": "public",
+      "request": {
+        "method": "GET",
+        "path": "/ctrl/overridden",
+        "headers": {
+          "x-outcome": "fail"
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "location": null,
+          "www-authenticate": null,
+          "set-cookie": null
+        },
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    }
+  ]
+}

@@ -157,6 +157,13 @@ impl GlobalEnhancer {
     }
 }
 
+/// Tag of a provider registered with [`Provider::strategy`]: how to get the authentication strategy out of its
+/// instance. It accepts the concrete class and the trait object itself, which is what a testing override stores.
+#[derive(Clone)]
+pub(crate) struct StrategyTag {
+    pub(crate) cast: fn(&Instance) -> Option<Arc<dyn crate::auth::Strategy>>,
+}
+
 /// What a provider is known to depend on without running it. An alias (`use_existing`) declares its target
 /// through `Provider::alias_of` instead.
 #[derive(Clone, Debug)]
@@ -183,6 +190,8 @@ pub struct Provider {
     pub(crate) scope: Scope,
     pub(crate) hooks: ErasedHooks,
     pub(crate) enhancer: Option<GlobalEnhancer>,
+    /// Set by [`Provider::strategy`]: the provider is an authentication strategy.
+    pub(crate) strategy: Option<StrategyTag>,
     /// Set by `use_existing`: the token this provider is an alias of.
     pub(crate) alias_of: Option<Token>,
     /// What the provider is known to depend on, for the startup validation of transient providers.
@@ -204,6 +213,7 @@ impl Provider {
             scope: Scope::Default,
             hooks: ErasedHooks::default(),
             enhancer: None,
+            strategy: None,
             alias_of: None,
             deps: DeclaredDeps::Unknown,
         }
@@ -352,6 +362,17 @@ impl Provider {
         p
     }
 
+    /// An authentication strategy (`providers: [JwtStrategy]` of a passport module). The application collects it into
+    /// the registry behind [`Authenticator`](crate::auth::Authenticator) under the name `S` reports through
+    /// [`Strategy::name`](crate::auth::Strategy::name). The strategy receives its dependencies like any provider.
+    pub fn strategy<S: Injectable + crate::auth::Strategy>() -> Self {
+        let mut p = Self::use_class::<S>(Token::named(format!("STRATEGY:{}", std::any::type_name::<S>())));
+        p.strategy = Some(StrategyTag {
+            cast: |i| downcast::<S>(i).map(|s| s as Arc<dyn crate::auth::Strategy>).or_else(|| downcast::<dyn crate::auth::Strategy>(i)),
+        });
+        p
+    }
+
     /// `{ provide: APP_INTERCEPTOR, useClass: T }`.
     pub fn app_interceptor<T: Injectable + CorvisInterceptor>() -> Self {
         let mut p = Self::use_class::<T>(Token::named(format!("APP_INTERCEPTOR:{}", std::any::type_name::<T>())));
@@ -415,5 +436,39 @@ mod tests {
         let alias = Provider::use_existing("ALIAS", "TOKEN");
         assert!(matches!(alias.deps, DeclaredDeps::Unknown));
         assert_eq!(alias.alias_of, Some(Token::from("TOKEN")));
+    }
+
+    struct Named;
+    impl Injectable for Named {
+        fn construct(_ctx: ResolveCtx) -> BoxFuture<'static, Result<Self, DiError>> {
+            async { Ok(Named) }.boxed()
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::auth::Strategy for Named {
+        fn name(&self) -> &str {
+            "named"
+        }
+        async fn authenticate(
+            &self,
+            _: &crate::common::context::ExecutionContext,
+            _: &crate::auth::AuthenticateOptions,
+        ) -> crate::auth::StrategyOutcome {
+            crate::auth::StrategyOutcome::Pass
+        }
+    }
+
+    #[test]
+    fn a_strategy_provider_is_tagged_and_its_cast_accepts_the_class_and_the_trait_object() {
+        assert!(Provider::class::<Named>().strategy.is_none());
+        let p = Provider::strategy::<Named>();
+        assert!(p.token.display_name().contains("STRATEGY:"));
+        let cast = p.strategy.expect("tagged").cast;
+        let class: Instance = erase(Arc::new(Named));
+        assert_eq!(cast(&class).unwrap().name(), "named");
+        let object: Instance = erase(Arc::new(Named) as Arc<dyn crate::auth::Strategy>);
+        assert_eq!(cast(&object).unwrap().name(), "named");
+        let other: Instance = erase(Arc::new(1u8));
+        assert!(cast(&other).is_none());
     }
 }
