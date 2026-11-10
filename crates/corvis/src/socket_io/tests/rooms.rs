@@ -5,7 +5,7 @@ use super::*;
 use crate::socket_io::adapter::MembershipSize;
 
 /// The sockets of `conns` that received an event named `name` (by the text of the packet) since the last read.
-async fn received(conns: &[&Conn], name: &str) -> Vec<bool> {
+pub(super) async fn received(conns: &[&Conn], name: &str) -> Vec<bool> {
     let mut out = Vec::new();
     for conn in conns {
         let sent = conn.sent().await;
@@ -14,11 +14,11 @@ async fn received(conns: &[&Conn], name: &str) -> Vec<bool> {
     out
 }
 
-fn size(namespace: &IoNamespace) -> MembershipSize {
+pub(super) fn size(namespace: &IoNamespace) -> MembershipSize {
     namespace.adapter().membership_size().expect("the in-memory adapter")
 }
 
-async fn connect(io: &IoServer, nsp: &str) -> (Conn, String) {
+pub(super) async fn connect(io: &IoServer, nsp: &str) -> (Conn, String) {
     let conn = io.conn();
     let packet = if nsp == "/" { "0".to_string() } else { format!("0{nsp},") };
     let sid = conn.join(&packet).await;

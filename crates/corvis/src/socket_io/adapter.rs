@@ -851,6 +851,19 @@ impl InMemoryAdapter {
         self.local.sockets_by_ids(ids.iter().map(|id| &**id))
     }
 
+    /// Puts a socket in a room without any of the checks of `add_all`: what a bug elsewhere could do, so the tests
+    /// can check that a direct operation reaches one socket whatever the room maps say.
+    #[cfg(test)]
+    pub(crate) fn force_join(&self, id: &str, room: &str) {
+        self.write().add(id, &[Room::from(room)], usize::MAX).unwrap();
+    }
+
+    /// The names the last `add_all` examined under the lock.
+    #[cfg(test)]
+    pub(crate) fn examined(&self) -> usize {
+        self.read().examined
+    }
+
     /// The size of the two maps, and whether they mirror each other.
     #[doc(hidden)]
     pub fn size(&self) -> MembershipSize {
