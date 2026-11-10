@@ -65,7 +65,8 @@ nobody is in selects nobody.
 ### Requirement: A broadcast is one packet, sent in order
 A broadcast SHALL deliver to each recipient the same packet a direct emit of the same event would, binary attachments
 included, encoded once for all recipients. Packets emitted by one task to the same socket, by broadcast or directly,
-MUST arrive in the order they were emitted. Reserved event names MUST be rejected as for a direct emit.
+MUST arrive in the order they were emitted; broadcasts of concurrent tasks have no order between them. Reserved event
+names MUST be rejected as for a direct emit.
 
 #### Scenario: Binary broadcast
 - **WHEN** the server broadcasts an event carrying a 1 KiB buffer to a room of three sockets, one of them on polling
@@ -74,6 +75,10 @@ MUST arrive in the order they were emitted. Reserved event names MUST be rejecte
 #### Scenario: Order
 - **WHEN** a handler emits `a` to a room and then `b` directly to a socket of that room
 - **THEN** that socket receives `a` before `b`
+
+#### Scenario: Order across a yield
+- **WHEN** one task awaits 20 broadcasts in a row to 1,300 sockets while another task broadcasts to the same sockets
+- **THEN** every socket receives the 20 broadcasts of the first task in the order they were issued
 
 ### Requirement: Leaving and disconnecting update rooms like Node
 `leave` SHALL remove the socket from a room immediately. A disconnecting socket MUST still be in its rooms while the
@@ -150,7 +155,12 @@ with the answers collected.
 
 ### Requirement: Rooms per socket are bounded
 A socket SHALL be in at most `max_rooms_per_socket` rooms (default 1,000, the room of its own id included). A join
-that would exceed it MUST fail without joining any room of that call.
+that would exceed it, or that names more rooms than that, MUST fail without joining any room, the second before looking
+at its names or taking the membership lock.
+
+#### Scenario: Oversized join
+- **WHEN** a join names 200,000 rooms, with `max_rooms_per_socket` at 50
+- **THEN** it fails at once and no name is examined under the membership lock
 
 #### Scenario: Room cap
 - **WHEN** application code joins a socket to 1,000 more rooms in one call, on a socket that is in its own room only
@@ -182,6 +192,10 @@ during a broadcast.
 - **THEN** every emit returns without waiting for a client, no session queues more than its send buffer bound plus one packet, the 50
   sessions are closed with `transport error`, and the reading client receives every event
 
+#### Scenario: Overflow warnings are rate limited
+- **WHEN** a broadcast closes 1,000 sessions by overflow within a minute
+- **THEN** one warning is logged, and the next one a minute later says how many were left out
+
 #### Scenario: Join during a broadcast
 - **WHEN** a handler triggered by a broadcast joins its socket to another room while the broadcast is being delivered
 - **THEN** the join and the broadcast both complete
@@ -212,17 +226,109 @@ adapter MUST be able to replace it through the server options without changes to
 - **WHEN** the test adapter fails a broadcast
 - **THEN** the emit returns the adapter's error to the caller and no socket is disconnected
 
+#### Scenario: Close once
+- **WHEN** the server is closed
+- **THEN** the close of each namespace's adapter runs once, however many paths reach it
+
 ### Requirement: Options are validated
 Creating a Socket.IO server SHALL fail, with an error naming the option, on a zero `max_rooms_per_socket`,
-`max_room_name_length` or `max_broadcast_ack_bytes`, and on a `max_room_name_length` shorter than a socket id.
+`max_room_name_length`, `max_broadcast_ack_bytes` or `adapter_timeout` (default 5 s, at most a day), and on a
+`max_room_name_length` shorter than a socket id.
 
 #### Scenario: Zero rooms
 - **WHEN** a server is created with `max_rooms_per_socket(0)`
 - **THEN** creation fails with an error naming `max_rooms_per_socket`
 
+### Requirement: The room of a socket id is not for clients
+A socket MUST NOT join a room named like the id of another live socket of its namespace, nor leave the room named like
+its own id; a join that names one fails and joins none of its rooms, and `sockets_join` skips such sockets. A new
+socket MUST NOT be given an id that is already a room. An operation of a `RemoteSocket` MUST reach that socket only:
+directly when it is local, by its id as a single-socket target otherwise, never as the members of a room.
+
+#### Scenario: Join another socket's id
+- **WHEN** a client has the application join it to the id of another socket and the server emits to that id
+- **THEN** the join fails, only the other socket receives the event, and the harness lists the difference from Node
+
+#### Scenario: Leave its own id
+- **WHEN** a socket leaves the room named like its own id and the server emits to that id
+- **THEN** it stays in the room and receives the event, and the harness lists the difference from Node
+
+#### Scenario: Id already a room
+- **WHEN** the adapter reports that the first two ids drawn for a new socket are rooms
+- **THEN** the socket is given a third id
+
+#### Scenario: Remote socket reaches one socket
+- **WHEN** a socket was put in the id room of a victim by a defect, and the victim's `RemoteSocket` emits, joins a
+  room, or disconnects, directly or through its operator
+- **THEN** only the victim receives, joins or is disconnected
+
+### Requirement: An empty list of rooms selects nobody
+`to` or `within` given an empty collection MUST select no socket, unless another call of the operator adds rooms: the
+operation succeeds and delivers to nobody; a broadcast with no `to` reaches every socket. `except` given an empty
+collection MUST have no effect.
+
+#### Scenario: Empty to
+- **WHEN** the server emits, fetches, joins and disconnects through `to` given an empty list
+- **THEN** no socket receives, is returned, joins or is disconnected, and the harness lists the difference from Node
+
+### Requirement: An operator names a bounded number of rooms
+An operator MUST name at most `max_rooms_per_socket` rooms in all (`to`, `within` and `except`); beyond it every
+terminal operation MUST fail with a room error and send or change nothing. Building an operator MUST cost what each
+call adds, not what the chain already holds.
+
+#### Scenario: Operator naming too many rooms
+- **WHEN** `max_rooms_per_socket` is 5 and an operator names 6 rooms through several calls
+- **THEN** every terminal operation fails with a room error and sends nothing
+
+#### Scenario: Linear chaining
+- **WHEN** 5,000 `to` calls are chained
+- **THEN** they allocate less than 1 KiB each in all, measured with a counting allocator
+
+### Requirement: Collected answers count against their connection
+Each answer collected by a broadcast with acknowledgements MUST stay charged to the unread budget of the connection
+that sent it (its session, its address and the server) until the call ends, however it ends, and the connection's reads
+pause at its quota like for any held packet. A charge MUST outlive the answering session when the call does.
+
+#### Scenario: Answers held by pending calls
+- **WHEN** a handler starts 32 calls to a room whose members answer 300 kB each and one never answers
+- **THEN** the heap held by the pending calls stays within the answering address's quota plus a bounded slack, and the
+  server gives it back when the calls end
+
+#### Scenario: Answering session closes
+- **WHEN** a session closes while its answer is held, and the call then ends
+- **THEN** the address and server gauges still count the answer until the call ends and are zero afterwards
+
+### Requirement: Adapter calls are bounded
+Every call to the adapter made by an operator or by initialisation MUST fail with `AdapterError::Timeout` after
+`adapter_timeout`, so an adapter that never returns cannot hang its caller. A panic in the adapter while a socket
+disconnects MUST NOT keep the socket in its namespace or keep its charges.
+
+#### Scenario: Adapter never returns
+- **WHEN** the adapter's broadcast or init never returns (paused clock)
+- **THEN** the emit fails with a timeout error after exactly `adapter_timeout`, and works again once the adapter does
+
+#### Scenario: Adapter panics on disconnect
+- **WHEN** `del_all` panics as a client's connection closes
+- **THEN** the socket leaves the namespace and its charges are released
+
+### Requirement: Socket descriptions are cheap and keep credentials out of logs
+`fetch_sockets` MUST NOT copy the handshake of a socket of this process (it shares it) and MUST allocate a bounded
+amount per socket whatever the handshake holds; the description stays serializable as plain data. The `Debug` output of
+`RemoteSocket`, `SocketInfo` and `HandshakeInfo` MUST NOT print the values of `cookie`, `authorization` and
+`proxy-authorization` headers, the values of `auth`, or a query string.
+
+#### Scenario: Fetch shares the handshake
+- **WHEN** 200 sockets with 14 KiB of `auth` each are fetched
+- **THEN** less than 3 KiB is allocated per socket and the `auth` object is the socket's own
+
+#### Scenario: Debug output
+- **WHEN** a fetched socket whose handshake has a cookie, a bearer token and an `auth` token is printed with `{:?}`
+- **THEN** none of those values appears, and the header names and `auth` keys do
+
 ### Requirement: Security divergences are explicit
-Every bound of this layer where Node has none or a different one (rooms per socket, room name length, the deadline
-and the collected bytes of broadcast acknowledgements, the per-recipient send buffer) SHALL be documented in
+Every bound of this layer where Node has none or a different one (rooms per socket and per operator, room name
+length, the rooms of socket ids, an empty `to`, the deadline and bytes of broadcast acknowledgements, the send buffer)
+SHALL be documented in
 `docs/websockets/adapter.md` (English and Spanish) and the rustdoc of `IoOptions`, and each one a client can observe
 MUST have an entry in the harness's `expected-differences.json` with the scenario that exercises it.
 

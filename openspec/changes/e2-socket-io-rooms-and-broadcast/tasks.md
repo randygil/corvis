@@ -117,6 +117,34 @@ clock; no retries.
   the three port apps keep 0 apidiff differences
 - [ ] 7.7 The security review of 6.3 is closed before archiving
 
+## 8. Security review, round 1 (fixes)
+
+- [x] 8.1 F1: `RemoteSocket::{emit, join, leave, disconnect}` act on the local socket directly, and through the adapter by
+  `BroadcastOptions::socket` (an exact single-socket target, honoured by `Membership::select`) otherwise; `add_all` refuses a
+  room named like another live socket's id (`RoomError::SocketIdRoom`), `del` ignores leaving the own id room, CONNECT never
+  assigns an id that is a room (`Adapter::room_exists`); tests `a_client_cannot_join_the_room_of_another_sockets_id`,
+  `no_socket_is_given_an_id_that_is_already_a_room`, `a_remote_socket_reaches_only_its_own_socket_even_when_another_is_in_its_id_room`;
+  scenario `rooms/id-rooms` and its six expected differences
+- [x] 8.2 F2: the `Charge` of a broadcast acknowledgement travels with its `Args` into the collector and is held until the call
+  ends (`AckSink::respond_charged`, released by `AckShared::finish`); tests with the gauges (during, session closed meanwhile,
+  call dropped, cap) and `answers_held_by_pending_broadcasts_stay_within_the_quota_of_the_answering_address` with the counting
+  allocator
+- [x] 8.3 B1: a join naming more than `max_rooms_per_socket` rooms is refused before the lock, names are deduplicated outside it,
+  `Membership::add` stops at the first name over the cap; tests count names examined
+- [x] 8.4 B3: `HandshakeInfo` shares the local handshake (`Handshake` is an `Arc`), rooms are shared names; counting-allocator test
+  `fetch_sockets_allocates_a_bounded_amount_per_socket_whatever_the_handshake_holds` (bound 3 KiB a socket)
+- [x] 8.5 B4: adapter panics on the disconnect path are contained; `IoOptions::adapter_timeout` (5 s, validated) bounds every adapter
+  call of an operator and `init`; tests with a probe adapter that panics and one that never returns, on the paused clock
+- [x] 8.6 B5: `to` / `within` given an empty collection select nobody; `except` with an empty collection has no effect; scenario
+  `rooms/empty-to` with three expected differences
+- [x] 8.7 Hand-written `Debug` for `RemoteSocket`, `SocketInfo` and `HandshakeInfo` (no cookie, authorization, `auth` values or
+  query); test `debug_output_hides_credentials`
+- [x] 8.8 Notes: `Adapter::close` once per namespace; chaining is linear and an operator names at most `max_rooms_per_socket` rooms
+  (`RoomError::TooManyTargets`); the order guarantee of one caller is tested across the 512-recipient yield and documented; the
+  Engine.IO overflow warning is rate limited
+- [x] 8.9 Docs (English and Spanish): the numbers of #175 / #176 and B2 in the limits page, the corrected sentence on frames, the
+  new rules and options; spec delta and design.md "Security review (round 1)"; `openspec validate e2-socket-io-rooms-and-broadcast --strict`
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` (its `ws/socket-io-rooms` delta is applied).
