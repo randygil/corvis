@@ -359,6 +359,81 @@ These settle the open questions and override the design where they differ.
    `iss`/`aud`; the second issue covers what remains after that.
 9. Implemented after #41, #42, #43, #44 and #45 land; task 1.1 reconciles the design with the merged code.
 
+## Security review
+
+The cross-cutting review of decision 2 ran in two rounds by the `security-reviewer` agent over the implementation, every
+suspicion first written as a proof of concept (kept in the maintainer's session notes) and then, for what was fixed, as a
+regression test. **No high or critical finding is open, so #47 is not blocked.** One medium finding is outside this
+change's reach and is filed (#177); everything else is low or informational.
+
+### Round 1 (scope items 1 to 6)
+
+| Item | Verdict | Notes |
+|---|---|---|
+| 1 Identity | Holds | the guard that ran last decides the user and the info; `set_user` drops the typed user so `User<T>` never disagrees; a global optional guard clears the restored user. Info: a required guard followed by an optional one that fails runs the handler anonymous while posture counts the route as protected (fails closed) |
+| 2 Chains | Holds, three info notes | the JWT key provider being down is a `Fail` and the chain continues (parity with `passport-jwt`, no bypass); API key normalizes validator errors of 500 and above while JWT, local and OAuth2 return them as they are; `Pass` cleared the user but not the auth info of an earlier guard (fixed here) |
+| 3 Shared places | Finding, low | a JWT cookie sent twice or planted in front of the victim's read the first value (fixed here); the rest holds (bearer and API key read the first `Authorization` value alike, repeated `X-Api-Key` headers never pick one) |
+| 4 Guard order and public routes | Finding, low | a composite guard exposing `[AuthGuard, ThrottlerGuard]` through `inner_guards` got no startup warning and limited nothing (fixed here); a wrapper that hides its guards is a documented limit |
+| 5 Session with OAuth2 | Finding, low | an OAuth2 flow whose state is in a cookie survived a logout and another user's login (fixed here); with `state_in_session()` the same sequence is refused. Info: a session cookie named like a state cookie is accepted at startup (configuration error) |
+| 6 Cookies on failure paths | Holds, two info notes | cookies a strategy appends are sent on a later `4xx` (Express parity; no built-in strategy appends authority); the row about failed logins creating no session holds only with `save_uninitialized(false)` (now said in the threat model) |
+
+### Round 2 (scope items 7 to 12)
+
+| Item | Verdict | Notes |
+|---|---|---|
+| 7 CSRF posture | Holds as documented, three info notes | four forced OAuth2 starts cancel a victim's pending flow; login CSRF through an urlencoded form works without an origin check, and `SameOriginGuard` exists only in the example (a candidate for the framework); a cookie-borne JWT or a session cookie without `SameSite` authenticates cross-site `POST`s in browsers that do not default to `Lax` |
+| 8 Sockets | Finding, two low (Socket.IO layer), the gateway side holds | a connect middleware on the main namespace does not cover the others, and `Debug` of `Handshake` prints the `auth` payload: filed as #178; a session never reaches an upgrade or a handshake; `apply_global_enhancers_to_gateways(false)` also drops a global throttler from gateways (info) |
+| 9 Defaults | Finding, low | the API key validator had a deadline and the JWT key provider, JWT validator and local validator had none (fixed here); startup warnings are asymmetric across strategies (info); length limits are capped only for API keys (info) |
+| 10 Secrets in output | Redaction holds; finding, medium | `CacheInterceptor` registered globally replays one user's `GET` response to others (filed as #177, cache module); a handler that formats a credential into a panic or error leaks it, as in the original |
+| 11 Resource use | Holds, two info notes | a throttler in front stops every strategy cost; a request that carries a session cookie costs two store calls and a user lookup even on a `404` or a `429`; an anonymous OAuth2 start with the state in the session creates a record (rate limit the route) |
+| 12 Feature combinations | Holds | every feature gate is an API-presence gate; the one place a feature decided a security property indirectly was the duplicate cookie scan, now available without `auth-session` |
+
+### Findings fixed in this change
+
+| Id | Severity | What | Where | Test |
+|---|---|---|---|---|
+| R-7 | Low | a JWT cookie sent twice authenticated with the first one; no warning for a cookie name without `__Host-` | `auth/jwt/extract.rs`, `auth/jwt/options.rs`, `http/request.rs` (`cookie_values` available with `jwt` or `auth-session`) | `a_jwt_cookie_sent_twice_is_no_token`, `auth_jwt_log.rs` |
+| R-8 | Low | the guard-order warning missed composite guards | `auth/mod.rs` | `auth_guard_order_log.rs` |
+| R-9 | Low | a cookie-state OAuth2 flow survived logout and another user's login | `auth/oauth2/state.rs`, `auth/oauth2/strategy.rs` | `oauth2_cookie_state_is_bound_to_the_session_it_started_under` |
+| R-10 | Low | no deadline for the JWT key provider, JWT validator and local validator | `auth/jwt/`, `auth/local/strategy.rs` | `auth_callback_timeouts.rs` (paused clock) |
+| R-11 | Info | a guard that passed kept the auth info of an earlier guard | `auth/guard.rs` | `a_later_pass_clears_the_auth_info_of_an_earlier_guard_too` |
+
+### Issues filed
+
+- #177 (medium): `CacheInterceptor` registered globally serves one user's response to others on authenticated `GET` routes.
+  Interim guidance: do not register it for the whole application when it has authenticated `GET` routes (threat model
+  warning box and `docs/data/caching.md`, English and Spanish).
+- #178 (low): Socket.IO connect middleware covers the main namespace only, and `Debug` of `Handshake` prints the `auth`
+  payload. Interim guidance: register the middleware on every namespace, never format a handshake with `{:?}` (threat model rows).
+- #173 (strategies at the WebSocket handshake) and #174 (`JwtService` defaults) were already open and are referenced in the
+  threat model; #172 (redirect URI allow-list) and #170, #171 (Redis and ORM session stores) too.
+
+### Known and accepted
+
+Each is on the threat model page or in the strategy docs; none is a way in.
+
+- The JWT key provider being down is a `Fail` (the chain continues): parity with the original, and the next strategy still
+  needs its own valid credential.
+- API key normalizes validator errors of 500 and above to a fixed body; JWT, local and OAuth2 return them as the validator
+  wrote them: documented per strategy ("passed on as it is"), and a validator controls its own message.
+- Four forced OAuth2 starts cancel a victim's pending flow: a nuisance, the victim retries; the limit of four flows per
+  browser is what keeps the cookie small.
+- Login CSRF through an urlencoded form works without an origin check; `SameOriginGuard` exists only in the example and
+  is a candidate to move into `corvis::auth` (a point for #47, not a change of this one).
+- A cookie-borne JWT without `SameSite` authenticates cross-site `POST`s in browsers that do not default to `Lax`: the
+  docs say to set `SameSite`.
+- A session cookie costs two store calls and a user lookup even on a `404` or a `429`, because the session middleware runs
+  before every guard: only a limiter ahead of `SessionModule` shields the store (same as `express-session`).
+- An anonymous OAuth2 start with the state in the session creates a record: rate limit the route (documented).
+- Startup warnings are asymmetric across strategies (for example `from_body_field` and `without_same_site()` are silent):
+  each is a deliberate choice, and the threat model's "known differences" paragraph says so.
+- A strategy that appends a cookie with `append_response_header` has it sent on a later `4xx`/`5xx`: no built-in strategy
+  does; a custom one must log in through the session.
+
+### Re-review
+
+Task 7.5 (a third `security-reviewer` run over the fixes only) is left to the maintainer's session.
+
 ## Implementation notes
 
 Task 1.1 compared this design with the merged code (`dev` at `62df145`). Adjustments, all recorded here:
@@ -395,13 +470,30 @@ Task 1.1 compared this design with the merged code (`dev` at `62df145`). Adjustm
    reader is stricter than the token reader on more than 640 bytes of leading whitespace. Nothing high or critical was
    found, so nothing blocks #47.
 6. **The two follow-up issues of decision 9** exist: #173 (strategies at the WebSocket handshake) and #174 (`JwtService`
-   defaults); #170, #171 and #172 are linked in the threat model too. Socket.IO (#33) is not merged: its row is pending.
-   Engine.IO is merged and is dispatched before the router (`server.rs`), so its handshake has no session.
+   defaults); #170, #171 and #172 are linked in the threat model too. Socket.IO (#33) was not merged when this change started and its row was pending; it is merged now and
+   was reviewed in round 2 (its row says what was found, #178). Engine.IO is dispatched before the router (`server.rs`),
+   so its handshake has no session.
 7. **Sockets**: "Global AuthGuard and a gateway" is tested again in `auth_invariants.rs` next to `tests/auth_ws.rs`, with an
    optional global guard so the HTTP routes keep working.
 8. **Always-compiled files touched**: `src/auth/mod.rs` (the guard-order warning), `src/modules/throttler.rs` (`as_any`,
    `ipv6_subnet_prefix`), `src/jwt.rs` (`Debug`); behind `auth-local`: `src/auth/local/strategy.rs` (`login_tracker`, the
    shared username lookup).
 9. **Left to the maintainer's session**: the corvis-parity check (4.4, 9.6), an external `security-reviewer` run (7.1, 7.2,
-   7.5: the implementer reviewed the scope list himself, turning each suspicion into a test), filing issues (7.4) and the
-   check of the CI log in the pull request (5.3).
+   7.5: the implementer reviewed the scope list himself, turning each suspicion into a test; the two rounds of 7.1 and 7.2
+   ran afterwards, see "Security review"), filing issues (7.4: #177 and #178 are filed) and the check of the CI log in the
+   pull request (5.3).
+10. **The review fixes** (R-7 to R-11, "Security review"). Decisions: (a) the duplicate cookie scan (`Request::cookie_values`)
+    is no longer gated on `auth-session`: it is compiled with `jwt` or `auth-session`, so a `jwt`-only build refuses a
+    duplicated cookie too and no other build changes; (b) the guard-order warning flattens `inner_guards` in execution order
+    (an `AuthGuard` kind, a `ThrottlerGuard` kind, depth capped by `MAX_GUARD_DEPTH`) and warns when any `AuthGuard`
+    precedes a `ThrottlerGuard`; (c) the OAuth2 binding is a SHA-256 of an HMAC (state cookie key) over the strategy, the
+    state and the session identifier, stored per flow as `b` in the signed cookie record, with `-` for "no session"; a new
+    session counts as "no session" unless `save_uninitialized` is on, because only then does the start request persist it;
+    the binding is not used with `state_in_session()` (the flow lives in the session); (d) `key_provider_timeout` and
+    `validator_timeout` of `JwtStrategyOptions` and `validator_timeout` of `LocalStrategyOptions` are 5 s by default, 1 ms to
+    300 s like the API key one, answer `HttpException::new((), 503)` and share the rate-limited warning helper
+    (`WarnLimiter`); (e) a guard that passes clears the auth info in `AuthGuard::can_activate`, not in the authenticator,
+    whose unit test keeps the info untouched when the chain itself passes.
+11. **Always-compiled files touched by the fixes**: `src/auth/mod.rs` (the warning), `src/auth/guard.rs` (`Pass`),
+    `src/http/request.rs` (the `cfg` of `cookie_values`) and `src/auth/jwt/` and `src/auth/local/` behind their features.
+    An application that enables none of the auth features compiles the same code as before.

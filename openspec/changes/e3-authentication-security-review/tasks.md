@@ -95,17 +95,17 @@ reviews what they shipped, so nothing below starts before that.
 
 ## 7. The review
 
-- [ ] 7.1 Run the `security-reviewer` agent with the scope list of design decision 2 (items 1-6), the earlier
+- [x] 7.1 Run the `security-reviewer` agent with the scope list of design decision 2 (items 1-6), the earlier
   findings of 1.2 and the test application; every suspicion is first written as a failing test in
   `auth_invariants.rs` or as a proof of concept in the scratchpad; verify each scope item has a written result
   (finding or "nothing found", with what was tried)
-- [ ] 7.2 Second round for scope items 7-12 (CSRF posture, sockets, defaults, secrets in output, resource use,
+- [x] 7.2 Second round for scope items 7-12 (CSRF posture, sockets, defaults, secrets in output, resource use,
   feature combinations), including the Engine.IO and Socket.IO handshakes if merged; verify the same way
 - [x] 7.3 Triage every finding with design decision 9; fix the in-change ones, each with its regression test, and
   add a `MODIFIED` delta to this change for any requirement of an archived auth change that a fix alters (then
   update that strategy's docs in English and Spanish); verify `openspec validate --strict` and the full auth test
   set after each fix
-- [ ] 7.4 Write the text of each issue to file (title, severity, labels `area:security`, description, interim
+- [x] 7.4 (filed as #177 and #178, with #173 and #174 already open) Write the text of each issue to file (title, severity, labels `area:security`, description, interim
   guidance) in the findings register and hand the list to the maintainer's session; verify the issue numbers are
   written back, and that any deferred high or critical finding was reported before continuing
 - [ ] 7.5 Re-review: run the `security-reviewer` agent once more over the fixes only; verify no fix opened a new
