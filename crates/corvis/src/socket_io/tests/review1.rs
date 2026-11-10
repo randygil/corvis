@@ -9,9 +9,11 @@ use std::sync::atomic::AtomicUsize;
 use async_trait::async_trait;
 
 use super::rooms::{connect, received, size};
-use crate::socket_io::adapter::{AckSink, Adapter, AdapterError, BroadcastOptions, InMemoryAdapter, LocalNamespace, MembershipSize, Packet, Room, SocketId, SocketInfo};
-use crate::socket_io::adapter::Membership;
 use super::*;
+use crate::socket_io::adapter::Membership;
+use crate::socket_io::adapter::{
+    AckSink, Adapter, AdapterError, BroadcastOptions, InMemoryAdapter, LocalNamespace, MembershipSize, Packet, Room, SocketId, SocketInfo,
+};
 
 // ------------------------------------------------------------------------------------------------ a probe adapter
 

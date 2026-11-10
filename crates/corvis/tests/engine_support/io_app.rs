@@ -200,7 +200,8 @@ fn register(namespace: &IoNamespace, io: &IoServer) {
         });
         socket.on("fetch-sockets", |socket, args, ack| async move {
             let sockets = selection(socket.namespace().operator(), &arg(&args)).fetch_sockets().await.unwrap_or_default();
-            let sockets: Vec<Value> = sockets.iter().map(|s| json!({ "id": s.id(), "rooms": s.rooms().iter().map(|r| &**r).collect::<Vec<&str>>() })).collect();
+            let sockets: Vec<Value> =
+                sockets.iter().map(|s| json!({ "id": s.id(), "rooms": s.rooms().iter().map(|r| &**r).collect::<Vec<&str>>() })).collect();
             if let Some(ack) = ack {
                 let _ = ack.send((json!({ "sockets": sockets }),));
             }

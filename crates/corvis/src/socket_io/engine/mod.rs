@@ -113,7 +113,9 @@ impl ServerInner {
         let left_out = std::mem::take(suppressed);
         *last = Some(now);
         Some(if left_out > 0 {
-            format!("session {log_id}: send buffer over its limit, session closed ({left_out} more were closed in the last minute without a line)")
+            format!(
+                "session {log_id}: send buffer over its limit, session closed ({left_out} more were closed in the last minute without a line)"
+            )
         } else {
             format!("session {log_id}: send buffer over its limit, session closed")
         })

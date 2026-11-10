@@ -17,8 +17,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use corvis::socket_io::engine::EngineOptions;
 use corvis::socket_io::IoOptions;
+use corvis::socket_io::engine::EngineOptions;
 use engine_support::io_client::{Msg, Raw, start};
 
 struct Counting;
@@ -143,7 +143,11 @@ async fn answers_held_by_pending_broadcasts_stay_within_the_quota_of_the_answeri
     // (received messages are charged before they can be refused); and the test's own clients, which keep each answer
     // and build it again to send it. Without the fix (measured): every answer of every call, 64 MB.
     let bound = PACKET + 9 * (16 * 1024 + 3 * ANSWER) + ANSWERERS * 4 * ANSWER;
-    println!("held by {CALLS} pending calls: {held} bytes after {} answers (bound {bound}; unbounded would be {})", sent.load(Ordering::SeqCst), CALLS * ANSWERERS * ANSWER);
+    println!(
+        "held by {CALLS} pending calls: {held} bytes after {} answers (bound {bound}; unbounded would be {})",
+        sent.load(Ordering::SeqCst),
+        CALLS * ANSWERERS * ANSWER
+    );
     assert!(held <= bound, "{held} bytes held above the bound {bound}");
     // The calls end at their deadline and everything is given back.
     for task in tasks {
@@ -199,7 +203,7 @@ async fn fetch_sockets_allocates_a_bounded_amount_per_socket_whatever_the_handsh
 async fn chaining_to_calls_costs_what_each_call_adds() {
     let _guard = ONE_AT_A_TIME.lock().await;
     const CALLS: usize = 5_000;
-    let fx = start(IoOptions::new().max_rooms_per_socket(CALLS + 1),|_| {}).await;
+    let fx = start(IoOptions::new().max_rooms_per_socket(CALLS + 1), |_| {}).await;
     let names: Vec<String> = (0..CALLS).map(|n| format!("room-{n}")).collect();
     let before = requested();
     let mut operator = fx.io.to("start");

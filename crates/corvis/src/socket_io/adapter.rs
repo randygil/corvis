@@ -274,7 +274,13 @@ impl std::fmt::Debug for HandshakeInfo {
         let headers: Vec<String> = self
             .headers()
             .into_iter()
-            .map(|(name, value)| if SECRET_HEADERS.contains(&name.to_ascii_lowercase().as_str()) { format!("{name}: <hidden>") } else { format!("{name}: {value}") })
+            .map(|(name, value)| {
+                if SECRET_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+                    format!("{name}: <hidden>")
+                } else {
+                    format!("{name}: {value}")
+                }
+            })
             .collect();
         let url = self.url();
         let url = match url.split_once('?') {
@@ -323,7 +329,11 @@ pub struct SocketInfo {
 
 impl std::fmt::Debug for SocketInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SocketInfo").field("id", &self.id).field("handshake", &self.handshake).field("rooms", &self.rooms.len()).finish_non_exhaustive()
+        f.debug_struct("SocketInfo")
+            .field("id", &self.id)
+            .field("handshake", &self.handshake)
+            .field("rooms", &self.rooms.len())
+            .finish_non_exhaustive()
     }
 }
 

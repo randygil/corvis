@@ -23,7 +23,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::adapter::{AckShared, AckSink, AdapterError, BroadcastFlags, BroadcastOptions, HandshakeInfo, Room, RoomError, SocketId, SocketInfo};
+use super::adapter::{
+    AckShared, AckSink, AdapterError, BroadcastFlags, BroadcastOptions, HandshakeInfo, Room, RoomError, SocketId, SocketInfo,
+};
 use super::engine::options::MAX_DURATION;
 use super::namespace::IoNamespace;
 use super::parser::{self, Body, Packet};
