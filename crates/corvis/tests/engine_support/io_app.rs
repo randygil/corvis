@@ -35,6 +35,10 @@ fn strings(arg: &Value, key: &str) -> Vec<String> {
 
 fn selection(mut operator: BroadcastOperator, arg: &Value) -> BroadcastOperator {
     let (to, except) = (strings(arg, "to"), strings(arg, "except"));
+    // `emptyTo`: a `to` given an empty list, as when the list came from a client.
+    if arg.get("emptyTo").and_then(Value::as_bool) == Some(true) {
+        operator = operator.to(Vec::<String>::new());
+    }
     if !to.is_empty() {
         operator = operator.to(to);
     }

@@ -446,7 +446,13 @@ impl Session {
             Ok(()) => Ok(()),
             Err(PushError::Closed) => Err(SendError::Closed),
             Err(PushError::Full) => {
-                Logger::new("EngineIO").warn(format!("session {}: send buffer over its limit, session closed", self.log_id));
+                let line = match self.server() {
+                    Some(server) => server.overflow_line(self.log_id, std::time::Instant::now()),
+                    None => Some(format!("session {}: send buffer over its limit, session closed", self.log_id)),
+                };
+                if let Some(line) = line {
+                    Logger::new("EngineIO").warn(line);
+                }
                 self.close(CloseReason::TransportError);
                 Err(SendError::Full)
             }

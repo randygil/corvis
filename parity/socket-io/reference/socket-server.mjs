@@ -68,7 +68,9 @@ function markDone(io) {
   for (const name of ["/", "/admin"]) io.of(name).emit("done");
 }
 
-function selection(operator, { to = [], except = [] }) {
+// `emptyTo` is a `to` given an empty list: what an application gets when the list came from a client.
+function selection(operator, { to = [], except = [], emptyTo = false }) {
+  if (emptyTo) operator = operator.to([]);
   if (to.length > 0) operator = operator.to(to);
   if (except.length > 0) operator = operator.except(except);
   return operator;

@@ -93,11 +93,32 @@ pub(crate) struct ServerInner {
     on_closing: RwLock<Vec<ClosingCallback>>,
     last_cap_warning: Mutex<Option<std::time::Instant>>,
     last_hook_warning: Mutex<Option<std::time::Instant>>,
+    /// When the last send-buffer overflow was logged and how many were left out since: a broadcast can close many
+    /// sessions at once, so the line is written once a minute with the number it left out.
+    overflow_warning: Mutex<(Option<std::time::Instant>, u64)>,
 }
 
 type AddressTable = Mutex<HashMap<String, Weak<UnreadGauge>>>;
 
 impl ServerInner {
+    /// The line to write for a session closed by a send buffer over its limit, or `None` when one was written less
+    /// than a minute ago (the next one says how many were left out).
+    pub(crate) fn overflow_line(&self, log_id: u64, now: std::time::Instant) -> Option<String> {
+        let mut state = self.overflow_warning.lock().unwrap_or_else(|e| e.into_inner());
+        let (last, suppressed) = &mut *state;
+        if last.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_secs(60)) {
+            *suppressed += 1;
+            return None;
+        }
+        let left_out = std::mem::take(suppressed);
+        *last = Some(now);
+        Some(if left_out > 0 {
+            format!("session {log_id}: send buffer over its limit, session closed ({left_out} more were closed in the last minute without a line)")
+        } else {
+            format!("session {log_id}: send buffer over its limit, session closed")
+        })
+    }
+
     /// What a new session's gauge is chained to: the gauge of its address when the address has a share of the
     /// budget, the server-wide gauge otherwise.
     fn parent_gauge(&self, key: &str) -> Arc<UnreadGauge> {
@@ -254,6 +275,7 @@ impl EngineServer {
                 on_closing: RwLock::new(Vec::new()),
                 last_cap_warning: Mutex::new(None),
                 last_hook_warning: Mutex::new(None),
+                overflow_warning: Mutex::new((None, 0)),
             }),
         })
     }
@@ -963,6 +985,20 @@ impl EngineSocket {
 mod tests {
     use super::packet::Packet;
     use super::*;
+
+    #[test]
+    fn sessions_closed_by_an_overflow_are_logged_once_a_minute_with_how_many_were_left_out() {
+        let server = EngineServer::new(EngineOptions::new()).unwrap();
+        let start = std::time::Instant::now();
+        let first = server.inner.overflow_line(1, start).expect("the first line is written");
+        assert!(!first.contains("without a line"), "{first}");
+        for id in 2..=1_000 {
+            assert_eq!(server.inner.overflow_line(id, start + Duration::from_secs(59)), None);
+        }
+        let next = server.inner.overflow_line(1_001, start + Duration::from_secs(60)).expect("a minute later");
+        assert!(next.contains("999 more were closed"), "{next}");
+        assert_eq!(server.inner.overflow_line(1_002, start + Duration::from_secs(61)), None);
+    }
 
     #[test]
     fn address_keys_are_normalized_whatever_form_a_proxy_wrote() {
