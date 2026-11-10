@@ -1,3 +1,4 @@
+use corvis::auth::api_key::ApiKeyStrategy;
 use corvis::auth::jwt::JwtStrategy;
 use corvis::auth::local::{LocalStrategy, PasswordHasher};
 use corvis::prelude::*;
@@ -7,6 +8,7 @@ use super::auth_controller::AuthController;
 use super::auth_service::AuthService;
 use super::jwt_auth::JwtAuth;
 use super::local_auth::LocalAuth;
+use super::service_key_auth::{ServiceKeyAuth, ServiceKeys};
 use crate::users::UsersModule;
 
 #[module(
@@ -28,6 +30,9 @@ use crate::users::UsersModule;
         Provider::class::<PasswordHasher>(),
         LocalAuth,
         Provider::strategy::<LocalStrategy<LocalAuth>>(),
+        ServiceKeys::provider(),
+        ServiceKeyAuth,
+        Provider::strategy::<ApiKeyStrategy<ServiceKeyAuth>>(),
     ],
     exports = [AuthService],
 )]

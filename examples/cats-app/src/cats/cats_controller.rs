@@ -44,6 +44,16 @@ impl CatsController {
         CountDto { count: self.cats_service.count() }
     }
 
+    /// Read-only route for machine clients: a signed-in user (`jwt`) or a service with the `SERVICE_API_KEY` in the
+    /// `X-Api-Key` header (`api-key`), whichever comes first. `#[public]` only keeps the global `jwt` guard out of the
+    /// way; this guard decides.
+    #[get("export")]
+    #[public]
+    #[use_guards(corvis::auth::AuthGuard::chain(["jwt", "api-key"]))]
+    fn export(&self, req: Request) -> Value {
+        json!({ "count": self.cats_service.count(), "caller": req.user() })
+    }
+
     /// The id of this request, from the request-scoped `RequestContext` (`X-Request-Id` or generated).
     #[get("request-id")]
     #[public]
