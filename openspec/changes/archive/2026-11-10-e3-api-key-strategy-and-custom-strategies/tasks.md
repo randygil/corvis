@@ -11,7 +11,7 @@ if it differs; record the adjustments under "Implementation notes" in `design.md
   `crates/corvis/Cargo.toml`; check with `cargo tree -d -p corvis --features auth-api-key` that no second generation
   of `subtle` appears and with `cargo deny check` that licenses pass; verify `cargo clippy -p corvis
   --no-default-features --features auth-api-key -- -D warnings` passes on an empty `auth::api_key` module
-- [ ] 1.2 Add `auth-api-key` to the per-feature loop (`.github/workflows/ci.yml:72`) and a
+- [x] 1.2 Add `auth-api-key` to the per-feature loop (`.github/workflows/ci.yml:72`) and a
   `cargo test -p corvis --features auth-api-key --no-fail-fast` step next to the `compression` one (line 114); verify
   the new steps run in the CI of the pull request
 
@@ -95,10 +95,10 @@ if it differs; record the adjustments under "Implementation notes" in `design.md
   `auth_api_key.rs` and `auth_custom.rs` without Node
 - [x] 7.4 Regression tests exist for every scenario of `auth/api-key` and `auth/custom-strategies`
 - [x] 7.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 7.6 Framework runtime code changed (`Request`, `LoggingInterceptor`): run the corvis-parity check; verify the
+- [x] 7.6 Framework runtime code changed (`Request`, `LoggingInterceptor`): run the corvis-parity check; verify the
   three port apps (consi, facten, houseplan) keep 0 apidiff differences
 - [x] 7.7 `cargo deny check` passes with `subtle` as a direct dependency
-- [ ] 7.8 Security review: run the security-reviewer agent over `corvis::auth::api_key`, the redaction code and the
+- [x] 7.8 Security review: run the security-reviewer agent over `corvis::auth::api_key`, the redaction code and the
   example's validator. Scope: timing of every comparison path (length, prefix, conflict rule, set lookup); key
   material in logs, `Debug`, errors, auth info and panics; source confusion (duplicate headers, header and query,
   bearer shared with JWT in a chain, parameter name encodings that escape redaction); the limits of design decision 6
@@ -125,7 +125,7 @@ if it differs; record the adjustments under "Implementation notes" in `design.md
   `npm run docs:check` in `docs/`
 - [x] 8.7 Panic line through the limiter, no per-request `ExceptionsHandler` line (note 23); verify with the log test
   that counts the lines for forty panics
-- [ ] 8.8 Maintainer: rerun the security review and the corvis-parity check over this round
+- [x] 8.8 Maintainer: rerun the security review and the corvis-parity check over this round
 
 ## 9. Security review (round 2)
 
@@ -134,6 +134,26 @@ if it differs; record the adjustments under "Implementation notes" in `design.md
 - [x] 9.2 `Debug` of `Request` prints the redacted URL (note 25); verify with
   `the_debug_form_of_a_request_hides_the_key_of_a_query_source`
 - [x] 9.3 Docs (EN, ES): what registers a name and what does not (note 26)
+
+## Verification
+
+Checked on `dev` at 80e41d8 (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy with the `auth-api-key` feature loop, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test --workspace` | 1635 passed, 0 failed, 83 ignored |
+| Security review, first round | 1 medium (an empty user authenticated), 3 low, notes; all fixed (group 8) |
+| Security review, second round | no fix bypassed; 0 leaks in a differential fuzz of 600,000 query strings; 1 low accepted (note 27), 3 notes fixed or documented (group 9) |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; databases equivalent |
+| Parity, houseplan | 598 checks equal (quiet hours), 0 different; databases equivalent (see note) |
+
+Notes: the first CI run of the merge failed to compile `auth_empty_user.rs` in the step that tests one feature at a
+time (helpers unused without all three strategy features, warnings denied on Linux); fixed in 80e41d8. The first
+houseplan run had 113 differences that started where the Node original reported `EADDRINUSE` on its own connections
+(local ports exhausted on the machine, which was running a socket-heavy review at the time); the rerun was clean. The
+group 9 changes were verified by their regression tests and the full workspace run, not by a third review round.
 
 ## Workflow follow-up
 
