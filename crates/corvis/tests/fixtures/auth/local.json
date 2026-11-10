@@ -1,0 +1,687 @@
+{
+  "versions": {
+    "passport-local": "1.0.0"
+  },
+  "cases": [
+    {
+      "name": "json body",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "form body",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "body": "username=ana&password=secret"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "form body with percent-encoding",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "body": "username=ana%40x.io&password=p%C3%A4ss+word%26"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana@x.io",
+            "usernameType": "string",
+            "password": "päss word&"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query string only",
+      "request": {
+        "method": "POST",
+        "path": "/login?username=ana&password=secret",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "query string with an empty JSON body",
+      "request": {
+        "method": "POST",
+        "path": "/login?username=ana&password=secret",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "body value wins over the query",
+      "request": {
+        "method": "POST",
+        "path": "/login?username=eve",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "username in the body, password in the query",
+      "request": {
+        "method": "POST",
+        "path": "/login?password=secret",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "validator returns no user",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json",
+          "x-validate": "null"
+        },
+        "body": "{\"username\":\"ana\",\"password\":\"bad\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "validator throws",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json",
+          "x-validate": "throw"
+        },
+        "body": "{\"username\":\"ana\",\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "message": "Account locked",
+          "error": "Forbidden",
+          "statusCode": 403
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "missing password",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "missing username",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "empty password",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":\"\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "empty username",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"\",\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "no body at all",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "password zero",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":0}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "password false",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":false}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "password null",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":null}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "empty body password falls back to the query",
+      "request": {
+        "method": "POST",
+        "path": "/login?password=secret",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":\"\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "username is an array",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":[\"ana\"],\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "username is an object",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":{\"name\":\"ana\"},\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "non-string username",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":123,\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": 123,
+            "usernameType": "number",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": "the original passes the number to validate(); Corvis treats a non-string credential as missing (type confusion in user lookups)"
+    },
+    {
+      "name": "non-string password",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":123}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": 123
+          }
+        }
+      },
+      "divergence": "the original passes the number to validate(); Corvis treats a non-string credential as missing"
+    },
+    {
+      "name": "custom nested field",
+      "request": {
+        "method": "POST",
+        "path": "/nested",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"user\":{\"email\":\"ana@x.io\"},\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana@x.io",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "custom nested field absent",
+      "request": {
+        "method": "POST",
+        "path": "/nested",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"user\":{},\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "string before the end of the path",
+      "request": {
+        "method": "POST",
+        "path": "/nested",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"user\":\"ana\",\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "object at the end of the path",
+      "request": {
+        "method": "POST",
+        "path": "/userobj",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"user\":{\"email\":\"ana@x.io\"},\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "string at a one-segment path",
+      "request": {
+        "method": "POST",
+        "path": "/userobj",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"user\":\"ana\",\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "array index in the path",
+      "request": {
+        "method": "POST",
+        "path": "/indexed",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"names\":[\"x\",\"ana\"],\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "array index out of range",
+      "request": {
+        "method": "POST",
+        "path": "/indexed",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"names\":[\"x\"],\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "array index on a string",
+      "request": {
+        "method": "POST",
+        "path": "/indexed",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"names\":\"ana\",\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "password of 1024 bytes",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":\"pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+          }
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "oversized password",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ana\",\"password\":\"ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ana",
+            "usernameType": "string",
+            "password": "ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+          }
+        }
+      },
+      "divergence": "the original has no limit besides the body size and calls validate(); Corvis refuses a credential over 1024 bytes"
+    },
+    {
+      "name": "oversized username",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"username\":\"ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\",\"password\":\"secret\"}"
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "user": {
+            "username": "ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+            "usernameType": "string",
+            "password": "secret"
+          }
+        }
+      },
+      "divergence": "the original has no limit besides the body size and calls validate(); Corvis refuses a credential over 1024 bytes"
+    }
+  ]
+}
