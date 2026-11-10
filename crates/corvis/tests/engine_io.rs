@@ -88,10 +88,7 @@ async fn polling_handshake_answers_the_open_packet() {
 #[tokio::test]
 async fn the_open_packet_follows_the_options() {
     let fx = start(
-        EngineOptions::new()
-            .ping_interval(Duration::from_millis(300))
-            .ping_timeout(Duration::from_millis(200))
-            .max_http_buffer_size(4096),
+        EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(200)).max_http_buffer_size(4096),
     )
     .await;
     let (_, open) = open_polling(fx.addr).await;

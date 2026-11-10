@@ -738,3 +738,105 @@ mod tests {
         assert_eq!(hb.deadline(), Some(start + Duration::from_secs(25)));
     }
 }
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    fn open(options: EngineOptions, transport: TransportKind) -> Arc<Session> {
+        let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
+        let remote = "127.0.0.1:1".parse().unwrap();
+        let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
+        // No server: removing the session from the store is a no-op.
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options))
+    }
+
+    fn drain(session: &Session) -> Vec<Packet> {
+        session.outbox.take_batch(usize::MAX, |p| p.polling_len() + 1)
+    }
+
+    async fn advance(ms: u64) {
+        tokio::time::advance(Duration::from_millis(ms)).await;
+        // Let the timer task run.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_session_pings_and_closes_with_ping_timeout_at_exact_times() {
+        let options = EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(200));
+        let session = open(options, TransportKind::WebSocket);
+        // The open packet only.
+        assert_eq!(drain(&session).len(), 1);
+        advance(299).await;
+        assert!(drain(&session).is_empty(), "no ping before the interval");
+        advance(1).await;
+        assert_eq!(drain(&session), vec![Packet::Ping(String::new())]);
+        advance(199).await;
+        assert_eq!(session.close_reason(), None, "no timeout before the pong deadline");
+        advance(1).await;
+        assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pong_keeps_the_session_alive_and_schedules_the_next_ping() {
+        let options = EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(200));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = drain(&session);
+        advance(300).await;
+        let _ = drain(&session);
+        advance(100).await;
+        session.on_packet(Packet::Pong(String::new()));
+        advance(299).await;
+        assert!(drain(&session).is_empty());
+        advance(1).await;
+        assert_eq!(drain(&session), vec![Packet::Ping(String::new())]);
+        assert_eq!(session.close_reason(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_upgrade_that_never_completes_is_abandoned_at_upgrade_timeout() {
+        let options = EngineOptions::new().upgrade_timeout(Duration::from_secs(10));
+        let session = open(options, TransportKind::Polling);
+        let candidate = session.begin_candidate().expect("a first candidate");
+        advance(9_999).await;
+        assert!(!*candidate.cancel.borrow());
+        advance(1).await;
+        assert!(*candidate.cancel.borrow(), "the candidate is cancelled at the deadline");
+        assert_eq!(session.close_reason(), None, "the session is kept");
+        // The slot is free again.
+        assert!(session.begin_candidate().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_upgrade_at_a_time_and_none_after_the_upgrade() {
+        let session = open(EngineOptions::new(), TransportKind::Polling);
+        let first = session.begin_candidate().expect("first");
+        assert!(session.begin_candidate().is_none(), "second candidate while probing");
+        assert!(session.candidate_upgraded(first.id));
+        assert_eq!(session.transport(), TransportKind::WebSocket);
+        assert!(session.begin_candidate().is_none(), "a candidate after the upgrade");
+        // A stale candidate cannot upgrade again.
+        assert!(!session.candidate_upgraded(first.id));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pending_poll_gets_a_noop_every_100_ms_while_probing() {
+        let session = open(EngineOptions::new(), TransportKind::Polling);
+        // The first poll takes the open packet off the outbox.
+        assert!(matches!(session.poll().await, Polled::Packets(_)));
+        let candidate = session.begin_candidate().unwrap();
+        session.candidate_probed(candidate.id);
+        for _ in 0..2 {
+            let poller = {
+                let session = session.clone();
+                tokio::spawn(async move { session.poll().await })
+            };
+            advance(99).await;
+            assert!(!poller.is_finished(), "no noop before 100 ms");
+            advance(1).await;
+            assert!(matches!(poller.await.unwrap(), Polled::Noop));
+        }
+    }
+}

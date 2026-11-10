@@ -43,10 +43,7 @@ pub fn presets() -> Vec<Preset> {
         Preset { name: "default", options: EngineOptions::new(), burst: false },
         Preset {
             name: "fast",
-            options: EngineOptions::new()
-                .path("/fast/")
-                .ping_interval(Duration::from_millis(300))
-                .ping_timeout(Duration::from_millis(200)),
+            options: EngineOptions::new().path("/fast/").ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(200)),
             burst: false,
         },
         Preset {

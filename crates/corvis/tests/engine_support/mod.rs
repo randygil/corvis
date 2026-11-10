@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use corvis::prelude::*;
-use corvis::socket_io::engine::{EngineServer, EngineSocket};
 use corvis::socket_io::EngineOptions;
+use corvis::socket_io::engine::{EngineServer, EngineSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -90,13 +90,13 @@ pub async fn http(addr: SocketAddr, method: &str, target: &str, headers: &[(&str
 }
 
 pub fn parse_response(raw: &[u8]) -> Resp {
-    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or_else(|| panic!("no response head in {:?}", String::from_utf8_lossy(raw)));
+    let split =
+        raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or_else(|| panic!("no response head in {:?}", String::from_utf8_lossy(raw)));
     let head = String::from_utf8_lossy(&raw[..split]).into_owned();
     let mut lines = head.split("\r\n");
     let status: u16 = lines.next().unwrap().split(' ').nth(1).unwrap().parse().unwrap();
-    let headers: Vec<(String, String)> = lines
-        .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
-        .collect();
+    let headers: Vec<(String, String)> =
+        lines.filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))).collect();
     let mut body = raw[split + 4..].to_vec();
     if headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.contains("chunked")) {
         body = dechunk(&body);
@@ -106,8 +106,7 @@ pub fn parse_response(raw: &[u8]) -> Resp {
 
 fn dechunk(mut data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    loop {
-        let Some(eol) = data.windows(2).position(|w| w == b"\r\n") else { break };
+    while let Some(eol) = data.windows(2).position(|w| w == b"\r\n") {
         let size = usize::from_str_radix(String::from_utf8_lossy(&data[..eol]).trim(), 16).unwrap_or(0);
         data = &data[eol + 2..];
         if size == 0 || data.len() < size {
