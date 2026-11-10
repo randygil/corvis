@@ -123,7 +123,7 @@ the configured value, "within" bounds are generous, timer logic runs on Tokio's 
   what is not supported: dynamic namespaces, state recovery, `volatile`, the client bundle) and translate it in
   `docs/es/websockets/adapter.md`; update the harness section of `CONTRIBUTING.md` (scenario app, control route,
   conformance test); verify `npm run docs:check` in `docs/`
-- [ ] 8.5 Security review of the change with the `security-reviewer` agent (parser, reassembly, ack tracking,
+- [x] 8.5 Security review of the change with the `security-reviewer` agent (parser, reassembly, ack tracking,
   CONNECT handling, limits of design.md Decision 9, the three Engine.IO additions); repeat rounds until no open
   finding; record findings and their fixes in design.md under "Security review"; verify every finding has a regression
   test or a recorded reason
@@ -221,9 +221,36 @@ the configured value, "within" bounds are generous, timer logic runs on Tokio's 
 - [x] 9.4 Regression tests: one per spec scenario (unit, integration, security or harness scenario), as listed in
   groups 1-8
 - [x] 9.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
-- [ ] 9.6 Framework runtime code changed (`crates/corvis/src/socket_io/`): run the `corvis-parity` check and verify
+- [x] 9.6 Framework runtime code changed (`crates/corvis/src/socket_io/`): run the `corvis-parity` check and verify
   the three port apps keep 0 apidiff differences
-- [ ] 9.7 The security review of 8.5 is closed before archiving
+- [x] 9.7 The security review of 8.5 is closed before archiving
+
+## Verification
+
+Checked on `dev` at 5e9aebb (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy with the feature loop, test with the `socket-io` step, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test -p corvis --features socket-io` | 1445 passed, 0 failed, 56 ignored |
+| `cargo test --workspace` | 1931 passed, 0 failed, 95 ignored |
+| `cargo check -p corvis --tests --features <f>` for compression, auth-local, auth-api-key, auth-session, auth-oauth2, socket-io | no warnings |
+| Against Node (`CORVIS_NODE_DIFF=1`): `socket_io_diff`, `socket_io_conformance`, `engine_io_conformance` | all pass |
+| Security review, round 1 | 1 medium (memory of decoded packets outside the budgets); fixed (group 8a) |
+| Security review, round 2 | cost model for text held; 2 medium (binary attachments outside the address quota, fragmented messages undercharged), 2 low; fixed (group 8b) |
+| Security review, flow-control pass | eight areas with proofs of concept, no medium; 3 low |
+| Security review, round 3 | transit memory of the WebSocket library measured, bounded by a test and documented as outside the budget; lows fixed (group 8c) |
+| Security review, round 4 | accounting held (no overshoot, no leak, honest-client guarantee with 7, 8 and 16 attacker addresses); 3 low fixed (group 8d) |
+| Security review, round 5 | rounds 3 and 4 held; 1 medium introduced by round 4 (a wakeup stampede), fixed (group 8e) |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 636 checks equal, 0 different; route tables identical; databases equivalent |
+
+Notes: the round 5 fix was verified by its regression test and by the reviewer's own measurement on the real server
+(0.005 to 0.009 cores with 256 parked connections, against 6.2 to 6.5 before), not by a sixth review round. Left as
+candidate follow-ups, with their numbers in design.md: charging the transit bytes of the WebSocket transport to the
+session (about 1.1 MiB persistent and 3.1 MiB transient per session with defaults, outside the budget), and a
+server-wide outbound budget for Engine.IO.
 
 ## Workflow follow-up
 
