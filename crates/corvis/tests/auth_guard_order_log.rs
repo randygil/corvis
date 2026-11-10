@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use corvis::auth::{AuthGuard, AuthenticateOptions, PassportModule, PassportModuleOptions, Strategy, StrategyOutcome};
+use corvis::di::{DiError, Injectable, ResolveCtx};
 use corvis::prelude::*;
 use corvis::testing::{Test, request};
 use corvis::{LogLevel, LoggerService, ThrottlerGuard, ThrottlerModule, ThrottlerOptions};
@@ -91,6 +92,44 @@ impl WrappedLevel {
     }
 }
 
+/// Authenticates, then rate-limits, and exposes both through `inner_guards` (a composite guard).
+pub struct Composite {
+    auth: AuthGuard,
+    throttler: Arc<ThrottlerGuard>,
+}
+
+impl Injectable for Composite {
+    fn construct(ctx: ResolveCtx) -> futures::future::BoxFuture<'static, Result<Self, DiError>> {
+        Box::pin(async move { Ok(Composite { auth: AuthGuard::new("open").optional(), throttler: ctx.get_or_construct::<ThrottlerGuard>().await? }) })
+    }
+}
+
+#[async_trait]
+impl corvis::CanActivate for Composite {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        if !self.auth.can_activate(ctx).await? {
+            return Ok(false);
+        }
+        self.throttler.can_activate(ctx).await
+    }
+
+    fn inner_guards(&self) -> Vec<&dyn corvis::CanActivate> {
+        vec![&self.auth, self.throttler.as_ref()]
+    }
+}
+
+#[controller("d")]
+pub struct CompositeLevel;
+
+#[routes]
+impl CompositeLevel {
+    #[post("login")]
+    #[use_guards(Composite)]
+    fn login(&self) -> &'static str {
+        "ok"
+    }
+}
+
 type Captured = Arc<Mutex<Vec<(LogLevel, String, Option<String>)>>>;
 
 struct Capture(Captured);
@@ -127,6 +166,7 @@ async fn start(global_auth: bool, global_throttler: bool) -> Captured {
         .controller::<ControllerLevel>()
         .controller::<RouteLevel>()
         .controller::<WrappedLevel>()
+        .controller::<CompositeLevel>()
         .compile()
         .await
         .unwrap();
@@ -159,7 +199,9 @@ async fn global_auth_guard_route_level_throttler() {
     // Every route with a throttler of its own runs the global AuthGuard first, `/b/safe` and `/b/free` included.
     assert!(lines.iter().any(|l| l.contains("POST /b/safe")), "the global AuthGuard still runs first: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("GET /b/free")), "{lines:?}");
-    assert_eq!(lines.len(), 6, "five routes with a route-level throttler plus the wrapped one: {lines:?}");
+    // A composite guard exposing `[AuthGuard, ThrottlerGuard]` through `inner_guards` is flattened in order.
+    assert!(lines.iter().any(|l| l.contains("POST /d/login")), "{lines:?}");
+    assert_eq!(lines.len(), 7, "five routes with a route-level throttler, the wrapped one and the composite: {lines:?}");
     // One warning per route, not per request.
     assert_eq!(lines.len(), lines.iter().collect::<std::collections::BTreeSet<_>>().len(), "{lines:?}");
 }
@@ -176,4 +218,6 @@ async fn throttler_first() {
     assert!(lines.iter().any(|l| l.contains("POST /b/login")), "{lines:?}");
     // A wrapper that exposes neither guard hides the problem from the check (documented limit).
     assert!(!lines.iter().any(|l| l.contains("/c/login")), "{lines:?}");
+    // A composite guard exposes both through `inner_guards`: the warning sees them in order.
+    assert!(lines.iter().any(|l| l.contains("POST /d/login")), "{lines:?}");
 }
