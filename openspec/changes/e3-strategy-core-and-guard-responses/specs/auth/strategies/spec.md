@@ -227,7 +227,8 @@ authenticate public routes like any other route, as the original `AuthGuard` doe
 
 ### Requirement: AuthGuard fails closed outside HTTP
 In a WebSocket context, `AuthGuard` MUST deny the message without running any strategy, and the framework SHALL log
-one warning per guard the first time it happens. Handshake authentication through strategies is not supported.
+one warning per gateway at startup (not per connection or message) naming the gateway and the guard. Handshake
+authentication through strategies is not supported.
 
 #### Scenario: Global AuthGuard applied to a gateway
 - **WHEN** the application calls `use_global_guards(AuthGuard::new("a"))`, global enhancers apply to gateways (the

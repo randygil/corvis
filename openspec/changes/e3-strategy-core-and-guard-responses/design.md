@@ -314,3 +314,42 @@ declares the same routes with equivalent Corvis strategies and replays every cas
 5. The router changes (guard redirects and extra headers on every path) need the corvis-parity check before
    archiving, and a `security-reviewer` round: header injection through `append_response_header`, the 128 `Set-Cookie`
    bound, redirect targets built from request data.
+
+## Implementation notes
+
+Decisions and deviations recorded while implementing (line references of the design were checked against `2d63992`;
+the router, `context.rs` and `application.rs` had moved by a few lines only).
+
+1. **`Authenticator` is not bound into `AuthGuard`.** Decision 8 planned a `OnceLock` bound by the startup check. An
+   instance guard written in `#[use_guards(..)]` can be shared by several applications of one process (tests build
+   many), so a cached binding could point to another application's registry. The guard instead looks the core
+   `Authenticator` up through `ctx.module_ref()` on each request (one map lookup). The startup check reads the registry
+   from the container and does not mutate the guard.
+2. **Gateway warning at startup** (Review note 2): `corvis::auth::warn_gateways` logs one `AuthGuard` warning per
+   gateway when the guards of any of its handlers include an `AuthGuard` (found through `CanActivate::as_any`), after
+   the gateway posture is computed. Nothing is logged per message. The spec requirement was updated to say so.
+3. **Router signal for stored responses.** `run_pipeline` returns a private `Pipeline` enum (`Done(HandlerResult)` or
+   `Stored(Response)`); `execute_route` returns a stored response after `apply_enhancer_headers(.., true)`, with no
+   `finalize`, filters or `#[res]` merge. A guard that panics after storing a response answers the panic's 500: the
+   panic is raised before the router can read the stored response.
+4. **`apply_enhancer_headers` gained a flag.** On `#[res]` routes the appended values are copied into the `Res` when it
+   is created (and written through by later calls), and `merge_into` already puts the `Res` cookies before the
+   response's own; running the append merge again would duplicate them, so those paths pass `appended = false`.
+   Every other path (success, exception, filter, stored response) passes `true`. Without appended headers the function
+   behaves byte for byte as before.
+5. **Later `append_response_header` calls on a `Res`** (an interceptor after the handler started) write `Set-Cookie`
+   always, and any other name when the `Res` has no header with it or the name was recorded earlier in the request, so
+   two appended `Link` values from a guard and an interceptor both reach a `#[res]` response.
+6. **Optional guards in the fixture** override `handleRequest` with `user || null`, not `user ?? null`: a failed
+   attempt hands the Nest callback `user === false`, which `??` keeps as `req.user = false`. Corvis leaves no user, the
+   `null` of the fixture. The spec scenario names `user ?? null`; the observable behavior (no user) is the same.
+7. **`chain` with one name.** The original passes an array for `AuthGuard(['a'])` and so reports an array auth info for
+   one failed strategy; Corvis reports the single challenge when one name is given, whatever constructor built the
+   guard. No fixture case covers it.
+8. **`StrategyOutcome` is not `#[non_exhaustive]`** (the five outcomes are the contract, mirrored from passport).
+9. **Scenarios implemented at different places than listed in tasks:** the "Two strategies of the same type with
+   different names" scenario uses two types (a type reports one fixed name), covered in `tests/auth_guard.rs`. The
+   discarded-result log test lives in its own binary (`tests/guard_responses_log.rs`) because the logger is
+   process-wide.
+10. **Left to the maintainer's session:** the corvis-parity check (tasks 1.5 and 6.6) and the `security-reviewer`
+    round (6.7), as the implementation brief says.
