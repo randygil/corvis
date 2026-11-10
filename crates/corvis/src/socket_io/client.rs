@@ -39,7 +39,8 @@ enum Slot {
     Pending,
     Joined(IoSocket),
     /// The connection joined the namespace and the socket has left it (the server disconnected it, or the client
-    /// did): packets the client had in flight for it are dropped, as Node does, instead of closing the connection. A
+    /// did): packets the client had in flight for it are dropped instead of closing the connection (the Node server
+    /// closes it: a deliberate, more lenient difference, at the cost of a packet for a joined namespace). A
     /// new CONNECT replaces it. There is at most one entry per registered namespace, so the set is bounded by them.
     Left,
 }

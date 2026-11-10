@@ -295,7 +295,7 @@ servidor, y un paquete de un cliente que use uno no se puede decodificar.
 Un paquete que no se puede decodificar, un segundo CONNECT a un espacio al que la conexión ya entró (o está entrando), un
 paquete para un espacio al que no entró (o que se le rechazó) y un CONNECT_ERROR de un cliente cierran la conexión. Un
 paquete para un espacio al que la conexión sí entró y cuyo socket se fue desde entonces (el servidor llamó a
-`disconnect(false)` cuando el paquete del cliente ya iba de camino) se descarta, como hace Node, y la conexión y sus demás
+`disconnect(false)` cuando el paquete del cliente ya iba de camino) se descarta (el servidor de Node cierra ahí toda la conexión; es una diferencia deliberada), y la conexión y sus demás
 espacios siguen: el paquete se lee, se mide y se carga como cualquier otro, sus adjuntos se consumen y luego se descarta; un
 nuevo CONNECT a ese espacio vuelve a unirlo.
 

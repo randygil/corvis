@@ -204,6 +204,12 @@ the configured value, "within" bounds are generous, timer logic runs on Tokio's 
 - [x] 8d.3 A close caused by the client's failure to make progress cancels its handlers at once; test
 - [x] 8d.4 Docs (EN and ES), spec delta and design updated; `openspec validate ... --strict` passes
 
+## 8e. Security review, round 5 (design.md "Security review (round 5)")
+
+- [x] 8e.1 An observer counts a refusal only at the level whose own reading decides the pause; verify with
+  `observers_paused_by_the_pool_are_not_woken_by_rollbacks_at_their_address` and the measurement on the real server
+- [x] 8e.2 Texts corrected: a packet for a left namespace is dropped as a deliberate difference from Node
+
 ## 9. Definition of done
 
 - [x] 9.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`

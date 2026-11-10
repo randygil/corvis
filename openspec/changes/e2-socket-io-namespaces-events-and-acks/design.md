@@ -945,7 +945,7 @@ that `trust_proxy` only helps behind a proxy the operator controls. EN and ES.
 ### Not changed by this round
 
 - The transit bytes are not charged (item A, considered and left).
-- The harness `expected-differences.json` gains nothing: the dropped packet for a left namespace is now what Node does,
+- The harness `expected-differences.json` gains nothing: the dropped packet for a left namespace has no scenario (see round 5: it is NOT what Node does),
   and the cancelled handlers are not observable by a client.
 
 ## Security review (round 4)
@@ -992,3 +992,43 @@ shutdown) keeps the grace, unless `finish_handlers_after_client_close(true)`. Re
 would buffer application data past the pause, so it is not done: the bound is `admission_timeout` after the packet
 parked (the ping deadline can come sooner), and the address quota is back when the handlers are dropped. Test:
 `socket_io_accounting.rs::a_client_that_goes_away_while_its_packet_waits_for_room_loses_its_handlers_at_the_admission_timeout`.
+
+## Security review (round 5)
+
+A closing pass over rounds 3 and 4, with proofs of concept for each item.
+
+Held: the heartbeat suspension (the three silent victims of the earlier measurement close at 2.0 to 2.1 s against
+38.5 s and 33.0 s; with spikes of 1 ms a silent client closes at 3.1 s and one that answered a single ping at 3.9 s,
+inside the bound of `ping_interval + ping_timeout + admission_timeout`; honest clients are not closed); the
+cancellation of handlers (the churn that left about 86,000 lingering futures leaves only those of open sessions, back
+to zero 31 ms after it stops; five ways out, 11,001 handlers started and as many dropped, `on_disconnect` exactly
+once, capacity unchanged); packets for a namespace that was left (a flood costs what a joined namespace without a
+handler costs, attachments are consumed, 10,000 join/leave cycles leave the heap unchanged).
+
+### The stampede (Medium, introduced by round 4 and fixed here)
+
+Round 4 made an observer count a refusal at every level it found over. A level can be over only because the level
+above is (`own > fair && parent_over`): an address under its quota whose pool is full. Sessions of that address,
+paused by the pool, therefore counted refusals at the ADDRESS each time they were observed, so every rollback at the
+address (a sibling's charge taken there and refused by the pool) found the counter moved and woke all of them, each to
+try, roll back and wake the others again. Measured on the real server with 256 parked connections of one address: 6.2
+to 6.5 cores of 8, sustained for the whole `admission_timeout`, against 0.004 idle.
+
+Fix (`UnreadGauge::observe_with`): an observer counts a refusal only at the level whose OWN reading decides the pause
+(`own_over`). A level that is over because of the level above is not what the observer waits on; the level above
+counted it, and a release there wakes every waiter below, since a waiter listens to its gauge and to every gauge above
+it. The lost-wakeup protocol of round 4 is unchanged where it applies (a transient peak that takes a level over its
+own limit). After the fix the same measurement gives 0.005 to 0.009 cores. Regression test:
+`observers_paused_by_the_pool_are_not_woken_by_rollbacks_at_their_address` (256 paused sessions, a thousand rollbacks
+at the address, no wakeup and no refusal counted there, and a release of the pool still wakes them).
+
+### A statement of round 3 corrected
+
+Round 3 (item F) said a packet for a namespace the connection had left is dropped "as Node does". It is not what Node
+does: the Node server closes the connection for any packet other than CONNECT addressed to a namespace it has no
+socket for ("invalid state"), a left namespace included. Dropping it is kept as a deliberate, more lenient difference:
+a normal race (the server disconnects one namespace while the client's packet for it is on its way) should not take
+down the client's other namespaces, and the review measured that such packets cost what packets for a joined
+namespace without a handler cost. A packet for a namespace never joined, refused or unknown still closes the
+connection, as in Node. The comment in `client.rs`, the spec and the docs say so now.
+

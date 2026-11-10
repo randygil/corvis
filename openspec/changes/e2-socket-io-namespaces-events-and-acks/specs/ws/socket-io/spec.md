@@ -125,7 +125,7 @@ still joined report `forced server close`).
 
 ### Requirement: Packets for a namespace that was left are dropped
 A packet from the client for a namespace its connection joined and whose socket has since left (the server called
-`disconnect(false)`, or the client left) MUST be dropped, as Node does, without closing the connection. It is read,
+`disconnect(false)`, or the client left) MUST be dropped without closing the connection (the Node server closes it). It is read,
 measured and charged like any packet, its attachments are consumed, and a new CONNECT joins the namespace again.
 
 #### Scenario: Packets racing a server-side leave

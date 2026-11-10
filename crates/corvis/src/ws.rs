@@ -500,11 +500,19 @@ impl UnreadGauge {
             if !over {
                 return (false, false);
             }
-            step(Step::Decided);
-            self.refusals.fetch_add(1, Ordering::SeqCst);
-            step(Step::Counted);
-            if self.bytes.load(Ordering::SeqCst) != own {
-                continue;
+            // Counted only at the level whose own reading decides the pause (it is over its own limit). A level that
+            // is over merely because a level above is (`own > fair && parent_over`) is not what the observer waits
+            // on: the level above counted it, and a release there wakes every waiter below. Counting here too made
+            // every observation of a session under server-wide pressure look like a refusal at its address, so each
+            // rollback at the address (a charge the pool then refused) woke every sibling, which tried, rolled back
+            // and woke the others again: a stampede that fed itself for as long as the pressure lasted.
+            if own_over {
+                step(Step::Decided);
+                self.refusals.fetch_add(1, Ordering::SeqCst);
+                step(Step::Counted);
+                if self.bytes.load(Ordering::SeqCst) != own {
+                    continue;
+                }
             }
             return (true, (self.blame && own_over) || parent_fault);
         }
@@ -1609,6 +1617,39 @@ mod gauge_tests {
         let session2 = Arc::new(UnreadGauge::new(10_000, Some(address2.clone())).with_fair_share(25));
         let _x = UnreadTicket::new(&session2, 150);
         assert_eq!(session2.pause(), Pause::Pressure);
+    }
+
+    /// The stampede of the fourth review round. The pool is over its limit; sessions of one address, itself under its
+    /// quota, are paused by that pressure and keep being observed. An observation must not count as a refusal at the
+    /// address (the address is not what they wait on), or every charge a sibling takes at the address and the pool
+    /// then refuses would wake them all on its rollback, each to try, roll back and wake the others again.
+    #[test]
+    fn observers_paused_by_the_pool_are_not_woken_by_rollbacks_at_their_address() {
+        let total = Arc::new(UnreadGauge::new(100, None).pooled());
+        let address = Arc::new(UnreadGauge::new(10_000, Some(total.clone())));
+        let sessions: Vec<_> = (0..256).map(|_| Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(1))).collect();
+        // Every session holds more than its fair share, and together they are over the pool's limit.
+        let _held: Vec<_> = sessions.iter().map(|s| UnreadTicket::new(s, 2)).collect();
+        for s in &sessions {
+            assert_eq!(s.pause(), Pause::Pressure);
+        }
+        let counted = address.refusals.load(Ordering::SeqCst);
+        // A sibling's charge is taken at the address and refused by the pool: the rollback has nobody to wake, however
+        // many times the paused sessions are observed in between.
+        for _ in 0..1_000 {
+            let waits = sessions[0].changed();
+            let seen = address.try_add_up_to(50, 10_000).expect("room at the address");
+            for s in &sessions {
+                assert!(s.over_limit());
+            }
+            address.roll_back(50, seen);
+            assert!(waits.now_or_never().is_none(), "a rollback at the address woke a session that waits on the pool");
+        }
+        assert_eq!(address.refusals.load(Ordering::SeqCst), counted, "observing counted refusals at the address");
+        // A release of the pool is what they wait for, and it wakes them.
+        let waits = sessions[0].changed();
+        drop(_held);
+        assert!(waits.now_or_never().is_some());
     }
 
     /// Many askers and observers on two addresses sharing a pool that refuses above the addresses' caps: charges taken

@@ -291,7 +291,7 @@ be emitted by the server, and a packet from a client that uses one is undecodabl
 A packet that cannot be decoded, a second CONNECT for a namespace the connection joined (or is joining), a packet for a
 namespace it has not joined (or was refused) and a CONNECT_ERROR from a client close the connection. A packet for a
 namespace the connection did join and whose socket has since left (the server called `disconnect(false)` while the
-client's packet was already on its way) is dropped, as Node does, and the connection and its other namespaces go on: the
+client's packet was already on its way) is dropped and the connection and its other namespaces go on (the Node server closes the whole connection there; this is a deliberate difference): the
 packet is read, measured and charged like any other, its attachments are consumed, and then it is discarded; a new CONNECT
 for that namespace joins it again.
 
