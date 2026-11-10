@@ -1,0 +1,1975 @@
+{
+  "versions": {
+    "express-session": "1.19.0",
+    "passport": "0.7.0",
+    "express": "5.3.0",
+    "cookie-signature": "1.0.7"
+  },
+  "secrets": {
+    "new": "corvis-session-secret-NEW-0123456789abcdef",
+    "old": "corvis-session-secret-OLD-fedcba9876543210"
+  },
+  "unknownId": "unknownUnknownUnknownUnknown0001",
+  "users": {
+    "1": {
+      "id": "1",
+      "name": "ana"
+    },
+    "2": {
+      "id": "2",
+      "name": "bob"
+    }
+  },
+  "apps": {
+    "original": {
+      "secrets": [
+        "new"
+      ],
+      "resave": true,
+      "saveUninitialized": true
+    },
+    "strict": {
+      "secrets": [
+        "new"
+      ],
+      "resave": false,
+      "saveUninitialized": false
+    },
+    "rolling": {
+      "secrets": [
+        "new"
+      ],
+      "resave": false,
+      "saveUninitialized": false,
+      "rolling": true
+    },
+    "maxage": {
+      "secrets": [
+        "new"
+      ],
+      "resave": false,
+      "saveUninitialized": false,
+      "maxAge": 3600000
+    },
+    "old-only": {
+      "secrets": [
+        "old"
+      ],
+      "resave": false,
+      "saveUninitialized": false,
+      "store": "rotation"
+    },
+    "rotated": {
+      "secrets": [
+        "new",
+        "old"
+      ],
+      "resave": false,
+      "saveUninitialized": false,
+      "store": "rotation"
+    },
+    "login": {
+      "secrets": [
+        "new"
+      ],
+      "resave": false,
+      "saveUninitialized": false
+    },
+    "seeded": {
+      "secrets": [
+        "new"
+      ],
+      "resave": false,
+      "saveUninitialized": false,
+      "genid": "FIXEDseedSEEDfixedSEEDfixed00001"
+    },
+    "keep": {
+      "secrets": [
+        "new"
+      ],
+      "resave": false,
+      "saveUninitialized": false,
+      "keepSessionInfo": true
+    }
+  },
+  "original": {
+    "app": "seeded",
+    "id": "FIXEDseedSEEDfixedSEEDfixed00001",
+    "cookie": "connect.sid=s%3AFIXEDseedSEEDfixedSEEDfixed00001.d2iC9h6yFDiw4OeqXMbJM%2F0wLRmj2eMoEecxLNGTy0o",
+    "record": {
+      "cookie": {
+        "originalMaxAge": null,
+        "expires": null,
+        "secure": false,
+        "httpOnly": true,
+        "path": "/"
+      },
+      "views": "7"
+    }
+  },
+  "steps": [
+    {
+      "name": "original: anonymous request creates a session",
+      "app": "original",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": null,
+        "as": "o1"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {}
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid1",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "sid": "sid1"
+        }
+      ],
+      "store": {
+        "sid1": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          }
+        }
+      }
+    },
+    {
+      "name": "original: second request saves again",
+      "app": "original",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "o1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {}
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid1"
+        },
+        {
+          "op": "set",
+          "sid": "sid1"
+        }
+      ],
+      "store": {
+        "sid1": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          }
+        }
+      }
+    },
+    {
+      "name": "original: a write",
+      "app": "original",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=views&v=1",
+        "headers": {},
+        "cookie": {
+          "ref": "o1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid1"
+        },
+        {
+          "op": "set",
+          "sid": "sid1"
+        }
+      ],
+      "store": {
+        "sid1": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "1"
+        }
+      }
+    },
+    {
+      "name": "original: read back",
+      "app": "original",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "o1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "views": "1"
+          }
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid1"
+        },
+        {
+          "op": "set",
+          "sid": "sid1"
+        }
+      ],
+      "store": {
+        "sid1": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "1"
+        }
+      }
+    },
+    {
+      "name": "strict: anonymous request creates nothing",
+      "app": "strict",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": null,
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {}
+        },
+        "setCookie": []
+      },
+      "ops": [],
+      "store": {}
+    },
+    {
+      "name": "strict: a write creates the session",
+      "app": "strict",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=views&v=1",
+        "headers": {},
+        "cookie": null,
+        "as": "s1"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid2",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "sid": "sid2"
+        }
+      ],
+      "store": {
+        "sid2": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "1"
+        }
+      }
+    },
+    {
+      "name": "strict: unmodified request touches",
+      "app": "strict",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "s1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "views": "1"
+          }
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid2"
+        },
+        {
+          "op": "touch",
+          "sid": "sid2"
+        }
+      ],
+      "store": {
+        "sid2": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "1"
+        }
+      }
+    },
+    {
+      "name": "strict: a write to an existing session",
+      "app": "strict",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=views&v=2",
+        "headers": {},
+        "cookie": {
+          "ref": "s1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid2"
+        },
+        {
+          "op": "set",
+          "sid": "sid2"
+        }
+      ],
+      "store": {
+        "sid2": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "2"
+        }
+      }
+    },
+    {
+      "name": "strict: the value it already has",
+      "app": "strict",
+      "request": {
+        "method": "POST",
+        "path": "/set-same?k=views",
+        "headers": {},
+        "cookie": {
+          "ref": "s1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid2"
+        },
+        {
+          "op": "touch",
+          "sid": "sid2"
+        }
+      ],
+      "store": {
+        "sid2": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "2"
+        }
+      }
+    },
+    {
+      "name": "strict: tampered signature",
+      "app": "strict",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "s1",
+          "mutate": "flip-signature"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {}
+        },
+        "setCookie": []
+      },
+      "ops": [],
+      "store": {
+        "sid2": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "2"
+        }
+      }
+    },
+    {
+      "name": "strict: unsigned identifier",
+      "app": "strict",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "s1",
+          "mutate": "unsigned"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {}
+        },
+        "setCookie": []
+      },
+      "ops": [],
+      "store": {
+        "sid2": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "2"
+        }
+      }
+    },
+    {
+      "name": "strict: signed but unknown identifier, then a write",
+      "app": "strict",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=a&v=b",
+        "headers": {},
+        "cookie": "unknown",
+        "as": "s-unknown"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid3",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "unknown"
+        },
+        {
+          "op": "set",
+          "sid": "sid3"
+        }
+      ],
+      "store": {
+        "sid2": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "views": "2"
+        },
+        "sid3": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "b"
+        }
+      }
+    },
+    {
+      "name": "strict: regenerate",
+      "app": "strict",
+      "request": {
+        "method": "POST",
+        "path": "/regenerate",
+        "headers": {},
+        "cookie": {
+          "ref": "s1"
+        },
+        "as": "s1b"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid4",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid2"
+        },
+        {
+          "op": "destroy",
+          "sid": "sid2",
+          "existed": true
+        },
+        {
+          "op": "set",
+          "sid": "sid4"
+        }
+      ],
+      "store": {
+        "sid3": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "b"
+        },
+        "sid4": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          }
+        }
+      }
+    },
+    {
+      "name": "strict: destroy",
+      "app": "strict",
+      "request": {
+        "method": "POST",
+        "path": "/destroy",
+        "headers": {},
+        "cookie": {
+          "ref": "s1b"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid4"
+        },
+        {
+          "op": "destroy",
+          "sid": "sid4",
+          "existed": true
+        }
+      ],
+      "store": {
+        "sid3": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "b"
+        }
+      },
+      "divergence": "express-session sends no Set-Cookie after destroy(); Corvis clears the cookie (the browser drops it) and still destroys the record"
+    },
+    {
+      "name": "rolling: anonymous request",
+      "app": "rolling",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": null,
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {}
+        },
+        "setCookie": []
+      },
+      "ops": [],
+      "store": {}
+    },
+    {
+      "name": "rolling: a write",
+      "app": "rolling",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=a&v=1",
+        "headers": {},
+        "cookie": null,
+        "as": "r1"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid5",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "sid": "sid5"
+        }
+      ],
+      "store": {
+        "sid5": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "1"
+        }
+      }
+    },
+    {
+      "name": "rolling: unmodified request sets the cookie again",
+      "app": "rolling",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "r1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "a": "1"
+          }
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid5",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid5"
+        },
+        {
+          "op": "touch",
+          "sid": "sid5"
+        }
+      ],
+      "store": {
+        "sid5": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "1"
+        }
+      }
+    },
+    {
+      "name": "maxage: a write sets an expiry",
+      "app": "maxage",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=a&v=1",
+        "headers": {},
+        "cookie": null,
+        "as": "m1"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/",
+              "Expires": "<date>"
+            },
+            "sid": "sid6",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "sid": "sid6"
+        }
+      ],
+      "store": {
+        "sid6": {
+          "cookie": {
+            "originalMaxAge": 3600000,
+            "expires": "<date>",
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "1"
+        }
+      }
+    },
+    {
+      "name": "maxage: unmodified request sends no cookie",
+      "app": "maxage",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "m1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "a": "1"
+          }
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid6"
+        },
+        {
+          "op": "touch",
+          "sid": "sid6"
+        }
+      ],
+      "store": {
+        "sid6": {
+          "cookie": {
+            "originalMaxAge": 3600000,
+            "expires": "<date>",
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "1"
+        }
+      }
+    },
+    {
+      "name": "maxage: a write sends the cookie again",
+      "app": "maxage",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=a&v=2",
+        "headers": {},
+        "cookie": {
+          "ref": "m1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/",
+              "Expires": "<date>"
+            },
+            "sid": "sid6",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid6"
+        },
+        {
+          "op": "set",
+          "sid": "sid6"
+        }
+      ],
+      "store": {
+        "sid6": {
+          "cookie": {
+            "originalMaxAge": 3600000,
+            "expires": "<date>",
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "2"
+        }
+      }
+    },
+    {
+      "name": "rotation: a session created with the old secret",
+      "app": "old-only",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=a&v=1",
+        "headers": {},
+        "cookie": null,
+        "as": "old1"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid7",
+            "signed": "old"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "sid": "sid7"
+        }
+      ],
+      "store": {
+        "sid7": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "1"
+        }
+      }
+    },
+    {
+      "name": "rotation: the rotated app accepts it and signs again",
+      "app": "rotated",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "old1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "a": "1"
+          }
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid7"
+        },
+        {
+          "op": "touch",
+          "sid": "sid7"
+        }
+      ],
+      "store": {
+        "sid7": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "a": "1"
+        }
+      },
+      "divergence": "express-session sends no Set-Cookie for an unmodified session; Corvis sends the cookie signed with the current secret"
+    },
+    {
+      "name": "login: anonymous request to a protected route",
+      "app": "login",
+      "request": {
+        "method": "GET",
+        "path": "/me",
+        "headers": {},
+        "cookie": null,
+        "as": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        },
+        "setCookie": []
+      },
+      "ops": [],
+      "store": {}
+    },
+    {
+      "name": "login: bad credentials",
+      "app": "login",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "x-user": "9"
+        },
+        "cookie": null,
+        "as": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        },
+        "setCookie": []
+      },
+      "ops": [],
+      "store": {}
+    },
+    {
+      "name": "login: without a previous session",
+      "app": "login",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "x-user": "1"
+        },
+        "cookie": null,
+        "as": "l1"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "1",
+            "name": "ana"
+          }
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid8",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "destroy",
+          "sid": "sid9",
+          "existed": false
+        },
+        {
+          "op": "set",
+          "sid": "sid8"
+        },
+        {
+          "op": "set",
+          "sid": "sid8"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {
+            "user": "1"
+          }
+        }
+      },
+      "divergence": "express-session calls store.destroy for the identifier of the discarded session even when it was never stored; Corvis does not"
+    },
+    {
+      "name": "login: request with the session user",
+      "app": "login",
+      "request": {
+        "method": "GET",
+        "path": "/me",
+        "headers": {},
+        "cookie": {
+          "ref": "l1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "1",
+            "name": "ana"
+          }
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid8"
+        },
+        {
+          "op": "touch",
+          "sid": "sid8"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {
+            "user": "1"
+          }
+        }
+      }
+    },
+    {
+      "name": "login: user deleted after login",
+      "app": "login",
+      "request": {
+        "method": "POST",
+        "path": "/admin/delete?id=1",
+        "headers": {},
+        "cookie": null,
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": []
+      },
+      "ops": [],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {
+            "user": "1"
+          }
+        }
+      }
+    },
+    {
+      "name": "login: the deleted user is anonymous",
+      "app": "login",
+      "request": {
+        "method": "GET",
+        "path": "/me",
+        "headers": {},
+        "cookie": {
+          "ref": "l1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid8"
+        },
+        {
+          "op": "set",
+          "sid": "sid8"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        }
+      }
+    },
+    {
+      "name": "login: the session lost the user",
+      "app": "login",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "l1"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "passport": {}
+          }
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid8"
+        },
+        {
+          "op": "touch",
+          "sid": "sid8"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        }
+      }
+    },
+    {
+      "name": "login: restore the user",
+      "app": "login",
+      "request": {
+        "method": "POST",
+        "path": "/admin/restore?id=1",
+        "headers": {},
+        "cookie": null,
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": []
+      },
+      "ops": [],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        }
+      }
+    },
+    {
+      "name": "login: anonymous session with data",
+      "app": "login",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=cart&v=milk",
+        "headers": {},
+        "cookie": null,
+        "as": "anon"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid10",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "sid": "sid10"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        },
+        "sid10": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "cart": "milk"
+        }
+      }
+    },
+    {
+      "name": "login: fixation attempt, login while presenting a pre-login cookie",
+      "app": "login",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "x-user": "2"
+        },
+        "cookie": {
+          "ref": "anon"
+        },
+        "as": "l2"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "2",
+            "name": "bob"
+          }
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid11",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid10"
+        },
+        {
+          "op": "destroy",
+          "sid": "sid10",
+          "existed": true
+        },
+        {
+          "op": "set",
+          "sid": "sid11"
+        },
+        {
+          "op": "set",
+          "sid": "sid11"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        },
+        "sid11": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {
+            "user": "2"
+          }
+        }
+      }
+    },
+    {
+      "name": "login: the old cookie is anonymous",
+      "app": "login",
+      "request": {
+        "method": "GET",
+        "path": "/me",
+        "headers": {},
+        "cookie": {
+          "ref": "anon"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid10"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        },
+        "sid11": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {
+            "user": "2"
+          }
+        }
+      }
+    },
+    {
+      "name": "login: the data of before the login is gone",
+      "app": "login",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "l2"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "passport": {
+              "user": "2"
+            }
+          }
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid11"
+        },
+        {
+          "op": "touch",
+          "sid": "sid11"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        },
+        "sid11": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {
+            "user": "2"
+          }
+        }
+      }
+    },
+    {
+      "name": "login: failed login keeps the session",
+      "app": "login",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "x-user": "9"
+        },
+        "cookie": {
+          "ref": "l2"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid11"
+        },
+        {
+          "op": "touch",
+          "sid": "sid11"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        },
+        "sid11": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {
+            "user": "2"
+          }
+        }
+      }
+    },
+    {
+      "name": "logout",
+      "app": "login",
+      "request": {
+        "method": "POST",
+        "path": "/logout",
+        "headers": {},
+        "cookie": {
+          "ref": "l2"
+        },
+        "as": "l3"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid12",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid11"
+        },
+        {
+          "op": "set",
+          "sid": "sid11"
+        },
+        {
+          "op": "destroy",
+          "sid": "sid11",
+          "existed": true
+        },
+        {
+          "op": "set",
+          "sid": "sid12"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        },
+        "sid12": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          }
+        }
+      },
+      "divergence": "passport saves the session without the user before it regenerates, so the original calls set before destroy; Corvis destroys the old record and creates the new one"
+    },
+    {
+      "name": "login: the old cookie after logout",
+      "app": "login",
+      "request": {
+        "method": "GET",
+        "path": "/me",
+        "headers": {},
+        "cookie": {
+          "ref": "l2"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "message": "Unauthorized",
+          "statusCode": 401
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid11"
+        }
+      ],
+      "store": {
+        "sid8": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "passport": {}
+        },
+        "sid12": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          }
+        }
+      }
+    },
+    {
+      "name": "keep: anonymous session with data",
+      "app": "keep",
+      "request": {
+        "method": "POST",
+        "path": "/set?k=cart&v=milk",
+        "headers": {},
+        "cookie": null,
+        "as": "k1"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid13",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "set",
+          "sid": "sid13"
+        }
+      ],
+      "store": {
+        "sid13": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "cart": "milk"
+        }
+      }
+    },
+    {
+      "name": "keep: login keeps the data",
+      "app": "keep",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {
+          "x-user": "1"
+        },
+        "cookie": {
+          "ref": "k1"
+        },
+        "as": "k2"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "user": {
+            "id": "1",
+            "name": "ana"
+          }
+        },
+        "setCookie": [
+          {
+            "flags": [
+              "HttpOnly"
+            ],
+            "attributes": {
+              "Path": "/"
+            },
+            "sid": "sid14",
+            "signed": "new"
+          }
+        ]
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid13"
+        },
+        {
+          "op": "destroy",
+          "sid": "sid13",
+          "existed": true
+        },
+        {
+          "op": "set",
+          "sid": "sid14"
+        },
+        {
+          "op": "set",
+          "sid": "sid14"
+        }
+      ],
+      "store": {
+        "sid14": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "cart": "milk",
+          "passport": {
+            "user": "1"
+          }
+        }
+      }
+    },
+    {
+      "name": "keep: read back",
+      "app": "keep",
+      "request": {
+        "method": "GET",
+        "path": "/sess",
+        "headers": {},
+        "cookie": {
+          "ref": "k2"
+        },
+        "as": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "cart": "milk",
+            "passport": {
+              "user": "1"
+            }
+          }
+        },
+        "setCookie": []
+      },
+      "ops": [
+        {
+          "op": "get",
+          "sid": "sid14"
+        },
+        {
+          "op": "touch",
+          "sid": "sid14"
+        }
+      ],
+      "store": {
+        "sid14": {
+          "cookie": {
+            "originalMaxAge": null,
+            "expires": null,
+            "secure": false,
+            "httpOnly": true,
+            "path": "/"
+          },
+          "cart": "milk",
+          "passport": {
+            "user": "1"
+          }
+        }
+      }
+    }
+  ]
+}

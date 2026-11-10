@@ -131,9 +131,9 @@ decides.
 
 ### Requirement: Unsafe cookie configurations are caught at startup
 The application MUST NOT start when the session cookie has `SameSite=None` without `Secure`; when its name starts
-with `__Host-` and it lacks `Secure`, has a `Domain` or a `Path` other than `/`; when its name starts with
-`__Secure-` and it lacks `Secure`; when the name, path or domain is not valid for a cookie; or when `max_age` is
-longer than the absolute timeout. Turning `Secure` or `HttpOnly` off SHALL log a startup warning.
+with `__Host-` (in any letter case) and it lacks `Secure`, has a `Domain` or a `Path` other than `/`; when its name
+starts with `__Secure-` (any case) and it lacks `Secure`; when the name, path or domain is not valid for a cookie; or
+when `max_age` is longer than the absolute timeout. Turning `Secure` or `HttpOnly` off SHALL log a startup warning.
 
 #### Scenario: SameSite=None without Secure
 - **WHEN** the options set `same_site(SameSite::None)` and `secure(false)`
@@ -142,6 +142,10 @@ longer than the absolute timeout. Turning `Secure` or `HttpOnly` off SHALL log a
 #### Scenario: Host prefix
 - **WHEN** the cookie name is `__Host-sid` and a `Domain` is configured
 - **THEN** `init()` fails with an error that names the prefix rule
+
+#### Scenario: Prefix in another letter case
+- **WHEN** the cookie name is `__host-sid` with a `Domain`, or `__SECURE-sid` with `secure(false)`
+- **THEN** `init()` fails with an error that names the prefix rule, as it does for `__Host-sid` and `__Secure-sid`
 
 #### Scenario: Secure turned off
 - **WHEN** the options set `secure(false)`
@@ -214,10 +218,30 @@ cookie SHALL be sent.
 - **WHEN** a handler stores a 20 KiB string in the session with the default limit
 - **THEN** the response is a 500, the store has no such record, and there is no `Set-Cookie` for the session
 
+### Requirement: Session nesting depth is bounded when written
+A record nested deeper than 100 levels, the object that holds the session counting as level 1, MUST NOT be written: the
+response SHALL be the 500 of an oversized session and no cookie SHALL be sent. A stored record deeper than that is no
+session when read. No write may fall back to a null or empty record when a stored one cannot be read. The limit leaves
+room under the 128 levels a JSON parser reads.
+
+#### Scenario: Deeply nested value
+- **WHEN** a handler stores a value nested 127 levels, which the body parser accepts
+- **THEN** the response is a 500 and nothing is written, and a logged-in session stays logged in
+
+### Requirement: A stored record over the size limit is not a session
+A record that the store returns larger than `max_session_bytes` MUST be treated as no session: it is not loaded, its
+identifier is not adopted and the record is not deleted. A warning, at most one a minute, SHALL report it without
+naming an identifier. Otherwise every write of that session would fail with a 500.
+
+#### Scenario: Record of 200 KB in a shared store
+- **WHEN** a valid cookie names a record of 200 KB and the limit is the default
+- **THEN** the request is anonymous, a write answers 200 with a new identifier, and the old record is still in the store
+
 ### Requirement: Session store contract
 The framework SHALL define a `SessionStore` trait with `load`, `create`, `update`, `touch` and `destroy`, and the
 middleware SHALL use the store given in the options for every operation. `create` MUST fail when the identifier
-already exists.
+already exists. `touch` has no default: every store implements it and it MUST change only the expiry and the
+timestamps, never the data. `destroy` MUST report whether it removed a record.
 
 #### Scenario: Custom store
 - **WHEN** an application provides its own `SessionStore` implementation in the options
@@ -228,14 +252,25 @@ already exists.
 - **THEN** it fails and the existing record is unchanged
 
 ### Requirement: A destroyed session cannot be re-created
-`update` and `touch` MUST NOT create a record: when the identifier no longer exists they report it, and the
-middleware writes nothing and sends no cookie. Documented divergence: the original's `store.set` creates or
-overwrites.
+`update` and `touch` MUST NOT create a record: when the identifier no longer exists they report it. A session that a
+request loaded from the store and whose record is gone when the request ends SHALL be treated as destroyed: nothing is
+created or updated, whatever the request did (`regenerate_keeping_data`, `regenerate`, a data change, a touch), and the
+cookie is cleared. Documented divergence: the original's `store.set` creates or overwrites.
 
 #### Scenario: Destroyed session does not come back
 - **WHEN** request A loads a logged-in session, request B logs out (destroying it) and then request A modifies the
   session and finishes
 - **THEN** the store has no record under the old identifier, and a later request with the old cookie is anonymous
+
+#### Scenario: Logout racing a regeneration that keeps the data
+- **WHEN** request A (logged in) is held in its handler, request B logs out, and A then calls
+  `regenerate_keeping_data()` and finishes
+- **THEN** A creates no record, its response only clears the cookie, and no cookie of A is logged in
+
+#### Scenario: The same race for destroy, regenerate, a data change and a touch
+- **WHEN** request B ends the session with a logout or with `destroy()` while request A, held in its handler, goes on
+  to call `regenerate()`, change data, or change nothing
+- **THEN** in every case A writes nothing and sends only a clearing cookie
 
 ### Requirement: Store errors fail closed
 A store error while loading or saving SHALL produce a 500. Store errors, the response and the log line MUST NOT
@@ -246,10 +281,10 @@ contain session identifiers or data.
 - **THEN** the response is a 500 whose body and log line contain no identifier
 
 ### Requirement: The memory store is bounded
-`MemorySessionStore` SHALL hold at most `max_sessions` records (default 100 000) and `max_total_bytes` of serialized
-data (default 256 MiB), drop expired records without a background task, and, when a new record does not fit, evict
-the least recently used records until it does, logging a warning at most once a minute that contains no identifier.
-Using the memory store SHALL log at startup that sessions are lost on restart and not shared between instances.
+`MemorySessionStore` SHALL hold at most `max_sessions` records (default 100 000) and `max_total_bytes` (default
+256 MiB), drop expired records without a background task, and, when a new record does not fit, evict records until it
+does, logging a warning at most once a minute that contains no identifier. Using the memory store SHALL log at startup
+that sessions are lost on restart and not shared between instances.
 
 #### Scenario: Count bound
 - **WHEN** a store with `max_sessions(100)` receives 10 000 new sessions
@@ -262,6 +297,45 @@ Using the memory store SHALL log at startup that sessions are lost on restart an
 #### Scenario: Expired records leave
 - **WHEN** records pass their time to live (test clock) and other sessions are written
 - **THEN** the expired records are gone without any of them being loaded
+
+### Requirement: The memory store accounts for the memory it uses
+`MemorySessionStore` MUST keep each record serialized and count against `max_total_bytes` the allocation of the
+record, its identifier, its user key and a fixed overhead per entry, so that the live heap of the store never exceeds
+the bytes it accounts for, whatever the shape of the data. Its tables MUST give back their room when they hold less
+than a quarter of it.
+
+#### Scenario: Adversarial shapes
+- **WHEN** records made of arrays of `0`, arrays of `{}`, objects with many short keys, or long strings fill a store
+  with a counting allocator
+- **THEN** the live heap of the store is at most the bytes it accounts for, and those are at most `max_total_bytes`
+
+#### Scenario: Create, destroy, refill
+- **WHEN** 100 000 minimal sessions are created and destroyed, and the store is then refilled with large records
+- **THEN** almost nothing stays live after the destruction, and the live heap of the refill is at most the bound
+
+### Requirement: The memory store does no work proportional to a record under its lock
+`MemorySessionStore` MUST NOT parse, serialize or copy a record while holding its lock: a load clones a reference to
+the record and parses it afterwards, a create or update serializes before the lock, and a touch replaces only a small
+fragment (`cookie`, `__corvis`) kept apart from the record text. A record that does not parse MUST be destroyed on
+load and be no session, with a warning at most once a minute.
+
+#### Scenario: Large sessions beside small ones
+- **WHEN** 16 tasks keep loading and touching one 15 KiB session while another user makes requests
+- **THEN** the other user's p99 latency and throughput stay within a small factor of a run where the 16 tasks use a
+  tiny session
+
+#### Scenario: Unreadable record
+- **WHEN** the store holds text that is not JSON under an identifier and it is loaded
+- **THEN** the load finds no session and the record is gone
+
+### Requirement: The memory store caps the sessions of one user
+`MemorySessionStore` SHALL hold at most `max_sessions_per_user` sessions of one user (default 16, at least 1, checked
+at startup), keyed by the serialized stored user. A new session of a user at the cap MUST evict that user's oldest
+session and never another user's. Other stores need their own policy, which the docs SHALL say.
+
+#### Scenario: One account logs in over and over
+- **WHEN** one account logs in 40 times without cookies while another user has a session, with a cap of 4
+- **THEN** the other user's session is still valid, and only the account's 4 newest sessions are
 
 ### Requirement: Log in and log out regenerate the session
 `Authenticator::log_in` SHALL generate a new session identifier, store the serialized user under `passport.user`,
@@ -364,6 +438,47 @@ a registered session strategy MUST stop the application at startup.
 - **WHEN** a route uses `AuthGuard::new("local").log_in()` and no `SessionStrategy` is registered
 - **THEN** `init()` fails with an error that names the route and the missing session strategy
 
+### Requirement: A login made by the guard is discarded when the request is rejected
+A login made by `AuthGuard::log_in()` MUST be discarded when the pipeline rejects the request: a later guard denies or
+ends it, a pipe or validation fails, the handler returns an error or panics, an interceptor fails. The router marks the
+rejection when it happens, before any exception filter or interceptor can rewrite the response, so the final status
+never decides. A handler that returns normally keeps the login. Documented divergence: the original keeps it.
+
+#### Scenario: Second guard refuses
+- **WHEN** a route has `AuthGuard::new("header").log_in()` followed by a guard that refuses
+- **THEN** the response is 403 with no `Set-Cookie`, and a presented anonymous session is unchanged
+
+#### Scenario: A filter rewrites the failure
+- **WHEN** a global or route filter turns the denial, the handler error, a panic or a failing pipe into a redirect or a
+  200 page, or an interceptor turns the handler error into a normal response
+- **THEN** the response has no logged-in cookie and a presented anonymous session is unchanged
+
+#### Scenario: Handler decides
+- **WHEN** a handler logs in with `Authenticator::log_in` and answers 403, or returns normally with a redirect after
+  the login guard
+- **THEN** the response carries the logged-in session cookie
+
+### Requirement: A cancelled request keeps no guard login
+When the response is never produced (the client disconnects, a timeout) a login made by the guard MUST NOT be stored.
+The identifier the login replaced is destroyed, not restored.
+
+#### Scenario: Disconnect during a guard login
+- **WHEN** the request future is dropped after the login guard ran
+- **THEN** no record holds the user, and the old cookie is anonymous
+
+### Requirement: A login that keeps nothing cannot be made to fail
+A login that carries nothing of the previous session (`keep_session_info_on_login` off) MUST create the new session even
+when the previous record is gone, still destroying the old identifier. The rule of `A destroyed session cannot be
+re-created` stays for logins that keep data, `regenerate_keeping_data()`, saves and touches.
+
+#### Scenario: Previous session evicted during login
+- **WHEN** the anonymous session a login arrived with is evicted while the login runs
+- **THEN** the response sets a logged-in cookie and the next request is logged in
+
+#### Scenario: Logout racing a login that keeps data
+- **WHEN** request A logs out a session while request B logs in on it with `keep_session_info_on_login(true)`
+- **THEN** B writes nothing and its cookie is only a clearing one
+
 ### Requirement: Invalid session options stop the application
 `SessionModule` MUST stop the application at startup when its options are invalid: cookie keys that `http/signed-cookies`
 refuses, limits or timeouts out of range, memory store bounds of zero. The error MUST name the option and MUST NOT
@@ -388,3 +503,75 @@ marked in the fixture with its reason and asserted from this specification.
 - **WHEN** a property test sends random `Cookie` headers, including mutations of valid session cookies
 - **THEN** the middleware never panics, never answers with an error because of the cookie, and loads a session only
   for a correctly signed identifier that is in the store
+
+### Requirement: Repeated session cookies are not believed
+A request with more than one cookie of the session name, in one `Cookie` header or several, MUST be treated as having
+no session cookie, so a cookie planted from a sibling subdomain cannot pick the session. Documented divergence:
+`Request::cookie` and the original take the first one.
+
+#### Scenario: Two valid cookies
+- **WHEN** a request carries two validly signed session cookies, of two different sessions or of the same one
+- **THEN** no session is loaded and the store is not read
+
+### Requirement: Ended sessions clear the cookie
+When the session that a verified cookie named is destroyed with `Session::destroy` or found expired, and no new session
+is saved in the same request, the response SHALL clear the cookie. Documented divergence: the original sends nothing
+after `destroy()`.
+
+#### Scenario: Idle session in a store that keeps records
+- **WHEN** an idle session's cookie arrives and the store still holds the record
+- **THEN** the record is destroyed and the response expires the cookie
+
+### Requirement: Destruction survives a cancelled request
+Identifiers queued for destruction by a login, a logout, `regenerate` or `destroy` MUST still be destroyed in the store
+when the request is cancelled (the client went away) before the session is committed.
+
+#### Scenario: Client disconnects after destroy
+- **WHEN** a handler destroys the session and the request future is dropped before it returns
+- **THEN** the record is gone from the store
+
+### Requirement: Store calls are bounded in time
+Every call to the store MUST be bounded by `store_timeout` (default 5 seconds, allowed 100 milliseconds to 60 seconds,
+other values stop the application at startup). A call that takes longer fails like a store error, as a 500.
+
+#### Scenario: Slow store
+- **WHEN** a store takes longer than `store_timeout` to load a session
+- **THEN** the response is the 500 of any store failure
+
+### Requirement: Anonymous sessions are evicted first
+When the memory store is full it MUST evict the least recently used session without a logged-in user
+(`passport.user`) first, then the oldest session of the user with the most sessions, so a flood of anonymous sessions
+cannot evict logged-in users.
+
+#### Scenario: Flood of anonymous sessions
+- **WHEN** 10 000 anonymous sessions are created in a store with room for 10 that holds 5 logged-in sessions
+- **THEN** the 5 logged-in sessions are still there
+
+#### Scenario: Only users left
+- **WHEN** a full store holds only logged-in sessions, one user with three and others with two or one
+- **THEN** the oldest session of the user with three is evicted
+
+### Requirement: An empty user is never restored or stored
+A stored user, or a user the serializer returns, that is JSON `null`, `false`, `0` or `""` MUST NOT authenticate a
+request: it is removed from the session. `Authenticator::log_in` MUST refuse such a user, or a serialized value of
+that kind, with a 500 and store nothing.
+
+#### Scenario: Stored empty user
+- **WHEN** a session record holds `passport.user` equal to `null`, `false`, `0` or `""`
+- **THEN** the request is anonymous and `passport.user` is removed from the session
+
+### Requirement: Regenerate matches the original, with a variant that keeps data
+`Session::regenerate()` SHALL start a new empty session with a new identifier, as `req.session.regenerate()` does.
+`Session::regenerate_keeping_data()` SHALL replace the identifier and keep the data. Both destroy the old record when
+the request ends.
+
+#### Scenario: Regenerate drops the data
+- **WHEN** a handler regenerates a session that holds a value
+- **THEN** the new session is empty, matching the recorded original, and the old record is gone
+
+### Requirement: The session applies to its cookie path
+A request whose path does not start with the cookie `Path` MUST run without a session, as in the original.
+
+#### Scenario: Request outside the path
+- **WHEN** the cookie path is `/app` and the request path is `/other`
+- **THEN** `Request::session()` returns nothing

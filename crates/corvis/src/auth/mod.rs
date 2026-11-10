@@ -33,6 +33,8 @@ mod guard;
 #[cfg(feature = "auth-local")]
 pub mod local;
 mod module;
+#[cfg(feature = "auth-session")]
+pub mod session;
 mod strategy;
 mod user;
 mod warn_limit;

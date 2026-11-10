@@ -26,4 +26,8 @@ impl UsersService {
     pub async fn find_one(&self, username: &str) -> Option<User> {
         self.users.iter().find(|u| u.username == username).cloned()
     }
+
+    pub async fn find_by_id(&self, user_id: u32) -> Option<User> {
+        self.users.iter().find(|u| u.user_id == user_id).cloned()
+    }
 }

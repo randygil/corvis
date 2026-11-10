@@ -327,7 +327,10 @@ El mismo `AuthGuard` de tertulia sirve para HTTP y para WebSocket: consulta `ctx
 
 ## Lo que no incluye Corvis
 
-- Además de JWT, todavía no hay estrategias tipo Passport (local, OAuth, OpenID Connect) ni sesiones de servidor. Ver
-  [Passport](/es/recipes/passport) y [Sesión](/es/http/session).
+- Además de JWT y de las estrategias local y de API key, todavía no hay estrategias OAuth ni OpenID Connect. Ver
+  [Passport](/es/recipes/passport).
+- Para autenticación basada en cookies hay [sesiones de servidor](/es/http/session) (la feature `auth-session`), con
+  login y logout mediante `Authenticator`, y [cookies firmadas](/es/http/cookies#cookies-firmadas) para valores pequeños
+  que el cliente no debe alterar. Una cookie de sesión es una credencial ambiental: ver [CSRF](/es/security/csrf).
 - No hay *refresh tokens* integrados: se implementan firmando un segundo token con otra vigencia
   (`sign_with` con `JwtSignOptions { expires_in: Some("7d".into()), .. }`) y un endpoint que lo canjea.

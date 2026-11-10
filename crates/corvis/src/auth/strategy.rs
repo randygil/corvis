@@ -133,6 +133,12 @@ impl AuthenticatedUser {
         Ok(AuthenticatedUser { json, typed: Arc::new(user) })
     }
 
+    /// The typed user, when it is a `T`.
+    #[cfg(feature = "auth-session")]
+    pub(crate) fn typed<T: 'static>(&self) -> Option<&T> {
+        self.typed.downcast_ref::<T>()
+    }
+
     /// The JSON form of the user (`Request::user`).
     pub fn json(&self) -> &Value {
         &self.json

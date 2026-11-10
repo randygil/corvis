@@ -326,6 +326,7 @@ version = "0.1.0"
 dependencies = [
  "corvis",
  "corvis-swagger",
+ "rand 0.8.8",
  "serde",
 ]
 
@@ -445,6 +446,7 @@ dependencies = [
  "form_urlencoded",
  "futures",
  "h2",
+ "hmac",
  "http",
  "http-body-util",
  "hyper",

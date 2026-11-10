@@ -326,7 +326,10 @@ Tertulia's same `AuthGuard` works for HTTP and for WebSocket: it checks `ctx.get
 
 ## What Corvis does not include
 
-- Besides JWT, there are no Passport-style strategies yet (local, OAuth, OpenID Connect) or server-side sessions. See
-  [Passport](/recipes/passport) and [Session](/http/session).
+- Besides JWT, local and API key strategies, there are no OAuth or OpenID Connect strategies yet. See
+  [Passport](/recipes/passport).
+- For cookie-based authentication there are [server-side sessions](/http/session) (the `auth-session` feature), with
+  login and logout through `Authenticator`, and [signed cookies](/http/cookies#signed-cookies) for small values the
+  client must not alter. A session cookie is an ambient credential: see [CSRF](/security/csrf).
 - There are no built-in *refresh tokens*: you implement them by signing a second token with a different lifetime
   (`sign_with` with `JwtSignOptions { expires_in: Some("7d".into()), .. }`) and an endpoint that redeems it.

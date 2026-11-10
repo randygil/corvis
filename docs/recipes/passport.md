@@ -6,7 +6,7 @@ status: partial
 
 Corvis has the **strategy model** of Passport and its integration for the original framework: strategies registered by name, an `AuthGuard` that runs them, the user on the request and the `401` the original answers when every strategy fails. Its behavior is checked against the original passport integration (12.0.1) over `passport` 0.7.0 with recorded responses.
 
-What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy), the [local strategy](#local-strategy-username-and-password) (username and password, with the `auth-local` feature) and [API keys](#api-keys) (the `auth-api-key` feature), plus the guide to [writing a strategy](#writing-a-strategy) of your own. The other strategies arrive one by one: sessions and OAuth2 are tracked in their own issues (#44 and #43). A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
+What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy), the [local strategy](#local-strategy-username-and-password) (username and password, with the `auth-local` feature) and [API keys](#api-keys) (the `auth-api-key` feature), plus the guide to [writing a strategy](#writing-a-strategy) of your own. [Sessions](#sessions) (the `auth-session` feature) log a user in and restore it on later requests. OAuth2 arrives with its own issue (#43). A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
 
 ## The model
 
@@ -187,8 +187,98 @@ When every strategy fails, the answer is `401 {"message":"Unauthorized","statusC
 - **Startup errors.** The original answers `500 Internal server error` on each request when a guard names an unknown strategy, and only logs an error when `AuthGuard()` has no default. Corvis stops `init()` before middleware `configure` and the init hooks, with one error that lists every route (method and path) and the missing name. This also covers an empty `AuthGuard::chain`, a default that is not registered, and two `PassportModule::register` calls with different defaults. A guard of your own that calls the `Authenticator` with an unknown name still gets the original's `500` at request time. A guard that wraps an `AuthGuard` (a composite guard) lists it in `CanActivate::inner_guards`, which the check follows at any depth, so a typo in the wrapped name also stops `init()`: `fn inner_guards(&self) -> Vec<&dyn CanActivate> { vec![&self.jwt] }`. Do not return the inner guard from `as_any`: that one is for the guard itself, and it would make the gateway warning below fire for a wrapper that lets public targets through.
 - **No `AuthGuard` on WebSocket gateways.** A global `AuthGuard` also reaches gateway messages by default, where the original does not work either. It denies the message with `Forbidden resource` without running a strategy, and the application logs one warning per gateway at startup. Authenticate sockets in `handle_connection`, or call `apply_global_enhancers_to_gateways(false)`, which removes every global enhancer from gateways, not only the `AuthGuard`.
 - **The typed user lives in its own slot.** `User<T>` reflects only what an `AuthGuard` stored, never another request extension of type `T`, and `Request::set_user` drops it, so a later guard that sets its own user makes `User<T>` answer `401`. When a strategy passes, or an optional guard finds no credentials, both the JSON user and the typed user are removed (`req.user` is `undefined` or `null` in the original).
-- **No session login.** `AuthGuard` never logs in to a session by itself; sessions come with their own issue.
+- **Session login is opt-in.** `AuthGuard` never writes to a session unless it is built with `.log_in()`; see [Sessions](#sessions).
 - **No `property`, `failureRedirect` or flash messages.** The user is always stored for `User<T>` and `request.user()`.
+
+## Sessions
+
+The `auth-session` feature adds the session part of Passport on top of [server-side sessions](/http/session): the user
+is stored in the session at login and restored on later requests.
+
+| Original | Corvis |
+|---|---|
+| `passport.serializeUser` and `passport.deserializeUser` | `SessionSerializer::serialize_user` and `deserialize_user` |
+| `app.use(passport.session())` | `SessionModule` (its middleware) and `SessionStrategy<S>`, the strategy named `"session"` |
+| `req.logIn(user)` | `AuthGuard::new("local").log_in()`, or `Authenticator::log_in(&req, &authenticated_user).await?` |
+| `req.logout()` | `Authenticator::log_out(&req).await?` |
+| a guard on `req.isAuthenticated()` | `AuthGuard::new("session")`: `401 {"message":"Unauthorized","statusCode":401}` when anonymous. The session strategy of the original always passes |
+| `keepSessionInfo` | `SessionOptions::keep_session_info_on_login(true)` (an option of the module, not of each call) |
+
+A complete example, with the [local strategy](#local-strategy-username-and-password) for the login:
+
+```rust
+use corvis::auth::session::{SessionModule, SessionSerializer, SessionStrategy};
+use corvis::auth::{AuthGuard, Authenticator, User};
+
+#[injectable]
+pub struct UserSerializer {
+    users: Arc<UsersService>,
+}
+
+#[async_trait]
+impl SessionSerializer for UserSerializer {
+    type User = Account;
+
+    // what goes into `passport.user`: an object, never a bare `0` or `""`
+    async fn serialize_user(&self, user: &Account) -> Result<Value, HttpException> {
+        Ok(json!({ "id": user.id }))
+    }
+
+    // `None` when the user no longer exists: the request is anonymous and the stale user is dropped
+    async fn deserialize_user(&self, _req: &Request, stored: Value) -> Result<Option<Account>, HttpException> {
+        let Some(id) = stored.get("id").and_then(Value::as_u64) else { return Ok(None) };
+        Ok(self.users.find(id).await)
+    }
+}
+
+#[module(
+    imports = [SessionModule::for_root(session_options())],
+    providers = [
+        UsersService,
+        Provider::class::<PasswordHasher>(),
+        Provider::class::<LocalAuth>(),
+        Provider::strategy::<LocalStrategy<LocalAuth>>(),
+        Provider::strategy::<SessionStrategy<UserSerializer>>(),
+        UserSerializer,
+    ],
+    controllers = [AuthController],
+)]
+pub struct AuthModule;
+
+#[controller("auth")]
+pub struct AuthController {
+    authenticator: Arc<Authenticator>,
+}
+
+#[routes]
+impl AuthController {
+    #[post("login")]
+    #[use_guards(AuthGuard::new("local").log_in())]
+    fn login(&self, user: User<Account>) -> Account {
+        user.0
+    }
+
+    #[get("me")]
+    #[use_guards(AuthGuard::new("session"))]
+    fn me(&self, user: User<Account>) -> Account {
+        user.0
+    }
+
+    #[post("logout")]
+    #[http_code(204)]
+    async fn logout(&self, #[req] req: Request) -> HttpResult<()> {
+        self.authenticator.log_out(&req).await
+    }
+}
+```
+
+`session_options()` builds the `SessionOptions`, see [Session](/http/session#setup). `Authenticator::log_in` takes an
+`AuthenticatedUser` (`AuthenticatedUser::new(user)?`). Logging in generates a new session identifier and destroys the old
+one, which prevents session fixation. The middleware restores the user on every route, public ones included, before the
+guards run. `AuthGuard::new("local").log_in()` is a startup error when no `SessionStrategy` is registered, and when it is
+combined with the `"session"` strategy. The rest of the rules (what an optional guard does to the session user,
+`AuthGuard::chain(["session", "jwt"])`, the `500` of a failed save) are in
+[Session](/http/session#guards-and-the-session-user).
 
 ## The JWT strategy
 
