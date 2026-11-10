@@ -121,7 +121,7 @@ jobs:
       - name: Test the auth-oauth2 feature
         run: cargo test -p corvis --features auth-oauth2 --no-fail-fast
       - name: Test the authentication review (all auth features together)
-        run: cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2" --test auth_invariants --test auth_login_throttle --test auth_defaults --test auth_source_checks --test auth_guard_order_log --no-fail-fast
+        run: cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2" --test auth_invariants --test auth_login_throttle --test auth_defaults --test auth_source_checks --test auth_guard_order_log --test auth_callback_timeouts --no-fail-fast
       - name: Test the socket-io feature
         run: cargo test -p corvis --features socket-io --no-fail-fast
       - name: Test the tls feature
