@@ -83,13 +83,14 @@ pub(crate) struct ServerInner {
     total_unread: Arc<UnreadGauge>,
     on_connection: RwLock<Option<ConnectionCallback>>,
     last_cap_warning: Mutex<Option<std::time::Instant>>,
+    last_hook_warning: Mutex<Option<std::time::Instant>>,
 }
 
 impl ServerInner {
     pub(crate) fn remove(&self, id: &str) {
         let mut store = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = store.map.remove(id) {
-            let key = ip_key(&session.ip);
+            let key = session.addr_key.clone();
             if let Some(count) = store.per_ip.get_mut(&key) {
                 *count -= 1;
                 if *count == 0 {
@@ -101,10 +102,6 @@ impl ServerInner {
 
     fn get(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions.read().unwrap_or_else(|e| e.into_inner()).map.get(id).cloned()
-    }
-
-    fn is_closed(&self) -> bool {
-        self.sessions.read().unwrap_or_else(|e| e.into_inner()).closed
     }
 }
 
@@ -122,19 +119,38 @@ enum OpenError {
     TooManyFromAddress,
 }
 
-/// The key sessions are counted under: the address as `ip()` resolved it (so `set_trust_proxy` is honored), with
-/// IPv6 addresses reduced to their `/64` (one subscriber gets at least that much) and IPv4-mapped ones to IPv4.
-fn ip_key(ip: &str) -> String {
-    match ip.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
-            Some(v4) => v4.to_string(),
-            None => {
-                let o = v6.octets();
-                format!("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}/64", o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7])
-            }
-        },
-        Ok(addr) => addr.to_string(),
-        Err(_) => ip.to_string(),
+/// Reads an address as a proxy may have written it: `203.0.113.7`, `203.0.113.7:40000`, `2001:db8::1`,
+/// `[2001:db8::1]`, `[2001:db8::1]:40000`, with an optional zone (`fe80::1%eth0`).
+fn parse_forwarded_ip(raw: &str) -> Option<std::net::IpAddr> {
+    let raw = raw.trim();
+    let host = if let Some(rest) = raw.strip_prefix('[') {
+        rest.split(']').next()?
+    } else if raw.matches(':').count() == 1 {
+        // `a.b.c.d:port`
+        raw.split(':').next()?
+    } else {
+        raw
+    };
+    host.split('%').next()?.parse().ok()
+}
+
+/// The key sessions are counted under: the address `ip()` resolved (so `set_trust_proxy` is honored), normalized
+/// (brackets, port and zone removed), with IPv6 addresses reduced to their `/64` (one subscriber gets at least that
+/// much) and IPv4-mapped ones to IPv4. When the resolved value is not an address at all the socket's peer is used,
+/// so a client cannot choose a fresh key per request with a malformed header (behind `TrustProxy::All` it still
+/// chooses a well-formed one: the per-address cap does not protect there).
+pub(crate) fn address_key(ip: &str, peer: Option<std::net::SocketAddr>) -> String {
+    let addr = parse_forwarded_ip(ip).or_else(|| peer.map(|p| p.ip())).map(|a| match a {
+        std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(a),
+        v4 => v4,
+    });
+    match addr {
+        Some(std::net::IpAddr::V6(v6)) => {
+            let o = v6.octets();
+            format!("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}/64", o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7])
+        }
+        Some(v4) => v4.to_string(),
+        None => ip.to_string(),
     }
 }
 
@@ -158,6 +174,7 @@ impl EngineServer {
                 total_unread,
                 on_connection: RwLock::new(None),
                 last_cap_warning: Mutex::new(None),
+                last_hook_warning: Mutex::new(None),
             }),
         })
     }
@@ -234,16 +251,8 @@ impl EngineServer {
     /// and the counts cannot be overshot by concurrent handshakes.
     fn open_session(&self, transport: TransportKind, handshake: Request) -> Result<Arc<Session>, OpenError> {
         let mut store = self.inner.sessions.write().unwrap_or_else(|e| e.into_inner());
-        if store.closed {
-            return Err(OpenError::Closing);
-        }
-        if store.map.len() >= self.inner.options.max_sessions {
-            return Err(OpenError::TooManySessions);
-        }
-        let key = ip_key(&handshake.ip());
-        if store.per_ip.get(&key).copied().unwrap_or(0) >= self.inner.options.max_sessions_per_ip {
-            return Err(OpenError::TooManyFromAddress);
-        }
+        let key = address_key(&handshake.ip(), handshake.remote_addr());
+        self.caps_ok(&store, &key)?;
         let mut id = sid::generate();
         while store.map.contains_key(&id) {
             id = sid::generate();
@@ -259,6 +268,26 @@ impl EngineServer {
         *store.per_ip.entry(key).or_insert(0) += 1;
         store.map.insert(id, session.clone());
         Ok(session)
+    }
+
+    fn caps_ok(&self, store: &Store, key: &str) -> Result<(), OpenError> {
+        if store.closed {
+            return Err(OpenError::Closing);
+        }
+        if store.map.len() >= self.inner.options.max_sessions {
+            return Err(OpenError::TooManySessions);
+        }
+        if store.per_ip.get(key).copied().unwrap_or(0) >= self.inner.options.max_sessions_per_ip {
+            return Err(OpenError::TooManyFromAddress);
+        }
+        Ok(())
+    }
+
+    /// The same checks as `open_session` without inserting: run before the `allow_request` hook so a client over a
+    /// cap is answered `503` without the hook being invoked. `open_session` checks again under the write lock.
+    fn check_caps(&self, handshake: &Request) -> Result<(), OpenError> {
+        let store = self.inner.sessions.read().unwrap_or_else(|e| e.into_inner());
+        self.caps_ok(&store, &address_key(&handshake.ip(), handshake.remote_addr()))
     }
 
     /// The response for a handshake that could not open a session.
@@ -281,10 +310,20 @@ impl EngineServer {
         let Some(hook) = &self.inner.options.allow_request else { return true };
         use futures::FutureExt;
         let future = std::panic::AssertUnwindSafe(async { (hook.0)(handshake).await });
-        match future.catch_unwind().await {
-            Ok(decision) => decision == options::Admission::Allow,
-            Err(_) => {
+        let limit = self.inner.options.allow_request_timeout;
+        match tokio::time::timeout(limit, future.catch_unwind()).await {
+            Ok(Ok(decision)) => decision == options::Admission::Allow,
+            Ok(Err(_)) => {
                 Logger::new("EngineIO").error("the allow_request hook panicked: the request was refused");
+                false
+            }
+            Err(_) => {
+                let mut last = self.inner.last_hook_warning.lock().unwrap_or_else(|e| e.into_inner());
+                let now = std::time::Instant::now();
+                if last.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(60)) {
+                    *last = Some(now);
+                    Logger::new("EngineIO").warn(format!("the allow_request hook took longer than {limit:?}: the request was refused"));
+                }
                 false
             }
         }
@@ -428,8 +467,9 @@ impl EngineServer {
         if query.get("EIO") != Some("4") {
             return polling::abort_request(5);
         }
-        if self.inner.is_closed() {
-            return self.open_refused(&handshake, false, OpenError::Closing);
+        // Before the hook: a client over a cap is answered without invoking it.
+        if let Err(error) = self.check_caps(&handshake) {
+            return self.open_refused(&handshake, false, error);
         }
         if !self.admitted(&handshake).await {
             return self.handshake_refused(&handshake, false, StatusCode::FORBIDDEN, 4, "Forbidden");
@@ -482,8 +522,8 @@ impl EngineServer {
                 if query.get("EIO") != Some("4") {
                     return polling::abort_upgrade(5);
                 }
-                if self.inner.is_closed() {
-                    return self.open_refused(&handshake, true, OpenError::Closing);
+                if let Err(error) = self.check_caps(&handshake) {
+                    return self.open_refused(&handshake, true, error);
                 }
                 if !self.admitted(&handshake).await {
                     return self.handshake_refused(&handshake, true, StatusCode::FORBIDDEN, 4, "Forbidden");
@@ -623,12 +663,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ipv6_addresses_are_counted_per_slash_64_and_mapped_ones_as_ipv4() {
-        assert_eq!(ip_key("203.0.113.7"), "203.0.113.7");
-        assert_eq!(ip_key("2001:db8:1:2:3:4:5:6"), ip_key("2001:db8:1:2:ffff::1"));
-        assert_ne!(ip_key("2001:db8:1:2::1"), ip_key("2001:db8:1:3::1"));
-        assert_eq!(ip_key("::ffff:203.0.113.7"), "203.0.113.7");
-        assert_eq!(ip_key("not an address"), "not an address");
+    fn address_keys_are_normalized_whatever_form_a_proxy_wrote() {
+        let peer: Option<std::net::SocketAddr> = Some("198.51.100.9:5000".parse().unwrap());
+        // IPv4 with and without a port.
+        assert_eq!(address_key("203.0.113.7", peer), "203.0.113.7");
+        assert_eq!(address_key("203.0.113.7:40000", peer), "203.0.113.7");
+        // IPv6: bare, bracketed, bracketed with a port, with a zone: all one /64.
+        let key = address_key("2001:db8:1:2::1", peer);
+        assert_eq!(address_key("[2001:db8:1:2::1]", peer), key);
+        assert_eq!(address_key("[2001:db8:1:2::1]:40000", peer), key);
+        assert_eq!(address_key("2001:db8:1:2:ffff::7%eth0", peer), key);
+        assert_eq!(address_key("[2001:db8:1:2::1%eth0]:1", peer), key);
+        assert_ne!(address_key("2001:db8:1:3::1", peer), key);
+        // IPv4-mapped IPv6 is IPv4.
+        assert_eq!(address_key("::ffff:203.0.113.7", peer), "203.0.113.7");
+        assert_eq!(address_key("[::ffff:203.0.113.7]:9", peer), "203.0.113.7");
+        // Garbage falls back to the socket peer, not to a key of the client's choosing.
+        assert_eq!(address_key("not an address", peer), "198.51.100.9");
+        assert_eq!(address_key("", peer), "198.51.100.9");
+        assert_eq!(address_key("999.1.1.1", peer), "198.51.100.9");
+    }
+
+    #[test]
+    fn a_client_cannot_pick_a_new_key_per_request_with_a_malformed_forwarded_address() {
+        let peer: Option<std::net::SocketAddr> = Some("198.51.100.9:5000".parse().unwrap());
+        let keys: std::collections::HashSet<String> = (0..50).map(|i| address_key(&format!("junk-{i}"), peer)).collect();
+        assert_eq!(keys.len(), 1);
     }
 
     #[tokio::test]

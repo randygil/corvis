@@ -200,7 +200,9 @@ a closing handshake. A panic in application code reached from a session MUST be 
 ### Requirement: Heartbeat matches Node
 The server SHALL send a ping packet `2` every `pingInterval` after the last pong, and MUST close the session with
 reason `ping timeout` when no pong `3` arrives within `pingTimeout` after a ping. A ping sent by the client (other than
-the upgrade probe) MUST close the session with reason `transport error`, as Node's "invalid heartbeat direction".
+the upgrade probe) MUST close the session with reason `transport error`, as Node's "invalid heartbeat direction". A pong
+that arrives while no ping is pending MUST NOT change the schedule (Node lets it postpone the next ping, so a client
+that only posts `3` could keep a session alive; this is a deliberate divergence, not observable without timing).
 
 #### Scenario: Client stops answering pings
 - **WHEN** a raw client stops answering pings, with `ping_interval` 300 ms and `ping_timeout` 200 ms on both servers
@@ -234,11 +236,23 @@ bound MUST wake every waiter (a held `POST` and the WebSocket reader of the same
 - **THEN** the `POST` is held and the WebSocket reader paused once the charged bytes pass `max_unread_bytes`, instead of
   the queue growing without bound
 
+While the total is exceeded, only sessions that hold more than a fair share SHALL be paused or held, with
+`fair = max(16 KiB, max_total_unread_bytes / max_sessions)` computed once from the options; a session at or below the
+fair share, and under its own limit, MUST keep reading and MUST NOT be paused by what other sessions hold. The worst case
+is bounded by `max_total_unread_bytes + max_sessions * fair` (plus one message per session), and the documentation MUST
+state it.
+
 #### Scenario: Total unread budget
-- **WHEN** `max_total_unread_bytes` is 3,000 and `max_unread_bytes` 2,000, and two sessions each receive a 1,500-byte
+- **WHEN** `max_total_unread_bytes` is 40,000 and `max_unread_bytes` 30,000, and two sessions each receive a 20,000-byte
   message that the application does not read
-- **THEN** the second `POST` is held although its own session is under its limit, and is answered once the application
-  reads the first session's message
+- **THEN** the second `POST` is held although its own session is under its limit (it is above the fair share while the
+  total is exceeded), and is answered once the application reads the first session's message
+
+#### Scenario: A hoarder does not starve a drained session
+- **WHEN** hoarding sessions fill the whole `max_total_unread_bytes` and another session, which the application drains,
+  answers its pings and sends messages
+- **THEN** that session is never paused, stays open for several ping cycles, and every message it sends reaches the
+  application
 
 ### Requirement: Send buffers are bounded
 Packets queued for a session and not yet written SHALL be bounded by `max_buffered_amount` (default 8 MiB, the
@@ -263,7 +277,10 @@ A server SHALL also hold at most `max_sessions_per_ip` open sessions per client 
 keyed by the request's `ip()` so that `set_trust_proxy` is honored and IPv6 addresses counted per `/64`. A handshake
 over it, on either transport, MUST be answered like the global cap (`503`, the same body). The per-address count, the
 global count and the closed flag of the server MUST be checked and updated under one lock, and a session MUST release
-its place when it ends. The limit MUST be configurable, and the documentation MUST state the NAT trade-off.
+its place when it ends. The limit MUST be configurable, and the documentation MUST state the NAT trade-off, that it does
+not stop an attacker with many addresses, and that behind `TrustProxy::All` the client chooses the key. The address MUST
+be normalized before it is used as a key (brackets, port and zone removed, IPv4-mapped IPv6 as IPv4); a value that is
+no address MUST fall back to the socket's peer address.
 
 #### Scenario: Sessions per address
 - **WHEN** `max_sessions_per_ip` is 3 and one address holds three sessions (any transport) and handshakes again
@@ -283,8 +300,10 @@ WebSocket-first sessions are not subject to it.
 ### Requirement: Handshakes can be refused by the application
 An Engine.IO server SHALL accept an `allow_request` hook that receives the handshake request (with the application's
 request settings) and runs, before any session is created, for polling handshakes and WebSocket-first connections.
-When it rejects, or panics, the server MUST answer `403` with `{"code":4,"message":"Forbidden"}` and create no session.
-Requests of existing sessions MUST NOT run it.
+When it rejects, panics, or takes longer than `allow_request_timeout` (default 5 s, validated like the other durations;
+a warning at most once per minute for timeouts), the server MUST answer `403` with `{"code":4,"message":"Forbidden"}`
+and create no session. It MUST run after the session caps are checked: a client over a cap is answered `503` without
+the hook being invoked. Requests of existing sessions MUST NOT run it.
 
 #### Scenario: Hook rejects
 - **WHEN** the hook rejects a polling handshake and a WebSocket-first connection
@@ -317,8 +336,8 @@ handshakes; it MUST happen when the HTTP server starts its graceful shutdown and
 ### Requirement: Options are validated
 Attaching an Engine.IO server SHALL fail, with an error naming the option, on a zero `ping_interval`, `ping_timeout`,
 `upgrade_timeout`, `max_http_buffer_size`, `max_payload_packets`, `max_buffered_amount`, `max_unread_bytes` or
-`max_sessions`, `max_sessions_per_ip`, `max_total_unread_bytes` or `first_request_timeout`, on a path that does not
-start with `/`, on any of `ping_interval`, `ping_timeout`, `upgrade_timeout`, `close_timeout` above one day (the timers
+`max_sessions`, `max_sessions_per_ip`, `max_total_unread_bytes`, `first_request_timeout` or `allow_request_timeout`, on a path that does not
+start with `/`, on any of `ping_interval`, `ping_timeout`, `upgrade_timeout`, `close_timeout`, `allow_request_timeout` above one day (the timers
 add them to the clock, and the arithmetic MUST NOT panic whatever the value), on a `first_request_timeout` above
 `ping_interval + ping_timeout`, and on a `max_total_unread_bytes` below `max_unread_bytes`.
 

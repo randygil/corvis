@@ -142,6 +142,25 @@ value, "within" bounds are generous, unit tests of timers use paused Tokio time,
 - [x] 10.9 Spec delta, design notes, bounds table in docs (English and Spanish) and rustdoc updated; full definition of
   done rerun; rebased on `origin/dev`
 
+## 11. Security review fixes (round 2)
+
+- [x] 11.1 N1: fair share of the total unread budget (`a_hoarder_filling_the_total_does_not_starve_a_drained_session`,
+  `a_session_above_its_fair_share_waits_while_the_total_is_over_and_resumes_when_it_drops`,
+  `the_total_budget_pauses_only_the_websocket_readers_above_their_fair_share`, units
+  `the_fair_share_is_the_floor_or_the_total_split_among_the_sessions`,
+  `a_session_at_or_below_the_fair_share_is_never_over_its_limit_because_of_the_total`)
+- [x] 11.2 N2: address normalization and peer fallback (`forwarded_address_forms_are_counted_as_one_client`, units
+  `address_keys_are_normalized_whatever_form_a_proxy_wrote`,
+  `a_client_cannot_pick_a_new_key_per_request_with_a_malformed_forwarded_address`)
+- [x] 11.3 R1: `allow_request` after the caps and under `allow_request_timeout`
+  (`allow_request_is_not_invoked_for_a_client_over_a_cap`, `allow_request_that_takes_too_long_refuses_the_request`, unit
+  `allow_request_timeout_has_a_default_and_is_validated_like_the_other_durations`)
+- [x] 11.4 R2: unsolicited pong ignored, Node's behavior recorded (paused-clock unit
+  `an_unsolicited_pong_does_not_postpone_the_ping_or_the_timeout`)
+- [x] 11.5 R3: `listen_until_in_background` closes the application even when `serve` fails
+- [x] 11.6 R4: docs (English and Spanish) for the many-address limit, `TrustProxy::All`, the fair share and its bound;
+  spec delta and design notes updated; full definition of done rerun after rebasing on `origin/dev`
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` (its `ws/engine-io` delta is applied).

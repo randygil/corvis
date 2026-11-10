@@ -347,21 +347,32 @@ pub(crate) struct UnreadGauge {
     /// has a single waiter, the read loop, and keeps `notify_one`, which cannot lose a release that happens
     /// between its check and its wait.
     wake_all: bool,
+    /// With a parent: while the parent is over its limit this gauge is only over its own when it holds more than
+    /// this many bytes, so a session that is drained is never paused by the hoarding of others.
+    fair: usize,
     parent: Option<Arc<UnreadGauge>>,
 }
 
 impl UnreadGauge {
     pub(crate) fn gateway(limit: usize) -> Self {
-        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: false, parent: None }
+        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: false, fair: 0, parent: None }
     }
 
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn new(limit: usize, parent: Option<Arc<UnreadGauge>>) -> Self {
-        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: true, parent }
+        UnreadGauge { bytes: AtomicUsize::new(0), notify: Notify::new(), limit, wake_all: true, fair: 0, parent }
+    }
+
+    /// Sets the fair share (see the field). Only meaningful with a parent.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn with_fair_share(mut self, fair: usize) -> Self {
+        self.fair = fair;
+        self
     }
 
     pub(crate) fn over_limit(&self) -> bool {
-        self.bytes.load(Ordering::SeqCst) > self.limit || self.parent.as_ref().is_some_and(|p| p.over_limit())
+        let own = self.bytes.load(Ordering::SeqCst);
+        own > self.limit || (own > self.fair && self.parent.as_ref().is_some_and(|p| p.over_limit()))
     }
 
     /// Bytes received and not yet taken.

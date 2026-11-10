@@ -188,11 +188,11 @@ created. Where Node has no bound, Corvis differs on purpose; each difference is 
 | `upgrade_timeout`, upgrades in progress | 10 s, one per session | same | the candidate is closed, the session stays |
 | `max_buffered_amount` (queued for the client) | 8 MiB | none | the send fails, the queue is discarded, `transport error` |
 | `max_unread_bytes` (received, not yet read; each message counts its length plus 64 bytes, empty ones too) | 16 MiB | none | WebSocket reads pause; the `POST` answer waits |
-| `max_total_unread_bytes` (the same, across all sessions; at least `max_unread_bytes`) | 256 MiB | none | every WebSocket pauses and every `POST` waits until the application reads |
+| `max_total_unread_bytes` (the same, across all sessions; at least `max_unread_bytes`) | 256 MiB | none | while exceeded, sessions holding more than a fair share (`max(16 KiB, total / max_sessions)`) pause and their `POST`s wait; the others keep reading. Worst case: `max_total_unread_bytes + max_sessions * fair share` |
 | `max_sessions` | 10,000 | none | handshake answered `503` with `{"code":3,"message":"Too many sessions"}` |
 | `max_sessions_per_ip` (per `ip()`, IPv6 per `/64`) | 256 | none | the same `503` |
 | `first_request_timeout` (polling session with no request after its handshake) | 10 s, at most `ping_interval + ping_timeout` | none | session closed with `ping timeout`, place released |
-| `allow_request` | off | off | `403` with `{"code":4,"message":"Forbidden"}` before any session exists |
+| `allow_request` (runs after the caps, within `allow_request_timeout`, 5 s) | off | off | `403` with `{"code":4,"message":"Forbidden"}` before any session exists; also on timeout or panic |
 | `close_timeout` | 30 s | 30 s | the connection is closed |
 | `cors`, `allowed_origins` | off | off (`allowed_origins` does not exist) | no CORS headers, or `403` with code 4 |
 
@@ -203,6 +203,13 @@ WebSocket-first connections, not for requests of an existing session. `max_sessi
 NAT or one CDN that is not a trusted proxy as a single address: raise it with `EngineOptions::max_sessions_per_ip(n)`
 for such deployments, or configure `set_trust_proxy` so the real client address is used. A session id handed out by a
 handshake the client never uses is released after `first_request_timeout`.
+
+The per-address cap does not stop an attacker who has many addresses: an IPv6 `/48` holds 65,536 `/64`s, and about 40
+addresses are enough to fill the default `max_sessions` of 10,000. Rate-limit handshakes at the edge (a reverse proxy
+or load balancer) or inside `allow_request`, and size `max_sessions` for the deployment. Behind a proxy the cap counts
+the address `ip()` resolves, written in any form (`203.0.113.7`, `203.0.113.7:40000`, `[2001:db8::1]:40000`, with or
+without a zone; a value that is no address counts as the socket's peer). With `TrustProxy::All` the client chooses
+that address, so the per-address cap protects nothing there: trust only the proxies you run.
 
 Polling responses are not compressed (Node compresses above 1 KiB when the client accepts gzip). Engine.IO v3, cookies and
 WebTransport are not supported. The server's [`send_timeout`](/http/performance#clients-that-stop-reading-send-timeout)

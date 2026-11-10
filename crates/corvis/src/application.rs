@@ -677,8 +677,11 @@ impl CorvisApplication {
         let local = listener.local_addr()?;
         let server = self.config.server.clone();
         let handle = tokio::spawn(async move {
-            crate::server::serve(listener, shared, server, Transport::Plain, shutdown).await?;
-            self.close_with_signal(None).await
+            // The close path runs whatever `serve` returned: its error (if any) is reported after the hooks ran.
+            let served = crate::server::serve(listener, shared, server, Transport::Plain, shutdown).await;
+            let closed = self.close_with_signal(None).await;
+            served?;
+            closed
         });
         Ok((local, handle))
     }

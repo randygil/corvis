@@ -227,53 +227,6 @@ async fn empty_messages_stop_being_read_over_websocket() {
 }
 
 #[tokio::test]
-async fn two_sessions_share_the_total_unread_budget() {
-    let mut fx = start(EngineOptions::new().max_unread_bytes(2000).max_total_unread_bytes(3000)).await;
-    let (a, _) = open_polling(fx.addr).await;
-    let socket_a = fx.socket().await;
-    let (b, _) = open_polling(fx.addr).await;
-    let socket_b = fx.socket().await;
-    let body = format!("4{}", "m".repeat(1500));
-    // 1,564 bytes charged: under the session limit and under the total.
-    assert_eq!(post(fx.addr, &a, &body).await.status, 200);
-    // The second pushes the total to 3,128: its answer is held although its own gauge is under the limit.
-    let addr = fx.addr;
-    let b2 = b.clone();
-    let held = tokio::spawn(async move { post(addr, &b2, &body).await });
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert!(!held.is_finished(), "held by the budget of the whole server");
-    assert!(socket_b.unread_bytes() < 2000);
-    // The application reading session A frees the budget.
-    let mut messages = socket_a.messages();
-    assert!(messages.next().await.is_some());
-    let resp = tokio::time::timeout(Duration::from_secs(10), held).await.expect("released").unwrap();
-    assert_eq!(resp.status, 200);
-}
-
-#[tokio::test]
-async fn the_total_budget_pauses_websocket_readers_too() {
-    let mut fx = start(EngineOptions::new().max_unread_bytes(2000).max_total_unread_bytes(3000)).await;
-    let (a, _) = open_polling(fx.addr).await;
-    let socket_a = fx.socket().await;
-    assert_eq!(post(fx.addr, &a, &format!("4{}", "m".repeat(1500))).await.status, 200);
-    let mut ws = ws_connect(fx.addr, None).await;
-    let _ = next_text(&mut ws).await;
-    let socket_b = fx.socket().await;
-    for _ in 0..10 {
-        send_text(&mut ws, &format!("4{}", "m".repeat(1000))).await;
-    }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    // One message of B fits (1,564 + 1,064 < 3,000); the next ones push the total over and the reader pauses.
-    assert!(socket_b.unread_bytes() <= 3 * 1064, "{}", socket_b.unread_bytes());
-    drop(socket_a.messages());
-    let mut messages = socket_b.messages();
-    for _ in 0..10 {
-        let next = tokio::time::timeout(Duration::from_secs(10), messages.next()).await.expect("a message");
-        assert!(next.is_some());
-    }
-}
-
-#[tokio::test]
 async fn sessions_per_address_are_capped() {
     let mut fx = start(EngineOptions::new().max_sessions_per_ip(3)).await;
     let mut sids = Vec::new();
@@ -435,4 +388,186 @@ async fn handshakes_racing_a_close_leave_no_session_behind() {
     // Every session that was admitted before the close was closed by it; none was admitted after.
     eventually("every session to be closed", || fx.engine.session_count() == 0).await;
     assert_eq!(http(fx.addr, "GET", POLLING, &[], b"").await.status, 503);
+}
+
+// ------------------------------------------------------- security review fixes, second round
+
+#[tokio::test]
+async fn a_session_above_its_fair_share_waits_while_the_total_is_over_and_resumes_when_it_drops() {
+    // Fair share 16 KiB (the floor). Two 20 KB messages: the second pushes the total over 40,000 and its session
+    // holds more than the fair share, so its answer is held although its own limit (30,000) is not reached.
+    let mut fx = start(EngineOptions::new().max_unread_bytes(30_000).max_total_unread_bytes(40_000)).await;
+    let (a, _) = open_polling(fx.addr).await;
+    let socket_a = fx.socket().await;
+    let (b, _) = open_polling(fx.addr).await;
+    let socket_b = fx.socket().await;
+    let body = format!("4{}", "m".repeat(20_000));
+    assert_eq!(post(fx.addr, &a, &body).await.status, 200);
+    let addr = fx.addr;
+    let b2 = b.clone();
+    let held = tokio::spawn(async move { post(addr, &b2, &body).await });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!held.is_finished(), "held: the total is over and B is above its fair share");
+    assert!(socket_b.unread_bytes() < 30_000);
+    // The application reading session A drops the total under its limit.
+    let mut messages = socket_a.messages();
+    assert!(messages.next().await.is_some());
+    let resp = tokio::time::timeout(Duration::from_secs(10), held).await.expect("released").unwrap();
+    assert_eq!(resp.status, 200);
+}
+
+#[tokio::test]
+async fn the_total_budget_pauses_only_the_websocket_readers_above_their_fair_share() {
+    let mut fx = start(EngineOptions::new().max_unread_bytes(30_000).max_total_unread_bytes(40_000)).await;
+    let (a, _) = open_polling(fx.addr).await;
+    let socket_a = fx.socket().await;
+    assert_eq!(post(fx.addr, &a, &format!("4{}", "m".repeat(20_000))).await.status, 200);
+    let mut ws = ws_connect(fx.addr, None).await;
+    let _ = next_text(&mut ws).await;
+    let socket_b = fx.socket().await;
+    for _ in 0..10 {
+        send_text(&mut ws, &format!("4{}", "m".repeat(20_000))).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // B's first message fits the total (20,064 + 20,064 > 40,000 only by the second): at most two are read.
+    assert!(socket_b.unread_bytes() <= 2 * 20_064, "{}", socket_b.unread_bytes());
+    drop(socket_a.messages());
+    let mut messages = socket_b.messages();
+    for _ in 0..10 {
+        let next = tokio::time::timeout(Duration::from_secs(10), messages.next()).await.expect("a message");
+        assert!(next.is_some());
+    }
+}
+
+#[tokio::test]
+async fn a_hoarder_filling_the_total_does_not_starve_a_drained_session() {
+    // The review's PoC: hoarders fill the whole budget; an innocent session that is drained and answers its pings
+    // must stay alive past several ping cycles and keep receiving.
+    let mut fx = start(
+        EngineOptions::new()
+            .ping_interval(Duration::from_millis(300))
+            .ping_timeout(Duration::from_millis(200))
+            .max_unread_bytes(50_000)
+            .max_total_unread_bytes(50_000),
+    )
+    .await;
+    let mut hoarders = Vec::new();
+    let mut held = Vec::new();
+    for _ in 0..3 {
+        let mut ws = ws_connect(fx.addr, None).await;
+        let _ = next_text(&mut ws).await;
+        let socket = fx.socket().await;
+        for _ in 0..4 {
+            send_text(&mut ws, &format!("4{}", "h".repeat(20_000))).await;
+        }
+        hoarders.push((ws, socket));
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let hoarded: usize = hoarders.iter().map(|(_, s)| s.unread_bytes()).sum();
+    assert!(hoarded > 50_000, "the total is over its budget ({hoarded})");
+    // Keep the hoarders' own pings answered too, without reading their messages.
+    for (mut ws, socket) in hoarders {
+        held.push(socket);
+        tokio::spawn(async move {
+            loop {
+                match tokio::time::timeout(Duration::from_secs(5), ws.next()).await {
+                    Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t)))) if t == "2" => send_text(&mut ws, "3").await,
+                    Ok(Some(Ok(_))) => {}
+                    _ => break,
+                }
+            }
+        });
+    }
+    // The innocent session.
+    let mut ws = ws_connect(fx.addr, None).await;
+    let _ = next_text(&mut ws).await;
+    let innocent = fx.socket().await;
+    let received = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = received.clone();
+    let mut messages = innocent.messages();
+    tokio::spawn(async move {
+        while messages.next().await.is_some() {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    let end = std::time::Instant::now() + Duration::from_millis(1800);
+    let mut sent = 0;
+    while std::time::Instant::now() < end {
+        tokio::select! {
+            frame = ws.next() => match frame {
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) if t == "2" => send_text(&mut ws, "3").await,
+                Some(Ok(_)) => {}
+                other => panic!("the innocent connection ended: {other:?}"),
+            },
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                send_text(&mut ws, "4hello").await;
+                sent += 1;
+            }
+        }
+    }
+    assert!(innocent.close_reason().is_none(), "{:?}", innocent.close_reason());
+    eventually("every message to arrive", || received.load(std::sync::atomic::Ordering::SeqCst) == sent).await;
+    drop(held);
+}
+
+#[tokio::test]
+async fn forwarded_address_forms_are_counted_as_one_client() {
+    let mut fx = start_with(EngineOptions::new().max_sessions_per_ip(1), |app| {
+        app.set_trust_proxy(corvis::TrustProxy::parse("127.0.0.1").unwrap());
+    })
+    .await;
+    // The first form opens the session; every other spelling of the same client is over its cap.
+    assert_eq!(http(fx.addr, "GET", POLLING, &[("X-Forwarded-For", "203.0.113.7:40000")], b"").await.status, 200);
+    let _ = fx.socket().await;
+    for form in ["203.0.113.7", "203.0.113.7:1", "::ffff:203.0.113.7"] {
+        assert_eq!(http(fx.addr, "GET", POLLING, &[("X-Forwarded-For", form)], b"").await.status, 503, "{form}");
+    }
+    assert_eq!(http(fx.addr, "GET", POLLING, &[("X-Forwarded-For", "[2001:db8:1:2::1]:40000")], b"").await.status, 200);
+    let _ = fx.socket().await;
+    for form in ["2001:db8:1:2::1", "[2001:db8:1:2::5]", "2001:db8:1:2::9%eth0"] {
+        assert_eq!(http(fx.addr, "GET", POLLING, &[("X-Forwarded-For", form)], b"").await.status, 503, "{form}");
+    }
+    // A value that is no address counts against the socket's peer, not against a key of its own.
+    assert_eq!(http(fx.addr, "GET", POLLING, &[("X-Forwarded-For", "junk-1")], b"").await.status, 200);
+    let _ = fx.socket().await;
+    assert_eq!(http(fx.addr, "GET", POLLING, &[("X-Forwarded-For", "junk-2")], b"").await.status, 503);
+}
+
+#[tokio::test]
+async fn allow_request_is_not_invoked_for_a_client_over_a_cap() {
+    use corvis::socket_io::Admission;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let mut fx = start(EngineOptions::new().max_sessions_per_ip(1).allow_request(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        async { Admission::Allow }
+    }))
+    .await;
+    assert_eq!(http(fx.addr, "GET", POLLING, &[], b"").await.status, 200);
+    let _ = fx.socket().await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // Over the per-address cap: 503 and no hook call, polling and WebSocket-first.
+    assert_eq!(http(fx.addr, "GET", POLLING, &[], b"").await.status, 503);
+    let err = tokio_tungstenite::connect_async(format!("ws://{}/socket.io/?EIO=4&transport=websocket", fx.addr)).await.unwrap_err();
+    assert!(matches!(err, tokio_tungstenite::tungstenite::Error::Http(ref r) if r.status() == 503), "{err:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn allow_request_that_takes_too_long_refuses_the_request() {
+    use corvis::socket_io::Admission;
+    let fx = start(EngineOptions::new().allow_request_timeout(Duration::from_millis(300)).allow_request(|_| async {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Admission::Allow
+    }))
+    .await;
+    let started = std::time::Instant::now();
+    let resp = http(fx.addr, "GET", POLLING, &[], b"").await;
+    assert_eq!(resp.status, 403);
+    assert_eq!(resp.json(), serde_json::json!({"code": 4, "message": "Forbidden"}));
+    assert!(started.elapsed() >= Duration::from_millis(300), "not before the timeout");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(fx.engine.session_count(), 0);
 }

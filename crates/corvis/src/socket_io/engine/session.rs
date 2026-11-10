@@ -134,7 +134,13 @@ impl Heartbeat {
     }
 
     /// A pong arrived: stop waiting and ping again `interval` from now.
+    ///
+    /// A pong with no ping pending is ignored: Node's `engine.io` lets it postpone the next ping, so a client that
+    /// only ever posts `3` keeps its session alive without answering anything; here the schedule is unchanged.
     pub(crate) fn pong(&mut self, now: Instant) {
+        if self.pong_deadline.is_none() {
+            return;
+        }
         self.pong_deadline = None;
         self.next_ping = Some(after(now, self.interval));
     }
@@ -216,6 +222,8 @@ pub(crate) struct Session {
     server: Weak<ServerInner>,
     pub(crate) handshake: Request,
     pub(crate) ip: String,
+    /// The key this session is counted under in the per-address cap.
+    pub(crate) addr_key: String,
     pub(crate) outbox: Arc<OutQueue<Packet>>,
     pub(crate) unread: Arc<UnreadGauge>,
     inbox: Mutex<Option<mpsc::UnboundedSender<(EngineMessage, UnreadTicket)>>>,
@@ -240,15 +248,17 @@ impl Session {
     ) -> Arc<Session> {
         let (inbox, rx) = mpsc::unbounded_channel();
         let ip = handshake.ip();
+        let handshake_peer = handshake.remote_addr();
         let now = Instant::now();
         let session = Arc::new(Session {
             id,
             log_id: LOG_IDS.fetch_add(1, Ordering::Relaxed),
             server,
             handshake,
+            addr_key: super::address_key(&ip, handshake_peer),
             ip,
             outbox: Arc::new(OutQueue::new(options.max_buffered_amount)),
-            unread: Arc::new(UnreadGauge::new(options.max_unread_bytes, total_unread)),
+            unread: Arc::new(UnreadGauge::new(options.max_unread_bytes, total_unread).with_fair_share(options.fair_unread_share())),
             inbox: Mutex::new(Some(inbox)),
             inbox_rx: Mutex::new(Some(rx)),
             state: Mutex::new(State {
@@ -970,5 +980,79 @@ mod review_tests {
         assert_eq!(total.unread(), 2 * UNREAD_MESSAGE_OVERHEAD + 3);
         drop(session.take_inbox());
         assert_eq!(total.unread(), 0, "dropping the queued tickets releases the total");
+    }
+}
+
+#[cfg(test)]
+mod review_round_two_tests {
+    use super::*;
+
+    fn open(options: EngineOptions, transport: TransportKind) -> Arc<Session> {
+        let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
+        let remote = "127.0.0.1:1".parse().unwrap();
+        let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), None)
+    }
+
+    async fn advance(ms: u64) {
+        tokio::time::advance(Duration::from_millis(ms)).await;
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unsolicited_pong_does_not_postpone_the_ping_or_the_timeout() {
+        let options = EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_millis(200));
+        let session = open(options, TransportKind::WebSocket);
+        let _ = session.outbox.take_batch(usize::MAX, |p| p.polling_len() + 1);
+        // Pongs while no ping is pending: Node would push the ping back each time.
+        for _ in 0..2 {
+            advance(100).await;
+            session.on_packet(Packet::Pong(String::new()));
+        }
+        advance(99).await;
+        assert!(session.outbox.take_batch(usize::MAX, |p| p.polling_len() + 1).is_empty());
+        advance(1).await;
+        assert_eq!(session.outbox.take_batch(usize::MAX, |p| p.polling_len() + 1), vec![Packet::Ping(String::new())]);
+        // Another pong after the ping is the answer; one more afterwards is ignored again.
+        advance(50).await;
+        session.on_packet(Packet::Pong(String::new()));
+        advance(100).await;
+        session.on_packet(Packet::Pong(String::new()));
+        advance(199).await;
+        assert!(session.outbox.take_batch(usize::MAX, |p| p.polling_len() + 1).is_empty());
+        advance(1).await;
+        assert_eq!(session.outbox.take_batch(usize::MAX, |p| p.polling_len() + 1), vec![Packet::Ping(String::new())]);
+        // Without answering that ping the session times out 200 ms later, at the exact time.
+        advance(199).await;
+        assert_eq!(session.close_reason(), None);
+        advance(1).await;
+        assert_eq!(session.close_reason(), Some(CloseReason::PingTimeout));
+    }
+
+    #[test]
+    fn the_fair_share_is_the_floor_or_the_total_split_among_the_sessions() {
+        let defaults = EngineOptions::new();
+        // 256 MiB / 10,000 sessions = 26,843 bytes, above the 16 KiB floor.
+        assert_eq!(defaults.fair_unread_share(), 256 * 1024 * 1024 / 10_000);
+        assert_eq!(EngineOptions::new().max_sessions(1_000_000).fair_unread_share(), 16 * 1024);
+        assert_eq!(EngineOptions::new().max_sessions(2).max_total_unread_bytes(1 << 20).fair_unread_share(), 1 << 19);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_at_or_below_the_fair_share_is_never_over_its_limit_because_of_the_total() {
+        let total = Arc::new(UnreadGauge::new(1000, None));
+        let fair = 100;
+        let own = Arc::new(UnreadGauge::new(10_000, Some(total.clone())).with_fair_share(fair));
+        let hoarder = Arc::new(UnreadGauge::new(10_000, Some(total.clone())).with_fair_share(fair));
+        let _hoard = UnreadTicket::new(&hoarder, 2000);
+        assert!(total.over_limit() && hoarder.over_limit(), "the hoarder is paused by the total");
+        let small = UnreadTicket::new(&own, 100);
+        assert!(!own.over_limit(), "at the fair share it keeps reading");
+        let _more = UnreadTicket::new(&own, 1);
+        assert!(own.over_limit(), "above the fair share it is paused while the total is over");
+        drop(small);
+        assert!(!own.over_limit(), "and resumes when it drops back");
     }
 }

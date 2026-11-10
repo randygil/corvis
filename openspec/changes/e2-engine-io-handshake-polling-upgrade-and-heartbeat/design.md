@@ -396,3 +396,33 @@ Findings of the first `security-reviewer` round, each with a regression test (na
 Harness: presets `ipcap` and `first` (Node defaults on the reference side) and two blocks in `engine-io/bounds`, with
 three new entries in `expected-differences.json`. Empty-message accounting, the total budget, `allow_request`,
 transport confusion and the close race have no Node counterpart to differ from, so they are covered by tests only.
+
+### Security review fixes, second round
+
+- N1 (fix 7 starved innocent sessions): `UnreadGauge::over_limit` is now `own > limit || (own > fair && parent over)`.
+  `fair = max(16 KiB, max_total_unread_bytes / max_sessions)` (`EngineOptions::fair_unread_share`, computed once when the
+  session opens). A drained session is never paused by what others hold; a session above its fair share is paused or
+  held while the total is exceeded and resumes when it drops (its own release or the total's wakes it through
+  `changed()`). Worst case: `max_total_unread_bytes + max_sessions * fair` plus one message per session; stated in the
+  docs. Unread messages are released when the application takes them or drops the socket and its stream, not when the
+  session closes (what was received stays readable), so a closed hoarder whose socket the application keeps still
+  counts; it only affects sessions above the fair share.
+- N2: `address_key(ip, peer)` strips brackets, port and zone, maps IPv4-mapped IPv6 to IPv4, counts IPv6 per `/64`, and
+  falls back to the socket peer when the resolved value is no address. The key is computed once per session
+  (`Session::addr_key`) so release always matches the count. Behind `TrustProxy::All` the client picks a well-formed
+  address, so the cap is ineffective there; documented.
+- R1: `check_caps` (closed flag, `max_sessions`, `max_sessions_per_ip`, read lock) runs before `allow_request`;
+  `open_session` repeats the checks under the write lock. The hook runs under `allow_request_timeout` (default 5 s,
+  validated: zero and above a day refused); a timeout answers 403 and logs a warning at most once a minute.
+- R2: Node 6.6.11 (`engine.io/build/socket.js`, `onPacket`, case `pong`) clears the ping timeout timer and refreshes the
+  ping interval timer whatever the state, so a pong with no ping pending postpones the next ping, and a client posting
+  `3` forever keeps its session alive. `Heartbeat::pong` now ignores a pong when no ping is pending. Because a pong that
+  follows a ping is accepted whether or not the client received that ping (the engine cannot tell), the divergence is
+  only visible through timing (the ping arrives earlier than on Node), which scenarios do not record, so there is no
+  expected-differences entry; the paused-clock unit test `an_unsolicited_pong_does_not_postpone_the_ping_or_the_timeout`
+  pins it.
+- R3: `listen_until_in_background` runs `close_with_signal` after `serve` whatever it returned, then reports the serve
+  error first.
+- R4: the preview docs state the many-address limit, edge rate limiting, `allow_request` and sizing `max_sessions`.
+- Harness: no wire-visible change in this round (fair share, address normalization and the hook order have no Node
+  counterpart), so `expected-differences.json` is unchanged.

@@ -24,6 +24,11 @@ pub const DEFAULT_MAX_SESSIONS_PER_IP: usize = 256;
 pub const DEFAULT_MAX_TOTAL_UNREAD_BYTES: usize = 256 * 1024 * 1024;
 /// The longest a first request timeout (see [`EngineOptions::first_request_timeout`]) may be by default.
 pub const DEFAULT_FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an `allow_request` hook may take before the request is refused.
+pub const DEFAULT_ALLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// The least a session may hold unread while the engine-wide budget is exceeded (see
+/// [`EngineOptions::max_total_unread_bytes`]).
+pub const MIN_FAIR_UNREAD_SHARE: usize = 16 * 1024;
 /// The largest value accepted for a duration option: a day. Larger values only ever meant "never" and overflow
 /// the clock arithmetic of the timers.
 pub const MAX_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
@@ -108,6 +113,7 @@ pub struct EngineOptions {
     pub(crate) max_total_unread_bytes: usize,
     pub(crate) first_request_timeout: Option<Duration>,
     pub(crate) allow_request: Option<AllowRequestHook>,
+    pub(crate) allow_request_timeout: Duration,
     pub(crate) close_timeout: Duration,
     pub(crate) cors: Option<CorsOptions>,
     pub(crate) allowed_origins: Option<Vec<String>>,
@@ -129,6 +135,7 @@ impl Default for EngineOptions {
             max_total_unread_bytes: DEFAULT_MAX_TOTAL_UNREAD_BYTES,
             first_request_timeout: None,
             allow_request: None,
+            allow_request_timeout: DEFAULT_ALLOW_REQUEST_TIMEOUT,
             close_timeout: crate::ws::DEFAULT_CLOSE_TIMEOUT,
             cors: None,
             allowed_origins: None,
@@ -211,9 +218,12 @@ impl EngineOptions {
         self
     }
 
-    /// The most received bytes waiting for the application across every session of the server; while it is
-    /// exceeded, every WebSocket stops being read and every polling `POST` is held, as for `max_unread_bytes`.
-    /// Must be at least `max_unread_bytes`. Node has no limit.
+    /// The most received bytes waiting for the application across every session of the server. While it is
+    /// exceeded, a WebSocket stops being read and a polling `POST` is held only for sessions that hold more than a
+    /// fair share, `max(16 KiB, max_total_unread_bytes / max_sessions)`; a session at or below it keeps reading, so a
+    /// hoarder never starves the others (they keep answering pings). The worst case is therefore bounded by
+    /// `max_total_unread_bytes + max_sessions * fair share` (plus one message per session). Must be at least
+    /// `max_unread_bytes`. Node has no limit.
     pub fn max_total_unread_bytes(mut self, bytes: usize) -> Self {
         self.max_total_unread_bytes = bytes;
         self
@@ -247,6 +257,19 @@ impl EngineOptions {
     {
         self.allow_request = Some(AllowRequestHook(std::sync::Arc::new(move |req| Box::pin(hook(req)))));
         self
+    }
+
+    /// How long the `allow_request` hook may take (default 5 s, above zero, at most a day). When it takes longer the
+    /// request is refused with `403` and a warning is logged, at most once a minute.
+    pub fn allow_request_timeout(mut self, timeout: Duration) -> Self {
+        self.allow_request_timeout = timeout;
+        self
+    }
+
+    /// The most unread bytes a session may hold while the engine-wide budget is exceeded without being paused:
+    /// `max(16 KiB, max_total_unread_bytes / max_sessions)`.
+    pub(crate) fn fair_unread_share(&self) -> usize {
+        MIN_FAIR_UNREAD_SHARE.max(self.max_total_unread_bytes / self.max_sessions.max(1))
     }
 
     /// The first-request timeout in force.
@@ -283,6 +306,7 @@ impl EngineOptions {
             ("ping_timeout", self.ping_timeout),
             ("upgrade_timeout", self.upgrade_timeout),
             ("close_timeout", self.close_timeout),
+            ("allow_request_timeout", self.allow_request_timeout),
         ];
         for (option, value) in durations {
             if value.is_zero() {
@@ -438,5 +462,15 @@ mod tests {
             let err = options.validate().unwrap_err();
             assert!(matches!(err, EngineOptionsError::Range { option, .. } if option == name), "{name}: {err}");
         }
+    }
+
+    #[test]
+    fn allow_request_timeout_has_a_default_and_is_validated_like_the_other_durations() {
+        assert_eq!(EngineOptions::new().allow_request_timeout, Duration::from_secs(5));
+        let zero = EngineOptions::new().allow_request_timeout(Duration::ZERO);
+        assert_eq!(zero.validate().unwrap_err(), EngineOptionsError::Zero { option: "allow_request_timeout" });
+        let long = EngineOptions::new().allow_request_timeout(Duration::from_secs(2 * 24 * 3600));
+        assert!(matches!(long.validate().unwrap_err(), EngineOptionsError::Range { option: "allow_request_timeout", .. }));
+        assert!(EngineOptions::new().allow_request_timeout(Duration::from_secs(1)).validate().is_ok());
     }
 }
