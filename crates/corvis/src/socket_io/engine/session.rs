@@ -351,11 +351,26 @@ impl Session {
         self.queue(Packet::Message(message))
     }
 
+    /// Queues several messages as one unit: no other message of the session is queued between them, and the group
+    /// is accepted or refused as a whole (the rule of `send` applied to the sum of their sizes).
+    pub(crate) fn send_all(&self, messages: Vec<EngineMessage>) -> Result<(), SendError> {
+        if self.lock().ready != Ready::Open {
+            return Err(SendError::Closed);
+        }
+        let result = self.outbox.push_group(messages.into_iter().map(Packet::Message).collect());
+        self.queued(result)
+    }
+
     fn queue(&self, packet: Packet) -> Result<(), SendError> {
         if self.lock().ready != Ready::Open {
             return Err(SendError::Closed);
         }
-        match self.outbox.push(packet, None) {
+        let result = self.outbox.push(packet, None);
+        self.queued(result)
+    }
+
+    fn queued(&self, result: Result<(), PushError>) -> Result<(), SendError> {
+        match result {
             Ok(()) => Ok(()),
             Err(PushError::Closed) => Err(SendError::Closed),
             Err(PushError::Full) => {

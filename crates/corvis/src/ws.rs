@@ -138,6 +138,32 @@ impl<M: QueueItem> OutQueue<M> {
         Ok(())
     }
 
+    /// Queues several items as one unit under a single lock: nothing else can be queued between them, and the group
+    /// is accepted or refused as a whole by the rule of [`push`](Self::push) applied to the sum of the sizes.
+    #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+    pub(crate) fn push_group(&self, items: Vec<M>) -> Result<(), PushError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let sizes: Vec<usize> = items.iter().map(|m| m.size()).collect();
+        let total: usize = sizes.iter().sum();
+        let mut s = self.lock();
+        if s.closed {
+            return Err(PushError::Closed);
+        }
+        let pending = s.queued + s.writing;
+        if pending > 0 && pending + total > self.limit {
+            return Err(PushError::Full);
+        }
+        for (m, size) in items.into_iter().zip(sizes) {
+            s.items.push_back((m, size, None));
+        }
+        s.queued += total;
+        drop(s);
+        self.wake();
+        Ok(())
+    }
+
     /// Rejects any later item. The pending ones stay queued for the writer, or are dropped with
     /// `discard`. Returns `false` if the queue was already closed.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
