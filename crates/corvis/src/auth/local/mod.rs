@@ -23,7 +23,7 @@ pub use hasher::{
     MAX_VERIFY_BCRYPT_COST, MIN_ARGON2_ITERATIONS, MIN_ARGON2_MEMORY_KIB, MIN_BCRYPT_COST, PasswordError, PasswordHasher,
     PasswordHasherOptions, VerifyLimits,
 };
-pub use strategy::{DEFAULT_MAX_CREDENTIAL_BYTES, LocalStrategy, LocalStrategyOptions, LocalValidator};
+pub use strategy::{DEFAULT_MAX_CREDENTIAL_BYTES, LocalStrategy, LocalStrategyOptions, LocalValidator, login_tracker};
 
 #[cfg(test)]
 mod tests;

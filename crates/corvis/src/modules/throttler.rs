@@ -808,6 +808,12 @@ impl ThrottlerStorage {
         self
     }
 
+    /// The IPv6 prefix length that identifies a client (see [`with_ipv6_subnet_prefix`](Self::with_ipv6_subnet_prefix)).
+    #[cfg_attr(not(feature = "auth-local"), allow(dead_code))]
+    pub(crate) fn ipv6_subnet_prefix(&self) -> u8 {
+        self.ipv6_subnet_prefix
+    }
+
     /// Number of live keys, counters and blocked keys.
     pub fn len(&self) -> usize {
         let c = self.counters.lock().unwrap_or_else(|e| e.into_inner());
@@ -1255,6 +1261,11 @@ impl CanActivate for ThrottlerGuard {
 
     fn controls_access(&self) -> bool {
         false
+    }
+
+    /// Lets the startup check of `corvis::auth` find this guard, to warn when an `AuthGuard` runs before it.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
 

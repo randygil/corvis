@@ -160,12 +160,44 @@ fn auth_guards_in(guard: &dyn crate::common::guard::CanActivate, depth: usize) -
     Ok(found)
 }
 
+/// `true` when the guard is a `ThrottlerGuard` or delegates to one through `CanActivate::inner_guards`.
+fn holds_throttler(guard: &dyn crate::common::guard::CanActivate, depth: usize) -> bool {
+    if depth > MAX_GUARD_DEPTH {
+        return false;
+    }
+    guard.as_any().is_some_and(|a| a.is::<crate::modules::throttler::ThrottlerGuard>())
+        || guard.inner_guards().into_iter().any(|inner| holds_throttler(inner, depth + 1))
+}
+
+/// Logs one warning for a route whose guards run an `AuthGuard` and, later, a `ThrottlerGuard`: the rate limit is
+/// checked after the password hash, the store read or the provider request it was meant to protect. A warning, not an
+/// error: limiting authenticated users after authenticating them is legitimate. A wrapper guard that does not expose
+/// the guards it holds through `as_any` or `inner_guards` hides both, and so the warning.
+fn warn_throttler_after_auth(route: &crate::router::CompiledRoute) {
+    let mut seen_auth = false;
+    for guard in &route.guards {
+        if seen_auth && holds_throttler(guard.as_ref(), 0) {
+            crate::logger::Logger::new("AuthGuard").warn(format!(
+                "AuthGuard runs before ThrottlerGuard on {} {}: the rate limit is checked after authentication. \
+                 Register ThrottlerGuard as a global guard (Provider::app_guard) or list it first",
+                route.method.as_str(),
+                route.path
+            ));
+            return;
+        }
+        if auth_guards_in(guard.as_ref(), 0).is_ok_and(|found| !found.is_empty()) {
+            seen_auth = true;
+        }
+    }
+}
+
 /// Startup check of the strategy names of every compiled route guard (global, controller and route level). One
 /// error lists every problem with its route.
 pub(crate) fn check_routes(container: &Container, table: &RouterTable) -> crate::Result<()> {
     let Some(authenticator) = container.instances_of::<Authenticator>().first().cloned() else { return Ok(()) };
     let mut problems: Vec<String> = Vec::new();
     for route in &table.routes {
+        warn_throttler_after_auth(route);
         for guard in &route.guards {
             let Ok(auth_guards) = auth_guards_in(guard.as_ref(), 0) else {
                 let line = format!(

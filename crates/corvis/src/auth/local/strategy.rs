@@ -153,6 +153,72 @@ impl Resolved {
             allow_query: options.allow_query_credentials,
         })
     }
+
+    /// The query the lookup reads: the request's when `allow_query_credentials` is on, `Null` (nothing) otherwise.
+    fn query_of(&self, req: &Request) -> Value {
+        if self.allow_query { Value::Object(req.query().clone()) } else { Value::Null }
+    }
+
+    /// The username the strategy would read from `req`: `None` when it is missing or longer than the limit (the cases
+    /// where the strategy answers "Missing credentials" or "Credentials too long" before the validator). The one
+    /// place both [`LocalStrategy`] and [`login_tracker`] get a username from, so they cannot disagree.
+    fn username_of(&self, req: &Request) -> Option<String> {
+        let query = self.query_of(req);
+        credential(req.body(), &query, &self.username).filter(|u| u.len() <= self.max_username_bytes).map(str::to_string)
+    }
+}
+
+/// A throttler tracker (for `ThrottlerStorage::with_named_tracker`) that counts login attempts per account: the
+/// username the local strategy configured with `options` will read from the same request (same field, same body then
+/// query order, same length limit), as `"acct:"` and the hex SHA-256 of its bytes. The digest keeps usernames out of
+/// the storage and bounds the key. A request with no readable username is counted by the normalized client address,
+/// as the built-in tracker does, so it is still limited. The username is used as submitted (no case folding): wrap the
+/// tracker when the application treats `Ana@x.io` and `ana@x.io` as one account.
+///
+/// ```ignore
+/// ThrottlerStorage::new(vec![ThrottlerOptions::new(60_000, 100), ThrottlerOptions::named("login", 60_000, 5)])
+///     .with_named_tracker("login-account", login_tracker(LocalStrategyOptions::default()))
+/// // on the route: #[apply_decorators(throttle("login").tracker("login-account"))]
+/// ```
+///
+/// # Panics
+///
+/// When `options` are not valid for the strategy (an empty field name, a zero length limit): the strategy would stop
+/// the application at startup for the same reason.
+pub fn login_tracker(
+    options: LocalStrategyOptions,
+) -> impl Fn(ExecutionContext) -> std::future::Ready<Result<String, HttpException>> + Send + Sync + 'static {
+    let resolved = Resolved::new(&options).unwrap_or_else(|problem| panic!("login_tracker: invalid local strategy options: {problem}"));
+    move |ctx| {
+        let req = ctx.request();
+        std::future::ready(Ok(match resolved.username_of(req) {
+            Some(username) => account_key(&username),
+            None => client_key(&ctx),
+        }))
+    }
+}
+
+/// `"acct:"` and the lowercase hex SHA-256 of the username's bytes.
+fn account_key(username: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let digest = Sha256::digest(username.as_bytes());
+    let mut key = String::with_capacity(5 + 64);
+    key.push_str("acct:");
+    for byte in digest {
+        let _ = write!(key, "{byte:02x}");
+    }
+    key
+}
+
+/// The built-in tracker's value for the request: the client address, normalized as the throttler normalizes it.
+fn client_key(ctx: &ExecutionContext) -> String {
+    let prefix = ctx
+        .module_ref()
+        .and_then(|m| m.get::<crate::modules::throttler::ThrottlerStorage>().ok())
+        .map(|s| s.ipv6_subnet_prefix())
+        .unwrap_or(crate::modules::throttler::DEFAULT_IPV6_SUBNET_PREFIX);
+    crate::modules::throttler::normalize_ip(&ctx.request().ip(), prefix)
 }
 
 /// What a lookup of a field in one source found.
@@ -252,7 +318,7 @@ impl<V: LocalValidator> Strategy for LocalStrategy<V> {
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
         // Without `allow_query_credentials` only the body is read: an empty query never yields a value.
-        let query = if self.resolved.allow_query { Value::Object(req.query().clone()) } else { Value::Null };
+        let query = self.resolved.query_of(req);
         let (Some(username), Some(password)) =
             (credential(req.body(), &query, &self.resolved.username), credential(req.body(), &query, &self.resolved.password))
         else {
