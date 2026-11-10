@@ -89,6 +89,12 @@ impl Routes {
         json!({ "ok": true })
     }
 
+    /// No guard: what `{:?}` of the request prints.
+    #[get("debug")]
+    fn debug(&self, req: Request) -> String {
+        format!("{req:?}")
+    }
+
     /// A guard whose strategy has no query source.
     #[get("header-only")]
     #[use_guards(AuthGuard::new("header-only"))]
@@ -292,4 +298,34 @@ async fn a_panicking_validator_logs_at_most_one_warning_a_minute_and_never_its_m
     assert!(lines(&captured, "ExceptionsHandler").is_empty(), "{:?}", lines(&captured, "ExceptionsHandler"));
     let all = captured.lock().unwrap().iter().map(|(_, m, _)| m.clone()).collect::<Vec<_>>().join("\n");
     assert!(!all.contains("secretmarker"), "a log line holds a key:\n{all}");
+}
+
+validator!(PercentName, "percent-name", ApiKeyStrategyOptions::new().source(ApiKeySource::query("k%FF")));
+
+#[module(providers = [Provider::strategy::<ApiKeyStrategy<PercentName>>()])]
+pub struct PercentNameModule;
+
+/// The parsers and the log read a name that is not valid percent-encoding differently, so such a name cannot be
+/// hidden reliably: the application does not start with it.
+#[tokio::test]
+async fn a_query_source_whose_name_holds_a_percent_sign_stops_the_start() {
+    let _g = SERIAL.lock().await;
+    let _captured = capture();
+    let mut app = CorvisFactory::create::<PercentNameModule>().await.unwrap();
+    app.silence_route_logs();
+    let error = app.init().await.expect_err("the start is refused").to_string();
+    assert!(error.contains("percent-name") && error.contains("k%FF") && error.contains('%'), "{error}");
+}
+
+/// `{:?}` of a request ends up in error reports and tracing spans: it prints the redacted URL.
+#[tokio::test]
+async fn the_debug_form_of_a_request_hides_the_key_of_a_query_source() {
+    let _g = SERIAL.lock().await;
+    let _captured = capture();
+    let app = start().await;
+    let r = request(&app).get(&format!("/debug?page=2&api_key={KEY}")).send().await;
+    assert_eq!(r.status, 200);
+    let shown = r.text();
+    assert!(shown.contains("api_key=REDACTED") && shown.contains("page=2"), "{shown}");
+    assert!(!shown.contains("secretmarker"), "{shown}");
 }

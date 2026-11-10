@@ -484,3 +484,25 @@ of "Implementation notes".
     the 500 it returns is an internal error and the default filter wrote an `ExceptionsHandler` line for each request.
     `HttpException::already_logged()` (crate-private) marks an exception whose raiser logged it, and
     `BaseExceptionFilter` skips the line for it. The panic payload is still never read.
+
+## Security review (round 2)
+
+The second pass could not get around any fix of round 1 (a differential fuzz of 600,000 query strings against what
+the strategies really read found no value left in `redacted_url()`), and judged the change ready to merge. What it
+noted, and what was done:
+
+24. A query parameter name that is not valid percent-encoding (`k%FF`) reads differently in the extended parser and in
+    the log, so its value reached the validator and was still printed. The names the strategies declare are now
+    checked when the application starts: a name with `%` stops the start, for every strategy. Test:
+    `a_query_source_whose_name_holds_a_percent_sign_stops_the_start`.
+25. `Debug` of `Request` printed the full URI, so a `{:?}` in an error report or a tracing span printed the key. It
+    prints `redacted_url()`. Test: `the_debug_form_of_a_request_hides_the_key_of_a_query_source`.
+26. A strategy that reads the query in its own code (`ExtractJwt::custom`, a custom strategy that does not override
+    `credential_query_params()`) registers no name. Documented, with the two ways to register one. A declarative
+    option for the JWT strategy is a possible follow-up.
+27. Accepted, not changed: `redacted_url()` is still several times the plain request for two shapes that only matter
+    with `LoggingInterceptor` and a query-reading strategy (999 deeply bracketed pairs under the extended parser,
+    3.6 ms against 1.0 ms; 32 KiB of `&` under the simple one, 0.3 ms against 0.02 ms). The header limit bounds it.
+    Candidate follow-up: compute the first-level key without the parser and print a fixed marker above 1000 pairs.
+28. `request.set_user(false)` from application code stays what the application wrote; it is not an authentication
+    path. A user that serializes to `[]` or `{}` authenticates, as in the original (`Ok(Some(vec![]))` included).

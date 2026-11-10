@@ -127,6 +127,14 @@ if it differs; record the adjustments under "Implementation notes" in `design.md
   that counts the lines for forty panics
 - [ ] 8.8 Maintainer: rerun the security review and the corvis-parity check over this round
 
+## 9. Security review (round 2)
+
+- [x] 9.1 Refuse a declared query parameter name with `%` at startup (note 24); verify with
+  `a_query_source_whose_name_holds_a_percent_sign_stops_the_start`
+- [x] 9.2 `Debug` of `Request` prints the redacted URL (note 25); verify with
+  `the_debug_form_of_a_request_hides_the_key_of_a_query_source`
+- [x] 9.3 Docs (EN, ES): what registers a name and what does not (note 26)
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.

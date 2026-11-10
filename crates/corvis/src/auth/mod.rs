@@ -96,10 +96,24 @@ pub(crate) fn build_registry(container: &Container) -> crate::Result<()> {
 }
 
 /// The query parameters the registered strategies read credentials from, for the log lines of every request.
-pub(crate) fn credential_query_params(container: &Container) -> Vec<String> {
-    let Some(authenticator) = container.instances_of::<Authenticator>().first().cloned() else { return Vec::new() };
-    let Some(registry) = authenticator.registry() else { return Vec::new() };
-    registry.by_name.values().flat_map(|s| s.credential_query_params()).collect()
+///
+/// A name with a `%` stops the start: the parsers of the application and the log disagree on how a name that is not
+/// valid percent-encoding reads, so its value could reach the strategy and still be printed.
+pub(crate) fn credential_query_params(container: &Container) -> crate::Result<Vec<String>> {
+    let Some(authenticator) = container.instances_of::<Authenticator>().first().cloned() else { return Ok(Vec::new()) };
+    let Some(registry) = authenticator.registry() else { return Ok(Vec::new()) };
+    let mut names = Vec::new();
+    for (strategy, instance) in &registry.by_name {
+        for name in instance.credential_query_params() {
+            if name.contains('%') {
+                anyhow::bail!(
+                    "the strategy \"{strategy}\" reads a credential from the query parameter {name:?}: a name with `%` cannot be hidden reliably in the request log; use a name without it"
+                );
+            }
+            names.push(name);
+        }
+    }
+    Ok(names)
 }
 
 /// The longest strategy name accepted.

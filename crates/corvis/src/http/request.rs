@@ -42,7 +42,9 @@ pub struct Request {
 
 impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Request").field("method", &self.method).field("uri", &self.uri).finish()
+        // The redacted form: a `{:?}` in an error report or a tracing span must not print a credential that a
+        // strategy reads from the query string.
+        f.debug_struct("Request").field("method", &self.method).field("uri", &self.redacted_url()).finish()
     }
 }
 
