@@ -1,0 +1,62 @@
+[
+  {
+    "name": "empty",
+    "password": "",
+    "hash": "$2b$04$/gbmzMPMPAA.Yt0q2hvf1.hOS0u4TolCjJQPLK5q2C9G6LdfsU4M."
+  },
+  {
+    "name": "ascii",
+    "password": "secret",
+    "hash": "$2b$04$jnBKVcsamLD7YdLdR3HzMu3aIlPlzTGRH0cNhhZmfBqJ4x3jk0hqa"
+  },
+  {
+    "name": "latin",
+    "password": "pässword",
+    "hash": "$2b$04$8P9ZknVZ0F2OxdNBbjmsNeHyMiL6eyo5BZ3exv96kxIMxJEQJj3pK"
+  },
+  {
+    "name": "emoji",
+    "password": "🔑secret",
+    "hash": "$2b$04$sqw1.dbIdl3laGrqx0w02.OkgG6jTItRTzRpy3A2bsObg68RXoDn2"
+  },
+  {
+    "name": "nul-middle",
+    "password": "pass\u0000word",
+    "hash": "$2b$04$Zjy9xesmR7Qu/VQcOXWZae3DeVeE1Zsyd8z/7aZsYVN6CeAfBDy5K"
+  },
+  {
+    "name": "nul-end",
+    "password": "pass\u0000",
+    "hash": "$2b$04$vjZfo1fb4sCkO/Syhk3bCer1mp0kKo48zNE2etywdiljYiji8TTKq"
+  },
+  {
+    "name": "nul-start",
+    "password": "\u0000pass",
+    "hash": "$2b$04$VHDUlvyq43uF83xl4pvdIO0DIteqIiLDxe9waT1ARBwfPwrjiMKU2"
+  },
+  {
+    "name": "bytes-71",
+    "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "hash": "$2b$04$HioofMoqSVNNySvyFJu0xOHCIXEBqoe0aXmXj3pCBvQih5THZ.sGW"
+  },
+  {
+    "name": "bytes-72",
+    "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "hash": "$2b$04$5ILLguKdIdwaVyfw7sGewuEPqEZ5sPlMMiBtFzQmvnKo3DmS53a06"
+  },
+  {
+    "name": "space",
+    "password": " leading and trailing ",
+    "hash": "$2b$04$8aI57/snpuhWFKXC1eOilOlqUcGWmUrRZnD/4kCsW9JXYhKPcS8Ne"
+  },
+  {
+    "name": "ascii-cost-10",
+    "password": "secret",
+    "hash": "$2b$10$SPPH0Se8ifD1.JD0hx6N6eSTAD1sK49C2CWBNc71U06YOyrEPCwAC"
+  },
+  {
+    "name": "latin-cost-10",
+    "password": "pässword",
+    "hash": "$2b$10$jDPEkltcXKBD6zCQ4T7L..AIAohUcmJgPYTcvGL43zHIqs0Gfdzu."
+  }
+]

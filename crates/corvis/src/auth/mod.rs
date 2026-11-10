@@ -28,6 +28,8 @@
 
 mod authenticator;
 mod guard;
+#[cfg(feature = "auth-local")]
+pub mod local;
 mod module;
 mod strategy;
 mod user;

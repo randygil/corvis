@@ -1,0 +1,297 @@
+//! `LocalStrategy`: the port of `passport-local` 1.0.0, with bounded credentials.
+
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::FutureExt;
+use futures::future::BoxFuture;
+use serde::Serialize;
+use serde_json::{Value, json};
+
+use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
+use crate::common::context::ExecutionContext;
+use crate::di::{DiError, Injectable, ResolveCtx};
+use crate::http::{HttpException, Request};
+
+/// The default of `max_username_bytes` and `max_password_bytes`.
+pub const DEFAULT_MAX_CREDENTIAL_BYTES: usize = 1024;
+
+/// The options of the local strategy, the `usernameField` and `passwordField` of `passport-local` plus the length
+/// limits.
+#[derive(Debug, Clone)]
+pub struct LocalStrategyOptions {
+    username_field: String,
+    password_field: String,
+    max_username_bytes: usize,
+    max_password_bytes: usize,
+}
+
+impl Default for LocalStrategyOptions {
+    fn default() -> Self {
+        LocalStrategyOptions {
+            username_field: "username".to_string(),
+            password_field: "password".to_string(),
+            max_username_bytes: DEFAULT_MAX_CREDENTIAL_BYTES,
+            max_password_bytes: DEFAULT_MAX_CREDENTIAL_BYTES,
+        }
+    }
+}
+
+impl LocalStrategyOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The field that holds the username (`usernameField`), `username` by default. `a[b]` reads `body.a.b`.
+    pub fn username_field(mut self, field: impl Into<String>) -> Self {
+        self.username_field = field.into();
+        self
+    }
+
+    /// The field that holds the password (`passwordField`), `password` by default.
+    pub fn password_field(mut self, field: impl Into<String>) -> Self {
+        self.password_field = field.into();
+        self
+    }
+
+    /// The longest username accepted, 1024 bytes by default.
+    pub fn max_username_bytes(mut self, max: usize) -> Self {
+        self.max_username_bytes = max;
+        self
+    }
+
+    /// The longest password accepted, 1024 bytes by default.
+    pub fn max_password_bytes(mut self, max: usize) -> Self {
+        self.max_password_bytes = max;
+        self
+    }
+}
+
+/// The class `PassportStrategy(Strategy)` of `passport-local` is written as: the options and `validate`.
+/// `validate` runs only when both credentials were found and are within their limits.
+///
+/// ```ignore
+/// #[injectable]
+/// pub struct LocalAuth { users: Arc<UsersService>, hasher: Arc<PasswordHasher> }
+///
+/// #[async_trait]
+/// impl LocalValidator for LocalAuth {
+///     type User = PublicUser;
+///     async fn validate(&self, _: &Request, username: &str, password: &str) -> Result<Option<PublicUser>, HttpException> {
+///         let user = self.users.find_by_username(username).await;
+///         let ok = self.hasher.verify_or_dummy(password, user.as_ref().map(|u| u.password_hash.as_str())).await
+///             .map_err(|_| InternalServerErrorException::empty())?;
+///         Ok(user.filter(|_| ok).map(PublicUser::from))
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait LocalValidator: Injectable {
+    /// The name routes use: `AuthGuard::new("local")`.
+    const NAME: &'static str = "local";
+
+    /// The user handed to the handler (`User<Self::User>`). Do not put the password hash in it.
+    type User: Serialize + Clone + Send + Sync + 'static;
+
+    /// The options, read once when the application starts.
+    fn options(&self) -> LocalStrategyOptions {
+        LocalStrategyOptions::default()
+    }
+
+    /// `validate(username, password)`: the user, `None` to refuse the credentials (401), or an exception (passed on
+    /// as it is). Verify the password with [`PasswordHasher::verify_or_dummy`](super::PasswordHasher::verify_or_dummy)
+    /// so an unknown username costs as much as a wrong password.
+    async fn validate(&self, req: &Request, username: &str, password: &str) -> Result<Option<Self::User>, HttpException>;
+
+    /// The auth info of a successful attempt (`Request::auth_info`), none by default.
+    fn info(&self, _user: &Self::User) -> Option<Value> {
+        None
+    }
+}
+
+struct Resolved {
+    username: Vec<String>,
+    password: Vec<String>,
+    max_username_bytes: usize,
+    max_password_bytes: usize,
+}
+
+/// `field.split(']').join('').split('[')` of `utils.lookup`.
+fn split_path(field: &str) -> Vec<String> {
+    field.replace(']', "").split('[').map(str::to_string).collect()
+}
+
+impl Resolved {
+    fn new(options: &LocalStrategyOptions) -> Result<Self, String> {
+        if options.username_field.is_empty() {
+            return Err("the username field name is empty".to_string());
+        }
+        if options.password_field.is_empty() {
+            return Err("the password field name is empty".to_string());
+        }
+        if options.max_username_bytes == 0 || options.max_password_bytes == 0 {
+            return Err("max_username_bytes and max_password_bytes must be at least 1".to_string());
+        }
+        Ok(Resolved {
+            username: split_path(&options.username_field),
+            password: split_path(&options.password_field),
+            max_username_bytes: options.max_username_bytes,
+            max_password_bytes: options.max_password_bytes,
+        })
+    }
+}
+
+/// What a lookup of a field in one source found.
+#[derive(Debug, PartialEq)]
+enum Found<'a> {
+    /// A non-empty string.
+    Text(&'a str),
+    /// Nothing usable: absent, empty, an object or array at the end of the path, or not a string.
+    Nothing,
+}
+
+/// `utils.lookup` of `passport-local` over a JSON value. A segment of an object is a key and a segment of an array is
+/// a canonical index. A scalar met on the way ends the lookup, even before the end of the path; only a non-empty
+/// string counts (the original also passes numbers and booleans on, which Corvis treats as missing).
+fn lookup<'a>(root: &'a Value, path: &[String]) -> Found<'a> {
+    let mut current = root;
+    for segment in path {
+        let next = match current {
+            Value::Object(map) => map.get(segment),
+            Value::Array(items) => segment.parse::<usize>().ok().filter(|i| i.to_string() == *segment).and_then(|i| items.get(i)),
+            _ => None,
+        };
+        match next {
+            None => return Found::Nothing,
+            Some(Value::String(s)) if !s.is_empty() => return Found::Text(s),
+            Some(inner @ (Value::Object(_) | Value::Array(_))) => current = inner,
+            Some(_) => return Found::Nothing,
+        }
+    }
+    Found::Nothing
+}
+
+/// `lookup(req.body, field) || lookup(req.query, field)`.
+fn credential<'a>(body: &'a Value, query: &'a Value, path: &[String]) -> Option<&'a str> {
+    match lookup(body, path) {
+        Found::Text(s) => Some(s),
+        Found::Nothing => match lookup(query, path) {
+            Found::Text(s) => Some(s),
+            Found::Nothing => None,
+        },
+    }
+}
+
+/// The strategy of a [`LocalValidator`]: register it with `Provider::strategy::<LocalStrategy<V>>()`.
+pub struct LocalStrategy<V: LocalValidator> {
+    validator: Arc<V>,
+    resolved: Resolved,
+    _marker: PhantomData<fn() -> V>,
+}
+
+/// Prints nothing but the strategy name.
+impl<V: LocalValidator> std::fmt::Debug for LocalStrategy<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LocalStrategy({})", V::NAME)
+    }
+}
+
+impl<V: LocalValidator> Injectable for LocalStrategy<V> {
+    fn construct(ctx: ResolveCtx) -> BoxFuture<'static, Result<Self, DiError>> {
+        async move {
+            let validator = ctx.get_or_construct::<V>().await?;
+            let resolved = Resolved::new(&validator.options()).map_err(|problem| DiError::Factory {
+                token: format!("LocalStrategy \"{}\" ({})", V::NAME, std::any::type_name::<V>()),
+                cause: Arc::new(anyhow::anyhow!("invalid local strategy options: {problem}")),
+            })?;
+            Ok(LocalStrategy { validator, resolved, _marker: PhantomData })
+        }
+        .boxed()
+    }
+}
+
+fn fail(message: &str) -> StrategyOutcome {
+    StrategyOutcome::Fail { challenge: Some(json!({ "message": message })), status: Some(400) }
+}
+
+#[async_trait]
+impl<V: LocalValidator> Strategy for LocalStrategy<V> {
+    fn name(&self) -> &str {
+        V::NAME
+    }
+
+    async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
+        let req = ctx.request();
+        let query = Value::Object(req.query().clone());
+        let (Some(username), Some(password)) =
+            (credential(req.body(), &query, &self.resolved.username), credential(req.body(), &query, &self.resolved.password))
+        else {
+            return fail("Missing credentials");
+        };
+        if username.len() > self.resolved.max_username_bytes || password.len() > self.resolved.max_password_bytes {
+            return fail("Credentials too long");
+        }
+        match self.validator.validate(req, username, password).await {
+            Err(e) => StrategyOutcome::Error(e),
+            Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
+            Ok(Some(user)) => {
+                let info = self.validator.info(&user);
+                match AuthenticatedUser::new(user) {
+                    Ok(user) => StrategyOutcome::Success { user, info },
+                    Err(e) => StrategyOutcome::Error(e),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(field: &str) -> Vec<String> {
+        split_path(field)
+    }
+
+    #[test]
+    fn paths_split_like_passport_local() {
+        assert_eq!(path("username"), ["username"]);
+        assert_eq!(path("user[email]"), ["user", "email"]);
+        assert_eq!(path("a[b][c]"), ["a", "b", "c"]);
+        assert_eq!(path("a]"), ["a"]);
+        assert_eq!(path("a[]"), ["a", ""]);
+    }
+
+    #[test]
+    fn lookup_follows_the_original_rules() {
+        let body = json!({ "u": "ana", "n": 5, "b": false, "e": "", "o": { "email": "a@x.io", "deep": { "x": "y" } }, "l": ["p", "q"], "z": null });
+        assert_eq!(lookup(&body, &path("u")), Found::Text("ana"));
+        assert_eq!(lookup(&body, &path("o[email]")), Found::Text("a@x.io"));
+        assert_eq!(lookup(&body, &path("o[deep][x]")), Found::Text("y"));
+        assert_eq!(lookup(&body, &path("u[email]")), Found::Text("ana"), "a string before the end of the path is returned");
+        assert_eq!(lookup(&body, &path("o")), Found::Nothing, "an object at the end of the path");
+        assert_eq!(lookup(&body, &path("l")), Found::Nothing, "an array at the end of the path");
+        assert_eq!(lookup(&body, &path("l[1]")), Found::Text("q"));
+        assert_eq!(lookup(&body, &path("l[2]")), Found::Nothing);
+        assert_eq!(lookup(&body, &path("l[length]")), Found::Nothing);
+        assert_eq!(lookup(&body, &path("l[01]")), Found::Nothing);
+        assert_eq!(lookup(&body, &path("n")), Found::Nothing, "numbers are missing");
+        assert_eq!(lookup(&body, &path("b")), Found::Nothing);
+        assert_eq!(lookup(&body, &path("e")), Found::Nothing, "empty is missing");
+        assert_eq!(lookup(&body, &path("z")), Found::Nothing);
+        assert_eq!(lookup(&body, &path("z[x]")), Found::Nothing, "null in the middle does not panic");
+        assert_eq!(lookup(&body, &path("absent")), Found::Nothing);
+        assert_eq!(lookup(&Value::Null, &path("u")), Found::Nothing);
+        assert_eq!(lookup(&json!("text"), &path("u")), Found::Nothing);
+        assert_eq!(lookup(&body, &path("")), Found::Nothing);
+    }
+
+    #[test]
+    fn options_are_validated() {
+        assert!(Resolved::new(&LocalStrategyOptions::default()).is_ok());
+        assert!(Resolved::new(&LocalStrategyOptions::default().username_field("")).is_err());
+        assert!(Resolved::new(&LocalStrategyOptions::default().password_field("")).is_err());
+        assert!(Resolved::new(&LocalStrategyOptions::default().max_password_bytes(0)).is_err());
+    }
+}
