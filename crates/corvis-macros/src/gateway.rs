@@ -32,8 +32,16 @@ struct GatewayOptions {
 
 const ACCEPTED: &str = "`path`, `namespace` and `cors`";
 
+/// A literal passed through `macro_rules!` (`$x:literal`, `$x:expr`) arrives wrapped in an invisible group.
+fn ungroup(mut expr: &Expr) -> &Expr {
+    while let Expr::Group(group) = expr {
+        expr = &group.expr;
+    }
+    expr
+}
+
 fn string_literal(value: &Expr, key: &str) -> syn::Result<String> {
-    lit_str(value).ok_or_else(|| syn::Error::new(value.span(), format!("`{key}` of #[websocket_gateway] expects a string literal")))
+    lit_str(ungroup(value)).ok_or_else(|| syn::Error::new(value.span(), format!("`{key}` of #[websocket_gateway] expects a string literal")))
 }
 
 fn check_namespace(namespace: &str, span: proc_macro2::Span) -> syn::Result<()> {
@@ -52,7 +60,7 @@ fn check_namespace(namespace: &str, span: proc_macro2::Span) -> syn::Result<()> 
 
 fn parse_cors(value: &Expr) -> syn::Result<Option<Cors>> {
     let forms = "`cors` of #[websocket_gateway] takes `true`, `false`, an origin string or an array of origin strings";
-    match value {
+    match ungroup(value) {
         Expr::Lit(l) => match &l.lit {
             syn::Lit::Bool(b) => Ok(if b.value { Some(Cors::Any) } else { None }),
             syn::Lit::Str(s) => Ok(Some(Cors::Origins(vec![s.value()]))),
@@ -61,7 +69,7 @@ fn parse_cors(value: &Expr) -> syn::Result<Option<Cors>> {
         Expr::Array(a) => {
             let mut origins = Vec::new();
             for element in &a.elems {
-                origins.push(lit_str(element).ok_or_else(|| syn::Error::new(element.span(), forms))?);
+                origins.push(lit_str(ungroup(element)).ok_or_else(|| syn::Error::new(element.span(), forms))?);
             }
             if origins.is_empty() {
                 return Err(syn::Error::new(value.span(), "`cors` of #[websocket_gateway] needs at least one origin in the array"));
@@ -76,7 +84,7 @@ fn parse_options(exprs: &[Expr]) -> syn::Result<GatewayOptions> {
     let mut options = GatewayOptions::default();
     let mut ws_path = "/".to_string();
     for e in exprs {
-        match e {
+        match ungroup(e) {
             Expr::Assign(a) => {
                 let key = match &*a.left {
                     Expr::Path(p) => p.path.get_ident().map(|i| i.to_string()),
@@ -359,6 +367,15 @@ mod tests {
         assert!(error(quote!(namespace = #long)).contains("257 bytes"));
         let ok = format!("/{}", "a".repeat(255));
         assert!(options(quote!(namespace = #ok)).is_ok());
+    }
+
+    #[test]
+    fn literals_that_came_through_macro_rules_are_accepted() {
+        let namespace = proc_macro2::Group::new(proc_macro2::Delimiter::None, quote!("/chat"));
+        let path = proc_macro2::Group::new(proc_macro2::Delimiter::None, quote!("/realtime"));
+        let cors = proc_macro2::Group::new(proc_macro2::Delimiter::None, quote!(true));
+        let o = options(quote!(namespace = #namespace, path = #path, cors = #cors)).unwrap();
+        assert_eq!((o.namespace.as_deref(), o.path.as_deref(), o.cors), (Some("/chat"), Some("/realtime"), Some(Cors::Any)));
     }
 
     #[test]
