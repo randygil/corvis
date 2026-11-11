@@ -143,7 +143,7 @@ proptest! {
         prop_assert!(!encoded.packet().contains(separator));
         prop_assert!(encoded.attachments.len() <= 10);
         let mut decoder = Decoder::new(limits());
-        let mut result = decoder.add_text(&encoded.packet()).unwrap();
+        let mut result = decoder.add_text(encoded.packet()).unwrap();
         for attachment in &encoded.attachments {
             prop_assert!(result.is_none());
             result = decoder.add_binary(attachment.bytes()).unwrap();
@@ -164,7 +164,7 @@ proptest! {
         match encode(&packet, 10) {
             Ok(encoded) => {
                 prop_assert!(depth < MAX_DEPTH);
-                prop_assert!(Decoder::new(limits()).add_text(&encoded.packet()).is_ok());
+                prop_assert!(Decoder::new(limits()).add_text(encoded.packet()).is_ok());
             }
             Err(_) => prop_assert!(depth >= MAX_DEPTH),
         }

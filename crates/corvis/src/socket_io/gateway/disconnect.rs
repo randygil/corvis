@@ -182,7 +182,7 @@ impl HookQueue {
             drop(state);
             socket.warn(
                 "a disconnect hook dropped",
-                &format!(
+                || format!(
                     "{hooks} handle_disconnect hooks are pending in the application, pinning {held} bytes (IoAdapter::max_pending_disconnect_hooks and max_pending_disconnect_hook_bytes): the hook of a socket that left was dropped"
                 ),
             );

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::adapter::{
-    AckShared, AckSink, AdapterError, BroadcastFlags, BroadcastOptions, HandshakeInfo, Room, RoomError, SocketId, SocketInfo,
+    AckShared, AckSink, AdapterError, BroadcastFlags, BroadcastOptions, HandshakeInfo, Room, RoomError, RoomLimits, SocketId, SocketInfo,
 };
 use super::engine::options::MAX_DURATION;
 use super::namespace::IoNamespace;
@@ -234,18 +234,18 @@ impl BroadcastOperator {
         if !except {
             next.narrowed = true;
         }
-        let options = self.nsp.options();
-        let max = options.max_room_name_length;
+        let limits = RoomLimits::of(self.nsp.options());
         let mut kept = Vec::new();
         for room in rooms.into_rooms() {
-            if room.len() > max {
-                // Kept, not dropped: leaving the name out of `to` could make the broadcast reach everyone.
-                next.error.get_or_insert(RoomError::NameTooLong { len: room.len(), max });
-            } else {
-                kept.push(room);
+            match limits.check_name(&room) {
+                // Kept as an error, not dropped: leaving the name out of `to` could make the broadcast reach everyone.
+                Err(error) => {
+                    next.error.get_or_insert(error);
+                }
+                Ok(()) => kept.push(room),
             }
         }
-        let most = options.max_rooms_per_socket;
+        let most = limits.max_rooms;
         if next.named.saturating_add(kept.len()) > most {
             next.error.get_or_insert(RoomError::TooManyTargets { max: most });
         } else {
@@ -416,16 +416,9 @@ impl BroadcastOperator {
     }
 
     fn valid_rooms(&self, rooms: impl IntoRooms) -> Result<Vec<Room>, RoomError> {
-        let options = self.nsp.options();
         let rooms = rooms.into_rooms();
-        if rooms.len() > options.max_rooms_per_socket {
-            return Err(RoomError::TooManyRooms { max: options.max_rooms_per_socket });
-        }
-        let max = options.max_room_name_length;
-        match rooms.iter().find(|r| r.len() > max) {
-            Some(room) => Err(RoomError::NameTooLong { len: room.len(), max }),
-            None => Ok(rooms),
-        }
+        RoomLimits::of(self.nsp.options()).check(&rooms)?;
+        Ok(rooms)
     }
 }
 

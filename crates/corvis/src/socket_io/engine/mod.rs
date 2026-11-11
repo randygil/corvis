@@ -48,6 +48,7 @@ pub use packet::EngineMessage;
 pub use session::{CloseReason, SendError};
 
 use self::session::Session;
+use super::warn::{WARN_INTERVAL, WarnLimiter};
 use crate::http::Request;
 use crate::http_adapter::HttpServer;
 use crate::logger::Logger;
@@ -92,12 +93,15 @@ pub(crate) struct ServerInner {
     on_connection: RwLock<Option<ConnectionCallback>>,
     /// Callbacks run at the start of `close()`, before any session is closed.
     on_closing: RwLock<Vec<ClosingCallback>>,
-    last_cap_warning: Mutex<Option<std::time::Instant>>,
-    last_hook_warning: Mutex<Option<std::time::Instant>>,
-    /// When the last send-buffer overflow was logged and how many were left out since: a broadcast can close many
-    /// sessions at once, so the line is written once a minute with the number it left out.
-    overflow_warning: Mutex<(Option<std::time::Instant>, u64)>,
+    /// Rate limit of the lines a client can provoke (a session cap reached, a slow `allow_request`, a send buffer over
+    /// its limit: a broadcast can close many sessions at once): once a minute per kind, with the number left out.
+    warnings: WarnLimiter,
 }
+
+/// The kinds of the engine's rate-limited lines (it has no namespace: the limiter's key is the empty name).
+const SESSION_CAP: &str = "a session cap";
+const ALLOW_REQUEST_TIMEOUT: &str = "an allow_request timeout";
+const SEND_BUFFER_OVERFLOW: &str = "a send buffer over its limit";
 
 type AddressTable = Mutex<HashMap<String, Weak<UnreadGauge>>>;
 
@@ -121,22 +125,8 @@ impl Linger {
 impl ServerInner {
     /// The line to write for a session closed by a send buffer over its limit, or `None` when one was written less
     /// than a minute ago (the next one says how many were left out).
-    pub(crate) fn overflow_line(&self, log_id: u64, now: std::time::Instant) -> Option<String> {
-        let mut state = self.overflow_warning.lock().unwrap_or_else(|e| e.into_inner());
-        let (last, suppressed) = &mut *state;
-        if last.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_secs(60)) {
-            *suppressed += 1;
-            return None;
-        }
-        let left_out = std::mem::take(suppressed);
-        *last = Some(now);
-        Some(if left_out > 0 {
-            format!(
-                "session {log_id}: send buffer over its limit, session closed ({left_out} more were closed in the last minute without a line)"
-            )
-        } else {
-            format!("session {log_id}: send buffer over its limit, session closed")
-        })
+    pub(crate) fn overflow_line(&self, log_id: u64, now: tokio::time::Instant) -> Option<String> {
+        self.warnings.line(SEND_BUFFER_OVERFLOW, "", || format!("session {log_id}: send buffer over its limit, session closed"), now)
     }
 
     /// What a new session's gauge is chained to: the gauge of its address when the address has a share of the
@@ -304,9 +294,7 @@ impl EngineServer {
                 lingering: Mutex::new(HashMap::new()),
                 on_connection: RwLock::new(None),
                 on_closing: RwLock::new(Vec::new()),
-                last_cap_warning: Mutex::new(None),
-                last_hook_warning: Mutex::new(None),
-                overflow_warning: Mutex::new((None, 0)),
+                warnings: WarnLimiter::new(WARN_INTERVAL, "EngineIO"),
             }),
         })
     }
@@ -448,18 +436,18 @@ impl EngineServer {
         match error {
             OpenError::Closing => handshake_refused(upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Server is closing"),
             OpenError::TooManySessions => {
-                self.warn_session_cap(format!("max_sessions ({})", self.inner.options.max_sessions));
+                self.warn_session_cap(|| format!("max_sessions ({})", self.inner.options.max_sessions));
                 handshake_refused(upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
             }
             OpenError::TooManyFromAddress => {
-                self.warn_session_cap(format!("max_sessions_per_ip ({})", self.inner.options.max_sessions_per_ip));
+                self.warn_session_cap(|| format!("max_sessions_per_ip ({})", self.inner.options.max_sessions_per_ip));
                 handshake_refused(upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
             }
             OpenError::PendingHooks => {
                 let (hooks, bytes) = self.inner.options.pending_hook_share.unwrap_or_default();
-                self.warn_session_cap(format!(
-                    "the share of one client address of the pending disconnect hooks ({hooks} hooks or {bytes} bytes)"
-                ));
+                self.warn_session_cap(|| {
+                    format!("the share of one client address of the pending disconnect hooks ({hooks} hooks or {bytes} bytes)")
+                });
                 handshake_refused(upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
             }
         }
@@ -478,24 +466,17 @@ impl EngineServer {
                 false
             }
             Err(_) => {
-                let mut last = self.inner.last_hook_warning.lock().unwrap_or_else(|e| e.into_inner());
-                let now = std::time::Instant::now();
-                if last.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(60)) {
-                    *last = Some(now);
-                    Logger::new("EngineIO").warn(format!("the allow_request hook took longer than {limit:?}: the request was refused"));
-                }
+                self.inner.warnings.warn(ALLOW_REQUEST_TIMEOUT, "", || {
+                    format!("the allow_request hook took longer than {limit:?}: the request was refused")
+                });
                 false
             }
         }
     }
 
-    fn warn_session_cap(&self, which: String) {
-        let mut last = self.inner.last_cap_warning.lock().unwrap_or_else(|e| e.into_inner());
-        let now = std::time::Instant::now();
-        if last.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(60)) {
-            *last = Some(now);
-            Logger::new("EngineIO").warn(format!("the Engine.IO server reached {which}: new handshakes are answered 503"));
-        }
+    /// One line a minute for all the caps together, `which` naming the cap reached.
+    fn warn_session_cap(&self, which: impl FnOnce() -> String) {
+        self.inner.warnings.warn(SESSION_CAP, "", || format!("the Engine.IO server reached {}: new handshakes are answered 503", which()));
     }
 
     fn notify_connection(&self, session: &Arc<Session>) {
@@ -903,6 +884,13 @@ impl EngineSocket {
         self.session.send_all(messages)
     }
 
+    /// Queues a message like [`send`](Self::send) and returns a future that resolves once the transport took it: `true`
+    /// when it was written to the WebSocket or taken into a poll response, `false` when the session discarded it or
+    /// closed first. What is queued after it leaves in a later write.
+    pub(crate) fn send_written(&self, message: EngineMessage) -> Result<impl std::future::Future<Output = bool> + use<>, SendError> {
+        self.session.send_written(message)
+    }
+
     /// Counts `count` handlers that outlive this session against its client address, until the guard says they are
     /// done or is dropped. At `max_lingering_per_ip` of them an address gets no new sessions (`503`). `None` when the
     /// server is gone.
@@ -1124,14 +1112,14 @@ mod tests {
     #[test]
     fn sessions_closed_by_an_overflow_are_logged_once_a_minute_with_how_many_were_left_out() {
         let server = EngineServer::new(EngineOptions::new()).unwrap();
-        let start = std::time::Instant::now();
+        let start = tokio::time::Instant::now();
         let first = server.inner.overflow_line(1, start).expect("the first line is written");
-        assert!(!first.contains("without a line"), "{first}");
+        assert!(!first.contains("not logged"), "{first}");
         for id in 2..=1_000 {
             assert_eq!(server.inner.overflow_line(id, start + Duration::from_secs(59)), None);
         }
         let next = server.inner.overflow_line(1_001, start + Duration::from_secs(60)).expect("a minute later");
-        assert!(next.contains("999 more were closed"), "{next}");
+        assert!(next.contains("999 more of this kind were not logged since the last one"), "{next}");
         assert_eq!(server.inner.overflow_line(1_002, start + Duration::from_secs(61)), None);
     }
 

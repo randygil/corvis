@@ -72,6 +72,8 @@ impl Conn {
     async fn join(&self, connect: &str) -> String {
         self.text(connect);
         let sent = self.sent().await;
+        // Taking CONNECT is its write: the connection handlers run now.
+        settle().await;
         let Some(Out::T(answer)) = sent.first() else { panic!("no answer to {connect}: {sent:?}") };
         let json_at = answer.find('{').expect("an object");
         let body: serde_json::Value = serde_json::from_str(&answer[json_at..]).unwrap_or_else(|_| panic!("not an object: {answer}"));
@@ -257,12 +259,59 @@ async fn connection_handlers_run_after_connect_and_before_the_first_event() {
     }
     let conn = io.conn();
     conn.text("0");
+    settle().await;
+    assert!(conn.socket.buffered_amount() > 0, "CONNECT is queued");
+    assert!(io.main().sockets().iter().all(|s| s.connected()), "and the socket connected");
     let sent = conn.sent().await;
+    assert!(matches!(&sent[..], [Out::T(s)] if s.starts_with("0{\"sid\":")), "CONNECT is written alone: {sent:?}");
+    // The client answers at once, before the connection handler had a turn: its event waits for the handler.
     conn.text(r#"2["early"]"#);
     settle().await;
+    assert_eq!(conn.sent().await, [t(r#"2["welcome","hi"]"#)], "what the handler emitted is a later write");
     assert_eq!(entries(&seen), ["early"], "the handler registered by the connection handler sees the first event");
-    assert!(matches!(&sent[0], Out::T(s) if s.starts_with("0{\"sid\":")));
-    assert_eq!(sent[1], t(r#"2["welcome","hi"]"#));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_connection_handlers_wait_for_the_connect_write() {
+    let io = server(options());
+    let ran = Arc::new(AtomicUsize::new(0));
+    {
+        let ran = ran.clone();
+        io.on_connection(move |socket| {
+            ran.fetch_add(1, Ordering::SeqCst);
+            socket.emit("auth", (json!({}),)).unwrap();
+        });
+    }
+    let conn = io.conn();
+    conn.text("0");
+    for _ in 0..1_000 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "the handler does not run while CONNECT waits for the transport");
+    let sent = conn.sent().await;
+    assert_eq!(sent.len(), 1, "CONNECT alone: {sent:?}");
+    assert_eq!(conn.sent().await, [t(r#"2["auth",{}]"#)]);
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_closes_before_the_connect_write_runs_no_handler_and_loses_its_socket() {
+    let io = server(options());
+    let ran = Arc::new(AtomicUsize::new(0));
+    {
+        let ran = ran.clone();
+        io.on_connection(move |_socket| {
+            ran.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+    let conn = io.conn();
+    conn.text("0");
+    settle().await;
+    assert_eq!(io.main().socket_count(), 1, "CONNECT is queued and the socket connected");
+    conn.socket.kill();
+    settle().await;
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "no connection handler ran");
+    assert_eq!(io.main().socket_count(), 0, "the socket was disconnected");
 }
 
 // ---------------------------------------------------------------------------------------------------- middleware
@@ -548,10 +597,8 @@ async fn the_server_emits_events_with_several_arguments_and_refuses_reserved_nam
         });
     }
     let conn = io.conn();
-    conn.text("0");
-    let sent = conn.sent().await;
-    assert_eq!(sent.len(), 2, "only the CONNECT and the update were sent: {sent:?}");
-    assert_eq!(sent[1], t(r#"2["update",1,"two",{"three":3}]"#));
+    conn.join("0").await;
+    assert_eq!(conn.sent().await, [t(r#"2["update",1,"two",{"three":3}]"#)], "only the update was sent after CONNECT");
     assert_eq!(entries(&result)[2], "\"disconnect\" is a reserved event name");
     assert_eq!(entries(&result).len(), 6);
 }
@@ -723,9 +770,9 @@ async fn a_server_emit_with_ack_resolves_with_the_clients_answer() {
         });
     }
     let conn = io.conn();
-    conn.text("0");
+    conn.join("0").await;
     let sent = conn.sent().await;
-    assert_eq!(sent[1], t(r#"20["ask","question"]"#), "the first id of a namespace is 0");
+    assert_eq!(sent, [t(r#"20["ask","question"]"#)], "the first id of a namespace is 0");
     assert!(result.lock().unwrap().is_none());
     conn.text(r#"30["yes",7]"#);
     settle().await;
@@ -757,12 +804,14 @@ async fn the_acknowledgement_ids_count_per_namespace_from_zero() {
     let first = io.conn();
     first.text("0");
     first.text("0/b,");
+    // The two CONNECTs are written, then the handlers emit.
+    assert_eq!(first.sent().await.len(), 2);
     let sent = first.sent().await;
     assert!(sent.contains(&t(r#"20["e"]"#)) && sent.contains(&t(r#"21["e"]"#)));
     assert!(sent.contains(&t(r#"2/b,0["e"]"#)) && sent.contains(&t(r#"2/b,1["e"]"#)));
     // A second connection continues the namespace's counter.
     let second = io.conn();
-    second.text("0");
+    second.join("0").await;
     let sent = second.sent().await;
     assert!(sent.contains(&t(r#"22["e"]"#)) && sent.contains(&t(r#"23["e"]"#)), "{sent:?}");
 }
@@ -825,11 +874,8 @@ async fn the_pending_cap_fails_the_extra_call_at_once_and_sends_nothing_for_it()
         });
     }
     let conn = io.conn();
-    conn.text("0");
-    let sent = conn.sent().await;
-    assert_eq!(sent.len(), 3, "CONNECT and two events: {sent:?}");
-    assert_eq!(sent[1], t(r#"20["ask",0]"#));
-    assert_eq!(sent[2], t(r#"21["ask",1]"#));
+    conn.join("0").await;
+    assert_eq!(conn.sent().await, [t(r#"20["ask",0]"#), t(r#"21["ask",1]"#)], "two events after CONNECT");
     {
         let results = results.lock().unwrap();
         assert_eq!(results.len(), 1);
@@ -988,12 +1034,12 @@ async fn the_server_emits_binary_events_with_placeholders_and_refuses_too_many_a
         });
     }
     let conn = io.conn();
-    conn.text("0");
+    conn.join("0").await;
     let sent = conn.sent().await;
-    assert_eq!(sent.len(), 4, "CONNECT, then the packet and its two attachments together: {sent:?}");
-    assert_eq!(sent[1], t(r#"52-["file",{"k":1},{"_placeholder":true,"num":0},{"_placeholder":true,"num":1}]"#));
-    assert_eq!(sent[2], Out::B(vec![1, 2]));
-    assert_eq!(sent[3], Out::B(b"zz".to_vec()));
+    assert_eq!(sent.len(), 3, "after CONNECT, the packet and its two attachments together: {sent:?}");
+    assert_eq!(sent[0], t(r#"52-["file",{"k":1},{"_placeholder":true,"num":0},{"_placeholder":true,"num":1}]"#));
+    assert_eq!(sent[1], Out::B(vec![1, 2]));
+    assert_eq!(sent[2], Out::B(b"zz".to_vec()));
     assert_eq!(entries(&result), ["Err(TooManyAttachments)"]);
 }
 

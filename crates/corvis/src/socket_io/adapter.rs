@@ -68,6 +68,36 @@ pub enum RoomError {
     TooManyTargets { max: usize },
 }
 
+/// The bounds on the room names a call may give: every place that takes room names from application code (a join, the
+/// in-memory adapter, a broadcast operator) applies them, the same way, before it looks at anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RoomLimits {
+    pub(crate) max_rooms: usize,
+    pub(crate) max_name_length: usize,
+}
+
+impl RoomLimits {
+    pub(crate) fn of(options: &IoOptions) -> RoomLimits {
+        RoomLimits { max_rooms: options.max_rooms_per_socket, max_name_length: options.max_room_name_length }
+    }
+
+    /// The count first (a call naming more rooms than a socket may be in is refused without looking at the names),
+    /// then each name.
+    pub(crate) fn check(&self, rooms: &[Room]) -> Result<(), RoomError> {
+        if rooms.len() > self.max_rooms {
+            return Err(RoomError::TooManyRooms { max: self.max_rooms });
+        }
+        rooms.iter().try_for_each(|room| self.check_name(room))
+    }
+
+    pub(crate) fn check_name(&self, room: &str) -> Result<(), RoomError> {
+        if room.len() > self.max_name_length {
+            return Err(RoomError::NameTooLong { len: room.len(), max: self.max_name_length });
+        }
+        Ok(())
+    }
+}
+
 /// Why a packet could not be encoded for a broadcast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PacketError {
@@ -382,12 +412,11 @@ impl LocalNamespace {
     /// Whether the socket is connected here and has not finished disconnecting: the test `add_all` makes under its
     /// own lock, so no membership is left behind by a socket that went away.
     pub fn is_live(&self, id: &str) -> bool {
+        #[cfg(test)]
+        if let Some(n) = self.inner.upgrade() {
+            n.liveness_lookups.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         self.socket(id).is_some_and(|s| s.is_live())
-    }
-
-    /// Whether `id` is the id of a live socket of this namespace (connected, or disconnecting).
-    pub(crate) fn is_socket_id(&self, id: &str) -> bool {
-        self.is_live(id)
     }
 
     /// The options of the namespace's server.
@@ -401,6 +430,10 @@ impl LocalNamespace {
 
     pub fn max_room_name_length(&self) -> usize {
         self.options().map_or(super::options::DEFAULT_MAX_ROOM_NAME_LENGTH, |o| o.max_room_name_length)
+    }
+
+    pub(crate) fn room_limits(&self) -> RoomLimits {
+        RoomLimits { max_rooms: self.max_rooms_per_socket(), max_name_length: self.max_room_name_length() }
     }
 
     /// The next id of a server-side acknowledgement of this namespace.
@@ -1036,17 +1069,12 @@ impl Adapter for InMemoryAdapter {
     fn add_all(&self, id: &str, rooms: &[Room]) -> Result<(), RoomError> {
         // The input is bounded and validated before the lock is taken: a call naming more rooms than a socket may be
         // in is refused at once, and names are checked and deduplicated outside it.
-        let max_rooms = self.local.max_rooms_per_socket();
-        if rooms.len() > max_rooms {
-            return Err(RoomError::TooManyRooms { max: max_rooms });
-        }
-        let max_name = self.local.max_room_name_length();
+        let limits = self.local.room_limits();
+        limits.check(rooms)?;
+        let max_rooms = limits.max_rooms;
         let mut seen: HashSet<&str> = HashSet::with_capacity(rooms.len());
         let mut distinct: Vec<Room> = Vec::with_capacity(rooms.len());
         for room in rooms {
-            if room.len() > max_name {
-                return Err(RoomError::NameTooLong { len: room.len(), max: max_name });
-            }
             if seen.insert(room) {
                 distinct.push(room.clone());
             }
@@ -1058,8 +1086,11 @@ impl Adapter for InMemoryAdapter {
             return Ok(());
         }
         // The id of another live socket is not a room a client may join: it would receive what is sent to that
-        // socket. Checked under the same lock, so the whole call stays all or nothing.
-        if distinct.iter().any(|room| &**room != id && self.local.is_socket_id(room)) {
+        // socket. A live socket is always in the room of its own id (it cannot leave it, and `del_all` runs once it is
+        // no longer live), so its id is a key of this adapter's own map: checked there, under the same lock, without
+        // looking anything up in the namespace. The one live socket not in it yet is one between its registration and
+        // its own room, and joining its own room expels whoever got into it meanwhile (below).
+        if distinct.iter().any(|room| &**room != id && m.sids.contains_key(&**room)) {
             return Err(RoomError::SocketIdRoom);
         }
         // The room named like the socket is its own: whoever else got into it before the socket was live (the id is
@@ -1158,10 +1189,9 @@ impl Adapter for InMemoryAdapter {
             }
             if let Err(error) = self.add_all(socket.id(), &rooms) {
                 // One socket at its cap must not block a bulk operation: it is skipped and logged.
-                socket.warn(
-                    "a socket skipped by sockets_join",
-                    &format!("a socket of the namespace {} was not joined: {error}", self.local.name()),
-                );
+                socket.warn("a socket skipped by sockets_join", || {
+                    format!("a socket of the namespace {} was not joined: {error}", self.local.name())
+                });
             }
         }
         Ok(())

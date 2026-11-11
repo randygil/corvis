@@ -1502,12 +1502,12 @@ mod tests {
         ];
         for p in packets {
             let encoded = enc(&p);
-            assert_eq!(Decoder::new(limits()).add_text(&encoded.packet()).unwrap().unwrap(), p, "{}", encoded.packet());
+            assert_eq!(Decoder::new(limits()).add_text(encoded.packet()).unwrap().unwrap(), p, "{}", encoded.packet());
         }
         let bin = event("/b", Some(1), "up", vec![IoValue::object([("data", IoValue::from(Bytes::from_static(b"\x00\x01")))])]);
         let encoded = enc(&bin);
         let mut d = Decoder::new(limits());
-        assert_eq!(d.add_text(&encoded.packet()), Ok(None));
+        assert_eq!(d.add_text(encoded.packet()), Ok(None));
         assert_eq!(d.add_binary(encoded.attachments[0].bytes()).unwrap().unwrap(), bin);
     }
 }

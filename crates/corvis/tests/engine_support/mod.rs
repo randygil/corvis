@@ -20,6 +20,19 @@ pub mod io_client;
 #[module]
 pub struct AppModule;
 
+/// How long [`eventually`] waits before it fails the test. Generous: it bounds a hang, it decides nothing.
+pub const EVENTUALLY: Duration = Duration::from_secs(30);
+
+/// Waits until `condition` holds, re-checking it, and fails the test naming `what` if it does not hold within
+/// [`EVENTUALLY`]. The cadence of the checks never decides an outcome: only the condition does.
+pub async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + EVENTUALLY;
+    while !condition() {
+        assert!(tokio::time::Instant::now() < deadline, "still waiting for {what} after {EVENTUALLY:?}");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// An application with one Engine.IO server attached; connected sockets arrive on `sockets`.
 pub struct Fixture {
     pub app: CorvisApplication,

@@ -694,3 +694,53 @@ the 4 KiB cookie that Decision 3 removes.
   those of the plain message), `a_framed_message_is_its_own_websocket_frame_without_a_copy` (pointer identity),
   `an_emit_queues_the_encoder_s_buffer_and_a_broadcast_one_shared_buffer`; the parser fixtures of the npm encoder pass
   unchanged (they now compare `Encoded::packet`, the text without the type).
+
+### Groups 6 and 7: the connect sequence and the CONNECT write
+
+- `Phase::Joining` (between `Pending` and `Connected`): live for the adapter (`is_live`), found by
+  `IoNamespace::socket(id)`, `sockets()` and `socket_count()`, skipped by `sockets_by_ids` (broadcasts and bulk
+  operations) and refused by every emit (all of them already required `Connected`). `IoSocket::disconnect(false)`
+  does nothing on it (it now checks `connected()` first, as its rustdoc always said); `disconnect_with` from the
+  server's own paths (`terminate`, shutdown, a failed step) tears it down silently through `leave_unannounced`:
+  `del_all`, out of the table, its slot of the connection removed (not `Left`: the client never joined, so a new
+  CONNECT is a first one and a packet for that namespace is one for a namespace it has not joined), its `auth` charge
+  given back, no handlers, no DISCONNECT.
+- `connect` after the middleware: (1) under `nsps()`, the slot and the phase `Joining`; (2) `add_socket`, which inserts
+  only while the phase is `Joining`, read under the table's write lock; (3) `join_own_room` with no lock of the
+  connection held; a failure tears the socket down and answers CONNECT_ERROR `Internal server error`; (4)
+  `IoSocket::announce`: under the socket's state lock, CONNECT queued with `EngineSocket::send_written` and the phase
+  set to `Connected`; a refused queue tears it down; (5) `joined_once`, then wait for the write or the close, then the
+  connection handlers and `mark_ready`.
+- Deviation from Decision 5, step 1: the phase is set while `nsps()` is held, as the design's step 1 says, so `nsps()`
+  is not quite a leaf: a socket's state lock is taken inside it there. Nothing takes `nsps()` while holding a state lock
+  (`disconnect_with` releases the state lock before `forget`; `terminate` releases `nsps()` before it disconnects), so
+  the order holds. Setting the phase after releasing `nsps()` would let a `terminate` in between find the socket still
+  `Pending`, skip it, and leave it to join a closed connection.
+- Deviation from Decision 6: `EngineSocket::send_written` queues one message with an acknowledgement (CONNECT has no
+  attachments) instead of a `send_all_written` for groups; `push_group` did not need an acknowledgement. `take_batch`
+  answers the acknowledgements of the items it takes (a poll); the WebSocket writer already answered after
+  `sink.send` (written and flushed); a discarded or closed queue drops them, which resolves the wait with `false`.
+- `InMemoryAdapter::add_all` tests the names against its own `sids` map; `LocalNamespace::is_socket_id` is gone. The
+  only liveness lookup left under the membership lock is the joining socket's own (`is_live(id)`).
+- Test hooks for the sequence: `corvis::socket_io::testing::{pause_connect, ConnectStep, ConnectPause}` (a pause at
+  one step, `reached`, `release`, and `finished`, reported by a guard when the attempt ends however it ends). The
+  namespace holds the pause in a `OnceLock`, so outside tests every step costs one atomic load.
+
+### Group 10: one place for each duplicated rule
+
+- `RoomLimits { max_rooms, max_name_length }` (with `check`, count first and then each name, and `check_name`) is used
+  by `IoSocket::join`, `InMemoryAdapter::add_all` (through `LocalNamespace::room_limits`), `valid_rooms` and
+  `with_rooms` (names only, the deferred error kept). Messages and error values unchanged.
+- `SocketState::register_ack(target, deadline, max, id)`: phase check, purge of expired entries, cap, then the id (taken
+  only once the registration is certain, so a refused call takes no id, as before). Used by `emit_with_ack_within` and
+  `register_broadcast_ack`.
+- `WarnLimiter`: a two-level table (`&'static str` kind, then the namespace, looked up by `&str`; a name is copied
+  only on first insert), `MAX_KEYS` counted over the pairs of every kind, messages built lazily
+  (`impl FnOnce() -> String`), the text "since the last one", and a logger context (`SocketIO`, `EngineIO`). The
+  engine's three hand-written limiters are one `WarnLimiter` with static kinds and the empty namespace: the session
+  caps share one kind (one line a minute for all of them, as before), the `allow_request` timeout and the send-buffer
+  overflow have their own. Operator-visible text: the overflow line's suffix was "(N more were closed in the last
+  minute without a line)" and is now "(N more of this kind were not logged since the last one)"; the cap and timeout
+  lines now carry that suffix too.
+- Left as it was: the `allow_request` hook's panic line is not rate limited (it was not one of the three, and a panic
+  of the application's own hook is not something this change was asked to bound); listed as a follow-up.

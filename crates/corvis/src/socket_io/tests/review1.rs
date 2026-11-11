@@ -652,18 +652,39 @@ async fn a_panic_in_room_exists_during_connect_refuses_the_attempt_and_leaves_no
     assert!(io.main().socket(&id).is_some());
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_panic_in_add_all_of_the_own_room_during_connect_closes_the_connection_and_removes_the_socket() {
+/// The own room of a connecting socket could not be joined (the adapter panicked, or refused): the attempt is refused
+/// with `Internal server error` before any CONNECT, nothing of the socket stays, and the connection stays open, so the
+/// client may try again.
+async fn an_own_room_failure_refuses_the_attempt(knob: impl Fn(&Knobs) -> &AtomicBool) {
     let (io, knobs, adapter) = probe_server(options());
-    knobs.panic_add_all.store(true, Ordering::SeqCst);
+    let connected = Arc::new(AtomicUsize::new(0));
+    {
+        let connected = connected.clone();
+        io.on_connection(move |_socket| {
+            connected.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+    knob(&knobs).store(true, Ordering::SeqCst);
     let conn = io.conn();
+    let before = io.engine().total_unread_bytes();
     conn.text(r#"0{"token":"a token that is charged"}"#);
-    settle().await;
-    advance(31_000).await; // the close timeout of the session: no transport drains it here
-    assert!(conn.socket.close_reason().is_some(), "the connection is closed, not left to linger");
+    assert_eq!(conn.sent().await, [t(r#"4{"message":"Internal server error"}"#)], "CONNECT_ERROR and no CONNECT");
+    assert!(!conn.socket.is_closing(), "the connection stays open");
     assert_eq!(io.main().socket_count(), 0, "no socket stays in the namespace");
+    assert_eq!(adapter.size(), MembershipSize { rooms: 0, sockets: 0, memberships: 0 }, "nor in the adapter");
     assert!(!adapter.has_socket("anyone"));
-    assert_eq!(io.engine().total_unread_bytes(), 0, "its charges were released");
+    assert_eq!(io.engine().total_unread_bytes(), before, "its charges were released");
+    assert_eq!(connected.load(Ordering::SeqCst), 0, "no connection handler ran");
+    // The slot is free: once the adapter works the client joins.
+    knob(&knobs).store(false, Ordering::SeqCst);
+    let id = conn.join("0").await;
+    assert!(io.main().socket(&id).is_some());
+    assert_eq!(connected.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_panic_in_add_all_of_the_own_room_during_connect_refuses_the_attempt_and_leaves_nothing_behind() {
+    an_own_room_failure_refuses_the_attempt(|knobs| &knobs.panic_add_all).await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -783,14 +804,6 @@ async fn one_address_cannot_fill_the_answer_budget_and_make_the_calls_of_others_
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_error_from_add_all_of_the_own_room_during_connect_closes_the_connection_like_a_panic() {
-    let (io, knobs, _) = probe_server(options());
-    knobs.fail_add_all.store(true, Ordering::SeqCst);
-    let conn = io.conn();
-    conn.text(r#"0{"token":"a token that is charged"}"#);
-    settle().await;
-    advance(31_000).await;
-    assert!(conn.socket.close_reason().is_some(), "the connection is closed");
-    assert_eq!(io.main().socket_count(), 0);
-    assert_eq!(io.engine().total_unread_bytes(), 0);
+async fn an_error_from_add_all_of_the_own_room_during_connect_refuses_the_attempt_like_a_panic() {
+    an_own_room_failure_refuses_the_attempt(|knobs| &knobs.fail_add_all).await;
 }

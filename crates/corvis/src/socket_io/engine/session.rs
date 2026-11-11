@@ -438,6 +438,18 @@ impl Session {
         self.queued(result)
     }
 
+    /// Queues a message like `send` and returns a future that resolves once the transport took it: `true` when it was
+    /// written to the WebSocket or taken into a poll response, `false` when the session discarded it or closed first.
+    pub(crate) fn send_written(&self, message: EngineMessage) -> Result<impl std::future::Future<Output = bool> + use<>, SendError> {
+        if self.lock().ready != Ready::Open {
+            return Err(SendError::Closed);
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let result = self.outbox.push(Packet::Message(message), Some(tx));
+        self.queued(result)?;
+        Ok(async move { matches!(rx.await, Ok(Ok(()))) })
+    }
+
     fn queue(&self, packet: Packet) -> Result<(), SendError> {
         if self.lock().ready != Ready::Open {
             return Err(SendError::Closed);
@@ -452,7 +464,7 @@ impl Session {
             Err(PushError::Closed) => Err(SendError::Closed),
             Err(PushError::Full) => {
                 let line = match self.server() {
-                    Some(server) => server.overflow_line(self.log_id, std::time::Instant::now()),
+                    Some(server) => server.overflow_line(self.log_id, Instant::now()),
                     None => Some(format!("session {}: send buffer over its limit, session closed", self.log_id)),
                 };
                 if let Some(line) = line {

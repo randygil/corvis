@@ -133,7 +133,7 @@ impl IoServer {
         let inner = Arc::new(ServerInner {
             options,
             engine: engine.clone(),
-            warnings: Arc::new(WarnLimiter::new(WARN_INTERVAL)),
+            warnings: Arc::new(WarnLimiter::new(WARN_INTERVAL, "SocketIO")),
             ack_budget,
             namespaces: RwLock::new(namespaces),
             closed: AtomicBool::new(false),
@@ -147,7 +147,7 @@ impl IoServer {
         engine.on_connection(move |socket| {
             let messages = socket.messages_held();
             let shared = ClientShared::new(socket, strong.options.clone(), &strong);
-            tokio::spawn(client::run(strong.clone(), shared, messages));
+            tokio::spawn(client::Connection::new(strong.clone(), shared, messages).run());
         });
         // The application's shutdown closes the engine: the sockets hear `server shutting down` first.
         engine.on_closing(move || {

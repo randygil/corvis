@@ -55,6 +55,8 @@ mod options;
 mod parser;
 mod server;
 mod socket;
+#[doc(hidden)]
+pub mod testing;
 mod value;
 mod warn;
 
