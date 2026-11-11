@@ -1170,7 +1170,7 @@ mod tests {
         for mut ticket in earlier {
             assert_eq!(ticket.admitted().now_or_never(), Some(true));
         }
-        assert_eq!(waiting.await, true, "once every earlier ticket started or was given up, it starts");
+        assert!(waiting.await, "once every earlier ticket started or was given up, it starts");
         // A ticket taken after the gate opened still waits for the ones taken before it.
         let mut before = gate.ticket();
         let mut after = gate.ticket();

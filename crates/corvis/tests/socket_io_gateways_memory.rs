@@ -285,10 +285,8 @@ struct DropCounter;
 
 impl corvis::LoggerService for DropCounter {
     fn log(&self, level: corvis::LogLevel, message: &str, _context: Option<&str>) {
-        if level == corvis::LogLevel::Warn && message.contains("was dropped") {
-            if DROPPED.fetch_add(1, Ordering::SeqCst) == 0 {
-                *FIRST_DROP.lock().unwrap() = message.to_string();
-            }
+        if level == corvis::LogLevel::Warn && message.contains("was dropped") && DROPPED.fetch_add(1, Ordering::SeqCst) == 0 {
+            *FIRST_DROP.lock().unwrap() = message.to_string();
         }
     }
 }
