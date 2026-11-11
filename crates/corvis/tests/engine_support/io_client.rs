@@ -43,7 +43,15 @@ pub struct Raw {
 impl Raw {
     /// Opens an Engine.IO session over WebSocket and reads the open packet.
     pub async fn connect(addr: SocketAddr) -> Raw {
-        let mut ws = super::ws_connect(addr, None).await;
+        Raw::connect_path(addr, "/socket.io/").await
+    }
+
+    /// The same, on another Engine.IO path (`/realtime/`).
+    pub async fn connect_path(addr: SocketAddr, path: &str) -> Raw {
+        let mut ws = tokio_tungstenite::connect_async(format!("ws://{addr}{path}?EIO=4&transport=websocket"))
+            .await
+            .expect("WebSocket handshake")
+            .0;
         let open = super::next_text(&mut ws).await;
         let open = serde_json::from_str(open.strip_prefix('0').expect("an open packet")).unwrap();
         Raw { ws, open }

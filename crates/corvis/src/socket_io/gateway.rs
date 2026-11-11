@@ -818,6 +818,10 @@ async fn build(
         }
         let io = IoServer::new(options).map_err(|e| DiError::Other(format!("the Socket.IO server of the Engine.IO path {path}: {e}")))?;
         servers.push(io.clone());
+        // The main namespace `/` exists on every server: when no gateway declares it, nobody may join it.
+        if !namespaces.iter().any(|(name, _)| name == "/") {
+            io.main().use_middleware(|_socket| async { Err(ConnectError::new("Invalid namespace")) });
+        }
         let mut to_init: Vec<(IoNamespace, Arc<GatewayRuntime>)> = Vec::new();
         for (name, members) in namespaces {
             let namespace = io
