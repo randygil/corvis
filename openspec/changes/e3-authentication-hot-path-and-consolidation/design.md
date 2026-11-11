@@ -748,3 +748,23 @@ passed, 0 failed.
   the `touch` row; the hashing page has the busy hasher's body. The log-line suffix and the tolerant locks (behaviors 7
   and 8 of the list above) are not documented: log lines are not an API, and a panic that poisons the extensions is not
   something an application does on purpose.
+
+## Security review
+
+One round (2026-11-11), with proofs of concept against `wip-186` at 28282da. Everything held (the JWT header checked
+once and before any key is chosen, the key provider across families and rotation, sessions with the lazy id, `touch`
+with metadata only, the size and depth limits, the batched purge, the single `Bearer` parser compared with the two it
+replaced over 248,203 header sets, `CookieKeys::mac`, the state cookie sent twice, the single 503, poisoned locks, the
+earlier proofs of concept of the authentication reviews) except one finding, which this change itself introduced:
+
+- **F1 (medium), fixed.** A string payload is signed as its raw bytes, as the original does (recorded case 27). A text
+  that is itself a JSON object therefore became the claims of the token: an application that signs a string a client
+  chose (an e-mail address, a link) with the key that verifies its access tokens, in a module without `expires_in`,
+  `issuer` or `audience`, handed that client a token for any subject. On `dev` the string was serialized with its
+  quotes and verification refused it. Fix: `sign` refuses a string payload whose text parses as a JSON object or
+  array (`jwt.rs`, `sign_at`), a deliberate difference from the original, said in the rustdoc and in the migration
+  page in both languages. Any other text is signed as before and verifies as no claims. Test:
+  `a_string_payload_that_is_json_claims_is_not_signed`.
+
+Seen and kept as parity: a payload `iat` in the future extends `exp` (whoever controls the payload controls `sub`
+already).

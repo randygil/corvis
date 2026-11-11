@@ -567,6 +567,10 @@ impl JwtService {
     /// - a string payload is signed as it is, with a header without `typ`, and is refused when any sign option is set;
     ///   a number or a boolean is signed as its JSON text, without `typ`; an array or `null` is refused.
     ///
+    /// One deliberate difference: a string payload whose text is a JSON object or array is refused. Signed as it is,
+    /// that text would be the claims of the token, so a caller that signs a string a client chose would hand the
+    /// client a token for any subject.
+    ///
     /// It also fails when no key is set (`secretOrPrivateKey must have a value`), the key does not parse, or
     /// `expires_in` / `not_before` is not a valid timespan. A bare number is a number of seconds.
     pub fn sign_with(&self, payload: &impl Serialize, opts: JwtSignOptions) -> crate::Result<String> {
@@ -577,6 +581,14 @@ impl JwtService {
     fn sign_at(&self, payload: &impl Serialize, opts: JwtSignOptions, now: i64) -> crate::Result<String> {
         let alg = self.options.algorithm;
         let claims = serde_json::to_value(payload)?;
+        // A string payload is signed as its raw bytes, so a text that is itself a JSON object or array would become
+        // the claims of the token: whoever chose the text would choose `sub` and `exp`. The original signs it; here
+        // it is refused (a deliberate difference). Any other text verifies as no claims at all.
+        if let Value::String(text) = &claims
+            && matches!(crate::untrusted_json::parse(text.as_bytes()), Some(Value::Object(_) | Value::Array(_)))
+        {
+            anyhow::bail!("a string payload that is a JSON object or array is not signed: pass the object itself");
+        }
         // The JWT module refuses a string payload with sign options before anything else.
         if claims.is_string() {
             let names = self.sign_option_names(&opts);
@@ -1105,6 +1117,28 @@ mod tests {
             // `mutatePayload` has no counterpart: Corvis borrows the payload (the case carries a divergence).
             ..Default::default()
         }
+    }
+
+    /// A string a client chose must not become the claims of a token: the text of a JSON object or array is refused,
+    /// with or without surrounding whitespace, while a plain text is still signed and verifies as no claims.
+    #[test]
+    fn a_string_payload_that_is_json_claims_is_not_signed() {
+        let jwt = JwtService::new(JwtModuleOptions::new("0123456789abcdef0123456789abcdef"));
+        for text in [
+            r#"{"sub":"1","exp":9999999999}"#,
+            " {\"sub\":\"1\"}
+",
+            r#"[{"sub":"1"}]"#,
+            "{}",
+        ] {
+            let error = jwt.sign(&text.to_string()).unwrap_err().to_string();
+            assert!(error.contains("JSON object or array"), "{text:?}: {error}");
+        }
+        let token = jwt.sign(&"victim@example.com".to_string()).unwrap();
+        assert!(jwt.verify::<Value>(&token).is_err(), "a plain text carries no claims");
+        // The same claims as an object are signed as before.
+        let token = jwt.sign(&serde_json::json!({ "sub": "1" })).unwrap();
+        assert_eq!(jwt.verify::<Value>(&token).unwrap()["sub"], "1");
     }
 
     /// `JwtService::sign` returns what the original returns, byte for byte, or fails with its error text, for every

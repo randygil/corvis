@@ -154,6 +154,9 @@ recording of it:
 - A string payload is signed as it is, with a header without `typ`, and is refused when any sign option is set
   (`Payload as string is not allowed with the following sign options: expiresIn`). A number or a boolean is signed as its
   JSON text, also without `typ`. An array or `null` is refused (`Expected "payload" to be a plain object.`).
+- One deliberate difference: a string payload whose text is itself a JSON object or array is refused. The original signs
+  it, and the text becomes the claims of the token, so signing a string that a client chose (an e-mail address, a link)
+  would hand that client a token for any subject. Pass the object itself.
 
 `not_before` and `jwt_id` are public fields of `JwtSignOptions`, so a struct literal needs `..Default::default()`. Earlier
 versions of Corvis overwrote `exp` and `sub`, and let the payload win for `iss` and `aud`.

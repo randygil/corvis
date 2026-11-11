@@ -154,6 +154,9 @@ grabación de él:
 - Un payload que es una cadena se firma tal cual, con una cabecera sin `typ`, y se rechaza si hay alguna opción de firma
   (`Payload as string is not allowed with the following sign options: expiresIn`). Un número o un booleano se firma como su
   texto JSON, también sin `typ`. Un arreglo o `null` se rechaza (`Expected "payload" to be a plain object.`).
+- Una diferencia deliberada: un payload que es una cadena cuyo texto es a su vez un objeto o un arreglo JSON se rechaza.
+  El original lo firma, y el texto pasa a ser los claims del token, así que firmar una cadena que eligió un cliente (un
+  correo, un enlace) le entregaría a ese cliente un token para cualquier sujeto. Pasa el objeto mismo.
 
 `not_before` y `jwt_id` son campos públicos de `JwtSignOptions`, así que un literal de struct necesita `..Default::default()`.
 Las versiones anteriores de Corvis sobrescribían `exp` y `sub`, y dejaban que el payload ganara para `iss` y `aud`.
