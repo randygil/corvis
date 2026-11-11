@@ -127,7 +127,7 @@ clock; no retries.
   scenario `rooms/id-rooms` and its six expected differences
 - [x] 8.2 F2: the `Charge` of a broadcast acknowledgement travels with its `Args` into the collector and is held until the call
   ends (`AckSink::respond_charged`, released by `AckShared::finish`); tests with the gauges (during, session closed meanwhile,
-  call dropped, cap) and `answers_held_by_pending_broadcasts_stay_within_the_quota_of_the_answering_address` with the counting
+  call dropped, cap) and `answers_held_by_pending_broadcasts_stay_within_the_answer_budget` with the counting
   allocator
 - [x] 8.3 B1: a join naming more than `max_rooms_per_socket` rooms is refused before the lock, names are deduplicated outside it,
   `Membership::add` stops at the first name over the cap; tests count names examined

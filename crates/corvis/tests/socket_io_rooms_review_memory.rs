@@ -89,7 +89,7 @@ async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 // ------------------------------------------------------------------------------------------------------------ F2
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn answers_held_by_pending_broadcasts_stay_within_the_quota_of_the_answering_address() {
+async fn answers_held_by_pending_broadcasts_stay_within_the_answer_budget() {
     let _guard = ONE_AT_A_TIME.lock().await;
     // The least server-wide budget the options allow, and an address share of one maximum packet.
     const TOTAL: usize = 16 * 1024 * 1024;
@@ -138,11 +138,12 @@ async fn answers_held_by_pending_broadcasts_stay_within_the_quota_of_the_answeri
     wait_for("answers to flow", || sent.load(Ordering::SeqCst) >= 8).await;
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     let held = (live() - before).max(0) as usize;
-    // Held while the calls wait: at most the quota of the address (one maximum packet here), what each of its
-    // sessions may always take (a fair share of 16 KiB), and per session the message being read and the one parked
-    // (received messages are charged before they can be refused); and the test's own clients, which keep each answer
-    // and build it again to send it. Without the fix (measured): every answer of every call, 64 MB.
-    let bound = PACKET + 9 * (16 * 1024 + 3 * ANSWER) + ANSWERERS * 4 * ANSWER;
+    // Held while the calls wait: at most the server-wide answer budget (a quarter of the unread budget, but never less
+    // than one call may hold: 16 MiB here, the default of `max_broadcast_ack_bytes`), and per session the message being
+    // read and the one parked; and the test's own clients, which keep each answer and build it again to send it.
+    // Without a bound (measured): every answer of every call, 64 MB.
+    const ANSWER_BUDGET: usize = 16 * 1024 * 1024;
+    let bound = ANSWER_BUDGET + 9 * (16 * 1024 + 3 * ANSWER) + ANSWERERS * 4 * ANSWER;
     println!(
         "held by {CALLS} pending calls: {held} bytes after {} answers (bound {bound}; unbounded would be {})",
         sent.load(Ordering::SeqCst),
