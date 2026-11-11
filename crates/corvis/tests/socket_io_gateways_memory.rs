@@ -61,6 +61,9 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
+/// One test at a time: the counter is the process's.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const MIB: usize = 1024 * 1024;
 
 #[injectable]
@@ -107,6 +110,7 @@ async fn start<M: Module>(options: IoOptions) -> (CorvisApplication, std::net::S
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_heap_of_events_in_flight_stays_within_the_unread_budget_times_a_constant() {
+    let _one = ONE_AT_A_TIME.lock().await;
     const TOTAL: usize = 16 * MIB;
     // All the events come from one address, whose quota is the binding bound.
     const ADDRESS: usize = 4 * MIB;
@@ -147,6 +151,7 @@ async fn the_heap_of_events_in_flight_stays_within_the_unread_budget_times_a_con
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_event_that_finds_no_room_for_its_copies_is_answered_with_exception_and_its_handler_does_not_run() {
+    let _one = ONE_AT_A_TIME.lock().await;
     // A budget that fits the arguments of one event but not the copies of the pipeline.
     let engine = EngineOptions::new().max_total_unread_bytes(2 * MIB).max_unread_bytes(2 * MIB);
     let (mut app, addr) =
