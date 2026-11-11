@@ -355,3 +355,22 @@ These settle the open questions and override the design where they differ.
    and their failure output is copied into "Implementation notes".
 7. The security review (task 10.2) is mandatory: DDL generation, the `CAST` insertion, chunked statements and the deferred
    errors.
+
+## Implementation notes
+
+### Task 1.1: re-check against `dev`
+
+- `dev` at implementation time (`926ffb6`, then `869de7c`) has no change under `crates/` since the review's `d46758a`
+  (`git diff --stat d46758a HEAD -- crates/` is empty): every file and line of "The findings, confirmed against the
+  code" still holds as written. Nothing was dropped.
+- `CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm --no-fail-fast` on the untouched tree (local `corvis-pg` on
+  `127.0.0.1:55432`): 207 passed, 0 failed, 14 ignored (doc tests marked `ignore`).
+
+### Recorders outside the repository (groups 3, 9 and the recorded parts of 4-6)
+
+The Postgres oracle's recorder is not in this repository: it is `C:\Users\Usuario\Devel\corvis-tests\tmp\orm\oracle\full\`
+(`cases.js`, `regen.sh`, `migration.sql`, `schema.prisma`, `client/` with the generated original client), and the
+original client 6.x is installed in `C:\Users\Usuario\Devel\corvis-tests\tmp\orm\node_modules`. Only its outputs are
+committed here (`tests/fixtures/oracle/`). The implementer of this change was told not to record anything there, so no
+new recording was made: the tasks that depend on one (3.1, 3.2, 3.3, the oracle parts of 4.1, 5.3, 5.5 and 6.2, the
+choice of 6.1 for non-finite floats, and 9.1) are left open, and each is marked below.
