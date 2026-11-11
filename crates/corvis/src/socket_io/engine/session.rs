@@ -425,6 +425,14 @@ impl Session {
         self.lock().ready
     }
 
+    pub(crate) fn poll_pending(&self) -> bool {
+        self.lock().get_pending
+    }
+
+    pub(crate) fn post_active(&self) -> bool {
+        self.lock().post_active
+    }
+
     pub(crate) fn closed_watch(&self) -> watch::Receiver<Option<CloseReason>> {
         self.closed.subscribe()
     }

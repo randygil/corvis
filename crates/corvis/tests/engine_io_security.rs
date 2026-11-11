@@ -102,7 +102,7 @@ async fn application_that_does_not_read_polling() {
     let addr = fx.addr;
     let sid2 = sid.clone();
     let held = tokio::spawn(async move { post(addr, &sid2, &body).await });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    eventually("the POST to deliver its message", || socket.unread_bytes() >= 1500).await;
     assert!(!held.is_finished(), "the answer is held while the application has not read");
     assert!(socket.unread_bytes() >= 1500);
     let mut messages = socket.messages();
@@ -122,6 +122,8 @@ async fn application_that_does_not_read_websocket() {
     for _ in 0..200 {
         send_text(&mut ws, &message).await;
     }
+    // Absence of reads past the pause: the frames are all written, and a bounded wait gives a broken pause the time
+    // to read on; nothing else would show it.
     tokio::time::sleep(Duration::from_millis(500)).await;
     // Reads paused once the unread bytes passed the limit: at most the limit plus a few frames.
     let unread = socket.unread_bytes();
@@ -190,7 +192,7 @@ async fn empty_messages_are_charged_over_polling() {
     let addr = fx.addr;
     let sid2 = sid.clone();
     let held = tokio::spawn(async move { post(addr, &sid2, &body).await });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    eventually("the POST to deliver its messages", || socket.unread_bytes() >= 100 * 64).await;
     assert!(!held.is_finished(), "the answer is held while empty messages wait unread");
     assert_eq!(socket.unread_bytes(), 100 * 64);
     let mut messages = socket.messages();
@@ -215,6 +217,7 @@ async fn empty_messages_stop_being_read_over_websocket() {
         let frame = if i % 2 == 0 { Message::Text("4".into()) } else { Message::Binary(vec![1]) };
         ws.send(frame).await.unwrap();
     }
+    // Absence of reads past the pause (see above).
     tokio::time::sleep(Duration::from_millis(500)).await;
     let unread = socket.unread_bytes();
     assert!(unread > 1000, "the limit was reached ({unread})");
@@ -329,6 +332,7 @@ async fn a_second_request_or_a_websocket_first_session_is_not_closed_by_the_firs
     let mut ws = ws_connect(fx.addr, None).await;
     let _ = next_text(&mut ws).await;
     let ws_socket = fx.socket().await;
+    // Not before: past the configured first-request timeout, the sessions are still open.
     tokio::time::sleep(Duration::from_millis(900)).await;
     assert!(polling_socket.close_reason().is_none());
     assert!(ws_socket.close_reason().is_none());
@@ -406,7 +410,7 @@ async fn a_session_above_its_fair_share_waits_while_the_total_is_over_and_resume
     let addr = fx.addr;
     let b2 = b.clone();
     let held = tokio::spawn(async move { post(addr, &b2, &body).await });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    eventually("B's POST to deliver its message", || socket_b.unread_bytes() >= 20_000).await;
     assert!(!held.is_finished(), "held: the total is over and B is above its fair share");
     assert!(socket_b.unread_bytes() < 30_000);
     // The application reading session A drops the total under its limit.
@@ -428,6 +432,7 @@ async fn the_total_budget_pauses_only_the_websocket_readers_above_their_fair_sha
     for _ in 0..10 {
         send_text(&mut ws, &format!("4{}", "m".repeat(20_000))).await;
     }
+    // Absence of reads past the pause (see above).
     tokio::time::sleep(Duration::from_millis(500)).await;
     // B's first message fits the total (20,064 + 20,064 > 40,000 only by the second): at most two are read.
     assert!(socket_b.unread_bytes() <= 2 * 20_064, "{}", socket_b.unread_bytes());
@@ -462,7 +467,7 @@ async fn a_hoarder_filling_the_total_does_not_starve_a_drained_session() {
         }
         hoarders.push((ws, socket));
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    eventually("the hoarders to go over the total", || hoarders.iter().map(|(_, s)| s.unread_bytes()).sum::<usize>() > 50_000).await;
     let hoarded: usize = hoarders.iter().map(|(_, s)| s.unread_bytes()).sum();
     assert!(hoarded > 50_000, "the total is over its budget ({hoarded})");
     // Keep the hoarders' own pings answered too, without reading their messages.

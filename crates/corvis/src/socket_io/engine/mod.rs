@@ -1008,6 +1008,16 @@ impl EngineSocket {
         self.session.outbox.buffered()
     }
 
+    /// Whether a polling `GET` is waiting (`testing::poll_pending`).
+    pub(crate) fn poll_pending(&self) -> bool {
+        self.session.poll_pending()
+    }
+
+    /// Whether a polling `POST` is being read (`testing::post_active`).
+    pub(crate) fn post_active(&self) -> bool {
+        self.session.post_active()
+    }
+
     /// Bytes received and not yet taken from [`messages`](Self::messages).
     pub fn unread_bytes(&self) -> usize {
         self.session.unread.unread()

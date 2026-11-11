@@ -127,6 +127,16 @@ pub fn buffered_amount(socket: &IoSocket) -> usize {
     socket.engine().map_or(0, |e| e.buffered_amount())
 }
 
+/// Whether a polling `GET` of the session is waiting for something to answer.
+pub fn poll_pending(socket: &super::engine::EngineSocket) -> bool {
+    socket.poll_pending()
+}
+
+/// Whether a polling `POST` of the session is being read.
+pub fn post_active(socket: &super::engine::EngineSocket) -> bool {
+    socket.post_active()
+}
+
 /// Whether two sockets share one handshake request (the one their Engine.IO session keeps).
 pub fn same_request(a: &IoSocket, b: &IoSocket) -> bool {
     std::ptr::eq(a.handshake().request(), b.handshake().request())
