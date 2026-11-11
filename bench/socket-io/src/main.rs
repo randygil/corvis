@@ -197,11 +197,23 @@ fn local_address(index: usize) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 1, (index % 200) as u8 + 1)), 0)
 }
 
+/// Connects from the loopback address of client `index`. A run opens thousands of connections from a few addresses and
+/// the previous runs leave their ports in `TIME_WAIT`, so a port the system hands out may still be taken for this
+/// destination: such an attempt is retried with another port.
 async fn connect_tcp(port: u16, index: usize) -> Result<TcpStream, Failure> {
-    let socket = TcpSocket::new_v4()?;
-    socket.bind(local_address(index))?;
-    socket.set_nodelay(true)?;
-    Ok(socket.connect(SocketAddr::from(([127, 0, 0, 1], port))).await?)
+    let server = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut attempts = 0;
+    loop {
+        let socket = TcpSocket::new_v4()?;
+        socket.set_reuseaddr(true)?;
+        socket.bind(local_address(index))?;
+        socket.set_nodelay(true)?;
+        match socket.connect(server).await {
+            Ok(stream) => return Ok(stream),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 50 => attempts += 1,
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 /// One HTTP/1.1 connection to the server.
