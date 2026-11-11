@@ -314,7 +314,13 @@ on Windows and on Linux. `rust-version` stays `1.89`; README and the docs need n
   unused under one feature fails there.
 - **`proptest`** also moved to `[workspace.dependencies]`: it is a dev-dependency of `corvis` and `corvis-orm`, and the
   shared-dependency rule counts every dependency section. `flate2` and `brotli`, declared twice inside `corvis`
-  (optional dependency and dev-dependency), are not shared by two crates and stay as they are.
+  (optional dependency and dev-dependency, each with its own version), moved there too at the maintainer's request,
+  and the rule now also reports a dependency that one crate declares in two sections (spec delta of `infra/packaging`
+  updated with a scenario).
+- **`#[allow]` and `#[expect]` are counted** (maintainer's request): an attribute under `src/` that names a ratchet
+  lint, or `warnings`, `clippy::restriction` or `clippy::pedantic`, counts once per lint named, in the group
+  `#[allow]/#[expect] of a ratchet lint`; `cfg_attr` and multi-line attributes included. The tree has one:
+  `#![allow(missing_docs)]` in `crates/corvis/src/__private.rs:7`.
 - **Tool versions.** `cargo-hack@0.6.46` and `cargo-semver-checks@0.51.0`, the latest versions in the manifests of the
   pinned `taiki-e/install-action` (v2.90.2).
 
@@ -346,6 +352,33 @@ failed, 97 ignored over 180 test binaries (a first run right after a reboot fail
 Postgres connect timeout; all passed when rerun). `cargo test -p corvis --features socket-io`: 1,534 passed, 1 failed,
 56 ignored; the failure, `socket_io_rooms_security::a_broadcast_racing_a_disconnect_never_panics_and_sends_nothing_after_it`
 (`left: 0, right: 18`), is a race that fails 5 times out of 6 on `dev` at `858230c` without this change too.
+
+### Rebase onto `dev` at `0aea739` (gateway adapter #35, authentication refactor #186)
+
+The rebase had no conflicts (the `fuzz` job keeps `timeout-minutes: 35`). The new code on `dev` brought no rustdoc
+warning and no finding of the lint floor (`cargo doc` both steps, and clippy with `-D warnings` on Windows and on
+Linux with all features, pass). The baseline was re-measured on Linux with all features and rewritten with
+`--update --allow-increase`; 2,679 findings before, 2,712 after, all in `corvis`:
+
+| Lint (`corvis`) | Before | After | Where the change comes from |
+|---|---|---|---|
+| `missing_docs` | 1262 | 1274 | `src/discovery.rs`, `src/posture.rs`, `src/socket_io/gateway.rs` |
+| `clippy::missing_errors_doc` | 179 | 192 | `src/socket_io/gateway.rs`, `src/websockets.rs` |
+| `missing_debug_implementations` | 182 | 183 | `src/websockets.rs` |
+| `clippy::undocumented_unsafe_blocks` (tests) | 42 | 52 | the counting allocators of `tests/auth_hot_path_heap.rs` and `tests/socket_io_gateways_memory.rs` |
+| ```` ```ignore ```` without a reason | 67 | 68 | `src/http/request.rs` |
+| `#[allow]`/`#[expect]` of a ratchet lint | (not counted) | 1 | `src/__private.rs:7`, counted from this change on |
+| `clippy::missing_panics_doc` | 92 | 90 | lowered by the refactors |
+| `clippy::unwrap_used` | 149 | 146 | lowered by the refactors |
+
+Per crate after the rebase: `corvis` 2,138, `corvis-orm` 359, `corvis-swagger` 107, `corvis-cli` 60, `corvis-macros`
+29, `corvis-swagger-macros` 10, `corvis-orm-macros` 9.
+
+### Follow-up
+
+- `semver` compares with the merge base of `main`, as designed. While pull requests target `dev`, it reports
+  everything `dev` changed since `main`; comparing with the merge base of the pull request's base branch
+  (`github.base_ref`) would report only the pull request's own changes. A maintainer decision, for a later issue.
 
 ### Required checks of `main` (for the maintainer)
 
