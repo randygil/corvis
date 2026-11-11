@@ -154,7 +154,7 @@
       },
       "missing_debug_implementations": {
         "crates/corvis/src/__private.rs": 9,
-        "crates/corvis/src/application.rs": 5,
+        "crates/corvis/src/application.rs": 4,
         "crates/corvis/src/application/introspection.rs": 2,
         "crates/corvis/src/auth/authenticator.rs": 1,
         "crates/corvis/src/auth/guard.rs": 1,
