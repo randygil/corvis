@@ -2,9 +2,8 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::Waker;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -45,13 +44,13 @@ pub(crate) use request::{
 };
 pub(crate) use response::{empty_body, into_hyper};
 
-use budget::{Budget, Verdict};
-use guarded_body::{GuardedBody, H2_SEND_BUF, InflightGuard};
-use rapid_reset::{CancelWatch, CancelWindow, Outcome};
+use budget::{ResponseBudget, Verdict};
+use guarded_body::{Activity, GuardedBody, H2_SEND_BUF, InflightGuard};
+use rapid_reset::{CancelState, CancelWatch, Outcome};
 use response::PlainLen;
 use timed_io::{Proto, TimedIo, limit_unsent_bytes};
 use transport::ServerIo;
-use watchdog::{BodyClock, Epoch, finish_connection};
+use watchdog::{Clocks, EndFlags, finish_connection};
 
 pub(crate) type ResBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
@@ -96,52 +95,26 @@ async fn handle(
 // Connection timeouts
 // ---------------------------------------------------------------------------
 
-/// Activity of one connection, shared between its IO and its in-flight requests.
+/// What one connection shares between its IO, its in-flight requests and its response bodies, one part per concern.
 #[derive(Default)]
 struct ConnState {
-    /// Requests whose response has not been fully written yet.
-    inflight: AtomicUsize,
-    /// Bumped when a request starts or ends.
-    generation: AtomicU64,
-    /// Requests whose response is done (fully written or dropped). The framing check compares it
-    /// with the requests it forwarded to know when a connection has nothing in flight.
-    finished: AtomicU64,
-    /// The connection was upgraded (WebSocket, ...): no idle timeouts.
-    upgraded: AtomicBool,
-    /// An upgrade listener destroyed the socket (or the upgrade was refused): nothing to protect.
-    destroyed: AtomicBool,
-    /// The server closes the connection to punish the peer (idle timeouts, refused h2c): no drain.
-    no_linger: AtomicBool,
-    /// The socket and its permit, left here by `TimedIo::drop` for the connection task, which decides
-    /// whether to drain before closing (hyper's own timeouts are only visible to that task).
-    closing: Mutex<Option<(ServerIo, Option<OwnedSemaphorePermit>)>>,
-    /// Task waiting on the IO, woken when the last in-flight request ends.
-    waker: Mutex<Option<Waker>>,
-    /// Requests cancelled and completed in the current and the previous window (rapid reset detection).
-    window: Mutex<Option<CancelWindow>>,
-    /// Signalled when too many requests were cancelled before their response (rapid reset): the
-    /// connection task closes the connection.
-    reset_flood: tokio::sync::Notify,
-    /// Set when the flood was detected: no further request of the connection reaches a handler.
-    flooded: AtomicBool,
-    /// `http2_max_cancelled_streams`: cancellations over the window that close the connection whatever it completed.
-    cancel_ceiling: u32,
-    /// Origin of the times the response-body clocks record.
-    epoch: Epoch,
-    /// Clocks of the response bodies of the connection that are alive (send timeout watchdog).
-    clocks: Mutex<Vec<Arc<BodyClock>>>,
-    /// When hyper last took a frame from any response body of the connection (milliseconds since `epoch` plus
-    /// one; `0` = never): the connection's progress.
-    progress: AtomicU64,
-    /// Signalled when a clock is registered, so a watchdog that had nothing to watch looks again.
-    clocks_changed: tokio::sync::Notify,
-    /// Response bytes the connection holds (`max_pending_response_bytes`).
-    budget: Mutex<Budget>,
-    /// Signalled whenever pending bytes or running handlers drop, so waiting requests look again.
-    budget_freed: tokio::sync::Notify,
-    /// HTTP/1: charges of bodies hyper already took into its write buffer, released when hyper flushes the socket
-    /// (it only does so with its write buffer empty).
-    deferred: AtomicUsize,
+    /// Requests in flight (idle timeouts, the framing check).
+    activity: Activity,
+    /// How the connection ends.
+    end: EndFlags,
+    /// Requests cancelled before their response (rapid reset).
+    cancels: CancelState,
+    /// The clocks of the response bodies (send timeout).
+    clocks: Clocks,
+    /// Response bytes held (`max_pending_response_bytes`).
+    budget: ResponseBudget,
+}
+
+impl ConnState {
+    /// A new connection's state; `cancel_ceiling` is `http2_max_cancelled_streams`.
+    fn new(cancel_ceiling: u32) -> Self {
+        ConnState { cancels: CancelState::new(cancel_ceiling), ..ConnState::default() }
+    }
 }
 
 /// hyper's `ignore_invalid_headers`; it must stay off while the framing check is on.
@@ -273,7 +246,7 @@ async fn run_connection(ctx: ConnCtx, stream: ServerIo, permit: Option<OwnedSema
             let mut watch = watch;
             // After a rapid-reset verdict the connection only waits for its GOAWAY: new streams are
             // reset without reaching a handler (hyper resets the stream on a service error).
-            if guard.0.flooded.load(Ordering::SeqCst) {
+            if guard.0.cancels.flooded.load(Ordering::SeqCst) {
                 watch.outcome = Outcome::Refused;
                 return Err(ServiceError::Destroyed);
             }
@@ -293,14 +266,14 @@ async fn run_connection(ctx: ConnCtx, stream: ServerIo, permit: Option<OwnedSema
                     let Some(admission) = admitted else {
                         // The handler never ran: neither cancelled nor completed.
                         watch.outcome = Outcome::Refused;
-                        guard.0.warn_wait_once(opts.max_pending_response_wait.unwrap_or_default());
+                        guard.0.budget.warn_wait_once(opts.max_pending_response_wait.unwrap_or_default());
                         return Err(ServiceError::Reset(h2::Error::from(h2::Reason::REFUSED_STREAM)));
                     };
                     Some((admission, cap))
                 }
                 None => None,
             };
-            if guard.0.flooded.load(Ordering::SeqCst) {
+            if guard.0.cancels.flooded.load(Ordering::SeqCst) {
                 watch.outcome = Outcome::Refused;
                 return Err(ServiceError::Destroyed);
             }
@@ -310,12 +283,12 @@ async fn run_connection(ctx: ConnCtx, stream: ServerIo, permit: Option<OwnedSema
             let resp = match resp {
                 Ok(r) => r,
                 Err(e) => {
-                    guard.0.destroyed.store(true, Ordering::SeqCst);
+                    guard.0.end.destroyed.store(true, Ordering::SeqCst);
                     return Err(e.into());
                 }
             };
             if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
-                guard.0.upgraded.store(true, Ordering::SeqCst);
+                guard.0.end.upgraded.store(true, Ordering::SeqCst);
             }
             // What the response holds until its body ends: an in-memory body in full (also when
             // compression hides its size), a streamed one only the unsent part of a cut frame.
@@ -482,7 +455,7 @@ pub(crate) async fn serve(
         if options.send_timeout.is_some() {
             limit_unsent_bytes(&stream);
         }
-        let state = Arc::new(ConnState { cancel_ceiling: options.http2_max_cancelled_streams, ..ConnState::default() });
+        let state = Arc::new(ConnState::new(options.http2_max_cancelled_streams));
         let ctx = ConnCtx {
             shared: shared.clone(),
             opts: options.clone(),
@@ -529,6 +502,8 @@ pub(crate) async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::AtomicBool;
 
     /// Sets its flag when dropped.
     struct DropFlag(Arc<AtomicBool>);

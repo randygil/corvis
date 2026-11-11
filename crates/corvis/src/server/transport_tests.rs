@@ -43,7 +43,7 @@ async fn read_until_parked(gate: &mut Gate, limit: usize) -> usize {
 
 fn upgraded() -> Arc<ConnState> {
     let state = Arc::new(ConnState::default());
-    state.upgraded.store(true, Ordering::SeqCst);
+    state.end.upgraded.store(true, Ordering::SeqCst);
     state
 }
 

@@ -3,9 +3,9 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::task::{Context, Poll};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use hyper::body::{Frame, SizeHint};
@@ -13,23 +13,37 @@ use hyper::body::{Frame, SizeHint};
 use super::watchdog::BodyClock;
 use super::{ConnState, ResBody};
 
+/// The requests in flight on a connection, which its IO reads for the idle timeouts and the framing check.
+#[derive(Default)]
+pub(super) struct Activity {
+    /// Requests whose response has not been fully written yet.
+    pub(super) inflight: AtomicUsize,
+    /// Bumped when a request starts or ends.
+    pub(super) generation: AtomicU64,
+    /// Requests whose response is done (fully written or dropped). The framing check compares it
+    /// with the requests it forwarded to know when a connection has nothing in flight.
+    pub(super) finished: AtomicU64,
+    /// Task waiting on the IO, woken when the last in-flight request ends.
+    pub(super) waker: Mutex<Option<Waker>>,
+}
+
 /// Keeps a request in flight until its response body is dropped (fully written or aborted).
 pub(super) struct InflightGuard(pub(super) Arc<ConnState>);
 
 impl InflightGuard {
     pub(super) fn new(state: Arc<ConnState>) -> Self {
-        state.inflight.fetch_add(1, Ordering::SeqCst);
-        state.generation.fetch_add(1, Ordering::SeqCst);
+        state.activity.inflight.fetch_add(1, Ordering::SeqCst);
+        state.activity.generation.fetch_add(1, Ordering::SeqCst);
         InflightGuard(state)
     }
 }
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        self.0.inflight.fetch_sub(1, Ordering::SeqCst);
-        self.0.finished.fetch_add(1, Ordering::SeqCst);
-        self.0.generation.fetch_add(1, Ordering::SeqCst);
-        if let Some(w) = self.0.waker.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        self.0.activity.inflight.fetch_sub(1, Ordering::SeqCst);
+        self.0.activity.finished.fetch_add(1, Ordering::SeqCst);
+        self.0.activity.generation.fetch_add(1, Ordering::SeqCst);
+        if let Some(w) = self.0.activity.waker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             w.wake();
         }
     }
@@ -91,9 +105,9 @@ impl GuardedBody {
 
     pub(super) fn with_charge(inner: ResBody, guard: InflightGuard, http2: bool, charge: Option<usize>, record: bool) -> Self {
         let clock = Arc::new(BodyClock::default());
-        clock.wait_for_hyper(&guard.0.epoch);
-        guard.0.clocks.lock().unwrap_or_else(|e| e.into_inner()).push(clock.clone());
-        guard.0.clocks_changed.notify_one();
+        clock.wait_for_hyper(&guard.0.clocks.epoch);
+        guard.0.clocks.bodies.lock().unwrap_or_else(|e| e.into_inner()).push(clock.clone());
+        guard.0.clocks.changed.notify_one();
         GuardedBody {
             inner,
             clock,
@@ -117,9 +131,9 @@ impl GuardedBody {
         }
         let now = self.rest.len();
         if now > self.charge {
-            self.guard.0.budget.lock().unwrap_or_else(|e| e.into_inner()).pending += now - self.charge;
+            self.guard.0.budget.held.lock().unwrap_or_else(|e| e.into_inner()).pending += now - self.charge;
         } else if now < self.charge {
-            self.guard.0.release_budget(self.charge - now);
+            self.guard.0.budget.release(self.charge - now);
         }
         self.charge = now;
     }
@@ -130,15 +144,15 @@ impl Drop for GuardedBody {
         let ended = self.ended || hyper::body::Body::is_end_stream(&*self);
         let charge = std::mem::take(&mut self.charge);
         if self.slice || !self.track {
-            self.guard.0.release_budget(charge);
+            self.guard.0.budget.release(charge);
         } else if charge > 0 {
             // HTTP/1 hyper queued the whole frame: the memory is held until the socket accepts it.
-            self.guard.0.defer_release(charge);
+            self.guard.0.budget.defer_release(charge);
         }
         if self.record {
-            self.guard.0.record(!ended);
+            self.guard.0.cancels.record(!ended);
         }
-        let mut clocks = self.guard.0.clocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut clocks = self.guard.0.clocks.bodies.lock().unwrap_or_else(|e| e.into_inner());
         clocks.retain(|c| !Arc::ptr_eq(c, &self.clock));
     }
 }
@@ -151,14 +165,14 @@ impl hyper::body::Body for GuardedBody {
         let this = &mut *self;
         // Hyper asks for the next frame only once it took the previous one: the connection moves. The first poll is
         // not that: it takes nothing.
-        if std::mem::replace(&mut this.polled, true) && this.clock.since(&this.guard.0.epoch).is_some() {
-            this.guard.0.note_progress();
+        if std::mem::replace(&mut this.polled, true) && this.clock.since(&this.guard.0.clocks.epoch).is_some() {
+            this.guard.0.clocks.note_progress();
         }
         if !this.rest.is_empty() {
             let part = cut_slice(&mut this.rest);
             this.sent_data = true;
             this.charge_rest();
-            this.clock.wait_for_hyper(&this.guard.0.epoch);
+            this.clock.wait_for_hyper(&this.guard.0.clocks.epoch);
             return Poll::Ready(Some(Ok(Frame::data(part))));
         }
         match Pin::new(&mut this.inner).poll_frame(cx) {
@@ -167,7 +181,7 @@ impl hyper::body::Body for GuardedBody {
                 Poll::Pending
             }
             Poll::Ready(Some(Ok(frame))) => {
-                this.clock.wait_for_hyper(&this.guard.0.epoch);
+                this.clock.wait_for_hyper(&this.guard.0.clocks.epoch);
                 this.sent_data |= frame.is_data();
                 if this.slice {
                     match frame.into_data() {
@@ -253,7 +267,7 @@ pub(super) mod tests {
     }
 
     fn waiting(state: &ConnState) -> Vec<bool> {
-        state.clocks.lock().unwrap().iter().map(|c| c.since(&state.epoch).is_some()).collect()
+        state.clocks.bodies.lock().unwrap().iter().map(|c| c.since(&state.clocks.epoch).is_some()).collect()
     }
 
     #[test]
@@ -268,8 +282,8 @@ pub(super) mod tests {
         assert!(matches!(poll_once(&mut body), Poll::Ready(None)));
         assert_eq!(waiting(&state), vec![false], "ended");
         drop(body);
-        assert!(state.clocks.lock().unwrap().is_empty(), "the clock goes with the body");
-        assert_eq!(state.inflight.load(Ordering::SeqCst), 0);
+        assert!(state.clocks.bodies.lock().unwrap().is_empty(), "the clock goes with the body");
+        assert_eq!(state.activity.inflight.load(Ordering::SeqCst), 0);
     }
 
     pub(in crate::server) fn many_frames(n: usize) -> Vec<Option<Result<Frame<Bytes>, io::Error>>> {
@@ -298,13 +312,13 @@ pub(super) mod tests {
     ) -> GuardedBody {
         let inner = Script { parts: parts.into(), pending_first: false }.boxed_unsync();
         if let Some(c) = charge {
-            state.budget.lock().unwrap().pending += c;
+            state.budget.held.lock().unwrap().pending += c;
         }
         GuardedBody::with_charge(inner, InflightGuard::new(state.clone()), http2, charge, true)
     }
 
     fn pending(state: &ConnState) -> usize {
-        state.budget.lock().unwrap().pending
+        state.budget.held.lock().unwrap().pending
     }
 
     #[test]
@@ -328,9 +342,9 @@ pub(super) mod tests {
         assert!(matches!(poll_once(&mut body), Poll::Ready(None)));
         drop(body);
         assert_eq!(pending(&state), 1000, "the data is still in hyper's write buffer");
-        state.flush_deferred();
+        state.budget.flush_deferred();
         assert_eq!(pending(&state), 0);
-        state.flush_deferred();
+        state.budget.flush_deferred();
         assert_eq!(pending(&state), 0, "a flush with nothing deferred changes nothing");
     }
 
@@ -344,14 +358,14 @@ pub(super) mod tests {
             assert!(matches!(poll_once(&mut body), Poll::Ready(Some(Ok(_)))));
             drop(body);
             // Only ten bytes of it were written; hyper still flushes with its buffer empty.
-            state.flush_deferred();
+            state.budget.flush_deferred();
             assert_eq!(pending(&state), 0);
         }
     }
 
     /// An HTTP/2 body of two bytes in one frame, as handlers of small JSON responses produce.
     fn full_body(state: &Arc<ConnState>) -> GuardedBody {
-        state.budget.lock().unwrap().pending += 2;
+        state.budget.held.lock().unwrap().pending += 2;
         GuardedBody::with_charge(full(Bytes::from_static(b"{}")), InflightGuard::new(state.clone()), true, Some(2), true)
     }
 
@@ -363,14 +377,14 @@ pub(super) mod tests {
         assert!(!hyper::body::Body::is_end_stream(&body), "the frame is with hyper but may not have left");
         // Dropped now (a client reset while h2 had no room): cancelled, not completed.
         drop(body);
-        let w = state.window.lock().unwrap().unwrap();
+        let w = state.cancels.window.lock().unwrap().unwrap();
         assert_eq!((w.cancelled, w.completed), (1, 0));
         let mut body = full_body(&state);
         assert!(matches!(poll_once(&mut body), Poll::Ready(Some(Ok(_)))));
         assert!(matches!(poll_once(&mut body), Poll::Ready(None)));
         assert!(hyper::body::Body::is_end_stream(&body));
         drop(body);
-        let w = state.window.lock().unwrap().unwrap();
+        let w = state.cancels.window.lock().unwrap().unwrap();
         assert_eq!((w.cancelled, w.completed), (1, 1));
     }
 
@@ -426,9 +440,9 @@ pub(super) mod tests {
 
     #[test]
     fn a_body_records_completed_when_it_ends_and_cancelled_when_dropped_before() {
-        let state = Arc::new(ConnState { cancel_ceiling: 2000, ..ConnState::default() });
+        let state = Arc::new(ConnState::new(2000));
         let recorded = |state: &ConnState| {
-            let w = state.window.lock().unwrap();
+            let w = state.cancels.window.lock().unwrap();
             w.map_or((0, 0), |w| (w.cancelled, w.completed))
         };
         let mut body = charged_body(vec![Some(Ok(Frame::data(Bytes::from_static(b"abc"))))], false, Some(3), &state);

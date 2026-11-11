@@ -2,15 +2,17 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::{Notify, OwnedSemaphorePermit};
 use tokio::time::Instant;
 
 use super::ConnState;
 use super::rapid_reset::FLOOD_GRACE;
 use super::timed_io::linger_close;
+use super::transport::ServerIo;
 
 pub(super) struct Epoch(Instant);
 
@@ -28,7 +30,35 @@ pub(super) struct BodyClock {
     waiting_since: AtomicU64,
 }
 
-impl ConnState {
+/// How a connection ends.
+#[derive(Default)]
+pub(super) struct EndFlags {
+    /// The connection was upgraded (WebSocket, ...): no idle timeouts.
+    pub(super) upgraded: AtomicBool,
+    /// An upgrade listener destroyed the socket (or the upgrade was refused): nothing to protect.
+    pub(super) destroyed: AtomicBool,
+    /// The server closes the connection to punish the peer (idle timeouts, refused h2c): no drain.
+    pub(super) no_linger: AtomicBool,
+    /// The socket and its permit, left here by `TimedIo::drop` for the connection task, which decides
+    /// whether to drain before closing (hyper's own timeouts are only visible to that task).
+    pub(super) closing: Mutex<Option<(ServerIo, Option<OwnedSemaphorePermit>)>>,
+}
+
+/// The clocks of a connection's response bodies, which the send-timeout watchdog reads.
+#[derive(Default)]
+pub(super) struct Clocks {
+    /// Origin of the times the response-body clocks record.
+    pub(super) epoch: Epoch,
+    /// Clocks of the response bodies of the connection that are alive (send timeout watchdog).
+    pub(super) bodies: Mutex<Vec<Arc<BodyClock>>>,
+    /// When hyper last took a frame from any response body of the connection (milliseconds since `epoch` plus
+    /// one; `0` = never): the connection's progress.
+    progress: AtomicU64,
+    /// Signalled when a clock is registered, so a watchdog that had nothing to watch looks again.
+    pub(super) changed: Notify,
+}
+
+impl Clocks {
     pub(super) fn note_progress(&self) {
         let ms = Instant::now().saturating_duration_since(self.epoch.0).as_millis() as u64;
         self.progress.store(ms + 1, Ordering::Relaxed);
@@ -77,27 +107,27 @@ fn is_hyper_timeout(err: &(dyn std::error::Error + 'static)) -> bool {
 async fn watchdog(state: &ConnState, timeout: Option<Duration>) {
     let Some(timeout) = timeout.filter(|t| Instant::now().checked_add(*t).is_some()) else { return std::future::pending().await };
     loop {
-        let notified = state.clocks_changed.notified();
+        let notified = state.clocks.changed.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
         let now = Instant::now();
         let (mut any, mut earliest) = (false, None::<Instant>);
-        for clock in state.clocks.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        for clock in state.clocks.bodies.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             any = true;
-            if let Some(t) = clock.since(&state.epoch) {
+            if let Some(t) = clock.since(&state.clocks.epoch) {
                 earliest = Some(earliest.map_or(t, |e| e.min(t)));
             }
         }
-        if state.upgraded.load(Ordering::SeqCst) {
+        if state.end.upgraded.load(Ordering::SeqCst) {
             return std::future::pending().await;
         }
         // The stall counts from the later of the oldest wait and the last frame any body gave: a body that starts
         // waiting after a long quiet period (idle SSE) gets a full period of its own.
-        let stalled_since = earliest.map(|t| state.last_progress().map_or(t, |p| p.max(t)));
+        let stalled_since = earliest.map(|t| state.clocks.last_progress().map_or(t, |p| p.max(t)));
         if let Some(t) = stalled_since
             && t + timeout <= now
         {
-            state.no_linger.store(true, Ordering::SeqCst);
+            state.end.no_linger.store(true, Ordering::SeqCst);
             return;
         }
         if any {
@@ -142,9 +172,9 @@ pub(super) async fn finish_connection<C>(
             }
             // Rapid reset: a graceful GOAWAY refuses new streams (hyper cannot send ENHANCE_YOUR_CALM), and the
             // connection is dropped after a short grace period whatever the streams are doing.
-            _ = state.reset_flood.notified(), if !flood => {
+            _ = state.cancels.reset_flood.notified(), if !flood => {
                 flood = true;
-                state.no_linger.store(true, Ordering::SeqCst);
+                state.end.no_linger.store(true, Ordering::SeqCst);
                 if !stopping {
                     graceful_shutdown(conn.as_mut());
                 }
@@ -158,11 +188,11 @@ pub(super) async fn finish_connection<C>(
     drop(watch);
     drop(conn);
     drop(stop);
-    let punish = state.no_linger.load(Ordering::SeqCst)
-        || state.destroyed.load(Ordering::SeqCst)
-        || state.upgraded.load(Ordering::SeqCst)
+    let punish = state.end.no_linger.load(Ordering::SeqCst)
+        || state.end.destroyed.load(Ordering::SeqCst)
+        || state.end.upgraded.load(Ordering::SeqCst)
         || result.as_ref().err().is_some_and(|e| is_hyper_timeout(e.as_ref()));
-    let closing = state.closing.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let closing = state.end.closing.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some((io, permit)) = closing {
         if !punish {
             linger_close(io).await;
@@ -207,7 +237,7 @@ mod tests {
         }
         tokio::time::advance(Duration::from_millis(1100)).await;
         assert!(futures::poll!(watch.as_mut()).is_ready(), "nothing moved for a send timeout");
-        assert!(state.no_linger.load(Ordering::SeqCst));
+        assert!(state.end.no_linger.load(Ordering::SeqCst));
     }
 
     #[tokio::test(start_paused = true)]

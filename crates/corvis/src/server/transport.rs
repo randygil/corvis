@@ -190,7 +190,7 @@ pub(super) mod tls_io {
     impl AsyncRead for Gate {
         fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
             let this = self.get_mut();
-            if buf.remaining() == 0 || !this.state.upgraded.load(Ordering::SeqCst) {
+            if buf.remaining() == 0 || !this.state.end.upgraded.load(Ordering::SeqCst) {
                 return Pin::new(&mut this.tcp).poll_read(cx, buf);
             }
             let limit = {

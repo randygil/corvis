@@ -1,8 +1,10 @@
 //! The response budget of a connection (`max_pending_response_bytes`): admission of handlers and the bytes charged.
 
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use tokio::sync::Notify;
 
 use super::ConnState;
 
@@ -66,7 +68,19 @@ impl Budget {
     }
 }
 
-impl ConnState {
+/// What one connection holds of its responses, and the requests that wait for room.
+#[derive(Default)]
+pub(super) struct ResponseBudget {
+    /// Response bytes the connection holds (`max_pending_response_bytes`).
+    pub(super) held: Mutex<Budget>,
+    /// Signalled whenever pending bytes or running handlers drop, so waiting requests look again.
+    freed: Notify,
+    /// HTTP/1: charges of bodies hyper already took into its write buffer, released when hyper flushes the socket
+    /// (it only does so with its write buffer empty).
+    deferred: AtomicUsize,
+}
+
+impl ResponseBudget {
     /// HTTP/1: hyper took a body into its write buffer; the memory is held until the buffer is flushed.
     pub(super) fn defer_release(&self, charge: usize) {
         self.deferred.fetch_add(charge, Ordering::Relaxed);
@@ -75,54 +89,32 @@ impl ConnState {
     /// Hyper flushed the socket, which it only does with its write buffer empty: what it took is out.
     pub(super) fn flush_deferred(&self) {
         let charge = self.deferred.swap(0, Ordering::Relaxed);
-        self.release_budget(charge);
+        self.release(charge);
     }
 
-    pub(super) fn release_budget(&self, charge: usize) {
+    pub(super) fn release(&self, charge: usize) {
         if charge > 0 {
             let wake = {
-                let mut b = self.budget.lock().unwrap_or_else(|e| e.into_inner());
+                let mut b = self.held.lock().unwrap_or_else(|e| e.into_inner());
                 b.release(charge);
                 b.should_wake()
             };
             if wake {
-                self.budget_freed.notify_waiters();
+                self.freed.notify_waiters();
             }
         }
     }
 
     /// Wakes the waiting requests when one of them could be admitted.
     fn wake_if_room(&self) {
-        if self.budget.lock().unwrap_or_else(|e| e.into_inner()).should_wake() {
-            self.budget_freed.notify_waiters();
-        }
-    }
-
-    /// Waits until the budget has room for a handler with this `share`; the reservation lasts until the handler
-    /// returns or the returned value is dropped.
-    pub(super) async fn admit(self: &Arc<Self>, share: usize, cap: usize) -> Admission {
-        let mut waiting: Option<Waiting> = None;
-        loop {
-            let notified = self.budget_freed.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            {
-                let mut b = self.budget.lock().unwrap_or_else(|e| e.into_inner());
-                if b.try_admit(share, cap) {
-                    return Admission { state: Some(self.clone()) };
-                }
-                if waiting.is_none() {
-                    b.waiting += 1;
-                    waiting = Some(Waiting(self.clone()));
-                }
-            }
-            notified.await;
+        if self.held.lock().unwrap_or_else(|e| e.into_inner()).should_wake() {
+            self.freed.notify_waiters();
         }
     }
 
     /// Logs, once per connection, that a request waited too long for room.
     pub(super) fn warn_wait_once(&self, wait: Duration) {
-        let first = !std::mem::replace(&mut self.budget.lock().unwrap_or_else(|e| e.into_inner()).warned_wait, true);
+        let first = !std::mem::replace(&mut self.held.lock().unwrap_or_else(|e| e.into_inner()).warned_wait, true);
         if first {
             crate::logger::Logger::warn_with(
                 format!(
@@ -137,12 +129,36 @@ impl ConnState {
     }
 }
 
+impl ConnState {
+    /// Waits until the budget has room for a handler with this `share`; the reservation lasts until the handler
+    /// returns or the returned value is dropped.
+    pub(super) async fn admit(self: &Arc<Self>, share: usize, cap: usize) -> Admission {
+        let mut waiting: Option<Waiting> = None;
+        loop {
+            let notified = self.budget.freed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let mut b = self.budget.held.lock().unwrap_or_else(|e| e.into_inner());
+                if b.try_admit(share, cap) {
+                    return Admission { state: Some(self.clone()) };
+                }
+                if waiting.is_none() {
+                    b.waiting += 1;
+                    waiting = Some(Waiting(self.clone()));
+                }
+            }
+            notified.await;
+        }
+    }
+}
+
 /// A request counted as waiting for room, until it is admitted or gives up.
 struct Waiting(Arc<ConnState>);
 
 impl Drop for Waiting {
     fn drop(&mut self) {
-        let mut b = self.0.budget.lock().unwrap_or_else(|e| e.into_inner());
+        let mut b = self.0.budget.held.lock().unwrap_or_else(|e| e.into_inner());
         b.waiting = b.waiting.saturating_sub(1);
     }
 }
@@ -157,12 +173,12 @@ impl Admission {
     pub(super) fn finish(mut self, charge: usize, cap: usize, http2: bool) -> Verdict {
         let state = self.state.take().expect("an admission finishes once");
         let (verdict, first) = {
-            let mut b = state.budget.lock().unwrap_or_else(|e| e.into_inner());
+            let mut b = state.budget.held.lock().unwrap_or_else(|e| e.into_inner());
             let verdict = b.finish_handler(charge, cap, http2);
             let first = verdict == Verdict::Reset && !std::mem::replace(&mut b.warned, true);
             (verdict, first)
         };
-        state.wake_if_room();
+        state.budget.wake_if_room();
         if first {
             crate::logger::Logger::warn_with(
                 format!(
@@ -180,10 +196,10 @@ impl Admission {
 impl Drop for Admission {
     fn drop(&mut self) {
         if let Some(state) = self.state.take() {
-            let mut b = state.budget.lock().unwrap_or_else(|e| e.into_inner());
+            let mut b = state.budget.held.lock().unwrap_or_else(|e| e.into_inner());
             b.running = b.running.saturating_sub(1);
             drop(b);
-            state.wake_if_room();
+            state.budget.wake_if_room();
         }
     }
 }
@@ -256,9 +272,9 @@ mod tests {
     fn a_dropped_admission_gives_its_reservation_back() {
         let state = Arc::new(ConnState::default());
         let admission = futures::executor::block_on(state.admit(10, 100));
-        assert_eq!(state.budget.lock().unwrap().running, 1);
+        assert_eq!(state.budget.held.lock().unwrap().running, 1);
         drop(admission);
-        assert_eq!(state.budget.lock().unwrap().running, 0);
+        assert_eq!(state.budget.held.lock().unwrap().running, 0);
     }
 
     #[test]
@@ -275,11 +291,11 @@ mod tests {
     async fn a_request_that_waits_too_long_gives_up_without_a_reservation() {
         let state = Arc::new(ConnState::default());
         let held = state.admit(60, 100).await;
-        state.budget.lock().unwrap().pending = 100;
+        state.budget.held.lock().unwrap().pending = 100;
         let waited = tokio::time::timeout(Duration::from_secs(5), state.admit(10, 100)).await;
         assert!(waited.is_err(), "no room: the wait times out");
         {
-            let b = state.budget.lock().unwrap();
+            let b = state.budget.held.lock().unwrap();
             assert_eq!((b.running, b.waiting), (1, 0), "the abandoned wait holds nothing");
         }
         drop(held);

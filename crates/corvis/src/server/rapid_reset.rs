@@ -1,9 +1,10 @@
 //! Rapid reset (CVE-2023-44487) detection: requests cancelled before their response.
 
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use super::ConnState;
@@ -28,7 +29,25 @@ pub(super) struct CancelWindow {
     prev_completed: u32,
 }
 
-impl ConnState {
+/// The requests a connection cancelled before their response, and the verdict when there are too many.
+#[derive(Default)]
+pub(super) struct CancelState {
+    /// Requests cancelled and completed in the current and the previous window (rapid reset detection).
+    pub(super) window: Mutex<Option<CancelWindow>>,
+    /// Signalled when too many requests were cancelled before their response (rapid reset): the
+    /// connection task closes the connection.
+    pub(super) reset_flood: Notify,
+    /// Set when the flood was detected: no further request of the connection reaches a handler.
+    pub(super) flooded: AtomicBool,
+    /// `http2_max_cancelled_streams`: cancellations over the window that close the connection whatever it completed.
+    ceiling: u32,
+}
+
+impl CancelState {
+    pub(super) fn new(ceiling: u32) -> Self {
+        CancelState { ceiling, ..CancelState::default() }
+    }
+
     /// Adds one request outcome at `now`; true when the connection has to be closed.
     fn tally(&self, now: Instant, cancelled: bool) -> bool {
         let mut guard = self.window.lock().unwrap_or_else(|e| e.into_inner());
@@ -51,7 +70,7 @@ impl ConnState {
         let inside = 1.0 - (now.saturating_duration_since(w.start).as_secs_f64() / CANCEL_WINDOW.as_secs_f64()).min(1.0);
         let cancelled_now = f64::from(w.cancelled) + f64::from(w.prev_cancelled) * inside;
         let completed_now = f64::from(w.completed) + f64::from(w.prev_completed) * inside;
-        cancelled && (cancelled_now > CANCEL_FLOOR.max(completed_now / COMPLETED_CREDIT) || cancelled_now > f64::from(self.cancel_ceiling))
+        cancelled && (cancelled_now > CANCEL_FLOOR.max(completed_now / COMPLETED_CREDIT) || cancelled_now > f64::from(self.ceiling))
     }
 
     pub(super) fn record(&self, cancelled: bool) {
@@ -86,7 +105,7 @@ pub(super) struct CancelWatch {
 impl Drop for CancelWatch {
     fn drop(&mut self) {
         if !matches!(self.outcome, Outcome::Refused | Outcome::Body) {
-            self.state.record(!matches!(self.outcome, Outcome::Completed));
+            self.state.cancels.record(!matches!(self.outcome, Outcome::Completed));
         }
     }
 }
@@ -97,9 +116,9 @@ mod tests {
 
     /// Feeds `events` (seconds from a start, cancelled or not) and returns the time of the first close verdict.
     fn first_close(events: impl IntoIterator<Item = (f64, bool)>) -> Option<f64> {
-        let state = ConnState { cancel_ceiling: 2000, ..ConnState::default() };
+        let state = ConnState::new(2000);
         let start = Instant::now();
-        events.into_iter().find(|&(t, cancelled)| state.tally(start + Duration::from_secs_f64(t), cancelled)).map(|(t, _)| t)
+        events.into_iter().find(|&(t, cancelled)| state.cancels.tally(start + Duration::from_secs_f64(t), cancelled)).map(|(t, _)| t)
     }
 
     #[test]

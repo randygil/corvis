@@ -203,7 +203,7 @@ impl Drop for TimedIo {
     fn drop(&mut self) {
         if let Some(io) = self.io.take() {
             let permit = self.permit.take();
-            *self.state.closing.lock().unwrap_or_else(|e| e.into_inner()) = Some((io, permit));
+            *self.state.end.closing.lock().unwrap_or_else(|e| e.into_inner()) = Some((io, permit));
         }
     }
 }
@@ -258,10 +258,10 @@ impl TimedIo {
 
     /// Notices requests that started or ended since the last poll.
     fn sync(&mut self) {
-        let g = self.state.generation.load(Ordering::SeqCst);
+        let g = self.state.activity.generation.load(Ordering::SeqCst);
         if g != self.seen_generation {
             self.seen_generation = g;
-            if self.state.inflight.load(Ordering::SeqCst) == 0 {
+            if self.state.activity.inflight.load(Ordering::SeqCst) == 0 {
                 self.phase = Phase::KeepAlive(Instant::now());
             }
         }
@@ -282,13 +282,13 @@ impl TimedIo {
                 if self.h2_only {
                     // ALPN negotiated `h2`: anything but the HTTP/2 preface is a protocol violation, and must not be
                     // parsed as HTTP/1 (the framing check is off on this path).
-                    self.state.no_linger.store(true, Ordering::SeqCst);
+                    self.state.end.no_linger.store(true, Ordering::SeqCst);
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 connection preface expected"));
                 }
                 self.preface = None;
             } else if matched + n == H2_PREFACE.len() {
                 if !self.h2c {
-                    self.state.no_linger.store(true, Ordering::SeqCst);
+                    self.state.end.no_linger.store(true, Ordering::SeqCst);
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP/2 (h2c) is disabled"));
                 }
                 self.preface = None;
@@ -386,7 +386,7 @@ impl TimedIo {
     /// The send timeout fired: mark the socket for an abortive close and wake both halves of an upgraded
     /// connection, so the one that is not polling the deadline sees the failure too.
     fn send_timed_out(&mut self) -> io::Error {
-        self.state.no_linger.store(true, Ordering::SeqCst);
+        self.state.end.no_linger.store(true, Ordering::SeqCst);
         self.send_failed = true;
         for w in [self.read_waker.take(), self.write_waker.take()].into_iter().flatten() {
             w.wake();
@@ -431,13 +431,13 @@ impl TimedIo {
 
     fn poll_idle(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.sync();
-        if self.state.upgraded.load(Ordering::SeqCst) {
+        if self.state.end.upgraded.load(Ordering::SeqCst) {
             return Poll::Pending;
         }
-        if self.state.inflight.load(Ordering::SeqCst) > 0 {
-            *self.state.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+        if self.state.activity.inflight.load(Ordering::SeqCst) > 0 {
+            *self.state.activity.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
             // The request may have ended in between: look again.
-            if self.state.inflight.load(Ordering::SeqCst) > 0 {
+            if self.state.activity.inflight.load(Ordering::SeqCst) > 0 {
                 return Poll::Pending;
             }
             self.sync();
@@ -454,7 +454,7 @@ impl TimedIo {
         }
         match sleep.as_mut().poll(cx) {
             Poll::Ready(()) => {
-                self.state.no_linger.store(true, Ordering::SeqCst);
+                self.state.end.no_linger.store(true, Ordering::SeqCst);
                 Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "connection idle timeout")))
             }
             Poll::Pending => Poll::Pending,
@@ -469,7 +469,7 @@ impl TimedIo {
         if done(&self.state) {
             return true;
         }
-        *self.state.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+        *self.state.activity.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
         done(&self.state)
     }
 
@@ -501,8 +501,8 @@ impl TimedIo {
                 let need = fr.heads();
                 // `finished` first, then `upgraded`: a 101 sets `upgraded` before its request finishes, so a request
                 // seen as finished here has its `upgraded` flag visible below and cannot be mistaken for a non-101.
-                let finished = state.finished.load(Ordering::SeqCst) >= need;
-                let released = state.upgraded.load(Ordering::SeqCst);
+                let finished = state.activity.finished.load(Ordering::SeqCst) >= need;
+                let released = state.end.upgraded.load(Ordering::SeqCst);
                 if released || finished {
                     if released {
                         fr.release(&mut self.queue);
@@ -515,18 +515,20 @@ impl TimedIo {
                     continue;
                 }
                 let full = fr.hold_full();
-                if self.wait_for_requests(cx, |s| s.upgraded.load(Ordering::SeqCst) || s.finished.load(Ordering::SeqCst) >= need) {
+                if self
+                    .wait_for_requests(cx, |s| s.end.upgraded.load(Ordering::SeqCst) || s.activity.finished.load(Ordering::SeqCst) >= need)
+                {
                     continue;
                 }
                 if full || sock_eof {
                     return self.poll_idle(cx);
                 }
             } else if let Some(t) = fr.pending_terminal() {
-                if state.finished.load(Ordering::SeqCst) >= t.wait {
+                if state.activity.finished.load(Ordering::SeqCst) >= t.wait {
                     fr.send_terminal(&mut self.queue);
                     continue;
                 }
-                if self.wait_for_requests(cx, |s| s.finished.load(Ordering::SeqCst) >= t.wait) {
+                if self.wait_for_requests(cx, |s| s.activity.finished.load(Ordering::SeqCst) >= t.wait) {
                     continue;
                 }
                 return self.poll_idle(cx);
@@ -574,7 +576,7 @@ impl TimedIo {
     /// its own timer. The reader is woken by `write_progress`, by the timer, or by the writer's own wake-up when the
     /// socket becomes writable (a protocol layer that wakes both halves, like tokio-tungstenite, wakes it too).
     fn read_paused(&mut self, cx: &mut Context<'_>) -> Option<Poll<io::Result<()>>> {
-        if !self.state.upgraded.load(Ordering::SeqCst) || !self.write_is_blocked() || !self.read_credit_exhausted() {
+        if !self.state.end.upgraded.load(Ordering::SeqCst) || !self.write_is_blocked() || !self.read_credit_exhausted() {
             return None;
         }
         // The blocked write may have been issued by the read path itself (a pong flushed while reading), in which
@@ -618,13 +620,13 @@ impl TimedIo {
 impl AsyncRead for TimedIo {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         let this = &mut *self;
-        if this.send_failed && this.state.upgraded.load(Ordering::SeqCst) {
+        if this.send_failed && this.state.end.upgraded.load(Ordering::SeqCst) {
             return Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "send timeout")));
         }
         if let Some(r) = this.read_paused(cx) {
             return r;
         }
-        let upgraded = this.state.upgraded.load(Ordering::SeqCst);
+        let upgraded = this.state.end.upgraded.load(Ordering::SeqCst);
         if !upgraded {
             return this.poll_read_unpaused(cx, buf);
         }
@@ -714,7 +716,7 @@ impl AsyncWrite for TimedIo {
                     this.write_stalled_since = None;
                 }
                 // Hyper flushes only with its write buffer empty: the HTTP/1 responses it took are out of memory.
-                this.state.flush_deferred();
+                this.state.budget.flush_deferred();
                 Poll::Ready(Ok(()))
             }
             Poll::Pending => {

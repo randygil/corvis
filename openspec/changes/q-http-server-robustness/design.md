@@ -409,6 +409,19 @@ two lines, the second counting the 67 errors after the first.
   `server.rs` with `serve`. `finish_response` is now `pub(super)` (the test client reaches it through `respond`);
   `request::drain` is re-exported for the Engine.IO polling transport under `socket-io` only.
 - `server.rs` went from 3,114 lines (after groups 2 to 6) to about 600.
+- `ConnState` (task 7.5) is five fields: `activity: Activity` (in `guarded_body.rs`, next to `InflightGuard`, which
+  writes it), `end: EndFlags` and `clocks: Clocks` (in `watchdog.rs`, next to `finish_connection` and the watchdog that
+  read them), `cancels: CancelState` (`rapid_reset.rs`) and `budget: ResponseBudget` (`budget.rs`). Field accesses
+  became paths (`state.activity.inflight`); three fields were renamed inside their group where the path would repeat
+  itself (`clocks.clocks` is `clocks.bodies`, `clocks_changed` is `clocks.changed`, `budget` is `budget.held`,
+  `budget_freed` is `budget.freed`, `cancel_ceiling` is `cancels.ceiling`). Methods that touch one group moved onto it:
+  `tally` and `record` onto `CancelState`; `note_progress` and `last_progress` onto `Clocks`; `defer_release`,
+  `flush_deferred`, `release` (was `release_budget`), `wake_if_room` and `warn_wait_once` onto `ResponseBudget`.
+  `admit` stays on `ConnState`, since `Admission` and `Waiting` keep the connection's `Arc`. `ConnState::new(ceiling)`
+  replaces the struct literal. No ordering, lock or lock scope changed. Test counts after it: 1,247 and 1,877.
+- One run of `--features tls --test transport_security` failed three tests at their first line,
+  `std::fs::create_dir_all` of the upload directory in the system temp folder (Windows); the next run passed and the
+  failure did not come back in later full runs. Not related to this change (no server code runs before that line).
 
 ## Review notes
 
