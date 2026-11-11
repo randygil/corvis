@@ -7,23 +7,23 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 1. Reconcile
 
-- [ ] 1.1 Re-check every file and line of design.md "Findings as checked" against `dev`; write moved lines in a new
+- [x] 1.1 Re-check every file and line of design.md "Findings as checked" against `dev`; write moved lines in a new
   "Implementation notes" section of design.md before any other task; verify `cargo test -p corvis --test zod4_fixtures
   --test zod_pipe --test zod_security --test zod --lib z::` passes on the untouched tree
 
 ## 2. Fixtures from the originals (design.md Decision 1)
 
-- [ ] 2.1 `crates/corvis/tests/fixtures/zod4/package.json` and `package-lock.json` pinning `zod` 4.4.3; header of
+- [x] 2.1 `crates/corvis/tests/fixtures/zod4/package.json` and `package-lock.json` pinning `zod` 4.4.3; header of
   `cases.mjs`: `npm ci && TZ=UTC node cases.mjs > parse.json`; recorder: `construct: { throws }` records and the
   `{ "$number": .. }` encoding; replay in `tests/zod4_fixtures.rs`: `construct` cases built under `catch_unwind`,
   `$number` compared through `z::parse_val`; re-record with no new case; verify `git diff --stat
   crates/corvis/tests/fixtures/zod4/parse.json` is empty (or lists only cases changed by the new encoding, written in
   Implementation notes) and `cargo test -p corvis --test zod4_fixtures` passes
-- [ ] 2.2 The new `c` and `c3` cases of the Decision 1 table in `cases.mjs`, their schemas by name in
+- [x] 2.2 The new `c` and `c3` cases of the Decision 1 table in `cases.mjs`, their schemas by name in
   `tests/zod4_fixtures.rs`; record; run `cargo test -p corvis --test zod4_fixtures` and copy the mismatch report into
   Implementation notes ("Fixture before"); for every claim of design.md whose case already passes, write "dropped:
   fixture agrees" next to it; verify the report lists only cases of this change
-- [ ] 2.3 `crates/corvis/tests/fixtures/builtin_pipes/` (`package.json` with the pinned versions of Decision 1,
+- [x] 2.3 `crates/corvis/tests/fixtures/builtin_pipes/` (`package.json` with the pinned versions of Decision 1,
   `package-lock.json`, `generate.mjs`, `builtin_pipes.json`) and `crates/corvis/tests/builtin_pipes_fixtures.rs`
   replaying `pipes` and `rules`; run it and copy the mismatches into Implementation notes; run `generate.mjs` a second time
   with the common package at 12.0.4 (not committed) and record any difference (Review note 4); verify the recorder output

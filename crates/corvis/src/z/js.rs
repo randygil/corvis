@@ -683,4 +683,38 @@ mod tests {
         assert!(parse_date("x").is_nan());
         assert_eq!(date_to_iso(parse_date("2024-02-29T10:20:30.5+02:00")).unwrap(), "2024-02-29T08:20:30.500Z");
     }
+
+    /// A year, an offset or a numeral too large to compute is an invalid date (V8 answers Invalid Date for each;
+    /// `date.coerce.edges` in the zod fixture), never a panic.
+    #[test]
+    fn dates_out_of_range_are_invalid() {
+        for input in ["999999999999999999-01-01", "Jan 1 999999999999999999", "1/1/2000 10:00 +9999999999999999"] {
+            assert!(parse_date(input).is_nan(), "{input}");
+        }
+        assert!(parse_date("1/1/99999999999999999999 UTC").is_nan(), "an over-long numeral is not 0");
+    }
+
+    /// `make_utc` of `{y}-01-01` computed the way the parser computed it before it was made total, in wrapping `i64`
+    /// arithmetic (what a release build without `overflow-checks` does).
+    fn wrapped_time(y: i64) -> i64 {
+        let y = y - 1;
+        let era = y / 400;
+        let yoe = y.wrapping_sub(era.wrapping_mul(400));
+        let doe = (yoe * 365 + yoe / 4 - yoe / 100) + (153 * 10 + 2) / 5;
+        era.wrapping_mul(146_097).wrapping_add(doe).wrapping_sub(719_468).wrapping_mul(86_400_000)
+    }
+
+    /// A year whose wrapped time value lands inside the valid range would have been a valid date in a release build.
+    #[test]
+    fn a_year_whose_wrapped_time_looks_valid_is_invalid() {
+        // A margin of one day for the local time zone offset.
+        let looks_valid = |t: i64| t.unsigned_abs() < 8_640_000_000_000_000 - 86_400_000;
+        // Consecutive years move the wrapped value by one year of milliseconds; a prime stride spreads it over the
+        // whole `i64` range, where about one candidate in a thousand lands inside the valid range.
+        let year = (0..100_000)
+            .map(|k| 100_000_000_000_000_000 + k * 1_000_003)
+            .find(|y| looks_valid(wrapped_time(*y)))
+            .expect("a candidate inside the valid range");
+        assert!(parse_date(&format!("{year}-01-01")).is_nan(), "{year}");
+    }
 }

@@ -371,3 +371,95 @@ These settle the open questions and override the design where they differ.
    with a different value (a silent wrong value is what D1, S4d and S4e are about).
 6. The security review is mandatory before archiving: the date parser, unwinding through depth guards, the error
    mapping and logs of the pipe and serializer, the engines of the zod 3 patterns, and the number parsing of the pipes.
+
+## Implementation notes
+
+### 1.1 Re-check against `dev` (53134b4)
+
+Between `d46758a` and `53134b4` the module changed only in two doc comments (`z/locales.rs:8`, `z/regex.rs:58`, one line
+each, no line shift), and `auth/warn_limit.rs` gained `WarnLimiter::line` (used by Decision 8). Every file and line of
+"Findings as checked" is where the table says. `cargo test -p corvis --test zod4_fixtures --test zod_pipe --test
+zod_security --test zod` (12 tests) and `cargo test -p corvis --lib z::` (21 tests) passed on the untouched tree.
+
+### 2.1 Recorder
+
+`tests/fixtures/zod4/package.json` and `package-lock.json` pin zod 4.4.3. Re-recording with `TZ=UTC node cases.mjs`
+reproduced `parse.json` byte for byte, before and after the two new encodings (`construct` records and `$number`); no
+existing case changed. The replay also reports a panic during a parse as a mismatch instead of aborting the test.
+
+zod 4 raises "Invalid discriminated union option at index ..." lazily, at the first parse, so `du.optional`,
+`du.nullable`, `du.default` and `du.catch` record a `throws` for their input rather than a `construct` record. Corvis
+raises it when the schema is built (Decision 8: construction errors stay panics at build time); the replay accepts a
+build panic when every recorded input throws that same message.
+
+### 2.2 Fixture before
+
+zod 4 mode (`zod4_parse_fixtures`), 9 mismatches, all of this change:
+
+- `date.coerce.edges`: `"999999999999999999-01-01"`, `"Jan 1 999999999999999999"` and
+  `"1/1/2000 10:00 +9999999999999999"` panic with "attempt to multiply with overflow"; `"1/1/99999999999999999999 UTC"`
+  is accepted as `2000-01-01T00:00:00.000Z` (the over-long numeral read as `0`), recorded invalid.
+- `du.check`, `du.overwrite`: build panic "Invalid discriminated union option at index "0"", recorded accepted.
+- `templateLiteral.check`, `templateLiteral.overwrite`: build panic "Invalid template literal part, no pattern found",
+  recorded accepted.
+- `literal.empty`: builds without panic; recorded `construct` "Cannot create literal schema with no valid values".
+
+zod 3 mode (`zod3_parse_fixtures`), 28 mismatches, all of this change:
+
+- `string.min.astral`, `string.max.astral`, `string.length.astral`: `"😀"` and `"a😀"` counted in code points (D4a).
+- `number.multipleOf.big` (`12345.00001`, `1000000000000.5`) and `number.multipleOf.tenth` (`0.30000000000000004`)
+  accepted, recorded refused (D4b). zod 3 refuses `0.30000000000000004` where zod 4 accepts it, so zod 3's own
+  `floatSafeRemainder` is ported as `float_safe_remainder_v3`.
+- `string.email.edges` `".a@b.co"`, `"a..b@b.co"` accepted (D4c, the lookaheads); `string.cuid.edges`
+  `"CJLD2CJXH0000QZRMN831I7RN"` refused (D4c, flag `i`); `string.url.edges` `"mailto:a@b.co"`, `"foo:bar"`,
+  `"javascript:alert(1)"` refused (D4c: zod 3 checks with `new URL()`); `string.ip.edges` `"fe80::1%eth0"` refused (D4h).
+- `coerce.number.edges`: `"inf"` a successful `null`, `"0x10"` refused, `"Infinity"` / `"-Infinity"` a successful
+  `null` where zod 3 returns the infinite number (D4d).
+- `coerce.string.edges`: `[1,2]` gives `"[1,2]"`, `{}` gives `"{}"` (D4g).
+- `string.trim.edges`: U+FEFF kept and U+0085 trimmed (D4e).
+- `number.min.big`, `number.max.small`: messages with `1000000000000000000000` and `0.0000001` (D4f).
+- `discriminatedUnion.refinedKey`: no options for the refined literal (S3b: zod 3 reads the discriminator through a
+  refinement).
+- `date.coerce.edges`: `"+275760-09-13T00:00:00.000Z"` and `"-271821-04-20T00:00:00.000Z"` refused (chrono's range;
+  Decision 6 moves zod 3 mode to `js::parse_date`).
+
+Dropped, fixture agrees (the cases stay as regression pins):
+
+- S3b, `.required()` over a refined optional: zod 3 keeps the refined optional, as Corvis does (`object.required.refine`).
+- D4c url `"http://"`, `"//x.com"`; email `"a@b.c"`; cuid `"c-abcdefgh"`, `"cabc"`; D4h ip `"::ffff:1.2.3.4"`,
+  `"01.2.3.4"`, `"::1"`: Corvis already answers as zod 3.
+- D4d `" 12 "`, `"1e3"`, `" 5"`, `"1_0"`, `".5"`, `"5."`, `"+5"`; D4e `" a　"`; D4g `1e21`, `1.5`, `true`,
+  `0.30000000000000004`; D4b `0.3`, `1.1`, `2.55`, `19.99`, `0.07`, `1.005`, `3`, `1e21`: already as zod 3.
+- D1 in zod 3 mode: zod 3 mode parses dates with chrono today and does not overflow; with Decision 6 it uses
+  `js::parse_date`, covered by the D1 unit tests and the `date.coerce.edges` cases.
+
+zod 3 returns `Infinity` for `z.coerce.number()` of `"Infinity"`; zod 3 mode works on JSON values and cannot hold it.
+Following Review note 5 it is refused with zod 3's own issue for an infinite number (`not_finite`, "Number must be
+finite") and listed as a divergence in the replay.
+
+### 2.3 Built-in pipes fixture
+
+Recorded with the common package 11.2.1, class-validator 0.14.4 and class-transformer 0.5.1 (the recorder writes the
+versions into `builtin_pipes.json`). Mismatches before any fix, 15 pipe records and 12 rule records:
+
+- `ParseArrayPipe({ items: Number })`: `"1,NaN"` and `"inf"` give `null` items, recorded `[i] item must be a number`;
+  `"1e20"` gives `i64::MAX`, recorded `1e20`; `"Infinity"` gives `null` (the original returns `Infinity`: a divergence,
+  refused with the `[0] item must be a number` error the original gives for `NaN`); `""` gives `[]`, recorded the 400;
+  `"1,,2"` gives the generic 400, recorded `[1] item must be a number`; `"0x10"` refused, recorded `16`.
+- `ParseArrayPipe()`: `"a, b"` trims the items (recorded `["a", " b"]`); `""` gives `[]` (recorded the 400).
+- `ParseIntPipe`: `"+5"`, `" 5"`, `"5 "` accepted, recorded refused; `"9007199254740993"` gives the exact integer where
+  the original's `parseInt` gives `9007199254740992`. `"99999999999999999999"` is a divergence (an integer beyond i64,
+  refused with the pipe's 400).
+- `ParseFloatPipe`: `"0x10"` refused, recorded `0` (`parseFloat`).
+- `DefaultValuePipe(7)`: `""` takes the default, recorded `""`.
+- `isNumberString`: `" 1"`, `"1 "`, `"NaN"`, `"inf"`, `"Infinity"`, `"1e5"`, `"5."` accepted, recorded refused.
+- `isIP`: `"fe80::1%eth0"` refused, recorded accepted.
+- `minLength(2)` / `maxLength(1)`: `"❤️"` and `"a️"` (with a presentation selector) counted as two, recorded as one.
+
+Agreed already: every `ParseBoolPipe` record; `ParseIntPipe` `"5"`, `"-0"`, `"007"`, `"1e3"`, `""`, `"0x10"`;
+`ParseFloatPipe` except `"0x10"`; `isIP` except the zone; the lengths of `"😀"`, `"é"`, `"ab"`.
+
+Second run with the common package 12.0.4 (not committed; class-validator and class-transformer unchanged): four records
+differ, none of them `ParseIntPipe`. `ParseArrayPipe({ items: Number })` of `""` answers `[0] item must be a number` and
+`ParseArrayPipe()` of `""` answers `[""]` (12.0.4 no longer refuses an empty string up front); `ParseFloatPipe` refuses
+`" 1.5 "` and `"0x10"`. The fixture stays on 11.2.1 (Review note 4); nothing to raise for houseplan.
