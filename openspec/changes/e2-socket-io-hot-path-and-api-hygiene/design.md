@@ -994,3 +994,15 @@ Left as it is, and outside this finding: a gateway's `handle_connection` runs in
 broadcast that runs between the announce and the hook's `disconnect` can still reach the socket, even when the hook
 disconnects before its first `await`; NestJS calls `handleConnection` synchronously from the `connection` event. The
 window is bounded by the scheduling of one task, no longer by the client. A follow-up for the maintainer.
+
+## Security review (round 2)
+
+The reviewer reran the proof of concept of the round 1 finding on the fix: the connection check runs once and the client
+that does not poll receives no broadcast, with a wait of 3 s and of 40 s, for an `on_connection` handler and for a
+gateway hook; the same result as before this change. Closing the poll response after a CONNECT, the charge of a queued
+text by its capacity and the release of the callbacks of a socket that never connected were attacked and held: only the
+encoder's own CONNECT ends a batch, each queued item releases the amount it was charged, and a connected socket never
+loses its callbacks. No open finding.
+
+The window noted at the end of round 1 was measured, on this change and before it alike, and affects a synchronous
+`on_connection` handler too; it is low in severity and is tracked in #208.
