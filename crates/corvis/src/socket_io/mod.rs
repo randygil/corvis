@@ -35,7 +35,7 @@
 //! (see [`BroadcastOperator`](crate::socket_io::BroadcastOperator)); the rooms of a namespace live in an adapter, in memory by default.
 //!
 //! Gateways: `use_websocket_adapter(IoAdapter::new())` serves the application's `#[websocket_gateway]` classes over Socket.IO (see
-//! [`IoAdapter`]).
+//! [`IoAdapter`](crate::socket_io::IoAdapter)).
 //!
 //! Not supported (yet): a Redis adapter, dynamic namespaces,
 //! connection state recovery, `volatile` and `compress` flags, catch-all listeners, custom parsers, Engine.IO v3
@@ -49,7 +49,7 @@ pub mod engine;
 mod broadcast;
 mod budget;
 mod client;
-mod gateway;
+pub(crate) mod gateway;
 mod namespace;
 mod options;
 mod parser;

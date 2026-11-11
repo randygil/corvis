@@ -98,7 +98,7 @@ async fn socket_io_differential_harness() {
     );
 
     assert!(
-        dir.join("gateway-reference").join("node_modules").join("@nestjs").join("core").join("package.json").is_file(),
+        dir.join("gateway-reference").join("node_modules").join("rxjs").join("package.json").is_file(),
         "the gateway reference is not installed: run `npm ci` in parity/socket-io/gateway-reference/ (cargo never installs packages)"
     );
 

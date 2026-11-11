@@ -1941,5 +1941,6 @@ async fn the_auth_of_many_sockets_in_many_namespaces_adds_up_on_the_address_and_
     assert_eq!(address_held(&io, "203.0.113.1"), 0);
 }
 
+mod gateways;
 mod review1;
 mod rooms;

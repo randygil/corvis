@@ -463,16 +463,16 @@ enum GateState {
 }
 
 /// Holds the events of a socket until its `handle_connection` hooks returned.
-struct Gate {
+pub(crate) struct Gate {
     state: watch::Sender<GateState>,
 }
 
 impl Gate {
-    fn new() -> Gate {
+    pub(crate) fn new() -> Gate {
         Gate { state: watch::channel(GateState::Closed).0 }
     }
 
-    fn open(&self) {
+    pub(crate) fn open(&self) {
         self.state.send_if_modified(|s| {
             let closed = *s == GateState::Closed;
             if closed {
@@ -482,12 +482,12 @@ impl Gate {
         });
     }
 
-    fn discard(&self) {
+    pub(crate) fn discard(&self) {
         self.state.send_replace(GateState::Discard);
     }
 
     /// `true` when the hooks returned and the socket stays; `false` when it was disconnected meanwhile.
-    async fn admitted(&self) -> bool {
+    pub(crate) async fn admitted(&self) -> bool {
         let mut rx = self.state.subscribe();
         loop {
             match *rx.borrow_and_update() {

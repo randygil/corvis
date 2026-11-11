@@ -1302,5 +1302,57 @@ async fn the_handshake_is_the_request_of_the_context() {
     app.close().await.unwrap();
 }
 
+// ------------------------------------------------------------------------------------- the throttler
+
+#[websocket_gateway("/throttled")]
+pub struct ThrottledGateway;
+
+#[handlers]
+impl ThrottledGateway {
+    #[subscribe_message("hit")]
+    fn hit(&self) -> &'static str {
+        "ok"
+    }
+}
+
+#[module(
+    imports = [corvis::ThrottlerModule::for_root(vec![corvis::ThrottlerOptions::new(60_000, 1)])],
+    providers = [ThrottledGateway, Provider::app_guard::<corvis::ThrottlerGuard>()]
+)]
+pub struct ThrottledModule;
+
+#[tokio::test]
+async fn the_throttler_keys_a_socket_io_handler_by_the_client_address_with_trust_proxy() {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let mut app = CorvisFactory::create::<ThrottledModule>().await.unwrap();
+    app.use_websocket_adapter(IoAdapter::new());
+    app.set_trust_proxy(true);
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let connect = |forwarded: &'static str| async move {
+        let mut request = format!("ws://{addr}/socket.io/?EIO=4&transport=websocket").into_client_request().unwrap();
+        request.headers_mut().insert("x-forwarded-for", forwarded.parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        ws.next().await.unwrap().unwrap(); // the open packet
+        ws.send(Message::Text("40/throttled,".into())).await.unwrap();
+        ws.next().await.unwrap().unwrap(); // CONNECT
+        ws
+    };
+    let mut first = connect("203.0.113.1").await;
+    first.send(Message::Text(r#"42/throttled,1["hit"]"#.into())).await.unwrap();
+    assert_eq!(first.next().await.unwrap().unwrap().into_text().unwrap(), r#"43/throttled,1["ok"]"#);
+    // The same address is over its budget.
+    first.send(Message::Text(r#"42/throttled,2["hit"]"#.into())).await.unwrap();
+    let denied = first.next().await.unwrap().unwrap().into_text().unwrap();
+    assert!(denied.starts_with(r#"42/throttled,["exception""#) && denied.contains("429"), "{denied}");
+    // Another address has its own budget.
+    let mut second = connect("203.0.113.2").await;
+    second.send(Message::Text(r#"42/throttled,1["hit"]"#.into())).await.unwrap();
+    assert_eq!(second.next().await.unwrap().unwrap().into_text().unwrap(), r#"43/throttled,1["ok"]"#);
+    app.close().await.unwrap();
+}
+
 #[allow(dead_code)]
 fn unused(_: Msg, _: WsServer) {}

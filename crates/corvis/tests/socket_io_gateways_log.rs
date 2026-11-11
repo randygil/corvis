@@ -67,7 +67,11 @@ async fn selecting_the_adapter_after_init_warns_and_changes_nothing() {
     let mut app = app_of::<PlainModule>().await;
     app.init().await.unwrap();
     app.use_websocket_adapter(IoAdapter::new());
-    assert!(warnings().iter().any(|w| w.contains("use_websocket_adapter() has no effect after the application was initialized")), "{:?}", warnings());
+    assert!(
+        warnings().iter().any(|w| w.contains("use_websocket_adapter() has no effect after the application was initialized")),
+        "{:?}",
+        warnings()
+    );
     // The gateways keep the adapter they were built with: the `ws` one.
     let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
     assert!(tokio_tungstenite::connect_async(format!("ws://{addr}/plain")).await.is_ok());

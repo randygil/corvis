@@ -557,3 +557,99 @@ These settle the open questions and override the design where they differ.
    packages) comes before any runtime code, and whatever it disproves is corrected in the design first.
 10. The security review is mandatory before the merge (connection guards and their bypasses, the `connect` exemption
     in route posture, CORS merging, exception payloads, reserved events).
+
+## Implementation notes
+
+Written while implementing, against `origin/dev` at `d290f1d` (#32, #33 and #34 merged).
+
+### 1.1 The layers as merged, and what changed in this design
+
+- `IoOptions` embeds `EngineOptions` (`IoOptions::engine(EngineOptions)`); `EngineOptions::path`, `cors`,
+  `allowed_origins`, `allow_request` and `max_sessions` exist as designed; `normalized_path()` (the path with exactly one
+  trailing `/`) is crate-private and is the key used to group gateways and to find the options of a path.
+  `IoServer::new` validates the options and returns `Result`; `attach(&HttpServer)` fails on overlapping paths; `of(name)`
+  returns `Result` (namespace rules) and the main namespace `/` always exists.
+- `IoNamespace::on_connection` takes a synchronous `Fn(IoSocket)` (it runs after CONNECT was queued and before the first
+  packet is handled), `use_middleware` an async function. There is no hook for events without a handler and the
+  in-flight accounting is the `inflight` set of the connection task (`client.rs`): this change adds the crate-private
+  `IoNamespace::set_dispatcher` consulted when the socket has no handler of its own for an event (it returns `None` for an
+  event nobody handles); the future it returns joins the same `inflight` set, so the 32-per-connection bound, the
+  arrival order, the charge of the packet and the cancellation when the client leaves are #33's, unchanged. `IoNamespace`
+  and `client.rs` do no extra work when no dispatcher is installed.
+- `Handshake::request()` returns `&Request`; the request is now held in an `Arc` (`request_arc()`, crate-private) so the
+  execution contexts of a socket share it, and `Handshake::ip()` is resolved once (a `OnceLock`): a gateway reads it for
+  every message and resolving it walks `X-Forwarded-For`.
+- Deferred operator errors: #34's `BroadcastOperator` always has a namespace, so an operator of a handle that is not
+  bound yet cannot be one. `IoGatewayServer` holds the namespace in a `OnceLock` of a **weak** reference (the namespace holds
+  the gateway through its dispatcher and hooks, the gateway holds the handle: a strong reference would be a cycle) and
+  returns an `IoGatewayBroadcast`, a thin wrapper with the same chain and terminal operations whose terminal operations return
+  `EmitError::NotStarted` (new variant) when unbound. `namespace()` is `None` before the gateway started and after its
+  server closed.
+- Added to #33's code only what the dispatcher needs: `IoNamespace::set_dispatcher`/`dispatcher`, `Handshake::request_arc`,
+  `IoValue::to_json_binary_as_null`, `EmitError::NotStarted`; nothing of the Engine.IO, parser, budget or adapter code changed.
+- `GatewayAdapterKind` lives in `discovery.rs` (it is needed by `GatewayInfo` and `WsEnhancers`, which are always compiled)
+  and is re-exported from `corvis::websockets`; the adapter an application selected is the hidden
+  `GatewayAdapterChoice` (`Ws`, or `SocketIo(Arc<IoAdapter>)` with the feature) stored in `RouterConfig`.
+- `GatewayInfo` gained `io`, `io_on_*` (the hooks implemented for `IoNamespace` / `IoSocket`) and `server_kind`;
+  `WsEnhancers` gained `socket_kinds`. Without the `socket-io` feature the `hooks::detect!` probes for the Socket.IO hooks
+  always answer `None` (the macro output is the same with and without the feature).
+- Macro: `macro_rules!` forwards a `$x:literal` or `$x:expr` as an invisible group; the option parser looks through it.
+
+### 1.2 The reference, verified against the installed packages
+
+Packages pinned in `parity/socket-io/gateway-reference/package.json` (exact versions, `package-lock.json`):
+`@nestjs/common`, `core`, `websockets`, `platform-express` (needed to build the HTTP application the platform adapter
+attaches to) and `platform-socket.io` 12.4.2, `reflect-metadata` 0.2.2, `rxjs` 7.8.2; `socket.io` 4.8.4 comes with the
+platform package. Read in `web-sockets-controller.js`, `socket-server-provider.js`, `ws-context-creator.js`,
+`ws-proxy.js`, `base-ws-exception-filter.js` and `io-adapter.js`, and checked by the harness scenarios (which replace the
+throwaway script: Node against Node and Node against Corvis agree on every scenario except the two listed differences).
+
+| Item | Result |
+|---|---|
+| 1. One server per path, first gateway's options win | Confirmed (`SocketServerProvider.scanForSocketServer` keys servers by port and path and decorates later gateways with `server.of(namespace)`). |
+| 2. `afterInit` gets the namespace | Confirmed. |
+| 3. `handleConnection` not awaited; handlers bound right after | Confirmed (`createStaticEventHandler` calls the hook and `subscribeMessages` runs next). New in 12.x: a disconnect that happens inside a connection hook is held until every gateway sharing the server handled the connection. |
+| 4. Payload | Corrected: with no argument and no callback the payload is `undefined`, with only a callback `undefined`, with one argument that argument, with several the array (also with a callback: `payload.slice(0, n)`). Corvis maps no argument to `null` (JSON has no `undefined`); the reference app states `body ?? null` where the scenario makes it visible. |
+| 5. Results | Confirmed: `null` / `undefined` send nothing; a truthy `event` is emitted with `socket.emit(event, data)` whether or not there is a callback; anything else calls the callback when there is one. |
+| 6. Guards | Confirmed: a guard that returns `false` raises `WsException("Forbidden resource")`; guards run per message, never for the connection. |
+| 7. Exceptions | **Corrected**: the built-in filter adds `cause: { pattern, data }` by default (`includeCause`), to the payload of a `WsException` with a string and to the unknown-error payload, not to a `WsException` with an object (sent as is); `data` is `undefined` (absent in JSON) when the event had no argument. An `Error` wrapped in a `WsException` is an unknown error. |
+| 8. Two gateways on one namespace | Confirmed: both handlers run. Corvis keeps one (startup error), an expected difference not observable by one client. |
+| `cors: true` | The wire scenario `gateways/wire/cors` compares the preflight and polling headers for a single origin, `true` and a list of origins (a list is not compared against the reference) and a path without `cors`: no difference. |
+
+### 1.3 Corrections applied
+
+- Decision 7 point 1: under the Socket.IO adapter the built-in mapping adds `cause: { pattern: <event>, data: <body> }` to the
+  payloads of a `WsException` with a string, of the denial `Forbidden resource` and of internal errors and panics (still
+  `Internal server error`, without the text). The `ws` adapter keeps its frames. `data` is left out when the event had no
+  argument. A payload built by a filter, or by `WsException::object`, has no `cause`. The cause is the message the client
+  itself sent, bounded by the message limits, and is sent back to that client only.
+- A message whose arguments cannot be converted to JSON (an object with a key the deserializer treats as an instruction, nesting
+  beyond the limit) is answered with `exception` `Invalid message body` and no handler runs.
+
+### Decisions and deviations
+
+- **Hook bound.** The design ran hooks to completion; the review brief for this change asks that a slow or panicking hook cannot
+  hold a slot or a charge for good. `IoAdapter::hook_timeout` (default 30 s, `DEFAULT_HOOK_TIMEOUT`) bounds `after_init`,
+  `handle_connection` and `handle_disconnect`: a connection hook that times out or panics disconnects the socket with
+  `disconnect(true)`; a disconnect hook that times out is abandoned; an `after_init` that panics or times out fails `init()`
+  (it would otherwise abort or hang start-up). A connection hook is dropped, not waited for, when the socket disconnects meanwhile.
+- **The main namespace.** An `IoServer` always has `/`. When no gateway of an Engine.IO path declares `/`, the server refuses it
+  with `CONNECT_ERROR` `Invalid namespace` (a connect middleware), so a client can reach only declared namespaces.
+- **Disconnect hooks run once**, through a flag shared by the `on_disconnect` callback and the case where the socket had already
+  left when the connection handler registered it; the gate is discarded at the same moment, which releases the events that
+  waited for the hooks.
+- **Gate and tasks.** One task per connected socket runs its connection hooks (bounded by `hook_timeout`, dropped when the socket
+  leaves); one short task per disconnected socket runs its disconnect hooks. No map or queue grows with client input: the gate
+  is a `watch` channel in the socket's own extensions.
+- **Connection guards.** The connect middleware is `use_middleware`, so `middleware_timeout` bounds it and a panic answers
+  `Internal server error` (#33's containment). A guard error with a payload that has a string `message` answers that message and
+  the rest of the payload as `data` (so `WsException::new("x")` gives `data: {"status":"error"}`); the design's rule, kept.
+- **Route posture.** `GatewayPosture` carries the Socket.IO view (`io`); the connection is the handler `connect` of the gateway
+  with the global and gateway guards. `UncheckedSurface::IoConnection` is shown in report mode too.
+- **Not done here**: a manual acknowledgement parameter, binary in the gateway pipeline, a public gateway adapter trait,
+  duplicate `ws` gateway paths, the user guide (#38); the examples were not changed (the Socket.IO adapter is opt in and the
+  examples run under the default one).
+
+## Security review
+
+Pending: task 7.3 belongs to the maintainer's session.
