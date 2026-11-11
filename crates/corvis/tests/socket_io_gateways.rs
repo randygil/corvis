@@ -14,7 +14,7 @@ use corvis::Module;
 use corvis::prelude::*;
 use corvis::socket_io::{ConnectError, EmitError, EngineOptions, IoAdapter, IoGatewayServer, IoNamespace, IoOptions, IoSocket};
 use corvis::{
-    OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsClient, WsException, WsResponse, WsServer, WsAdapter, websocket_gateway,
+    OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsAdapter, WsClient, WsException, WsResponse, WsServer, websocket_gateway,
 };
 use engine_support::http;
 use engine_support::io_client::{Msg, Raw};
@@ -946,7 +946,10 @@ async fn overlapping_engine_paths_name_both() {
 #[tokio::test]
 async fn the_same_event_in_two_gateways_of_a_namespace_fails_naming_both_and_the_event() {
     let message = format!("{:#}", init_of::<startup::DupModule>(Some(IoAdapter::new())).await.unwrap_err());
-    assert!(message.contains("DupA") && message.contains("DupB") && message.contains("\"message\"") && message.contains("/dup"), "{message}");
+    assert!(
+        message.contains("DupA") && message.contains("DupB") && message.contains("\"message\"") && message.contains("/dup"),
+        "{message}"
+    );
 }
 
 #[tokio::test]
@@ -1101,7 +1104,7 @@ async fn exceptions_are_events_and_never_answer_the_callback() {
     let mut client = connect(addr, "/chat", None).await;
     let exception = |body: &str| event_packet("/chat", None, &format!(r#"["exception",{body}]"#));
     emit_ack(&mut client, "/chat", r#"["fail-str"]"#).await;
-    assert_eq!(client.recv_text().await, exception(r#"{"status":"error","message":"Room is full"}"#));
+    assert_eq!(client.recv_text().await, exception(r#"{"status":"error","message":"Room is full","cause":{"pattern":"fail-str"}}"#));
     emit_ack(&mut client, "/chat", r#"["fail-obj"]"#).await;
     assert_eq!(client.recv_text().await, exception(r#"{"code":"ROOM_FULL"}"#));
     // An HTTP exception keeps its message (an expected difference from the reference).
@@ -1112,7 +1115,7 @@ async fn exceptions_are_events_and_never_answer_the_callback() {
     for event in ["fail-unknown", "boom"] {
         emit_ack(&mut client, "/chat", &format!(r#"["{event}"]"#)).await;
         let text = client.recv_text().await;
-        assert_eq!(text, exception(r#"{"status":"error","message":"Internal server error"}"#));
+        assert_eq!(text, exception(&format!(r#"{{"status":"error","message":"Internal server error","cause":{{"pattern":"{event}"}}}}"#)));
         assert!(!text.contains("secret"));
     }
     // The connection survives a panic: the next event works.
@@ -1129,7 +1132,7 @@ async fn guards_pipes_interceptors_and_filters_run_in_the_gateway_pipeline() {
     emit_ack(&mut denied, "/rules", r#"["guarded"]"#).await;
     assert_eq!(
         denied.recv_text().await,
-        event_packet("/rules", None, r#"["exception",{"status":"error","message":"Forbidden resource"}]"#)
+        event_packet("/rules", None, r#"["exception",{"status":"error","message":"Forbidden resource","cause":{"pattern":"guarded"}}]"#)
     );
     assert!(!log.entries().contains(&"rules-handler".to_string()));
     // With a token: the handler runs, the context was a WebSocket one with the gateway as class.
@@ -1215,8 +1218,16 @@ async fn hooks_run_in_order_and_disconnect_exactly_once() {
     expect_marker(&mut client, "/chat").await;
     client.close().await;
     log.wait_for("disconnect:rooms=0").await;
-    let chat: Vec<String> = log.entries().into_iter().filter(|e| e.starts_with("init:") || e.starts_with("connection:") || e.starts_with("disconnect:")).collect();
-    assert_eq!(chat, [r#"init:/chat"#, r#"connection:{"token":"t"}"#, "disconnect:rooms=0"], "init, then the connection (it saw the handshake auth), then one disconnect that reads no rooms");
+    let chat: Vec<String> = log
+        .entries()
+        .into_iter()
+        .filter(|e| e.starts_with("init:") || e.starts_with("connection:") || e.starts_with("disconnect:"))
+        .collect();
+    assert_eq!(
+        chat,
+        [r#"init:/chat"#, r#"connection:{"token":"t"}"#, "disconnect:rooms=0"],
+        "init, then the connection (it saw the handshake auth), then one disconnect that reads no rooms"
+    );
     app.close().await.unwrap();
 }
 

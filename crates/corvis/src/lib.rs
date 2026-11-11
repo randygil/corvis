@@ -293,6 +293,8 @@ pub use websockets::{
 /// Everything you need in a typical application: `use corvis::prelude::*;`.
 pub mod prelude {
     pub use crate::MiddlewareConsumer;
+    #[cfg(feature = "socket-io")]
+    pub use crate::socket_io::{IoAdapter, IoGatewayServer};
     pub use crate::z::{self, ZodSchema, ZodValidationPipe};
     pub use crate::{
         ArgumentMetadata, ArgumentsHost, BadRequestException, BaseExceptionFilter, BeforeApplicationShutdown, Body, CACHE_KEY_METADATA,
@@ -314,8 +316,6 @@ pub mod prelude {
     #[cfg(feature = "compression")]
     pub use crate::{CompressionOptions, should_compress};
     pub use crate::{HttpAdapterHost, StreamableFileOptions};
-    #[cfg(feature = "socket-io")]
-    pub use crate::socket_io::{IoAdapter, IoGatewayServer};
     pub use async_trait::async_trait;
     pub use serde_json::Value;
     pub use std::sync::Arc;

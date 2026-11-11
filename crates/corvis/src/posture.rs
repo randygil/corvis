@@ -1238,16 +1238,14 @@ mod tests {
             },
         ];
         for known in [true, false] {
-            let report = RoutePostureReport::new(Vec::new(), Vec::new()).with_unchecked(gateways.iter().map(|g| g.unchecked_surface(known)).collect());
+            let report = RoutePostureReport::new(Vec::new(), Vec::new())
+                .with_unchecked(gateways.iter().map(|g| g.unchecked_surface(known)).collect());
             let (text, _) = render_report_mode(&report, ReportFormat::Text, None);
             assert!(
                 text.contains("Socket.IO connection of ChatGateway on namespace /chat at /socket.io (connection guards off)"),
                 "{text}"
             );
-            assert!(
-                text.contains("Socket.IO connection of MainGateway on namespace / at /realtime (connection guards on)"),
-                "{text}"
-            );
+            assert!(text.contains("Socket.IO connection of MainGateway on namespace / at /realtime (connection guards on)"), "{text}");
             let json = serde_json::to_value(&report).unwrap();
             assert_eq!(
                 json["unchecked"][0],

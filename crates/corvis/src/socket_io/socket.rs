@@ -172,7 +172,15 @@ struct HandshakeData {
 
 impl Handshake {
     pub(crate) fn new(auth: Value, request: Request, charge: Option<Held>) -> Self {
-        Handshake { data: Arc::new(HandshakeData { auth, request: Arc::new(request), ip: std::sync::OnceLock::new(), issued_at: SystemTime::now(), _charge: charge }) }
+        Handshake {
+            data: Arc::new(HandshakeData {
+                auth,
+                request: Arc::new(request),
+                ip: std::sync::OnceLock::new(),
+                issued_at: SystemTime::now(),
+                _charge: charge,
+            }),
+        }
     }
 
     /// The `auth` object of the CONNECT packet (`{}` when the client sent none).

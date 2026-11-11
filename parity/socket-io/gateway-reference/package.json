@@ -1,0 +1,18 @@
+{
+  "name": "corvis-gateway-reference",
+  "private": true,
+  "type": "module",
+  "description": "Test-only reference application of the Socket.IO gateway scenarios: the original framework's core, WebSocket and Socket.IO platform packages, pinned.",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@nestjs/common": "12.4.2",
+    "@nestjs/core": "12.4.2",
+    "@nestjs/platform-express": "12.4.2",
+    "@nestjs/platform-socket.io": "12.4.2",
+    "@nestjs/websockets": "12.4.2",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  }
+}

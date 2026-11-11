@@ -1,21 +1,36 @@
 // Runs every scenario against two targets, compares what the clients observed and exits non-zero on a difference.
 //
-//   node run.mjs [--corvis <url> --corvis-capabilities engine-io,socket-io] [--scenario <substring>]
+//   node run.mjs [--corvis <url> --corvis-capabilities engine-io,socket-io] [--corvis-gateways <url>] [--scenario <substring>]
 //
 // Without --corvis the second target is another Node reference server (the harness then checks itself).
+// `--corvis-gateways` is the Corvis application of the gateway scenarios (capability `gateways`); the scenarios that
+// require it are reported as skipped on a Corvis target without it, and, when `gateway-reference/` is not installed,
+// as skipped on Node too (with `CORVIS_NODE_DIFF=1` that is an error that names `npm ci`).
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { diff, evaluate, formatReport, loadExpected } from "./lib/compare.mjs";
 import { normalize } from "./lib/normalize.mjs";
-import { ALL_CAPABILITIES, ROOT, checkInstalledVersions, corvisTarget, modeOf, plan, runScenario, startNodeTarget } from "./lib/targets.mjs";
+import {
+  ALL_CAPABILITIES,
+  GATEWAY_NPM_CI_HINT,
+  ROOT,
+  checkGatewayReference,
+  checkInstalledVersions,
+  corvisTarget,
+  modeOf,
+  plan,
+  runScenario,
+  startNodeTarget,
+} from "./lib/targets.mjs";
 
 function parseArgs(argv) {
-  const options = { corvis: null, capabilities: [], filter: null };
+  const options = { corvis: null, capabilities: [], corvisGateways: null, filter: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--corvis") options.corvis = argv[++i];
     else if (arg === "--corvis-capabilities") options.capabilities = (argv[++i] ?? "").split(",").filter(Boolean);
+    else if (arg === "--corvis-gateways") options.corvisGateways = argv[++i];
     else if (arg === "--scenario") options.filter = argv[++i];
     else throw new Error(`unknown argument ${arg}`);
   }
@@ -69,12 +84,14 @@ async function main() {
   try {
     // The reference servers of a mode (socket.io, engine.io) start when the first scenario of that mode runs.
     const corvis = options.corvis ? corvisTarget(options.corvis, options.capabilities) : null;
+    const gatewayCorvis = options.corvisGateways ? corvisTarget(options.corvisGateways, ["engine-io", "socket-io", "gateways"]) : null;
+    const secondOfMode = (mode) => (mode === "gateways" && gatewayCorvis ? gatewayCorvis : corvis);
     const byMode = new Map();
     async function targetsOf(mode) {
       if (!byMode.has(mode)) {
         const node = await startNodeTarget("node", { mode });
         started.push(node);
-        let second = corvis;
+        let second = secondOfMode(mode);
         if (!second) {
           second = await startNodeTarget("node-2", { mode });
           started.push(second);
@@ -83,12 +100,22 @@ async function main() {
       }
       return byMode.get(mode);
     }
-    const secondFor = corvis ?? { name: "node-2", capabilities: ALL_CAPABILITIES };
+    const secondFor = (scenario) => secondOfMode(modeOf(scenario)) ?? { name: "node-2", capabilities: ALL_CAPABILITIES };
+    const gatewayProblems = checkGatewayReference();
 
     const results = [];
     let failed = false;
     for (const scenario of scenarios) {
-      const where = plan(scenario, { second: secondFor });
+      if (modeOf(scenario) === "gateways" && gatewayProblems.length > 0) {
+        if (process.env.CORVIS_NODE_DIFF === "1") {
+          failed = true;
+          line(scenario.name, "all", `FAILED: the gateway reference is not installed (${GATEWAY_NPM_CI_HINT}): ${gatewayProblems.join("; ")}`);
+        } else {
+          line(scenario.name, "all", `skipped (the gateway reference is not installed: ${GATEWAY_NPM_CI_HINT})`);
+        }
+        continue;
+      }
+      const where = plan(scenario, { second: secondFor(scenario) });
       for (const skip of where.skipped) {
         line(scenario.name, skip.target, `skipped (${skip.reason})`);
       }
@@ -118,7 +145,7 @@ async function main() {
     }
 
     const outcome = evaluate(results, expected);
-    const names = results[0]?.names ?? { left: "node", right: secondFor.name };
+    const names = results[0]?.names ?? { left: "node", right: corvis?.name ?? "node-2" };
     const report = formatReport(outcome, names);
     if (report) console.log(report);
     const compared = results.length;

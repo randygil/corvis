@@ -41,7 +41,8 @@ fn ungroup(mut expr: &Expr) -> &Expr {
 }
 
 fn string_literal(value: &Expr, key: &str) -> syn::Result<String> {
-    lit_str(ungroup(value)).ok_or_else(|| syn::Error::new(value.span(), format!("`{key}` of #[websocket_gateway] expects a string literal")))
+    lit_str(ungroup(value))
+        .ok_or_else(|| syn::Error::new(value.span(), format!("`{key}` of #[websocket_gateway] expects a string literal")))
 }
 
 fn check_namespace(namespace: &str, span: proc_macro2::Span) -> syn::Result<()> {
@@ -153,7 +154,9 @@ fn cors_tokens(cors: &Option<Cors>) -> TokenStream {
         None => quote!(::std::option::Option::None),
         Some(Cors::Any) => quote!(::std::option::Option::Some(::corvis::discovery::CorsDecl::Any)),
         Some(Cors::Origins(list)) => {
-            quote!(::std::option::Option::Some(::corvis::discovery::CorsDecl::Origins(::std::vec![#(::std::string::String::from(#list)),*])))
+            quote!(::std::option::Option::Some(::corvis::discovery::CorsDecl::Origins(
+                ::std::vec![#(::std::string::String::from(#list)),*]
+            )))
         }
     }
 }
@@ -221,8 +224,7 @@ pub fn expand(args: TokenStream, mut item: ItemStruct) -> syn::Result<TokenStrea
         });
         if is_server {
             let ty = &field.ty;
-            let attr: syn::Attribute =
-                syn::parse_quote!(#[init(<#ty as ::corvis::websockets::GatewayServerField>::__corvis_unbound())]);
+            let attr: syn::Attribute = syn::parse_quote!(#[init(<#ty as ::corvis::websockets::GatewayServerField>::__corvis_unbound())]);
             field.attrs.push(attr);
             if server_field.is_none() {
                 let access = match &field.ident {

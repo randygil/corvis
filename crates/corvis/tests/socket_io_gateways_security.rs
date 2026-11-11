@@ -13,7 +13,10 @@ use std::time::Duration;
 use corvis::Module;
 use corvis::prelude::*;
 use corvis::socket_io::{ConnectError, EngineOptions, IoAdapter, IoGatewayServer, IoNamespace, IoOptions, IoSocket};
-use corvis::{OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, RoutePostureOptions, UncheckedSurface, WsException, WsResponse, websocket_gateway};
+use corvis::{
+    OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, RoutePostureOptions, UncheckedSurface, WsException, WsResponse,
+    websocket_gateway,
+};
 use engine_support::http;
 use engine_support::io_client::Raw;
 use tokio::sync::Notify;
@@ -409,7 +412,10 @@ async fn connection_guards_are_off_by_default_and_only_messages_are_denied() {
     let mut client = connect(addr, "/rules", None).await;
     log.wait_for("rules-connection").await;
     client.send(&event_packet("/rules", Some(1), r#"["guarded"]"#)).await;
-    assert_eq!(client.recv_text().await, event_packet("/rules", None, r#"["exception",{"status":"error","message":"Forbidden resource"}]"#));
+    assert_eq!(
+        client.recv_text().await,
+        event_packet("/rules", None, r#"["exception",{"status":"error","message":"Forbidden resource","cause":{"pattern":"guarded"}}]"#)
+    );
     assert!(!log.entries().iter().any(|e| e.contains("handler=connect")), "{:?}", log.entries());
     app.close().await.unwrap();
 }
@@ -441,8 +447,7 @@ async fn the_context_of_a_connection_guard() {
     try_connect(&mut client, "/rules", r#"{"token":"t"}"#).await;
     let entry = log.entries().into_iter().find(|e| e.starts_with("guard:")).expect("the guard ran for the connection");
     assert_eq!(
-        entry,
-        r#"guard:type=ws:class=RulesGateway:handler=connect:data=null:client=true:path=/socket.io/:meta="rules-metadata""#,
+        entry, r#"guard:type=ws:class=RulesGateway:handler=connect:data=null:client=true:path=/socket.io/:meta="rules-metadata""#,
         "a WebSocket context: the socket as client, the handshake as request, null data, the gateway as class, a handler named connect with the gateway's metadata"
     );
     app.close().await.unwrap();
@@ -481,7 +486,11 @@ async fn handler_level_guards_do_not_run_for_the_connection() {
     client.send(&event_packet("/handler-guard", Some(2), r#"["secret"]"#)).await;
     assert_eq!(
         client.recv_text().await,
-        event_packet("/handler-guard", None, r#"["exception",{"status":"error","message":"Forbidden resource"}]"#)
+        event_packet(
+            "/handler-guard",
+            None,
+            r#"["exception",{"status":"error","message":"Forbidden resource","cause":{"pattern":"secret"}}]"#
+        )
     );
     app.close().await.unwrap();
 }
@@ -529,7 +538,10 @@ async fn a_panicking_guard_or_filter_never_reaches_the_client_as_text_and_the_co
     let mut client = connect(addr, "/panicky", None).await;
     client.send(&event_packet("/panicky", Some(1), r#"["hello"]"#)).await;
     let text = client.recv_text().await;
-    assert_eq!(text, event_packet("/panicky", None, r#"["exception",{"status":"error","message":"Internal server error"}]"#));
+    assert_eq!(
+        text,
+        event_packet("/panicky", None, r#"["exception",{"status":"error","message":"Internal server error","cause":{"pattern":"hello"}}]"#)
+    );
     assert!(!text.contains("secret"));
     // A filter that panics.
     let mut client = connect(addr, "/filtered", None).await;
@@ -736,20 +748,30 @@ async fn the_connection_is_listed_as_not_checked_with_its_namespace_path_and_whe
     let report = app.route_posture().unwrap();
     // A middleware registered in `after_init` is not claimed as protection.
     assert!(
-        report.unchecked().iter().any(|s| matches!(s, UncheckedSurface::IoConnection { namespace, path, gateway, guard_connections: false }
+        report
+            .unchecked()
+            .iter()
+            .any(|s| matches!(s, UncheckedSurface::IoConnection { namespace, path, gateway, guard_connections: false }
             if namespace == "/hooked" && path == "/socket.io" && gateway == "Hooked")),
         "{:?}",
         report.unchecked()
     );
     let mut app = posture::app_of::<posture::HookedModule>(IoAdapter::new().guard_connections(true), RoutePostureOptions::enforce()).await;
     app.init().await.unwrap();
-    assert!(app.route_posture().unwrap().unchecked().iter().any(|s| matches!(s, UncheckedSurface::IoConnection { guard_connections: true, .. })));
+    assert!(
+        app.route_posture()
+            .unwrap()
+            .unchecked()
+            .iter()
+            .any(|s| matches!(s, UncheckedSurface::IoConnection { guard_connections: true, .. }))
+    );
 }
 
 #[tokio::test]
 async fn with_connection_guards_the_connection_is_an_enforced_entry_named_connect() {
     // Handler-level guards only: the connection is the one entry that fails.
-    let mut app = posture::app_of::<posture::HandlerGuardedModule>(IoAdapter::new().guard_connections(true), RoutePostureOptions::enforce()).await;
+    let mut app =
+        posture::app_of::<posture::HandlerGuardedModule>(IoAdapter::new().guard_connections(true), RoutePostureOptions::enforce()).await;
     let message = format!("{:#}", app.init().await.unwrap_err());
     assert!(message.contains("connect") && message.contains("/chat") && !message.contains("HandlerGuarded::a"), "{message}");
     // The same gateway without connection guards: nothing to enforce, and it starts.
@@ -758,7 +780,10 @@ async fn with_connection_guards_the_connection_is_an_enforced_entry_named_connec
     // A gateway-level guard, a public gateway, or an exemption accepts it.
     for module in ["guarded", "public"] {
         let mut app = match module {
-            "guarded" => posture::app_of::<posture::GatewayGuardedModule>(IoAdapter::new().guard_connections(true), RoutePostureOptions::enforce()).await,
+            "guarded" => {
+                posture::app_of::<posture::GatewayGuardedModule>(IoAdapter::new().guard_connections(true), RoutePostureOptions::enforce())
+                    .await
+            }
             _ => posture::app_of::<posture::PublicModule>(IoAdapter::new().guard_connections(true), RoutePostureOptions::enforce()).await,
         };
         app.init().await.unwrap();

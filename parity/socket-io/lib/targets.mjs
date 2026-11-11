@@ -5,10 +5,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const ALL_CAPABILITIES = ["engine-io", "socket-io", "redis"];
+export const ALL_CAPABILITIES = ["engine-io", "socket-io", "redis", "gateways"];
 export const STEP_TIMEOUT_MS = 10_000;
 
 const NPM_CI_HINT = "run `npm ci` in parity/socket-io/";
+export const GATEWAY_ROOT = join(ROOT, "gateway-reference");
+export const GATEWAY_NPM_CI_HINT = "run `npm ci` in parity/socket-io/gateway-reference/";
 
 /**
  * Refuses stale installs: the installed `socket.io` and `engine.io` must equal the versions pinned in package.json.
@@ -26,6 +28,32 @@ export function checkInstalledVersions(root = ROOT) {
     const installed = JSON.parse(readFileSync(file, "utf8")).version;
     if (installed !== pinned[name]) {
       problems.push(`${name} ${installed} is installed but package.json pins ${pinned[name]} (${NPM_CI_HINT})`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * The gateway reference (`gateway-reference/`) is its own package: its pinned packages must be installed at the pinned
+ * versions for a scenario that requires the capability `gateways`. Returns the problems (empty when all match).
+ */
+export function checkGatewayReference(root = GATEWAY_ROOT) {
+  let pinned;
+  try {
+    pinned = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).dependencies ?? {};
+  } catch (error) {
+    return [`cannot read ${join(root, "package.json")}: ${error.message}`];
+  }
+  const problems = [];
+  for (const [name, version] of Object.entries(pinned)) {
+    const file = join(root, "node_modules", name, "package.json");
+    if (!existsSync(file)) {
+      problems.push(`${name} is not installed (${GATEWAY_NPM_CI_HINT})`);
+      continue;
+    }
+    const installed = JSON.parse(readFileSync(file, "utf8")).version;
+    if (installed !== version) {
+      problems.push(`${name} ${installed} is installed but gateway-reference/package.json pins ${version} (${GATEWAY_NPM_CI_HINT})`);
     }
   }
   return problems;
@@ -50,22 +78,25 @@ function hookCleanup() {
   }
 }
 
-export const MODES = ["socket-io", "engine-io"];
+export const MODES = ["socket-io", "engine-io", "gateways"];
 
 /**
  * The reference server a scenario runs against. A scenario that needs `socket-io` runs against the `socket.io` server
  * (`reference/socket-server.mjs`); one that only needs `engine-io` runs against `engine.io` attached to a plain HTTP
- * server (`reference/engine-server.mjs`), the Engine.IO reference mode.
+ * server (`reference/engine-server.mjs`), the Engine.IO reference mode; one that needs `gateways` runs against the
+ * reference gateway application (`gateway-reference/gateway-server.mjs`).
  */
 export function modeOf(scenario) {
-  return (scenario.requires ?? []).includes("socket-io") ? "socket-io" : "engine-io";
+  const requires = scenario.requires ?? [];
+  if (requires.includes("gateways")) return "gateways";
+  return requires.includes("socket-io") ? "socket-io" : "engine-io";
 }
 
 /** Starts a Node reference server and resolves once it has reported its port. */
 export function startNodeTarget(name, { ackDelay = 0, root = ROOT, mode = "socket-io", args: extraArgs = [] } = {}) {
   hookCleanup();
-  const script = mode === "engine-io" ? "engine-server.mjs" : "socket-server.mjs";
-  const args = [join(root, "reference", script)];
+  const script = mode === "gateways" ? join("gateway-reference", "gateway-server.mjs") : join("reference", mode === "engine-io" ? "engine-server.mjs" : "socket-server.mjs");
+  const args = [join(root, script)];
   if (ackDelay > 0) args.push("--ack-delay", String(ackDelay));
   args.push(...extraArgs);
   const child = spawn(process.execPath, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });

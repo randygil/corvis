@@ -838,7 +838,17 @@ pub(crate) async fn compile_gateways(container: &Arc<Container>, cfg: &RouterCon
             let server = info.server.as_ref().and_then(|s| s.downcast_ref::<WsServer>().cloned()).unwrap_or_default();
             let class_target = Arc::new(Target { name: p.name.clone(), metadata: info.enhancers.metadata.iter().cloned().collect() });
             let module_ref = ModuleRef { container: container.clone(), module: module.id };
-            out.push(GatewayRuntime { name: p.name.clone(), server, handlers, info, class_target, module_ref, kind, global_guards, gateway_guards });
+            out.push(GatewayRuntime {
+                name: p.name.clone(),
+                server,
+                handlers,
+                info,
+                class_target,
+                module_ref,
+                kind,
+                global_guards,
+                gateway_guards,
+            });
         }
     }
     Ok(out)
@@ -874,10 +884,8 @@ pub(crate) fn posture_gateways<'a>(
     gateways
         .into_iter()
         .map(|g| {
-            let io = (g.kind == GatewayAdapterKind::SocketIo).then(|| crate::posture::IoConnectionPosture {
-                engine_path: g.io_path().to_string(),
-                guard_connections,
-            });
+            let io = (g.kind == GatewayAdapterKind::SocketIo)
+                .then(|| crate::posture::IoConnectionPosture { engine_path: g.io_path().to_string(), guard_connections });
             let mut handlers: Vec<crate::posture::GatewayHandlerPosture> = g
                 .handlers
                 .iter()
@@ -1107,13 +1115,26 @@ async fn invoke_handler(
 /// The `data` of the `exception` frame for an error: the first handler or gateway filter that
 /// catches it answers, otherwise the built-in mapping. `None` means a filter answered by itself
 /// (empty body) and nothing is sent. Internal errors are logged only when the built-in mapping
-/// answers.
-pub(crate) async fn exception_data(gateway: &GatewayRuntime, handler: &CompiledWsHandler, ctx: &ExecutionContext, e: HttpException) -> Option<Value> {
+/// answers. `cause` (`{ pattern, data }`, the message that raised the error) is added to the payloads the built-in
+/// mapping builds, except to the object of a `WsException::object`: the base WebSocket exception filter of the original
+/// framework does so (its `includeCause` default), and the Socket.IO adapter follows it.
+pub(crate) async fn exception_data(
+    gateway: &GatewayRuntime,
+    handler: &CompiledWsHandler,
+    ctx: &ExecutionContext,
+    e: HttpException,
+    cause: Option<Value>,
+) -> Option<Value> {
     let builtin = |e: &HttpException| {
         if e.is_internal() {
             Logger::new("WsExceptionsHandler").error(format!("{}: {}", gateway.name, e.message()));
         }
-        Some(exception_payload(e))
+        let mut payload = exception_payload(e);
+        let object_error = WsException::get_error(e).is_some_and(Value::is_object);
+        if let (Some(cause), Value::Object(map), false) = (&cause, &mut payload, object_error) {
+            map.insert("cause".to_string(), cause.clone());
+        }
+        Some(payload)
     };
     let log = Logger::new("WsExceptionsHandler");
     // A panicking `catches` counts as "does not catch" and is logged.
@@ -1204,7 +1225,7 @@ async fn dispatch(
         }
         Ok(None) => {}
         Err(e) => {
-            if let Some(data) = exception_data(&gateway, &handler, &ctx, e).await {
+            if let Some(data) = exception_data(&gateway, &handler, &ctx, e, None).await {
                 client.send_text(with_id(json!({ "event": "exception", "data": data })).to_string());
             }
         }
@@ -1219,7 +1240,12 @@ async fn run_hook(gateway: &GatewayRuntime, name: &str, hook: &crate::discovery:
 }
 
 /// The same for any handle: `arg` is what the hook downcasts.
-pub(crate) async fn run_hook_with(gateway: &str, name: &str, hook: &crate::discovery::GatewayHook, arg: Arc<dyn Any + Send + Sync>) -> bool {
+pub(crate) async fn run_hook_with(
+    gateway: &str,
+    name: &str,
+    hook: &crate::discovery::GatewayHook,
+    arg: Arc<dyn Any + Send + Sync>,
+) -> bool {
     match AssertUnwindSafe(async { hook(arg).await }).catch_unwind().await {
         Ok(()) => true,
         Err(_) => {

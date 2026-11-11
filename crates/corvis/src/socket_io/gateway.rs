@@ -369,7 +369,9 @@ fn plan(gateways: &[&GatewayRuntime], adapter: &IoAdapter) -> Result<Vec<ServerP
     for (i, (a, _)) in groups.iter().enumerate() {
         for (b, _) in &groups[i + 1..] {
             if a.starts_with(b.as_str()) || b.starts_with(a.as_str()) {
-                return fail(format!("the Engine.IO paths {a} and {b} overlap: a path that is a prefix of another would take its requests"));
+                return fail(format!(
+                    "the Engine.IO paths {a} and {b} overlap: a path that is a prefix of another would take its requests"
+                ));
             }
         }
     }
@@ -580,6 +582,7 @@ async fn dispatch_event(
     gateway: Arc<GatewayRuntime>,
     handler: Arc<CompiledWsHandler>,
     socket: IoSocket,
+    event: String,
     args: Args,
     ack: Option<AckSender>,
 ) {
@@ -595,6 +598,7 @@ async fn dispatch_event(
             return;
         }
     };
+    let no_arguments = args.is_empty();
     drop(args);
     let client: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
     let ctx = ExecutionContext::for_ws(
@@ -628,7 +632,14 @@ async fn dispatch_event(
         },
         Ok(None) => {}
         Err(e) => {
-            if let Some(data) = exception_data(&gateway, &handler, &ctx, e).await {
+            // The message that raised the error, as the reference's `cause`: `data` is left out when the event had
+            // no argument, where the reference has `undefined`.
+            let mut cause = serde_json::Map::new();
+            cause.insert("pattern".to_string(), Value::String(event));
+            if !no_arguments {
+                cause.insert("data".to_string(), ctx.switch_to_ws().get_data().cloned().unwrap_or(Value::Null));
+            }
+            if let Some(data) = exception_data(&gateway, &handler, &ctx, e, Some(Value::Object(cause))).await {
                 let _ = socket.emit("exception", (data,));
             }
         }
@@ -639,7 +650,7 @@ fn dispatcher(runtime: Arc<NamespaceRuntime>) -> super::namespace::Dispatcher {
     Arc::new(move |socket: IoSocket, event: &str, args: Args, ack: Option<AckSender>| {
         let (index, handler) = runtime.events.get(event)?;
         let gateway = runtime.gateways[*index].clone();
-        Some(dispatch_event(gateway, handler.clone(), socket, args, ack).boxed())
+        Some(dispatch_event(gateway, handler.clone(), socket, event.to_string(), args, ack).boxed())
     })
 }
 
@@ -824,9 +835,7 @@ async fn build(
         }
         let mut to_init: Vec<(IoNamespace, Arc<GatewayRuntime>)> = Vec::new();
         for (name, members) in namespaces {
-            let namespace = io
-                .of(&name)
-                .map_err(|e| DiError::Other(format!("{}: {e}", gateways[members[0]].name)))?;
+            let namespace = io.of(&name).map_err(|e| DiError::Other(format!("{}: {e}", gateways[members[0]].name)))?;
             let members: Vec<Arc<GatewayRuntime>> = members.iter().map(|&i| gateways[i].clone()).collect();
             let mut events = HashMap::new();
             for (index, gateway) in members.iter().enumerate() {
@@ -838,7 +847,8 @@ async fn build(
                 .iter()
                 .map(|g| Arc::new(Target { name: "connect".to_string(), metadata: g.class_target.metadata.clone() }))
                 .collect();
-            let runtime = Arc::new(NamespaceRuntime { gateways: members.clone(), events, connect_targets, hook_timeout: adapter.hook_timeout });
+            let runtime =
+                Arc::new(NamespaceRuntime { gateways: members.clone(), events, connect_targets, hook_timeout: adapter.hook_timeout });
             namespace.set_dispatcher(dispatcher(runtime.clone()));
             if adapter.guard_connections {
                 let guards = runtime.clone();
@@ -864,7 +874,10 @@ async fn build(
                 Ok(true) => {}
                 Ok(false) => return fail(format!("{}: after_init panicked", gateway.name)),
                 Err(_) => {
-                    return fail(format!("{}: after_init took longer than {:?} (IoAdapter::hook_timeout)", gateway.name, adapter.hook_timeout));
+                    return fail(format!(
+                        "{}: after_init took longer than {:?} (IoAdapter::hook_timeout)",
+                        gateway.name, adapter.hook_timeout
+                    ));
                 }
             }
         }
@@ -950,8 +963,13 @@ mod tests {
         assert!(server.namespace().is_none());
         assert_eq!(server.emit("news", ("x",)).await, Err(EmitError::NotStarted));
         assert_eq!(server.to("room").emit("news", ()).await, Err(EmitError::NotStarted));
-        assert_eq!(server.to("a").except("b").within("c").local().timeout(Duration::from_secs(1)).emit("n", ()).await, Err(EmitError::NotStarted));
-        assert!(matches!(server.emit_with_ack("news", ()).await, Err(e) if matches!(e.kind(), super::super::BroadcastAckErrorKind::Emit(EmitError::NotStarted))));
+        assert_eq!(
+            server.to("a").except("b").within("c").local().timeout(Duration::from_secs(1)).emit("n", ()).await,
+            Err(EmitError::NotStarted)
+        );
+        assert!(
+            matches!(server.emit_with_ack("news", ()).await, Err(e) if matches!(e.kind(), super::super::BroadcastAckErrorKind::Emit(EmitError::NotStarted)))
+        );
         assert!(matches!(server.fetch_sockets().await, Err(EmitError::NotStarted)));
         assert_eq!(server.sockets_join("r").await, Err(EmitError::NotStarted));
         assert_eq!(server.sockets_leave("r").await, Err(EmitError::NotStarted));
