@@ -6,8 +6,9 @@
 // - inherit:  license, authors, repository, homepage, edition and rust-version come from [workspace.package]
 // - deps:     every dependency on another workspace crate has a version requirement (not `*`), and one on a
 //             proc-macro crate is pinned with `=` to the version of both crates
-// - shared:   a crates.io dependency that two or more published crates declare (in any dependency section) comes from
-//             [workspace.dependencies] in every one of them (`name = { workspace = true }`, extra features allowed)
+// - shared:   a crates.io dependency declared more than once (by two published crates, or in two dependency sections
+//             of one) comes from [workspace.dependencies] everywhere (`name = { workspace = true }`, extra features
+//             allowed), so its version is written in one place
 //
 // Run from anywhere: `node scripts/check-crate-files.mjs`. Prints one line per problem and exits 1 if there is any.
 import { execFileSync } from 'node:child_process'
@@ -90,22 +91,22 @@ for (const pkg of published) {
 // `name = ...` line of a dependency section, or per `[dependencies.name]` table.
 const declarations = new Map() // dependency -> [{ crate, inherited }]
 for (const pkg of published) {
-  for (const { name, inherited } of dependencyDeclarations(fs.readFileSync(pkg.manifest_path, 'utf8'))) {
+  for (const { name, section, inherited } of dependencyDeclarations(fs.readFileSync(pkg.manifest_path, 'utf8'))) {
     if (byName.has(name)) continue // workspace crates are checked above
     if (!declarations.has(name)) declarations.set(name, [])
-    declarations.get(name).push({ crate: pkg.name, inherited })
+    declarations.get(name).push({ crate: pkg.name, section, inherited })
   }
 }
 for (const [dep, decls] of [...declarations].sort(([a], [b]) => a.localeCompare(b))) {
-  const crates = [...new Set(decls.map((d) => d.crate))]
-  if (crates.length < 2) continue
+  if (decls.length < 2) continue
   const own = [...new Set(decls.filter((d) => !d.inherited).map((d) => d.crate))]
   if (own.length) {
-    bad(own.join(', '), `dependency \`${dep}\` is declared by ${crates.join(', ')}; declare it once in [workspace.dependencies] and use \`${dep} = { workspace = true }\``)
+    const where = decls.map((d) => `${d.crate} [${d.section}]`).join(', ')
+    bad(own.join(', '), `dependency \`${dep}\` is declared in ${where}; declare it once in [workspace.dependencies] and use \`${dep} = { workspace = true }\``)
   }
 }
 
-/** The dependencies a manifest declares, each with whether it comes from [workspace.dependencies]. */
+/** The dependencies a manifest declares, each with its section and whether it comes from [workspace.dependencies]. */
 function dependencyDeclarations(manifest) {
   const out = []
   let section = ''
@@ -117,7 +118,7 @@ function dependencyDeclarations(manifest) {
       table = null
       const named = /^(?:target\..+\.)?(?:dev-|build-)?dependencies\.([A-Za-z0-9_-]+)$/.exec(section)
       if (named) {
-        table = { name: named[1], inherited: false }
+        table = { name: named[1], section: section.slice(0, -named[1].length - 1), inherited: false }
         out.push(table)
       }
       continue
@@ -128,7 +129,7 @@ function dependencyDeclarations(manifest) {
     }
     if (!/^(?:target\..+\.)?(?:dev-|build-)?dependencies$/.test(section)) continue
     const entry = /^\s*([A-Za-z0-9_-]+)(\.workspace)?\s*=\s*(.*)$/.exec(line)
-    if (entry) out.push({ name: entry[1], inherited: Boolean(entry[2]) || /\bworkspace\s*=\s*true\b/.test(entry[3]) })
+    if (entry) out.push({ name: entry[1], section, inherited: Boolean(entry[2]) || /\bworkspace\s*=\s*true\b/.test(entry[3]) })
   }
   return out
 }

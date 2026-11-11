@@ -33,9 +33,12 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 anyhow = "1"
-# Shared by two or more published crates: declared once (scripts/check-crate-files.mjs checks it). A crate that needs
-# more adds features at its use site, for example `chrono = { workspace = true, features = ["serde"] }`.
+# Shared by two or more published crates, or by two dependency sections of one: declared once
+# (scripts/check-crate-files.mjs checks it). A crate that needs more adds features at its use site, for example
+# `chrono = { workspace = true, features = ["serde"] }`.
+brotli = "9"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+flate2 = "1"
 futures = "0.3"
 proc-macro2 = "1"
 proptest = "1"

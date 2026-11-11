@@ -50,8 +50,8 @@ memchr = "2"
 memory-stats = "1"
 tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring", "tls12"] }
 webpki-roots = { version = "0.26", optional = true }
-flate2 = { version = "1", optional = true }
-brotli = { version = "9", optional = true }
+flate2 = { workspace = true, optional = true }
+brotli = { workspace = true, optional = true }
 argon2 = { version = "0.5", optional = true }
 bcrypt = { version = "0.17", optional = true }
 subtle = { version = "2", optional = true }
@@ -81,5 +81,5 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
 tokio-tungstenite = { workspace = true }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
-flate2 = "1"
-brotli = "9"
+flate2 = { workspace = true }
+brotli = { workspace = true }

@@ -216,8 +216,8 @@ done
 The check needs no build. It fails when a copy differs from the root, when a published crate lacks `description`,
 `license`, `authors`, `repository`, `homepage`, `rust-version`, `readme`, one to five `keywords` or a category, when
 those shared fields are not inherited from `[workspace.package]`, when a dependency on a workspace crate has no
-version, or when a crates.io dependency that two or more published crates declare is not taken from
-`[workspace.dependencies]` (`regex = { workspace = true }`; a crate that needs more adds features at its use site):
+version, or when a crates.io dependency declared more than once (by two published crates, or in two dependency
+sections of one) is not taken from `[workspace.dependencies]` (`regex = { workspace = true }`; a crate that needs more adds features at its use site):
 
 ```sh
 node scripts/check-crate-files.mjs
