@@ -301,3 +301,11 @@ These settle the open questions and override the design where they differ.
    other task.
 6. The security review is mandatory before the merge: the cancel path (pid handling, second connection, races with the
    statement's end), the shared connection attempt, the bind-by-reference and in-place identifier writing.
+7. Input from `q-orm-correctness` (its design.md, "Group 8" notes): engine-built lists of compound keys are now split
+   into statements of at most 500 `OR`ed groups. Each statement is bounded, but the total work of a long list over
+   columns without an index is still rows x keys: Postgres evaluates the whole `OR` on every row of a sequential scan
+   (measured: 396 ms for 500 groups over 70,000 rows; a 16,383-group statement ran for 13 minutes and could not be
+   cancelled). Evaluate a form whose cost is linear, such as `(a, b) IN (SELECT * FROM unnest($1::text[], $2::int[]))`
+   on Postgres (typed arrays per column, with the enum, `uuid` and `date` casts) and a `json_each` join on SQLite, with
+   the benchmark of this change; keep the `OR` form for lists that fit one statement, whose Postgres SQL the oracle
+   snapshot pins.

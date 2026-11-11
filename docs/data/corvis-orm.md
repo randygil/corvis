@@ -362,7 +362,9 @@ let amount: Decimal = input.parse()?;           // was: Decimal::from(input.as_s
 let users = db.wallet().find_many(vec![wallet::amount::gte(decimal!("100"))]).await?;
 ```
 
-A `DecimalCtor` (`Decimal.clone({...})`) reads text with `D.parse("1234.5678")?` instead of `D.of("1234.5678")`.
+A `DecimalCtor` (`Decimal.clone({...})`) reads text with `D.parse("1234.5678")?` instead of `D.of("1234.5678")`. Parsing and `decimal!` accept what decimal.js accepts, checked input by input against it: `0x`, `0b` and `0o` numbers with a fraction and a binary exponent (`0x1.8p3`), and one `_` between two digits (`1_000`).
+
+`corvis_orm::or_undefined(value)` writes a non-finite float as `null`, like the original sends `NaN`, but a value that fails to serialize makes the query fail with a validation error instead of becoming `null`.
 
 ### Typed helpers and non-finite floats
 
@@ -427,19 +429,24 @@ From code: `db.migrate_deploy(dir).await` and `db.migrate_status(dir).await`. Th
 
 ## PostgreSQL and SQLite differences
 
-Most queries give the same results on both databases. These do not:
+Most queries give the same results on both databases. These do not. Each row was recorded with the original client on
+both databases (the oracles of `crates/corvis-orm/tests/`), and Corvis does what the original does, except where the
+last column says otherwise.
 
 | What | PostgreSQL | SQLite |
 |---|---|---|
-| `mode: "insensitive"` | Folds every letter (`ILIKE`, `LOWER`) | `LOWER` folds ASCII letters only: `"JOSÉ"` does not match `"josé"` |
-| JSON `path` with a numeric segment (`["0"]`) | Always the key `"0"` (or index `0` of an array) | An array index; write the string form `'$."0"'` for an object key |
-| `search` | Full-text search (`to_tsquery`, its operators) | Every term must appear in the text (`INSTR`), case-insensitive |
-| `Decimal` | Exact, with the precision and scale of the column | A number with 15 significant digits (numeric affinity), like the original's SQLite migration. Comparisons, ordering and aggregates read the column with `CAST(.. AS NUMERIC)`, so they are numeric on `TEXT` columns of earlier pushes too; the cast keeps a plain index on the column from serving a range |
+| `contains`, `startsWith`, `endsWith` | Case-sensitive | `LIKE`: folds ASCII letters only (`"ANA"` matches `"ana@x.io"`, `"JOSÉ"` does not match `"José"`). The original reads `%` and `_` of the input as wildcards there (`contains: "%"` matches every row); Corvis matches them literally, as on Postgres |
+| `mode: "insensitive"` | Folds every letter (`ILIKE`, `LOWER`) | The original rejects `mode` on SQLite. Corvis accepts it as an extension: `LOWER` folds ASCII letters only |
+| JSON `path` | A list (`["a", "0"]`) | The original takes one string (`"$.a[0]"`; `"$.0"` and `'$."0"'` are the key `"0"`) and rejects the list form and the `array_*` filters. Corvis also accepts both as an extension, a numeric segment of a list being an array index |
+| `search` | Full-text search (`to_tsquery`; the original needs the `fullTextSearchPostgres` preview feature) | Not in the original. Corvis extension: every term must appear in the text (`INSTR`), case-insensitive |
+| `createMany` with `skipDuplicates` | `ON CONFLICT DO NOTHING` | Not in the original. Corvis extension: `INSERT OR IGNORE` |
+| `Decimal` | Exact, with the precision and scale of the column | A number with 15 significant digits (numeric affinity), like the original's SQLite migration; `_avg` keeps 16 significant digits. Comparisons, ordering and aggregates read the column with `CAST(.. AS NUMERIC)`, so they are numeric on `TEXT` columns of earlier pushes too; the cast keeps a plain index on the column from serving a range |
+| Writing a `Decimal` beyond the column's precision | Fails (`numeric field overflow`) | The original stores it (`1e100`). Corvis refuses a value beyond `Decimal(65, 30)` (or the field's `@db.Decimal(p, s)`), the bound of its security review |
+| Filtering on an `Int` beyond 32 bits, or a `Decimal` beyond `NUMERIC` | Fails (conversion error) | Runs, comparing numbers |
 | Scalar lists (`String[]`) | Arrays | JSON text (a Corvis extension; the original does not support lists on SQLite) |
-| `divide: 0` | Fails (`22012`, division by zero) | `null` |
-| `increment` past the range of an `Int` | Fails | The value is stored; reading it into an `i32` field fails later |
-
-The last two rows describe what Corvis does today; matching them to the original client on each database is pending a recording of the original's results on SQLite.
+| `NaN` and infinite floats | Sent as `null` by the original (`ratio: NaN` is `ratio IS NULL`) | The same. Corvis sends `null` too in JSON arguments; its typed helpers refuse such values instead (see above) |
+| `divide: 0` | Fails (`22012`, division by zero); `null` stays `null` | The result is `null`: `P2011` on a required column, `null` stored in an optional one |
+| `increment` past the range of an `Int` | Fails (`22003`) | The value is stored (SQLite integers are 64-bit); reading the row fails with `P2023` (`Value 2147483648 does not fit in an INT column`) |
 
 ## What is not supported
 

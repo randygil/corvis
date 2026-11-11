@@ -39,7 +39,7 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 3. Reference recordings (Decision 1)
 
-- [ ] 3.1 SQLite recorder `corvis-tests/tmp/orm/oracle/sqlite/`: `schema.prisma` (the oracle schema minus what the
+- [x] 3.1 SQLite recorder `corvis-tests/tmp/orm/oracle/sqlite/`: `schema.prisma` (the oracle schema minus what the
   original's SQLite connector rejects, listed in its header), `migration.sql` produced by the original's
   `migrate diff --from-empty --to-schema-datamodel`, `cases.js` (the applicable Postgres cases plus the SQLite cases of
   Decisions 2, 4 and 7: the four amounts, `increment` by `0.01` of `12345678901234.56`, `0.1 + 0.2`, `_sum`, `_avg`,
@@ -47,18 +47,18 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   `increment` past `2147483647`; `contains` insensitive with `José`/`JOSÉ`; a JSON path `["0"]` on an object; a two-term
   `search`), `$float` in `revive`, `regen.sh` writing `crates/corvis-orm/tests/fixtures/oracle_sqlite/`; generate
   `tests/generated/oracle_sqlite.rs` with `corvis-orm generate`; verify the results file names `recorded_with` and `script`
-- [ ] 3.2 Postgres oracle: append the Decision 4 and 7 cases at the end of `corvis-tests/tmp/orm/oracle/full/cases.js`, add
+- [x] 3.2 Postgres oracle: append the Decision 4 and 7 cases at the end of `corvis-tests/tmp/orm/oracle/full/cases.js`, add
   `$float` to `revive`, run `regen.sh`; add the `$float` marker to `tests/pg_oracle.rs`; verify `git diff` of
   `tests/fixtures/oracle/results.json` shows only appended cases, and record in Implementation notes what the original
   does for each of them (non-finite floats as values or as `null`; each arithmetic case)
-- [ ] 3.3 `crates/corvis-orm/tests/sqlite_oracle.rs`: the runner of design.md Decision 1 (migrated database and pushed
+- [x] 3.3 `crates/corvis-orm/tests/sqlite_oracle.rs`: the runner of design.md Decision 1 (migrated database and pushed
   database, `KNOWN_DIFFERENCES` with label, database and reason, failing when an entry no longer differs); add its
   allowlist entry to `scripts/check-naming.mjs` (it maps errors to the original's class names, like `pg_oracle.rs`);
   verify it runs, and list in Implementation notes the cases that fail before groups 4-9
 
 ## 4. `Decimal` on SQLite (Decision 2)
 
-- [ ] 4.1 `schema.rs`: `DECIMAL` for `Decimal` on SQLite; `engine/filter.rs`, `engine/read.rs` (`order_sql`,
+- [x] 4.1 `schema.rs`: `DECIMAL` for `Decimal` on SQLite; `engine/filter.rs`, `engine/read.rs` (`order_sql`,
   `cursor_sql`), `engine/aggregate.rs` (`agg_expr_sql`, `having`), `engine/write.rs` (`set_list_sql` arithmetic): a
   `Decimal` column on SQLite written `CAST(<col> AS NUMERIC)`, through one helper; the `data_value` comment of
   `engine/mod.rs` rewritten; if the recording of 3.1 contradicts design.md's expectation, follow the recording and write
@@ -78,14 +78,14 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   (columns, key and `B` index named as the reference, cascading foreign keys), foreign keys as `ALTER TABLE .. ADD
   CONSTRAINT` named by `RelationMeta.map` or `<table>_<cols>_fkey`, statement order of the reference; verify the
   many-to-many test of 2.2 passes on both dialects
-- [ ] 5.3 `schema.rs`, SQLite: the types, keys, indexes, join tables and inline foreign keys of the recorded
+- [x] 5.3 `schema.rs`, SQLite: the types, keys, indexes, join tables and inline foreign keys of the recorded
   `oracle_sqlite/migration.sql`; verify the SQLite tests of 2.2 pass (the SQLite tests of 2.2 pass; matching the recorded
   SQLite migration waits for the recording of 3.1)
 - [x] 5.4 Refusals before any statement (unknown native type, index type or option; views skipped) with a validation
   error naming model, field and construct; `client.rs` `db_push_models` and `db_push_force_reset` in one transaction with
   `ensure_schema` (N6); tests: a push whose third model fails leaves no table; a model and an enum whose names contain `"`
   and `;` are pushed with quoted identifiers; verify `cargo test -p corvis-orm --test db_push`
-- [ ] 5.5 Catalog comparison tests in `tests/db_push.rs`: Postgres reference migration (without its extras block) vs
+- [x] 5.5 Catalog comparison tests in `tests/db_push.rs`: Postgres reference migration (without its extras block) vs
   `db_push` of the oracle models; SQLite recorded migration vs `db_push` of the SQLite oracle models; the houseplan models
   vs the houseplan migrations when `corvis-tests` and the `vector` extension are available (skipped with a message
   otherwise); every remaining difference fixed or listed in the test with its reason; then both oracles on pushed
@@ -100,7 +100,7 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   `data_object`, `and`, `or`, `not`, `Args`, `WhereArg`, `DataArg` and `Query::with_error` carrying the first error;
   verify `cargo test -p corvis-orm --lib` (non-finite floats are refused for now: provisional until the recording of 3.2
   decides between refusal and the engine strings)
-- [ ] 6.2 `corvis-orm-macros/src/lib.rs`: every helper through `try_new`; nested relation helpers carry errors; tests in
+- [x] 6.2 `corvis-orm-macros/src/lib.rs`: every helper through `try_new`; nested relation helpers carry errors; tests in
   `tests/typed_params.rs`, one per helper family of design.md Decision 4, plus the `NaN` cases of both oracles; verify 2.3
   passes and `--test client --test codegen_schemas` pass (all done except the `NaN` cases of both oracles, which wait for
   the recordings of 3.1 and 3.2)
@@ -132,10 +132,10 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 9. Dialect differences (Decision 7)
 
-- [ ] 9.1 `engine/write.rs` (and the `Int` handling of `engine/mod.rs` if the recording needs it): `divide: 0` and the
+- [x] 9.1 `engine/write.rs` (and the `Int` handling of `engine/mod.rs` if the recording needs it): `divide: 0` and the
   `Int` overflow of `increment` made equal to the recording on each dialect where they differ today, on that dialect
   only; verify the arithmetic cases of both oracles pass
-- [ ] 9.2 `docs/data/corvis-orm.md` and `docs/es/data/corvis-orm.md`: the table "PostgreSQL and SQLite differences"
+- [x] 9.2 `docs/data/corvis-orm.md` and `docs/es/data/corvis-orm.md`: the table "PostgreSQL and SQLite differences"
   (case folding, JSON path segments, `search`, `Decimal` precision, scalar lists as a Corvis extension on SQLite, the
   arithmetic cases as recorded); verify `npm run docs:check` in `docs/` (table written, docs check passes; its two
   arithmetic rows state Corvis' current behavior and wait for the recordings of 9.1)
@@ -161,7 +161,7 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   (2114 passed, 0 failed, 97 ignored; `sqlite_oracle` does not exist yet, see 3.3)
 - [x] 11.4 Per-feature checks: `cargo check -p corvis-orm --tests --no-default-features` and
   `cargo check -p corvis-orm --tests --no-default-features --features corvis`, with no warnings
-- [ ] 11.5 Regression tests: one per spec scenario, as listed in groups 2-9
+- [x] 11.5 Regression tests: one per spec scenario, as listed in groups 2-9
 - [x] 11.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 11.7 Framework code changed (`corvis-orm`, `corvis-orm-macros`): run the `corvis-parity` check and verify the three
   port apps keep 0 apidiff differences and equivalent databases

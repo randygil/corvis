@@ -366,7 +366,7 @@ These settle the open questions and override the design where they differ.
 - `CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm --no-fail-fast` on the untouched tree (local `corvis-pg` on
   `127.0.0.1:55432`): 207 passed, 0 failed, 14 ignored (doc tests marked `ignore`).
 
-### Recorders outside the repository (groups 3, 9 and the recorded parts of 4-6)
+### Recorders outside the repository (groups 3, 9 and the recorded parts of 4-6): first round
 
 The Postgres oracle's recorder is not in this repository: it is `C:\Users\Usuario\Devel\corvis-tests\tmp\orm\oracle\full\`
 (`cases.js`, `regen.sh`, `migration.sql`, `schema.prisma`, `client/` with the generated original client), and the
@@ -583,3 +583,81 @@ file, line, before and after was handed to the maintainer with the report.
 scripts/check-naming.mjs` (one allowlist entry added: the houseplan migrations folder in `tests/db_push.rs`), `npm run
 docs:check` and `openspec validate q-orm-correctness --strict`: pass. No test database of this change is left on the
 server.
+
+### Group 3: the recordings (second round, with the coordinator's permission to write under `corvis-tests/tmp/orm/`)
+
+Where the recorders live and how to regenerate them (the original client 6.19.3 and decimal.js 10.6.0 are installed in
+`corvis-tests/tmp/orm/node_modules`; the Postgres recorder as it was before this change is backed up in
+`oracle/full.bak-2026-11-11/`):
+
+- Postgres oracle: `corvis-tests/tmp/orm/oracle/full/` (`cases.js`, `regen.sh`, `schema.prisma`, `migration.sql`,
+  `client/`). `FIX=<repo>/crates/corvis-orm/tests/fixtures/oracle sh regen.sh` recreates `orm_oracle_rec_full` on
+  `corvis-pg` (10 s `statement_timeout`), applies `migration.sql`, runs `cases.js`, drops the database and copies
+  `results.json`, `migration.sql` and `schema.prisma`. Changes: 32 cases appended at the end of `cases.js` (`fin.*`,
+  `arith.*`, `dialect.*`); `$float` revived to a JavaScript number; non-finite numbers in results written as `$float`;
+  the case list exported for the SQLite recorder (the runner only runs when the file is executed directly); and
+  `previewFeatures = ["fullTextSearchPostgres"]` (client regenerated) so that `search` is the original's full-text
+  filter. Verified: the regenerated `results.json` equals the previous one in its first 225 cases (labels in order, only
+  the clock values of `updatedAt` differ) and adds 32 cases (257 in all).
+- SQLite oracle: `corvis-tests/tmp/orm/oracle/sqlite/` (`schema.prisma`, `cases.js`, `regen.sh`, `client/`).
+  `FIX=<repo>/crates/corvis-orm/tests/fixtures/oracle_sqlite sh regen.sh` writes `migration.sql` with the original's
+  `migrate diff --from-empty --to-schema-datamodel`, generates the client, builds `oracle.db` in that folder with
+  `sqlite3`, runs `cases.js`, deletes the database file and copies `schema.prisma`, `migration.sql` and `results.json`
+  (`{ recorded_with: "@prisma/client 6.19.3", script, cases }`). The schema is the Postgres one minus what the SQLite
+  connector rejects (`prisma validate`): the scalar lists and every `@db.*` type; and `User.meta` loses
+  `@default("{}")`, because the original writes it as `DEFAULT {}`, which SQLite rejects (no table could be created from
+  its own migration). `cases.js` takes the Postgres cases that apply: no raw SQL, none filtering on the removed lists,
+  none using an argument the SQLite connector does not have (recorded once: `skipDuplicates`, `mode`, `search` and the
+  `array_*` JSON filters are "Unknown argument" there), list paths turned into the SQLite string form; plus 29 SQLite
+  cases (decimals, case folding, JSON string paths). 244 cases.
+- decimal.js parsing: `corvis-tests/tmp/orm/decimal_parse/cases.js`; from `tmp/orm`,
+  `node decimal_parse/cases.js > <repo>/crates/corvis-orm/tests/fixtures/decimal_parse.json` (92 inputs).
+- Models: `tests/generated/oracle_sqlite.rs`, from `corvis-orm generate --schema tests/fixtures/oracle_sqlite/schema.prisma`.
+
+What the recordings decided:
+
+- Non-finite floats (3.2): the original sends `NaN` and `Infinity` as JSON `null` on both databases (`ratio: NaN` is
+  `IS NULL`, `not: NaN` is `IS NOT NULL`, `lt: Infinity` is "Argument `lt` is missing", `in: [NaN, 1.5]` a validation
+  error, `set: -Infinity` stores `null`). So Review note 4 applies: typed helpers refuse them (the provisional choice of
+  group 6 stands) and the JSON path sends `null` like the original. Corvis now also rejects `{ lt: null }` and a `null`
+  item in `in` / `notIn`, as the original does.
+- Arithmetic (9.1): on Postgres `divide: 0` fails with `22012` on `Int`, `Float` and `Decimal` (a `null` `Float` stays
+  `null`) and `increment` past `Int` fails with `22003`: Corvis already did the same. On SQLite the division gives
+  `null`: `P2011` on a required column, `null` in an optional one; `increment` past `Int` is stored and reading the row
+  fails with `P2023` (`Value 2147483648 does not fit in an INT column ...`). Corvis now binds `Int` as 64-bit on SQLite
+  (filters and writes beyond 32 bits run, as recorded) and fails the read with that `P2023`; the `P2011` message has the
+  original's backticks on SQLite, and `P2003` has `constraint: null` there.
+- `Decimal` on SQLite (4.1): the recording confirms Decision 2 (numeric comparison, order, `_min` / `_max` / `_sum`,
+  float arithmetic: `0.1 + 0.2` is `0.30000000000000004`, `12345678901234.56 + 0.01` is `12345678901234.57`). Two
+  details followed: `_avg` keeps 16 significant digits; filter values beyond `NUMERIC` run (bound in exponent form)
+  instead of failing.
+- Dialect (9.1, 9.2): on SQLite the original's `contains` / `startsWith` / `endsWith` are `LIKE` (ASCII case folding):
+  Corvis followed (it used exact `INSTR`). JSON string paths keep `$.0` and `$."0"` as keys and `[0]` as an index (Corvis
+  turned every numeric segment into an index). Case folding beyond ASCII, numeric list segments, `search` and
+  `skipDuplicates` are in the documentation's differences table.
+- SQLite `db push` (5.3, 5.5): the recorded migration declares `BIGINT` for `BigInt` and `JSONB` for `Json`; Corvis now
+  does too. `catalog_equals_the_reference_migration_sqlite` compares the columns (type, nullability, default, key),
+  indexes (uniqueness, origin, columns) and foreign keys (columns, actions) of the recorded migration and of the push:
+  equal. The pushed SQLite oracle run gives the same results as the migrated one.
+
+`tests/sqlite_oracle.rs` runs the 244 cases on both databases. `KNOWN_DIFFERENCES` ends with three entries, for the
+maintainer's approval:
+
+- `sqlite.contains_wildcards`, `sqlite.contains_underscore` (both databases): the original does not escape `%` and `_`
+  in `LIKE` on SQLite (`contains: "%"` matches every row); Corvis matches them literally, as the original does on
+  Postgres.
+- `sec.decimal_write_overflow` (both databases): the original stores `1e100` in a SQLite `Decimal`; Corvis keeps the
+  `Decimal(65, 30)` bound of its security review. With values now written in exponent form the bound may no longer be
+  needed for safety; that is for the security review (10.2) to decide.
+
+Follow-ups done in this change, proved by recordings: `Decimal::parse` and `decimal!` accept exactly what
+`new Decimal(text)` accepts (92 recorded inputs: `0x` / `0b` / `0o` with a fraction and a `p` exponent, rounded like
+decimal.js for `|p| >= 54`; one `_` between two decimal digits; `0x+1f` and `0x1_f` rejected; the same error messages);
+`or_undefined` writes `NaN` as `null` like the original and makes the query fail on a value that cannot be serialized (a
+sentinel the engine checks before anything else). The linear key-list form went to `q-orm-hot-path`'s Review notes (7).
+
+Rebased onto `dev` at `51ca1c1` (#186, #191). `node scripts/lint-ratchet.mjs`: no count raised (four new
+`missing_errors_doc` findings on `to_json`, `into_pair`, `where_object` and `data_object` were fixed with `# Errors`
+sections); the corvis-orm counts that went down (`missing_panics_doc`, `panic`, `unwrap_used`, `missing_docs`) were
+lowered in `lint-baseline.json`. The script runs on Windows here; its one other difference (`corvis` `expect_used`
+51 -> 50, platform-specific code of a crate this change does not touch) was left at the Linux count.

@@ -116,6 +116,9 @@ db.transaction().find_many(json!({
 })).await?;
 ```
 
+`or_undefined` escribe un `NaN` o un infinito como `null`, igual que el cliente original envía `NaN`; un valor que no se puede
+serializar hace fallar la consulta con un error de validación antes de enviar SQL.
+
 ### Transacciones
 
 ```rust
@@ -183,6 +186,8 @@ db.query_raw("SELECT * FROM users WHERE id = $1", vec![json!(1)]).await?;
 `corvis_orm::Decimal` tiene la semántica de decimal.js (precisión 20, `ROUND_HALF_UP`, `toFixed`, `toDecimalPlaces`, `toString`...).
 Se serializa como `toString()` (`"24.5"`) y se lee y escribe sin pérdida en columnas `NUMERIC`. `Decimal.clone({...})` es
 `DecimalCtor::new(&CONFIG)`. `corvis_orm::DateTime` equivale al `Date` de JS: milisegundos y siempre `"2026-01-02T03:04:05.678Z"`.
+
+`Decimal::parse` y `decimal!` aceptan lo mismo que decimal.js (comprobado contra él en `tests/fixtures/decimal_parse.json`): números `0x`, `0b` y `0o` con fracción y exponente binario (`0x1.8p3`) y un `_` entre dos dígitos (`1_000`).
 
 El texto se convierte en `Decimal` solo con conversiones que informan del error: `Decimal::parse`, `"12.5".parse::<Decimal>()`
 y `Decimal::try_from(..)` (de `&str` o `String`) para texto que llega en tiempo de ejecución, y el literal `decimal!("1.50")`,
