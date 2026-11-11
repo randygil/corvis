@@ -396,7 +396,9 @@ impl<'a> HttpArgumentsHost<'a> {
     pub fn status_code(&self) -> u16 {
         self.ctx.inner.request.get::<RouteStatus>().map(|s| s.0.as_u16()).unwrap_or(200)
     }
-    /// `getResponse()`: the Express response when the handler declares `#[res]`.
+    /// `getResponse()`: the Express response when the handler declares `#[res]`, from the moment the guards passed
+    /// until the handler (and the interceptors) returned. After that, a `#[res]` response that is not ended yet is no
+    /// longer reachable here (`None`): code that ends it later must keep the `Res` it got (see [`Res`](crate::http::Res)).
     pub fn get_response(&self) -> Option<crate::http::Res> {
         self.ctx.inner.request.get::<crate::http::Res>()
     }

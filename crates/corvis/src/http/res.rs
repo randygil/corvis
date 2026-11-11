@@ -31,6 +31,7 @@
 //! handler throws, the exception filter answers but the headers set on `res` stay (a
 //! filter's own headers win), like with the shared Express response.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -62,16 +63,52 @@ struct ResState {
 
 struct ResInner {
     state: Mutex<ResState>,
+    /// Signalled when the response is ended, and when a handle goes and one is left.
     done: tokio::sync::Notify,
+    /// Handles alive (`Res` values). Counted apart from the `Arc`, whose count a dropping handle only lowers after its
+    /// `Drop` ran: a waiter woken from that `Drop` would still see the old count.
+    handles: AtomicUsize,
     method: Method,
     accept: Option<String>,
     mode: ResMode,
 }
 
 /// The Express response (`@Res() res: Response`). Cheap to clone; clones share the state.
-#[derive(Clone)]
+///
+/// With `#[res]` (not passthrough) the request is answered when the response is ended (`send`, `json`, `end`,
+/// `redirect`, ...), also after the handler returned: a handler can move its `Res` into a task that ends it later. When
+/// the handler and the interceptors have returned without ending it and no handle of it is left (the handler kept
+/// none, or the task that held the last one dropped it), nothing can end it any more: the request is answered with the
+/// generic `500` and one error line is logged. From the moment the handler returned the response is no longer
+/// reachable through the request (`get_response()` answers `None`): code that ends it later keeps its own `Res`.
 pub struct Res {
     inner: Arc<ResInner>,
+}
+
+/// How waiting for a handled response ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ResEnd {
+    /// The response was ended.
+    Ended,
+    /// No handle is left besides the waiter's and the response was not ended: nothing can end it.
+    Orphaned,
+}
+
+impl Clone for Res {
+    fn clone(&self) -> Self {
+        self.inner.handles.fetch_add(1, Ordering::SeqCst);
+        Res { inner: self.inner.clone() }
+    }
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        let left = self.inner.handles.fetch_sub(1, Ordering::SeqCst) - 1;
+        // The last handle but one went: a waiter holding that last one looks again (see `wait_end_or_orphaned`).
+        if left == 1 && self.inner.mode == ResMode::Handled {
+            self.inner.done.notify_waiters();
+        }
+    }
 }
 
 impl std::fmt::Debug for Res {
@@ -560,6 +597,7 @@ impl Res {
             inner: Arc::new(ResInner {
                 state: Mutex::new(ResState { status, headers: HeaderMap::new(), body: None, sent: false, finished: false }),
                 done: tokio::sync::Notify::new(),
+                handles: AtomicUsize::new(1),
                 method,
                 accept,
                 mode,
@@ -772,7 +810,6 @@ impl Res {
             s.finished = true;
         }
         self.inner.done.notify_waiters();
-        self.inner.done.notify_one();
     }
 
     /// `res.send(body)`: strings default to `text/html`, buffers to `application/octet-stream`,
@@ -862,12 +899,17 @@ impl Res {
         self.headers_sent()
     }
 
-    /// Waits until the handler ends the response (Express keeps the request open until then).
-    pub(crate) async fn wait_end(&self) {
+    /// Waits until the response is ended (Express keeps the request open until then), or until the caller's handle is
+    /// the only one left without the response being ended: then nothing can end it.
+    pub(crate) async fn wait_end_or_orphaned(&self) -> ResEnd {
         loop {
+            // Created before both checks: an end or a drop in between wakes it.
             let notified = self.inner.done.notified();
             if self.headers_sent() {
-                return;
+                return ResEnd::Ended;
+            }
+            if self.inner.handles.load(Ordering::SeqCst) == 1 {
+                return ResEnd::Orphaned;
             }
             notified.await;
         }
@@ -877,7 +919,7 @@ impl Res {
     pub(crate) fn take_response(&self) -> Option<Response> {
         let mut s = self.inner.state.lock().unwrap();
         let body = s.body.take()?;
-        let mut r = Response { status: Some(s.status), headers: s.headers.clone(), body, ..Default::default() };
+        let mut r = Response { status: Some(s.status), headers: std::mem::take(&mut s.headers), body, ..Default::default() };
         r.express_send = s.sent;
         Some(r)
     }

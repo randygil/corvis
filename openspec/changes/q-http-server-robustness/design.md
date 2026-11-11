@@ -359,6 +359,26 @@ two lines, the second counting the 67 errors after the first.
   through the engine belongs with the engine's own shutdown (`q-core-lifecycle-and-cache-correctness` closes the
   sessions).
 
+### `#[res]` responses nobody can end (group 4)
+
+- The failing test of 4.1 (`a_handled_response_nobody_can_end_is_answered_with_500`) timed out after its 5 s on the
+  untouched tree: the request was never answered.
+- Deviation: the count of handles is an `AtomicUsize` in `ResInner` (a manual `Clone` increments it, `Drop` decrements
+  it), not `Arc::strong_count`. `Drop::drop` runs before the `Arc` field is released, so a waiter woken from the `Drop`
+  of the last outside handle would still read a count of 2, go back to sleep, and never be woken again. The explicit
+  count is decremented before the notification. `Drop` notifies only in the handled mode and only when one handle is
+  left, the waiter's.
+- The orphaned response goes through `handle_exception` as `HttpException::internal(OrphanedResponse)`, marked as
+  already logged: the router writes the one `ExceptionsHandler` error line itself, so it is there even when an
+  application filter catches the exception. The headers already set on the `Res` (and the route's `#[header]`s) are
+  merged as for a thrown error.
+- The extension is removed only when the response is not ended yet; a handler that already ended it leaves
+  `get_response()` working as before.
+- Grep for `get_response()` called after a handler returned: none in this repository (the only callers of the
+  `HttpArgumentsHost` method are guards and interceptors before the handler) and none in the three port applications,
+  which never call `switch_to_http().get_response()`. Their two handled `#[res]` handlers (consi
+  `settlement.controller.rs` `report`, houseplan `auth.controller.rs` `magic`) end the response on every `Ok` path.
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.

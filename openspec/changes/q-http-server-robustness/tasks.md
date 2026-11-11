@@ -40,14 +40,14 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 
 ## 4. `#[res]` responses nobody can end (Decision 3)
 
-- [ ] 4.1 Failing test first in `crates/corvis/tests/res.rs`: a handled handler that returns without ending the
+- [x] 4.1 Failing test first in `crates/corvis/tests/res.rs`: a handled handler that returns without ending the
   response gets a response within the test's deadline; verify it fails (times out) on the untouched tree
-- [ ] 4.2 `http/res.rs`: `impl Drop for Res` (notify when a handle goes and the response is not ended),
+- [x] 4.2 `http/res.rs`: `impl Drop for Res` (notify when a handle goes and the response is not ended),
   `wait_end_or_orphaned`, `finish` with one notification, `take_response` with `mem::take`; `router/mod.rs`: remove the
   extension after a handled pipeline, answer `Orphaned` with the generic `500` and one `ExceptionsHandler` line; rustdoc
   of `Res` and of `HttpArgumentsHost::get_response`; grep the repository and the three port apps for `get_response()`
   called after a handler returned and record the result; verify 4.1 passes
-- [ ] 4.3 Tests for the scenarios of the spec requirement "An `@Res()` response nobody can end is answered" (task that
+- [x] 4.3 Tests for the scenarios of the spec requirement "An `@Res()` response nobody can end is answered" (task that
   ends it later, task that drops its handle, passthrough unaffected); verify `cargo test -p corvis --test res` and the
   replay of `fixtures/res_express.json` (`later` case) pass
 
