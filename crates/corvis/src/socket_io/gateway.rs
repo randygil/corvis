@@ -769,9 +769,20 @@ fn spawn_disconnect_hooks(runtime: &Arc<NamespaceRuntime>, socket: IoSocket) {
     start_disconnect_worker(runtime, &handle);
 }
 
+/// Takes one of the [`DISCONNECT_WORKERS`] places; `false` when they are all taken.
+fn claim_worker(workers: &std::sync::atomic::AtomicUsize) -> bool {
+    let mut current = workers.load(Ordering::SeqCst);
+    while current < DISCONNECT_WORKERS {
+        match workers.compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+    false
+}
+
 fn start_disconnect_worker(runtime: &Arc<NamespaceRuntime>, handle: &tokio::runtime::Handle) {
-    let claimed = runtime.disconnect_workers.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < DISCONNECT_WORKERS).then_some(n + 1));
-    if claimed.is_err() {
+    if !claim_worker(&runtime.disconnect_workers) {
         return;
     }
     let runtime = runtime.clone();
@@ -782,11 +793,7 @@ fn start_disconnect_worker(runtime: &Arc<NamespaceRuntime>, handle: &tokio::runt
                 runtime.disconnect_workers.fetch_sub(1, Ordering::SeqCst);
                 // A socket queued after the pop, by a call that found every worker busy, must not wait for nobody.
                 let waiting = !runtime.disconnects.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-                let reclaimed = waiting
-                    && runtime
-                        .disconnect_workers
-                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < DISCONNECT_WORKERS).then_some(n + 1))
-                        .is_ok();
+                let reclaimed = waiting && claim_worker(&runtime.disconnect_workers);
                 if reclaimed {
                     continue;
                 }

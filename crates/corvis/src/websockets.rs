@@ -666,6 +666,7 @@ pub(crate) struct GatewayRuntime {
 
 impl CompiledWsHandler {
     /// The number of `#[message_body]` parameters: each takes a copy of the body (or of a property of it).
+    #[cfg(feature = "socket-io")]
     pub(crate) fn param_count(&self) -> usize {
         self.params.len()
     }

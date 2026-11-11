@@ -161,10 +161,10 @@ async fn an_event_that_finds_no_room_for_its_copies_is_answered_with_exception_a
     }
     let mut refused = 0;
     while let Some(message) = client.recv_within(Duration::from_secs(2)).await {
-        if let engine_support::io_client::Msg::Text(text) = message {
-            if text.contains("Too many messages in flight") {
-                refused += 1;
-            }
+        if let engine_support::io_client::Msg::Text(text) = message
+            && text.contains("Too many messages in flight")
+        {
+            refused += 1;
         }
         if refused > 0 {
             break;
