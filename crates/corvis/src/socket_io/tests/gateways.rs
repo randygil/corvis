@@ -100,3 +100,27 @@ async fn an_event_the_dispatcher_does_not_know_is_dropped_and_a_socket_handler_w
     assert_eq!(calls.load(Ordering::SeqCst), 2, "the dispatcher is consulted for events without a handler of the socket only");
     assert!(!conn.socket.is_closing(), "an unknown event does not close the connection");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_ping_due_while_a_layer_queues_its_packets_waits_for_it_and_is_never_lost() {
+    let engine = EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_secs(3600));
+    let io = server(IoOptions::new().engine(engine));
+    let conn = io.conn();
+    // CONNECT and what the connection handlers emit are queued under a hold: no ping lands between them.
+    let hold = conn.socket.hold_ping();
+    advance(400).await;
+    assert_eq!(conn.socket.take_pings(), 0, "the ping that fell due is held back");
+    drop(hold);
+    settle().await;
+    assert_eq!(conn.socket.take_pings(), 1, "and queued when the hold ends: the heartbeat still fires");
+    // A hold that is never released cannot postpone the heartbeat without limit.
+    let io = server(
+        IoOptions::new().engine(EngineOptions::new().ping_interval(Duration::from_millis(300)).ping_timeout(Duration::from_secs(3600))),
+    );
+    let stuck = io.conn();
+    let _forgotten = stuck.socket.hold_ping();
+    advance(400).await;
+    assert_eq!(stuck.socket.take_pings(), 0);
+    advance(1_100).await;
+    assert_eq!(stuck.socket.take_pings(), 1, "after one second the held ping goes out anyway");
+}

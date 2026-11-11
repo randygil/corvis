@@ -561,6 +561,8 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
         let _ = shared.send_packet(&Packet { nsp: name, body: Body::ConnectError(IoValue::Object(Box::new(payload))) });
         return;
     }
+    // From CONNECT to the end of the connection handlers no ping is queued between their packets.
+    let ping_hold = shared.engine.hold_ping();
     let own_room = {
         let mut nsps = shared.nsps();
         if shared.done.load(Ordering::SeqCst) || !matches!(nsps.get(&name), Some(Slot::Pending)) {
@@ -593,6 +595,7 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
             shared.warnings.guard("a connection handler", &name, || handler(s));
         }
     }
+    drop(ping_hold);
     socket.mark_ready();
 }
 
