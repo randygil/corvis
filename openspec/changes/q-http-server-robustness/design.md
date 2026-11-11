@@ -423,6 +423,36 @@ two lines, the second counting the 67 errors after the first.
   `std::fs::create_dir_all` of the upload directory in the system temp folder (Windows); the next run passed and the
   failure did not come back in later full runs. Not related to this change (no server code runs before that line).
 
+### Left to the maintainer's session
+
+Task 8.2 (security review), 9.7 (corvis-parity of the three port applications) and 9.9 (closing the review). The port
+applications need no change: no public API they use changed signature (`ServerOptions` gained a method, `Res` lost
+its derived `Clone` for a manual one with the same behavior), and their two handled `#[res]` handlers end the response
+on every path.
+
+## Verification
+
+Windows, `CARGO_TARGET_DIR` shared, after the last code change (commit "Group ConnState into one struct per concern").
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `cargo build --workspace --all-targets` | no warnings |
+| `cargo clippy --workspace --all-targets -- -D warnings`; `-p corvis --no-default-features`; `-p corvis --all-targets --features tls,socket-io,compression` | clean |
+| `cargo check -p corvis --tests --features <f>` for websockets, compression, tls, health-tls, auth-local, auth-api-key, auth-session, auth-oauth2, socket-io | no warnings |
+| `cargo test --workspace --no-fail-fast` | 2,666 passed, 0 failed, 101 ignored |
+| `cargo test -p corvis --features socket-io --no-fail-fast` | 1,723 passed, 0 failed, 57 ignored |
+| `cargo test -p corvis --features tls,compression --no-fail-fast` | 1,290 passed, 0 failed, 54 ignored |
+| `server_lifecycle` and `--features tls --test tls`, 5 runs in a row; `server::accept` unit tests, 5 runs | all passed |
+| Framing property (`h1_framing::tests::mutated_streams_...`) with 200,000 and 600,000 cases | passed |
+| Fuzz steps: `PROPTEST_CASES=20000 cargo test -p corvis --lib fuzz` and `--features socket-io --lib fuzz` | passed |
+| Test counts before and after the split (`-- --list`) | 1,247 / 1,247 default; 1,877 / 1,877 with `tls,compression,socket-io` |
+| `cargo deny check` | advisories, bans, licenses, sources ok |
+| `node scripts/check-naming.mjs`; `node scripts/check-crate-files.mjs` | passed |
+| `node scripts/lint-ratchet.mjs` | no count above the baseline; `expect_used` and `missing_docs` of `corvis` read one lower, the known Windows difference |
+| `npm run docs:check` | 179 English and 179 Spanish pages |
+| `openspec validate q-http-server-robustness --strict` | valid |
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.

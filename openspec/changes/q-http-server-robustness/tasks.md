@@ -97,18 +97,18 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 
 ## 9. Definition of done
 
-- [ ] 9.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 9.2 `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy -p corvis --no-default-features
+- [x] 9.1 `cargo build --workspace --all-targets` with no warnings
+- [x] 9.2 `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo clippy -p corvis --no-default-features
   -- -D warnings`
-- [ ] 9.3 `cargo test --workspace` passes; `cargo test -p corvis --features tls,compression` passes
-- [ ] 9.4 Per-feature checks: `cargo check -p corvis --tests --features <f>` for websockets, compression, tls,
+- [x] 9.3 `cargo test --workspace` passes; `cargo test -p corvis --features tls,compression` passes
+- [x] 9.4 Per-feature checks: `cargo check -p corvis --tests --features <f>` for websockets, compression, tls,
   health-tls, auth-local, auth-api-key, auth-session, auth-oauth2 and socket-io, with no warnings
-- [ ] 9.5 Regression tests: one per spec scenario, as listed in groups 2-6; the failing tests of 3.1 and 4.1 were seen
+- [x] 9.5 Regression tests: one per spec scenario, as listed in groups 2-6; the failing tests of 3.1 and 4.1 were seen
   failing before their fix
-- [ ] 9.6 Docs pages updated in English and Spanish, then `npm run docs:check` in `docs/`
+- [x] 9.6 Docs pages updated in English and Spanish, then `npm run docs:check` in `docs/`
 - [ ] 9.7 Framework runtime code changed (`server.rs`, `server/`, `router/mod.rs`, `http/res.rs`, `testing.rs`): run the
   `corvis-parity` check and verify the three port apps keep 0 apidiff differences
-- [ ] 9.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
+- [x] 9.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
 - [ ] 9.9 The security review of 8.2 is closed; a "Verification" table (checks and results, as in the archived changes)
   is added to design.md
 
