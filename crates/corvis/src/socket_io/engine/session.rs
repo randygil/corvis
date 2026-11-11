@@ -1366,15 +1366,15 @@ mod review_tests {
         let total = Arc::new(UnreadGauge::new(1000, None));
         let session = open(EngineOptions::new().max_unread_bytes(100), TransportKind::WebSocket, Some(total.clone()));
         // Two waiters on the same gauge (a held POST and the WebSocket reader).
-        let a = session.unread.changed();
-        let b = session.unread.changed();
+        let a = session.unread.register();
+        let b = session.unread.register();
         let ticket = UnreadTicket::new(&session.unread, 10);
         drop(ticket);
         tokio::time::timeout(Duration::from_millis(10), a).await.expect("the first waiter wakes");
         tokio::time::timeout(Duration::from_millis(10), b).await.expect("the second waiter wakes");
         // A release charged to another session of the same engine wakes this one: its own gauge never changed.
         let other = open(EngineOptions::new(), TransportKind::WebSocket, Some(total.clone()));
-        let waiting = session.unread.changed();
+        let waiting = session.unread.register();
         let ticket = UnreadTicket::new(&other.unread, 10);
         drop(ticket);
         tokio::time::timeout(Duration::from_millis(10), waiting).await.expect("woken through the total");
@@ -1521,7 +1521,7 @@ mod review_round_two_tests {
         // above has not answered yet) while a sibling is refused there; the rollback must wake that sibling, because
         // nothing was released and nothing else would.
         let address = Arc::new(UnreadGauge::new(300, None));
-        let sibling_waits = address.changed();
+        let sibling_waits = address.register();
         let seen = address.try_add_up_to(25, 300).expect("the asker's charge");
         assert!(address.try_add_up_to(290, 300).is_none(), "the sibling is refused while the level is inflated");
         address.roll_back(25, seen);
@@ -1533,7 +1533,7 @@ mod review_round_two_tests {
         let total = Arc::new(UnreadGauge::new(1000, None).pooled().with_guarantee_cap(10));
         let address = Arc::new(UnreadGauge::new(300, Some(total.clone())).with_guarantee_cap(350));
         let asker = Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(25));
-        let own_wait = asker.changed();
+        let own_wait = asker.register();
         assert!(UnreadTicket::try_new_within_share(&asker, 25, 0).is_none(), "the server-wide level refuses");
         assert_eq!((asker.unread(), address.unread(), total.unread()), (0, 0, 0), "everything was undone");
         assert!(own_wait.now_or_never().is_none(), "the asker is not woken by its own rollback");
@@ -1542,7 +1542,7 @@ mod review_round_two_tests {
         let total = Arc::new(UnreadGauge::new(100, None).pooled());
         let address = Arc::new(UnreadGauge::new(300, Some(total.clone())));
         let asker = Arc::new(UnreadGauge::new(10_000, Some(address.clone())));
-        let own_wait = asker.changed();
+        let own_wait = asker.register();
         assert!(UnreadTicket::try_new_within_ancestors(&asker, 150, 0).is_none(), "the server-wide limit refuses");
         assert_eq!((address.unread(), total.unread()), (0, 0));
         assert!(own_wait.now_or_never().is_none());
@@ -1598,7 +1598,7 @@ mod review_round_two_tests {
     async fn a_release_anywhere_up_the_chain_wakes_a_session_that_waits() {
         let (_total, _address, a, b) = chain();
         let held = UnreadTicket::new(&a, 100);
-        let changed = b.changed();
+        let changed = b.register();
         drop(held);
         tokio::time::timeout(Duration::from_secs(5), changed).await.expect("woken by a release of a sibling session");
     }
@@ -1621,7 +1621,7 @@ mod review_round_two_tests {
         let total = Arc::new(UnreadGauge::new(1000, None));
         let own = Arc::new(UnreadGauge::new(100, Some(total.clone())));
         let mut ticket = UnreadTicket::new(&own, 500);
-        let changed = own.changed();
+        let changed = own.register();
         ticket.shrink_to(200);
         tokio::time::timeout(Duration::from_secs(5), changed).await.expect("woken by the shrink");
         assert_eq!((own.unread(), total.unread(), ticket.size()), (200, 200, 200));

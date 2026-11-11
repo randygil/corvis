@@ -158,7 +158,12 @@ pub(super) async fn post(
     // Received data waits within a bound: the answer is held until the application takes some of it.
     let mut closed = session.closed_watch();
     loop {
-        let notified = session.unread.changed();
+        if session.unread.pause() == Pause::No || session.is_closed() {
+            break;
+        }
+        // Over a limit: registered for the next release, then the limits are read again, so a release in between is
+        // not lost (`UnreadGauge::register`).
+        let notified = session.unread.register();
         let pause = session.unread.pause();
         if pause == Pause::No || session.is_closed() {
             break;

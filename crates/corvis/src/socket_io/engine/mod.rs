@@ -931,10 +931,10 @@ impl EngineSocket {
         self.session.unread.over_limit()
     }
 
-    /// Resolves at the next release of this session's gauge or the server-wide one. Create it before checking
-    /// [`unread_over_limit`](Self::unread_over_limit), so a release in between is not lost.
-    pub(crate) fn unread_changed(&self) -> impl std::future::Future<Output = ()> + '_ {
-        self.session.unread.changed()
+    /// Registers for the next release of this session's gauge or of a gauge above it, and returns the wait. Call it
+    /// only after finding the budget full, then look again before waiting (`UnreadGauge::register`).
+    pub(crate) fn unread_release(&self) -> impl std::future::Future<Output = ()> + '_ {
+        self.session.unread.register()
     }
 
     /// Like [`messages`](Self::messages), but each message keeps counting against `max_unread_bytes` until its
@@ -1054,6 +1054,11 @@ impl EngineSocket {
     /// The server ends the connection at once, as a shutdown does.
     pub(crate) fn force_close(&self) {
         self.session.close(session::CloseReason::ForcedClose);
+    }
+
+    /// The most waiters for a release the session's gauge, or one above it, ever had at once.
+    pub(crate) fn peak_unread_waiters(&self) -> usize {
+        self.session.unread.peak_waiters()
     }
 
     /// `true` once the session is closing or closed.

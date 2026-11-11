@@ -34,17 +34,17 @@ to applications and clients" says so.
 
 ## 3. Release wakeups (design.md Decision 2)
 
-- [ ] 3.1 `crates/corvis/src/ws.rs`: `UnreadGauge::waiters`, `register()` returning an allocation-free future (three
+- [x] 3.1 `crates/corvis/src/ws.rs`: `UnreadGauge::waiters`, `register()` returning an allocation-free future (three
   `Option<Notified>`, a guard that decrements the counts), chain depth asserted at construction, `release` and `roll_back`
   waking a level only when its count is not zero; unit tests in `ws.rs::gauge_tests` for the three scenarios of the spec
   requirement "Waiting for room costs nothing below the limits" (a test-build counter of `wake` calls) and an interleaving test
   with the waiter steps; verify the existing gauge tests, including
   `observers_paused_by_the_pool_are_not_woken_by_rollbacks_at_their_address`, pass unchanged
-- [ ] 3.2 Callers check, register, recheck: `socket_io/client.rs` (the loop's `unread_changed` only when parked or over the
+- [x] 3.2 Callers check, register, recheck: `socket_io/client.rs` (the loop's `unread_changed` only when parked or over the
   limit), `socket_io/engine/websocket.rs` (reader), `socket_io/engine/polling.rs` (held `POST`); remove
   `EngineSocket::unread_changed` if nothing else uses it; verify `cargo test -p corvis --features socket-io --test
   socket_io_accounting --test engine_io_security --test socket_io_transit`
-- [ ] 3.3 `OutQueue::watchers` with the same count (`wait_ready` registers, `wake` notifies watchers only when counted); unit
+- [x] 3.3 `OutQueue::watchers` with the same count (`wait_ready` registers, `wake` notifies watchers only when counted); unit
   test: 10,000 pushes with no pending poll send no watcher notification, and a poll that registers between a push and its
   check gets the item; verify `cargo test -p corvis --features socket-io --lib ws` and `--test engine_io`
 

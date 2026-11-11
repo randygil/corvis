@@ -231,9 +231,11 @@ pub(crate) async fn run(
     // Set on every way out of the loop: whether the end of the connection is the client's doing.
     let client_dropped: bool;
     let mut closed: Closed<'_> = Box::pin(engine.closed());
+    // The last turn found the budget full (a parked message, or reads paused): this turn registers for a release before
+    // it looks again, so a release in between is not lost. A connection under its limits never registers.
+    let mut blocked = false;
     loop {
-        // Registered before anything below looks at the gauges, so a release in between wakes the select.
-        let unread_changed = engine.unread_changed();
+        let release = blocked.then(|| engine.unread_release());
         if let Some(waiting) = parked.take() {
             let flow = admit(&server, &shared, &mut decoder, &mut reassembly, &mut parked, &mut inflight, &mut closed, waiting).await;
             match flow {
@@ -257,6 +259,11 @@ pub(crate) async fn run(
         }
         let reassembling = decoder.is_reassembling();
         let over_limit = !reassembling && engine.unread_over_limit();
+        blocked = parked.is_some() || over_limit;
+        if blocked && release.is_none() {
+            // Found full without a registration: register, and look again.
+            continue;
+        }
         let can_read = !stream_done && parked.is_none() && (reassembling || (inflight.len() < options.max_inflight && !over_limit));
         let connect_wait = wait_until(connect_deadline);
         let admission_wait = wait_until(admission_deadline);
@@ -289,7 +296,7 @@ pub(crate) async fn run(
                 break;
             }
             // A release of room somewhere: the parked message, or the reads that are paused, may go on.
-            _ = unread_changed, if parked.is_some() || over_limit => {}
+            () = crate::ws::released(release), if blocked => {}
             next = messages.next(), if can_read => {
                 let Some((message, held)) = next else {
                     stream_done = true;

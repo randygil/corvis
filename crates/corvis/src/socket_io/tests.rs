@@ -115,6 +115,35 @@ fn record_disconnects(namespace: &IoNamespace, log: &Log) {
 // ------------------------------------------------------------------------------------- namespaces and connection
 
 #[tokio::test(start_paused = true)]
+async fn a_connection_under_its_limits_never_registers_for_a_release() {
+    let io = server(options());
+    let handled = Arc::new(AtomicUsize::new(0));
+    {
+        let handled = handled.clone();
+        io.on_connection(move |socket| {
+            let handled = handled.clone();
+            socket.on("e", move |_socket, _args, _ack| {
+                let handled = handled.clone();
+                async move {
+                    handled.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    for i in 0..10_000 {
+        conn.text(&format!(r#"2["e",{i}]"#));
+        if i % 100 == 99 {
+            settle().await;
+        }
+    }
+    settle().await;
+    assert_eq!(handled.load(Ordering::SeqCst), 10_000);
+    assert_eq!(conn.socket.peak_unread_waiters(), 0, "a reader under its limits registered for a release");
+}
+
+#[tokio::test(start_paused = true)]
 async fn auth_is_visible_to_the_server_and_the_answer_carries_a_socket_id() {
     let io = server(options());
     let seen = log();
