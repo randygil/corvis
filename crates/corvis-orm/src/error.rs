@@ -147,9 +147,11 @@ impl OrmError {
                 )
             }
             sqlx::error::ErrorKind::ForeignKeyViolation => {
+                // SQLite does not name the constraint; the reference client then reports `constraint: null` there.
                 let (text, constraint) = match db.constraint() {
-                    Some(c) => (format!("constraint: `{c}`"), c.to_string()),
-                    None => ("foreign key".to_string(), "foreign key".to_string()),
+                    Some(c) => (format!("constraint: `{c}`"), json!(c)),
+                    None if pg.is_none() => ("foreign key".to_string(), Value::Null),
+                    None => ("foreign key".to_string(), json!("foreign key")),
                 };
                 Self::known(
                     "P2003",
@@ -159,7 +161,8 @@ impl OrmError {
             }
             sqlx::error::ErrorKind::NotNullViolation => {
                 let cols = columns_to_fields(not_null_columns(&msg));
-                let c = cols.join(", ");
+                // Recorded on SQLite: "(`views`)".
+                let c = if pg.is_none() { cols.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ") } else { cols.join(", ") };
                 Self::known(
                     "P2011",
                     format!("Null constraint violation on the fields: ({c})"),

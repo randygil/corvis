@@ -1,0 +1,133 @@
+// The schema of the Postgres oracle (../full/schema.prisma) for SQLite, with only what the original's SQLite
+// connector rejects removed (`prisma validate`): the scalar lists `User.roles`, `User.tags`, `User.scores`, and every
+// `@db.*` native type (`Decimal(p, s)`, `Date`, `JsonB`, `Uuid`, `Timestamptz`). Enums are kept: the connector accepts
+// them. `User.meta` loses `@default("{}")` and becomes optional: the original's SQLite migration writes that default as
+// `DEFAULT {}`, which SQLite rejects ("unrecognized token"), so no table could be created from it.
+// Regenerate the fixtures with `sh regen.sh` (see there).
+generator client {
+  provider = "prisma-client-js"
+  output          = "./client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER @map("member")
+  GUEST
+
+  @@map("role_t")
+}
+
+enum Currency {
+  USD
+  VES
+  USDT
+}
+
+model User {
+  id        Int       @id @default(autoincrement())
+  email     String    @unique
+  name      String?
+  role      Role      @default(MEMBER)
+  balance   Decimal   @default(0)
+  ratio     Float?
+  big       BigInt    @default(0)
+  birthday  DateTime?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt
+  data      Json?
+  meta      Json?
+  active    Boolean   @default(true)
+  managerId Int?
+  manager   User?     @relation("mgr", fields: [managerId], references: [id])
+  reports   User[]    @relation("mgr")
+  posts     Post[]
+  profile   Profile?
+  groups    Group[]
+  wallets   Wallet[]
+
+  @@map("users")
+}
+
+model Profile {
+  id     Int    @id @default(autoincrement())
+  bio    String
+  userId Int    @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Post {
+  id         Int        @id @default(autoincrement())
+  title      String
+  body       String?
+  published  Boolean    @default(false)
+  views      Int        @default(0)
+  authorId   Int?
+  author     User?      @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  categories Category[]
+  comments   Comment[]
+  createdAt  DateTime   @default(now())
+}
+
+model Comment {
+  id     Int    @id @default(autoincrement())
+  text   String
+  postId Int
+  post   Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+}
+
+model Category {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  posts Post[]
+}
+
+model Group {
+  id    String @id
+  name  String
+  users User[]
+}
+
+model Wallet {
+  id       String   @id
+  userId   Int
+  currency Currency
+  amount   Decimal
+  label    String?
+  user     User     @relation(fields: [userId], references: [id])
+  entries  Entry[]
+
+  @@unique([userId, currency])
+}
+
+model Pair {
+  a       String
+  b       Int
+  label   String
+  entries Entry[]
+
+  @@id([a, b])
+}
+
+model Entry {
+  id       Int     @id @default(autoincrement())
+  walletId String
+  wallet   Wallet  @relation(fields: [walletId], references: [id])
+  pairA    String?
+  pairB    Int?
+  pair     Pair?   @relation(fields: [pairA, pairB], references: [a, b])
+  amount   Decimal
+}
+
+model Rate {
+  date   DateTime
+  source String
+  value  Decimal
+  at     DateTime?
+
+  @@id([date, source])
+}

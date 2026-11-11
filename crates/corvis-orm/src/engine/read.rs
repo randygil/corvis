@@ -245,11 +245,29 @@ impl Engine {
     }
 
     /// Decodes rows selected with [`Engine::select_scalars`].
-    pub(crate) fn decode_scalars(&self, model: &'static ModelMeta, rows: Vec<Vec<Value>>) -> Vec<Map<String, Value>> {
+    pub(crate) fn decode_scalars(&self, model: &'static ModelMeta, rows: Vec<Vec<Value>>) -> Result<Vec<Map<String, Value>>> {
         let d = self.dialect();
         rows.into_iter()
-            .map(|r| model.scalars().zip(r).map(|(f, v)| (f.name.to_string(), crate::db::coerce_field_d(f, v, d))).collect())
+            .map(|r| {
+                model
+                    .scalars()
+                    .zip(r)
+                    .map(|(f, v)| match self.int_out_of_range(model, f, &v) {
+                        Some(e) => Err(e),
+                        None => Ok((f.name.to_string(), crate::db::coerce_field_d(f, v, d))),
+                    })
+                    .collect()
+            })
             .collect()
+    }
+
+    /// `P2023` for an `Int` column holding a value outside 32 bits, which SQLite can store (its integers are 64-bit):
+    /// the reference client fails like this when it reads such a row.
+    fn int_out_of_range(&self, model: &'static ModelMeta, f: &FieldMeta, v: &Value) -> Option<OrmError> {
+        let n = v.as_i64().filter(|n| f.kind == crate::meta::FieldKind::Int && !f.list && i32::try_from(*n).is_err())?;
+        let detail =
+            format!("Conversion failed: Value {n} does not fit in an INT column, try migrating the '{}' column type to BIGINT", f.column);
+        Some(OrmError::known("P2023", format!("Inconsistent column data: {detail}"), json!({ "modelName": model.name, "message": detail })))
     }
 
     /// Plain scalar rows matching `where` (no relations).
@@ -262,7 +280,7 @@ impl Engine {
             q.push(" LIMIT ").bind(SqlValue::Int(l));
         }
         let rows = self.client.fetch(&q, Some(model)).await?;
-        Ok(self.decode_scalars(model, rows.rows))
+        self.decode_scalars(model, rows.rows)
     }
 
     /// Shapes a fetched record into the output object.
@@ -387,7 +405,7 @@ impl Engine {
             self.limit_sql(&mut q, take.map(|t| t.checked_abs().unwrap_or(i64::MAX)), skip);
         }
         let rows = self.client.fetch(&q, Some(model)).await?;
-        let mut records = self.decode_scalars(model, rows.rows);
+        let mut records = self.decode_scalars(model, rows.rows)?;
         if let Some(fields) = &distinct {
             let mut seen = HashSet::new();
             records.retain(|r| seen.insert(key_of(&fields.iter().map(|f| r.get(f.name).unwrap_or(&Value::Null)).collect::<Vec<_>>())));

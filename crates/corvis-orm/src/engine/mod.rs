@@ -407,11 +407,14 @@ impl Engine {
                     },
                     _ => return Err(bad()),
                 };
-                match i32::try_from(i) {
-                    Ok(i) if self.dialect() == Dialect::Postgres => SqlValue::Int32(i),
-                    Ok(i) => SqlValue::Int(i as i64),
+                match (i32::try_from(i), self.dialect()) {
+                    (Ok(i), Dialect::Postgres) => SqlValue::Int32(i),
                     // Like the reference client, the query fails when the parameter is converted (`ToSql`).
-                    Err(_) => SqlValue::OutOfRange(i),
+                    (Err(_), Dialect::Postgres) => SqlValue::OutOfRange(i),
+                    // SQLite integers are 64-bit and the reference client binds them as such (recorded: a filter
+                    // with 3000000000 runs, a write stores it, and reading it into an `Int` field fails, see
+                    // `Engine::int_out_of_range`).
+                    (_, Dialect::Sqlite) => SqlValue::Int(i),
                 }
             }
             // Out of the 64-bit range is an error, never a saturated value.
@@ -443,10 +446,13 @@ impl Engine {
                 // A value that does not fit a NUMERIC stays a `Decimal`: running the query fails
                 // with a conversion error (`check_params`), as in the reference engine, before
                 // anything tries to print it.
-                if self.dialect() == Dialect::Postgres || !d.fits_numeric() {
-                    SqlValue::Decimal(d)
-                } else {
-                    SqlValue::Text(d.to_fixed_plain())
+                match (self.dialect(), d.fits_numeric()) {
+                    (Dialect::Postgres, _) => SqlValue::Decimal(d),
+                    (Dialect::Sqlite, true) => SqlValue::Text(d.to_fixed_plain()),
+                    // SQLite reads it as a number (recorded: `lt: "1e140000"` matches every row, `lte: "9999e-262144"`
+                    // none); the exponent form keeps the text short, where the fixed form would have 140,000 digits.
+                    // Writes are bounded before they get here (`Engine::data_value`).
+                    (Dialect::Sqlite, false) => SqlValue::Text(d.to_string()),
                 }
             }
             FieldKind::Boolean => SqlValue::Bool(v.as_bool().ok_or_else(bad)?),

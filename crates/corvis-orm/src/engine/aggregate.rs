@@ -181,6 +181,14 @@ impl Engine {
 
     /// Converts a decoded aggregate into the output type of the reference client.
     fn agg_value(&self, a: &Agg, v: Value) -> Value {
+        // SQLite computes `AVG` as a double; the reference client keeps 16 significant digits of it (recorded:
+        // `3002399751580330` for 9007199254740991 / 3, `"1.333333333333333"` for a `Decimal` 4 / 3).
+        let v = match (a.group, self.dialect(), v.as_f64()) {
+            ("_avg", Dialect::Sqlite, Some(x)) if x.is_finite() => {
+                format!("{x:.15e}").parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(v, Value::Number)
+            }
+            _ => v,
+        };
         match (a.group, a.field) {
             ("_count", _) => Value::from(v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or(0)),
             (_, Some(f)) if f.kind == FieldKind::Decimal => coerce(FieldKind::Decimal, v),
