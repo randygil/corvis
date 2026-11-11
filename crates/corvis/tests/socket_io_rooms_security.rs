@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use corvis::socket_io::engine::EngineOptions;
-use corvis::socket_io::{IoOptions, RoomError};
+use corvis::socket_io::{IoOptions, RoomError, testing};
 use engine_support::io_client::{IoFixture, Msg, Raw, start};
 use engine_support::{open_polling, poll, post};
 
@@ -36,7 +36,7 @@ async fn a_socket_cannot_join_more_rooms_than_the_cap_and_a_refused_join_changes
     // Leaving frees room.
     socket.leave("room-0");
     socket.join("one-more").unwrap();
-    assert_eq!(fx.io.main().adapter().membership_size().unwrap().memberships, 1_000);
+    assert_eq!(testing::membership_size(&fx.io.main()).unwrap().memberships, 1_000);
 }
 
 #[tokio::test]
@@ -53,7 +53,7 @@ async fn a_room_name_over_the_limit_is_refused_in_join() {
 #[tokio::test]
 async fn churn_leaves_the_maps_empty() {
     let fx = start(IoOptions::new(), |_| {}).await;
-    let adapter = fx.io.main().adapter().clone();
+    let namespace = fx.io.main();
     let mut raw = Raw::connect(fx.addr).await;
     let id = raw.join("/", None).await;
     let socket = fx.io.main().socket(&id).unwrap();
@@ -63,7 +63,7 @@ async fn churn_leaves_the_maps_empty() {
         socket.join(room.as_str()).unwrap();
         socket.leave(&room);
     }
-    assert_eq!(adapter.membership_size().unwrap().rooms, 1, "only the room of the socket's id");
+    assert_eq!(testing::membership_size(&namespace).unwrap().rooms, 1, "only the room of the socket's id");
     // Sockets that join many rooms and disconnect (or just drop): they are gone with their rooms.
     for round in 0..200u32 {
         let mut other = Raw::connect(fx.addr).await;
@@ -83,9 +83,9 @@ async fn churn_leaves_the_maps_empty() {
         }
     })
     .await;
-    let size = adapter.membership_size().unwrap();
+    let size = testing::membership_size(&namespace).unwrap();
     assert_eq!((size.rooms, size.sockets, size.memberships), (0, 0, 0));
-    assert_eq!(adapter.check_invariants(), Ok(()));
+    assert_eq!(testing::check_invariants(&namespace), Ok(()));
 }
 
 /// A client that connected over long polling and never polls again: what is queued for it stays queued.
@@ -134,7 +134,7 @@ async fn many_slow_clients_never_hold_the_broadcast_back_and_each_is_cut_at_its_
         within(rx.recv()).await.expect("the reader received the event");
         for id in &slow {
             if let Some(socket) = fx.io.main().socket(id) {
-                max_queue = max_queue.max(socket.buffered_amount());
+                max_queue = max_queue.max(testing::buffered_amount(&socket));
             }
         }
         assert!(n < EVENTS);
@@ -200,7 +200,7 @@ async fn a_join_during_a_broadcast_and_a_broadcast_during_a_join_both_complete()
     stop.store(true, Ordering::SeqCst);
     within(broadcaster).await.unwrap();
     assert!(sent.load(Ordering::SeqCst) > 0);
-    assert_eq!(fx.io.main().adapter().check_invariants(), Ok(()));
+    assert_eq!(testing::check_invariants(&fx.io.main()), Ok(()));
     drop(raws);
 }
 
@@ -209,7 +209,7 @@ async fn a_join_during_a_broadcast_and_a_broadcast_during_a_join_both_complete()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_join_racing_a_disconnect_leaves_no_membership_behind() {
     let fx = start(IoOptions::new(), |_| {}).await;
-    let adapter = fx.io.main().adapter().clone();
+    let namespace = fx.io.main();
     for round in 0..1_000u32 {
         let mut raw = Raw::connect(fx.addr).await;
         let id = raw.join("/", None).await;
@@ -234,15 +234,15 @@ async fn a_join_racing_a_disconnect_leaves_no_membership_behind() {
         });
         within(closer).await.unwrap();
         // `disconnect` returned: the socket is out of every room, whatever the joiners do from now on.
-        assert!(!adapter.has_socket(&id), "round {round}: a membership of a disconnected socket");
+        assert!(!testing::has_socket(&namespace, &id).unwrap(), "round {round}: a membership of a disconnected socket");
         for j in joiners {
             within(j).await.unwrap();
         }
-        assert!(!adapter.has_socket(&id), "round {round}: a join after the disconnect left a membership");
-        assert_eq!(adapter.check_invariants(), Ok(()), "round {round}");
+        assert!(!testing::has_socket(&namespace, &id).unwrap(), "round {round}: a join after the disconnect left a membership");
+        assert_eq!(testing::check_invariants(&namespace), Ok(()), "round {round}");
         drop(raw);
     }
-    let size = adapter.membership_size().unwrap();
+    let size = testing::membership_size(&namespace).unwrap();
     assert_eq!(size.sockets, 0);
     assert_eq!(size.rooms, 0);
 }
@@ -265,9 +265,9 @@ async fn a_broadcast_racing_a_disconnect_never_panics_and_sends_nothing_after_it
         socket.disconnect(false);
         within(broadcasting).await.unwrap();
         assert!(!socket.connected());
-        let before = socket.buffered_amount();
+        let before = testing::buffered_amount(&socket);
         fx.io.to("r").emit("after", ()).await.unwrap();
         // Not `==`: the socket holds its connection weakly, so once the connection is gone the amount reads zero.
-        assert!(socket.buffered_amount() <= before, "nothing is queued for a socket that disconnected");
+        assert!(testing::buffered_amount(&socket) <= before, "nothing is queued for a socket that disconnected");
     }
 }

@@ -12,7 +12,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::Duration;
 
-use corvis::socket_io::IoOptions;
+use corvis::socket_io::{IoOptions, testing};
 use engine_support::io_client::start;
 use engine_support::{open_polling, poll, post};
 
@@ -97,7 +97,7 @@ async fn a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reac
 
     println!("held by a broadcast to 10 sockets: {few} bytes; to 100 sockets: {all} bytes (payload {PAYLOAD})");
     for id in ids.iter().take(10) {
-        assert!(fx.io.main().socket(id).unwrap().buffered_amount() > PAYLOAD, "the packet is queued on every recipient");
+        assert!(testing::buffered_amount(&fx.io.main().socket(id).unwrap()) > PAYLOAD, "the packet is queued on every recipient");
     }
     assert!(few < (PAYLOAD as isize) * 3 / 2 + 10 * PER_RECIPIENT, "one copy for 10 recipients, held {few}");
     assert!(all < few + 90 * PER_RECIPIENT, "ninety more recipients cost {} bytes: a copy each would be {}", all - few, 90 * PAYLOAD);

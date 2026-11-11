@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock, Weak};
 
 use super::adapter::AckBudget;
 use super::client::{self, ClientShared};
-use super::engine::{EngineOptionsError, EngineServer};
+use super::engine::{EngineOptionsError, EngineServer, EngineSocket};
 use super::namespace::IoNamespace;
 use super::options::{IoOptions, IoOptionsError};
 use super::parser::MAX_NAMESPACE_LEN;
@@ -36,12 +36,18 @@ pub(crate) struct ServerInner {
     /// The room for the answers held by calls with acknowledgements, shared by every namespace.
     ack_budget: Arc<AckBudget>,
     namespaces: RwLock<HashMap<String, IoNamespace>>,
-    closed: AtomicBool,
     /// `release` ran: the adapters are closed once per namespace however many paths reach it.
     released: AtomicBool,
 }
 
 impl ServerInner {
+    /// Starts the connection task of a new Engine.IO session.
+    fn serve(self: &Arc<Self>, socket: EngineSocket) {
+        let messages = socket.messages_held();
+        let shared = ClientShared::new(socket, self.options.clone(), self);
+        tokio::spawn(client::Connection::new(self.clone(), shared, messages).run());
+    }
+
     pub(crate) fn namespace(&self, name: &str) -> Option<IoNamespace> {
         self.namespaces.read().unwrap_or_else(|e| e.into_inner()).get(name).cloned()
     }
@@ -136,18 +142,15 @@ impl IoServer {
             warnings: Arc::new(WarnLimiter::new(WARN_INTERVAL, "SocketIO")),
             ack_budget,
             namespaces: RwLock::new(namespaces),
-            closed: AtomicBool::new(false),
             released: AtomicBool::new(false),
         });
         let weak: Weak<ServerInner> = Arc::downgrade(&inner);
-        // The connection callback keeps the server alive, as `new Server(httpServer)` is kept by its HTTP server: an
-        // application may drop its `IoServer` handle after attaching it. `close`, and the application's shutdown,
-        // replace the callback, which breaks the cycle.
-        let strong = inner.clone();
-        engine.on_connection(move |socket| {
-            let messages = socket.messages_held();
-            let shared = ClientShared::new(socket, strong.options.clone(), &strong);
-            tokio::spawn(client::Connection::new(strong.clone(), shared, messages).run());
+        // Until it is attached, the server is kept by its handles only: one created and dropped is freed. A session
+        // that reaches a server already gone is closed.
+        let unattached = weak.clone();
+        engine.on_connection(move |socket| match unattached.upgrade() {
+            Some(server) => server.serve(socket),
+            None => socket.close(),
         });
         // The application's shutdown closes the engine: the sockets hear `server shutting down` first.
         engine.on_closing(move || {
@@ -162,7 +165,15 @@ impl IoServer {
     /// `io.attach(httpServer)`: from now on the server takes every request under the Engine.IO path (`/socket.io/`
     /// by default). Fails when another attached server's path overlaps this one.
     pub fn attach(&self, server: &HttpServer) -> Result<(), EngineOptionsError> {
-        self.inner.engine.attach(server)
+        self.inner.engine.attach(server)?;
+        // From now on the connection callback keeps the server alive, as `new Server(httpServer)` is kept by its HTTP
+        // server: an application may drop its `IoServer` handle after attaching it. `close`, and the application's
+        // shutdown, replace the callback, which breaks the cycle (and a closed server is not revived here).
+        if !self.inner.released.load(Ordering::SeqCst) {
+            let strong = self.inner.clone();
+            self.inner.engine.on_connection(move |socket| strong.serve(socket));
+        }
+        Ok(())
     }
 
     /// `io.of(name)`: the namespace with this name, registered if it was not. A name without a leading `/` gets one.
@@ -204,7 +215,6 @@ impl IoServer {
     /// then the Engine.IO sessions close and new handshakes are refused with `503`. Idempotent. The application's
     /// shutdown does the same through the Engine.IO server's hook.
     pub fn close(&self) {
-        self.inner.closed.store(true, Ordering::SeqCst);
         self.inner.disconnect_sockets(DisconnectReason::ServerShuttingDown);
         self.inner.release();
         self.inner.engine.close();
@@ -245,6 +255,14 @@ mod tests {
         assert!(Arc::ptr_eq(&a.inner, &b.inner));
         assert!(io.inner.namespace("/missing").is_none());
         assert!(Arc::ptr_eq(&io.of("/").unwrap().inner, &io.main().inner));
+    }
+
+    #[test]
+    fn a_server_that_is_never_attached_is_freed_when_its_last_handle_drops() {
+        let io = IoServer::new(IoOptions::new()).unwrap();
+        let inner = Arc::downgrade(&io.inner);
+        drop(io);
+        assert!(inner.upgrade().is_none(), "the connection callback kept an unattached server alive");
     }
 
     #[test]

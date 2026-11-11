@@ -28,7 +28,29 @@ pub(crate) type EventHandler = Arc<dyn Fn(IoSocket, Args, Option<AckSender>) -> 
 type DisconnectHandler = Arc<dyn Fn(&IoSocket, DisconnectReason) + Send + Sync>;
 
 /// Why a socket disconnected, with the strings Node's `socket.io` reports.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::DisconnectReason;
+/// fn every_variant(value: DisconnectReason) {
+///     match value {
+///         DisconnectReason::ClientNamespaceDisconnect => {}
+///         DisconnectReason::ServerNamespaceDisconnect => {}
+///         DisconnectReason::TransportClose => {}
+///         DisconnectReason::TransportError => {}
+///         DisconnectReason::PingTimeout => {}
+///         DisconnectReason::ParseError => {}
+///         DisconnectReason::ForcedClose => {}
+///         DisconnectReason::ForcedServerClose => {}
+///         DisconnectReason::ServerShuttingDown => {}
+///         DisconnectReason::AdmissionTimeout => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DisconnectReason {
     /// The client left the namespace (a DISCONNECT packet).
     ClientNamespaceDisconnect,
@@ -91,7 +113,28 @@ impl From<CloseReason> for DisconnectReason {
 }
 
 /// Why an emit failed. Nothing was sent.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::EmitError;
+/// fn every_variant(value: EmitError) {
+///     match value {
+///         EmitError::ReservedEvent(_) => {}
+///         EmitError::NotConnected => {}
+///         EmitError::TooManyAttachments => {}
+///         EmitError::TooDeep => {}
+///         EmitError::BufferFull => {}
+///         EmitError::Value(_) => {}
+///         EmitError::InvalidRoom(_) => {}
+///         EmitError::Adapter(_) => {}
+///         EmitError::NotStarted => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum EmitError {
     /// The event name is one of `connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`,
     /// `removeListener`.
@@ -135,7 +178,23 @@ impl From<AdapterError> for EmitError {
 }
 
 /// Why an acknowledged emit did not produce the client's answer.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::AckError;
+/// fn every_variant(value: AckError) {
+///     match value {
+///         AckError::Timeout => {}
+///         AckError::Disconnected => {}
+///         AckError::TooManyPending => {}
+///         AckError::Emit(_) => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum AckError {
     /// The client did not answer in time.
     #[error("operation has timed out")]
@@ -678,13 +737,6 @@ impl IoSocket {
             Ok(Err(_)) => Err(AckError::Disconnected),
             Err(_) => Err(AckError::Timeout),
         }
-    }
-
-    /// The bytes queued for this socket's connection and not yet written. Unstable and hidden: for the tests that
-    /// check what a broadcast holds.
-    #[doc(hidden)]
-    pub fn buffered_amount(&self) -> usize {
-        self.engine().map_or(0, |e| e.buffered_amount())
     }
 
     /// The number of acknowledged emits still waiting for the client.

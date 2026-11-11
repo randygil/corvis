@@ -132,9 +132,8 @@ impl IoNamespace {
         IoNamespace { inner }
     }
 
-    /// The adapter of this namespace. Unstable and hidden: for tests and for the layers built on this one.
-    #[doc(hidden)]
-    pub fn adapter(&self) -> &Arc<dyn Adapter> {
+    /// The adapter of this namespace (`testing::adapter` for the tests).
+    pub(crate) fn adapter(&self) -> &Arc<dyn Adapter> {
         &self.inner.adapter
     }
 

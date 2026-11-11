@@ -94,7 +94,22 @@ impl<S: AsRef<str>, const N: usize> IntoRooms for &[S; N] {
 }
 
 /// Why a broadcast with acknowledgements ended without every answer.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::BroadcastAckErrorKind;
+/// fn every_variant(value: BroadcastAckErrorKind) {
+///     match value {
+///         BroadcastAckErrorKind::Timeout => {}
+///         BroadcastAckErrorKind::ResponsesTooLarge => {}
+///         BroadcastAckErrorKind::Emit(_) => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
 pub enum BroadcastAckErrorKind {
     /// The deadline passed before every recipient answered.
     #[error("operation has timed out")]

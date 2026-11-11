@@ -20,7 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use corvis::socket_io::{EngineOptions, IoOptions, probe_decode};
+use corvis::socket_io::testing::probe_decode;
+use corvis::socket_io::{EngineOptions, IoOptions};
 use engine_support::io_client::{Raw, start};
 use tokio::sync::Notify;
 

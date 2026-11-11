@@ -34,7 +34,24 @@ pub(crate) fn after(now: Instant, delay: Duration) -> Instant {
 }
 
 /// Why a session ended, with the strings Node's `engine.io` reports.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::engine::CloseReason;
+/// fn every_variant(value: CloseReason) {
+///     match value {
+///         CloseReason::TransportClose => {}
+///         CloseReason::TransportError => {}
+///         CloseReason::PingTimeout => {}
+///         CloseReason::ParseError => {}
+///         CloseReason::ForcedClose => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CloseReason {
     /// The client closed the transport or sent a close packet.
     TransportClose,
@@ -289,7 +306,7 @@ pub(crate) struct Candidate {
 
 /// What a polling `GET` is answered with.
 pub(crate) enum Polled {
-    /// Packets to send (at least one), and whether the session is closing after them.
+    /// Packets to send, at least one (a close packet last when the session closes after them).
     Packets(Vec<Packet>),
     /// Answer a single noop (an upgrade, or the client closed).
     Noop,

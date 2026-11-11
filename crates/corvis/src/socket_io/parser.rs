@@ -620,15 +620,13 @@ fn parse_json(text: &str, measured: Measured) -> Result<IoValue, DecodeError> {
     let state = Budget { remaining: Cell::new(measured.bound), fail: Cell::new(None), sizes: measured.sizes, next: Cell::new(0) };
     let mut de = serde_json::Deserializer::from_str(text);
     let result = Seed { budget: &state, depth: 0 }.deserialize(&mut de).and_then(|v| de.end().map(|()| v));
-    match result {
-        Ok(v) => Ok(v),
-        Err(e) => Err(match state.fail.get() {
-            Some(Fail::Size) => DecodeError::TooLarge,
-            Some(Fail::Depth) => DecodeError::TooDeep,
-            None if e.to_string().starts_with("recursion limit exceeded") => DecodeError::TooDeep,
-            None => DecodeError::InvalidPayload,
-        }),
-    }
+    // The seed's depth bound (`MAX_DEPTH`) is below `serde_json`'s own recursion limit, so a document nested too deeply
+    // is always the seed's `Depth`, never an error of the parser to recognize by its text.
+    result.map_err(|_| match state.fail.get() {
+        Some(Fail::Size) => DecodeError::TooLarge,
+        Some(Fail::Depth) => DecodeError::TooDeep,
+        None => DecodeError::InvalidPayload,
+    })
 }
 
 /// A binary packet whose attachments are still arriving.

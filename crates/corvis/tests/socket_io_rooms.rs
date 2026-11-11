@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use corvis::socket_io::adapter::{
-    AckSink, Adapter, AdapterError, BroadcastOptions, InMemoryAdapter, LocalNamespace, MembershipSize, Packet, Room, SocketId, SocketInfo,
+    AckSink, Adapter, AdapterError, BroadcastOptions, InMemoryAdapter, LocalNamespace, Packet, Room, SocketId, SocketInfo,
 };
-use corvis::socket_io::{Args, Binary, BroadcastAckErrorKind, EmitError, IoOptions, IoServer, IoValue};
+use corvis::socket_io::{Args, Binary, BroadcastAckErrorKind, EmitError, IoOptions, IoServer, IoValue, testing};
 use engine_support::io_client::{IoFixture, Msg, Raw, start};
 use engine_support::{open_polling, poll, post};
 use tokio::sync::Notify;
@@ -31,10 +31,12 @@ struct Knobs {
     release: Notify,
     /// Cluster operations seen.
     calls: std::sync::atomic::AtomicUsize,
+    /// The in-memory adapter the main namespace's test adapter wraps (the first one built).
+    adapter: std::sync::OnceLock<Arc<InMemoryAdapter>>,
 }
 
 struct TestAdapter {
-    inner: InMemoryAdapter,
+    inner: Arc<InMemoryAdapter>,
     knobs: Arc<Knobs>,
 }
 
@@ -113,9 +115,6 @@ impl Adapter for TestAdapter {
         self.step(false).await?;
         self.inner.disconnect_sockets(opts, close).await
     }
-    fn membership_size(&self) -> Option<MembershipSize> {
-        self.inner.membership_size()
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -132,8 +131,11 @@ impl Variant {
             Variant::InMemory => IoOptions::new(),
             Variant::Replaced => {
                 let knobs = knobs.clone();
-                IoOptions::new()
-                    .adapter(move |local: LocalNamespace| TestAdapter { inner: InMemoryAdapter::new(local), knobs: knobs.clone() })
+                IoOptions::new().adapter(move |local: LocalNamespace| {
+                    let inner = Arc::new(InMemoryAdapter::new(local));
+                    let _ = knobs.adapter.set(inner.clone());
+                    TestAdapter { inner, knobs: knobs.clone() }
+                })
             }
         }
     }
@@ -363,7 +365,11 @@ async fn leave_and_rooms_during_disconnecting() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(*log.lock().unwrap(), ["during:2", "after:0"], "{v:?}");
-        assert_eq!(fx.io.main().adapter().membership_size().unwrap().sockets, 1, "only `a` is left");
+        let size = match v {
+            Variant::InMemory => testing::membership_size(&fx.io.main()),
+            Variant::Replaced => testing::adapter_size(knobs.adapter.get().expect("the wrapped adapter")),
+        };
+        assert_eq!(size.unwrap().sockets, 1, "only `a` is left");
     }
 }
 
@@ -497,5 +503,5 @@ async fn a_long_name_in_to_sends_nothing() {
 #[tokio::test]
 async fn the_default_adapter_is_the_in_memory_one() {
     let io = IoServer::new(IoOptions::new()).unwrap();
-    assert!(io.main().adapter().membership_size().is_some());
+    assert!(testing::in_memory(&io.main()).is_some());
 }

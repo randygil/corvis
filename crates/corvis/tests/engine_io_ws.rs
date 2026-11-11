@@ -94,6 +94,25 @@ async fn a_websocket_first_session_exchanges_messages() {
     assert_eq!(socket.closed().await, CloseReason::TransportClose);
 }
 
+/// The writer may be the first to see the peer's close frame (the library refuses its next frame), or the reader may:
+/// either way the session ends as a peer close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_frame_while_the_server_writes_ends_the_session_as_a_transport_close() {
+    let mut fx = start(EngineOptions::new().max_buffered_amount(4 * 1024 * 1024)).await;
+    let chunk = "x".repeat(64 * 1024);
+    for round in 0..200 {
+        let mut ws = ws_connect(fx.addr, None).await;
+        let _open = next_text(&mut ws).await;
+        let socket = fx.socket().await;
+        // 1 MiB queued for a client that sends its close frame instead of reading it.
+        for _ in 0..16 {
+            socket.send(chunk.as_str()).unwrap();
+        }
+        ws.send(Message::Close(None)).await.unwrap();
+        assert_eq!(socket.closed().await, CloseReason::TransportClose, "round {round}");
+    }
+}
+
 #[tokio::test]
 async fn a_websocket_message_over_the_limit_closes_with_1009() {
     let mut fx = start(EngineOptions::new().max_http_buffer_size(1000)).await;

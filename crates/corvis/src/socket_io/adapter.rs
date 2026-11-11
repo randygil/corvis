@@ -50,7 +50,23 @@ pub type SocketId = Arc<str>;
 const YIELD_EVERY: usize = 512;
 
 /// Why a join was refused. Nothing was joined.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::RoomError;
+/// fn every_variant(value: RoomError) {
+///     match value {
+///         RoomError::NameTooLong { .. } => {}
+///         RoomError::TooManyRooms { .. } => {}
+///         RoomError::SocketIdRoom => {}
+///         RoomError::TooManyTargets { .. } => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum RoomError {
     /// A room name is longer than `max_room_name_length`.
     #[error("a room name is {len} bytes long; the most is {max}")]
@@ -118,7 +134,23 @@ impl From<EncodeError> for PacketError {
 
 /// Why an operation of the adapter failed. A recipient that cannot take a packet is not an adapter error: that
 /// recipient is closed and the broadcast goes on.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::AdapterError;
+/// fn every_variant(value: AdapterError) {
+///     match value {
+///         AdapterError::Timeout => {}
+///         AdapterError::Closed => {}
+///         AdapterError::Unavailable(_) => {}
+///         AdapterError::InvalidPacket(_) => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum AdapterError {
     /// The adapter did not get an answer in time.
     #[error("the adapter timed out")]
@@ -732,7 +764,7 @@ impl AckSink {
 
 /// The adapter of one namespace. See the [module documentation](self); unstable until #36.
 #[async_trait]
-pub trait Adapter: Send + Sync + 'static {
+pub trait Adapter: std::any::Any + Send + Sync + 'static {
     /// Runs once, before the first cluster operation of the namespace (Node's `init`).
     async fn init(&self) -> Result<(), AdapterError>;
     /// Releases what the adapter holds (Node's `close`).
@@ -779,25 +811,6 @@ pub trait Adapter: Send + Sync + 'static {
     fn room_exists(&self, _room: &str) -> bool {
         false
     }
-
-    /// What the local maps hold, for the tests that check nothing is left behind. `None` when the adapter has no such
-    /// maps.
-    #[doc(hidden)]
-    fn membership_size(&self) -> Option<MembershipSize> {
-        None
-    }
-
-    /// The invariants of the local maps (they mirror each other, no empty room), for the tests.
-    #[doc(hidden)]
-    fn check_invariants(&self) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// Whether the local maps hold anything for this socket, for the tests.
-    #[doc(hidden)]
-    fn has_socket(&self, _id: &str) -> bool {
-        false
-    }
 }
 
 // -------------------------------------------------------------------------------------- the in-memory adapter
@@ -809,6 +822,7 @@ pub(crate) struct Membership {
     pub(crate) rooms: HashMap<Room, HashSet<SocketId>>,
     pub(crate) sids: HashMap<SocketId, HashSet<Room>>,
     /// The names the last `add` looked at: the work done under the lock, for the tests.
+    #[cfg(test)]
     pub(crate) examined: usize,
 }
 
@@ -819,9 +833,15 @@ impl Membership {
         let current = self.sids.get(id);
         let held = current.map_or(0, HashSet::len);
         let mut fresh: Vec<&Room> = Vec::new();
-        self.examined = 0;
+        #[cfg(test)]
+        {
+            self.examined = 0;
+        }
         for room in rooms {
-            self.examined += 1;
+            #[cfg(test)]
+            {
+                self.examined += 1;
+            }
             if current.is_some_and(|set| set.contains(&**room)) {
                 continue;
             }
@@ -975,7 +995,8 @@ impl std::fmt::Debug for InMemoryAdapter {
     }
 }
 
-/// How big the maps of an adapter are: for the tests that check nothing is left behind after churn.
+/// How big the maps of the in-memory adapter are: for the tests that check nothing is left behind after churn (see
+/// `testing::membership_size`).
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MembershipSize {
@@ -1016,14 +1037,25 @@ impl InMemoryAdapter {
         self.read().examined
     }
 
-    /// The size of the two maps, and whether they mirror each other.
-    #[doc(hidden)]
-    pub fn size(&self) -> MembershipSize {
+    /// The size of the two maps; an error when they do not mirror each other.
+    pub(crate) fn size(&self) -> Result<MembershipSize, String> {
         let m = self.read();
         let from_rooms: usize = m.rooms.values().map(HashSet::len).sum();
         let from_sids: usize = m.sids.values().map(HashSet::len).sum();
-        assert_eq!(from_rooms, from_sids, "the two maps of the adapter mirror each other");
-        MembershipSize { rooms: m.rooms.len(), sockets: m.sids.len(), memberships: from_rooms }
+        if from_rooms != from_sids {
+            return Err(format!("the rooms hold {from_rooms} memberships and the sockets {from_sids}"));
+        }
+        Ok(MembershipSize { rooms: m.rooms.len(), sockets: m.sids.len(), memberships: from_rooms })
+    }
+
+    /// The invariants of the two maps (they mirror each other, no empty room or socket).
+    pub(crate) fn check_invariants(&self) -> Result<(), String> {
+        self.read().check()
+    }
+
+    /// Whether the maps hold anything for this socket.
+    pub(crate) fn has_socket(&self, id: &str) -> bool {
+        self.read().sids.contains_key(id)
     }
 
     async fn deliver(&self, sockets: &[IoSocket], encoded: &parser::SharedEncoded) {
@@ -1040,18 +1072,6 @@ impl InMemoryAdapter {
 
 #[async_trait]
 impl Adapter for InMemoryAdapter {
-    fn membership_size(&self) -> Option<MembershipSize> {
-        Some(self.size())
-    }
-
-    fn check_invariants(&self) -> Result<(), String> {
-        self.read().check()
-    }
-
-    fn has_socket(&self, id: &str) -> bool {
-        self.read().sids.contains_key(id)
-    }
-
     async fn init(&self) -> Result<(), AdapterError> {
         Ok(())
     }

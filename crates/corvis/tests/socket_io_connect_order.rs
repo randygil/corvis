@@ -201,7 +201,7 @@ async fn a_connection_that_ends_at(step: ConnectStep) {
     assert_eq!(handled.load(Ordering::SeqCst), 0, "no handler of the attempt that ended at {step:?} ran");
     assert_eq!(fx.io.main().socket_count(), 0, "no socket is left (at {step:?})");
     let empty = MembershipSize { rooms: 0, sockets: 0, memberships: 0 };
-    assert_eq!(membership_size(&fx.io.main()), Some(empty), "no membership is left (at {step:?})");
+    assert_eq!(membership_size(&fx.io.main()), Ok(empty), "no membership is left (at {step:?})");
     fx.io.close();
 }
 
@@ -229,12 +229,13 @@ async fn a_connection_that_ends_once_connect_was_queued_runs_no_handler() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn over_websocket_the_handlers_event_follows_connect_as_its_own_frame() {
-    let fx = start(options().engine(EngineOptions::new().max_sessions_per_ip(4_096).ping_interval(std::time::Duration::from_secs(60))), |io| {
-        io.on_connection(|socket| {
-            let _ = socket.emit("auth", (serde_json::json!({}),));
-        });
-    })
-    .await;
+    let fx =
+        start(options().engine(EngineOptions::new().max_sessions_per_ip(4_096).ping_interval(std::time::Duration::from_secs(60))), |io| {
+            io.on_connection(|socket| {
+                let _ = socket.emit("auth", (serde_json::json!({}),));
+            });
+        })
+        .await;
     for _ in 0..50 {
         let mut raw = Raw::connect(fx.addr).await;
         raw.join("/", None).await;

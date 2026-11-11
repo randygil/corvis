@@ -21,7 +21,8 @@ use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use corvis::socket_io::{DisconnectReason, EngineOptions, IoOptions, IoServer, probe_auth};
+use corvis::socket_io::testing::probe_auth;
+use corvis::socket_io::{DisconnectReason, EngineOptions, IoOptions, IoServer};
 use engine_support::io_client::start;
 use socket_io_raw::{Raw, ip};
 use tokio::sync::Notify;

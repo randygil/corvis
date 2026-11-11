@@ -188,7 +188,13 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
                         }
                         break Exit::WriterFailed;
                     }
-                    Ok((_, sink)) => {
+                    // The protocol refused a frame: the closing handshake began (the peer's close frame arrived and the
+                    // library answers it), so the peer is closing the connection.
+                    Ok((WriteEnd::Refused, sink)) => {
+                        sink_slot = Some(sink);
+                        break Exit::Peer { close_frame: true };
+                    }
+                    Ok((WriteEnd::Closed, sink)) => {
                         // The outbox ended: the session is closing (or closed).
                         sink_slot = Some(sink);
                         if session.ready() == Ready::Closing {

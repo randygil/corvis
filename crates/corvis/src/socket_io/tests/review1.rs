@@ -112,9 +112,6 @@ impl Adapter for Probe {
     async fn disconnect_sockets(&self, opts: BroadcastOptions, close: bool) -> Result<(), AdapterError> {
         self.inner.disconnect_sockets(opts, close).await
     }
-    fn membership_size(&self) -> Option<MembershipSize> {
-        self.inner.membership_size()
-    }
 }
 
 /// A server whose main namespace runs a [`Probe`], with the knobs and the adapter it wraps.
@@ -671,8 +668,8 @@ async fn an_own_room_failure_refuses_the_attempt(knob: impl Fn(&Knobs) -> &Atomi
     assert_eq!(conn.sent().await, [t(r#"4{"message":"Internal server error"}"#)], "CONNECT_ERROR and no CONNECT");
     assert!(!conn.socket.is_closing(), "the connection stays open");
     assert_eq!(io.main().socket_count(), 0, "no socket stays in the namespace");
-    assert_eq!(adapter.size(), MembershipSize { rooms: 0, sockets: 0, memberships: 0 }, "nor in the adapter");
-    assert!(!adapter.has_socket("anyone"));
+    assert_eq!(adapter.size(), Ok(MembershipSize { rooms: 0, sockets: 0, memberships: 0 }), "nor in the adapter");
+    assert!(!crate::socket_io::testing::adapter_has_socket(&adapter, "anyone"));
     assert_eq!(io.engine().total_unread_bytes(), before, "its charges were released");
     assert_eq!(connected.load(Ordering::SeqCst), 0, "no connection handler ran");
     // The slot is free: once the adapter works the client joins.
@@ -708,7 +705,7 @@ async fn the_own_room_of_a_connecting_socket_expels_whoever_joined_its_id_during
     let (v, iv) = connect(&io, "/").await;
     assert_eq!(entries(&joined), ["Ok(())"], "the join of a name that is not yet an id goes through");
     assert!(!attacker.rooms().contains(&iv), "but the socket's own room expelled the attacker: {:?}", attacker.rooms());
-    io.main().adapter().check_invariants().unwrap();
+    crate::socket_io::testing::check_invariants(&io.main()).unwrap();
     io.to(iv.as_str()).emit("private", ()).await.unwrap();
     assert_eq!(received(&[&x, &v], "private").await, [false, true]);
 }
