@@ -194,3 +194,57 @@ async fn res_without_attribute_is_an_error() {
     let r = request(&app).get("/plain").send().await;
     assert_eq!(r.status(), 500);
 }
+
+// ---------------------------------------------------------------------------
+// A `#[res]` response nobody can end
+// ---------------------------------------------------------------------------
+
+type Line = (corvis::LogLevel, String, Option<String>);
+
+/// Collects the log lines of this test binary (no other test of it reads or replaces the logger).
+#[derive(Clone, Default)]
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<Line>>>);
+
+impl corvis::LoggerService for Capture {
+    fn log(&self, level: corvis::LogLevel, message: &str, context: Option<&str>) {
+        self.0.lock().unwrap().push((level, message.to_string(), context.map(str::to_string)));
+    }
+}
+
+#[controller("orphan")]
+pub struct OrphanController;
+
+#[routes]
+impl OrphanController {
+    /// Returns without ending the response and keeps no handle of it.
+    #[get("forgot")]
+    #[header("X-Route", "r")]
+    fn forgot(&self, #[res] res: Res) {
+        res.set_header("X-Before", "1");
+    }
+}
+
+#[module(controllers = [OrphanController])]
+pub struct OrphanModule;
+
+#[corvis::test]
+async fn a_handled_response_nobody_can_end_is_answered_with_500() {
+    let capture = Capture::default();
+    corvis::logger::set_logger(capture.clone());
+    let mut app = CorvisFactory::create::<OrphanModule>().await.unwrap();
+    app.silence_route_logs();
+    app.init().await.unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(5), request(&app).get("/orphan/forgot").send())
+        .await
+        .expect("the request is answered instead of waiting for a response nothing can end");
+    assert_eq!(r.status(), 500);
+    assert_eq!(r.json_value(), json!({ "statusCode": 500, "message": "Internal server error" }));
+    // The headers already set on the response stay, as for a thrown error.
+    assert_eq!(r.header("x-before"), Some("1"));
+    assert_eq!(r.header("x-route"), Some("r"));
+    let lines = capture.0.lock().unwrap();
+    let mine: Vec<_> = lines.iter().filter(|(_, m, _)| m.contains("without ending the response")).collect();
+    assert_eq!(mine.len(), 1, "{lines:?}");
+    assert_eq!(mine[0].0, corvis::LogLevel::Error);
+    assert_eq!(mine[0].2.as_deref(), Some("ExceptionsHandler"));
+}
