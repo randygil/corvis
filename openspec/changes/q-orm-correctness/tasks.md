@@ -20,15 +20,15 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 2. Failing tests first (one per must-fix finding)
 
-- [ ] 2.1 `crates/corvis-orm/tests/sqlite_decimal.rs` (M1): a model with a `Decimal` field pushed on SQLite with the
+- [x] 2.1 `crates/corvis-orm/tests/sqlite_decimal.rs` (M1): a model with a `Decimal` field pushed on SQLite with the
   amounts `99.5`, `100`, `1000`, `-5`; `gte 100`, `lt 0`, `in`, `orderBy` asc and desc, `_min`, `_max`, `having` on
   `_sum`; the same on a table created with a `DECIMAL` column by raw SQL; verify the pushed-table tests fail on the
   untouched tree and copy the failure output into Implementation notes
-- [ ] 2.2 `crates/corvis-orm/tests/db_push.rs` (M3): `schema_sql` of the oracle `Pair` contains `PRIMARY KEY ("a", "b")`;
+- [x] 2.2 `crates/corvis-orm/tests/db_push.rs` (M3): `schema_sql` of the oracle `Pair` contains `PRIMARY KEY ("a", "b")`;
   pushed `Category`/`Post` with a nested `categories: { create }`; on Postgres, pushed `User` with `role: "ADMIN"`, a
   `@db.Uuid` filter on pushed `Wallet`, `scores: [1, 2]`; verify each fails today with the error design.md names (`P2021`,
   `type "role_t" does not exist`, `operator does not exist: text = uuid`) and record the output
-- [ ] 2.3 `crates/corvis-orm/tests/typed_params.rs` (M4): `score::equals(f64::NAN).value()` and `score::not(..)` are not
+- [x] 2.3 `crates/corvis-orm/tests/typed_params.rs` (M4): `score::equals(f64::NAN).value()` and `score::not(..)` are not
   `null`; on SQLite with rows `1.0`, `2.0`, `null`, `delete_many(vec![score::not(f64::NAN)])` leaves at least the rows a
   value comparison leaves; a helper value whose `Serialize` fails makes `find_many` fail; verify they fail today and record
   the output
@@ -63,8 +63,9 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   `Decimal` column on SQLite written `CAST(<col> AS NUMERIC)`, through one helper; the `data_value` comment of
   `engine/mod.rs` rewritten; if the recording of 3.1 contradicts design.md's expectation, follow the recording and write
   why in Implementation notes; verify `--test sqlite_decimal` passes and the `Decimal` cases of `--test sqlite_oracle`
-  pass on both databases
-- [ ] 4.2 Verify the snapshot test of 1.2 passes unchanged, and `CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm --test
+  pass on both databases (code and `sqlite_decimal` done; the `sqlite_oracle` verification waits for the recording of
+  3.1)
+- [x] 4.2 Verify the snapshot test of 1.2 passes unchanged, and `CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm --test
   pg_oracle --test pg_houseplan` passes
 
 ## 5. `db push` (Decision 3)

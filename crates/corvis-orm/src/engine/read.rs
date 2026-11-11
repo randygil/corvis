@@ -450,7 +450,8 @@ impl Engine {
                 } else {
                     " > "
                 };
-                q.col("t0", f.column).push(op).bind(v);
+                self.operand(q, "t0", f);
+                q.push(op).bind(v);
             }
             q.push(")");
         }

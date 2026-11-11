@@ -64,6 +64,10 @@ async fn check(db: &OrmClient) {
     assert_eq!(find(db, json!({ "where": { "amount": { "gt": "99.5" } }, "orderBy": by_id })).await, ["100", "1000"], "gt 99.5");
     assert_eq!(find(db, json!({ "where": { "amount": { "in": ["100.0", 1000] } }, "orderBy": by_id })).await, ["100", "1000"], "in");
     assert_eq!(find(db, json!({ "where": { "amount": { "notIn": ["100.0", 1000] } }, "orderBy": by_id })).await, ["99.5", "-5"], "notIn");
+    // A long list is bound as one parameter (`IN (SELECT value FROM json_each(?))`).
+    let mut many: Vec<Value> = (0..1500).map(|i| json!(format!("{}.25", i + 2000))).collect();
+    many.extend([json!("100.0"), json!(1000)]);
+    assert_eq!(find(db, json!({ "where": { "amount": { "in": many } }, "orderBy": by_id })).await, ["100", "1000"], "long in");
     assert_eq!(find(db, json!({ "where": { "amount": "1e3" } })).await, ["1000"], "equals 1e3");
     assert_eq!(find(db, json!({ "orderBy": { "amount": "asc" } })).await, ["-5", "99.5", "100", "1000"], "orderBy asc");
     assert_eq!(find(db, json!({ "orderBy": { "amount": "desc" } })).await, ["1000", "100", "99.5", "-5"], "orderBy desc");

@@ -23,6 +23,8 @@ fn column_type_base(d: Dialect, f: &FieldMeta) -> &'static str {
         (Dialect::Sqlite, FieldKind::Boolean) => "BOOLEAN",
         (Dialect::Sqlite, FieldKind::DateTime) => "DATETIME",
         (Dialect::Sqlite, FieldKind::Json) => "TEXT",
+        // Numeric affinity, like the reference migration: values compare and sort as numbers.
+        (Dialect::Sqlite, FieldKind::Decimal) if !f.list => "DECIMAL",
         (Dialect::Sqlite, _) => "TEXT",
         (Dialect::Postgres, FieldKind::Int) => {
             if f.default == Some(DefaultValue::Autoincrement) {

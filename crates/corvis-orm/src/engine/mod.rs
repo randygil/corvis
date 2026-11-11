@@ -232,6 +232,24 @@ impl Engine {
         }
     }
 
+    /// `true` when `f` is read through `CAST(.. AS NUMERIC)` wherever it is compared, sorted, aggregated or used in
+    /// arithmetic: a `Decimal` on SQLite. Its column may be `DECIMAL` (numeric affinity, what `db push` and the
+    /// reference migration create) or `TEXT` (created by `db push` of earlier versions), and only the cast makes a
+    /// `TEXT` column compare as numbers. Postgres columns are `numeric` and are never cast.
+    pub(crate) fn numeric_operand(&self, f: &FieldMeta) -> bool {
+        self.dialect() == Dialect::Sqlite && f.kind == FieldKind::Decimal && !f.list
+    }
+
+    /// `alias."column"` as an operand of a comparison, an ordering, an aggregate or arithmetic
+    /// (see [`Engine::numeric_operand`]). Only the quoted column is wrapped, never a value.
+    pub(crate) fn operand(&self, q: &mut crate::db::Sql, alias: &str, f: &FieldMeta) {
+        if self.numeric_operand(f) {
+            q.push("CAST(").col(alias, f.column).push(" AS NUMERIC)");
+        } else {
+            q.col(alias, f.column);
+        }
+    }
+
     /// The `::cast` a Postgres parameter for `f` needs (enums, json, ...), if any.
     fn pg_cast(&self, f: &FieldMeta, list: bool) -> Option<String> {
         if self.dialect() != Dialect::Postgres {
@@ -466,11 +484,12 @@ impl Engine {
 
     /// A value written to a column (`data` of creates, updates and upserts).
     ///
-    /// Postgres enforces the precision and scale of `NUMERIC(p, s)` columns itself. SQLite has
-    /// no such type (corvis-orm stores decimals as exact text), so a `Decimal` is checked
-    /// against the column it stands for, `@db.Decimal(p, s)` or the default `Decimal(65, 30)`:
-    /// it is rounded to `s` decimal places like Postgres does, and a value whose integer part
-    /// does not fit is rejected. This also bounds what a short input such as `"1e100000"` stores.
+    /// Postgres enforces the precision and scale of `NUMERIC(p, s)` columns itself. SQLite does not: a
+    /// `DECIMAL` column has numeric affinity and keeps what it is given as a 64-bit integer or float (15
+    /// significant digits), like with the reference client's own SQLite migration. So a `Decimal` is
+    /// checked against the column it stands for, `@db.Decimal(p, s)` or the default `Decimal(65, 30)`: it
+    /// is rounded to `s` decimal places like Postgres does, and a value whose integer part does not fit is
+    /// rejected. This also bounds what a short input such as `"1e100000"` stores.
     pub(crate) fn data_value(&self, f: &FieldMeta, v: &Value) -> Result<SqlValue> {
         if self.dialect() != Dialect::Sqlite || f.kind != FieldKind::Decimal || f.list || !(v.is_string() || v.is_number()) {
             return self.value(f, v, false);

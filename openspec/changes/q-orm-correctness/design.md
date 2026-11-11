@@ -412,3 +412,19 @@ fixture. The same recorder counts statements in the unit tests of Decision 6.
   `foreign key mismatch - "entries" referencing "pairs"` and the `m2m` disconnect with `P2021` (both are the `db push`
   bugs of 2.2). On Postgres every test failed at the push (`42830`, the compound key). They were run again after group 5,
   before group 8, to see the parameter-limit errors themselves (below).
+
+### Group 4: `Decimal` on SQLite
+
+- One helper, `Engine::operand` (with `Engine::numeric_operand`), writes a column as an operand: `CAST(t0."c" AS
+  NUMERIC)` for a non-list `Decimal` on SQLite, the plain quoted column otherwise. Used by `scalar_filter` /
+  `scalar_ops` (`=`, `<>`, `<`, `<=`, `>`, `>=`, `in`, `notIn`), `cursor_sql`, `order_expr_sql` (fields, fields through
+  to-one relations, `groupBy` aggregates other than `COUNT`), `agg_expr_sql` (`_sum`, `_avg`, `_min`, `_max`) and
+  `set_list_sql` arithmetic. `IS NULL` / `IS NOT NULL` keep the plain column. `db push` declares `DECIMAL`.
+- Beyond the design: a `having` filter on a `Decimal` aggregate binds its operand as `CAST(? AS NUMERIC)` on SQLite
+  (`bind_agg_operand`). The aggregate has no affinity, so without it the number was compared with the text parameter,
+  even on a `DECIMAL` column (the test of 2.1 found it). The cast wraps a bound parameter, never a value in the text.
+- Not yet checked against the recording (3.1 is open): that the original's SQLite results for these cases are the
+  numeric ones. The rounding and bound of `data_value` are kept; its comment now says what SQLite stores.
+- Verified: `--test sqlite_decimal` (4 tests, on a pushed table, a `DECIMAL` column and a `TEXT` column of an earlier
+  push), the Postgres SQL snapshot unchanged, `pg_oracle` and `pg_houseplan` (run with `CORVIS_TESTS_DIR`) pass; the
+  whole `corvis-orm` suite fails only in the not yet fixed tests of group 2.

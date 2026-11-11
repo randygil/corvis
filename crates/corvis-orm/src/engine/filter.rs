@@ -222,7 +222,8 @@ impl Engine {
             Value::Object(ops) => self.scalar_ops(q, alias, f, ops),
             other => {
                 let val = self.value(f, other, true)?;
-                q.col(alias, f.column).push(" = ").bind(val);
+                self.operand(q, alias, f);
+                q.push(" = ").bind(val);
                 Ok(())
             }
         }
@@ -250,7 +251,7 @@ impl Engine {
             if ci {
                 q.push("LOWER(").col(alias, f.column).push(")");
             } else {
-                q.col(alias, f.column);
+                self.operand(q, alias, f);
             }
         };
         let bind = |q: &mut Sql, v: SqlValue| {
@@ -1121,13 +1122,13 @@ impl Engine {
     /// Writes the SQL expression an order item sorts on.
     pub(crate) fn order_expr_sql(&self, q: &mut Sql, alias: &str, item: &OrderItem) {
         match &item.expr {
-            OrderExpr::Field(f) => {
-                q.col(alias, f.column);
-            }
+            OrderExpr::Field(f) => self.operand(q, alias, f),
             OrderExpr::RelationField(path, tf) => {
                 // (SELECT tN.col FROM a AS t1 JOIN b AS t2 ON .. WHERE t1 joins parent LIMIT 1)
                 let aliases: Vec<String> = path.iter().map(|_| q.alias()).collect();
-                q.push("(SELECT ").col(aliases.last().unwrap(), tf.column).push(" FROM ");
+                q.push("(SELECT ");
+                self.operand(q, aliases.last().unwrap(), tf);
+                q.push(" FROM ");
                 for (i, r) in path.iter().enumerate() {
                     if i > 0 {
                         q.push(" INNER JOIN ");
@@ -1159,6 +1160,7 @@ impl Engine {
             OrderExpr::Aggregate(agg, f) => {
                 q.push(agg).push("(");
                 match f {
+                    Some(f) if *agg != "COUNT" => self.operand(q, alias, f),
                     Some(f) => {
                         q.col(alias, f.column);
                     }

@@ -339,7 +339,8 @@ impl Engine {
                     q.bind(v.clone());
                 }
                 SetExpr::Arith(op, v) => {
-                    q.col(alias, f.column).push(" ").push(op).push(" ").bind(v.clone());
+                    self.operand(q, alias, f);
+                    q.push(" ").push(op).push(" ").bind(v.clone());
                 }
                 SetExpr::Push(v) => match self.dialect() {
                     Dialect::Postgres => {

@@ -165,6 +165,7 @@ impl Engine {
         }
         q.push(sql_func(group)).push("(");
         match f {
+            Some(f) if group != "_count" => self.operand(q, alias, f),
             Some(f) => {
                 q.col(alias, f.column);
             }
@@ -538,6 +539,19 @@ impl Engine {
         Ok(())
     }
 
+    /// Binds the value an aggregate of `f` is compared with. An aggregate has no type affinity in SQLite, so
+    /// a `Decimal` operand (bound as text) is cast to a number there; otherwise the number would be compared
+    /// with a string.
+    fn bind_agg_operand(&self, q: &mut Sql, group: &str, f: &'static FieldMeta, v: &Value) -> Result<()> {
+        let value = self.agg_operand(group, f, v)?;
+        if group != "_count" && self.numeric_operand(f) {
+            q.push("CAST(").bind(value).push(" AS NUMERIC)");
+        } else {
+            q.bind(value);
+        }
+        Ok(())
+    }
+
     /// The value bound when comparing an aggregate of `f`.
     fn agg_operand(&self, group: &str, f: &'static FieldMeta, v: &Value) -> Result<SqlValue> {
         let bad = |expected: &str| {
@@ -583,8 +597,8 @@ impl Engine {
                         "gt" => " > ",
                         _ => " >= ",
                     };
-                    let v = self.agg_operand(group, f, val)?;
-                    q.push(sym).bind(v);
+                    q.push(sym);
+                    self.bind_agg_operand(q, group, f, val)?;
                 }
                 "in" | "notIn" => {
                     let items = match val {
@@ -601,8 +615,7 @@ impl Engine {
                         if j > 0 {
                             q.push(", ");
                         }
-                        let v = self.agg_operand(group, f, it)?;
-                        q.bind(v);
+                        self.bind_agg_operand(q, group, f, it)?;
                     }
                     q.push(")");
                 }
@@ -617,8 +630,8 @@ impl Engine {
                     }
                     other => {
                         self.agg_expr_sql(q, "t0", group, field);
-                        let v = self.agg_operand(group, f, other)?;
-                        q.push(" <> ").bind(v);
+                        q.push(" <> ");
+                        self.bind_agg_operand(q, group, f, other)?;
                     }
                 },
                 other => {
