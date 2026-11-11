@@ -386,3 +386,29 @@ row, read-backs, includes, counts, nested writes, `m2m` unlinks) would never be 
 Decision 6 edits. Recording the real run covers all of them: 199 cases, 345 statements. Like the other Postgres tests
 it is skipped without a server unless `CORVIS_ORM_PG_REQUIRED=1`; `CORVIS_ORM_UPDATE_PG_SNAPSHOT=1` rewrites the
 fixture. The same recorder counts statements in the unit tests of Decision 6.
+
+### Group 2: the failing tests, as they failed on the untouched engine
+
+- `tests/sqlite_decimal.rs` (2.1): on the pushed table and on a `TEXT` column (the layout of earlier pushes),
+  `gte 100` returned `["99.5", "100", "1000"]` instead of `["100", "1000"]`; `db_push_declares_decimal_columns_as_decimal`
+  failed (`"amount" TEXT NOT NULL`). Also found: on a `DECIMAL` column (the original's migration), `having` on
+  `_sum` returned `[]` instead of `["a", "b"]`: the aggregate has no affinity and the operand is bound as text, so SQLite
+  compared a number with a string. The fix casts the bound operand of a `Decimal` aggregate filter on SQLite.
+- `tests/db_push.rs` (2.2): `schema_sql::<Pair>()` had `PRIMARY KEY ("a")`; two pairs sharing `a`: `P2002 Unique
+  constraint failed on the fields: (`a`)` (both dialects); nested `categories: { create }`: `P2021 The table
+  `_CategoryToPost` does not exist` (Postgres; on SQLite the table name in the message is empty); `User` with
+  `role: "ADMIN"`: `42704 type "role_t" does not exist` (also for `scores`, since the default role is cast); a
+  `@db.Uuid` filter on `Group`: `42883 operator does not exist: text = uuid`; every oracle model in one push:
+  `42830 there is no unique constraint matching given keys for referenced table "Pair"` on Postgres, and `foreign key
+  mismatch - "Entry" referencing "Pair"` on the first SQLite insert. The test asserts `PRIMARY KEY ("a","b")`, the
+  reference migration's spelling (no space), rather than the task's `("a", "b")`.
+- `tests/typed_params.rs` (2.3): `score::equals(NaN)` matched the `null` row; `delete_many(vec![score::not(NaN)])`
+  left `[None]` (it deleted `1.0` and `2.0`); `update_many` by `equals(NaN)` changed the `null` row; `set(NaN)` stored
+  `null`; every helper family with a value whose `Serialize` fails ran as a `null` filter or wrote `null`
+  (`increment: expected a validation error, got Ok(BatchPayload { count: 1 })`, ...). `in_vec`/`not_in_vec` already
+  failed with a validation error, by accident: the list became `null` and `in: null` is rejected.
+- `tests/parameter_limits.rs` (2.4), SQLite: `createManyAndReturn` (40,000), `updateManyAndReturn` (40,000), the nested
+  `set` and `in` with `mode: insensitive` failed with `too many SQL variables`; the compound include failed earlier with
+  `foreign key mismatch - "entries" referencing "pairs"` and the `m2m` disconnect with `P2021` (both are the `db push`
+  bugs of 2.2). On Postgres every test failed at the push (`42830`, the compound key). They were run again after group 5,
+  before group 8, to see the parameter-limit errors themselves (below).
