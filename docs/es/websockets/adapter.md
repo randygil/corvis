@@ -717,26 +717,56 @@ sin ejecutar guards ni handlers, cuando un hook desconecta el socket. Un hook qu
 `IoAdapter::hook_timeout` (30 s por defecto), desconecta el socket y cierra su conexión; un `handle_disconnect` que lo supera
 se abandona; un `after_init` que entra en pánico o lo supera hace fallar `init()`. Un `hook_timeout` igual a cero hace fallar `init()`.
 
-Los eventos retenidos tras el hook empiezan en el orden en que llegaron (la compuerta es primero en entrar, primero en salir).
-Los hooks `handle_disconnect` de un namespace corren en como máximo 16 tareas, sea cual sea el número de sockets que se van, y
-como máximo 10.000 sockets esperan a un trabajador; un hook que encuentra la cola llena se omite y se registra (con límite de
-frecuencia). Entre el paquete CONNECT y el final de los manejadores de conexión el ping del latido se retiene (como máximo un
-segundo), así que lo que emite un manejador sigue a CONNECT como en el original.
+Los eventos retenidos tras el hook empiezan en el orden en que llegaron, por construcción: cada evento toma un puesto en el
+orden de su socket cuando la conexión lo lee, y empieza solo cuando todos los anteriores han empezado, así que un evento que
+llega justo cuando se abre la compuerta no puede adelantar a los que esperaban.
+
+**Hooks de desconexión.** Un socket que se va espera a sus hooks `handle_disconnect` en una sola cola para toda la aplicación
+(todos los namespaces y rutas de Engine.IO):
+
+- Como máximo corren 32 hooks a la vez, como máximo 8 de ellos de una misma dirección de cliente, y un trabajador libre
+  atiende por turnos a las direcciones con hooks en espera: el hook de un socket empieza después de, como máximo, un hook de
+  cada otra dirección que tenía hooks esperando antes que él, por muchos que haya encolado cada una.
+- Cada dirección tiene un 64.º de los topes de la aplicación: mientras sus hooks pendientes (en espera o en curso) lleguen a
+  ese número, o retengan esa cantidad de bytes, las sesiones nuevas desde ella se responden con `503` hasta que se vacíen. Así
+  una dirección no puede acumular hooks salvo desde las sesiones que ya tiene abiertas, y dentro de su parte **no se omite
+  ningún hook**.
+- Como máximo hay `IoAdapter::max_pending_disconnect_hooks` (10.000) hooks pendientes en la aplicación, que retienen como
+  máximo `IoAdapter::max_pending_disconnect_hook_bytes` (64 MiB). Un socket que se va mientras cualquiera de los dos topes
+  está lleno es **el único caso en que se descarta un hook**; se registra (con límite de frecuencia). Como cada dirección se
+  limita a su parte, llenar un tope exige muchas direcciones a la vez: al menos
+  `tope / (parte + max_sessions_per_ip x namespaces con hooks de desconexión)`.
+- Qué retiene un socket pendiente: el socket guarda su conexión con una referencia débil, así que la sesión de Engine.IO y sus
+  búferes se liberan con la conexión, y la sesión guarda una copia propia de su handshake (no un trozo del búfer de lectura de
+  la conexión). A cada socket pendiente se le carga, como máximo, sus propias estructuras (unos 3 KiB), su id, su handshake
+  (`auth`, cabeceras, query) y su `data`; lo que la aplicación le adjuntó con `insert` no se cuenta. Cuando el socket entra en
+  la cola se libera la carga de su `auth` en el presupuesto de lectura: desde entonces la carga el presupuesto de la cola. La
+  memoria de la cola es como máximo los hooks pendientes por eso, es decir, como máximo `max_pending_disconnect_hook_bytes`
+  (medido con un asignador contador: 212 sockets con una carga de 1.047.524 bytes retenían 833.724).
 
 `init()` también rechaza una ruta de Engine.IO `/` o vacía (Engine.IO se quedaría con todas las peticiones HTTP de la
-aplicación) y un `#[subscribe_message]` para un nombre de evento reservado de Socket.IO (`connect`, `connect_error`,
-`disconnect`, `disconnecting`, `newListener`, `removeListener`: ningún cliente puede emitirlos, así que el handler nunca
-correría), ambos nombrando el gateway. Una opción de `#[websocket_gateway]` duplicada es un error de compilación.
+aplicación), una ruta de Engine.IO bajo la que vive una ruta HTTP (`path = "/status"` con una ruta `GET /status/ping`:
+Engine.IO responde a todas las peticiones bajo su ruta antes del enrutado), nombrando el gateway y la ruta, y un
+`#[subscribe_message]` para un nombre de evento reservado de Socket.IO (`connect`, `connect_error`, `disconnect`,
+`disconnecting`, `newListener`, `removeListener`: ningún cliente puede emitirlos, así que el handler nunca correría),
+nombrando el gateway. Una ruta cuyos primeros segmentos son parámetros o un comodín (`/:id/ping`, `/*rest`) no se rechaza: solo
+van a Engine.IO las peticiones cuyos valores forman la ruta de Engine.IO, cosa que el enrutador no puede saber. Una opción de
+`#[websocket_gateway]` duplicada es un error de compilación.
 
-**Qué retiene un mensaje.** Además de los argumentos del paquete (que carga la capa Socket.IO), un handler de gateway retiene el
-cuerpo como un valor JSON compartido, una copia por cada parámetro `#[message_body]` y, si falla, la copia que repite su
-`cause`: `2 + P` copias de los argumentos para `P` parámetros de cuerpo. Se cargan al presupuesto de lectura de la conexión
-(sesión, dirección y global, como los argumentos) con una carga inmediata que nunca espera, **antes** de que corra ningún
-guard. Si no hay sitio, el evento se responde con `exception` (`Too many messages in flight`), ningún guard ni handler lo ve y
-el callback queda sin respuesta. Así, el heap de los handlers en curso se mantiene dentro del presupuesto que limita a la
-dirección (su cuota `max_address_share`, o el global `max_total_unread_bytes`) por una constante pequeña, medido con un
-asignador contador (el doble de la cuota de la dirección con 30 eventos de 400 KiB desde una dirección), y no dentro de ese
-presupuesto por el número de copias.
+**Qué retiene un mensaje.** Una vez construido el cuerpo a partir de los argumentos del evento, los argumentos se liberan, y un
+handler de gateway retiene el cuerpo como un valor JSON compartido y una copia por cada parámetro `#[message_body]` (un
+parámetro `Value` recibe su copia tal cual, sin reconstruirla); después del handler, el `cause` de un error repite una copia
+más, cuando los parámetros ya no existen. La carga es `(1 + max(P, 1)) x json_cost(cuerpo)` para `P` parámetros de cuerpo,
+donde `json_cost` es el tamaño real del cuerpo: una ranura `Value` (72 bytes con `preserve_order`) por elemento de array o
+entrada de objeto, los bytes de cada cadena y clave, y la capacidad de cada contenedor, cada asignación con 24 bytes de
+sobrecarga; las copias se construyen con capacidad exacta, así que ninguna es mayor que el cuerpo. Va al presupuesto de lectura
+de la conexión (sesión, dirección y global) con una carga inmediata que nunca espera, **antes** de que corra ningún guard,
+contando como espacio la carga del propio paquete (que se libera justo después, con los argumentos). Si no hay sitio, el
+evento se responde con `exception` (`Too many messages in flight`), ningún guard ni handler lo ve y el callback queda sin
+respuesta. Medido con un asignador contador para un array de 2^17 + 1 ceros, el heap del evento se mantiene dentro de 1,04
+veces su carga con un parámetro de cuerpo y 1,00 veces con dos (las pruebas admiten 1,25). Las copias ocupan más memoria que el
+paquete, así que cuando el presupuesto global está bajo presión un mensaje que la capa Socket.IO aún leería puede rechazarse
+aquí: es la memoria que sus copias necesitan de verdad, y dejarlo pasar pondría el heap por encima del presupuesto.
 
 #### Qué autentica una conexión Socket.IO
 
@@ -763,13 +793,15 @@ se revisará con los valores por defecto de la 1.0.
 
 #### Límites
 
-Esta capa no añade tablas, colas ni búferes propios; los límites son los de las secciones de Engine.IO, Socket.IO y salas,
-fijados con `IoAdapter::options`, más estos:
+Esta capa añade una cola propia, la de los hooks de desconexión; los demás límites son los de las secciones de Engine.IO,
+Socket.IO y salas, fijados con `IoAdapter::options`, más estos:
 
 | Límite | Por defecto | Al superarse |
 |---|---|---|
 | Handlers en curso por conexión, **incluidos los eventos que esperan a `handle_connection`** | 32 (`max_inflight`) | se pausa la lectura |
 | Hooks del ciclo de vida | 30 s (`IoAdapter::hook_timeout`) | se desconecta el socket; `init()` falla |
+| Hooks `handle_disconnect` en curso | 32 en la aplicación, 8 por dirección de cliente | los demás esperan su turno |
+| Hooks `handle_disconnect` pendientes, y los bytes que retienen sus sockets | 10.000 y 64 MiB en la aplicación (`IoAdapter::max_pending_disconnect_hooks`, `max_pending_disconnect_hook_bytes`); un 64.º de cada uno por dirección de cliente | en la parte de la dirección: sesiones nuevas desde ella con `503`; en el tope de la aplicación: el hook se descarta y se registra |
 | Namespaces a los que llega un cliente | los que declaran los gateways | `CONNECT_ERROR` `Invalid namespace` |
 | Handlers por evento y namespace | 1 | `init()` falla |
 | Confirmaciones por evento | como máximo 1, con un argumento | n/a |

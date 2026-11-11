@@ -26,10 +26,11 @@
 //! it) and, opt in, by [`IoAdapter::guard_connections`], which runs the global and gateway-level guards when a socket
 //! connects.
 //!
-//! Limits. This layer adds no table or queue of its own: events that wait for `handle_connection` count as handlers in
-//! flight (`max_inflight`, 32 per connection, then reads pause), the namespaces a client can reach are the ones
-//! gateways declare, and every other limit is the one of the Engine.IO and Socket.IO layers, set through
-//! [`IoAdapter::options`]. Hooks are bounded by [`IoAdapter::hook_timeout`].
+//! Limits. Events that wait for `handle_connection` count as handlers in flight (`max_inflight`, 32 per connection, then
+//! reads pause), the namespaces a client can reach are the ones gateways declare, and every other limit is the one of the
+//! Engine.IO and Socket.IO layers, set through [`IoAdapter::options`]. Hooks are bounded by [`IoAdapter::hook_timeout`].
+//! The one queue of this layer, the `handle_disconnect` hooks', has a share per client address and caps for the whole
+//! application ([`IoAdapter::max_pending_disconnect_hooks`], [`IoAdapter::max_pending_disconnect_hook_bytes`]).
 
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap};

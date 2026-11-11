@@ -268,4 +268,11 @@ mod tests {
         assert_eq!(address_share(DEFAULT_MAX_PENDING_DISCONNECT_HOOKS, DEFAULT_MAX_PENDING_DISCONNECT_HOOK_BYTES), (156, 1024 * 1024));
         assert_eq!(address_share(10, 100), (1, 1));
     }
+
+    #[test]
+    fn a_pending_sockets_own_structures_are_charged_about_three_kib() {
+        // The documentation says "about 3 KiB" for what a pending socket pins besides its strings and its handshake.
+        let own = LEFT_SOCKET_HEAP + GATEWAY_HEAP;
+        assert!((1024..=3 * 1024 + 512).contains(&own), "{own}");
+    }
 }

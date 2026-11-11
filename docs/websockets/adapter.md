@@ -698,25 +698,53 @@ discarded, without running guards or handlers, when a hook disconnects the socke
 `IoAdapter::hook_timeout` (30 s by default), disconnects the socket and closes its connection; a `handle_disconnect` that
 exceeds it is abandoned; an `after_init` that panics or exceeds it fails `init()`. A zero `hook_timeout` fails `init()`.
 
-Events held behind the hook start in the order they arrived (the gate is first in, first out). The `handle_disconnect` hooks
-of a namespace run in at most 16 tasks, whatever the number of sockets that leave, and at most 10,000 sockets wait for a
-worker; a hook that finds the queue full is skipped and logged (rate limited). Between the CONNECT packet and the end of the
-connection handlers the heartbeat's ping is held back (at most one second), so what a handler emits follows CONNECT as in the
-original.
+Events held behind the hook start in the order they arrived, by construction: each event takes a place in its socket's order
+when the connection reads it, and starts only when every event before it has started, so an event that arrives just as the
+gate opens cannot overtake the ones that waited.
 
-`init()` also refuses an Engine.IO path of `/` or an empty one (Engine.IO would take every HTTP request of the application)
-and a `#[subscribe_message]` for a reserved Socket.IO event name (`connect`, `connect_error`, `disconnect`, `disconnecting`,
-`newListener`, `removeListener`: no client can emit them, so the handler could never run), both naming the gateway. A
-duplicated `#[websocket_gateway]` option is a compile error.
+**Disconnect hooks.** A socket that leaves waits for its `handle_disconnect` hooks in one queue for the whole application
+(every namespace and Engine.IO path):
 
-**What a message holds.** Besides the packet's arguments (charged by the Socket.IO layer), a gateway handler holds the body
-as one shared JSON value, a copy for each `#[message_body]` parameter and, when it fails, the copy its `cause` echoes: `2 + P`
-copies of the arguments for `P` body parameters. They are charged to the connection's unread budget (session, address and
-server-wide, as the arguments are) by a try-charge that never waits, **before** any guard runs. When there is no room the
-event is answered with `exception` (`Too many messages in flight`), no guard or handler sees it, and the callback stays
-unanswered. So the heap of the handlers in flight stays within the unread budget that binds the address (its quota
-`max_address_share`, or the server-wide `max_total_unread_bytes`) times a small constant, measured with a counting
-allocator (twice the address quota for 30 events of 400 KiB from one address), and not within that budget times the number of copies.
+- At most 32 hooks run at once, at most 8 of them for one client address, and a free worker serves the addresses with hooks
+  waiting in turn: a socket's hook starts after at most one hook of each other address that had hooks waiting before it,
+  however many each of them queued.
+- Each address has a 64th of the application's caps: while its pending hooks (waiting or running) reach that count, or pin
+  that many bytes, new sessions from it are answered `503` until they drain. So an address cannot pile up hooks except
+  from the sessions it already has open, and within its share **no hook is skipped**.
+- At most `IoAdapter::max_pending_disconnect_hooks` (10,000) hooks are pending in the application, pinning at most
+  `IoAdapter::max_pending_disconnect_hook_bytes` (64 MiB). A socket that leaves while either cap is full is **the one case in
+  which a hook is dropped**; it is logged (rate limited). Since every address is held to its share, filling a cap takes many
+  addresses at once: at least `cap / (share + max_sessions_per_ip x namespaces with disconnect hooks)`.
+- What a pending socket pins: the socket holds its connection weakly, so the Engine.IO session and its buffers are freed
+  with the connection, and the session keeps a copy of its handshake (not a slice of the connection's read buffer). Each
+  pending socket is charged, at most, its own structures (about 3 KiB), its id, its handshake (`auth`, headers, query) and
+  its `data`; what the application attached with `insert` is not counted. When the socket is queued the unread-budget charge
+  of its `auth` is released: the queue's budget charges it from then on. The queue's memory is at most the pending hooks
+  times that, so at most `max_pending_disconnect_hook_bytes` (measured with a counting allocator: 212 sockets charged
+  1,047,524 bytes held 833,724).
+
+`init()` also refuses an Engine.IO path of `/` or an empty one (Engine.IO would take every HTTP request of the application),
+an Engine.IO path under which an HTTP route lives (`path = "/status"` with a route `GET /status/ping`: Engine.IO answers every
+request under its path before routing), naming the gateway and the route, and a `#[subscribe_message]` for a reserved
+Socket.IO event name (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`: no client can
+emit them, so the handler could never run), naming the gateway. A route whose leading segments are parameters or a wildcard
+(`/:id/ping`, `/*rest`) is not refused: only the requests whose values spell the Engine.IO path go to Engine.IO, which the
+router cannot know of. A duplicated `#[websocket_gateway]` option is a compile error.
+
+**What a message holds.** Once the body is built from the event's arguments, the arguments are dropped, and a gateway handler
+holds the body as one shared JSON value and a copy for each `#[message_body]` parameter (a `Value` parameter takes its copy
+as it is, without rebuilding it); after the handler, an error's `cause` echoes one more copy, when the parameters are gone.
+The charge is `(1 + max(P, 1)) x json_cost(body)` for `P` body parameters, where `json_cost` is the body's real size: one
+`Value` slot (72 bytes with `preserve_order`) per array element or object entry, the bytes of every string and key, and the
+capacity of every container, each allocation with 24 bytes of overhead; the copies are built with exact capacity, so none
+is larger than the body. It goes to the connection's unread budget (session, address and server-wide) by a try-charge that
+never waits, **before** any guard runs, with the packet's own charge counted as room (it is released right after, with the
+arguments). When there is no room the event is answered with `exception` (`Too many messages in flight`), no guard or handler
+sees it, and the callback stays unanswered. Measured with a counting allocator for an array of 2^17 + 1 zeros, the heap of the
+event stays within 1.04 times its charge with one body parameter and 1.00 times with two (the tests allow 1.25). The copies
+take more memory than the packet did, so when the server-wide budget is under pressure a message the Socket.IO layer would
+still read can be refused here: that is the memory its copies really need, and letting it through would put the heap over
+the budget.
 
 #### What authenticates a Socket.IO connection
 
@@ -741,13 +769,15 @@ for the connection. The default is revisited with the 1.0 defaults.
 
 #### Limits
 
-This layer adds no table, queue or buffer of its own; the limits are those of the Engine.IO, Socket.IO and rooms sections, set
-through `IoAdapter::options`, plus these:
+This layer adds one queue of its own, the disconnect hooks'; the other limits are those of the Engine.IO, Socket.IO and rooms
+sections, set through `IoAdapter::options`, plus these:
 
 | Limit | Default | When exceeded |
 |---|---|---|
 | Handlers in flight per connection, **including events waiting for `handle_connection`** | 32 (`max_inflight`) | reads pause |
 | Lifecycle hooks | 30 s (`IoAdapter::hook_timeout`) | the socket is disconnected; `init()` fails |
+| `handle_disconnect` hooks running | 32 in the application, 8 per client address | the others wait their turn |
+| Pending `handle_disconnect` hooks, and the bytes their sockets pin | 10,000 and 64 MiB in the application (`IoAdapter::max_pending_disconnect_hooks`, `max_pending_disconnect_hook_bytes`); a 64th of each per client address | at the address's share: new sessions from it `503`; at the application's cap: the hook is dropped and logged |
 | Namespaces a client can reach | the ones gateways declare | `CONNECT_ERROR` `Invalid namespace` |
 | Handlers per event per namespace | 1 | `init()` fails |
 | Acknowledgements per event | at most 1, one argument | n/a |
