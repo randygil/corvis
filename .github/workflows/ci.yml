@@ -276,3 +276,143 @@ jobs:
         run: node scripts/check-crate-files.mjs
       - name: Package the published crates
         run: cargo package -p corvis-macros -p corvis -p corvis-orm-macros -p corvis-orm -p corvis-swagger-macros -p corvis-swagger -p corvis-cli
+
+  # Rustdoc with warnings denied: broken or private intra-doc links, invalid HTML tags, bare URLs. The CLI is
+  # documented in its own step because its binary is named `corvis`, like the library: in one run both write
+  # target/doc/corvis at the same time.
+  doc:
+    name: doc
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - name: Document the workspace
+        run: cargo doc --workspace --exclude corvis-cli --no-deps --all-features
+      - name: Document the CLI
+        run: cargo doc -p corvis-cli --no-deps --all-features
+
+  # The minimum supported Rust version. The toolchain is read from `rust-version` in Cargo.toml, so the declaration
+  # and the check cannot disagree. Library and binary targets of the published crates only: the promise is to users
+  # of the crates, not to the test suites, which may use the toolchain of RUST_TOOLCHAIN.
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: msrv
+        name: Read rust-version from Cargo.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^rust-version = "\([0-9.]*\)"\r\{0,1\}$/\1/p' Cargo.toml)
+          if [ -z "$version" ]; then echo "::error file=Cargo.toml::no rust-version in [workspace.package]"; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - name: Check the published crates (default features)
+        run: cargo check --locked -p corvis -p corvis-macros -p corvis-orm -p corvis-orm-macros -p corvis-swagger -p corvis-swagger-macros -p corvis-cli
+      - name: Check the published crates (all features)
+        run: cargo check --locked -p corvis -p corvis-macros -p corvis-orm -p corvis-orm-macros -p corvis-swagger -p corvis-swagger-macros -p corvis-cli --all-features
+
+  # Each feature of corvis-orm and corvis-swagger on its own, with no default features and with all of them. The
+  # features of corvis keep their loop in the clippy job, on Linux and Windows.
+  features:
+    name: features
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-hack@0.6.46
+      - run: cargo hack check --each-feature --no-dev-deps -p corvis-orm -p corvis-swagger
+
+  # Lint findings only go down: scripts/lint-ratchet.mjs counts the lints that still have findings against
+  # lint-baseline.json (see CONTRIBUTING.md). No -D warnings here: the counted lints are warnings by design.
+  lint-ratchet:
+    name: lint-ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Self-test of the script
+        run: node scripts/lint-ratchet.mjs --self-test
+      - name: Compare with lint-baseline.json
+        run: node scripts/lint-ratchet.mjs
+
+  # Public API changes against the merge base with main, written to the job summary. Informational, NOT a required
+  # check: before the first release to crates.io, public API that must change changes now; this job makes it visible.
+  # After that release it becomes required, with the published version as the baseline.
+  semver:
+    name: semver
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # The merge base with main has to be in the clone.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1 (2026-10-16)
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'pull_request' }}
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-semver-checks@0.51.0
+      - name: Compare the public API with the merge base of main
+        shell: bash
+        run: |
+          base=$(git merge-base HEAD origin/main)
+          set +e
+          cargo semver-checks --workspace --baseline-rev "$base" --color never 2>&1 | tee semver.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo "### Public API against the merge base with main (\`$base\`)"
+            echo
+            echo '```'
+            cat semver.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
