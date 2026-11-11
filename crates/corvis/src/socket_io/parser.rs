@@ -252,6 +252,21 @@ impl Writer {
     }
 }
 
+/// Appends `n` in decimal, without formatting machinery or an allocation of its own.
+fn push_decimal(out: &mut Vec<u8>, mut n: u64) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&digits[at..]);
+}
+
 /// The binary values of `value` at `depth`, not looking below `MAX_DEPTH`: the writer refuses a value nested deeper
 /// (`TooDeep`) before it gets there. Allocates nothing.
 fn count_binary(value: &IoValue, depth: usize) -> usize {
@@ -284,14 +299,15 @@ pub(crate) fn encode(packet: &Packet, max_attachments: usize) -> Result<Encoded,
     out.push(b'4');
     out.push(b'0' + kind);
     if binary {
-        write!(out, "{attachments}-").expect("writing to a Vec cannot fail");
+        push_decimal(&mut out, attachments as u64);
+        out.push(b'-');
     }
     if packet.nsp != "/" && !packet.nsp.is_empty() {
         out.extend_from_slice(packet.nsp.as_bytes());
         out.push(b',');
     }
     if let Some(id) = id {
-        write!(out, "{id}").expect("writing to a Vec cannot fail");
+        push_decimal(&mut out, id);
     }
     let mut w = Writer { out, attachments: Vec::with_capacity(attachments), max_attachments, binary };
     match &packet.body {

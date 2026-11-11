@@ -174,10 +174,14 @@ mod rooms_serde {
 /// `Debug` hides credentials (see [`HandshakeInfo`]).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SocketInfo {
+    /// The socket id.
     pub id: String,
+    /// What the client sent when it connected.
     pub handshake: HandshakeInfo,
+    /// The rooms the socket is in, the room of its own id included.
     #[serde(with = "rooms_serde")]
     pub rooms: Vec<Room>,
+    /// The application's `socket.data`.
     pub data: serde_json::Value,
 }
 
