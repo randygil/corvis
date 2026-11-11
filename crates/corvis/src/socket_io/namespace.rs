@@ -189,8 +189,10 @@ impl IoNamespace {
     }
 
     /// `namespace.on("connection", fn)`: adds a function that runs for every socket that connected, after the
-    /// CONNECT packet was queued and before the first packet of the client is handled, so `on` registered here never
-    /// misses an event. It is synchronous: spawn a task for anything slow. A panic is logged and the socket stays.
+    /// CONNECT packet was written (handed to the WebSocket, or taken by a poll) and before the first packet of the
+    /// client is handled, so `on` registered here never misses an event and what it emits leaves in a later write, as
+    /// with the reference server. A connection that ends before CONNECT is written runs none. It is synchronous: spawn
+    /// a task for anything slow. A panic is logged and the socket stays.
     pub fn on_connection(&self, f: impl Fn(IoSocket) + Send + Sync + 'static) -> &Self {
         self.inner.connection.write().unwrap_or_else(|e| e.into_inner()).push(Arc::new(f));
         self

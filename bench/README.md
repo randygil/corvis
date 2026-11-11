@@ -8,6 +8,9 @@ same validation and the same response bodies, and the script checks that with `c
 - `bench/node-app/` is the equivalent Node.js application; `run.sh` installs its dependencies and builds it.
 - `bench/report.js` turns the raw load generator output into `bench/results.md`.
 
+The Socket.IO server has a benchmark of its own, which measures Corvis before and after a change rather than against
+Node: see [`bench/socket-io/README.md`](socket-io/README.md).
+
 ## Prerequisites
 
 - Git Bash on Windows (the script uses `taskkill` and `/proc/<pid>/winpid`).

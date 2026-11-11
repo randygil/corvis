@@ -288,6 +288,22 @@ longer than `admission_timeout` for room in the unread budget; Node has no such 
 Reserved event names (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`) cannot
 be emitted by the server, and a packet from a client that uses one is undecodable.
 
+When a socket connects: once its connect middleware passed, the socket is added to the namespace and to the room of
+its own id, then CONNECT is queued, and its connection handlers run once CONNECT was written (handed to the WebSocket, or
+taken by a poll), so what they emit leaves in a later write, as with the reference server; over polling that is the
+next poll. `io.of(name).socket(id)` finds a socket from the moment its client can know its id, with no retry: a socket
+returned there, by `sockets()` or counted by `socket_count()`, may still be joining (or already leaving), and its `emit`
+then fails with `NotConnected`; broadcasts and bulk operations skip a socket until its CONNECT is queued. If the adapter
+fails to add the socket to the room of its own id (it panics or returns an error), the client gets CONNECT_ERROR
+`Internal server error`, nothing of the socket stays, and the connection stays open. A connection that closes before
+CONNECT was written runs no connection handler.
+
+The request that opened the Engine.IO session is kept once per session and shared by every socket of the connection
+(`socket.handshake().request()`): at most one request per session, bounded by the HTTP server's header limit, and not
+charged to the unread budget. `DisconnectReason`, `EmitError`, `AckError`, `RoomError`, `AdapterError`,
+`BroadcastAckErrorKind` and the Engine.IO `CloseReason` are `#[non_exhaustive]`: a `match` on one of them needs a
+wildcard arm, so a release can add a variant.
+
 A packet that cannot be decoded, a second CONNECT for a namespace the connection joined (or is joining), a packet for a
 namespace it has not joined (or was refused) and a CONNECT_ERROR from a client close the connection. A packet for a
 namespace the connection did join and whose socket has since left (the server called `disconnect(false)` while the

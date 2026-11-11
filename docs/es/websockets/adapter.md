@@ -292,6 +292,23 @@ esperó más de `admission_timeout` a que hubiera sitio en el presupuesto; Node 
 (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`) no los puede emitir el
 servidor, y un paquete de un cliente que use uno no se puede decodificar.
 
+Cuando un socket se conecta: en cuanto pasa su middleware de conexión, el socket se agrega al espacio y a la sala de su
+propio id, después se encola CONNECT, y sus manejadores de conexión corren cuando CONNECT ya se escribió (se entregó al
+WebSocket, o lo tomó un poll), así que lo que emiten sale en una escritura posterior, como con el servidor de referencia;
+con polling, eso es el poll siguiente. `io.of(nombre).socket(id)` encuentra un socket desde el momento en que su cliente
+puede conocer su id, sin reintentos: un socket devuelto ahí, por `sockets()` o contado por `socket_count()`, puede estar
+todavía entrando (o ya saliendo), y entonces su `emit` falla con `NotConnected`; los broadcasts y las operaciones en bloque
+omiten un socket hasta que su CONNECT está encolado. Si el adaptador no logra agregar el socket a la sala de su propio id
+(entra en pánico o devuelve un error), el cliente recibe CONNECT_ERROR `Internal server error`, no queda nada del socket y
+la conexión sigue abierta. Una conexión que se cierra antes de que CONNECT se escriba no ejecuta ningún manejador de
+conexión.
+
+La petición que abrió la sesión Engine.IO se guarda una vez por sesión y la comparten todos los sockets de la conexión
+(`socket.handshake().request()`): como mucho una petición por sesión, acotada por el límite de cabeceras del servidor HTTP,
+y no se carga al presupuesto de lo no leído. `DisconnectReason`, `EmitError`, `AckError`, `RoomError`, `AdapterError`,
+`BroadcastAckErrorKind` y el `CloseReason` de Engine.IO son `#[non_exhaustive]`: un `match` sobre cualquiera de ellos
+necesita un brazo comodín, para que una versión pueda agregar una variante.
+
 Un paquete que no se puede decodificar, un segundo CONNECT a un espacio al que la conexión ya entró (o está entrando), un
 paquete para un espacio al que no entró (o que se le rechazó) y un CONNECT_ERROR de un cliente cierran la conexión. Un
 paquete para un espacio al que la conexión sí entró y cuyo socket se fue desde entonces (el servidor llamó a
