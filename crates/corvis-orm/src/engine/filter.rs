@@ -436,8 +436,10 @@ impl Engine {
         }
     }
 
-    /// ` IN (..)` / ` NOT IN (..)` after `LOWER(col)` for a long `in` / `notIn` with `mode: insensitive`: the
-    /// values in one parameter, each folded by `LOWER` like the short form (`LOWER($1), LOWER($2), ...`) folds them.
+    /// ` IN (SELECT ..)` / ` NOT IN (SELECT ..)` after `LOWER(col)` for a long `in` / `notIn` with
+    /// `mode: insensitive`: the values in one parameter, each folded by `LOWER` like the short form
+    /// (`LOWER($1), LOWER($2), ...`) folds them. An `IN` subquery is hashed by both databases (Postgres does not hash
+    /// `<> ALL (subquery)`, which compares every row with every value).
     fn push_folded_list(&self, q: &mut Sql, vals: Vec<SqlValue>, negate: bool) {
         let raw: Vec<SqlValue> = vals
             .into_iter()
@@ -446,16 +448,15 @@ impl Engine {
                 other => other,
             })
             .collect();
+        q.push(if negate { " NOT IN (SELECT LOWER(" } else { " IN (SELECT LOWER(" });
         match self.dialect() {
             Dialect::Postgres => {
                 let arr = SqlValue::Cast(Box::new(SqlValue::Array(raw, FieldKind::String)), "text[]".into());
-                q.push(if negate { " <> ALL(SELECT LOWER(x) FROM unnest(" } else { " = ANY(SELECT LOWER(x) FROM unnest(" });
-                q.bind(arr).push(") AS x)");
+                q.push("x) FROM unnest(").bind(arr).push(") AS x)");
             }
             Dialect::Sqlite => {
                 let json = Value::Array(raw.iter().map(crate::db::sql_value_json).collect()).to_string();
-                q.push(if negate { " NOT IN (SELECT LOWER(value) FROM json_each(" } else { " IN (SELECT LOWER(value) FROM json_each(" });
-                q.bind(SqlValue::Text(json)).push("))");
+                q.push("value) FROM json_each(").bind(SqlValue::Text(json)).push("))");
             }
         }
     }

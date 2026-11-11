@@ -514,22 +514,43 @@ rejects expressions deeper than 1000 levels (`SQLITE_MAX_EXPR_DEPTH`), so on SQL
 ### Group 8: key lists within the parameter limit
 
 - `Engine::statement_chunks(items, params_of)` splits a list into the groups of one statement each: at most half the
-  database's parameter limit (16383 on SQLite, 32767 on Postgres) and, on SQLite only, at most 500 `OR`ed groups.
-  Deviation from Decision 6: the design sized chunks by parameters only, but SQLite also rejects an `OR` chain of about
-  1,000 groups (`Expression tree is too large (maximum depth 1000)`, seen in 2.4), so its chunks are bounded by depth too.
+  database's parameter limit (16383 on SQLite, 32767 on Postgres) and at most 500 `OR`ed groups. Deviation from Decision
+  6: the design sized chunks by parameters only, but SQLite rejects an `OR` chain of about 1,000 groups (`Expression tree
+  is too large (maximum depth 1000)`, seen in 2.4) and Postgres executes a long one very slowly (below).
 - `Engine::key_filters(fields, keys, shape)` (the design's `key_condition`, at the level of `where` filters so that every
   caller keeps its own SQL): a list that fits in one statement is written by the caller's `shape`, exactly as before; a
   longer single-field list is one `in` filter (one parameter past 1,000 items, through `push_in_list`); a longer compound
-  list is one statement per chunk. Hence Postgres SQL changes only for lists that did not fit one statement: compound
-  lists past 16383 keys (they failed) and single-field lists past 32767 keys (they worked up to 65535 and are now one
-  `= ANY($1)`); on SQLite single-field lists past 500 keys (they failed past about 1,000).
+  list is one statement per chunk. Hence the SQL changes only for lists longer than 500 keys: single-field lists become
+  one `in` list (`IN ($1, ..)` up to 1,000 values, `= ANY($1)` / `json_each(?)` past that) and compound lists several
+  statements. None of the oracle cases has such a list: the Postgres SQL snapshot is unchanged.
 - Moved to it: `read_back_many` (rows of all chunks, then in the given order), the four `ids_filter` updates (now
   `update_by_ids`, which sums the counts of its statements; each statement carries its own part of the key list in its
   `WHERE`), the compound include (children of each chunk grouped by parent; no pagination there, so each parent gets the
   same children), the compound `count_related` (counts merged), the nested `deleteMany` items (chunked by the parameters
   each item compiles to), `m2m_unlink` (through `push_in_list`, the same text for short lists) and `in` / `notIn` with
   `mode: insensitive` past 1,000 values (`LOWER(col) IN (SELECT LOWER(value) FROM json_each(?))`,
-  `LOWER(col) = ANY(SELECT LOWER(x) FROM unnest($1::text[]) AS x)` and their negations).
+  `LOWER(col) IN (SELECT LOWER(x) FROM unnest($1::text[]) AS x)` and their `NOT IN`). Deviation: the design's
+  Postgres form `= ANY(SELECT ..)` works for `in`, but its negation `<> ALL(SELECT ..)` is not hashed by Postgres and
+  compared every row with every value (65,600 x 65,600: cancelled by the test's 10 s `statement_timeout`); `IN` /
+  `NOT IN (SELECT ..)` is a hashed subplan on Postgres and the same shape as on SQLite.
+- The hang of the shared Postgres server (first run of the group 8 code). `include_over_a_compound_key_postgres` built,
+  for 70,000 parents with a two-field key, chunks of 16,383 keys (32,766 parameters each): `SELECT .. FROM "entries" AS t0
+  WHERE ((t0."pair_a" = $1 AND t0."pair_b" = $2) OR ...)`. `entries` had no index on the two columns (the reference
+  migration creates none for foreign keys), so each statement was a sequential scan evaluating the whole `OR` for each of
+  the 70,000 rows: execution, not planning. Measured on the same server with literal keys: planning takes 0.5 ms for 500
+  groups and 61 ms for 16,383; execution over 70,000 unindexed rows takes 51 ms for 100 groups, 396 ms for 500 and 790 ms
+  for 1,000, and a single statement of 2,000 groups did not finish within a 15 s `statement_timeout` (it was cancelled);
+  with an index on `(pair_a, pair_b)` 500 groups run in 2.3 ms and 16,383 in 753 ms (bitmap `OR`). The 16,383-group
+  statement ran for 13 minutes without answering `pg_terminate_backend` and blocked other tests' `DROP DATABASE` until
+  the coordinator restarted the container. The fix bounds each statement to 500 groups on both dialects
+  (`OR_GROUPS_PER_STATEMENT`; a single-field list past that is one `in` list instead), so one statement is at most about
+  0.4 s per 70,000 unindexed rows and can be cancelled. The total work of a huge compound include over an unindexed
+  foreign key is still rows x keys, as for any `OR` of key groups (the original's row-value `IN` list is evaluated the
+  same way on a sequential scan); a linear form (`(a, b) IN (SELECT * FROM unnest($1::text[], $2::int[]))`) is proposed
+  for `q-orm-hot-path`. The Postgres tests now use sizes just past the limit (65,600 keys, 32,800 compound parents), an
+  index on the compound foreign key of the test model, `statement_timeout = 10s` on their databases
+  (`pg::fresh_db_bounded`) and a guard that drops each database at the end of its test, also on failure
+  (`pg::DropOnExit`); `db_push.rs`, the pushed `pg_oracle` run and the snapshot unit test drop theirs the same way.
 - Statement counts are asserted in `src/engine/key_list_tests.rs` (SQLite, 1,200 keys, with the recorder): one read-back
   statement with one parameter, three child and three count statements for the compound include (1000, 1000, 400
   parameters), three `UPDATE`s for a compound `set` whose `WHERE`s hold their own keys, three `DELETE`s for a nested
