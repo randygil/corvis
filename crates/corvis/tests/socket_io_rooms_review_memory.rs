@@ -78,12 +78,8 @@ fn requested() -> usize {
     REQUESTED.load(Ordering::SeqCst)
 }
 
-async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while !done() {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+async fn wait_for(what: &str, done: impl FnMut() -> bool) {
+    engine_support::eventually(what, done).await;
 }
 
 // ------------------------------------------------------------------------------------------------------------ F2
@@ -136,6 +132,8 @@ async fn answers_held_by_pending_broadcasts_stay_within_the_answer_budget() {
         trigger.send(r#"2["ask"]"#).await;
     }
     wait_for("answers to flow", || sent.load(Ordering::SeqCst) >= 8).await;
+    // Let the answerers push as much as the budget lets in: the end of the flow is an absence over real sockets,
+    // a quiet period, not a condition (a shorter one would hold less and make the bound weaker, never wrong).
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     let held = (live() - before).max(0) as usize;
     // Held while the calls wait: at most the server-wide answer budget (a quarter of the unread budget, but never less
@@ -155,7 +153,6 @@ async fn answers_held_by_pending_broadcasts_stay_within_the_answer_budget() {
         task.abort();
     }
     drop((silent, trigger));
-    tokio::time::sleep(Duration::from_secs(1)).await;
     wait_for("the server to give the answers back", || (live() - before) < 2 * 1024 * 1024).await;
     fx.io.close();
 }

@@ -34,7 +34,24 @@ pub(crate) fn after(now: Instant, delay: Duration) -> Instant {
 }
 
 /// Why a session ended, with the strings Node's `engine.io` reports.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::engine::CloseReason;
+/// fn every_variant(value: CloseReason) {
+///     match value {
+///         CloseReason::TransportClose => {}
+///         CloseReason::TransportError => {}
+///         CloseReason::PingTimeout => {}
+///         CloseReason::ParseError => {}
+///         CloseReason::ForcedClose => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CloseReason {
     /// The client closed the transport or sent a close packet.
     TransportClose,
@@ -81,8 +98,22 @@ pub enum SendError {
 }
 
 impl QueueItem for Packet {
+    /// What the packet holds while queued: a framed text is the Socket.IO encoder's buffer, which may keep up to an
+    /// eighth of its length as spare capacity, so it is charged its allocation and not its length.
     fn size(&self) -> usize {
-        self.polling_len() + 16
+        let held = match self {
+            Packet::Message(EngineMessage::Framed(text)) => text.capacity(),
+            _ => self.polling_len(),
+        };
+        held + 16
+    }
+
+    /// A Socket.IO CONNECT (`40`: an Engine.IO message holding a packet of type `0`, which only the Socket.IO encoder
+    /// frames) closes a poll response: the connection handlers queue their packets right after it, and they leave
+    /// in the next one, as with the reference server when a poll was waiting. A WebSocket writes every packet as a
+    /// frame of its own anyway.
+    fn ends_batch(&self) -> bool {
+        matches!(self, Packet::Message(EngineMessage::Framed(text)) if text.starts_with("40"))
     }
 }
 
@@ -289,7 +320,7 @@ pub(crate) struct Candidate {
 
 /// What a polling `GET` is answered with.
 pub(crate) enum Polled {
-    /// Packets to send (at least one), and whether the session is closing after them.
+    /// Packets to send, at least one (a close packet last when the session closes after them).
     Packets(Vec<Packet>),
     /// Answer a single noop (an upgrade, or the client closed).
     Noop,
@@ -305,8 +336,13 @@ pub(crate) struct Session {
     pub(crate) log_id: u64,
     pub(crate) options: Arc<EngineOptions>,
     server: Weak<ServerInner>,
-    pub(crate) handshake: Request,
-    pub(crate) ip: String,
+    /// The request that opened the session, in allocations of its own (`Request::detached`), kept once: every socket of
+    /// a layer on top shares it. Bounded by the HTTP server's header limit; not charged to the unread budget, like the
+    /// session's other fixed state.
+    pub(crate) handshake: Arc<Request>,
+    /// The client address, resolved once when the session opened (it follows `set_trust_proxy`); shared by the
+    /// sockets of a layer on top.
+    pub(crate) ip: Arc<str>,
     /// The key this session is counted under in the per-address cap.
     pub(crate) addr_key: String,
     pub(crate) outbox: Arc<OutQueue<Packet>>,
@@ -327,7 +363,7 @@ impl Session {
         server: Weak<ServerInner>,
         id: String,
         transport: TransportKind,
-        handshake: Request,
+        handshake: Arc<Request>,
         options: Arc<EngineOptions>,
         total_unread: Option<Arc<UnreadGauge>>,
     ) -> Arc<Session> {
@@ -341,7 +377,7 @@ impl Session {
             server,
             handshake,
             addr_key: super::address_key(&ip, handshake_peer),
-            ip,
+            ip: Arc::from(ip),
             outbox: Arc::new(OutQueue::new(options.max_buffered_amount)),
             unread: Arc::new(UnreadGauge::new(options.max_unread_bytes, total_unread).with_fair_share(options.fair_unread_share())),
             inbox: Mutex::new(Some(inbox)),
@@ -403,6 +439,14 @@ impl Session {
         self.lock().ready
     }
 
+    pub(crate) fn poll_pending(&self) -> bool {
+        self.lock().get_pending
+    }
+
+    pub(crate) fn post_active(&self) -> bool {
+        self.lock().post_active
+    }
+
     pub(crate) fn closed_watch(&self) -> watch::Receiver<Option<CloseReason>> {
         self.closed.subscribe()
     }
@@ -447,7 +491,7 @@ impl Session {
             Err(PushError::Closed) => Err(SendError::Closed),
             Err(PushError::Full) => {
                 let line = match self.server() {
-                    Some(server) => server.overflow_line(self.log_id, std::time::Instant::now()),
+                    Some(server) => server.overflow_line(self.log_id, Instant::now()),
                     None => Some(format!("session {}: send buffer over its limit, session closed", self.log_id)),
                 };
                 if let Some(line) = line {
@@ -1016,7 +1060,7 @@ mod session_tests {
         let remote = "127.0.0.1:1".parse().unwrap();
         let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
         // No server: removing the session from the store is a no-op.
-        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), None)
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, Arc::new(handshake), Arc::new(options), None)
     }
 
     fn drain(session: &Session) -> Vec<Packet> {
@@ -1029,6 +1073,40 @@ mod session_tests {
         for _ in 0..5 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_framed_text_counts_against_the_send_buffer_with_its_spare_capacity() {
+        let session = open(EngineOptions::new().max_buffered_amount(2_000), TransportKind::Polling);
+        drain(&session);
+        let framed = |len: usize, capacity: usize| {
+            let mut text = String::with_capacity(capacity);
+            text.push_str(&"4".repeat(len));
+            EngineMessage::Framed(text)
+        };
+        session.send(framed(900, 1_000)).unwrap();
+        assert_eq!(session.outbox.buffered(), 1_000 + 16, "charged its allocation, not its 900 bytes");
+        // 1,016 + 900 + 16 would fit by length; by allocation it does not.
+        assert_eq!(session.send(framed(900, 1_000)), Err(SendError::Full));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_response_closes_after_a_socket_io_connect() {
+        let session = open(EngineOptions::new(), TransportKind::Polling);
+        drain(&session);
+        let framed = |text: &str| Packet::Message(EngineMessage::Framed(text.to_string()));
+        let texts = [r#"42["before"]"#, r#"40/chat,{"sid":"a"}"#, r#"42/chat,["hello"]"#, r#"40{"sid":"b"}"#, r#"42["after"]"#];
+        for text in texts {
+            session.send(EngineMessage::Framed(text.to_string())).unwrap();
+        }
+        // What was queued before a CONNECT leaves with it; what follows it waits for the next response.
+        assert_eq!(drain(&session), vec![framed(texts[0]), framed(texts[1])]);
+        assert_eq!(drain(&session), vec![framed(texts[2]), framed(texts[3])]);
+        assert_eq!(drain(&session), vec![framed(texts[4])]);
+        // A message of the application that reads `40` on the wire is not a Socket.IO CONNECT.
+        session.send(EngineMessage::Text("0".to_string())).unwrap();
+        session.send(EngineMessage::Text("1".to_string())).unwrap();
+        assert_eq!(drain(&session).len(), 2);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1304,7 +1382,7 @@ mod review_tests {
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
         let remote = "127.0.0.1:1".parse().unwrap();
         let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
-        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), total)
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, Arc::new(handshake), Arc::new(options), total)
     }
 
     async fn advance(ms: u64) {
@@ -1366,15 +1444,15 @@ mod review_tests {
         let total = Arc::new(UnreadGauge::new(1000, None));
         let session = open(EngineOptions::new().max_unread_bytes(100), TransportKind::WebSocket, Some(total.clone()));
         // Two waiters on the same gauge (a held POST and the WebSocket reader).
-        let a = session.unread.changed();
-        let b = session.unread.changed();
+        let a = session.unread.register();
+        let b = session.unread.register();
         let ticket = UnreadTicket::new(&session.unread, 10);
         drop(ticket);
         tokio::time::timeout(Duration::from_millis(10), a).await.expect("the first waiter wakes");
         tokio::time::timeout(Duration::from_millis(10), b).await.expect("the second waiter wakes");
         // A release charged to another session of the same engine wakes this one: its own gauge never changed.
         let other = open(EngineOptions::new(), TransportKind::WebSocket, Some(total.clone()));
-        let waiting = session.unread.changed();
+        let waiting = session.unread.register();
         let ticket = UnreadTicket::new(&other.unread, 10);
         drop(ticket);
         tokio::time::timeout(Duration::from_millis(10), waiting).await.expect("woken through the total");
@@ -1406,7 +1484,7 @@ mod review_round_two_tests {
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
         let remote = "127.0.0.1:1".parse().unwrap();
         let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
-        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), total)
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, Arc::new(handshake), Arc::new(options), total)
     }
 
     async fn advance(ms: u64) {
@@ -1521,7 +1599,7 @@ mod review_round_two_tests {
         // above has not answered yet) while a sibling is refused there; the rollback must wake that sibling, because
         // nothing was released and nothing else would.
         let address = Arc::new(UnreadGauge::new(300, None));
-        let sibling_waits = address.changed();
+        let sibling_waits = address.register();
         let seen = address.try_add_up_to(25, 300).expect("the asker's charge");
         assert!(address.try_add_up_to(290, 300).is_none(), "the sibling is refused while the level is inflated");
         address.roll_back(25, seen);
@@ -1533,7 +1611,7 @@ mod review_round_two_tests {
         let total = Arc::new(UnreadGauge::new(1000, None).pooled().with_guarantee_cap(10));
         let address = Arc::new(UnreadGauge::new(300, Some(total.clone())).with_guarantee_cap(350));
         let asker = Arc::new(UnreadGauge::new(10_000, Some(address.clone())).with_fair_share(25));
-        let own_wait = asker.changed();
+        let own_wait = asker.register();
         assert!(UnreadTicket::try_new_within_share(&asker, 25, 0).is_none(), "the server-wide level refuses");
         assert_eq!((asker.unread(), address.unread(), total.unread()), (0, 0, 0), "everything was undone");
         assert!(own_wait.now_or_never().is_none(), "the asker is not woken by its own rollback");
@@ -1542,7 +1620,7 @@ mod review_round_two_tests {
         let total = Arc::new(UnreadGauge::new(100, None).pooled());
         let address = Arc::new(UnreadGauge::new(300, Some(total.clone())));
         let asker = Arc::new(UnreadGauge::new(10_000, Some(address.clone())));
-        let own_wait = asker.changed();
+        let own_wait = asker.register();
         assert!(UnreadTicket::try_new_within_ancestors(&asker, 150, 0).is_none(), "the server-wide limit refuses");
         assert_eq!((address.unread(), total.unread()), (0, 0));
         assert!(own_wait.now_or_never().is_none());
@@ -1598,7 +1676,7 @@ mod review_round_two_tests {
     async fn a_release_anywhere_up_the_chain_wakes_a_session_that_waits() {
         let (_total, _address, a, b) = chain();
         let held = UnreadTicket::new(&a, 100);
-        let changed = b.changed();
+        let changed = b.register();
         drop(held);
         tokio::time::timeout(Duration::from_secs(5), changed).await.expect("woken by a release of a sibling session");
     }
@@ -1621,7 +1699,7 @@ mod review_round_two_tests {
         let total = Arc::new(UnreadGauge::new(1000, None));
         let own = Arc::new(UnreadGauge::new(100, Some(total.clone())));
         let mut ticket = UnreadTicket::new(&own, 500);
-        let changed = own.changed();
+        let changed = own.register();
         ticket.shrink_to(200);
         tokio::time::timeout(Duration::from_secs(5), changed).await.expect("woken by the shrink");
         assert_eq!((own.unread(), total.unread(), ticket.size()), (200, 200, 200));

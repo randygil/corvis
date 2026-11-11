@@ -23,7 +23,7 @@ use super::packet::{Incoming, Packet, WsFrame, decode_frame};
 use super::session::{Candidate, CloseReason, Ready, Session};
 use crate::http_adapter::UpgradedIo;
 use crate::logger::Logger;
-use crate::ws::{Pause, WriteEnd, protocol_error, write_loop_with};
+use crate::ws::{Pause, WriteEnd, protocol_error, released, write_loop_with};
 
 /// What the WebSocket is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +41,7 @@ type Stream = SplitStream<WebSocketStream<UpgradedIo>>;
 type Writer = JoinHandle<(WriteEnd, Sink)>;
 
 fn encode(packet: Packet) -> Message {
-    match packet.encode_ws() {
+    match packet.into_ws() {
         WsFrame::Text(t) => Message::Text(t),
         WsFrame::Binary(b) => Message::Binary(b.to_vec()),
     }
@@ -118,10 +118,14 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
         if session.is_closed() {
             break Exit::Session;
         }
-        // Registered before the limit is read, so a release in between wakes this loop (`notify_waiters` stores
-        // nothing for a waiter that is not registered yet).
-        let unread_changed = session.unread.changed();
-        let pause = if active { session.unread.pause() } else { Pause::No };
+        // A reader under its limits registers for nothing. One that finds a limit reached registers for the next
+        // release and reads the limits again, so a release in between is not lost (`UnreadGauge::register`).
+        let mut pause = if active { session.unread.pause() } else { Pause::No };
+        let mut release = None;
+        if pause != Pause::No {
+            release = Some(session.unread.register());
+            pause = session.unread.pause();
+        }
         let paused = pause != Pause::No;
         // Paused by the budget's pressure, not by what the session or its address holds: a pong it is not allowed to
         // read must not close it (a no-op unless `pressure_pause_timeout` is set).
@@ -169,7 +173,7 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
                     break Exit::Protocol(code);
                 }
             },
-            _ = unread_changed, if paused => {}
+            () = released(release), if paused => {}
             _ = closed.changed() => break Exit::Session,
             _ = cancelled => break Exit::CandidateEnded,
             end = writer_done => {
@@ -184,7 +188,13 @@ pub(super) async fn run(server: EngineServer, session: Arc<Session>, io: Upgrade
                         }
                         break Exit::WriterFailed;
                     }
-                    Ok((_, sink)) => {
+                    // The protocol refused a frame: the closing handshake began (the peer's close frame arrived and the
+                    // library answers it), so the peer is closing the connection.
+                    Ok((WriteEnd::Refused, sink)) => {
+                        sink_slot = Some(sink);
+                        break Exit::Peer { close_frame: true };
+                    }
+                    Ok((WriteEnd::Closed, sink)) => {
                         // The outbox ended: the session is closing (or closed).
                         sink_slot = Some(sink);
                         if session.ready() == Ready::Closing {

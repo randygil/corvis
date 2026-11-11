@@ -429,6 +429,8 @@ impl HandlerGuardGateway {
 #[websocket_gateway("/life")]
 pub struct LifecycleGateway {
     log: Arc<Log>,
+    #[websocket_server]
+    server: IoGatewayServer,
 }
 
 #[handlers]
@@ -473,6 +475,10 @@ impl OnGatewayConnection<IoSocket> for LifecycleGateway {
                 self.log.push("life-hook-waiting");
                 self.log.release.notified().await;
                 socket.disconnect(false);
+            }
+            "refuse" => {
+                socket.disconnect(false);
+                self.log.push("life-refused");
             }
             _ => {}
         }
@@ -1231,6 +1237,29 @@ async fn hooks_run_in_order_and_disconnect_exactly_once() {
     app.close().await.unwrap();
 }
 
+/// Security review of #185, F1: a polling client that posts CONNECT and never polls must still go through
+/// `handle_connection` (where a gateway authenticates its sockets): the hook runs when the socket is announced, not when
+/// the client chooses to collect its CONNECT, and a socket it refused gets no broadcast.
+#[tokio::test]
+async fn the_connection_hook_runs_for_a_polling_client_that_does_not_poll_and_a_socket_it_refuses_gets_no_broadcast() {
+    let (mut app, addr) = start::<MainModule>(IoAdapter::new()).await;
+    let log = app.get::<Log>().unwrap();
+    let life = app.get::<LifecycleGateway>().unwrap().server.namespace().expect("started");
+    let mut member = Raw::connect(addr).await;
+    member.join("/life", Some(r#"{"token":"member"}"#)).await;
+    let (sid, _) = engine_support::open_polling(addr).await;
+    // No GET is pending, and none comes until the hook ran.
+    assert_eq!(engine_support::post(addr, &sid, r#"40/life,{"token":"refuse"}"#).await.status, 200);
+    log.wait_for("life-refused").await;
+    life.emit("news", ()).await.unwrap();
+    assert_eq!(member.recv_text().await, r#"2/life,["news"]"#, "the broadcast ran");
+    // The client polls now: its CONNECT (alone in its response), then the disconnect, and nothing of the broadcast.
+    let first = engine_support::packets(&engine_support::poll(addr, &sid).await.text());
+    assert!(matches!(&first[..], [connect] if connect.starts_with("40/life,{\"sid\"")), "{first:?}");
+    assert_eq!(engine_support::packets(&engine_support::poll(addr, &sid).await.text()), ["41/life,"]);
+    app.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn connect_middleware_registered_in_after_init_runs_before_the_connection_hook() {
     let (mut app, addr) = start::<MainModule>(IoAdapter::new()).await;
@@ -1286,7 +1315,8 @@ async fn early_events_are_discarded_when_the_hook_disconnects_the_socket() {
     emit_ack(&mut client, "/life", r#"["hello"]"#).await;
     log.release.notify_one();
     log.wait_for("life-disconnect:rooms=0").await;
-    // Whatever the discarded event could have done, it did not: no handler ran.
+    // Whatever the discarded event could have done, it did not: no handler ran. Absence of an effect on another task, with
+    // nothing that would mark its end (a discarded event leaves no trace): a quiet period, not a condition.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!log.entries().iter().any(|e| e == "life-handler"), "{:?}", log.entries());
     app.close().await.unwrap();

@@ -11,6 +11,7 @@ members = [
     "examples/*",
     "bench/corvis-app",
     "bench/auth",
+    "bench/socket-io",
 
 ]
 

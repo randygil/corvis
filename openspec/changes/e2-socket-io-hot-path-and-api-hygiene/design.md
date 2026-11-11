@@ -229,10 +229,9 @@ After the middleware passes, `connect` does, with no connection lock held across
    including `disconnect(true)` on the connection: nothing deadlocks.
 4. If 3 failed (panic or `Err`): the socket is torn down silently (step "Teardown" below), its slot is removed (not `Left`:
    the client never joined), and the client receives CONNECT_ERROR `Internal server error`, as for a panic in the id check.
-5. Under the socket's state lock: if the phase is still `Joining`, queue CONNECT with a write acknowledgement (Decision 6)
-   and set the phase to `Connected`; otherwise (a teardown ran) do nothing. A refused queue (closed, or full, which closes the
+5. Under the socket's state lock: if the phase is still `Joining`, queue CONNECT and set the phase to `Connected`; otherwise (a teardown ran) do nothing. A refused queue (closed, or full, which closes the
    session) leaves the phase `Joining` and the socket is torn down after the lock is released.
-6. `joined_once`, then Decision 6.
+6. `joined_once`, then the connection handlers and `mark_ready` (Decision 6).
 
 Teardown of a joining socket (`disconnect_with` on a `Joining` socket: from `terminate`, from server shutdown, or from step 4):
 phase `Disconnected`, `adapter.del_all`, `remove_socket`, `forget`; no `disconnecting` / `disconnect` handlers and no
@@ -273,38 +272,39 @@ Alternatives considered: keep the lock and only reorder (rejected: the deadlock 
 register" (rejected: that is #183); register in the table but keep the phase `Connected` from the start (rejected: an emit by
 a thread that found the socket by enumeration could precede CONNECT).
 
-### 6. CONNECT in a write of its own
+### 6. Connection handlers right after the announce; CONNECT alone in its poll response
 
-The connection handlers run only after CONNECT was handed to the transport. Mechanism:
+Revised after the security review (see "Security review (round 1)"): the first version of this decision made the
+connection handlers wait for the CONNECT write, which on long-polling is the client's next `GET`.
 
-- `EngineSocket::send_all_written(messages) -> Result<Written, SendError>` queues the group like `send_all` and returns a
-  future that resolves `true` when the group's last message was handed to the transport and `false` when the session
-  discarded it or closed first. The outbox already carries an optional acknowledgement per item (`OutQueue::push`, `Ack`);
-  `push_group` gains it for the last item. WebSocket: `write_loop_with` sends it after `sink.send` returned (it already does).
-  Polling: `take_batch` sends it for the items it takes into a response (today it drops them).
-- In `connect`, step 5 queues CONNECT with `send_all_written`; after the state lock is released, `connect` waits for
-  `Written` or for the connection to close, then runs the connection handlers and `mark_ready`. If the write did not happen
-  the connection is ending: `terminate` disconnects the socket, and `connect` returns.
-- Packets of the client that arrive meanwhile wait for `ready` as today; the wait is bounded by the connection itself (a
-  WebSocket write that never completes is cut by the server's write deadline; a polling client that never polls is closed by
-  the heartbeat). `connect_timeout` no longer applies once the socket is `Connected` (`joined_once` is set in step 6).
+- The connection handlers and `mark_ready` run right after step 5, in the same task and with no wait, whatever the
+  transport and whether or not the client collected CONNECT: the order of `dev` and of the reference server
+  (`_onconnect` queues CONNECT, then `connection` is emitted). From step 5 the socket is selected by broadcasts, so the
+  hook where an application checks a socket (`on_connection`, a gateway's `handle_connection`) cannot depend on the
+  client. Packets of the client that arrive meanwhile wait for `ready` as before.
+- CONNECT still leaves alone: `QueueItem::ends_batch` (false by default) is true for an Engine.IO message framed by the
+  Socket.IO encoder whose packet is a CONNECT (`40`), and `OutQueue::take_batch` closes a poll response after such an
+  item, so what the handlers emit leaves in the next response, as with the reference server when a poll was waiting. A
+  WebSocket writes every packet as a frame of its own already. Nothing waits for a write, so the outbox needs no
+  acknowledgement for it.
+- A socket that never connected (refused by a middleware, the connection closed during the middleware, or a failure
+  before CONNECT) runs no `disconnecting` or `disconnect` callback, as with the reference server (`_onclose` returns
+  early for a socket that is not connected), and what was registered on it is dropped when the attempt ends: a callback
+  that holds a clone of the socket would otherwise keep the socket and its handshake alive for good.
 
-This is the reference order: CONNECT is written, then the handler runs, and what it emits goes in a later write (WebSocket:
-a separate frame written after the CONNECT frame was flushed; polling: the next response, since a response that carries
-CONNECT was taken before the handler could emit). Visible to applications: connection handlers start one write later than
-today, at most one poll round trip on polling. #35's `handle_connection` hook runs among the connection handlers and keeps
-its guarantee ("finishes before any event of that socket is dispatched").
+Tests: polling, the client posts `40` with no `GET` pending and the connection handler emits `auth`: the first `GET`
+answers exactly the CONNECT packet and the second the event
+(`over_polling_connect_is_answered_alone_and_the_handlers_event_in_the_next_poll`, and
+`a_poll_response_closes_after_a_socket_io_connect` over the session's outbox); WebSocket: the event is a frame of its
+own after CONNECT (`over_websocket_the_handlers_event_follows_connect_as_its_own_frame`); the regression tests of the
+security review (below).
 
-Number it must move: the upstream suite (`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test
-socket_io_conformance`) passes 20 runs in a row (task 1.2 records the failure rate before: about 2 to 3 in 8). Tests,
-deterministic: polling, the client posts `40` with no `GET` pending and the connection handler emits `auth`: the first `GET`
-answers exactly the CONNECT packet and the second the event (unit test over the session's outbox: the handler has not run
-until the CONNECT item is taken); WebSocket, a unit test with the in-process transport of `socket_io/tests.rs`: the
-connection handler does not run until the test drains the CONNECT item, and the first emit is a separate item.
+This does not fix the upstream suite's instability (#184, task 7.4); neither did the wait.
 
-Alternatives considered: stop `take_batch` at a CONNECT and yield in the writer after it (rejected: a yield orders nothing
-across threads, and the WebSocket writer already flushes per frame; the handler emitting before the CONNECT write is the
-cause); delay only the first emit (rejected: any emit of any task would need the same rule).
+Alternatives considered: wait for the CONNECT write (implemented first, removed after the security review); run the
+handlers at the write or after a deadline, whichever comes first (rejected: the client still controls a window in which
+an unchecked socket receives broadcasts); delay only the first emit (rejected: any emit of any task would need the same
+rule).
 
 ### 7. The answer budget uses the session's address key
 
@@ -453,6 +453,7 @@ comes near one has a test that pins it (existing, kept passing, or new):
 | One shared encoding per broadcast; each recipient bounded by `max_buffered_amount`; lengths of shared messages | #34 round 1 | 4 | `a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reaches`, `many_slow_clients_never_hold_the_broadcast_back_and_each_is_cut_at_its_own_bound`, length unit tests |
 | WebSocket message limits (`max_message_size`, `max_frame_size`) | #32 | 4 (upgrade) | `engine_io_security.rs`, `ws_security.rs` size tests |
 | Nothing the application emits precedes CONNECT; a packet behind CONNECT waits for the connection handlers | #33 Implementation notes | 5, 6 | new connect-order tests; existing `socket_io.rs` ordering tests |
+| The connection handlers run as soon as the socket is announced, without waiting for its client | this change, security review round 1 | 6 | `the_connection_handler_runs_before_the_client_polls_and_a_socket_it_refuses_gets_no_broadcast`, `the_connection_hook_runs_for_a_polling_client_that_does_not_poll_and_a_socket_it_refuses_gets_no_broadcast` |
 | No client in another socket's id room; own room expels; no id that is already a room | #34 round 1 F1, round 2 lead | 5 | `a_client_cannot_join_the_room_of_another_sockets_id`, `the_own_room_of_a_connecting_socket_expels_whoever_joined_its_id_during_the_middleware`, `no_socket_is_given_an_id_that_is_already_a_room`, plus a new test joining a joining socket's id between steps 2 and 3 |
 | No membership left behind by a socket that went away | #34 Decision 4 | 5 | `a_join_racing_a_disconnect_leaves_no_membership_behind`, `churn_leaves_the_maps_empty`, the fuzz properties, new teardown-during-joining tests |
 | Adapter panics and errors at CONNECT leave nothing behind | #34 round 2 L1/L2, round 3 | 5 | the three CONNECT tests, updated to the CONNECT_ERROR outcome (spec delta) |
@@ -465,8 +466,9 @@ comes near one has a test that pins it (existing, kept passing, or new):
 | What | Before | After | Consequence |
 |---|---|---|---|
 | Adapter fails joining the own room | CONNECT sent, then the socket disconnected and the connection closed | CONNECT_ERROR `Internal server error`, the connection stays | The client sees a refused connection instead of a dropped one (spec delta of `ws/socket-io-rooms`) |
-| CONNECT and the first emit of a connection handler | Often one read on WebSocket, one response on polling | Separate writes, separate responses | Matches the reference server; the upstream suite stabilizes |
-| When connection handlers run | Right after CONNECT was queued | After CONNECT was written (polling: taken by a poll) | Up to one poll round trip later on polling; events wait for the handlers as before |
+| CONNECT and the first emit of a connection handler over polling | Often one response | Separate responses (a response ends after CONNECT) | Matches the reference server when a poll was waiting; over WebSocket they were and stay separate frames |
+| Send buffer charge of a Socket.IO packet | Its length | The allocation of its buffer (at most an eighth more than its length) | A send fails with `Full` up to an eighth earlier for a client that does not read |
+| Callbacks registered on a socket that never connected | Not run; kept for as long as the socket (for good if one held the socket) | Not run; dropped when the attempt ends | Memory only |
 | Lookup by id | Could miss a socket whose client knew the id | Never misses; may also return a socket that is joining (its `emit` fails with `NotConnected`) | Applications that look sockets up from another channel stop needing retries |
 | Seven public enums | Exhaustive | `#[non_exhaustive]` | Downstream exhaustive matches need a wildcard arm |
 | Test hooks | On the trait and on public types (hidden) | In `corvis::socket_io::testing` (hidden) | Only code that used hidden items changes |
@@ -478,7 +480,8 @@ comes near one has a test that pins it (existing, kept passing, or new):
   `Connection` struct (Decision 8) is done after the connect sequence so #35's dispatcher hook moves once.
 - The `tokio-tungstenite` upgrade touches the gateway layer and its tests → isolated task, all WebSocket suites run, fallback in
   Decision 4.
-- Waiting for the CONNECT write delays connection handlers → bounded by the connection itself; documented; matches the reference.
+- The connection handlers run before the client collected CONNECT, so they may emit while CONNECT is still queued → a poll
+  response ends after CONNECT, and what they emit leaves after it on both transports.
 - The `Joining` phase adds a state every phase check must consider → one place lists who skips it (Decision 5), and the tests
   drive a teardown at each step.
 - Wall-clock tests turned into condition waits can hang on a regression → every wait has a deadline that fails with a message.
@@ -506,8 +509,488 @@ These settle the open questions and override the design where they differ.
    there may still be joining or already leaving, and that `emit` then fails with `NotConnected`.
 3. The module is `corvis::socket_io::testing`, `#[doc(hidden)]`.
 4. `ip()` keeps returning `String`; it stops resolving the proxy chain on every call. A `&str` accessor is a possible later issue.
-5. Connection handlers wait for the CONNECT write on both transports.
+5. Connection handlers wait for the CONNECT write on both transports. Overridden by the security review (round 1): they run
+   right after the announce, and a poll response ends after CONNECT instead (Decision 6).
 6. Implemented after #35 lands; task 1.1 is mandatory and its findings are written in "Implementation notes" before any other
    task starts.
 7. The security review is mandatory before the merge: the connect sequence (phases, teardown, lock order), the wakeup protocol,
    the request handling of the engine, the `tokio-tungstenite` upgrade.
+
+## Implementation notes
+
+### 1.1 The findings against `dev` with #35 merged (`bd398aa`)
+
+Every cited line was read again on `dev` at `bd398aa` (the merge of #35, the gateway adapter). Moved lines and what #35
+changed:
+
+| Finding | Where now | What changed |
+|---|---|---|
+| Wakeup registration allocates | `ws.rs:531-541` (`changed`), callers `client.rs:236`, `engine/websocket.rs:123`, `engine/polling.rs:161` | Unchanged |
+| `notify_waiters` on every release | `ws.rs:654-680` (`wake`, `roll_back`, `release`); `OutQueue::wake` at `ws.rs:117-120` | Unchanged |
+| Handshake copied per socket and per poll | `client.rs:551` (`shared.engine.handshake().clone()` into `Handshake::new`, which wraps it in an `Arc` of its own: one copy per socket); `engine/mod.rs:536` (`dispatch(handshake.clone(), ..)`); `Query::parse` at `engine/mod.rs:563` | #35 made `HandshakeData.request` an `Arc<Request>` (`Handshake::request_arc`, used by the gateway's execution contexts) and detached the session's request from the read buffer when the session opens (`Request::detached`, `engine/mod.rs:415`). The per-socket copy remains, so Decision 3 still applies; the `Arc` it asks for replaces the per-socket one. `Request::detached` stays: the session keeps the detached request, once |
+| Comments that say the opposite | `adapter.rs:175-177`, `budget.rs:3-12`, `socket.rs:154` (`Handshake`) | Unchanged |
+| Copies per emit | `parser.rs:286-304`, `client.rs:80`, `engine/packet.rs:150-158`, `engine/websocket.rs:43-47`, `ws.rs:148` | Unchanged |
+| Client mutex across the adapter | `client.rs:584-601` | Unchanged. #35 added the share check of pending disconnect hooks to `begin_connect` (`client.rs:535-543`) under the same `nsps()` lock; it only reads the lingering table (a leaf lock) |
+| `add_all` lookups under the write lock | `adapter.rs:1035-1071`, `is_socket_id` at `adapter.rs:388` | Unchanged |
+| Answer budget address key | `socket.rs:705` | **Already done by #35**: the socket keeps the session's `address_key` (`SocketInner::address`, `socket.rs:257,341`) and `resolve_ack` passes it to `respond_charged`; `EngineSocket::address_key()` exists (`engine/mod.rs:905`). Decision 7 reduces to its test (task 8.1) |
+| Eight parameters, triplicated flow handling | `client.rs:347`, `client.rs:385`, `client.rs:238-251`, `298-311` | Unchanged |
+| Room validation four times | `socket.rs:565-577`, `adapter.rs:1038-1052`, `broadcast.rs:232-254`, `broadcast.rs:418-429` | Unchanged |
+| Ack registration twice | `socket.rs:656-669`, `socket.rs:714-726` | Unchanged |
+| Hand-written limiters | `engine/mod.rs:121-140` (overflow), `485-491` (hook timeout), `496-503` (session cap) | #35 added a fourth caller of the session-cap limiter (`OpenError::PendingHooks`, `engine/mod.rs:462-468`) |
+| `WarnLimiter` allocates first | `warn.rs:41`, `warn.rs:74` and callers | Unchanged; #35 added callers (`IoSocket::warn`, `gateway.rs`) that `format!` before calling |
+| Test hooks in the public API | `adapter.rs:749-766`, `adapter.rs:979-1006`, `adapter.rs:774-790`, `mod.rs:80-123`, `socket.rs:679-684`, `namespace.rs:127-131` | Unchanged |
+| Enums without `#[non_exhaustive]` | `socket.rs:31,94,138`, `adapter.rs:54,92`, `broadcast.rs:98`, `engine/session.rs:38` | #35 added `EmitError::NotStarted` |
+| Tests with `sleep` or wall-clock bounds | as cited | Re-checked in group 12 |
+| Dead code | `server.rs:39,139,207`, `socket.rs:488-495`, `engine/mod.rs:376` | Unchanged |
+| Contradicting comments | `engine/session.rs:292`, `warn.rs:66` | Unchanged |
+| Errors typed by text | `parser.rs:594-607`, `client.rs:521` | Unchanged |
+| Reference cycle | `server.rs:142-151` | Unchanged |
+| `WriteEnd::Refused` | `engine/websocket.rs:187-194` | Unchanged |
+| `ip()` per call | `socket.rs:207-210`, `socket.rs:378-380` | #35 resolves it once per `Handshake` (a `OnceLock`): once per socket, still a `String` per call. Decision 13 still moves it to the session's resolved address |
+| `contains_binary` | `value.rs`, `parser.rs:250-253` | Unchanged |
+
+What #35 put on the paths this change redesigns, kept as invariants of this change, each with the tests that pin it:
+
+| Invariant (#35) | Where | Pinned by |
+|---|---|---|
+| An address at its share of pending disconnect hooks gets no new session (`503`) and no CONNECT to a namespace with disconnect hooks (`CONNECT_ERROR` `Too many pending disconnects`), checked before any socket or slot exists | `engine/mod.rs::caps_ok`, `client.rs::begin_connect` | `an_address_at_its_share_of_pending_hooks_gets_no_session_until_they_drain`, `one_session_joining_and_leaving_in_a_loop_is_refused_at_its_addresss_share`, `twenty_victims_hooks_run_while_one_address_keeps_rejoining` |
+| Disconnect hooks run exactly once on every path | `gateway.rs::on_connected` (`once`), `gateway/disconnect.rs` | lifecycle tests of `socket_io_gateways.rs` and `socket_io_gateways_security.rs`, `disconnect_hooks_run_in_a_bounded_number_of_tasks_and_every_one_runs_once` |
+| The connection hooks finish before any event of that socket is dispatched; events start in arrival order (tickets taken by the dispatcher, which the connection calls in arrival order) | `gateway.rs` (`Gate`, `Ticket`), `client.rs::dispatch` | `events_written_with_the_connect_start_in_arrival_order_while_the_gate_opens`, `events_held_behind_a_slow_connection_hook_start_in_arrival_order`, `tickets_start_in_the_order_they_were_taken_whatever_the_order_they_are_polled_in` |
+| The body copies of a gateway handler are charged at their real size, the packet's charge as credit, before any guard runs | `gateway.rs::dispatch_event` (`IoSocket::try_charge`) | `the_copies_of_a_body_stay_within_their_charge_for_one_and_two_body_parameters`, `an_event_that_finds_no_room_for_its_copies_is_answered_with_exception_and_its_handler_does_not_run`, `the_heap_of_events_in_flight_stays_within_the_unread_budget_times_a_constant` |
+| Global connection guards run once per gateway of the namespace | `gateway.rs::run_connection_guards` | `the_global_guards_run_for_every_gateway_of_a_namespace_whatever_the_provider_order` |
+| A socket holds its connection weakly; the session's request is detached from the read buffer | `socket.rs` (`SocketInner::client`), `engine/mod.rs::open_session` | `a_socket_queued_for_its_disconnect_hooks_gives_its_auth_charge_back_and_keeps_no_session`, `the_sockets_of_pending_disconnect_hooks_pin_at_most_the_byte_cap` |
+
+Interactions with the decisions:
+
+- Decision 3: the session keeps an `Arc<Request>` of the detached request and `HandshakeData.request` takes that `Arc`
+  (no second `Arc::new`), so `Handshake::request_arc` hands out the session's request. `LEFT_SOCKET_HEAP` counts
+  `size_of::<Request>()` for a request allocation: a socket a disconnect hook keeps can outlive its session and then
+  holds the session's request alone, so the constant keeps counting it (an upper bound), and `request_cost` in
+  `gateway/disconnect.rs` keeps charging the request's contents per pending socket. That over-counts only when several
+  sockets of one connection are pending at once, bounded by the namespaces with disconnect hooks.
+- Decisions 5 and 6: #35's gate opens after the connection hooks, which run among the connection handlers; the
+  dispatcher's tickets are taken in arrival order by the connection loop, after `wait_ready`. The new order (handlers
+  right after the announce, then `mark_ready`; Decision 6) keeps both: events still wait for `ready`, and `ready` is set after the
+  handlers. The CONNECT-time share check stays in `begin_connect`, before any socket exists.
+
+The untouched tree passes `cargo test -p corvis --features socket-io --no-fail-fast`: 1,646 passed, 0 failed, 56
+ignored (112 test binaries).
+
+### 1.2 The upstream suite before the change
+
+`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_conformance`, 8 runs on `bd398aa`. The
+file has two tests that run at the same time: the suite against Corvis and, as a control, against the Node reference.
+
+| Run | Against Corvis | Against the Node reference |
+|---|---|---|
+| 1 | pass | fail: `should connect then disconnect from a custom namespace` (timeout) |
+| 2 | **fail: `should allow connection to the main namespace`, `expected '2' to deeply equal '42["auth",{}]'`** | fail: `should connect then disconnect from a custom namespace` (timeout) |
+| 3 | pass | pass |
+| 4 | pass | fail: `should close the session upon ping timeout` (`expected 200 to deeply equal 400`) |
+| 5 | pass | pass |
+| 6 | **fail: `should connect then disconnect from a custom namespace` (timeout)** | fail: `should close the session upon ping timeout` |
+| 7 | pass | pass |
+| 8 | pass | fail: `should close the session upon ping timeout` |
+
+Corvis failed 2 runs of 8. Run 2 is the failure #184 describes. Run 6 is the same cause in another test: that test also
+waits for CONNECT and then registers the listener for `auth` after an `await` (`test-suite.js:539-540`), so it loses
+the `auth` frame when both arrive in one read and times out. The control failed 5 runs of 8, with the same `custom
+namespace` timeout and with the ping-timeout test, whose 300/200 ms heartbeat is tight while two suites, two servers
+and the build share the machine: the suite itself is timing-sensitive under load, whatever the server. Decision 6
+removes the cause on Corvis' side (CONNECT and what the connection handler emits leave in separate writes, as in the
+reference), but separate writes can still reach a slow client in one read, as they do from the reference. For the
+acceptance runs of task 7.4 the two tests are therefore run one at a time (`-- --test-threads=1`), so the control
+measures the suite and not the contention between the two runs; the result of each test is recorded separately.
+
+### 2.3 Benchmark before
+
+`LARGE_SIZE=16384 bash bench/socket-io/run.sh` on `7aab240` (the code of `dev` with the benchmark added), Windows 11,
+the release binary in the shared target directory. Each figure is the median of three runs (minimum to maximum).
+
+| Scenario | Transport | Connections | Messages | Payload | Runs | Messages/s | p50 (ms) | p99 (ms) | Max (ms) | Allocations/msg | Bytes/msg | Peak RSS (MiB) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| broadcast | polling | 200 | 100 | 64 B | 3 | 1175668 (1083183 to 1242491) | 7.23 (5.11 to 9.09) | 13.47 (12.88 to 14.49) | 15.49 (15.08 to 16.31) | 3.3 (3.3 to 3.7) | 864 (846 to 954) | 50.3 (49.2 to 50.8) |
+| broadcast | polling | 200 | 100 | 16384 B | 3 | 41012 (40004 to 41732) | 392.48 (342.09 to 401.11) | 469.00 (427.62 to 469.18) | 483.59 (474.78 to 493.13) | 3.4 (3.4 to 3.8) | 42694 (38126 to 43231) | 77.7 (72.2 to 78.9) |
+| broadcast | websocket | 1000 | 100 | 64 B | 3 | 127411 (117981 to 227488) | 7.86 (7.58 to 9.18) | 33.17 (27.43 to 33.41) | 53.34 (49.66 to 57.05) | 3.0 (3.0 to 3.0) | 181 (181 to 181) | 76.8 (74.8 to 77.5) |
+| broadcast | websocket | 1000 | 100 | 16384 B | 3 | 65566 (45432 to 65579) | 9.90 (9.61 to 18.95) | 118.64 (99.21 to 119.55) | 205.43 (202.69 to 283.91) | 3.0 (3.0 to 3.0) | 16764 (16764 to 16764) | 93.5 (90.4 to 94.8) |
+| emit | polling | 200 | 100 | 64 B | 3 | 26319 (22535 to 28580) | 6.18 (5.47 to 7.40) | 24.01 (18.15 to 24.98) | 38.63 (26.35 to 45.99) | 133.0 (133.0 to 133.0) | 25757 (25757 to 25757) | 48.1 (47.2 to 48.5) |
+| emit | websocket | 1000 | 100 | 64 B | 3 | 55823 (46848 to 76890) | 13.91 (11.75 to 14.65) | 60.65 (31.32 to 89.74) | 109.48 (50.69 to 145.16) | 39.0 (39.0 to 39.0) | 1968 (1968 to 1969) | 78.8 (75.7 to 81.5) |
+| server-emit | polling | 200 | 100 | 64 B | 3 | 599402 (502452 to 618867) | 6.80 (5.20 to 9.57) | 16.91 (15.81 to 17.29) | 21.83 (20.39 to 22.73) | 19.3 (18.7 to 20.1) | 1929 (1842 to 2146) | 51.1 (47.4 to 51.7) |
+| server-emit | polling | 200 | 100 | 16384 B | 3 | 36668 (36048 to 38487) | 4.37 (4.18 to 4.42) | 28.37 (27.78 to 30.91) | 53.47 (49.79 to 56.60) | 44.3 (44.0 to 45.0) | 141330 (140979 to 141487) | 60.2 (59.5 to 60.4) |
+| server-emit | websocket | 1000 | 100 | 64 B | 3 | 230050 (123227 to 232466) | 3.16 (1.91 to 3.18) | 15.74 (12.40 to 19.19) | 48.53 (43.50 to 189.28) | 17.3 (17.3 to 17.3) | 864 (863 to 866) | 78.3 (73.7 to 78.9) |
+| server-emit | websocket | 1000 | 100 | 16384 B | 3 | 36285 (29786 to 53455) | 0.48 (0.26 to 0.92) | 23.08 (7.76 to 23.70) | 152.21 (85.67 to 428.29) | 17.3 (17.3 to 17.3) | 115431 (115430 to 115431) | 114.9 (111.2 to 118.8) |
+
+Two things found while making the run: the benchmark first ran out of ephemeral ports over the matrix (connections the
+client closes stay in `TIME_WAIT`, and a run opens thousands), so its client sockets are reset on close (zero linger);
+and the polling `emit` figure (25,757 bytes per message for a 64-byte payload) is dominated by the per-request copy of
+the 4 KiB cookie that Decision 3 removes.
+
+### Group 3: release wakeups
+
+- `UnreadGauge::register` replaces `changed`: three `Option<Notified>` in an `async` block over `tokio::select!` and a
+  guard (`Registered`) that gives the waiter counts back; no allocation. Each level's notification is created before its
+  count is incremented, so a release that reads the count wakes a notification that already exists. `wake` returns at
+  once on a chained gauge with no registered waiter; the gateway's gauge keeps `notify_one`. `new` asserts a chain of
+  at most three.
+- The callers look, register only when blocked, and look again: the WebSocket reader and the held `POST` in place; the
+  connection loop registers on the turn after one that found it blocked (`blocked`), and a turn that finds it blocked
+  without a registration goes round once more, registered, before it waits.
+- `OutQueue::watching` counts the watchers in `wait_ready`; a push notifies `watchers` only when one is counted.
+- Tests: `releases_with_nobody_waiting_send_no_notification` (10,000 releases, a rollback, 0 notifications at every
+  level), `a_registration_counts_one_waiter_per_level_until_its_wait_ends_or_is_dropped`,
+  `a_registration_that_lands_around_a_release_never_misses_it` (registration before the release, after its
+  subtraction at each of the three levels, and after it: never paused and unwoken),
+  `pushes_with_no_pending_poll_notify_no_watcher_and_a_poll_never_misses_an_item`, and
+  `socket_io::tests::a_connection_under_its_limits_never_registers_for_a_release` (10,000 events: the peak of waiters
+  on the session's chain stays 0). The interleaving, stampede and stress tests of `gauge_tests` pass with `changed`
+  renamed to `register` and nothing else changed.
+
+### Group 4: one handshake request per session
+
+- **The finding was narrower than the review said.** `Request::clone` does not copy the header bytes: a header value
+  is a reference-counted `Bytes`, so a clone copies the header map's structure, the URI, the parsed query and the body
+  value. Measured with a 16 KiB cookie (`tests/socket_io_memory.rs`): each socket after the first grew the heap by
+  about 3.4 KB before and 1.7 KB after (the rest is the socket itself); a `POST` of a session peaked at 55,440 bytes
+  before and 53,951 after, of which 51,385 are the HTTP server's own for the same bytes (a request to a route that does
+  not exist). The copies are gone, but the figures of Decision 3 ("about 4 KiB less per request") were not there to
+  remove. The test that failed before the change is the identity one (`std::ptr::eq` of `Handshake::request()` of two
+  sockets, which needs no `testing` hook); the heap bounds of the spec scenarios hold before and after, and are kept as
+  regression bounds: per extra socket under the cookie size, and a `POST` under the cookie size beyond the HTTP
+  server's own allocation for the same request (`a_post_of_an_existing_session_copies_nothing_of_its_request`; the
+  spec's "less than 16 KiB beyond its body" cannot hold literally, since the HTTP server alone peaks at three times
+  the headers).
+- `Session.handshake` is `Arc<Request>` (the detached request of #35), `Session.ip` is `Arc<str>`;
+  `EngineSocket::handshake_arc` and `ip_arc` hand them to `Handshake::new`, which no longer wraps a copy. `Handshake::ip`
+  returns a copy of the session's resolved address (Decision 13, task 11.7) instead of resolving `X-Forwarded-For` once
+  per socket.
+- `EngineServer::handle` parses `Query` (three fields) from the URI, builds the request once and passes it by reference;
+  a request with a `sid` that is not an upgrade is built by `Request::for_engine_poll` (moved parts, no query parsing).
+  `reserve` debug-asserts that the request it gets carries no `sid`. `handshake_refused` lost its unused parameter and
+  became a free function; `open_refused` and `open_session` take what they use.
+- Unit test `the_query_keeps_only_the_three_parameters_the_engine_reads` (10,000 extra parameters).
+- `cargo doc -p corvis --features socket-io --no-deps`: no warning in `socket_io/` or `ws.rs` (the warnings it prints
+  are in `z/regex.rs` and `posture.rs`, untouched here).
+
+### Group 5: fewer copies, and the `tokio-tungstenite` upgrade (fallback taken)
+
+- **Task 5.4 took the fallback of Decision 4.** Every `tungstenite` release with `Bytes` payloads (0.26.2, 0.27, 0.28,
+  0.29, 0.30, the latest) depends on `rand` 0.9 while the workspace uses `rand` 0.8, and `deny.toml` denies a second
+  generation of `rand` (and, for 0.30, of `digest` through `sha1` 0.11): `cargo deny check` fails with every one of them.
+  Allowing it is a decision on the dependency policy of the authentication threat model, outside the files Decision 4
+  lists, so the upgrade goes to its own issue and the other three items landed. The upgrade itself was done to the
+  point of compiling the whole workspace with 0.30 (MSRV 1.85, below the workspace's 1.89): about forty call sites in
+  `ws.rs`, `websockets.rs`, `engine/websocket.rs` and the tests that build `tungstenite` messages; `CloseFrame` lost its
+  lifetime and `WebSocketConfig` became non-exhaustive (built with its setters). One thing the follow-up must keep:
+  from 0.26 the library allocates a 128 KiB read buffer for every connection when it starts (0.24 read through a
+  4 KiB chunk), so every server WebSocket must set `read_buffer_size` back to 4 KiB, or an idle connection costs 32
+  times more. The patch of that work is handed over with the implementation report.
+- With 0.24 what Decision 4 removes: the encoder writes the Engine.IO type, the header and the JSON into one buffer
+  (`count_binary`, bounded by `MAX_DEPTH`, counts the attachments first, allocating nothing; slack over an eighth is
+  shrunk); `Encoded` moves by value into the queue as the hidden `EngineMessage::Framed`, which a WebSocket frame takes
+  without a copy (`Packet::into_ws`, consuming); a send without attachments queues one message (no group vector);
+  `push_group` computes sizes without a vector; `contains_binary` allocates nothing for a value without containers.
+  `EngineMessage::Shared` holds the framed text too, so its length is the same and polling writes it as it is.
+- What stays until the upgrade: a broadcast's text is still copied into a `String` per WebSocket recipient when its
+  frame is written, and a binary attachment into a `Vec<u8>` (0.24 takes owned buffers). The spec scenarios
+  "Broadcast" and "Binary attachment" of "An emit is encoded once" are therefore not met; "One recipient" is
+  (`a_framed_message_is_its_own_websocket_frame_without_a_copy`).
+- Tests: `framed_and_shared_messages_are_the_same_bytes_as_a_text_message` (lengths, polling bytes and frames equal to
+  those of the plain message), `a_framed_message_is_its_own_websocket_frame_without_a_copy` (pointer identity),
+  `an_emit_queues_the_encoder_s_buffer_and_a_broadcast_one_shared_buffer`; the parser fixtures of the npm encoder pass
+  unchanged (they now compare `Encoded::packet`, the text without the type).
+
+### Groups 6 and 7: the connect sequence and the CONNECT write
+
+- `Phase::Joining` (between `Pending` and `Connected`): live for the adapter (`is_live`), found by
+  `IoNamespace::socket(id)`, `sockets()` and `socket_count()`, skipped by `sockets_by_ids` (broadcasts and bulk
+  operations) and refused by every emit (all of them already required `Connected`). `IoSocket::disconnect(false)`
+  does nothing on it (it now checks `connected()` first, as its rustdoc always said); `disconnect_with` from the
+  server's own paths (`terminate`, shutdown, a failed step) tears it down silently through `leave_unannounced`:
+  `del_all`, out of the table, its slot of the connection removed (not `Left`: the client never joined, so a new
+  CONNECT is a first one and a packet for that namespace is one for a namespace it has not joined), its `auth` charge
+  given back, no handlers, no DISCONNECT.
+- `connect` after the middleware: (1) under `nsps()`, the slot and the phase `Joining`; (2) `add_socket`, which inserts
+  only while the phase is `Joining`, read under the table's write lock; (3) `join_own_room` with no lock of the
+  connection held; a failure tears the socket down and answers CONNECT_ERROR `Internal server error`; (4)
+  `IoSocket::announce`: under the socket's state lock, CONNECT queued and the phase set to `Connected`; a refused queue
+  tears it down; (5) `joined_once`, then the connection handlers and `mark_ready` (after the security review; the
+  first version waited for the CONNECT write here).
+- Deviation from Decision 5, step 1: the phase is set while `nsps()` is held, as the design's step 1 says, so `nsps()`
+  is not quite a leaf: a socket's state lock is taken inside it there. Nothing takes `nsps()` while holding a state lock
+  (`disconnect_with` releases the state lock before `forget`; `terminate` releases `nsps()` before it disconnects), so
+  the order holds. Setting the phase after releasing `nsps()` would let a `terminate` in between find the socket still
+  `Pending`, skip it, and leave it to join a closed connection.
+- The first version of Decision 6 (`EngineSocket::send_written`, acknowledgements answered by `take_batch`, the wait in
+  `connect`) was removed after the security review; see "Security review (round 1)".
+- `InMemoryAdapter::add_all` tests the names against its own `sids` map; `LocalNamespace::is_socket_id` is gone. The
+  only liveness lookup left under the membership lock is the joining socket's own (`is_live(id)`).
+- Test hooks for the sequence: `corvis::socket_io::testing::{pause_connect, ConnectStep, ConnectPause}` (a pause at
+  one step, `reached`, `release`, and `finished`, reported by a guard when the attempt ends however it ends). The
+  namespace holds the pause in a `OnceLock`, so outside tests every step costs one atomic load.
+
+### Group 10: one place for each duplicated rule
+
+- `RoomLimits { max_rooms, max_name_length }` (with `check`, count first and then each name, and `check_name`) is used
+  by `IoSocket::join`, `InMemoryAdapter::add_all` (through `LocalNamespace::room_limits`), `valid_rooms` and
+  `with_rooms` (names only, the deferred error kept). Messages and error values unchanged.
+- `SocketState::register_ack(target, deadline, max, id)`: phase check, purge of expired entries, cap, then the id (taken
+  only once the registration is certain, so a refused call takes no id, as before). Used by `emit_with_ack_within` and
+  `register_broadcast_ack`.
+- `WarnLimiter`: a two-level table (`&'static str` kind, then the namespace, looked up by `&str`; a name is copied
+  only on first insert), `MAX_KEYS` counted over the pairs of every kind, messages built lazily
+  (`impl FnOnce() -> String`), the text "since the last one", and a logger context (`SocketIO`, `EngineIO`). The
+  engine's three hand-written limiters are one `WarnLimiter` with static kinds and the empty namespace: the session
+  caps share one kind (one line a minute for all of them, as before), the `allow_request` timeout and the send-buffer
+  overflow have their own. Operator-visible text: the overflow line's suffix was "(N more were closed in the last
+  minute without a line)" and is now "(N more of this kind were not logged since the last one)"; the cap and timeout
+  lines now carry that suffix too.
+- Left as it was: the `allow_request` hook's panic line is not rate limited (it was not one of the three, and a panic
+  of the application's own hook is not something this change was asked to bound); listed as a follow-up.
+
+### Group 7, task 7.4: the upstream suite after the change (acceptance not met)
+
+The suite was run after the rebase on `ed1e480`, against Corvis alone (`the_protocol_suite_passes_against_corvis`,
+`--test-threads=1`), 10 runs on this branch and, for comparison in the same hour on the same machine, 10 runs on `dev`
+(`ed1e480`, the code without this change):
+
+| | Runs passed | Failing tests seen |
+|---|---|---|
+| `dev` | 1 of 10 | `should allow connection to the main namespace` (and `... with a payload`), `... to a custom namespace` (and `... with a payload`), `should connect then disconnect from a custom namespace`, `should disconnect from the main namespace` |
+| this branch | 1 of 10 | the same tests, and once `should ignore HTTP requests with same sid after upgrade` (also seen on `dev` in a separate run) |
+
+The control (the suite against the Node reference) failed most runs on `dev` in that hour too (timeouts), where it had
+passed 3 of 8 in the morning. The failures are the suite's own pattern: it waits for one frame with a `once` listener and
+registers the listener for the next one after an `await`, so it loses a frame whenever two arrive in one read, and its
+300/200 ms heartbeat turns any delay into a ping in place of the expected frame. These runs were made with the first
+version of Decision 6 (the connection handlers ran after the CONNECT write; over WebSocket the write is the `sink.send`
+of the writer, flushed; over polling the take of a poll), and the unit and integration tests showed CONNECT and the
+handlers' first emit in separate writes (`connection_handlers_run_after_connect_and_before_the_first_event`,
+`over_polling_connect_is_answered_alone_and_the_handlers_event_in_the_next_poll`,
+`over_websocket_the_handlers_event_follows_connect_as_its_own_frame`), but two separate writes on loopback still reach a
+client that is slower than the server in one read: the gap between them is the time the CONNECT write's acknowledgement
+takes to wake the connect task (microseconds), shorter than Node's, whose next write waits for the previous write's
+callback on a later turn of its event loop. Making the gap longer (a timer, a yield) would be the "yield in the writer"
+the design rejected, and orders nothing. The acceptance (20 of 20) is therefore not met and #184 is not closed by this
+change; what would close it is a fix of the suite's listener pattern (a buffered `waitFor`) applied by
+`fetch-suites.mjs`, or keeping the conformance test advisory: a decision for the maintainer, listed as a follow-up.
+`socket_io_diff` was not run 20 times for the same reason (it shares the client pattern).
+
+### Group 11
+
+- `corvis::socket_io::testing` (hidden) holds: `pause_connect`/`ConnectPause`/`ConnectStep`, `adapter`, `in_memory`,
+  `membership_size`, `check_invariants`, `has_socket` (on a namespace), `adapter_size`, `adapter_invariants`,
+  `adapter_has_socket` (on an `InMemoryAdapter` a test adapter wraps), `buffered_amount`, `same_request`,
+  `poll_pending`, `post_active` (engine sessions, for group 12), `probe_decode`, `probe_auth`, `DecodeProbe`. The trait
+  lost its three hooks and gained `Any` as a supertrait (the tests find the in-memory adapter by downcast; no burden on
+  implementors, every `'static` type is `Any`); `InMemoryAdapter::size` is crate-private and returns an error instead of
+  panicking; `Membership.examined` exists only under `cfg(test)`; `IoNamespace::adapter` and `IoSocket::buffered_amount`
+  are crate-private. The test adapter of `tests/socket_io_rooms.rs` keeps the `Arc<InMemoryAdapter>` it wraps in its
+  knobs and asks `testing::adapter_size` for it.
+- `#[non_exhaustive]` on the seven enums, each with a `compile_fail` doctest that matches every variant without a
+  wildcard (they pass: the match does not compile).
+- Dead code: `ServerInner.closed`, `IoSocket::send_encoded`, the parameter of `handshake_refused` (now a free function).
+  Comments: `Polled::Packets`, `warn.rs`.
+- `parse_json` maps errors only through the seed's cell (its depth bound, 127, is below `serde_json`'s 128); the
+  existing `nesting_is_bounded_without_recursing_beyond_the_limit` pins 127 levels decoded and 128 `TooDeep`.
+  `begin_connect` returns `Result<(), ProtocolViolation>`.
+- `IoServer::new` installs a callback that holds the server weakly; `attach` installs the strong one (not after a
+  close). Test `a_server_that_is_never_attached_is_freed_when_its_last_handle_drops` (fails with the old strong callback).
+- `WriteEnd::Refused` ends the WebSocket loop as a peer close with a close frame. Test
+  `a_close_frame_while_the_server_writes_ends_the_session_as_a_transport_close` (200 rounds, 1 MiB queued); the old arm
+  also ended as `transport close` in practice (the session's default reason), so the test pins the outcome rather than
+  failing before the change.
+- The split: `adapter/mod.rs` (with the lock order in its module docs), `adapter/memory.rs`, `ack.rs`, `info.rs`; the
+  public paths are re-exported unchanged, no file outside `socket_io/` changed for it. `tests/review1.rs` became
+  `tests/review/{probe,id_rooms,ack_budget,adapter_contract,debug_output,connect_failures}.rs` (no test named a round).
+  `cargo test -p corvis --features socket-io -- --list` gives 1,755 tests before and after.
+- The lint ratchet (from #191) found two counts above the baseline after the split and the encoder change: one
+  `expect_used` (the encoder wrote numbers with `write!(..).expect(..)`; it now appends decimal digits itself) and four
+  `missing_docs` (the fields of `SocketInfo`, now in a private module re-exported publicly, where the hidden `adapter`
+  module had kept them out of the count; documented). The baseline only moves the file paths of the split; on Windows
+  `expect_used` reads one below the Linux baseline because of a `cfg(unix)` line in `application.rs`, untouched.
+
+### Group 8
+
+The code was already there (#35). Test `malformed_forwarded_addresses_from_one_peer_share_one_share_of_the_answer_budget`
+(three sessions of one peer behind `TrustProxy::All` with forwarded addresses that do not parse: one address entry in
+the answer budget, held answers at most its share, the calls past it end with `ResponsesTooLarge`). It passes on `dev`
+as well, since #35 made the change; it pins it.
+
+### Group 12 (partly done)
+
+- `eventually(what, condition)` and `EVENTUALLY` (30 s) in `tests/engine_support/mod.rs`; `testing::poll_pending` and
+  `testing::post_active` give the engine tests a condition for "the request reached the server".
+- Rewritten: `engine_io.rs` (the three sleeps that waited for a pending poll or a held `POST`), `engine_io_security.rs`
+  (the held-`POST` waits at 105, 193 and 409, and the hoarders at 465). Left with a comment that says why: the waits that
+  observe that reads stay paused while the peer keeps writing (an absence nothing else shows) and the "not before" wait
+  past `first_request_timeout`. Each rewritten suite passed 5 runs in a row.
+- Finished after the report: `socket_io_accounting.rs`, `socket_io_lingering.rs`, the wall-clock upper bounds of
+  `engine_io_security.rs` and `engine_io_ws.rs`, and the sweep of task 12.4 over every socket-io and engine-io suite
+  (below). One hook was added under `corvis::socket_io::testing`: `unread_bytes(&IoSocket)` (what the socket's session
+  holds against its unread budget), so the accounting test can wait for a packet to reach the server before its client
+  leaves. The synchronous `auth` test counts per thread (a thread-local in its allocator), so it no longer waits for the
+  heap of the test before it to go quiet.
+- `settle_until(condition)` was not done. `settle()` (40 `yield_now`) and the session tests' `advance` (5) stay: they
+  count turns of the single-threaded runtime on the paused clock, which is neither a sleep nor wall-clock time. The
+  generic replacement tried, a timer on the paused clock (which only completes when no task is ready), breaks the
+  exact-time tests: the timer wheel's 1 ms resolution moves the clock under them (13 tests failed). Writing a condition
+  at each of the ~150 call sites is what remains; `settle()` says so in its rustdoc.
+
+### 13.1 Benchmark after
+
+The same command and matrix as 2.3, on the same machine, on the final code of this change (`bench/socket-io/results.md`
+is this table):
+
+| Scenario | Transport | Connections | Messages | Payload | Runs | Messages/s | p50 (ms) | p99 (ms) | Max (ms) | Allocations/msg | Bytes/msg | Peak RSS (MiB) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| broadcast | polling | 200 | 100 | 64 B | 3 | 2257744 (2120778 to 2413826) | 3.43 (3.32 to 3.55) | 5.85 (5.71 to 6.12) | 7.07 (7.05 to 7.37) | 0.9 (0.8 to 1.0) | 848 (836 to 913) | 52.5 (48.9 to 54.0) |
+| broadcast | polling | 200 | 100 | 16384 B | 3 | 51954 (50480 to 67371) | 253.81 (198.72 to 271.95) | 371.93 (280.61 to 373.45) | 379.61 (288.26 to 391.37) | 0.8 (0.8 to 0.8) | 42936 (42717 to 43089) | 81.5 (74.6 to 81.6) |
+| broadcast | websocket | 1000 | 100 | 64 B | 3 | 219039 (209138 to 223443) | 8.20 (8.17 to 8.25) | 28.08 (24.71 to 28.82) | 53.02 (44.84 to 56.22) | 1.0 (1.0 to 1.0) | 133 (133 to 133) | 77.3 (74.0 to 78.8) |
+| broadcast | websocket | 1000 | 100 | 16384 B | 3 | 47360 (46243 to 54073) | 19.56 (18.25 to 19.89) | 73.88 (73.23 to 87.11) | 190.41 (142.01 to 222.62) | 1.0 (1.0 to 1.0) | 16716 (16716 to 16716) | 93.5 (89.8 to 95.6) |
+| emit | polling | 200 | 100 | 64 B | 3 | 50070 (48573 to 50342) | 3.77 (3.73 to 3.92) | 7.90 (7.87 to 7.96) | 12.54 (11.44 to 12.83) | 51.0 (51.0 to 51.0) | 20125 (20125 to 20126) | 47.1 (46.7 to 47.9) |
+| emit | websocket | 1000 | 100 | 64 B | 3 | 98017 (96494 to 100814) | 9.25 (8.91 to 9.43) | 24.00 (23.58 to 25.26) | 42.46 (39.16 to 44.19) | 19.0 (19.0 to 19.0) | 1077 (1077 to 1077) | 84.4 (81.3 to 87.5) |
+| server-emit | polling | 200 | 100 | 64 B | 3 | 1439947 (1089461 to 1447744) | 3.18 (2.10 to 3.19) | 6.75 (5.96 to 7.11) | 8.87 (8.78 to 10.09) | 8.2 (8.1 to 8.8) | 1375 (1361 to 1646) | 51.7 (47.3 to 53.8) |
+| server-emit | polling | 200 | 100 | 16384 B | 3 | 48231 (47917 to 50664) | 3.58 (3.49 to 3.63) | 15.48 (14.46 to 17.61) | 29.39 (26.33 to 42.43) | 18.9 (18.8 to 19.0) | 122715 (122618 to 122953) | 59.9 (59.4 to 61.1) |
+| server-emit | websocket | 1000 | 100 | 64 B | 3 | 215966 (209138 to 227486) | 3.03 (2.81 to 3.13) | 19.51 (15.27 to 22.47) | 46.08 (44.63 to 50.07) | 7.2 (7.2 to 7.2) | 444 (443 to 445) | 77.7 (75.1 to 79.1) |
+| server-emit | websocket | 1000 | 100 | 16384 B | 3 | 46872 (43056 to 56675) | 0.63 (0.63 to 0.74) | 15.57 (14.53 to 17.51) | 135.19 (85.45 to 183.35) | 8.2 (8.2 to 8.2) | 82507 (82507 to 82508) | 111.0 (108.7 to 112.9) |
+
+Per decision, the figure it had to move:
+
+| Decision | Figure | Before | After | Met |
+|---|---|---|---|---|
+| 2 (release wakeups) | allocations per message, `emit` over WebSocket (1,000 x 100, 64 B) | 39.0 | 19.0 | yes (20 fewer; at least 6 asked), and the rate rose from 55,823 to 98,017 messages/s |
+| 3 (one request per session) | bytes per message, `emit` over polling (one `POST` and one `GET` per message, 4 KiB cookie) | 25,757 | 20,125 | partly: 5.6 KB less per message, but not "the headers" (see group 4: the header bytes were never copied; what went is the header map, the URI and the parsed query of each request) |
+| 4 (fewer copies) | bytes per `server-emit` message, WebSocket, 16 KiB | 115,431 (7.0 payloads) | 82,507 (5.0 payloads) | partly: two payloads less; the target of about two needs the `tokio-tungstenite` upgrade (the fallback was taken) and counts the application's own copy of the payload into its arguments, which the benchmark makes |
+| 4 | per broadcast recipient, WebSocket, 16 KiB: bytes / allocations | 16,764 / 3.0 | 16,716 / 1.0 | allocations yes (two fewer: the size vector and the group vector); the payload copy per recipient stays until the upgrade |
+
+All rates went up and the latencies down, most in the polling scenarios (`emit` over polling doubled), where the request
+copies and the per-message registrations went away. The figures are from one machine; the comparison is what counts.
+
+### Final checks (after the last code change, on `ed1e480` + this branch)
+
+- `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p corvis
+  --no-default-features --features socket-io -- -D warnings`; `cargo build -p corvis --features socket-io`: clean.
+- `cargo check -p corvis --tests --features <f>` for websockets, compression, tls, auth-local, auth-api-key,
+  auth-session, auth-oauth2 and socket-io: no warning (a test-only counter had to be gated on `socket-io`).
+- `cargo test --workspace --no-fail-fast`: 2,641 passed, 0 failed, 101 ignored (190 test binaries). An earlier run of
+  it failed one test, the first version of the lookup test, which opened 1,000 TCP connections and ran the machine out
+  of ephemeral ports (`WSAENOBUFS`) late in the workspace run; it now makes its 1,000 CONNECTs over 50 connections.
+- `cargo test -p corvis --features socket-io --no-fail-fast`: 1,698 passed, 0 failed, 57 ignored (114 binaries).
+- The CI fuzz steps with `PROPTEST_CASES=20000`: `--features socket-io --lib fuzz` 32 passed, `--lib fuzz` 16 passed.
+- Repeated: `socket_io_rooms_security` 30 of 30 (the `socket_of` waits are gone), `socket_io_connect_order` 5 of 5
+  (twice), `engine_io` and `engine_io_security` 5 of 5.
+- `node scripts/lint-ratchet.mjs`: no count above the baseline (see group 11); `node scripts/check-naming.mjs`,
+  `node scripts/check-crate-files.mjs`, `cargo deny check`, `npm run docs:check` (179 + 179 pages),
+  `openspec validate` of this change and of `e2-socket-io-redis-adapter`: pass.
+- Not met: the upstream suite 20 of 20 (task 7.4, above); `socket_io_diff` was not run in the end, for the same reason.
+
+### What this change does not claim (decided after the report)
+
+- **The no-copy-per-recipient scenarios are deferred to the `tokio-tungstenite` upgrade.** With the fallback of Decision
+  4 accepted, the spec delta of `ws/socket-io` keeps "One recipient" (the frame is the encoder's buffer) and states for
+  broadcasts only what the code does: one shared encoding queued on every recipient (`One encoding per broadcast`,
+  pinned by `an_emit_queues_the_encoder_s_buffer_and_a_broadcast_one_shared_buffer` and
+  `a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reaches`). The scenarios "Broadcast" (every
+  recipient's frame points into the shared buffer) and "Binary attachment" (the binary frame is the attachment's
+  buffer) were removed from this change's delta: with 0.24 the library takes an owned `String` and `Vec<u8>`, so each
+  WebSocket recipient's frame is a copy. They belong to the upgrade issue, which the maintainer files with the patch.
+- **The `POST` scenario is stated as what is bounded.** "Handling the `POST` allocates less than 16 KiB beyond its body"
+  cannot hold: the HTTP server alone peaks at about three times the headers for such a request (group 4). The delta of
+  `ws/engine-io` now says what `a_post_of_an_existing_session_copies_nothing_of_its_request` checks: the engine's
+  allocation for the `POST` stays under 16 KiB beyond what the HTTP server allocates for the same request.
+- **#184 is not fixed by this change and stays open on its own.** The scenario "Upstream suite is stable" was removed from
+  the delta: the suite loses a frame whenever two arrive in one read (its listener is registered after an `await`), and
+  the Node reference fails the same way on this machine. What this change guarantees, and its tests pin, is the order of
+  "A connecting socket is registered before its CONNECT" and the poll response that ends after CONNECT ("CONNECT leaves
+  alone"). Task 7.4 and the suite part of 15.3 stay unticked.
+
+### 12.4: the waits left in the socket-io and engine-io suites, and why
+
+Rewritten to conditions (`eventually`, `testing::poll_pending`, `testing::post_active`, `testing::unread_bytes`, an
+acknowledged `echo` round trip, or the paused clock where the code reads tokio time): every wait for something that has
+an observable end. Removed: every wall-clock upper bound (`elapsed() < ...`). What is left, each with a comment beside it:
+
+| Where | What | Why it stays |
+|---|---|---|
+| `socket_io.rs:149`, `socket_io_rooms.rs:464`, `engine_io_security.rs:310, 570`, `engine_io_ws.rs:189, 253, 313` | `elapsed() >= configured` | "Not before" bounds against the configured timeout, over real sockets |
+| `socket_io_security.rs:110`, `engine_io_security.rs:327` | a wait shorter or longer than the configured timeout, then a check that nothing closed | "Not before" bounds over real sockets (the server's timers run on the real clock there) |
+| `socket_io_accounting.rs:159` (`Handlers::settle`), `socket_io_memory.rs:219, 273`, `socket_io_rooms_review_memory.rs:137` | a quiet period before reading how much a flood got in | The end of admissions is an absence over real sockets (a paused reader resumes on any release): no state says every flooding reader stopped for good. A shorter wait makes the bound weaker, never wrong |
+| `socket_io_gateways.rs:1320`, `socket_io_log.rs:74, 110`, `socket_io_security.rs:197`, `engine_io_security.rs:127, 212, 429` | a quiet period before checking that something did not happen (a discarded event's handler, a second log line, a 33rd handler, reads past a pause) | Absence of an effect on another task, with nothing that marks its end |
+| `socket_io_rooms_memory.rs:90`, `socket_io_transit.rs:72` (`settled`) | a quiet heap before or while measuring | The heap of a server on real sockets has no "done" condition; it guards the measurement, it orders nothing |
+| `socket_io_accounting.rs:132`, `socket_io_security.rs:146`, `engine_io_security.rs:645`, `engine_support/io_app.rs:77` | a handler, middleware or hook that takes time | The load of the test (slow application code), not a synchronisation; `io_app` is compared with the Node application, which does the same |
+| `engine_io_ws.rs:182` | a producer's pace of sending | The application's behavior while the peer does not read |
+| `engine_support/mod.rs:32` | the re-check cadence inside `eventually` | Decides nothing: only the condition does |
+| `socket_io_accounting.rs:483, 516` | `elapsed()` read for messages and a "not before" bound | No upper bound left |
+
+Each rewritten suite passed 5 runs in a row (`socket_io_accounting`, `socket_io_lingering`, `engine_io_security`,
+`engine_io`); the swept ones passed in one run before the final checks.
+
+## Security review (round 1)
+
+**F1 (high): over long-polling, the connection hook could be skipped by a client that never polls.** In the first version
+of Decision 6, `connect` announced the socket (CONNECT queued, phase `Connected`: from then on it is selected by
+broadcasts and receives `send_shared`) and then waited for CONNECT to be written before running the connection handlers
+and `mark_ready`. Over long-polling "written" meant "taken by a `GET`", which the client decides: a client that `POST`ed
+CONNECT and never polled kept a socket that was connected, received every broadcast of the namespace into its queue, and
+never went through `on_connection` or a gateway's `handle_connection`, the documented place to authenticate a socket and
+disconnect it (`docs/websockets/guards.md`). Only the heartbeat ended it, and a client that polls once after the
+broadcast it wants collects it.
+
+Fix (Decision 6, revised): the connection handlers and `mark_ready` run right after the announce, as on `dev` and in the
+reference server; the wait, `EngineSocket::send_written`, `Session::send_written` and the acknowledgements `take_batch`
+answered for it are removed (no phase or other bookkeeping existed only for the wait). "CONNECT leaves alone" is kept in
+the transport: `take_batch` closes a poll response after a Socket.IO CONNECT (`QueueItem::ends_batch`). Unit tests that
+had been changed for the wait went back to their `dev` form; the two that tested the wait itself
+(`the_connection_handlers_wait_for_the_connect_write`,
+`a_connection_that_closes_before_the_connect_write_runs_no_handler_and_loses_its_socket`) were removed, and the
+teardown at each step of the sequence stays pinned by `socket_io_connect_order.rs`.
+
+Regression tests, written first and seen failing on `cd8672c`:
+
+- `socket_io::tests::the_connection_handler_runs_before_the_client_polls_and_a_socket_it_refuses_gets_no_broadcast`
+  (in-process, paused clock): a member joins `/chat`, a task broadcasts `news` in a loop, a second client sends
+  `0/chat,` without a token and nothing takes its queue; the `on_connection` handler disconnects a socket without a
+  token. On `cd8672c` it failed with "the connection handler of the client that does not poll: not within 10,000 turns of
+  the runtime". Now the handler runs, and what the client collects is its CONNECT and its DISCONNECT, with no `news`.
+- `socket_io_gateways.rs::the_connection_hook_runs_for_a_polling_client_that_does_not_poll_and_a_socket_it_refuses_gets_no_broadcast`
+  (real polling transport): a client `POST`s `40/life,{"token":"refuse"}` with no `GET`; the gateway's
+  `handle_connection` disconnects it. On `cd8672c` it failed with "`life-refused` was not logged within 10 s; log:
+  ["init:/chat", "life-connection:member"]" (the WebSocket member's hook ran, the polling client's never did). Now the
+  hook runs before any `GET`, a broadcast after it reaches the member and not the client, and the client's first `GET`
+  answers its CONNECT alone and the second its DISCONNECT.
+
+Hardening notes of the review:
+
+- **Spare capacity of a queued packet.** The encoder keeps up to an eighth of a buffer's length as spare capacity, which
+  `max_buffered_amount` did not count. A framed text is now charged its capacity (`QueueItem::size` of `Packet`), which
+  costs nothing; shrinking every buffer to fit would reallocate, and may copy, on every emit. Test:
+  `a_framed_text_counts_against_the_send_buffer_with_its_spare_capacity` (failed with 916 for 1,016 under the old rule).
+- **Callbacks of a socket that never connected.** On an own-room failure, the `disconnecting` and `disconnect` callbacks
+  a middleware registered did not run (right: the client never saw the socket connected, and the reference server runs
+  no `disconnect` for a socket that is not connected) but were kept inside the socket, so one holding a clone of the
+  socket made a cycle that nothing freed. The same held for a socket its middleware refused, and for one whose
+  connection closed during the middleware (`PendingGuard`). Both paths now drop them without running them
+  (`IoSocket::release_callbacks`). Tests:
+  `the_disconnect_callbacks_of_a_socket_whose_own_room_failed_are_released_without_running` and
+  `the_disconnect_callbacks_of_a_socket_a_middleware_refused_are_released_without_running`, both failed on the release
+  assertion before.
+
+Checks after the fix (on `03e5801`): `cargo fmt --check`, workspace clippy, the socket-io clippy without default
+features, the eight per-feature checks and `cargo build --workspace --all-targets`: clean. `cargo test --workspace
+--no-fail-fast`: 2,645 passed, 0 failed, 101 ignored (190 binaries); `cargo test -p corvis --features socket-io
+--no-fail-fast`: 1,702 passed, 0 failed, 57 ignored (114 binaries); fuzz with `PROPTEST_CASES=20000`: 32 and 16
+passed; `socket_io_connect_order` and `socket_io_gateways` 5 of 5; ratchet (only the known Windows difference,
+`expect_used` 50 for the Linux 51), naming, crate files, `cargo deny check`, `npm run docs:check` (179 + 179 pages) and
+`openspec validate --strict`: pass.
+
+The `emit` rows of the benchmark, rerun with the binary of `cd8672c` and the binary of the fix alternated, three rounds
+each in the same hour (each round is itself the median of 3 runs): allocations and bytes per message did not change (51.0
+and 20,125 over polling, 19.0 and 1,077 over WebSocket). Rates, `cd8672c` then the fix: polling 49,341 / 50,725 / 49,852
+and 50,682 / 49,130 / 49,079 msg/s; WebSocket 90,042 / 85,059 / 97,021 and 91,375 / 96,420 / 96,074 msg/s. No
+regression; the WebSocket rate of this machine moves by 10% from run to run (13.1's 98,017 was another hour).
+`results.md` keeps the table of 13.1.
+
+Left as it is, and outside this finding: a gateway's `handle_connection` runs in a task of its own (as on `dev`), so a
+broadcast that runs between the announce and the hook's `disconnect` can still reach the socket, even when the hook
+disconnects before its first `await`; NestJS calls `handleConnection` synchronously from the `connection` event. The
+window is bounded by the scheduling of one task, no longer by the client. A follow-up for the maintainer.

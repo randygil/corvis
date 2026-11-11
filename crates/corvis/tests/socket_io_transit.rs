@@ -62,7 +62,9 @@ fn live() -> isize {
     LIVE.load(Ordering::Relaxed)
 }
 
-/// Waits until the live heap stops moving (three samples within 32 KiB of each other), and returns it.
+/// Waits until the live heap stops moving (three samples within 32 KiB of each other), and returns it. The heap of a
+/// server on real sockets, with tasks that free on their own schedule, has no condition that says it is done: this is a
+/// quiet period, used to read the worst transient and the idle retention, not to order anything.
 async fn settled() -> isize {
     let mut last = live();
     let mut calm = 0;
@@ -149,7 +151,7 @@ async fn measure(m: usize, sessions: usize, source: u8) -> Measured {
     assert!(clients.iter().all(|c| !c.is_closed()), "the sessions stay open");
     drop(clients);
     fx.io.close();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    engine_support::eventually("the sessions to close", || fx.io.engine().session_count() == 0).await;
     Measured { persistent, transient }
 }
 

@@ -69,6 +69,11 @@ pub(crate) enum PushError {
 /// What a queue holds: it reports the bytes an item counts against the queue's limit.
 pub(crate) trait QueueItem {
     fn size(&self) -> usize;
+
+    /// Whether a batch taken from the queue (`OutQueue::take_batch`) closes after this item.
+    fn ends_batch(&self) -> bool {
+        false
+    }
 }
 
 impl QueueItem for Message {
@@ -99,24 +104,52 @@ impl<M> Default for OutState<M> {
 pub(crate) struct OutQueue<M: QueueItem = Message> {
     state: Mutex<OutState<M>>,
     notify: Notify,
-    /// Woken with `notify_waiters` on every change, for consumers that only look at the queue
-    /// (a pending long-poll) and must not take the single wake-up of the writer.
+    /// Woken with `notify_waiters` on a change while `watching` counts a watcher: consumers that only look at the
+    /// queue (a pending long-poll) and must not take the single wake-up of the writer.
     watchers: Notify,
+    /// The watchers in `wait_ready`. A push with nobody watching takes no lock of `watchers`.
+    watching: AtomicUsize,
+    /// The watcher notifications sent, for the tests.
+    #[cfg(test)]
+    watcher_wakes: AtomicUsize,
     limit: usize,
+}
+
+/// One watcher counted in `OutQueue::watching` for as long as it waits.
+struct Watching<'a>(&'a AtomicUsize);
+
+impl Drop for Watching<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl<M: QueueItem> OutQueue<M> {
     pub(crate) fn new(limit: usize) -> Self {
-        OutQueue { state: Mutex::new(OutState::default()), notify: Notify::new(), watchers: Notify::new(), limit: limit.max(1) }
+        OutQueue {
+            state: Mutex::new(OutState::default()),
+            notify: Notify::new(),
+            watchers: Notify::new(),
+            watching: AtomicUsize::new(0),
+            #[cfg(test)]
+            watcher_wakes: AtomicUsize::new(0),
+            limit: limit.max(1),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, OutState<M>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Called after the state lock was released. A watcher counts itself before it locks the state to look at it, so a
+    /// change that reads no watcher here was made before that look, which sees it.
     fn wake(&self) {
         self.notify.notify_one();
-        self.watchers.notify_waiters();
+        if self.watching.load(Ordering::SeqCst) > 0 {
+            #[cfg(test)]
+            self.watcher_wakes.fetch_add(1, Ordering::SeqCst);
+            self.watchers.notify_waiters();
+        }
     }
 
     /// Queues an item. An item is always accepted when nothing is pending (so one message
@@ -145,8 +178,8 @@ impl<M: QueueItem> OutQueue<M> {
         if items.is_empty() {
             return Ok(());
         }
-        let sizes: Vec<usize> = items.iter().map(|m| m.size()).collect();
-        let total: usize = sizes.iter().sum();
+        // Sizes are cheap to compute: once for the total, once more as each item is queued.
+        let total: usize = items.iter().map(QueueItem::size).sum();
         let mut s = self.lock();
         if s.closed {
             return Err(PushError::Closed);
@@ -155,7 +188,8 @@ impl<M: QueueItem> OutQueue<M> {
         if pending > 0 && pending + total > self.limit {
             return Err(PushError::Full);
         }
-        for (m, size) in items.into_iter().zip(sizes) {
+        for m in items {
+            let size = m.size();
             s.items.push_back((m, size, None));
         }
         s.queued += total;
@@ -190,7 +224,7 @@ impl<M: QueueItem> OutQueue<M> {
     }
 
     /// Takes queued items in order while `cost` of the taken ones stays within `budget`; always at least one
-    /// when any is queued. Taken items no longer count against the limit.
+    /// when any is queued, and none after an item that ends a batch. Taken items no longer count against the limit.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn take_batch(&self, budget: usize, mut cost: impl FnMut(&M) -> usize) -> Vec<M> {
         let mut s = self.lock();
@@ -204,7 +238,11 @@ impl<M: QueueItem> OutQueue<M> {
             spent += c;
             let (m, size, _) = s.items.pop_front().expect("front exists");
             s.queued -= size;
+            let ends = m.ends_batch();
             taken.push(m);
+            if ends {
+                break;
+            }
         }
         taken
     }
@@ -212,6 +250,8 @@ impl<M: QueueItem> OutQueue<M> {
     /// Resolves when an item is queued or the queue is sealed, without taking anything.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) async fn wait_ready(&self) {
+        self.watching.fetch_add(1, Ordering::SeqCst);
+        let _watching = Watching(&self.watching);
         loop {
             let notified = self.watchers.notified();
             {
@@ -388,6 +428,45 @@ pub(crate) struct UnreadGauge {
     /// How many charges this level has refused: a rollback compares it with the value seen when its charge was taken,
     /// to know whether anyone was refused while this level held a charge that did not stay.
     refusals: AtomicUsize,
+    /// Waiters registered on this level (see `register`): a release notifies the level only while one is.
+    waiters: AtomicUsize,
+    /// The notifications this level sent, for the tests that check a release with nobody waiting sends none.
+    #[cfg(test)]
+    wakes: AtomicUsize,
+    /// The most waiters this level ever had at once, for the tests that check a reader under its limits registers none.
+    #[cfg(test)]
+    peak_waiters: AtomicUsize,
+}
+
+/// The waiter counts a registration took (see `UnreadGauge::register`), given back when its wait ends or is dropped.
+struct Registered<'a> {
+    levels: [Option<&'a UnreadGauge>; 3],
+}
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        for gauge in self.levels.iter().flatten() {
+            gauge.waiters.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Waits for a notification that may not exist.
+async fn notified(notified: Option<tokio::sync::futures::Notified<'_>>) {
+    match notified {
+        Some(n) => n.await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Awaits a registration for a release (`UnreadGauge::register`) when there is one, and never resolves otherwise: what a
+/// `select!` arm needs when its caller registered only if it found a limit reached.
+#[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
+pub(crate) async fn released(release: Option<impl std::future::Future<Output = ()>>) {
+    match release {
+        Some(release) => release.await,
+        None => std::future::pending().await,
+    }
 }
 
 /// A point of a refusal or an observation where another thread may run (see `UnreadGauge::observe`).
@@ -424,11 +503,21 @@ impl UnreadGauge {
             guarantee_cap: usize::MAX,
             on_drop: None,
             refusals: AtomicUsize::new(0),
+            waiters: AtomicUsize::new(0),
+            #[cfg(test)]
+            wakes: AtomicUsize::new(0),
+            #[cfg(test)]
+            peak_waiters: AtomicUsize::new(0),
         }
     }
 
+    /// A gauge of a chain of at most three (a session, its address, the server); `register` waits on three levels.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn new(limit: usize, parent: Option<Arc<UnreadGauge>>) -> Self {
+        assert!(
+            parent.as_ref().and_then(|p| p.parent.as_ref()).and_then(|p| p.parent.as_ref()).is_none(),
+            "a chain of unread gauges is at most three deep"
+        );
         UnreadGauge {
             bytes: AtomicUsize::new(0),
             notify: Notify::new(),
@@ -440,6 +529,11 @@ impl UnreadGauge {
             guarantee_cap: usize::MAX,
             on_drop: None,
             refusals: AtomicUsize::new(0),
+            waiters: AtomicUsize::new(0),
+            #[cfg(test)]
+            wakes: AtomicUsize::new(0),
+            #[cfg(test)]
+            peak_waiters: AtomicUsize::new(0),
         }
     }
 
@@ -524,20 +618,59 @@ impl UnreadGauge {
         self.bytes.load(Ordering::SeqCst)
     }
 
-    /// Resolves at the next release of this gauge or of any gauge above it (its address, the server-wide one). The
-    /// notifications are registered when this is called, before the caller checks `over_limit`, so a release in
-    /// between is not lost.
+    /// Registers for the next release of this gauge or of any gauge above it (its address, the server-wide one) and
+    /// returns the wait, which resolves at that release. A reader calls it only once it found a limit reached, then
+    /// reads the limits again and awaits only if they are still reached: a reader under its limits registers nothing,
+    /// and a release notifies a level only while someone is registered there.
+    ///
+    /// No release is lost. Registering creates each level's notification and then increments the level's waiter count;
+    /// a release subtracts its bytes and then reads the count (all sequentially consistent). Either the release reads
+    /// the count after the increment, and its `notify_waiters` wakes the notification created before it, or it read
+    /// the count before the increment, and then the reader's second reading comes after the subtraction and sees it.
+    /// A rollback reads the refusal count before the waiter count, and an observer registers before the reading that
+    /// counts its refusal, so the rule of `roll_back` holds the same way. Allocates nothing.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
-    pub(crate) fn changed(&self) -> impl std::future::Future<Output = ()> + '_ {
-        let mut waits = Vec::with_capacity(3);
-        let mut gauge = Some(self);
-        while let Some(g) = gauge {
-            waits.push(Box::pin(g.notify.notified()));
-            gauge = g.parent.as_deref();
-        }
+    pub(crate) fn register(&self) -> impl std::future::Future<Output = ()> + '_ {
+        let parent = self.parent.as_deref();
+        let levels = [Some(self), parent, parent.and_then(|p| p.parent.as_deref())];
+        let waits = levels.map(|level| {
+            level.map(|gauge| {
+                let wait = gauge.notify.notified();
+                gauge.waiters.fetch_add(1, Ordering::SeqCst);
+                #[cfg(test)]
+                gauge.peak_waiters.fetch_max(gauge.waiters.load(Ordering::SeqCst), Ordering::SeqCst);
+                wait
+            })
+        });
+        let registered = Registered { levels };
         async move {
-            futures::future::select_all(waits).await;
+            let _registered = registered;
+            let [a, b, c] = waits;
+            tokio::select! {
+                () = notified(a) => {}
+                () = notified(b) => {}
+                () = notified(c) => {}
+            }
         }
+    }
+
+    /// The waiters registered on this level now.
+    #[cfg(test)]
+    pub(crate) fn waiters(&self) -> usize {
+        self.waiters.load(Ordering::SeqCst)
+    }
+
+    /// The notifications this level sent since it was created.
+    #[cfg(test)]
+    pub(crate) fn wakes(&self) -> usize {
+        self.wakes.load(Ordering::SeqCst)
+    }
+
+    /// The most waiters this level, or one above it, ever had at once.
+    #[cfg(all(test, feature = "socket-io"))]
+    pub(crate) fn peak_waiters(&self) -> usize {
+        let above = self.parent.as_ref().map_or(0, |p| p.peak_waiters());
+        self.peak_waiters.load(Ordering::SeqCst).max(above)
     }
 
     /// Whether reading must stop, and whose doing it is.
@@ -651,12 +784,21 @@ impl UnreadGauge {
         self.release(by);
     }
 
+    /// Wakes the waiters of this level. A chained gauge notifies only while a waiter is registered (`register`): its
+    /// `notify_waiters` takes the notifier's lock, which every release of every session would otherwise contend for at
+    /// the server-wide level. The gateway's gauge keeps `notify_one`, which takes no lock without a waiter and stores a
+    /// permit for its single reader.
     fn wake(&self) {
-        if self.wake_all {
-            self.notify.notify_waiters();
-        } else {
+        if !self.wake_all {
             self.notify.notify_one();
+            return;
         }
+        if self.waiters.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        #[cfg(test)]
+        self.wakes.fetch_add(1, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
 
     /// Undoes a charge of this level that a failed charge higher up made void. For an instant this level was
@@ -672,10 +814,17 @@ impl UnreadGauge {
     }
 
     fn release(&self, size: usize) {
+        self.release_with(size, &mut || {});
+    }
+
+    /// `release` calling `step` between the subtraction and the reading of the waiter count of each level, where a
+    /// reader on another thread could register (the tests run it there).
+    fn release_with(&self, size: usize, step: &mut dyn FnMut()) {
         self.bytes.fetch_sub(size, Ordering::SeqCst);
+        step();
         self.wake();
         if let Some(parent) = &self.parent {
-            parent.release(size);
+            parent.release_with(size, step);
         }
     }
 }
@@ -1532,7 +1681,7 @@ mod gauge_tests {
     fn a_refusal_that_lands_around_a_rollback_is_never_left_waiting() {
         for stage in [Step::Decided, Step::Counted] {
             let level = UnreadGauge::new(300, None);
-            let waits = level.changed();
+            let waits = level.register();
             let seen = level.try_add_up_to(25, 300).expect("the asker's charge");
             let mut rolled_back = false;
             // The sibling decides on 25 held (it needs 290 of 300) and the whole rollback runs at `stage`.
@@ -1558,7 +1707,7 @@ mod gauge_tests {
             let level = Arc::new(UnreadGauge::new(300, None));
             let session = Arc::new(UnreadGauge::new(10_000, Some(level.clone())));
             let held = UnreadTicket::new(&session, 5);
-            let waits = session.changed();
+            let waits = session.register();
             // The asker's charge takes the address to 350 while its limit is 300; the level above has not answered.
             let seen = level.try_add_up_to(350, 400).expect("the asker's charge");
             let mut rolled_back = false;
@@ -1602,7 +1751,7 @@ mod gauge_tests {
         let held = UnreadTicket::new(&session, 20);
         assert_eq!(session.pause(), Pause::No);
         // Not over: nothing is counted, so a rollback has nobody to wake.
-        let waits = address.changed();
+        let waits = address.register();
         let seen = address.try_add_up_to(10, 400).expect("a charge");
         address.roll_back(10, seen);
         assert!(waits.now_or_never().is_none());
@@ -1637,7 +1786,7 @@ mod gauge_tests {
         // A sibling's charge is taken at the address and refused by the pool: the rollback has nobody to wake, however
         // many times the paused sessions are observed in between.
         for _ in 0..1_000 {
-            let waits = sessions[0].changed();
+            let waits = sessions[0].register();
             let seen = address.try_add_up_to(50, 10_000).expect("room at the address");
             for s in &sessions {
                 assert!(s.over_limit());
@@ -1647,7 +1796,7 @@ mod gauge_tests {
         }
         assert_eq!(address.refusals.load(Ordering::SeqCst), counted, "observing counted refusals at the address");
         // A release of the pool is what they wait for, and it wakes them.
-        let waits = sessions[0].changed();
+        let waits = sessions[0].register();
         drop(_held);
         assert!(waits.now_or_never().is_some());
     }
@@ -1672,7 +1821,7 @@ mod gauge_tests {
                 std::thread::spawn(move || {
                     for _ in 0..300 {
                         let ticket = loop {
-                            let wait = session.changed();
+                            let wait = session.register();
                             if let Some(t) = UnreadTicket::try_new_within_share(&session, 20, 0) {
                                 break t;
                             }
@@ -1691,7 +1840,7 @@ mod gauge_tests {
                 std::thread::spawn(move || {
                     for _ in 0..300 {
                         loop {
-                            let wait = address.changed();
+                            let wait = address.register();
                             if !address.over_limit() {
                                 break;
                             }
@@ -1712,5 +1861,109 @@ mod gauge_tests {
             }
         }
         assert_eq!(total.unread(), 0, "everything was given back");
+    }
+
+    fn chain() -> (Arc<UnreadGauge>, Arc<UnreadGauge>, Arc<UnreadGauge>) {
+        let total = Arc::new(UnreadGauge::new(1_000, None).pooled());
+        let address = Arc::new(UnreadGauge::new(600, Some(total.clone())));
+        let session = Arc::new(UnreadGauge::new(300, Some(address.clone())).with_fair_share(50));
+        (total, address, session)
+    }
+
+    #[test]
+    fn releases_with_nobody_waiting_send_no_notification() {
+        let (total, address, session) = chain();
+        for _ in 0..10_000 {
+            let mut ticket = UnreadTicket::new(&session, 40);
+            ticket.shrink_to(10);
+            assert_eq!(session.pause(), Pause::No);
+        }
+        let seen = address.try_add_up_to(10, 600).expect("room");
+        address.roll_back(10, seen);
+        for gauge in [&total, &address, &session] {
+            assert_eq!(gauge.wakes(), 0, "a release with nobody registered notified");
+            assert_eq!(gauge.waiters(), 0);
+        }
+    }
+
+    #[test]
+    fn a_registration_counts_one_waiter_per_level_until_its_wait_ends_or_is_dropped() {
+        let (total, address, session) = chain();
+        let wait = session.register();
+        for gauge in [&total, &address, &session] {
+            assert_eq!(gauge.waiters(), 1);
+        }
+        drop(wait);
+        for gauge in [&total, &address, &session] {
+            assert_eq!(gauge.waiters(), 0, "a dropped wait gives its counts back");
+        }
+        let wait = session.register();
+        drop(UnreadTicket::new(&session, 1));
+        assert!(wait.now_or_never().is_some(), "woken by the release");
+        assert_eq!((total.waiters(), address.waiters(), session.waiters()), (0, 0, 0), "a finished wait gives its counts back");
+        assert_eq!((total.wakes(), address.wakes(), session.wakes()), (1, 1, 1));
+    }
+
+    /// A reader found the session over its limit and registers while a release runs: before it, between its
+    /// subtraction and its reading of the waiter count at each level of the chain, or after it. Either the second look
+    /// of the reader sees the release, or the release wakes it.
+    #[test]
+    fn a_registration_that_lands_around_a_release_never_misses_it() {
+        const BEFORE: usize = 0;
+        const AFTER: usize = 4;
+        for stage in BEFORE..=AFTER {
+            let (_total, _address, session) = chain();
+            session.charge(400);
+            assert_eq!(session.pause(), Pause::Own, "the reader finds the limit reached");
+            let mut wait = None;
+            let mut paused = None;
+            let register = |wait: &mut Option<_>, paused: &mut Option<bool>| {
+                *wait = Some(session.register());
+                *paused = Some(session.pause() != Pause::No);
+            };
+            if stage == BEFORE {
+                register(&mut wait, &mut paused);
+            }
+            let mut level = 0;
+            session.release_with(400, &mut || {
+                level += 1;
+                if level == stage {
+                    register(&mut wait, &mut paused);
+                }
+            });
+            if stage == AFTER {
+                register(&mut wait, &mut paused);
+            }
+            let paused = paused.expect("registered");
+            let woken = wait.expect("a wait").now_or_never().is_some();
+            assert!(!paused || woken, "lost release (stage {stage})");
+            assert_eq!(paused, stage == BEFORE, "a registration after the subtraction sees the lowered level (stage {stage})");
+            assert_eq!(woken, stage != AFTER, "a release that read the count after the registration wakes it (stage {stage})");
+        }
+    }
+
+    #[test]
+    fn pushes_with_no_pending_poll_notify_no_watcher_and_a_poll_never_misses_an_item() {
+        struct Item;
+        impl QueueItem for Item {
+            fn size(&self) -> usize {
+                1
+            }
+        }
+        let queue: OutQueue<Item> = OutQueue::new(usize::MAX);
+        for _ in 0..10_000 {
+            queue.push(Item, None).unwrap();
+            assert_eq!(queue.take_batch(usize::MAX, |_| 1).len(), 1);
+        }
+        assert_eq!(queue.watcher_wakes.load(Ordering::SeqCst), 0);
+        // A poll registered before the push is woken by it.
+        let mut waiting = Box::pin(queue.wait_ready());
+        assert!((&mut waiting).now_or_never().is_none(), "nothing queued yet");
+        queue.push(Item, None).unwrap();
+        assert!(waiting.now_or_never().is_some(), "the push wakes the poll");
+        assert_eq!(queue.watcher_wakes.load(Ordering::SeqCst), 1);
+        assert_eq!(queue.watching.load(Ordering::SeqCst), 0, "the poll gave its count back");
+        // A poll that registers after the push finds the item at once.
+        assert!(queue.wait_ready().now_or_never().is_some());
     }
 }

@@ -12,14 +12,14 @@ use serde_json::Value;
 use tokio::sync::{Notify, oneshot};
 use tokio::time::Instant;
 
-use super::adapter::{AckSink, AdapterError, HandshakeInfo, Room, RoomError, SocketInfo};
+use super::adapter::{AckSink, AdapterError, HandshakeInfo, Room, RoomError, RoomLimits, SocketInfo};
 use super::broadcast::{BroadcastOperator, IntoRooms};
 use super::client::{Charge, ClientShared};
 use super::engine::options::MAX_DURATION;
 use super::engine::session::{CloseReason, after};
 use super::engine::{EngineSocket, Held};
 use super::namespace::IoNamespace;
-use super::parser::{self, Body, EncodeError, Encoded, Packet, SharedEncoded};
+use super::parser::{self, Body, EncodeError, Packet, SharedEncoded};
 use super::value::{Args, IntoArgs, IoValue, IoValueError};
 use super::warn::WarnLimiter;
 use crate::http::Request;
@@ -28,7 +28,29 @@ pub(crate) type EventHandler = Arc<dyn Fn(IoSocket, Args, Option<AckSender>) -> 
 type DisconnectHandler = Arc<dyn Fn(&IoSocket, DisconnectReason) + Send + Sync>;
 
 /// Why a socket disconnected, with the strings Node's `socket.io` reports.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::DisconnectReason;
+/// fn every_variant(value: DisconnectReason) {
+///     match value {
+///         DisconnectReason::ClientNamespaceDisconnect => {}
+///         DisconnectReason::ServerNamespaceDisconnect => {}
+///         DisconnectReason::TransportClose => {}
+///         DisconnectReason::TransportError => {}
+///         DisconnectReason::PingTimeout => {}
+///         DisconnectReason::ParseError => {}
+///         DisconnectReason::ForcedClose => {}
+///         DisconnectReason::ForcedServerClose => {}
+///         DisconnectReason::ServerShuttingDown => {}
+///         DisconnectReason::AdmissionTimeout => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DisconnectReason {
     /// The client left the namespace (a DISCONNECT packet).
     ClientNamespaceDisconnect,
@@ -91,7 +113,28 @@ impl From<CloseReason> for DisconnectReason {
 }
 
 /// Why an emit failed. Nothing was sent.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::EmitError;
+/// fn every_variant(value: EmitError) {
+///     match value {
+///         EmitError::ReservedEvent(_) => {}
+///         EmitError::NotConnected => {}
+///         EmitError::TooManyAttachments => {}
+///         EmitError::TooDeep => {}
+///         EmitError::BufferFull => {}
+///         EmitError::Value(_) => {}
+///         EmitError::InvalidRoom(_) => {}
+///         EmitError::Adapter(_) => {}
+///         EmitError::NotStarted => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum EmitError {
     /// The event name is one of `connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`,
     /// `removeListener`.
@@ -135,7 +178,23 @@ impl From<AdapterError> for EmitError {
 }
 
 /// Why an acknowledged emit did not produce the client's answer.
+///
+/// It is `#[non_exhaustive]`: a variant may be added in a minor release, so a `match` outside the crate needs a wildcard
+/// arm.
+///
+/// ```compile_fail
+/// # use corvis::socket_io::AckError;
+/// fn every_variant(value: AckError) {
+///     match value {
+///         AckError::Timeout => {}
+///         AckError::Disconnected => {}
+///         AckError::TooManyPending => {}
+///         AckError::Emit(_) => {}
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum AckError {
     /// The client did not answer in time.
     #[error("operation has timed out")]
@@ -152,6 +211,12 @@ pub enum AckError {
 }
 
 /// What a client sent in its CONNECT packet and how it arrived (`socket.handshake` in Node).
+///
+/// The request is the one that opened the Engine.IO session, kept once per session and shared by every socket of the
+/// connection (and by the execution contexts of a gateway): not a copy per socket. It is bounded by the HTTP server's
+/// header limit (`max_header_size`), so the server holds at most `max_sessions` of them, and it is not charged to the
+/// unread budget, like the rest of a session's fixed state: a charge for as long as the session lives would occupy part
+/// of its fair share and of its address's quota for good.
 #[derive(Debug, Clone)]
 pub struct Handshake {
     data: Arc<HandshakeData>,
@@ -160,10 +225,10 @@ pub struct Handshake {
 #[derive(Debug)]
 struct HandshakeData {
     auth: Value,
+    /// The session's request (`EngineSocket::handshake_arc`).
     request: Arc<Request>,
-    /// `request.ip()`, resolved the first time it is asked for: a gateway reads it for every message, and resolving it
-    /// walks the handshake's `X-Forwarded-For`.
-    ip: std::sync::OnceLock<String>,
+    /// The client address the session resolved when it opened (`EngineSocket::ip_arc`).
+    ip: Arc<str>,
     issued_at: SystemTime,
     /// What `auth` occupies, charged to the connection's session and address for as long as the handshake lives (the
     /// socket's life, or that of a `fetch_sockets` result that shares it): `auth` is a `serde_json::Value`, whose
@@ -173,16 +238,8 @@ struct HandshakeData {
 }
 
 impl Handshake {
-    pub(crate) fn new(auth: Value, request: Request, charge: Option<Held>) -> Self {
-        Handshake {
-            data: Arc::new(HandshakeData {
-                auth,
-                request: Arc::new(request),
-                ip: std::sync::OnceLock::new(),
-                issued_at: SystemTime::now(),
-                charge: Mutex::new(charge),
-            }),
-        }
+    pub(crate) fn new(auth: Value, request: Arc<Request>, ip: Arc<str>, charge: Option<Held>) -> Self {
+        Handshake { data: Arc::new(HandshakeData { auth, request, ip, issued_at: SystemTime::now(), charge: Mutex::new(charge) }) }
     }
 
     /// The `auth` object of the CONNECT packet (`{}` when the client sent none).
@@ -204,9 +261,9 @@ impl Handshake {
         self.data.request.headers()
     }
 
-    /// The client address (it follows `set_trust_proxy`).
+    /// The client address (it follows `set_trust_proxy`), as the session resolved it when it opened.
     pub fn ip(&self) -> String {
-        self.data.ip.get_or_init(|| self.data.request.ip()).clone()
+        self.data.ip.to_string()
     }
 
     /// When the CONNECT packet was handled.
@@ -225,6 +282,10 @@ impl Handshake {
 pub(crate) enum Phase {
     /// Created, running middleware.
     Pending,
+    /// Accepted by the middleware: in the namespace and joining the room of its own id, not announced yet (no CONNECT
+    /// was queued). Lookups by id find it; broadcasts, bulk operations and its own emits skip it. Torn down silently,
+    /// since its client never saw it connected.
+    Joining,
     Connected,
     /// The `disconnecting` handlers are running.
     Disconnecting,
@@ -245,6 +306,31 @@ struct PendingAck {
 struct SocketState {
     phase: Phase,
     acks: HashMap<u64, PendingAck>,
+}
+
+/// Why a pending acknowledgement was not registered.
+enum AckRefused {
+    NotConnected,
+    TooManyPending,
+}
+
+impl SocketState {
+    /// Registers `target` for the acknowledgement `id()` until `deadline`: refused when the socket is not connected or
+    /// already waits for `max` answers. Entries whose deadline passed are purged first (a call abandoned without being
+    /// polled again still expires). `id` is called only once the registration is certain, so a refused call takes no id.
+    fn register_ack(&mut self, target: AckTarget, deadline: Instant, max: usize, id: impl FnOnce() -> u64) -> Result<u64, AckRefused> {
+        if self.phase != Phase::Connected {
+            return Err(AckRefused::NotConnected);
+        }
+        let now = Instant::now();
+        self.acks.retain(|_, a| a.deadline > now);
+        if self.acks.len() >= max {
+            return Err(AckRefused::TooManyPending);
+        }
+        let id = id();
+        self.acks.insert(id, PendingAck { target, deadline });
+        Ok(id)
+    }
 }
 
 pub(crate) struct SocketInner {
@@ -442,8 +528,9 @@ impl IoSocket {
         self
     }
 
-    /// Adds a function that runs once the socket left its namespace. Synchronous; a panic is logged. Each socket
-    /// reports each of the two exactly once.
+    /// Adds a function that runs once the socket left its namespace. Synchronous; a panic is logged. Each socket that
+    /// connected reports each of the two exactly once; one that never did (a middleware refused it, or its connection
+    /// failed before CONNECT) reports neither, and what it registered is dropped.
     pub fn on_disconnect(&self, f: impl Fn(&IoSocket, DisconnectReason) + Send + Sync + 'static) -> &Self {
         self.inner.disconnect.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::new(f));
         self
@@ -467,7 +554,7 @@ impl IoSocket {
 
     fn send(&self, packet: &Packet) -> Result<(), EmitError> {
         let encoded = parser::encode(packet, self.inner.nsp.options().max_attachments).map_err(emit_error)?;
-        self.client()?.send_encoded(&encoded)
+        self.client()?.send_encoded(encoded)
     }
 
     /// The connection, while it lives.
@@ -485,15 +572,6 @@ impl IoSocket {
         &self.inner.address
     }
 
-    /// Sends an already encoded packet (one encoding shared by many sockets).
-    #[allow(dead_code)]
-    pub(crate) fn send_encoded(&self, encoded: &Encoded) -> Result<(), EmitError> {
-        if self.state().phase != Phase::Connected {
-            return Err(EmitError::NotConnected);
-        }
-        self.client()?.send_encoded(encoded)
-    }
-
     /// Queues an encoding shared by the recipients of a broadcast. The phase is checked first, so a socket that
     /// disconnected is never sent a packet.
     pub(crate) fn send_shared(&self, encoded: &SharedEncoded) -> Result<(), EmitError> {
@@ -507,9 +585,10 @@ impl IoSocket {
         Arc::downgrade(&self.inner)
     }
 
-    /// Connected, or disconnecting with its `disconnecting` handlers still running: the sockets that may be in rooms.
+    /// Joining, connected, or disconnecting with its `disconnecting` handlers still running: the sockets that may be in
+    /// rooms.
     pub(crate) fn is_live(&self) -> bool {
-        matches!(self.state().phase, Phase::Connected | Phase::Disconnecting)
+        matches!(self.state().phase, Phase::Joining | Phase::Connected | Phase::Disconnecting)
     }
 
     /// Charges `bytes` to this connection's unread budget (its session, address and the server-wide gauge, the chain of
@@ -522,7 +601,7 @@ impl IoSocket {
     }
 
     /// A rate limited warning of the connection's server.
-    pub(crate) fn warn(&self, kind: &'static str, message: &str) {
+    pub(crate) fn warn(&self, kind: &'static str, message: impl FnOnce() -> String) {
         self.inner.warnings.warn(kind, self.inner.nsp.name(), message);
     }
 
@@ -564,16 +643,8 @@ impl IoSocket {
     /// ```
     pub fn join(&self, rooms: impl IntoRooms) -> Result<(), RoomError> {
         let rooms = rooms.into_rooms();
-        let options = self.inner.nsp.options();
-        // The input is bounded before anything looks at it: more names than a socket may hold is refused at once.
-        if rooms.len() > options.max_rooms_per_socket {
-            return Err(RoomError::TooManyRooms { max: options.max_rooms_per_socket });
-        }
-        for room in &rooms {
-            if room.len() > options.max_room_name_length {
-                return Err(RoomError::NameTooLong { len: room.len(), max: options.max_room_name_length });
-            }
-        }
+        // Checked here whatever the adapter does: the input is bounded before anything looks at it.
+        RoomLimits::of(self.inner.nsp.options()).check(&rooms)?;
         self.inner.nsp.adapter().add_all(&self.inner.id, &rooms)
     }
 
@@ -653,19 +724,12 @@ impl IoSocket {
         let timeout = timeout.min(MAX_DURATION);
         let (tx, rx) = oneshot::channel();
         let now = Instant::now();
-        let id = {
-            let mut state = self.state();
-            if state.phase != Phase::Connected {
-                return Err(EmitError::NotConnected.into());
-            }
-            // An entry whose future was abandoned without being polled again still expires.
-            state.acks.retain(|_, a| a.deadline > now);
-            if state.acks.len() >= self.inner.nsp.options().max_pending_acks {
-                return Err(AckError::TooManyPending);
-            }
-            let id = self.inner.nsp.next_ack_id();
-            state.acks.insert(id, PendingAck { target: AckTarget::One(tx), deadline: after(now, timeout) });
-            id
+        let max = self.inner.nsp.options().max_pending_acks;
+        let registered = self.state().register_ack(AckTarget::One(tx), after(now, timeout), max, || self.inner.nsp.next_ack_id());
+        let id = match registered {
+            Ok(id) => id,
+            Err(AckRefused::NotConnected) => return Err(EmitError::NotConnected.into()),
+            Err(AckRefused::TooManyPending) => return Err(AckError::TooManyPending),
         };
         let _slot = AckSlot { socket: self.clone(), id };
         self.send(&Packet { nsp: self.inner.nsp.name().to_string(), body: Body::Event { id: Some(id), name: event.to_string(), args } })?;
@@ -674,13 +738,6 @@ impl IoSocket {
             Ok(Err(_)) => Err(AckError::Disconnected),
             Err(_) => Err(AckError::Timeout),
         }
-    }
-
-    /// The bytes queued for this socket's connection and not yet written. Unstable and hidden: for the tests that
-    /// check what a broadcast holds.
-    #[doc(hidden)]
-    pub fn buffered_amount(&self) -> usize {
-        self.engine().map_or(0, |e| e.buffered_amount())
     }
 
     /// The number of acknowledged emits still waiting for the client.
@@ -712,17 +769,8 @@ impl IoSocket {
     /// `false` when the socket is not connected or already waits for `max_pending_acks` answers (it then gets the
     /// event and its answer is not awaited).
     pub(crate) fn register_broadcast_ack(&self, id: u64, sink: AckSink, deadline: Instant) -> bool {
-        let now = Instant::now();
-        let mut state = self.state();
-        if state.phase != Phase::Connected {
-            return false;
-        }
-        state.acks.retain(|_, a| a.deadline > now);
-        if state.acks.len() >= self.inner.nsp.options().max_pending_acks {
-            return false;
-        }
-        state.acks.insert(id, PendingAck { target: AckTarget::Broadcast(sink), deadline });
-        true
+        let max = self.inner.nsp.options().max_pending_acks;
+        self.state().register_ack(AckTarget::Broadcast(sink), deadline, max, || id).is_ok()
     }
 
     /// Forgets the acknowledgement `id` without answering it.
@@ -740,17 +788,34 @@ impl IoSocket {
             if let Some(client) = self.inner.client.upgrade() {
                 client.terminate(DisconnectReason::ServerNamespaceDisconnect, true, true);
             }
-        } else {
+        } else if self.connected() {
             self.disconnect_with(DisconnectReason::ServerNamespaceDisconnect, true);
         }
     }
 
-    /// Moves the socket to connected: called with the connection's namespace table locked, after CONNECT is queued.
-    pub(crate) fn mark_connected(&self) {
+    /// The middleware accepted the socket and the connection gave it its slot (called with the connection's namespace
+    /// table locked, so a `terminate` that drains the table finds the socket joining and tears it down).
+    pub(crate) fn begin_joining(&self) {
         let mut state = self.state();
         if state.phase == Phase::Pending {
+            state.phase = Phase::Joining;
+        }
+    }
+
+    /// Announces a joining socket: under its state lock, `queue` queues CONNECT and, when it succeeds, the socket is
+    /// connected. Every emit takes the same lock to read the phase, so one that sees the socket connected is queued after
+    /// CONNECT. `None` when the socket is no longer joining (it was torn down meanwhile); a failed `queue` leaves it
+    /// joining, for the caller to tear down.
+    pub(crate) fn announce<T, E>(&self, queue: impl FnOnce() -> Result<T, E>) -> Option<Result<T, E>> {
+        let mut state = self.state();
+        if state.phase != Phase::Joining {
+            return None;
+        }
+        let queued = queue();
+        if queued.is_ok() {
             state.phase = Phase::Connected;
         }
+        Some(queued)
     }
 
     pub(crate) fn mark_ready(&self) {
@@ -773,14 +838,21 @@ impl IoSocket {
     }
 
     /// The whole disconnect sequence, once: `disconnecting` handlers (still in the namespace), removal, pending
-    /// acknowledgements failed, `disconnect` handlers.
+    /// acknowledgements failed, `disconnect` handlers. A socket that is still joining is torn down silently instead
+    /// (see [`leave_unannounced`](Self::leave_unannounced)).
     pub(crate) fn disconnect_with(&self, reason: DisconnectReason, send_packet: bool) {
         {
             let mut state = self.state();
-            if state.phase != Phase::Connected {
-                return;
+            match state.phase {
+                Phase::Connected => state.phase = Phase::Disconnecting,
+                Phase::Joining => {
+                    state.phase = Phase::Disconnected;
+                    drop(state);
+                    self.leave_unannounced();
+                    return;
+                }
+                Phase::Pending | Phase::Disconnecting | Phase::Disconnected => return,
             }
-            state.phase = Phase::Disconnecting;
         }
         if send_packet {
             let _ = self.send(&Packet { nsp: self.inner.nsp.name().to_string(), body: Body::Disconnect });
@@ -816,6 +888,32 @@ impl IoSocket {
         // The handlers may hold clones of the socket: drop them so nothing keeps the socket alive (and their table's
         // memory with them: a socket a disconnect hook keeps holds only what the hook needs).
         drop(std::mem::take(&mut *self.inner.handlers.write().unwrap_or_else(|e| e.into_inner())));
+    }
+
+    /// The teardown of a socket that was never announced (already marked disconnected): out of its rooms, out of the
+    /// namespace, its slot of the connection freed (the client never joined, so a new CONNECT is a first one), its
+    /// charge given back. No `disconnecting` or `disconnect` handler runs and no DISCONNECT is sent, as for a socket
+    /// the middleware refused. Whichever of this and the inserts of the connect path takes the namespace's table or the
+    /// adapter's lock first, nothing survives: both inserts check the phase under the lock this removal takes.
+    fn leave_unannounced(&self) {
+        let adapter = self.inner.nsp.adapter();
+        self.inner.warnings.guard("an adapter's del_all", self.inner.nsp.name(), || adapter.del_all(&self.inner.id));
+        self.inner.nsp.remove_socket(&self.inner.id);
+        if let Some(client) = self.inner.client.upgrade() {
+            client.forget_unannounced(self.inner.nsp.name(), self);
+        }
+        self.inner.handshake.release_charge();
+        self.release_callbacks();
+    }
+
+    /// Drops, without running any, what was registered on a socket that never connected: its event handlers and its
+    /// `disconnecting` and `disconnect` callbacks. A socket that never connected reports no disconnect (the reference
+    /// server's `_onclose` returns early for it), and a callback that holds a clone of the socket would otherwise keep
+    /// the socket, and whatever the callbacks capture, alive for good.
+    pub(crate) fn release_callbacks(&self) {
+        drop(std::mem::take(&mut *self.inner.handlers.write().unwrap_or_else(|e| e.into_inner())));
+        drop(std::mem::take(&mut *self.inner.disconnecting.lock().unwrap_or_else(|e| e.into_inner())));
+        drop(std::mem::take(&mut *self.inner.disconnect.lock().unwrap_or_else(|e| e.into_inner())));
     }
 }
 

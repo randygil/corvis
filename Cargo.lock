@@ -549,6 +549,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "corvis-sio-bench"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "corvis",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "memory-stats",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "corvis-swagger"
 version = "0.1.0"
 dependencies = [

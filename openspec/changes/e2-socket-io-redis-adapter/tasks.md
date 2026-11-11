@@ -29,7 +29,7 @@ only.
 
 ## 2. Public adapter interface and server-side emit
 
-- [ ] 2.1 Apply design.md Decision 9 to `crates/corvis/src/socket_io/adapter.rs`: remove `#[doc(hidden)]` from the
+- [ ] 2.1 Apply design.md Decision 9 to `crates/corvis/src/socket_io/adapter/` (`mod.rs`, `memory.rs`; see Review note 15): remove `#[doc(hidden)]` from the
   adapter items, `Packet::event`, `event_name`, `args`, `namespace` with the wire encoding private, `AdapterError`
   `#[non_exhaustive]` with `Unavailable`, `Timeout`, `TooManyRequests`, `MessageTooLarge`, `Unsupported`, `Closed`,
   what `LocalNamespace` needs to answer requests, the defaulted factory method that `IoServer::new` calls with the

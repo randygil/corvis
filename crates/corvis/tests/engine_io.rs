@@ -9,8 +9,8 @@ mod engine_support;
 use std::time::Duration;
 
 use corvis::prelude::*;
-use corvis::socket_io::EngineOptions;
 use corvis::socket_io::engine::{CloseReason, EngineServer, TransportKind};
+use corvis::socket_io::{EngineOptions, testing};
 use engine_support::*;
 use futures::StreamExt;
 
@@ -239,7 +239,7 @@ async fn a_pending_poll_is_answered_when_a_message_is_queued() {
     let socket = fx.socket().await;
     let addr = fx.addr;
     let pending = tokio::spawn(async move { poll(addr, &sid).await });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    eventually("the poll to wait", || testing::poll_pending(&socket)).await;
     assert!(!pending.is_finished(), "nothing to say yet");
     socket.send("now").unwrap();
     let resp = tokio::time::timeout(Duration::from_secs(10), pending).await.unwrap().unwrap();
@@ -272,7 +272,7 @@ async fn overlapping_polls() {
     let addr = fx.addr;
     let sid2 = sid.clone();
     let first = tokio::spawn(async move { poll(addr, &sid2).await });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    eventually("the first poll to wait", || testing::poll_pending(&socket)).await;
     let second = poll(fx.addr, &sid).await;
     assert_eq!(second.status, 400);
     assert_eq!(socket.closed().await, CloseReason::TransportError);
@@ -290,7 +290,7 @@ async fn overlapping_posts_close_the_session() {
     let mut slow = tokio::net::TcpStream::connect(fx.addr).await.unwrap();
     use tokio::io::AsyncWriteExt;
     slow.write_all(format!("POST {} HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n4a", poll_url(&sid)).as_bytes()).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    eventually("the slow POST to hold the slot", || testing::post_active(&socket)).await;
     let second = post(fx.addr, &sid, "4b").await;
     assert_eq!(second.status, 400);
     assert_eq!(socket.closed().await, CloseReason::TransportError);

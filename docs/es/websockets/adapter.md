@@ -190,7 +190,7 @@ motivo en el arnés.
 | Peticiones pendientes por sesión | un `GET` y un `POST` | igual | `400` y `transport error` |
 | `ping_interval` / `ping_timeout` | 25 s / 20 s | igual | `ping timeout` |
 | `upgrade_timeout`, upgrades en curso | 10 s, uno por sesión | igual | se cierra el candidato, la sesión sigue |
-| `max_buffered_amount` (en cola para el cliente) | 8 MiB | ninguno | el envío falla, se descarta la cola, `transport error` |
+| `max_buffered_amount` (en cola para el cliente; un paquete Socket.IO cuenta el búfer en el que se codificó, a lo sumo un octavo más que su longitud) | 8 MiB | ninguno | el envío falla, se descarta la cola, `transport error` |
 | `max_unread_bytes` (recibido, aún sin leer; cada mensaje cuenta su longitud más 64 bytes, también los vacíos) | 16 MiB | ninguno | se pausa la lectura del WebSocket; la respuesta del `POST` espera |
 | `max_total_unread_bytes` (lo mismo, entre todas las sesiones; al menos `max_unread_bytes`) | 256 MiB | ninguno | mientras se excede, las sesiones con más de una cuota justa (`max(16 KiB, total / max_sessions)`) se pausan y sus `POST` esperan; las demás siguen leyendo. Peor caso: `max_total_unread_bytes + max_sessions * cuota justa + max_sessions * max_http_buffer_size` (un mensaje por sesión, que domina con los valores por defecto) |
 | `max_sessions` | 10.000 | ninguno | handshake con `503` y `{"code":3,"message":"Too many sessions"}` |
@@ -291,6 +291,25 @@ esperó más de `admission_timeout` a que hubiera sitio en el presupuesto; Node 
 `on_disconnecting`, mientras el socket sigue en su espacio, y luego a los `on_disconnect`. Los nombres de evento reservados
 (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`) no los puede emitir el
 servidor, y un paquete de un cliente que use uno no se puede decodificar.
+
+Cuando un socket se conecta: en cuanto pasa su middleware de conexión, el socket se agrega al espacio y a la sala de su
+propio id, después se encola CONNECT, y sus manejadores de conexión corren enseguida, haya recogido o no el cliente su
+CONNECT. Desde ese momento el socket recibe broadcasts, así que el manejador de conexión (o el `handle_connection` de un
+gateway) es el lugar para revisar el socket y desconectarlo. Lo que emiten los manejadores sale después de CONNECT: con
+polling, una respuesta termina después de CONNECT, así que sus paquetes llegan con el poll siguiente, como con el servidor
+de referencia. `io.of(nombre).socket(id)` encuentra un socket desde el momento en que su cliente puede conocer su id, sin
+reintentos: un socket devuelto ahí, por `sockets()` o contado por `socket_count()`, puede estar todavía entrando (o ya
+saliendo), y entonces su `emit` falla con `NotConnected`; los broadcasts y las operaciones en bloque omiten un socket hasta
+que su CONNECT está encolado. Si el adaptador no logra agregar el socket a la sala de su propio id (entra en pánico o
+devuelve un error), el cliente recibe CONNECT_ERROR `Internal server error`, no queda nada del socket y la conexión sigue
+abierta. Un socket que nunca se conectó (rechazado por su middleware, o cuya conexión falló) no ejecuta ningún manejador
+`on_disconnecting` ni `on_disconnect`, y lo que se registró en él se descarta.
+
+La petición que abrió la sesión Engine.IO se guarda una vez por sesión y la comparten todos los sockets de la conexión
+(`socket.handshake().request()`): como mucho una petición por sesión, acotada por el límite de cabeceras del servidor HTTP,
+y no se carga al presupuesto de lo no leído. `DisconnectReason`, `EmitError`, `AckError`, `RoomError`, `AdapterError`,
+`BroadcastAckErrorKind` y el `CloseReason` de Engine.IO son `#[non_exhaustive]`: un `match` sobre cualquiera de ellos
+necesita un brazo comodín, para que una versión pueda agregar una variante.
 
 Un paquete que no se puede decodificar, un segundo CONNECT a un espacio al que la conexión ya entró (o está entrando), un
 paquete para un espacio al que no entró (o que se le rechazó) y un CONNECT_ERROR de un cliente cierran la conexión. Un

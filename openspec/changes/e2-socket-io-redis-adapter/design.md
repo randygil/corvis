@@ -622,3 +622,27 @@ These settle the open questions and override the design where they differ.
     synchronous methods must not block or wait for the network, because `adapter_timeout` cannot bound them.
 14. Implemented after #35 lands. The security review is mandatory before the merge (every message from Redis is
     untrusted input: sizes, MessagePack depth, request floods, ack accumulation, redaction).
+15. (From #185, `e2-socket-io-hot-path-and-api-hygiene`, which lands first.) What the adapter trait looks like after it,
+    and what this change must take into account (task 2.1 compares with the merged code):
+    1. The trait has no test hooks: `membership_size`, `check_invariants` and `has_socket` are gone, and the simulated
+       second node and the tests use `corvis::socket_io::testing` (`membership_size`, `check_invariants`, `has_socket`
+       on a namespace's in-memory adapter, or `adapter_size` and friends on an `InMemoryAdapter` a test adapter wraps).
+       The trait has `Any` as a supertrait, so the tests can find the in-memory adapter.
+    2. `AdapterError` and `RoomError` are already `#[non_exhaustive]`; this change only adds its variants.
+    3. A socket's own-room `add_all` runs while the socket is joining (`Phase::Joining`): `LocalNamespace::is_live` is true
+       for it and an adapter must accept the join; `LocalNamespace::sockets_by_ids` leaves joining sockets out of every
+       selection. `del_all` may be called for a socket that never reached `Connected` (the teardown of a joining socket).
+    4. No connection lock is held when the adapter runs, but its synchronous methods are still called from the connect
+       path and must not block (#34's rule). `InMemoryAdapter::add_all` decides "id of another socket" from its own
+       membership map; a Redis adapter that wraps it gets that for free and must not call back into the namespace while
+       it holds its own lock.
+    5. A failure of the own-room `add_all` refuses the CONNECT (CONNECT_ERROR `Internal server error`) instead of
+       disconnecting a connected socket: a Redis adapter that fails there is visible to the client as a refused connection.
+    6. `AckSink::respond_charged` receives the session's address key; `respond` (answers from other nodes) is unchanged.
+    7. `Packet` reaches the adapter before encoding, unchanged; the shared encoding a broadcast queues is now the Engine.IO
+       message with its type byte (`EngineMessage::Shared`). The wire encoding stays private.
+    8. The module layout: `socket_io/adapter/mod.rs` (the trait, options, errors, `RoomLimits`, `LocalNamespace`, the
+       factory), `socket_io/adapter/memory.rs` (`InMemoryAdapter`), `socket_io/ack.rs` (the answer budget and `AckSink`),
+       `socket_io/info.rs` (`HandshakeInfo`, `SocketInfo`); every public path is the same as before.
+    9. `IoNamespace::adapter()` is no longer public (`corvis::socket_io::testing::adapter` for the tests). If this change
+       wants Node's `namespace.adapter`, it publishes it with the trait.

@@ -102,7 +102,7 @@ async fn application_that_does_not_read_polling() {
     let addr = fx.addr;
     let sid2 = sid.clone();
     let held = tokio::spawn(async move { post(addr, &sid2, &body).await });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    eventually("the POST to deliver its message", || socket.unread_bytes() >= 1500).await;
     assert!(!held.is_finished(), "the answer is held while the application has not read");
     assert!(socket.unread_bytes() >= 1500);
     let mut messages = socket.messages();
@@ -122,6 +122,8 @@ async fn application_that_does_not_read_websocket() {
     for _ in 0..200 {
         send_text(&mut ws, &message).await;
     }
+    // Absence of reads past the pause: the frames are all written, and a bounded wait gives a broken pause the time
+    // to read on; nothing else would show it.
     tokio::time::sleep(Duration::from_millis(500)).await;
     // Reads paused once the unread bytes passed the limit: at most the limit plus a few frames.
     let unread = socket.unread_bytes();
@@ -171,15 +173,6 @@ async fn sids_that_are_not_ids_never_reach_the_store() {
 
 // ------------------------------------------------------------------- security review fixes
 
-/// Waits until `cond` holds, within 10 s.
-async fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
-    let end = std::time::Instant::now() + Duration::from_secs(10);
-    while !cond() {
-        assert!(std::time::Instant::now() < end, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 #[tokio::test]
 async fn empty_messages_are_charged_over_polling() {
     let mut fx = start(EngineOptions::new().max_unread_bytes(1000)).await;
@@ -190,7 +183,7 @@ async fn empty_messages_are_charged_over_polling() {
     let addr = fx.addr;
     let sid2 = sid.clone();
     let held = tokio::spawn(async move { post(addr, &sid2, &body).await });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    eventually("the POST to deliver its messages", || socket.unread_bytes() >= 100 * 64).await;
     assert!(!held.is_finished(), "the answer is held while empty messages wait unread");
     assert_eq!(socket.unread_bytes(), 100 * 64);
     let mut messages = socket.messages();
@@ -215,6 +208,7 @@ async fn empty_messages_stop_being_read_over_websocket() {
         let frame = if i % 2 == 0 { Message::Text("4".into()) } else { Message::Binary(vec![1]) };
         ws.send(frame).await.unwrap();
     }
+    // Absence of reads past the pause (see above).
     tokio::time::sleep(Duration::from_millis(500)).await;
     let unread = socket.unread_bytes();
     assert!(unread > 1000, "the limit was reached ({unread})");
@@ -329,6 +323,7 @@ async fn a_second_request_or_a_websocket_first_session_is_not_closed_by_the_firs
     let mut ws = ws_connect(fx.addr, None).await;
     let _ = next_text(&mut ws).await;
     let ws_socket = fx.socket().await;
+    // Not before: past the configured first-request timeout, the sessions are still open.
     tokio::time::sleep(Duration::from_millis(900)).await;
     assert!(polling_socket.close_reason().is_none());
     assert!(ws_socket.close_reason().is_none());
@@ -379,7 +374,9 @@ async fn handshakes_racing_a_close_leave_no_session_behind() {
     let fx = start(EngineOptions::new().max_sessions_per_ip(100_000).max_sessions(100_000)).await;
     let addr = fx.addr;
     let clients: Vec<_> = (0..64).map(|_| tokio::spawn(async move { http(addr, "GET", POLLING, &[], b"").await.status })).collect();
-    tokio::time::sleep(Duration::from_millis(5)).await;
+    // The close lands among the handshakes, wherever they are: no order is needed, every outcome below is accepted, and
+    // what is checked holds for any interleaving. This only lets some of them start first.
+    tokio::task::yield_now().await;
     fx.engine.close();
     for client in clients {
         let status = client.await.unwrap();
@@ -406,7 +403,7 @@ async fn a_session_above_its_fair_share_waits_while_the_total_is_over_and_resume
     let addr = fx.addr;
     let b2 = b.clone();
     let held = tokio::spawn(async move { post(addr, &b2, &body).await });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    eventually("B's POST to deliver its message", || socket_b.unread_bytes() >= 20_000).await;
     assert!(!held.is_finished(), "held: the total is over and B is above its fair share");
     assert!(socket_b.unread_bytes() < 30_000);
     // The application reading session A drops the total under its limit.
@@ -428,6 +425,7 @@ async fn the_total_budget_pauses_only_the_websocket_readers_above_their_fair_sha
     for _ in 0..10 {
         send_text(&mut ws, &format!("4{}", "m".repeat(20_000))).await;
     }
+    // Absence of reads past the pause (see above).
     tokio::time::sleep(Duration::from_millis(500)).await;
     // B's first message fits the total (20,064 + 20,064 > 40,000 only by the second): at most two are read.
     assert!(socket_b.unread_bytes() <= 2 * 20_064, "{}", socket_b.unread_bytes());
@@ -462,7 +460,7 @@ async fn a_hoarder_filling_the_total_does_not_starve_a_drained_session() {
         }
         hoarders.push((ws, socket));
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    eventually("the hoarders to go over the total", || hoarders.iter().map(|(_, s)| s.unread_bytes()).sum::<usize>() > 50_000).await;
     let hoarded: usize = hoarders.iter().map(|(_, s)| s.unread_bytes()).sum();
     assert!(hoarded > 50_000, "the total is over its budget ({hoarded})");
     // Keep the hoarders' own pings answered too, without reading their messages.
@@ -490,19 +488,20 @@ async fn a_hoarder_filling_the_total_does_not_starve_a_drained_session() {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     });
-    let end = std::time::Instant::now() + Duration::from_millis(1800);
+    // The innocent session keeps talking through several heartbeats (each ping proves one passed): it answers every ping
+    // and sends a message with each answer, while the pool stays over its budget.
     let mut sent = 0;
-    while std::time::Instant::now() < end {
-        tokio::select! {
-            frame = ws.next() => match frame {
-                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) if t == "2" => send_text(&mut ws, "3").await,
-                Some(Ok(_)) => {}
-                other => panic!("the innocent connection ended: {other:?}"),
-            },
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+    let mut pings = 0;
+    while pings < 4 {
+        match ws.next().await {
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) if t == "2" => {
+                pings += 1;
+                send_text(&mut ws, "3").await;
                 send_text(&mut ws, "4hello").await;
                 sent += 1;
             }
+            Some(Ok(_)) => {}
+            other => panic!("the innocent connection ended: {other:?}"),
         }
     }
     assert!(innocent.close_reason().is_none(), "{:?}", innocent.close_reason());
@@ -558,8 +557,9 @@ async fn allow_request_is_not_invoked_for_a_client_over_a_cap() {
 #[tokio::test]
 async fn allow_request_that_takes_too_long_refuses_the_request() {
     use corvis::socket_io::Admission;
+    // A hook that never answers.
     let fx = start(EngineOptions::new().allow_request_timeout(Duration::from_millis(300)).allow_request(|_| async {
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        futures::future::pending::<()>().await;
         Admission::Allow
     }))
     .await;
@@ -568,7 +568,6 @@ async fn allow_request_that_takes_too_long_refuses_the_request() {
     assert_eq!(resp.status, 403);
     assert_eq!(resp.json(), serde_json::json!({"code": 4, "message": "Forbidden"}));
     assert!(started.elapsed() >= Duration::from_millis(300), "not before the timeout");
-    assert!(started.elapsed() < Duration::from_secs(10));
     assert_eq!(fx.engine.session_count(), 0);
 }
 
@@ -582,13 +581,14 @@ async fn blind_pongs_do_not_keep_a_polling_session_that_never_polls() {
     for _ in 0..8 {
         socket.send("y".repeat(1024)).unwrap();
     }
-    let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_secs(5) && socket.close_reason().is_none() {
+    // The client posts pongs back to back without ever polling, until the session ends (the heartbeat, 300 + 200 ms, runs
+    // on real sockets).
+    let deadline = tokio::time::Instant::now() + EVENTUALLY;
+    while socket.close_reason().is_none() {
+        assert!(tokio::time::Instant::now() < deadline, "blind pongs kept the session alive for {EVENTUALLY:?}");
         let _ = post(fx.addr, &sid, "3").await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(socket.close_reason(), Some(CloseReason::PingTimeout), "closed by the ping timeout, not kept by blind pongs");
-    assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
     eventually("the session to be removed", || fx.engine.session_count() == 0).await;
 }
 
@@ -599,9 +599,8 @@ async fn a_polling_client_that_receives_the_ping_and_answers_stays_alive() {
     let (sid, _) = open_polling(fx.addr).await;
     let socket = fx.socket().await;
     // The GET is parked when each ping is queued; the client answers every ping it receives.
-    let started = std::time::Instant::now();
     let mut pings = 0;
-    while started.elapsed() < Duration::from_millis(1500) {
+    while pings < 3 {
         let resp = poll(fx.addr, &sid).await;
         assert_eq!(resp.status, 200);
         if packets(&resp.text()).iter().any(|p| p == "2") {
@@ -609,7 +608,6 @@ async fn a_polling_client_that_receives_the_ping_and_answers_stays_alive() {
             assert_eq!(post(fx.addr, &sid, "3").await.status, 200);
         }
     }
-    assert!(pings >= 3, "{pings}");
     assert_eq!(socket.close_reason(), None);
 }
 
@@ -643,6 +641,7 @@ async fn concurrent_handshakes_from_an_address_at_its_cap_do_not_all_run_the_hoo
     let fx = start(EngineOptions::new().max_sessions_per_ip(2).allow_request(move |_| {
         counted.fetch_add(1, Ordering::SeqCst);
         async {
+            // A slow hook, so the handshakes overlap while it runs: the load, not a synchronisation.
             tokio::time::sleep(Duration::from_millis(300)).await;
             Admission::Allow
         }

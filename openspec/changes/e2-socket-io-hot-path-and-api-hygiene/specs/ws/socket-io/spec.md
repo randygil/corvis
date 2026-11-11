@@ -29,10 +29,35 @@ so an adapter that disconnects the socket or closes its connection from `add_all
 - **WHEN** a test adapter's `add_all` for the room of the socket's own id calls `disconnect(true)` on that socket
 - **THEN** the connect attempt ends, the socket is removed and the connection closes, within the test's deadline
 
-### Requirement: CONNECT leaves in a write of its own
-The connection handlers of a socket SHALL run only after its CONNECT packet was handed to the transport (written to the
-WebSocket, or taken by a poll), so what they emit leaves in a later write, as the reference server does. Packets the
-client sends meanwhile MUST wait for the handlers, and the wait MUST end when the connection closes.
+### Requirement: Connection handlers run when the socket is announced
+The connection handlers of a socket SHALL run right after its CONNECT was queued and the socket marked connected, before
+any packet of the client is handled, whatever the transport and whether or not the client has collected CONNECT: from
+that moment the socket receives broadcasts, so the hook where an application checks a socket MUST NOT wait for the
+client. Packets the client sends meanwhile MUST wait for the handlers.
+
+#### Scenario: Polling client that does not poll
+- **WHEN** a client posts CONNECT to a namespace that is broadcast to in a loop, has no poll pending and does not poll,
+  and the connection handler disconnects the socket
+- **THEN** the handler runs before any poll, and what the client then collects holds its CONNECT, the disconnect and no
+  broadcast
+
+#### Scenario: Gateway hook of a polling client that does not poll
+- **WHEN** a polling client posts CONNECT to a gateway's namespace with no poll pending and does not poll, and the
+  gateway's `handle_connection` disconnects the socket
+- **THEN** the hook runs before any poll, and a broadcast to the namespace after it does not reach the client
+
+### Requirement: A socket that never connected reports no disconnect
+A socket that never connected (refused by a middleware, or whose connect failed before CONNECT) SHALL run no
+`disconnecting` or `disconnect` callback, and what was registered on it MUST be released when the attempt ends.
+
+#### Scenario: Callbacks of a socket that never connected
+- **WHEN** a connect middleware registers `disconnecting` and `disconnect` callbacks that hold a clone of the socket, and
+  the attempt is refused by the middleware or by a failure to join the socket's own room
+- **THEN** neither callback runs and both are dropped
+
+### Requirement: CONNECT leaves alone
+A poll response SHALL end after a Socket.IO CONNECT packet, so what the connection handlers emit leaves in a later
+response, as with the reference server when a poll was waiting. A WebSocket SHALL write CONNECT as a frame of its own.
 
 #### Scenario: Polling
 - **WHEN** a client posts CONNECT with no poll pending and the connection handler emits `auth`
@@ -40,34 +65,26 @@ client sends meanwhile MUST wait for the handlers, and the wait MUST end when th
 
 #### Scenario: WebSocket
 - **WHEN** the connection handler of a WebSocket client emits an event
-- **THEN** the handler runs after the CONNECT frame was written, and the event is written as a separate frame
-
-#### Scenario: Upstream suite is stable
-- **WHEN** `CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_conformance` runs 20 times in a
-  row
-- **THEN** every run passes
-
-#### Scenario: Connection closes before the write
-- **WHEN** the connection closes after CONNECT was queued and before it was written
-- **THEN** no connection handler runs and the socket is disconnected
+- **THEN** the event is written as a frame of its own after the CONNECT frame
 
 ### Requirement: An emit is encoded once
-The server SHALL encode an event into one buffer that holds the Engine.IO message, move it into the send queue without
-copying it, and build the WebSocket frame from that buffer without copying it; a broadcast SHALL do the same with one
-shared buffer for every recipient. The lengths counted against `max_buffered_amount` and the polling batch bound MUST
-stay those of the encoded packet.
+The server SHALL encode an event for one recipient into one buffer that holds the Engine.IO message, move it into the
+send queue without copying it, and build the WebSocket frame from that buffer without copying it. A broadcast SHALL
+queue one shared encoding on every recipient. The polling batch bound MUST count the length of the encoded packet, and
+`max_buffered_amount` the allocation that holds it (its length, plus at most an eighth of spare capacity for a buffer of
+one recipient).
 
 #### Scenario: One recipient
 - **WHEN** a socket emits a 16 KiB event to a WebSocket client
 - **THEN** the frame handed to the WebSocket library points into the buffer the encoder produced
 
-#### Scenario: Broadcast
-- **WHEN** an event is broadcast to ten WebSocket recipients
-- **THEN** every frame points into the one shared buffer, and the broadcast holds one copy of its encoding
+#### Scenario: One encoding per broadcast
+- **WHEN** an event is broadcast to several recipients
+- **THEN** every recipient's queue holds the same shared encoding
 
-#### Scenario: Binary attachment
-- **WHEN** an event with a binary attachment is emitted to a WebSocket client
-- **THEN** the binary frame is the attachment's buffer, not a copy of it
+#### Scenario: Spare capacity counts against the send buffer
+- **WHEN** an encoded packet of 900 bytes held in a buffer of 1,000 is queued
+- **THEN** it counts its 1,000 bytes of allocation against `max_buffered_amount`, not its 900 bytes of length
 
 ### Requirement: Public enums can grow
 `EmitError`, `AckError`, `DisconnectReason`, `RoomError`, `AdapterError`, `BroadcastAckErrorKind` and the Engine.IO

@@ -55,9 +55,11 @@ move.
   skip; then, under the socket's own state lock, CONNECT is queued and the socket marked connected. No connection lock is
   held across the adapter or a send. `InMemoryAdapter::add_all` checks the ids of other sockets against its own map
   instead of looking each name up in the namespace under its write lock.
-- **CONNECT in a write of its own (#184).** The connection handlers run after the CONNECT packet was handed to the
-  transport (written to the WebSocket, or taken by a poll), so what they emit leaves in a later write, as the reference
-  server does.
+- **CONNECT alone (#184).** A poll response ends after a CONNECT packet, so what the connection handlers emit leaves in a
+  later response, as with the reference server when a poll was waiting (a WebSocket already writes each packet as a
+  frame of its own). The connection handlers still run right after CONNECT is queued: the first design made them wait
+  for the CONNECT write, which the security review found let a polling client that never polls skip them (design.md,
+  "Security review (round 1)").
 - **Address key.** The answer budget uses the session's address key.
 - **Hygiene.** One `Connection` struct for the connection task; one function each for room validation, pending-ack
   registration and the engine's rate-limited lines (`WarnLimiter`, which stops allocating before it knows it will log);
@@ -73,9 +75,9 @@ move.
   namespace-table lock): one redesign fixes both, so its requirement ("a lookup by id never misses a socket whose client
   knows the id", "nothing the application emits precedes CONNECT") and its tests are part of this change, and the waits the
   #34 tests added for it are removed.
-- **#184** is the engine's writer and the connect path: the fix (connection handlers after the CONNECT write) changes the
-  order this change redesigns, so its requirement and its check (the upstream suite 20 times in a row) are part of this
-  change.
+- **#184** is the engine's writer and the connect path: the fix considered (CONNECT in a write of its own) touches the
+  order this change redesigns, so it was taken up here; the upstream suite stays unstable for reasons of its own and #184
+  stays open (design.md, "What this change does not claim").
 
 ## Capabilities
 
@@ -85,8 +87,8 @@ move.
 
 ### Modified Capabilities
 
-- `ws/socket-io`: added requirements for the connect order, the CONNECT write, no lock across the adapter, one encoding
-  per emit, extensible public enums and the place of test hooks.
+- `ws/socket-io`: added requirements for the connect order, when the connection handlers run, CONNECT alone in its poll
+  response, no lock across the adapter, one encoding per emit, extensible public enums and the place of test hooks.
 - `ws/socket-io-rooms`: the requirement on adapter failures while a socket connects changes (a failure joining the own
   room now refuses the CONNECT instead of closing the connection), and an added requirement on the address key of the
   answer budget.
@@ -107,10 +109,9 @@ move.
   `IoNamespace::adapter`, `probe_decode`, `probe_auth` and `DecodeProbe` leave their current places for the hidden
   `testing` module (all were `#[doc(hidden)]`). Nothing else changes signature.
 - Behavior visible to clients: a failure of the adapter joining the own room answers CONNECT_ERROR
-  `Internal server error` instead of closing the connection after CONNECT; CONNECT and what the connection handlers emit
-  leave in separate writes (polling: separate responses). Visible to applications: connection handlers run after the
-  CONNECT write instead of right after it was queued; a lookup by id finds a socket from the moment its client can know the
-  id. Listed in design.md "Behavior visible to applications and clients".
+  `Internal server error` instead of closing the connection after CONNECT; over polling, CONNECT and what the connection
+  handlers emit leave in separate responses. Visible to applications: a lookup by id finds a socket from the moment its
+  client can know the id; a Socket.IO packet counts its buffer's allocation against `max_buffered_amount`. Listed in design.md "Behavior visible to applications and clients".
 - Dependencies: `tokio-tungstenite` and `tungstenite` move from 0.24 to the release chosen in task 5.4 (same licenses,
   already allowed by `deny.toml`). No new crate.
 - Port apps do not enable `socket-io`, but `ws.rs`, `websockets.rs` and `server.rs` change with the upgrade, so the

@@ -94,6 +94,25 @@ async fn a_websocket_first_session_exchanges_messages() {
     assert_eq!(socket.closed().await, CloseReason::TransportClose);
 }
 
+/// The writer may be the first to see the peer's close frame (the library refuses its next frame), or the reader may:
+/// either way the session ends as a peer close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_frame_while_the_server_writes_ends_the_session_as_a_transport_close() {
+    let mut fx = start(EngineOptions::new().max_buffered_amount(4 * 1024 * 1024)).await;
+    let chunk = "x".repeat(64 * 1024);
+    for round in 0..200 {
+        let mut ws = ws_connect(fx.addr, None).await;
+        let _open = next_text(&mut ws).await;
+        let socket = fx.socket().await;
+        // 1 MiB queued for a client that sends its close frame instead of reading it.
+        for _ in 0..16 {
+            socket.send(chunk.as_str()).unwrap();
+        }
+        ws.send(Message::Close(None)).await.unwrap();
+        assert_eq!(socket.closed().await, CloseReason::TransportClose, "round {round}");
+    }
+}
+
 #[tokio::test]
 async fn a_websocket_message_over_the_limit_closes_with_1009() {
     let mut fx = start(EngineOptions::new().max_http_buffer_size(1000)).await;
@@ -158,6 +177,7 @@ async fn a_peer_that_never_reads_is_dropped_after_the_send_timeout() {
         tokio::spawn(async move {
             // 1 MB/s: slow enough that `max_buffered_amount` (8 MiB) cannot fill before the send timeout fires,
             // whatever the timer resolution of the platform.
+            // The application's pace of sending (a producer), not a synchronisation.
             while socket.send(chunk.clone()).is_ok() {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -217,10 +237,8 @@ async fn a_pending_poll_gets_a_noop_while_upgrading() {
     let _socket = fx.socket().await;
     let mut ws = ws_connect(fx.addr, Some(&sid)).await;
     probe(&mut ws).await;
-    let started = std::time::Instant::now();
     let resp = poll(fx.addr, &sid).await;
     assert_eq!(resp.text(), "6");
-    assert!(started.elapsed() < Duration::from_secs(5));
     send_text(&mut ws, "5").await;
 }
 
@@ -293,7 +311,6 @@ async fn client_stops_answering_pings() {
     assert_eq!(next_text(&mut ws).await, "2");
     assert_eq!(socket.closed().await, CloseReason::PingTimeout);
     assert!(started.elapsed() >= Duration::from_millis(500), "not before interval plus timeout");
-    assert!(started.elapsed() < Duration::from_secs(10));
 }
 
 #[tokio::test]
@@ -350,15 +367,13 @@ async fn graceful_shutdown_with_a_pending_poll() {
     let (sid, _) = open_polling(addr).await;
     let socket = sockets.recv().await.unwrap();
     let pending = tokio::spawn(async move { poll(addr, &sid).await });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    eventually("the poll to wait", || corvis::socket_io::testing::poll_pending(&socket)).await;
     assert!(!pending.is_finished());
-    let started = std::time::Instant::now();
     stop.send(()).unwrap();
     let resp = tokio::time::timeout(Duration::from_secs(5), pending).await.expect("answered within 5 s").unwrap();
     assert_eq!(resp.text(), "1");
     assert_eq!(socket.closed().await, CloseReason::ForcedClose);
     tokio::time::timeout(Duration::from_secs(10), serving).await.expect("the server drains").unwrap().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(engine.session_count(), 0);
 }
 

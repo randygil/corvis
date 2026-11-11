@@ -15,7 +15,7 @@ pub(super) async fn received(conns: &[&Conn], name: &str) -> Vec<bool> {
 }
 
 pub(super) fn size(namespace: &IoNamespace) -> MembershipSize {
-    namespace.adapter().membership_size().expect("the in-memory adapter")
+    crate::socket_io::testing::membership_size(namespace).expect("the in-memory adapter")
 }
 
 pub(super) async fn connect(io: &IoServer, nsp: &str) -> (Conn, String) {

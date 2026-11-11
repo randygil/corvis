@@ -19,10 +19,26 @@ fn options() -> IoOptions {
     IoOptions::new().engine(EngineOptions::new().ping_interval(DAY).ping_timeout(DAY))
 }
 
+/// Lets the tasks that are ready run: 40 turns of the single-threaded runtime on the paused clock, neither a sleep nor
+/// wall-clock time (the clock does not move). A wait for "nothing left to do" cannot be written here: on the paused clock
+/// a timer would be the way, and the timer wheel's 1 ms resolution would move the clock under the exact-time tests.
+/// Every packet these tests feed takes far fewer turns than this to be handled.
 async fn settle() {
     for _ in 0..40 {
         tokio::task::yield_now().await;
     }
+}
+
+/// Lets the runtime turn until `condition` holds, failing loudly after 10,000 turns: a wait for a condition, on the
+/// paused clock.
+async fn settle_until(what: &str, mut condition: impl FnMut() -> bool) {
+    for _ in 0..10_000 {
+        if condition() {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("{what}: not within 10,000 turns of the runtime");
 }
 
 async fn advance(ms: u64) {
@@ -61,7 +77,9 @@ impl Conn {
             .map(|m| match m {
                 EngineMessage::Text(s) => Out::T(s),
                 EngineMessage::Binary(b) => Out::B(b.to_vec()),
-                EngineMessage::Shared(s) => Out::T(s.to_string()),
+                // Framed messages carry the Engine.IO type in front.
+                EngineMessage::Framed(s) => Out::T(s[1..].to_string()),
+                EngineMessage::Shared(s) => Out::T(s[1..].to_string()),
             })
             .collect()
     }
@@ -113,6 +131,58 @@ fn record_disconnects(namespace: &IoNamespace, log: &Log) {
 }
 
 // ------------------------------------------------------------------------------------- namespaces and connection
+
+#[tokio::test(start_paused = true)]
+async fn an_emit_queues_the_encoder_s_buffer_and_a_broadcast_one_shared_buffer() {
+    let io = server(options());
+    let conns = [io.conn(), io.conn()];
+    let mut ids = Vec::new();
+    for conn in &conns {
+        ids.push(conn.join("0").await);
+    }
+    let socket = io.main().socket(&ids[0]).expect("connected");
+    socket.emit("one", ("x".repeat(1024),)).unwrap();
+    let sent = conns[0].socket.take_sent();
+    let [EngineMessage::Framed(text)] = &sent[..] else { panic!("one framed message, got {sent:?}") };
+    assert!(text.starts_with(r#"42["one","#), "{text}");
+    io.main().emit("all", ("y".repeat(1024),)).await.unwrap();
+    let mut buffers = Vec::new();
+    for conn in &conns {
+        let sent = conn.socket.take_sent();
+        let [EngineMessage::Shared(text)] = &sent[..] else { panic!("one shared message, got {sent:?}") };
+        buffers.push(text.clone());
+    }
+    assert!(Arc::ptr_eq(&buffers[0], &buffers[1]), "every recipient queues the one encoding");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_under_its_limits_never_registers_for_a_release() {
+    let io = server(options());
+    let handled = Arc::new(AtomicUsize::new(0));
+    {
+        let handled = handled.clone();
+        io.on_connection(move |socket| {
+            let handled = handled.clone();
+            socket.on("e", move |_socket, _args, _ack| {
+                let handled = handled.clone();
+                async move {
+                    handled.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        });
+    }
+    let conn = io.conn();
+    conn.join("0").await;
+    for i in 0..10_000 {
+        conn.text(&format!(r#"2["e",{i}]"#));
+        if i % 100 == 99 {
+            settle().await;
+        }
+    }
+    settle().await;
+    assert_eq!(handled.load(Ordering::SeqCst), 10_000);
+    assert_eq!(conn.socket.peak_unread_waiters(), 0, "a reader under its limits registered for a release");
+}
 
 #[tokio::test(start_paused = true)]
 async fn auth_is_visible_to_the_server_and_the_answer_carries_a_socket_id() {
@@ -209,6 +279,49 @@ async fn connection_handlers_run_after_connect_and_before_the_first_event() {
     assert_eq!(entries(&seen), ["early"], "the handler registered by the connection handler sees the first event");
     assert!(matches!(&sent[0], Out::T(s) if s.starts_with("0{\"sid\":")));
     assert_eq!(sent[1], t(r#"2["welcome","hi"]"#));
+}
+
+/// Security review of #185, F1: the connection handlers are where an application authenticates a socket and
+/// disconnects it. They must run as soon as the socket is announced, not when its client chooses to poll: a client that
+/// posts CONNECT and never polls must not stay connected, unauthenticated, receiving the namespace's broadcasts.
+#[tokio::test(start_paused = true)]
+async fn the_connection_handler_runs_before_the_client_polls_and_a_socket_it_refuses_gets_no_broadcast() {
+    let io = server(options());
+    let chat = io.of("/chat").unwrap();
+    let ran = Arc::new(AtomicUsize::new(0));
+    {
+        let ran = ran.clone();
+        chat.on_connection(move |socket| {
+            ran.fetch_add(1, Ordering::SeqCst);
+            if socket.handshake().auth().get("token").is_none() {
+                socket.disconnect(false);
+            }
+        });
+    }
+    // A member, so the broadcasts have somewhere to go.
+    let member = io.conn();
+    member.join(r#"0/chat,{"token":"t"}"#).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let broadcaster = {
+        let (chat, stop) = (chat.clone(), stop.clone());
+        tokio::spawn(async move {
+            while !stop.load(Ordering::SeqCst) {
+                let _ = chat.emit("news", ()).await;
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+    // CONNECT without a token, and no poll: nothing takes what is queued for this client.
+    let conn = io.conn();
+    conn.text("0/chat,");
+    settle_until("the connection handler of the client that does not poll", || ran.load(Ordering::SeqCst) == 2).await;
+    let sent = conn.sent().await;
+    stop.store(true, Ordering::SeqCst);
+    broadcaster.await.unwrap();
+    assert!(matches!(sent.first(), Some(Out::T(t)) if t.starts_with("0/chat,{\"sid\"")), "{sent:?}");
+    assert!(!sent.iter().any(|m| matches!(m, Out::T(t) if t.contains("news"))), "a broadcast reached a refused socket: {sent:?}");
+    assert_eq!(sent.last(), Some(&t("1/chat,")), "the socket was disconnected: {sent:?}");
+    assert!(member.sent().await.iter().any(|m| matches!(m, Out::T(t) if t.contains("news"))), "the broadcasts did run");
 }
 
 // ---------------------------------------------------------------------------------------------------- middleware
@@ -1944,5 +2057,5 @@ async fn the_auth_of_many_sockets_in_many_namespaces_adds_up_on_the_address_and_
 }
 
 mod gateways;
-mod review1;
+mod review;
 mod rooms;

@@ -32,7 +32,7 @@ budget.
 
 #### Scenario: Polling requests do not copy it
 - **WHEN** a session opened with a 16 KiB `cookie` header sends a `POST`
-- **THEN** handling the `POST` allocates less than 16 KiB beyond its body
+- **THEN** the engine allocates less than 16 KiB beyond what the HTTP server itself allocates for the same request
 
 #### Scenario: Query of a poll
 - **WHEN** a poll of an existing session carries 10,000 extra query parameters

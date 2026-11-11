@@ -85,7 +85,8 @@ untrusted input, within bounds, without ever panicking or holding unbounded stat
   `crates/corvis/tests/fixtures/redis_adapter_8.3.0.json`, `parity/socket-io/scripts/record-redis-adapter.mjs`,
   `parity/socket-io/scenarios/cluster/**`.
 - Edited: `crates/corvis/Cargo.toml` (feature, optional dependencies), `Cargo.lock`, `THIRD_PARTY_NOTICES.md`,
-  `crates/corvis/src/socket_io/{mod,adapter,broadcast,namespace,server}.rs` (public adapter items, server-side emit),
+  `crates/corvis/src/socket_io/{mod,adapter/mod,adapter/memory,ack,info,broadcast,namespace,server}.rs` (public adapter items,
+  server-side emit; the adapter module was split by #185),
   `.github/workflows/ci.yml` (Redis service, feature in the clippy loop and the test job),
   `crates/corvis/tests/socket_io_diff.rs`, `parity/socket-io/reference/socket-server.mjs`,
   `parity/socket-io/lib/targets.mjs`, `parity/socket-io/run.mjs`, `parity/socket-io/expected-differences.json`,

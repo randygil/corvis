@@ -11,7 +11,7 @@ use serde::Serialize;
 use super::adapter::{Adapter, LocalNamespace};
 use super::client::Charge;
 use super::options::IoOptions;
-use super::socket::{AckSender, IoSocket};
+use super::socket::{AckSender, IoSocket, Phase};
 use super::value::{Args, IoValue};
 
 pub(crate) type Middleware = Arc<dyn Fn(IoSocket) -> BoxFuture<'static, Result<(), ConnectError>> + Send + Sync>;
@@ -97,6 +97,11 @@ pub(crate) struct NamespaceInner {
     /// Set by the gateway layer when the namespace has disconnect hooks: a CONNECT from an address at its share of pending
     /// hooks is refused (see `IoNamespace::limit_pending_hooks`).
     limits_pending_hooks: AtomicBool,
+    /// A test's hold on the connect sequence (`testing::pause_connect`); never set outside tests.
+    pub(crate) connect_pause: std::sync::OnceLock<Arc<super::testing::ConnectPause>>,
+    /// The liveness lookups adapters made (`LocalNamespace::is_live`), for the tests that bound the work under a lock.
+    #[cfg(test)]
+    pub(crate) liveness_lookups: std::sync::atomic::AtomicUsize,
 }
 
 impl std::fmt::Debug for IoNamespace {
@@ -120,13 +125,15 @@ impl IoNamespace {
             sockets: RwLock::new(HashMap::new()),
             next_ack_id: AtomicU64::new(0),
             limits_pending_hooks: AtomicBool::new(false),
+            connect_pause: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            liveness_lookups: std::sync::atomic::AtomicUsize::new(0),
         });
         IoNamespace { inner }
     }
 
-    /// The adapter of this namespace. Unstable and hidden: for tests and for the layers built on this one.
-    #[doc(hidden)]
-    pub fn adapter(&self) -> &Arc<dyn Adapter> {
+    /// The adapter of this namespace (`testing::adapter` for the tests).
+    pub(crate) fn adapter(&self) -> &Arc<dyn Adapter> {
         &self.inner.adapter
     }
 
@@ -181,25 +188,30 @@ impl IoNamespace {
         self
     }
 
-    /// `namespace.on("connection", fn)`: adds a function that runs for every socket that connected, after the
-    /// CONNECT packet was queued and before the first packet of the client is handled, so `on` registered here never
-    /// misses an event. It is synchronous: spawn a task for anything slow. A panic is logged and the socket stays.
+    /// `namespace.on("connection", fn)`: adds a function that runs for every socket that connected, right after its
+    /// CONNECT packet was queued (whether or not the client collected it yet) and before the first packet of the client
+    /// is handled, so `on` registered here never misses an event. The socket receives broadcasts from that moment, so
+    /// this is the place to check it and disconnect it. What it emits leaves after CONNECT, in a later poll response
+    /// over long-polling. It is synchronous: spawn a task for anything slow. A panic is logged and the socket stays.
     pub fn on_connection(&self, f: impl Fn(IoSocket) + Send + Sync + 'static) -> &Self {
         self.inner.connection.write().unwrap_or_else(|e| e.into_inner()).push(Arc::new(f));
         self
     }
 
-    /// The sockets connected to this namespace.
+    /// The sockets of this namespace. A socket returned here may still be joining (its CONNECT not sent yet) or already
+    /// leaving: its `emit` then fails with `NotConnected`.
     pub fn sockets(&self) -> Vec<IoSocket> {
         self.inner.sockets.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
     }
 
-    /// The number of sockets connected to this namespace.
+    /// The number of sockets of this namespace, joining and leaving ones included (see [`sockets`](Self::sockets)).
     pub fn socket_count(&self) -> usize {
         self.inner.sockets.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// The connected socket with this id.
+    /// The socket with this id. It is found from the moment its client can know the id (the socket joins the namespace
+    /// before its CONNECT is queued), so it may still be joining, or already leaving: its `emit` then fails with
+    /// `NotConnected`.
     pub fn socket(&self, id: &str) -> Option<IoSocket> {
         self.inner.sockets.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
     }
@@ -219,6 +231,18 @@ impl IoNamespace {
         self.inner.limits_pending_hooks.load(Ordering::SeqCst)
     }
 
+    /// What reports the end of a connect attempt to a test's pause; `None` unless `testing::pause_connect` ran.
+    pub(crate) fn connect_attempt(&self) -> Option<super::testing::Attempt> {
+        self.inner.connect_pause.get().map(|pause| pause.attempt())
+    }
+
+    /// Where a test holds the connect sequence of this namespace's sockets: a no-op unless `testing::pause_connect` ran.
+    pub(crate) async fn connect_step(&self, step: super::testing::ConnectStep) {
+        if let Some(pause) = self.inner.connect_pause.get() {
+            pause.at(step).await;
+        }
+    }
+
     pub(crate) fn dispatcher(&self) -> Option<Dispatcher> {
         self.inner.dispatcher.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -231,8 +255,15 @@ impl IoNamespace {
         self.inner.connection.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    pub(crate) fn add_socket(&self, socket: &IoSocket) {
-        self.inner.sockets.write().unwrap_or_else(|e| e.into_inner()).insert(socket.id().to_string(), socket.clone());
+    /// Adds a joining socket. The phase is read under the table's write lock, which the teardown's removal takes after
+    /// it marked the socket disconnected: a socket torn down meanwhile is not added (`false`).
+    pub(crate) fn add_socket(&self, socket: &IoSocket) -> bool {
+        let mut sockets = self.inner.sockets.write().unwrap_or_else(|e| e.into_inner());
+        if !socket.is_phase(Phase::Joining) {
+            return false;
+        }
+        sockets.insert(socket.id().to_string(), socket.clone());
+        true
     }
 
     pub(crate) fn remove_socket(&self, id: &str) {
@@ -257,10 +288,11 @@ impl NamespaceInner {
         self.sockets.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
     }
 
-    /// The sockets with these ids under one read lock.
+    /// The sockets with these ids under one read lock, leaving out the ones still joining: broadcasts and bulk
+    /// operations reach a socket only once it was announced.
     pub(crate) fn sockets_by_ids<'a>(&self, ids: impl IntoIterator<Item = &'a str>) -> Vec<IoSocket> {
         let sockets = self.sockets.read().unwrap_or_else(|e| e.into_inner());
-        ids.into_iter().filter_map(|id| sockets.get(id).cloned()).collect()
+        ids.into_iter().filter_map(|id| sockets.get(id).filter(|s| !s.is_phase(Phase::Joining)).cloned()).collect()
     }
 
     pub(crate) fn next_ack_id(&self) -> u64 {

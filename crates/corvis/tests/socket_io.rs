@@ -188,20 +188,10 @@ async fn disconnect_reasons_from_a_real_client() {
     raw.join("/", None).await;
     raw.join("/admin", None).await;
     raw.send("1/admin,").await;
-    for _ in 0..100 {
-        if reasons.lock().unwrap().len() == 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    engine_support::eventually("the namespace disconnect", || reasons.lock().unwrap().len() == 1).await;
     assert_eq!(*reasons.lock().unwrap(), ["/admin client namespace disconnect"]);
     raw.close().await;
-    for _ in 0..100 {
-        if reasons.lock().unwrap().len() == 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    engine_support::eventually("the transport close", || reasons.lock().unwrap().len() == 2).await;
     assert_eq!(reasons.lock().unwrap()[1], "/ transport close");
 }
 

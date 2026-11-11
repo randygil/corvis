@@ -38,12 +38,8 @@ fn lines(captured: &Captured) -> Vec<String> {
     captured.lock().unwrap().iter().filter(|(_, _, ctx)| ctx.as_deref() == Some("SocketIO")).map(|(_, m, _)| m.clone()).collect()
 }
 
-async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while !done() {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+async fn wait_for(what: &str, done: impl FnMut() -> bool) {
+    engine_support::eventually(what, done).await;
 }
 
 #[tokio::test]
@@ -73,6 +69,8 @@ async fn a_handler_that_panics_on_client_data_writes_one_line_a_minute_without_t
         client.send(r#"2["boom","client-data-123"]"#).await;
     }
     wait_for("the 50 handlers", || handled.load(Ordering::SeqCst) == 50).await;
+    // No more lines after the first: the absence of a line another task might still write, with nothing that marks its
+    // end; a quiet period, not a condition.
     tokio::time::sleep(Duration::from_millis(100)).await;
     let written = lines(&captured);
     assert_eq!(written.len(), 1, "50 panics, one line: {written:?}");
@@ -106,7 +104,10 @@ async fn panics_in_connection_and_disconnect_handlers_are_limited_and_never_prin
     for client in clients {
         client.close().await;
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for("every socket to leave", || fx.io.main().socket_count() == 0).await;
+    // The disconnect handlers run right after their socket left; no more lines than the limit allow: the absence of a
+    // line, a quiet period, not a condition.
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let written = lines(&captured);
     let connection: Vec<_> = written.iter().filter(|l| l.contains("a connection handler")).collect();
     let disconnect: Vec<_> = written.iter().filter(|l| l.contains("a disconnect handler")).collect();
@@ -122,12 +123,13 @@ async fn a_slow_connect_middleware_warns_once_a_minute_per_namespace() {
     let captured = capture();
     let options = IoOptions::new().middleware_timeout(Duration::from_millis(100));
     let fx = start(options, |io| {
+        // Middleware that never finishes.
         io.of("/slow").unwrap().use_middleware(|_socket| async {
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            futures::future::pending::<()>().await;
             Ok(())
         });
         io.of("/slower").unwrap().use_middleware(|_socket| async {
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            futures::future::pending::<()>().await;
             Ok(())
         });
     })

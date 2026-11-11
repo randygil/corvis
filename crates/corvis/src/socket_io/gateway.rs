@@ -790,13 +790,12 @@ async fn dispatch_event(
             Delivery::Nothing => {}
             Delivery::Emit(event, data) => {
                 if let Err(EmitError::ReservedEvent(_)) = socket.emit(&event, (data,)) {
-                    socket.warn(
-                        "a reserved event in a gateway reply",
-                        &format!(
+                    socket.warn("a reserved event in a gateway reply", || {
+                        format!(
                             "{}::{} returned a reply for a reserved Socket.IO event name: nothing was sent",
                             gateway.name, handler.target.name
-                        ),
-                    );
+                        )
+                    });
                 }
             }
             Delivery::Ack(value) => {
@@ -815,13 +814,12 @@ async fn dispatch_event(
                 cause.insert("data".to_string(), ctx.switch_to_ws().get_data().cloned().unwrap_or(Value::Null));
             }
             let internal = |_: &HttpException| {
-                socket.warn(
-                    "an internal error in a gateway handler",
-                    &format!(
+                socket.warn("an internal error in a gateway handler", || {
+                    format!(
                         "{}::{} failed with an internal error (a panic or an unexpected error): the client was told Internal server error",
                         gateway.name, handler.target.name
-                    ),
-                );
+                    )
+                });
             };
             if let Some(data) = exception_data(&gateway, &handler, &ctx, e, Some(Value::Object(cause)), &internal).await {
                 let _ = socket.emit("exception", (data,));
@@ -890,13 +888,12 @@ async fn run_connection_guards(runtime: &NamespaceRuntime, socket: IoSocket) -> 
                     Ok(false) => return Err(ConnectError::new("Forbidden resource")),
                     Err(e) => {
                         if e.is_internal() {
-                            socket.warn(
-                                "an internal error in a connection guard",
-                                &format!(
+                            socket.warn("an internal error in a connection guard", || {
+                                format!(
                                     "{}: a connection guard failed with an internal error; the client was told Internal server error",
                                     gateway.name
-                                ),
-                            );
+                                )
+                            });
                         }
                         return Err(connect_error_of(&e));
                     }
