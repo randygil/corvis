@@ -805,22 +805,10 @@ back and forged `undefined()` with it. Three fixes:
    `increment`, an unknown argument, ...), checking the message, `Display` and `Debug`, and the `Debug` of a
    `WhereParam`; before the fix `orderBy: { owner: db_null() }` showed the tag.
 
-*A typed marker instead of a string, reconsidered: not feasible in this change.* What stands in the way, for the
-follow-up:
-- The markers are `serde_json::Value`s by design of the public API: `undefined()`, `or_undefined()`, `db_null()`, ...
-  return a `Value` to be put inside `json!(..)` arguments of `query_json` and of the delegates' JSON methods, which the
-  port applications use throughout (9 files of the three apps use `undefined()` / `or_undefined()`). `Value` is a closed
-  enum: no variant can carry "undefined" or "DbNull", so in that API a marker can only be in-band.
-- The engine reads its input as `serde_json::Value` / `Map<String, Value>` everywhere (about 6,200 lines in
-  `engine/*.rs` and `query.rs`, some 175 lines of `engine/` naming `&Value` or `Map<String, Value>`). A typed marker means an
-  argument tree of its own (`enum Arg { Null, Bool, Number, String, Array, Object, Undefined, DbNull, JsonNull,
-  AnyNull }`), a conversion from `Value` that can never produce the last four, a `json!`-like macro (or `From`
-  impls) to build it, and the engine ported to it.
-- The typed helpers alone (`WhereParam`, `SetParam`, ...) could keep markers out of band (a side table by JSON pointer
-  next to the `Value` they build), but that removes the class only for them: the JSON API, which takes request-shaped
-  input and is where the forgery happened, would still need in-band markers.
-  So the follow-up is "own argument tree for the engine, with `json!` interop" (an API change for the JSON form); the
-  fixes above make the in-band design safe meanwhile (unforgeable, never stored, never shown).
+*A typed marker instead of a string, reconsidered: not feasible in this change.* What stands in the way, and the plan,
+are in [Follow-up issue: a typed argument tree for corvis-orm instead of in-band
+markers](#follow-up-issue-a-typed-argument-tree-for-corvis-orm-instead-of-in-band-markers) below (after round 3). The
+fixes above make the in-band design safe inside the ORM meanwhile (unforgeable, never stored, never shown by the ORM).
 
 Constant-time comparison of a marker: skipped, as agreed. One `==` against a 64-character nonce is far below what a
 client can measure through a query, and the client never learns which comparison ran.
@@ -878,3 +866,117 @@ default features), the feature checks, `cargo build --workspace --all-targets` a
 `CORVIS_ORM_PG_REQUIRED=1 cargo test --workspace --no-fail-fast`: 2202 passed, 0 failed, 98 ignored. `cargo deny`,
 `check-naming`, `docs:check`, `openspec validate --strict`: pass. Lint ratchet: nothing above the baseline (the same
 two Windows-only `corvis` counts below it). No test database left on the server.
+
+### Security review (round 3)
+
+A and B hold, no earlier proof of concept reproduces, and the parameter barrier refuses no ordinary data. One finding
+remains.
+
+**C. The application can leak the `undefined` secret (medium, older than this change).** `undefined()` and
+`or_undefined(None)` return a `Value::String` that carries the per-process secret of the marker. The ORM keeps it out
+of everything it produces itself: its errors (`redact`), the `Debug` of its typed parameters, and every SQL parameter
+(`check_params`). It cannot see what the application does with its own argument `Value`: a list endpoint that echoes
+"the filter applied", built as `json!({ "owner": or_undefined(status) })`, sends the secret to the client, and the
+`Debug` of a `json!` value holding `undefined()` writes it to a log. A client that reads it can forge `undefined()`
+and drop conditions again (the impact of round 1's finding 1). The same holds for the tags of `db_null()`,
+`json_null()` and `any_null()`, whose leak lets a client turn a Json value into a `NULL` (each kind has its own secret,
+so one leaked tag reveals no other).
+
+**Decision (coordinator).** No sanitizer in the HTTP response path: it would patch an ORM secret in another layer, cost
+something on every response, and still miss logs and other outputs. The root fix is the typed argument tree described
+below; it gets its own high-priority issue and is done next. In this change only documentation: the rustdoc of
+`undefined()`, `or_undefined()`, `db_null()`, `json_null()` and `any_null()` (a `# Security` section each) and the ORM
+page's security notes and Json nulls section (English and Spanish) say that an argument value built with them is for
+the ORM only, never to be serialized into a response, a log line or a message; that what is echoed to a client must be
+built from the application's own validated fields; and that until the typed argument tree lands this is the
+application's responsibility, because the arguments are a `serde_json::Value` the ORM cannot tell apart from any other
+JSON once it leaves the query. No code changed.
+
+**Residual risk.** Until the follow-up lands, an application that serializes or logs a query argument built with these
+helpers exposes that process's secret, and from then until the process restarts (the secrets are drawn at start-up) any
+client that saw it can drop a condition of a JSON query that takes one of its values (`{ "reset_token": body.token }`
+becomes "no condition"), with round 1's impact: another user's row read, or every row of a `deleteMany` / `updateMany`
+hit. Nothing in the ORM can detect this; it rests on the documented rule, on code review of the places that echo or log
+arguments (in the port applications, `consi-backend` builds a webhook event with `or_undefined` and strips the markers
+with its own helper before signing it, which is safe only as long as that strip is kept), and on the typed tree.
+
+### Follow-up issue: a typed argument tree for corvis-orm instead of in-band markers
+
+**Problem.** `corvis_orm::undefined()`, `or_undefined()`, `db_null()`, `json_null()` and `any_null()` must put a value
+into query arguments that no JSON can produce. The arguments are `serde_json::Value`, a closed enum, so today the
+markers are in-band: a string (`undefined`) or a `{ "$type": <tag> }` object (the Json nulls) that carries a per-process,
+per-kind secret (`engine/mod.rs`, `Markers`). The ORM guarantees that a request cannot forge them, that they are never
+stored or sent to the database, and that its own errors and `Debug` output never show them (security reviews of #188,
+rounds 1 to 3). It cannot stop the application from serializing or logging an argument `Value` that holds one, which
+leaks the secret (round 3, finding C). A typed tree removes the class: a marker becomes a variant no `Value` and no
+request can produce, and the tree can refuse to be serialized or show a marker's secret, because there is none.
+
+**Public API today** (every place a `Value` enters as query arguments):
+- `OrmClient::query_json(model, action, args: Value)` (`client.rs`).
+- The delegates' methods (`db.user().find_many(..)`, `create`, `update`, `upsert`, `delete`, `*_many`, `count`,
+  `aggregate`, `group_by`, ...: `query.rs`, `Delegate<M>`), which take `impl Into<Args<M>>`, with
+  `impl From<Value> for Args<M>`, `DataArg<M>` and `WhereArg<M>`; `_transaction_batch` takes the same queries.
+- The typed parameters `WhereParam`, `SetParam`, `OrderByParam`, `IncludeParam`, `SelectParam` (`query.rs`,
+  `{ key, value: Value }`), built by the helpers that `corvis-orm-macros` generates per model (`user::email::equals`,
+  ...), and assembled by `where_object` / `data_object` into a `Value`.
+- The marker constructors in `lib.rs`: `undefined()`, `or_undefined()`, `db_null()`, `json_null()`, `any_null()`, all
+  returning `Value`; `or_undefined` also carries a serialization failure (`engine::invalid_argument`, a third in-band
+  marker).
+- Raw SQL takes `Value`s as arguments (`ToSqlArg`); `check_params` refuses a marker there.
+
+**Engine entry points that read `Value` / `Map<String, Value>`.** Everything starts at `engine::run(client, model,
+action, args: Value)` (`engine/mod.rs`), which runs `check_depth`, `find_invalid_argument` and `strip_undefined` on the
+`Value` and dispatches. Below it every module reads the tree as `&Value` / `&Map<String, Value>` (about 175 lines of
+`engine/` name those types, in some 6,200 lines of `engine/*.rs` and `query.rs`): `filter.rs` (`where_sql`, the scalar
+operators, `json_filter`, relation filters, `find_nul`), `write.rs` (`set_expr`, `scalar_data`, nested writes, upsert,
+`createMany`), `read.rs` (selection, `include`, `orderBy`, `cursor`, `distinct`), `aggregate.rs` (`aggregate`,
+`groupBy`, `having`), and `mod.rs` (`value`, `scalar_value`, `data_value`, `decimal_input`, `null_sentinel`). The
+outputs (rows) stay `Value`.
+
+**Usage in the port applications** (9 files, all in `consi-backend`; `facten-api` and `houseplan-api` use neither):
+- Optional conditions in `where` (`or_undefined(option)`): `exchange-rate/exchange-rate.service.rs:39`,
+  `ledger/ledger.service.rs:90`, `settlement/settlement.service.rs:135, 209, 267-268, 286`,
+  `transaction/transaction.service.rs:523-533` (a list filter from a query DTO), `:689`.
+- Optional fields in `data`: `checkout/checkout.service.rs:94, 98`, `exchange-rate/exchange-rate.service.rs:61`,
+  `ops/ops.service.rs:84`, `transaction/transaction.service.rs:168, 177, 359-365`, `webhook/webhook.service.rs:85`;
+  inside a Json field's value (dropped from it like `JSON.stringify` does): `webhook/webhook.service.rs:122, 156`; in
+  seed data: `bin/seed.rs:261`.
+- A conditional update operation (`if .. { undefined() } else { json!({ "decrement": .. }) }`):
+  `transaction/transaction.service.rs:624, 648`.
+- Outside the ORM: `checkout/checkout.service.rs:350, 353` build a webhook event with `or_undefined` and remove the
+  markers with the application's own `common/js.rs:70-79` (`strip_undefined`, which compares with
+  `corvis_orm::undefined()`) before signing it: the pattern of finding C, safe only while that strip is kept.
+- `facten-api/src/emissions/emissions.service.rs:157` writes `json!({ "$type": "DbNull" })` and must already become
+  `corvis_orm::db_null()` (round 1).
+
+**Design.**
+- A tree of its own, `corvis_orm::Arg` (name to settle): `Null`, `Bool`, `Number(serde_json::Number)`, `String`,
+  `Array(Vec<Arg>)`, `Object(Map<String, Arg>)` (key order kept, as the engine relies on it), and the markers
+  `Undefined`, `DbNull`, `JsonNull`, `AnyNull`, `Invalid(String)`.
+- `impl From<Value> for Arg` that never yields a marker variant (a request's JSON stays data, by construction).
+- The marker constructors return `Arg` (or a small `Marker` type that is `Into<Arg>`).
+- `json!` interop: a macro `corvis_orm::args!({ .. })` with the grammar of `json!` (same keys, nesting and
+  interpolation), where an interpolated expression is `impl Into<Arg>`: markers, `Value`s, and any `Serialize` through
+  a blanket conversion (`Arg::from_serialize`, which turns a serialization failure into `Invalid`). A builder
+  (`Arg::object().set("where", ..)`) for code that assembles arguments step by step (`where_["createdAt"] = ..` today).
+- `Arg` has no `Serialize` (or one that fails on a marker), and its `Debug` shows `undefined` / `DbNull`: it cannot be
+  echoed into a response or a log with its secret, because it has none.
+- The engine is ported from `&Value` to `&Arg`. `Arg` offers the accessors the engine uses on `Value` (`as_object`,
+  `as_array`, `as_str`, `as_i64`, `as_f64`, `get`, `is_null`, indexing), so the port is mostly a change of type; the
+  marker checks become `match` arms (`strip_undefined`, `null_sentinel`, `find_invalid_argument` and the nonces go
+  away, with `redact` and the marker check of `check_params`).
+- The typed parameters hold `Arg`, and `where_object` / `data_object` return `Arg`.
+
+**Migration path.**
+1. Add `Arg`, `args!` and the conversions; `query_json` and the delegates accept `impl Into<Arg>`, so existing `Value`
+   arguments keep compiling. During this step the `Value` conversion still recognizes the in-band markers (the current
+   secrets), so `json!` code that uses `undefined()` keeps working, and `args!` code gets the typed variants.
+2. Port the 9 files of `consi-backend` from `json!` to `args!` (mechanical: same grammar), the oracle runners and the
+   tests; `corvis-orm-macros` generates helpers that build `Arg`.
+3. Make the markers typed only: `undefined()` and the Json nulls return `Arg` (a `json!` that interpolates one no longer
+   compiles, which finds every remaining use), the `Value` conversion stops recognizing markers, and the nonces,
+   `redact` of markers and the marker check of `check_params` are removed. A breaking change of the JSON form, in the
+   changelog with the before and after.
+4. Tests: every security test of #188 (`tests/security_r188.rs`, the marker tests of `engine/mod.rs`) rewritten for the
+   typed form, a property test that no `Value` converts to a marker variant, both oracles and the Postgres SQL snapshot
+   unchanged.

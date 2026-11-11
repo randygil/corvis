@@ -111,6 +111,16 @@ pub mod prelude {
 ///                "currency": corvis_orm::undefined() }
 /// })).await?;
 /// ```
+///
+/// # Security
+///
+/// The value is a string that carries a secret of this process, which is what makes it impossible to forge from a
+/// request. An argument value built with it (or with [`or_undefined`], [`db_null`], [`json_null`], [`any_null`]) is
+/// for the ORM only: never serialize it into a response, a log line or a message. A client that read the secret could
+/// send it back and drop the condition it stands in. Build what you echo to the client (an applied filter, a
+/// pagination header) from your own validated fields. The ORM keeps it out of its own errors, `Debug` output and SQL
+/// parameters, but it cannot see what the application does with its `Value`; until the arguments are a type of their
+/// own instead of `serde_json::Value`, that is the application's responsibility.
 pub fn undefined() -> serde_json::Value {
     engine::undefined_marker()
 }
@@ -120,16 +130,31 @@ pub fn undefined() -> serde_json::Value {
 ///
 /// Like [`json_null`] and [`any_null`], it is only ever the whole value of a Json field or of `equals` / `not`:
 /// inside a Json value, a `Json[]` list or another operator the query fails with a validation error.
+///
+/// # Security
+///
+/// Its `$type` tag carries a secret of this process. An argument value built with it is for the ORM only: never
+/// serialize it into a response, a log line or a message; see [`undefined`].
 pub fn db_null() -> serde_json::Value {
     engine::null_marker(engine::NullKind::Db)
 }
 
 /// The JSON `null` value of a Json field (`JsonNull`), as opposed to the database `NULL` ([`db_null`]).
+///
+/// # Security
+///
+/// For the ORM only, like [`db_null`]: never serialize an argument value built with it into a response, a log line
+/// or a message; see [`undefined`].
 pub fn json_null() -> serde_json::Value {
     engine::null_marker(engine::NullKind::Json)
 }
 
 /// Either null of a Json field (`AnyNull`): in a filter it matches the database `NULL` and the JSON `null`.
+///
+/// # Security
+///
+/// For the ORM only, like [`db_null`]: never serialize an argument value built with it into a response, a log line
+/// or a message; see [`undefined`].
 pub fn any_null() -> serde_json::Value {
     engine::null_marker(engine::NullKind::Any)
 }
@@ -139,6 +164,12 @@ pub fn any_null() -> serde_json::Value {
 /// A non-finite float becomes `null`, as the reference client sends `NaN` (recorded). A value whose `Serialize`
 /// fails does not: the query it is part of fails with a validation error before any SQL runs, as JavaScript fails
 /// on a value `JSON.stringify` cannot write.
+///
+/// # Security
+///
+/// `None` gives [`undefined()`], which carries a secret of this process: an argument value built with `or_undefined`
+/// is for the ORM only. Never serialize it into a response (for example to echo the filter a list applied), a log
+/// line or a message; build what you echo from your own validated fields. See [`undefined`].
 pub fn or_undefined<T: serde::Serialize>(v: Option<T>) -> serde_json::Value {
     match v.map(serde_json::to_value) {
         Some(Ok(v)) => v,
