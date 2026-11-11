@@ -210,19 +210,19 @@ to applications and clients" says so.
 
 ## 15. Definition of done
 
-- [ ] 15.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io` with no
+- [x] 15.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io` with no
   warnings
-- [ ] 15.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
+- [x] 15.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
   `cargo clippy -p corvis --no-default-features --features socket-io -- -D warnings`
 - [ ] 15.3 `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
   `CORVIS_NODE_DIFF=1` the `socket_io_diff` and `socket_io_conformance` tests pass
-- [ ] 15.4 Per-feature checks: `cargo check -p corvis --tests --features <f>` for websockets, compression, tls, auth-local,
+- [x] 15.4 Per-feature checks: `cargo check -p corvis --tests --features <f>` for websockets, compression, tls, auth-local,
   auth-api-key, auth-session, auth-oauth2 and socket-io, with no warnings
 - [ ] 15.5 Regression tests: one per spec scenario (unit, integration, counting allocator or harness), as listed in groups 3-12
-- [ ] 15.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
+- [x] 15.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 15.7 Framework runtime code changed (`ws.rs`, `websockets.rs`, `server.rs`, `socket_io/`): run the `corvis-parity` check and
   verify the three port apps keep 0 apidiff differences
-- [ ] 15.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
+- [x] 15.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
 - [ ] 15.9 The security review of 14.3 is closed before archiving
 
 ## Workflow follow-up

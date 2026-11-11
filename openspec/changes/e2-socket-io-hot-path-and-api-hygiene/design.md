@@ -856,3 +856,21 @@ Per decision, the figure it had to move:
 
 All rates went up and the latencies down, most in the polling scenarios (`emit` over polling doubled), where the request
 copies and the per-message registrations went away. The figures are from one machine; the comparison is what counts.
+
+### Final checks (after the last code change, on `ed1e480` + this branch)
+
+- `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p corvis
+  --no-default-features --features socket-io -- -D warnings`; `cargo build -p corvis --features socket-io`: clean.
+- `cargo check -p corvis --tests --features <f>` for websockets, compression, tls, auth-local, auth-api-key,
+  auth-session, auth-oauth2 and socket-io: no warning (a test-only counter had to be gated on `socket-io`).
+- `cargo test --workspace --no-fail-fast`: 2,641 passed, 0 failed, 101 ignored (190 test binaries). An earlier run of
+  it failed one test, the first version of the lookup test, which opened 1,000 TCP connections and ran the machine out
+  of ephemeral ports (`WSAENOBUFS`) late in the workspace run; it now makes its 1,000 CONNECTs over 50 connections.
+- `cargo test -p corvis --features socket-io --no-fail-fast`: 1,698 passed, 0 failed, 57 ignored (114 binaries).
+- The CI fuzz steps with `PROPTEST_CASES=20000`: `--features socket-io --lib fuzz` 32 passed, `--lib fuzz` 16 passed.
+- Repeated: `socket_io_rooms_security` 30 of 30 (the `socket_of` waits are gone), `socket_io_connect_order` 5 of 5
+  (twice), `engine_io` and `engine_io_security` 5 of 5.
+- `node scripts/lint-ratchet.mjs`: no count above the baseline (see group 11); `node scripts/check-naming.mjs`,
+  `node scripts/check-crate-files.mjs`, `cargo deny check`, `npm run docs:check` (179 + 179 pages),
+  `openspec validate` of this change and of `e2-socket-io-redis-adapter`: pass.
+- Not met: the upstream suite 20 of 20 (task 7.4, above); `socket_io_diff` was not run in the end, for the same reason.
