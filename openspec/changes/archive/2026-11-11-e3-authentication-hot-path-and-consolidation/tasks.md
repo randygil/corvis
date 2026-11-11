@@ -163,7 +163,7 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 - [x] 10.1 `bash bench/auth/run.sh --label after` on the finished branch, same machine and parameters as 1.4; fill
   design.md "Measurements"; explain any scenario more than 5% slower; check each number of the table of design.md Decision
   1 moved as named
-- [ ] 10.2 Security review of the change with the `security-reviewer` agent over the invariants table of design.md
+- [x] 10.2 Security review of the change with the `security-reviewer` agent over the invariants table of design.md
   (header checks and the key provider, family allow-lists with prepared validations, cached keys and `Debug`, the session
   size boundary and change detection, the timestamps-only touch, the lazy identifier and generator failure, the purge
   bound, the MAC derivations and prepared HMAC keys, the repeated state cookie, the API key redaction, the typed user slot,
@@ -180,12 +180,12 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 - [x] 11.4 Regression tests: one per spec scenario of this change and one per pinning test of design.md's invariants table,
   as listed in groups 1 to 8
 - [x] 11.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
-- [ ] 11.6 Framework runtime code changed (`crates/corvis/src/jwt.rs`, `auth/`, `http/`): run the `corvis-parity` check and
+- [x] 11.6 Framework runtime code changed (`crates/corvis/src/jwt.rs`, `auth/`, `http/`): run the `corvis-parity` check and
   verify the three port apps keep 0 apidiff differences; a difference caused by `JwtService::sign` is handled as design.md
   Risks says (behaviour kept, divergence recorded) before archiving
 - [x] 11.7 `cargo deny check` passes (no new dependency) and `openspec validate e3-authentication-hot-path-and-consolidation
   --strict` is valid
-- [ ] 11.8 The security review of 10.2 is closed before archiving
+- [x] 11.8 The security review of 10.2 is closed before archiving
 
 ## Workflow follow-up
 
@@ -193,3 +193,20 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
   `auth/strategies` deltas are applied and `bench/auth-hot-path` is created).
 - Close issue #186, tick it in epic #39 and move its card to Done (see the `corvis-task` skill).
 - #181 and #182 stay open; comment on each that #186 left the example's workaround in place for them.
+
+## Verification
+
+Checked on `dev` at fd505b0 (2026-11-11):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2"` | 1649 passed |
+| `cargo test -p corvis --features socket-io` | 1665 passed |
+| `cargo test --workspace` | 2110 passed; one Postgres connect-timeout test failed under the load of the full run and passed alone |
+| `JwtService::sign` against the 40 recorded fixtures | all equal |
+| `cargo deny check`, `node scripts/check-naming.mjs`, docs check | ok |
+| Security review | 1 medium (a string payload whose text is a JSON object or array was signed as the claims), fixed: `sign` refuses it, with a regression test and a documented divergence (design.md "Security review"); the earlier proofs of concept did not reproduce |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 636 checks equal, 0 different, in two runs; route tables identical; databases equivalent |

@@ -126,7 +126,7 @@ clock; no retries. Test servers bind to `127.0.0.1` only.
   `docs/websockets/gateways.md`; connection checks and `guard_connections` in `docs/websockets/guards.md`
   ("Authenticating on connect", "Route posture for gateways"); translate the three in `docs/es/websockets/`; verify
   `npm run docs:check` in `docs/`
-- [ ] 7.3 Security review of the change with the `security-reviewer` agent (adapter / gateway mismatch, the
+- [x] 7.3 Security review of the change with the `security-reviewer` agent (adapter / gateway mismatch, the
   connection gate and early events, connection guards and their context, CORS versus the origin allowlist, what
   `exception` and `CONNECT_ERROR` payloads can leak, posture reporting, panics, the namespace dispatcher as an
   extension of #33); repeat rounds until no open finding; record findings and fixes in design.md under "Security
@@ -143,9 +143,9 @@ clock; no retries. Test servers bind to `127.0.0.1` only.
 - [x] 8.4 Regression tests: one per spec scenario (macro, unit, integration, security or harness scenario), as listed
   in groups 2-6
 - [x] 8.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
-- [ ] 8.6 Framework runtime code changed (`crates/corvis/src/websockets.rs`, the gateway macro): run the
+- [x] 8.6 Framework runtime code changed (`crates/corvis/src/websockets.rs`, the gateway macro): run the
   `corvis-parity` check and verify the three port apps keep 0 apidiff differences
-- [ ] 8.7 The security review of 7.3 is closed before archiving
+- [x] 8.7 The security review of 7.3 is closed before archiving
 
 ## Workflow follow-up
 
@@ -154,3 +154,20 @@ clock; no retries. Test servers bind to `127.0.0.1` only.
 - Close issue #35, tick it in epic #30 and move its card to Done (see the `corvis-task` skill).
 - Open the follow-up issues noted in proposal.md "Out of scope" that the maintainer accepts (manual acknowledgement
   parameter, binary in the gateway pipeline, duplicate `ws` gateway paths).
+
+## Verification
+
+Checked on `dev` at bd398aa (the merge) and fd505b0 (2026-11-11):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed at bd398aa and at fd505b0; in between, one assertion of `socket_io_rooms_security` that read the buffered amount of a socket whose connection was already gone was made an upper bound |
+| `cargo test -p corvis --features socket-io` | 1646 passed |
+| `cargo test --workspace` | 2074 passed |
+| `socket_io_diff` with `CORVIS_NODE_DIFF=1` | passed in 2 of 3 runs; the failing case is the timing one of #184, which #185 takes over |
+| `cargo check -p corvis --tests --features <f>` for compression, auth-local, auth-api-key, auth-session, auth-oauth2, socket-io | no warnings |
+| `cargo deny check`, `node scripts/check-naming.mjs`, docs check | ok |
+| Security review, rounds 1 to 4 | every finding fixed with a regression test (design.md "Security review"); round 4 confirmed the share per address at CONNECT and found nothing open |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 636 checks equal, 0 different, in two runs; route tables identical; databases equivalent. Three earlier runs, made while four compilations loaded the machine, lost requests from the test runner to its mock server; they did not recur on the idle machine |
