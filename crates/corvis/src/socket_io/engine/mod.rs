@@ -1053,9 +1053,22 @@ impl EngineServer {
 
     /// The same, as if the client connected from `address`.
     pub(crate) fn open_test_socket_from(&self, address: &str) -> EngineSocket {
-        let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=websocket").body(()).unwrap().into_parts();
+        self.open_test_socket_forwarded(address, None)
+    }
+
+    /// The same, behind a proxy every request trusts, with this `X-Forwarded-For` value.
+    pub(crate) fn open_test_socket_forwarded(&self, address: &str, forwarded: Option<&str>) -> EngineSocket {
+        let mut request = http::Request::builder().uri("/socket.io/?EIO=4&transport=websocket");
+        if let Some(value) = forwarded {
+            request = request.header("x-forwarded-for", value);
+        }
+        let (parts, _) = request.body(()).unwrap().into_parts();
         let peer: std::net::SocketAddr = format!("{address}:1").parse().unwrap();
-        let handshake = Request::for_upgrade(parts, peer, &Default::default()).unwrap();
+        let parser = crate::http::body_parser::BodyParserOptions {
+            trust_proxy: if forwarded.is_some() { crate::http::proxy_addr::TrustProxy::All } else { Default::default() },
+            ..Default::default()
+        };
+        let handshake = Request::for_upgrade(parts, peer, &parser).unwrap();
         let reservation = self.reserve(&handshake).ok().expect("a free slot");
         let session = self.open_session(TransportKind::WebSocket, &handshake, reservation).ok().expect("an open session");
         self.notify_connection(&session);

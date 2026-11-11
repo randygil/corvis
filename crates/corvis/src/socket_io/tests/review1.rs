@@ -727,6 +727,55 @@ fn question_id(sent: &[Out]) -> u64 {
     panic!("no question in {sent:?}")
 }
 
+/// Behind a proxy every request trusts, two connections of one peer send forwarded addresses that do not parse: the
+/// session falls back to the peer for its key, and so does the answer budget, so the two share one address share.
+#[tokio::test(start_paused = true)]
+async fn malformed_forwarded_addresses_from_one_peer_share_one_share_of_the_answer_budget() {
+    const MIB: usize = 1 << 20;
+    let io = server(
+        IoOptions::new()
+            .max_decoded_bytes(MIB)
+            .max_broadcast_ack_bytes(MIB)
+            .engine(EngineOptions::new().ping_interval(DAY).ping_timeout(DAY).max_total_unread_bytes(16 * MIB)),
+    );
+    let budget = io.main().ack_budget().clone();
+    let conns: Vec<Conn> = ["junk-a", "junk-b", "junk-c"]
+        .iter()
+        .map(|xff| Conn { socket: io.engine().open_test_socket_forwarded("203.0.113.1", Some(xff)) })
+        .collect();
+    for conn in &conns {
+        let id = conn.join("0").await;
+        let socket = io.main().socket(&id).unwrap();
+        assert_eq!(socket.address_key(), "203.0.113.1", "the key of the session, not the raw forwarded value");
+        socket.join("r").unwrap();
+    }
+    let calls = 40;
+    let mut tasks = Vec::new();
+    for _ in 0..calls {
+        let io = io.clone();
+        tasks.push(tokio::spawn(async move { io.to("r").timeout(Duration::from_secs(60)).emit_with_ack("q", ()).await }));
+        settle().await;
+    }
+    let big = "x".repeat(100_000);
+    // Two of them answer; the third stays silent, so the calls stay open and hold what was answered.
+    for conn in &conns[..2] {
+        conn.sent().await;
+        for id in 0..calls as u64 {
+            conn.text(&answer(id, &big));
+            settle().await;
+        }
+    }
+    assert_eq!(budget.address_entries(), 1, "one share for both connections");
+    assert!(budget.used() <= budget.address_share(), "{} held, share {}", budget.used(), budget.address_share());
+    advance(61_000).await;
+    let too_large = futures::future::join_all(tasks)
+        .await
+        .into_iter()
+        .filter(|r| matches!(r, Ok(Err(e)) if *e.kind() == BroadcastAckErrorKind::ResponsesTooLarge))
+        .count();
+    assert!(too_large > 0, "the answers past the share ended their calls with ResponsesTooLarge");
+}
+
 #[tokio::test(start_paused = true)]
 async fn one_address_cannot_fill_the_answer_budget_and_make_the_calls_of_others_fail() {
     const MIB: usize = 1 << 20;

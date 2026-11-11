@@ -29,6 +29,9 @@ pub(crate) const BINARY_MARKER: &str = "$corvis::socket_io::Binary";
 // buffers of an object. The decoder builds every buffer at its exact final size (it counts the elements first), so
 // no growth slack exists; `ALLOC_OVERHEAD` covers what the allocator adds to each allocation (glibc: an 8-byte header
 // and rounding to a multiple of 16, at most 23 bytes; a counting allocator that sees requested sizes only sees less).
+// The counting-allocator tests that check the model (`tests/socket_io_memory.rs` and the other `*_memory.rs` suites)
+// run in the Linux CI job (glibc) and measure requested sizes, so they bound the model from below, on the allocator it
+// describes.
 
 /// What the allocator adds to every allocation, on top of the requested size.
 pub(crate) const ALLOC_OVERHEAD: usize = 24;
