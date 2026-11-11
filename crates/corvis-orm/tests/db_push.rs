@@ -24,11 +24,12 @@ async fn sqlite<S: ModelSet>() -> OrmClient {
     db
 }
 
-async fn postgres<S: ModelSet>(name: &str) -> Option<OrmClient> {
-    let url = pg::fresh_db(&format!("push_{name}")).await?;
+/// A database pushed with `S`, and the guard that drops it when the test ends.
+async fn postgres<S: ModelSet>(name: &str) -> Option<(pg::DropOnExit, OrmClient)> {
+    let (url, guard) = pg::fresh_db_bounded(&format!("push_{name}"), 30).await?;
     let db = OrmClient::new(url).unwrap();
     db.db_push::<S>().await.unwrap();
-    Some(db)
+    Some((guard, db))
 }
 
 async fn q(db: &OrmClient, model: &'static corvis_orm::ModelMeta, action: &str, args: Value) -> corvis_orm::Result<Value> {
@@ -83,13 +84,13 @@ async fn implicit_many_to_many_sqlite() {
 
 #[tokio::test]
 async fn compound_primary_key_postgres() {
-    let Some(db) = postgres::<Pair>("pk").await else { return };
+    let Some((_drop, db)) = postgres::<Pair>("pk").await else { return };
     two_pairs_share_a(&db).await;
 }
 
 #[tokio::test]
 async fn implicit_many_to_many_postgres() {
-    let Some(db) = postgres::<(User, Post, Category)>("m2m").await else { return };
+    let Some((_drop, db)) = postgres::<(User, Post, Category)>("m2m").await else { return };
     nested_m2m_create(&db).await;
 }
 
@@ -120,7 +121,7 @@ async fn all_oracle_models_sqlite() {
 
 #[tokio::test]
 async fn all_oracle_models_postgres() {
-    let Some(db) = postgres::<OracleModels>("all").await else { return };
+    let Some((_drop, db)) = postgres::<OracleModels>("all").await else { return };
     all_oracle_models(&db).await;
 }
 
@@ -130,7 +131,7 @@ async fn all_oracle_models_postgres() {
 
 #[tokio::test]
 async fn enum_types_postgres() {
-    let Some(db) = postgres::<User>("enum").await else { return };
+    let Some((_drop, db)) = postgres::<User>("enum").await else { return };
     let user = q(&db, meta::<User>(), "create", json!({ "data": { "email": "a@x.io", "role": "ADMIN", "roles": ["GUEST", "MEMBER"] } }))
         .await
         .unwrap();
@@ -144,7 +145,7 @@ async fn enum_types_postgres() {
 
 #[tokio::test]
 async fn native_types_and_scalar_lists_postgres() {
-    let Some(db) = postgres::<(User, Wallet)>("native").await else { return };
+    let Some((_drop, db)) = postgres::<(User, Wallet)>("native").await else { return };
     let user = q(
         &db,
         meta::<User>(),
@@ -183,7 +184,7 @@ async fn native_types_and_scalar_lists_postgres() {
 
 #[tokio::test]
 async fn uuid_filter_postgres() {
-    let Some(db) = postgres::<Group>("uuid").await else { return };
+    let Some((_drop, db)) = postgres::<Group>("uuid").await else { return };
     let id = "5b0f2b8e-2f0a-4a8e-8f8e-1c2d3e4f5a6b";
     q(&db, meta::<Group>(), "create", json!({ "data": { "id": id, "name": "g" } })).await.unwrap();
     let found = q(&db, meta::<Group>(), "findMany", json!({ "where": { "id": id } })).await.unwrap();
@@ -301,7 +302,7 @@ async fn a_failed_push_leaves_nothing_sqlite() {
 
 #[tokio::test]
 async fn a_failed_push_leaves_nothing_postgres() {
-    let Some(url) = pg::fresh_db("push_atomic").await else { return };
+    let Some((url, _drop_url)) = pg::fresh_db_bounded("push_atomic", 30).await else { return };
     push_is_atomic(&OrmClient::new(url).unwrap()).await;
 }
 
@@ -347,7 +348,7 @@ async fn hostile_names_are_quoted_sqlite() {
 
 #[tokio::test]
 async fn hostile_names_are_quoted_postgres() {
-    let Some(url) = pg::fresh_db("push_hostile").await else { return };
+    let Some((url, _drop_url)) = pg::fresh_db_bounded("push_hostile", 30).await else { return };
     let db = OrmClient::new(url).unwrap();
     hostile_names(&db).await;
     db.db_push::<edge::InSchema>().await.unwrap();
@@ -372,7 +373,7 @@ async fn existing_tables_are_left_alone_sqlite() {
 
 #[tokio::test]
 async fn existing_tables_are_left_alone_postgres() {
-    let Some(url) = pg::fresh_db("push_existing").await else { return };
+    let Some((url, _drop_url)) = pg::fresh_db_bounded("push_existing", 30).await else { return };
     existing_tables_are_left_alone(&OrmClient::new(url).unwrap()).await;
 }
 
@@ -449,8 +450,8 @@ fn catalog_differences(reference: &Value, pushed: &Value, accepted: &[&str]) -> 
 
 #[tokio::test]
 async fn catalog_equals_the_reference_migration_postgres() {
-    let Some(reference_url) = pg::fresh_db("push_catalog_ref").await else { return };
-    let Some(pushed_url) = pg::fresh_db("push_catalog_pushed").await else { return };
+    let Some((reference_url, _drop_reference_url)) = pg::fresh_db_bounded("push_catalog_ref", 30).await else { return };
+    let Some((pushed_url, _drop_pushed_url)) = pg::fresh_db_bounded("push_catalog_pushed", 30).await else { return };
     let reference = OrmClient::new(reference_url).unwrap();
     reference.db_execute(reference_migration()).await.unwrap();
     let pushed = OrmClient::new(pushed_url).unwrap();
@@ -473,8 +474,8 @@ async fn catalog_equals_the_houseplan_migrations_postgres() {
         eprintln!("skipping: corvis-tests/nest/houseplan is not available (set CORVIS_TESTS_DIR)");
         return;
     };
-    let Some(reference_url) = pg::fresh_db("push_hp_ref").await else { return };
-    let Some(pushed_url) = pg::fresh_db("push_hp_pushed").await else { return };
+    let Some((reference_url, _drop_reference_url)) = pg::fresh_db_bounded("push_hp_ref", 30).await else { return };
+    let Some((pushed_url, _drop_pushed_url)) = pg::fresh_db_bounded("push_hp_pushed", 30).await else { return };
     let reference = OrmClient::new(reference_url).unwrap();
     if let Err(e) = reference.migrate_deploy(&dir).await {
         eprintln!("skipping: the houseplan migrations do not apply here (the `vector` extension is needed): {e}");

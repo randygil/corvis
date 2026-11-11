@@ -59,12 +59,28 @@ async fn scratch_db(base: &str) -> Option<String> {
     Some(db)
 }
 
-async fn drop_db(base: &str, db: &str) {
-    if let Ok(opts) = sqlx::postgres::PgConnectOptions::from_str(&format!("{base}/postgres"))
-        && let Ok(mut c) = opts.connect().await
-    {
-        let _ = c.execute(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)").as_str()).await;
-        let _ = c.close().await;
+/// Drops the scratch database when the test ends, also when it panics.
+struct DropDb {
+    base: String,
+    db: String,
+}
+
+impl Drop for DropDb {
+    fn drop(&mut self) {
+        let (base, db) = (self.base.clone(), self.db.clone());
+        // A fresh runtime on its own thread: the test's runtime may be the one unwinding.
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
+            rt.block_on(async {
+                if let Ok(opts) = sqlx::postgres::PgConnectOptions::from_str(&format!("{base}/postgres"))
+                    && let Ok(mut c) = opts.connect().await
+                {
+                    let _ = c.execute(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)").as_str()).await;
+                    let _ = c.close().await;
+                }
+            });
+        })
+        .join();
     }
 }
 
@@ -75,6 +91,7 @@ async fn postgres_sql_of_the_oracle_cases_is_unchanged() {
         eprintln!("skipping: Postgres not reachable");
         return;
     };
+    let _drop = DropDb { base: base.clone(), db: db_name.clone() };
     let db = OrmClient::new(format!("{base}/{db_name}")).unwrap();
     db.db_execute(include_str!("../../tests/fixtures/oracle/migration.sql")).await.unwrap();
     let cases: Vec<Value> = serde_json::from_str(include_str!("../../tests/fixtures/oracle/results.json")).unwrap();
@@ -86,7 +103,6 @@ async fn postgres_sql_of_the_oracle_cases_is_unchanged() {
         snapshot.push(json!({ "label": label, "statements": statements }));
     }
     let _ = db.disconnect().await;
-    drop_db(&base, &db_name).await;
 
     let got = serde_json::to_string_pretty(&Value::Array(snapshot)).unwrap() + "\n";
     if std::env::var("CORVIS_ORM_UPDATE_PG_SNAPSHOT").is_ok_and(|v| v == "1") {

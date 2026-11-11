@@ -157,6 +157,36 @@ pub async fn fresh_db(name: &str) -> Option<String> {
     fresh_db_at(&base_url(), required(), name).await
 }
 
+/// Drops its database when it goes out of scope, also when the test panics (declare it before the clients that use
+/// the database, so that they are dropped first). A process that is killed still leaves the database behind: the
+/// sweep of a later run drops it once it is stale.
+pub struct DropOnExit(String);
+
+impl Drop for DropOnExit {
+    fn drop(&mut self) {
+        let db = std::mem::take(&mut self.0);
+        // A fresh runtime on its own thread: the test's runtime may be the one unwinding.
+        let _ = std::thread::spawn(move || {
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                rt.block_on(drop_scratch(&base_url(), vec![Scratch::Database(db)]));
+            }
+        })
+        .join();
+    }
+}
+
+/// [`fresh_db`], with a guard that drops the database at the end of the test and `statement_timeout` set on it
+/// (`timeout_secs`), so that a statement that would run for long fails instead of holding the shared server.
+pub async fn fresh_db_bounded(name: &str, timeout_secs: u32) -> Option<(String, DropOnExit)> {
+    let url = fresh_db(name).await?;
+    let guard = DropOnExit(db_of(&url).to_string());
+    let opts = sqlx::postgres::PgConnectOptions::from_str(&url).expect("a scratch database URL");
+    let mut c = opts.connect().await.expect("the scratch database accepts connections");
+    c.execute(format!("ALTER DATABASE \"{}\" SET statement_timeout = '{timeout_secs}s'", db_of(&url)).as_str()).await.unwrap();
+    let _ = c.close().await;
+    Some((url, guard))
+}
+
 /// [`fresh_db`] against an explicit server URL and policy.
 pub async fn fresh_db_at(base: &str, required: bool, name: &str) -> Option<String> {
     let db = scratch_name("orm_test_", name);

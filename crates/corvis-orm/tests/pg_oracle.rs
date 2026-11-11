@@ -109,7 +109,7 @@ async fn matches_reference_client() {
 /// `CHECK` and a trigger written by hand after the migration) applied after the push.
 #[tokio::test]
 async fn matches_reference_client_on_a_pushed_database() {
-    let Some(url) = pg::fresh_db("oracle_rs_pushed").await else { return };
+    let Some((url, _drop)) = pg::fresh_db_bounded("oracle_rs_pushed", 30).await else { return };
     let db = OrmClient::new(url).unwrap();
     db.db_push::<(
         oracle::User,

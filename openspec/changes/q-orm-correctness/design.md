@@ -510,3 +510,27 @@ rejects expressions deeper than 1000 levels (`SQLITE_MAX_EXPR_DEPTH`), so on SQL
 - In-repository callers moved to `decimal!` or `parse` (`decimal.rs` tests and module docs, `tests/decimal_js.rs`,
   `tests/pg_features.rs`, `tests/pg_oracle.rs`). These two panics had no failing test written before the fix: the
   `panic!` of `From<&str>` and the `assert!` of `join` were plain in the code, and the first one is now a compile error.
+
+### Group 8: key lists within the parameter limit
+
+- `Engine::statement_chunks(items, params_of)` splits a list into the groups of one statement each: at most half the
+  database's parameter limit (16383 on SQLite, 32767 on Postgres) and, on SQLite only, at most 500 `OR`ed groups.
+  Deviation from Decision 6: the design sized chunks by parameters only, but SQLite also rejects an `OR` chain of about
+  1,000 groups (`Expression tree is too large (maximum depth 1000)`, seen in 2.4), so its chunks are bounded by depth too.
+- `Engine::key_filters(fields, keys, shape)` (the design's `key_condition`, at the level of `where` filters so that every
+  caller keeps its own SQL): a list that fits in one statement is written by the caller's `shape`, exactly as before; a
+  longer single-field list is one `in` filter (one parameter past 1,000 items, through `push_in_list`); a longer compound
+  list is one statement per chunk. Hence Postgres SQL changes only for lists that did not fit one statement: compound
+  lists past 16383 keys (they failed) and single-field lists past 32767 keys (they worked up to 65535 and are now one
+  `= ANY($1)`); on SQLite single-field lists past 500 keys (they failed past about 1,000).
+- Moved to it: `read_back_many` (rows of all chunks, then in the given order), the four `ids_filter` updates (now
+  `update_by_ids`, which sums the counts of its statements; each statement carries its own part of the key list in its
+  `WHERE`), the compound include (children of each chunk grouped by parent; no pagination there, so each parent gets the
+  same children), the compound `count_related` (counts merged), the nested `deleteMany` items (chunked by the parameters
+  each item compiles to), `m2m_unlink` (through `push_in_list`, the same text for short lists) and `in` / `notIn` with
+  `mode: insensitive` past 1,000 values (`LOWER(col) IN (SELECT LOWER(value) FROM json_each(?))`,
+  `LOWER(col) = ANY(SELECT LOWER(x) FROM unnest($1::text[]) AS x)` and their negations).
+- Statement counts are asserted in `src/engine/key_list_tests.rs` (SQLite, 1,200 keys, with the recorder): one read-back
+  statement with one parameter, three child and three count statements for the compound include (1000, 1000, 400
+  parameters), three `UPDATE`s for a compound `set` whose `WHERE`s hold their own keys, three `DELETE`s for a nested
+  `deleteMany`, one statement with one parameter for an insensitive `in`.

@@ -312,7 +312,10 @@ impl Engine {
                         continue;
                     }
                     col(q);
-                    if ci {
+                    if ci && items.len() > IN_LIST_INLINE_MAX {
+                        let vals = items.iter().map(|item| self.value(f, item, false)).collect::<Result<Vec<_>>>()?;
+                        self.push_folded_list(q, vals, op == "notIn");
+                    } else if ci {
                         q.push(if op == "in" { " IN (" } else { " NOT IN (" });
                         for (j, item) in items.iter().enumerate() {
                             if j > 0 {
@@ -428,6 +431,30 @@ impl Engine {
             Dialect::Sqlite => {
                 let json = Value::Array(vals.iter().map(crate::db::sql_value_json).collect()).to_string();
                 q.push(if negate { " NOT IN (SELECT value FROM json_each(" } else { " IN (SELECT value FROM json_each(" });
+                q.bind(SqlValue::Text(json)).push("))");
+            }
+        }
+    }
+
+    /// ` IN (..)` / ` NOT IN (..)` after `LOWER(col)` for a long `in` / `notIn` with `mode: insensitive`: the
+    /// values in one parameter, each folded by `LOWER` like the short form (`LOWER($1), LOWER($2), ...`) folds them.
+    fn push_folded_list(&self, q: &mut Sql, vals: Vec<SqlValue>, negate: bool) {
+        let raw: Vec<SqlValue> = vals
+            .into_iter()
+            .map(|v| match v {
+                SqlValue::Cast(inner, _) => *inner,
+                other => other,
+            })
+            .collect();
+        match self.dialect() {
+            Dialect::Postgres => {
+                let arr = SqlValue::Cast(Box::new(SqlValue::Array(raw, FieldKind::String)), "text[]".into());
+                q.push(if negate { " <> ALL(SELECT LOWER(x) FROM unnest(" } else { " = ANY(SELECT LOWER(x) FROM unnest(" });
+                q.bind(arr).push(") AS x)");
+            }
+            Dialect::Sqlite => {
+                let json = Value::Array(raw.iter().map(crate::db::sql_value_json).collect()).to_string();
+                q.push(if negate { " NOT IN (SELECT LOWER(value) FROM json_each(" } else { " IN (SELECT LOWER(value) FROM json_each(" });
                 q.bind(SqlValue::Text(json)).push("))");
             }
         }

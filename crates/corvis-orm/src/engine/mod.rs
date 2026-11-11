@@ -7,6 +7,8 @@
 mod aggregate;
 mod filter;
 #[cfg(test)]
+mod key_list_tests;
+#[cfg(test)]
 mod pg_sql_snapshot;
 mod read;
 #[cfg(test)]
@@ -21,6 +23,12 @@ use crate::client::OrmClient;
 use crate::db::{Dialect, SqlValue, parse_datetime};
 use crate::error::{OrmError, Result, suggest};
 use crate::meta::{DefaultValue, FieldKind, FieldMeta, ModelMeta, ResolvedRelation, resolve_relation};
+
+/// Most `OR`ed groups (key groups, `deleteMany` items) one engine-built statement takes. SQLite parses
+/// `a OR b OR ...` as a left-deep tree and rejects an expression deeper than 1000 levels (`SQLITE_MAX_EXPR_DEPTH`);
+/// Postgres accepts long lists but plans them slowly (a statement with 16383 two-field groups did not finish in half
+/// an hour). Lists of single-field keys longer than this are one `in` list instead.
+const OR_GROUPS_PER_STATEMENT: usize = 500;
 
 /// Executes an action against a model.
 pub(crate) async fn run(client: OrmClient, model: &'static ModelMeta, action: &'static str, args: Value) -> Result<Value> {
@@ -230,6 +238,51 @@ impl Engine {
             Some(s) => format!("{}.{}", crate::db::quote_ident(s), crate::db::quote_ident(e.db_name)),
             None => crate::db::quote_ident(e.db_name),
         }
+    }
+
+    /// Parameters an engine-built list may bind in one statement: half the database's limit (32766 on SQLite,
+    /// 65535 on Postgres), leaving the other half to the rest of the statement.
+    fn list_param_budget(&self) -> usize {
+        match self.dialect() {
+            Dialect::Sqlite => 32766 / 2,
+            Dialect::Postgres => 65535 / 2,
+        }
+    }
+
+    /// Splits `items` into the groups of one statement each: at most [`Engine::list_param_budget`] parameters
+    /// (`params` gives those of an item) and at most [`OR_GROUPS_PER_STATEMENT`] items. A list that fits in one
+    /// statement stays one group, so the statement is the one written before chunking existed.
+    pub(crate) fn statement_chunks<T>(&self, items: Vec<T>, params: impl Fn(&T) -> usize) -> Vec<Vec<T>> {
+        let budget = self.list_param_budget();
+        let max_items = OR_GROUPS_PER_STATEMENT;
+        let mut chunks: Vec<Vec<T>> = Vec::new();
+        let mut used = 0;
+        for item in items {
+            let n = params(&item);
+            match chunks.last_mut() {
+                Some(chunk) if chunk.len() < max_items && used + n <= budget => chunk.push(item),
+                _ => {
+                    chunks.push(vec![item]);
+                    used = 0;
+                }
+            }
+            used += n;
+        }
+        chunks
+    }
+
+    /// The `where` filters, one per statement, that together match the rows whose key (`fields`) is one of `keys`.
+    ///
+    /// A list that fits in one statement is written by `shape` (the caller's `OR` of the keys, as before chunking
+    /// existed). A longer list of single-field keys is one `in` filter, bound as one parameter; a longer list of
+    /// compound keys is split into several statements of one `shape` each (see [`Engine::statement_chunks`]).
+    pub(crate) fn key_filters(&self, fields: &[&'static FieldMeta], keys: Vec<Id>, shape: impl Fn(Vec<Id>) -> Value) -> Vec<Value> {
+        let chunks = self.statement_chunks(keys, |_| fields.len());
+        if let ([f], [_, _, ..]) = (fields, chunks.as_slice()) {
+            let values: Vec<Value> = chunks.into_iter().flatten().map(|mut k| k.remove(f.name).unwrap_or(Value::Null)).collect();
+            return vec![Value::Object(Map::from_iter([(f.name.to_string(), serde_json::json!({ "in": values }))]))];
+        }
+        chunks.into_iter().map(shape).collect()
     }
 
     /// `true` when `f` is read through `CAST(.. AS NUMERIC)` wherever it is compared, sorted, aggregated or used in
