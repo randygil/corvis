@@ -19,6 +19,10 @@ fn options() -> IoOptions {
     IoOptions::new().engine(EngineOptions::new().ping_interval(DAY).ping_timeout(DAY))
 }
 
+/// Lets the tasks that are ready run: 40 turns of the single-threaded runtime on the paused clock, neither a sleep nor
+/// wall-clock time (the clock does not move). A wait for "nothing left to do" cannot be written here: on the paused clock
+/// a timer would be the way, and the timer wheel's 1 ms resolution would move the clock under the exact-time tests.
+/// Every packet these tests feed takes far fewer turns than this to be handled.
 async fn settle() {
     for _ in 0..40 {
         tokio::task::yield_now().await;

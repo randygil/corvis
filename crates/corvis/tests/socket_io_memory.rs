@@ -186,12 +186,8 @@ fn holding(entered: &Arc<AtomicUsize>, gate: &Arc<Notify>) -> impl Fn(&corvis::s
     }
 }
 
-async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while !done() {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+async fn wait_for(what: &str, done: impl FnMut() -> bool) {
+    engine_support::eventually(what, done).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -218,7 +214,8 @@ async fn many_sessions_of_one_address_hold_a_bounded_amount_while_their_handlers
     }
     wait_for("the first handler", || entered.load(Ordering::SeqCst) >= 1).await;
     // The others cannot have room: the share of an address is one maximum packet (9.4 MB here), the packet is bigger than half of it, so one packet per address
-    // beyond the guaranteed shares. Give them time to (wrongly) get in.
+    // beyond the guaranteed shares. Give them time to (wrongly) get in: the absence of an admission over real sockets,
+    // a quiet period, not a condition (a shorter one would make the check weaker, never wrong).
     tokio::time::sleep(Duration::from_millis(500)).await;
     let admitted = entered.load(Ordering::SeqCst);
     let held = (live() - before).max(0) as usize;
@@ -230,15 +227,12 @@ async fn many_sessions_of_one_address_hold_a_bounded_amount_while_their_handlers
     assert!(held <= bound, "{held} bytes live above the bound {bound}");
     // Nobody is dropped or deadlocked: releasing the handler lets the others through, one after the other.
     gate.notify_waiters();
-    let gate2 = gate.clone();
-    let opener = tokio::spawn(async move {
-        for _ in 0..200 {
-            gate2.notify_waiters();
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    });
-    wait_for("every packet to be handled", || entered.load(Ordering::SeqCst) == SESSIONS).await;
-    opener.abort();
+    // Each handler that starts waits for the gate: it is opened again at every check, until all have run.
+    wait_for("every packet to be handled", || {
+        gate.notify_waiters();
+        entered.load(Ordering::SeqCst) == SESSIONS
+    })
+    .await;
     drop(clients);
     fx.io.close();
 }
@@ -275,6 +269,7 @@ async fn an_honest_address_is_served_while_another_holds_its_maximum() {
         attackers.push(client);
     }
     wait_for("an attacker handler", || entered.load(Ordering::SeqCst) >= 1).await;
+    // The absence of a third admission over real sockets: a quiet period, not a condition (a shorter one weakens the check).
     tokio::time::sleep(Duration::from_millis(300)).await;
     // The address holds its quota (16 MiB: two of these packets) and no more.
     assert!(entered.load(Ordering::SeqCst) <= 2, "the attacking address holds {} packets", entered.load(Ordering::SeqCst));

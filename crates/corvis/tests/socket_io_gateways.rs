@@ -1286,7 +1286,8 @@ async fn early_events_are_discarded_when_the_hook_disconnects_the_socket() {
     emit_ack(&mut client, "/life", r#"["hello"]"#).await;
     log.release.notify_one();
     log.wait_for("life-disconnect:rooms=0").await;
-    // Whatever the discarded event could have done, it did not: no handler ran.
+    // Whatever the discarded event could have done, it did not: no handler ran. Absence of an effect on another task, with
+    // nothing that would mark its end (a discarded event leaves no trace): a quiet period, not a condition.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!log.entries().iter().any(|e| e == "life-handler"), "{:?}", log.entries());
     app.close().await.unwrap();

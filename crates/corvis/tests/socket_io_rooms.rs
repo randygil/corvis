@@ -360,10 +360,7 @@ async fn leave_and_rooms_during_disconnecting() {
         let seen = collect(&fx, &mut [&mut a, &mut b]).await;
         assert_eq!((hits(&seen[0], "e"), hits(&seen[1], "e")), (0, 1), "{v:?}");
         b.raw.close().await;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while log.lock().unwrap().len() < 2 && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        engine_support::eventually("both disconnect handlers", || log.lock().unwrap().len() >= 2).await;
         assert_eq!(*log.lock().unwrap(), ["during:2", "after:0"], "{v:?}");
         let size = match v {
             Variant::InMemory => testing::membership_size(&fx.io.main()),

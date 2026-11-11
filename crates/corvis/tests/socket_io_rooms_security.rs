@@ -77,12 +77,7 @@ async fn churn_leaves_the_maps_empty() {
         }
     }
     socket.disconnect(false);
-    within(async {
-        while fx.io.main().socket_count() > 0 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await;
+    engine_support::eventually("every socket to leave", || fx.io.main().socket_count() == 0).await;
     let size = testing::membership_size(&namespace).unwrap();
     assert_eq!((size.rooms, size.sockets, size.memberships), (0, 0, 0));
     assert_eq!(testing::check_invariants(&namespace), Ok(()));

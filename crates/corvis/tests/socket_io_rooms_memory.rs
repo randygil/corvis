@@ -84,6 +84,9 @@ async fn a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reac
             socket.join("few").unwrap();
         }
     }
+    // Before a heap baseline: the connect tasks of the 100 sockets finish on their own schedule once their CONNECT was
+    // taken, and nothing outside the crate marks that; a quiet period, not a condition (what it guards against is
+    // noise in the two measurements below, whose bounds are generous).
     tokio::time::sleep(Duration::from_millis(200)).await;
     let payload = "x".repeat(PAYLOAD);
 

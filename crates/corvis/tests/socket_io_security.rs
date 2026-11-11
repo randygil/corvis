@@ -90,12 +90,7 @@ async fn hostile_packets_close_the_connection_and_never_reach_a_handler() {
     let mut raw = Raw::connect(fx.addr).await;
     raw.join("/", None).await;
     raw.send(r#"2["x"]"#).await;
-    for _ in 0..100 {
-        if reached.load(Ordering::SeqCst) == 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    engine_support::eventually("the handler", || reached.load(Ordering::SeqCst) == 1).await;
     assert_eq!(reached.load(Ordering::SeqCst), 1);
 }
 
@@ -110,7 +105,8 @@ async fn a_declared_count_without_data_holds_only_the_header_until_the_attachmen
         clients.push(raw);
     }
     assert_eq!(fx.io.engine().session_count(), 100);
-    // All of them are held (not before the configured time) and all of them are closed afterwards.
+    // All of them are held (not before the configured time) and all of them are closed afterwards: a "not before"
+    // bound below the configured attachment timeout, over real sockets.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(fx.io.engine().session_count(), 100, "the packets wait for their attachments");
     for raw in &mut clients {
@@ -146,6 +142,7 @@ async fn a_connect_flood_during_slow_middleware_runs_it_once() {
                 let runs = runs.clone();
                 async move {
                     runs.fetch_add(1, Ordering::SeqCst);
+                    // Slow middleware, so the CONNECT flood arrives while it runs: the load, not a synchronisation.
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     Ok(())
                 }
@@ -195,12 +192,8 @@ async fn blocked_handlers_are_capped_and_other_connections_are_served() {
     for _ in 0..10_000 {
         raw.send(r#"2["block"]"#).await;
     }
-    for _ in 0..100 {
-        if running.load(Ordering::SeqCst) == 32 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    engine_support::eventually("32 handlers to run", || running.load(Ordering::SeqCst) == 32).await;
+    // No 33rd: the absence of a handler over real sockets, a quiet period, not a condition.
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(running.load(Ordering::SeqCst), 32, "32 handlers run, the rest wait");
     let mut other = Raw::connect(fx.addr).await;

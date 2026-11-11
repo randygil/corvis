@@ -583,12 +583,7 @@ async fn disconnect_hooks_run_once_on_every_path() {
     let _open = connect(addr, "/life", Some(r#"{"token":"b"}"#)).await;
     log.wait_for("life-connection:b").await;
     app.close().await.unwrap();
-    for _ in 0..200 {
-        if log.count("life-disconnect") >= 3 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    engine_support::eventually("the three disconnect hooks", || log.count("life-disconnect") >= 3).await;
     assert_eq!(log.count("life-disconnect"), 3, "one per socket: {:?}", log.entries());
 }
 

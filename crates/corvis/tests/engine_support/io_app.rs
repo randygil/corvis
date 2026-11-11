@@ -72,6 +72,7 @@ fn register(namespace: &IoNamespace, io: &IoServer) {
             namespace.use_middleware(|_socket| async move { Err(ConnectError::new("not authorized")) });
         }
         "/slow" => {
+            // Middleware that takes a second, as in the Node reference application: the behavior compared, not a wait.
             namespace.use_middleware(|_socket| async move {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 Ok(())
