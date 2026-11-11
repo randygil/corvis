@@ -716,6 +716,24 @@ passed, 0 failed.
   public `default_strategies` keeps returning a `Vec`.
 - `OAuth2Client` keeps a `WarnLimiter`; `a_failed_refresh_logs_one_line_a_minute` tests the line it writes.
 
+### Definition of done (group 11)
+
+- After the last code change: `cargo test --workspace --no-fail-fast` 2084 passed, 0 failed, 98 ignored (182 test
+  binaries). Per feature: `compression` 1198, `auth-local` 1223, `auth-api-key` 1218, `auth-oauth2` 1450 passed with no
+  failure; `auth-session` 1306 passed with one failure, `transport_security::incomplete_body_gets_408` (its temporary
+  upload folder already existed, `AlreadyExists` from `create_dir_all`), and `socket-io` 1616 passed with one failure,
+  `socket_io_rooms_security::a_broadcast_racing_a_disconnect_never_panics_and_sends_nothing_after_it`; neither file is
+  touched by this change, and both binaries passed in full when run again on their own (31 and 7 tests). The CI's
+  all-auth-features run (with `auth_hot_path_heap` and `fuzz_auth` added) 64 passed. The auth fuzz steps of `ci.yml`
+  with `PROPTEST_CASES=20000`: 16, 17, 18 and 5 passed.
+- `cargo build --workspace --all-targets` and `cargo clippy --workspace --all-targets -- -D warnings` clean; the CI
+  per-feature clippy loop clean for every feature; `cargo check -p corvis --tests --features <f>` clean for
+  `compression`, `auth-local`, `auth-api-key`, `auth-session`, `auth-oauth2` and `socket-io`.
+- `cargo test -p auth-app` and `node scripts/smoke-examples.mjs auth-app` (17 of 17) pass; `cargo deny check`,
+  `node scripts/check-naming.mjs`, `npm run docs:check` and `openspec validate --strict` pass.
+- The first full run found the authorization page's sample of the example's `RolesGuard` still reading `user_as`
+  (`examples/auth-app/tests/docs_samples.rs`); the sample and its sentence now read `typed_user`, in both languages.
+
 ### Example, docs and naming (groups 8 and 9)
 
 - `roles_guard_without_an_auth_guard` (`tests/auth_invariants.rs`) keeps its own `RolesGuard` that reads

@@ -43,7 +43,7 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
   it, conflicts with the original's texts, the claim order, the header without `typ` for a non-object payload); add
   `not_before` and `jwt_id` to `JwtSignOptions` (rustdoc with the original's option names; `Debug` lists them); verify the
   replay passes, with any remaining case marked as a divergence with its reason, and `cargo test -p corvis --lib jwt`
-- [ ] 2.6 Check every caller of `sign` / `sign_with` in the repository (`examples/`, `crates/corvis/tests/`,
+- [x] 2.6 Check every caller of `sign` / `sign_with` in the repository (`examples/`, `crates/corvis/tests/`,
   `crates/corvis/src/fuzz_tests.rs`) still signs: none passes a payload claim together with its option; verify
   `cargo test --workspace`
 
@@ -172,18 +172,18 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 11. Definition of done
 
-- [ ] 11.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 11.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and the per-feature loop of
+- [x] 11.1 `cargo build --workspace --all-targets` with no warnings
+- [x] 11.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and the per-feature loop of
   `.github/workflows/ci.yml` passes with each auth feature alone, all together and `--no-default-features`
-- [ ] 11.3 `cargo test --workspace` passes, and `cargo test -p corvis --features "auth-local auth-api-key auth-session
+- [x] 11.3 `cargo test --workspace` passes, and `cargo test -p corvis --features "auth-local auth-api-key auth-session
   auth-oauth2"` passes including `auth_invariants`, `auth_hot_path_heap`, `auth_source_checks` and `fuzz_auth`
-- [ ] 11.4 Regression tests: one per spec scenario of this change and one per pinning test of design.md's invariants table,
+- [x] 11.4 Regression tests: one per spec scenario of this change and one per pinning test of design.md's invariants table,
   as listed in groups 1 to 8
-- [ ] 11.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
+- [x] 11.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 11.6 Framework runtime code changed (`crates/corvis/src/jwt.rs`, `auth/`, `http/`): run the `corvis-parity` check and
   verify the three port apps keep 0 apidiff differences; a difference caused by `JwtService::sign` is handled as design.md
   Risks says (behaviour kept, divergence recorded) before archiving
-- [ ] 11.7 `cargo deny check` passes (no new dependency) and `openspec validate e3-authentication-hot-path-and-consolidation
+- [x] 11.7 `cargo deny check` passes (no new dependency) and `openspec validate e3-authentication-hot-path-and-consolidation
   --strict` is valid
 - [ ] 11.8 The security review of 10.2 is closed before archiving
 
