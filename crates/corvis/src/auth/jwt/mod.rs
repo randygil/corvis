@@ -57,8 +57,9 @@ pub use options::{
 pub use crate::jwt::JwtAlgorithm;
 
 use self::options::{KeySource, Resolved, check_secret};
+use super::outcome::{service_unavailable, user_outcome, with_deadline};
 use super::warn_limit::WarnLimiter;
-use super::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
+use super::{AuthenticateOptions, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Hooks, Injectable, ResolveCtx};
 use crate::http::{HttpException, Request};
@@ -147,10 +148,6 @@ impl From<&'static str> for Denied {
     }
 }
 
-fn unavailable() -> StrategyOutcome {
-    StrategyOutcome::Error(HttpException::new((), http::StatusCode::SERVICE_UNAVAILABLE))
-}
-
 fn fail(reason: &str) -> StrategyOutcome {
     StrategyOutcome::Fail { challenge: Some(json!({ "message": reason })), status: None }
 }
@@ -229,9 +226,8 @@ impl Resolved {
 impl<V: JwtValidator> JwtStrategy<V> {
     /// A warning a client can trigger: at most one per reason a minute, with no request data.
     fn warn(&self, reason: &'static str, message: &str) {
-        if let Some(suppressed) = self.warnings.allow(reason, Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-            Logger::new("JwtStrategy").warn(format!("strategy \"{}\": {message}{more}", V::NAME));
+        if let Some(line) = self.warnings.line(reason, Instant::now(), || format!("strategy \"{}\": {message}", V::NAME)) {
+            Logger::new("JwtStrategy").warn(line);
         }
     }
 }
@@ -266,26 +262,16 @@ impl<V: JwtValidator> Strategy for JwtStrategy<V> {
             Err(Denied::Fail(reason)) => return fail(reason),
             Err(Denied::Unavailable(reason, message)) => {
                 self.warn(reason, message);
-                return unavailable();
+                return StrategyOutcome::Error(service_unavailable());
             }
         };
-        let validated = match tokio::time::timeout(self.resolved.validator_timeout, self.validator.validate(req, payload)).await {
-            Ok(result) => result,
-            Err(_) => {
-                self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503");
-                return unavailable();
-            }
-        };
+        let validated = with_deadline(self.resolved.validator_timeout, self.validator.validate(req, payload), || {
+            self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503")
+        })
+        .await;
         match validated {
-            Err(e) => StrategyOutcome::Error(e),
-            Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
-            Ok(Some(user)) => {
-                let info = self.validator.info(&user);
-                match AuthenticatedUser::new(user) {
-                    Ok(user) => StrategyOutcome::Success { user, info },
-                    Err(e) => StrategyOutcome::Error(e),
-                }
-            }
+            Ok(result) => user_outcome(result, |user| self.validator.info(user)),
+            Err(unavailable) => unavailable,
         }
     }
 }

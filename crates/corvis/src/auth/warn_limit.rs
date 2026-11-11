@@ -37,6 +37,18 @@ impl WarnLimiter {
         state.insert(reason.to_string(), (now, 0));
         Some(0)
     }
+
+    /// The warning line for `reason` when it may be written now: `message()` (built only then), followed by
+    /// ` ({n} more since the last warning)` when `n` were dropped since the last one. `None` when it must be dropped.
+    pub(crate) fn line(&self, reason: &str, now: Instant, message: impl FnOnce() -> String) -> Option<String> {
+        let suppressed = self.allow(reason, now)?;
+        let mut line = message();
+        if suppressed > 0 {
+            use std::fmt::Write as _;
+            let _ = write!(line, " ({suppressed} more since the last warning)");
+        }
+        Some(line)
+    }
 }
 
 #[cfg(test)]
@@ -53,6 +65,26 @@ mod tests {
         assert_eq!(limiter.allow("b", start + Duration::from_secs(2)), Some(0));
         assert_eq!(limiter.allow("a", start + Duration::from_secs(61)), Some(2));
         assert_eq!(limiter.allow("a", start + Duration::from_secs(62)), None);
+    }
+
+    #[test]
+    fn a_line_says_how_many_were_dropped_and_is_built_only_when_written() {
+        let limiter = WarnLimiter::new(Duration::from_secs(60));
+        let start = Instant::now();
+        assert_eq!(limiter.line("a", start, || "first".into()).as_deref(), Some("first"));
+        let mut built = false;
+        assert_eq!(
+            limiter.line("a", start + Duration::from_secs(1), || {
+                built = true;
+                "dropped".into()
+            }),
+            None
+        );
+        assert!(!built, "a dropped line is not built");
+        assert_eq!(
+            limiter.line("a", start + Duration::from_secs(60), || "again".into()).as_deref(),
+            Some("again (1 more since the last warning)")
+        );
     }
 
     #[test]

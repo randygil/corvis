@@ -35,6 +35,8 @@ pub mod local;
 mod module;
 #[cfg(feature = "auth-oauth2")]
 pub mod oauth2;
+#[cfg(any(feature = "jwt", feature = "auth-local", feature = "auth-api-key", feature = "auth-oauth2"))]
+mod outcome;
 #[cfg(feature = "auth-session")]
 pub mod session;
 mod strategy;

@@ -1,11 +1,10 @@
 //! `PasswordHasher`: argon2id hashes for new passwords, verification of argon2 and bcrypt hashes, and the bounds that
 //! keep a login flood or a planted hash from burning the server.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
@@ -15,8 +14,9 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
+use crate::auth::warn_limit::WarnLimiter;
 use crate::di::{DiError, Injectable, ResolveCtx};
-use crate::http::{HttpException, InternalServerErrorException, ServiceUnavailableException};
+use crate::http::{HttpException, InternalServerErrorException};
 use crate::logger::Logger;
 
 /// The lowest argon2 memory (KiB) accepted without [`allow_weak_parameters`](PasswordHasherOptions::allow_weak_parameters):
@@ -105,7 +105,7 @@ impl PasswordError {
     /// same for every user, and an empty `500` for anything else. The text never says which account was involved.
     pub fn into_http_exception(self) -> HttpException {
         match self {
-            PasswordError::Busy => ServiceUnavailableException::empty(),
+            PasswordError::Busy => crate::auth::outcome::service_unavailable(),
             _ => InternalServerErrorException::empty(),
         }
     }
@@ -323,36 +323,15 @@ struct Inner {
     refused_reports: AtomicUsize,
 }
 
-/// At most one warning per reason per interval, counting the ones suppressed in between.
-struct WarnLimiter {
-    interval: Duration,
-    state: Mutex<HashMap<&'static str, (Instant, u64)>>,
+/// A slot of a [`PasswordHasher`] taken by [`PasswordHasher::hold_slot`]: free again when this is dropped.
+#[doc(hidden)]
+pub struct HeldSlot {
+    _permit: OwnedSemaphorePermit,
 }
 
-impl WarnLimiter {
-    fn new(interval: Duration) -> Self {
-        WarnLimiter { interval, state: Mutex::new(HashMap::new()) }
-    }
-
-    /// `Some(suppressed)` when a warning for `reason` may be written now (`suppressed` is the count since the last
-    /// one), `None` when it must be dropped.
-    fn allow(&self, reason: &'static str, now: Instant) -> Option<u64> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        match state.get_mut(reason) {
-            None => {
-                state.insert(reason, (now, 0));
-                Some(0)
-            }
-            Some((last, suppressed)) if now.saturating_duration_since(*last) >= self.interval => {
-                let count = *suppressed;
-                (*last, *suppressed) = (now, 0);
-                Some(count)
-            }
-            Some((_, suppressed)) => {
-                *suppressed += 1;
-                None
-            }
-        }
+impl std::fmt::Debug for HeldSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HeldSlot")
     }
 }
 
@@ -668,6 +647,13 @@ impl PasswordHasher {
         }
     }
 
+    /// Takes a free slot and holds it until the returned value is dropped, or fails with [`PasswordError::Busy`] when
+    /// none is free. For tests that need a busy hasher without a slow hash.
+    #[doc(hidden)]
+    pub fn hold_slot(&self) -> Result<HeldSlot, PasswordError> {
+        self.inner.slots.clone().try_acquire_owned().map(|permit| HeldSlot { _permit: permit }).map_err(|_| PasswordError::Busy)
+    }
+
     /// `true` when `stored` should be replaced by a fresh hash of the same password: another algorithm or argon2
     /// variant, weaker memory, iterations, output or salt, a lower bcrypt cost, or a hash that cannot be parsed. No
     /// key derivation runs.
@@ -852,12 +838,7 @@ impl Inner {
             PasswordError::OverLimit { what } => what,
             _ => "other",
         };
-        let suppressed = self.warnings.allow(key, now)?;
-        let mut message = format!("a stored password hash was refused ({reason}); the login is answered as a wrong password");
-        if suppressed > 0 {
-            message.push_str(&format!(" ({suppressed} more of this kind in the last minute were not logged)"));
-        }
-        Some(message)
+        self.warnings.line(key, now, || format!("a stored password hash was refused ({reason}); the login is answered as a wrong password"))
     }
 
     /// Warns once when a stored hash that parses costs something else than the dummy verification, which makes the

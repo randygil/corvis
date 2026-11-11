@@ -108,17 +108,16 @@ impl Authenticator {
     /// The text of the warning about a strategy that panicked at `now`, at most once a minute per strategy. The panic
     /// payload is never read: it can hold request data.
     fn panic_warning(&self, name: &str, now: Instant) -> Option<String> {
-        let suppressed = self.panics.allow(name, now)?;
-        Some(format!("the strategy \"{name}\" panicked; the request was answered with a 500{}", more(suppressed)))
+        self.panics.line(name, now, || format!("the strategy \"{name}\" panicked; the request was answered with a 500"))
     }
 
     /// The text of the warning about a strategy that returned an empty user, at most once a minute per strategy.
     fn empty_user_warning(&self, name: &str, now: Instant) -> Option<String> {
-        let suppressed = self.empty_users.allow(name, now)?;
-        Some(format!(
-            "the strategy \"{name}\" returned an empty user (null, false, 0 or \"\") and the attempt was treated as a failure; a validator that finds no user must return None{}",
-            more(suppressed)
-        ))
+        self.empty_users.line(name, now, || {
+            format!(
+                "the strategy \"{name}\" returned an empty user (null, false, 0 or \"\") and the attempt was treated as a failure; a validator that finds no user must return None"
+            )
+        })
     }
 
     fn warn_panic(&self, name: &str) {
@@ -222,11 +221,6 @@ impl Authenticator {
         AuthInfo::store(ctx.request(), info);
         Ok(AuthResult::Failed { failures })
     }
-}
-
-/// The suffix of a rate-limited warning that says how many were dropped since the last one.
-fn more(suppressed: u64) -> String {
-    if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() }
 }
 
 /// What passport's `strategy.redirect(url, status)` writes: the status (302 by default), `Location` as given,

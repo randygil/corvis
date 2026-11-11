@@ -16,12 +16,13 @@ use super::profile::OAuth2Profile;
 use super::redeem::{ClientSlots, Redeemed};
 use super::secret::OAuth2Token;
 use super::state::{self, Flow, StateCookie};
+use crate::auth::outcome::service_unavailable;
 use crate::auth::session::{SameSite, SessionManager};
 use crate::auth::warn_limit::WarnLimiter;
 use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::{ExecutionContext, GuardPhase};
 use crate::di::{DiError, Injectable, ResolveCtx};
-use crate::http::{HttpException, Request, ServiceUnavailableException};
+use crate::http::{HttpException, Request};
 use crate::logger::Logger;
 
 /// What a successful callback hands to [`OAuth2Validator::validate`]: the original's `validate(accessToken,
@@ -284,9 +285,7 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
 
     /// A line for the log, at most once a minute per reason: a client can trigger every failure of the callback.
     fn note(&self, reason: &str, level_warn: bool, detail: String) {
-        if let Some(suppressed) = self.warnings.allow(reason, Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last line)") } else { String::new() };
-            let line = format!("strategy \"{}\": {reason}{detail}{more}", V::NAME);
+        if let Some(line) = self.warnings.line(reason, Instant::now(), || format!("strategy \"{}\": {reason}{detail}", V::NAME)) {
             let log = Logger::new("OAuth2Strategy");
             if level_warn {
                 log.warn(line);
@@ -528,7 +527,7 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
         // state cookie in the browser, like every refusal of the callback).
         let Some(slot) = self.slots.acquire(client_key(req)) else {
             self.note("one client address holds its share of the requests to the provider", true, String::new());
-            return StrategyOutcome::Error(ServiceUnavailableException::empty());
+            return StrategyOutcome::Error(service_unavailable());
         };
         // Only a state that verified reaches this point; it is redeemed once, so a replay (or a concurrent copy of the
         // same callback) costs no token request.
@@ -548,7 +547,7 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             }
             Err(OAuth2Error::Busy) => {
                 self.note("too many requests to the provider are in flight", true, String::new());
-                return StrategyOutcome::Error(ServiceUnavailableException::empty());
+                return StrategyOutcome::Error(service_unavailable());
             }
             Err(error) => return self.internal("the token request failed", format!(" ({host}): {error}")),
         };
@@ -556,7 +555,7 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             Ok(profile) => profile,
             Err(OAuth2Error::Busy) => {
                 self.note("too many requests to the provider are in flight", true, String::new());
-                return StrategyOutcome::Error(ServiceUnavailableException::empty());
+                return StrategyOutcome::Error(service_unavailable());
             }
             Err(error) => return self.internal("the profile request failed", format!(": {error}")),
         };

@@ -663,7 +663,7 @@ fn refusal_warnings_are_limited_to_one_per_reason_per_minute() {
     let t0 = std::time::Instant::now();
     let at = |secs: u64| t0 + std::time::Duration::from_secs(secs);
     let first = h.refused_message_at(&PasswordError::Malformed, at(0)).expect("the first one is written");
-    assert!(!first.contains("not logged"), "{first}");
+    assert!(!first.contains("more since"), "{first}");
     for second in 1..=3 {
         assert_eq!(h.refused_message_at(&PasswordError::Malformed, at(second)), None);
     }
@@ -672,7 +672,7 @@ fn refusal_warnings_are_limited_to_one_per_reason_per_minute() {
     assert!(h.refused_message_at(&PasswordError::OverLimit { what: "bcrypt cost" }, at(4)).is_some());
     assert_eq!(h.refused_message_at(&PasswordError::Malformed, at(59)), None);
     let next = h.refused_message_at(&PasswordError::Malformed, at(61)).expect("a minute later it is written again");
-    assert!(next.contains("4 more of this kind"), "{next}");
+    assert!(next.contains("(4 more since the last warning)"), "{next}");
     assert_eq!(h.refused_message_at(&PasswordError::Malformed, at(62)), None);
     assert!(!next.contains('$'));
 }

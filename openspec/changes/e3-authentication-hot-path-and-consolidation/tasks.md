@@ -91,10 +91,10 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 5. Consolidation
 
-- [ ] 5.1 `auth/warn_limit.rs`: `WarnLimiter::line`; the hasher uses `WarnLimiter`; the eight copies and the `more`
+- [x] 5.1 `auth/warn_limit.rs`: `WarnLimiter::line`; the hasher uses `WarnLimiter`; the eight copies and the `more`
   helper of `authenticator.rs` use `line`; update the tests that pin the old suffixes; verify
   `cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2" --lib`
-- [ ] 5.2 `auth/outcome.rs` (private): `service_unavailable`, `with_deadline`, `user_outcome`; the JWT, local and API key
+- [x] 5.2 `auth/outcome.rs` (private): `service_unavailable`, `with_deadline`, `user_outcome`; the JWT, local and API key
   strategies use them; `PasswordError::into_http_exception` and the OAuth2 busy answers use `service_unavailable`; test
   `every_framework_503_has_the_same_bytes` (spec "Busy hasher and slow validator on one route", "OAuth2 at its limit"),
   comparing the body text, not the parsed JSON; verify `tests/auth_callback_timeouts.rs` and
@@ -125,7 +125,7 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
   redaction tests of `tests/auth_api_key*.rs`
 - [ ] 6.4 `http/request.rs`: `insert`, `get`, `remove` recover a poisoned lock; unit test that they work after a poisoning
   panic, and `a_handler_that_panics_with_a_poisoned_lock_is_a_500`
-- [ ] 6.5 `local/hasher.rs`: hidden `PasswordHasher::hold_slot` and `HeldSlot`; rewrite
+- [x] 6.5 `local/hasher.rs`: hidden `PasswordHasher::hold_slot` and `HeldSlot`; rewrite
   `a_busy_hasher_answers_503_for_every_user` (`tests/auth_local.rs`) to hold the slot, with no thread and no sleep; verify
   it passes 20 runs in a row
 

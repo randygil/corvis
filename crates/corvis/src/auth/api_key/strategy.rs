@@ -14,8 +14,9 @@ use serde_json::{Value, json};
 
 use super::key::{ApiKey, constant_time_eq};
 use super::options::{ApiKeyStrategyOptions, Place, Resolved};
+use crate::auth::outcome::{user_outcome, with_deadline};
 use crate::auth::warn_limit::WarnLimiter;
-use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
+use crate::auth::{AuthenticateOptions, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Hooks, Injectable, ResolveCtx};
 use crate::http::body_parser::latin1;
@@ -307,9 +308,8 @@ impl std::error::Error for ValidatorFailed {}
 impl<V: ApiKeyValidator> ApiKeyStrategy<V> {
     /// A warning a client can trigger: at most one per reason a minute, with no request data.
     fn warn(&self, reason: &'static str, message: &str) {
-        if let Some(suppressed) = self.warnings.allow(reason, Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-            Logger::new("ApiKeyStrategy").warn(format!("strategy \"{}\": {message}{more}", V::NAME));
+        if let Some(line) = self.warnings.line(reason, Instant::now(), || format!("strategy \"{}\": {message}", V::NAME)) {
+            Logger::new("ApiKeyStrategy").warn(line);
         }
     }
 
@@ -346,23 +346,10 @@ impl<V: ApiKeyValidator> Strategy for ApiKeyStrategy<V> {
             Ok(key) => ApiKey::new(key),
             Err(reason) => return fail(reason),
         };
-        let result = match tokio::time::timeout(self.resolved.validator_timeout, self.validator.validate(req, &key)).await {
-            Ok(result) => result,
-            Err(_) => {
-                self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503");
-                return StrategyOutcome::Error(HttpException::new((), http::StatusCode::SERVICE_UNAVAILABLE));
-            }
-        };
-        match result {
-            Err(e) => StrategyOutcome::Error(self.uniform(e)),
-            Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
-            Ok(Some(user)) => {
-                let info = self.validator.info(&user);
-                match AuthenticatedUser::new(user) {
-                    Ok(user) => StrategyOutcome::Success { user, info },
-                    Err(e) => StrategyOutcome::Error(e),
-                }
-            }
+        let warn = || self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503");
+        match with_deadline(self.resolved.validator_timeout, self.validator.validate(req, &key), warn).await {
+            Ok(result) => user_outcome(result.map_err(|e| self.uniform(e)), |user| self.validator.info(user)),
+            Err(unavailable) => unavailable,
         }
     }
 }

@@ -130,29 +130,31 @@ impl SessionManager {
     /// A failure of the store or of the session itself: one rate-limited warning per reason (no identifier, no data,
     /// no message of the store) and the same 500 for every session.
     pub(crate) fn fault(&self, reason: &'static str, error: Option<&SessionStoreError>) -> HttpException {
-        if let Some(suppressed) = self.warnings.allow(reason, Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-            let kind = match error {
-                Some(SessionStoreError::Timeout) => " (the store did not answer in time)",
-                Some(SessionStoreError::Exists) => " (the identifier was taken)",
-                Some(SessionStoreError::Backend(_)) => " (the store reported a failure)",
-                None => "",
-            };
-            // The message of a backend error is never logged: it is the store's text and could hold an identifier. A
-            // store that wants its failures in the log writes them itself.
-            Logger::new("SessionMiddleware").warn(format!("session failure: {reason}{kind}; the request was answered with a 500{more}"));
+        let kind = match error {
+            Some(SessionStoreError::Timeout) => " (the store did not answer in time)",
+            Some(SessionStoreError::Exists) => " (the identifier was taken)",
+            Some(SessionStoreError::Backend(_)) => " (the store reported a failure)",
+            None => "",
+        };
+        // The message of a backend error is never logged: it is the store's text and could hold an identifier. A store
+        // that wants its failures in the log writes them itself.
+        let line = || format!("session failure: {reason}{kind}; the request was answered with a 500");
+        if let Some(line) = self.warnings.line(reason, Instant::now(), line) {
+            Logger::new("SessionMiddleware").warn(line);
         }
         HttpException::internal(SessionFault("session failure")).already_logged()
     }
 
     /// The warning for a stored record over `max_session_bytes`, at most one a minute, with no identifier.
     fn warn_oversized(&self) {
-        if let Some(suppressed) = self.warnings.allow("oversized record", Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-            Logger::new("SessionMiddleware").warn(format!(
-                "a stored session record is larger than max_session_bytes ({}) and was ignored: the request goes on without a session{more}",
+        let line = || {
+            format!(
+                "a stored session record is larger than max_session_bytes ({}) and was ignored: the request goes on without a session",
                 self.options.max_session_bytes
-            ));
+            )
+        };
+        if let Some(line) = self.warnings.line("oversized record", Instant::now(), line) {
+            Logger::new("SessionMiddleware").warn(line);
         }
     }
 
@@ -192,11 +194,13 @@ impl SessionManager {
         }
         // Likewise a record nested deeper than a write is allowed to nest: it could never be saved again.
         if super::session::too_deep(&record, MAX_RECORD_DEPTH) {
-            if let Some(suppressed) = self.warnings.allow("too deep record", Instant::now()) {
-                let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-                Logger::new("SessionMiddleware").warn(format!(
-                    "a stored session record is nested deeper than {MAX_RECORD_DEPTH} levels and was ignored: the request goes on without a session{more}"
-                ));
+            let line = || {
+                format!(
+                    "a stored session record is nested deeper than {MAX_RECORD_DEPTH} levels and was ignored: the request goes on without a session"
+                )
+            };
+            if let Some(line) = self.warnings.line("too deep record", Instant::now(), line) {
+                Logger::new("SessionMiddleware").warn(line);
             }
             return Ok(session(state));
         }

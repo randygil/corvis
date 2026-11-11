@@ -428,16 +428,6 @@ fn slow_hasher() -> &'static PasswordHasher {
     })
 }
 
-/// A bcrypt hash of cost 13, about 200 ms to verify: long enough to hold the only slot while a request arrives.
-fn slow_hash() -> &'static str {
-    static HASH: OnceLock<String> = OnceLock::new();
-    HASH.get_or_init(|| {
-        std::thread::spawn(|| PasswordHasher::new(PasswordHasherOptions::bcrypt(13)).unwrap().hash_blocking("secret").unwrap())
-            .join()
-            .unwrap()
-    })
-}
-
 #[injectable]
 pub struct Slow;
 
@@ -446,6 +436,10 @@ impl LocalValidator for Slow {
     const NAME: &'static str = "slow";
     type User = Public;
     async fn validate(&self, _req: &Request, username: &str, password: &str) -> Result<Option<Public>, HttpException> {
+        if username == "hang" {
+            // A validator that never answers: the strategy's deadline answers for it.
+            std::future::pending::<()>().await;
+        }
         let stored = (username == "ana").then_some("$2b$04$iQJJhVONs/5UD7Hw1ADyBusLeIrz/tMsKqJxw7KFBLjqJm.Of4IyK");
         let ok = slow_hasher().verify_or_dummy(password, stored).await.map_err(PasswordError::into_http_exception)?;
         Ok(stored.filter(|_| ok).map(|_| Public { username: username.to_string() }))
@@ -467,23 +461,54 @@ impl SlowRoutes {
 #[module(providers = [Provider::class::<Slow>(), Provider::strategy::<LocalStrategy<Slow>>()], controllers = [SlowRoutes])]
 pub struct SlowModule;
 
-#[corvis::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_busy_hasher_answers_503_for_every_user() {
+/// The body of every `503` the authentication module builds.
+const UNAVAILABLE: &str = r#"{"statusCode":503,"message":"Service Unavailable"}"#;
+
+/// The two tests that hold the slow hasher's only slot take turns.
+static SLOT_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn slow_app() -> CorvisApplication {
     let mut app = CorvisFactory::create::<SlowModule>().await.unwrap();
     app.silence_route_logs();
     app.init().await.unwrap();
-    let hash = slow_hash().to_string();
+    app
+}
+
+#[tokio::test]
+async fn a_busy_hasher_answers_503_for_every_user() {
+    let _turn = SLOT_TURN.lock().await;
+    let app = slow_app().await;
     let json = [("content-type", "application/json")];
     // Free: a known user logs in.
     let ok = post(&app, "/slow", &json, r#"{"username":"ana","password":"secret"}"#).await;
     assert_eq!(ok.status, 201, "{}", ok.text());
-    // Hold the only slot with a slow verification, then log in while it runs.
-    let holder = std::thread::spawn(move || slow_hasher().verify_blocking("secret", &hash));
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    // The only slot is held: both logins are refused before any key derivation.
+    let held = slow_hasher().hold_slot().expect("the slot is free");
+    assert!(slow_hasher().hold_slot().is_err(), "a held slot is not free");
     let known = post(&app, "/slow", &json, r#"{"username":"ana","password":"secret"}"#).await;
     let unknown = post(&app, "/slow", &json, r#"{"username":"nobody","password":"secret"}"#).await;
-    assert_eq!(holder.join().unwrap(), Ok(true));
-    assert_eq!(known.status, 503, "{}", known.text());
+    drop(held);
+    assert_eq!((known.status, known.text().as_str()), (503, UNAVAILABLE));
     assert_eq!((unknown.status, unknown.text()), (known.status, known.text()), "the same answer for every user");
-    assert_eq!(known.json_value()["message"], "Service Unavailable");
+    // The slot is free again.
+    let ok = post(&app, "/slow", &json, r#"{"username":"ana","password":"secret"}"#).await;
+    assert_eq!(ok.status, 201, "{}", ok.text());
+}
+
+/// Spec "Busy hasher and slow validator on one route": both `503`s are the same bytes, as every other `503` of the
+/// module (the JWT, local and API key deadlines, and the OAuth2 strategy at its limit, which `tests/auth_oauth2.rs`
+/// compares with the same text).
+#[tokio::test(start_paused = true)]
+async fn every_framework_503_has_the_same_bytes() {
+    let _turn = SLOT_TURN.lock().await;
+    let app = slow_app().await;
+    let json = [("content-type", "application/json")];
+    let held = slow_hasher().hold_slot().expect("the slot is free");
+    let busy = post(&app, "/slow", &json, r#"{"username":"ana","password":"secret"}"#).await;
+    drop(held);
+    // The paused clock runs past the validator's deadline of 5 seconds without waiting.
+    let deadline = post(&app, "/slow", &json, r#"{"username":"hang","password":"secret"}"#).await;
+    assert_eq!((busy.status, busy.text().as_str()), (503, UNAVAILABLE));
+    assert_eq!((deadline.status, deadline.text().as_str()), (503, UNAVAILABLE));
+    assert_eq!(PasswordError::Busy.into_http_exception().get_status(), 503);
 }

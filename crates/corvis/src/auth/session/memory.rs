@@ -415,10 +415,10 @@ impl MemorySessionStore {
                 inner.remove(id);
             }
         }
-        if let Some(suppressed) = self.warnings.allow("unreadable", Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-            crate::logger::Logger::new("MemorySessionStore")
-                .warn(format!("a stored session record could not be read and was destroyed{more}"));
+        if let Some(line) =
+            self.warnings.line("unreadable", Instant::now(), || "a stored session record could not be read and was destroyed".to_string())
+        {
+            crate::logger::Logger::new("MemorySessionStore").warn(line);
         }
     }
 }
