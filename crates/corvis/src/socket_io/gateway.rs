@@ -359,6 +359,9 @@ fn plan(gateways: &[&GatewayRuntime], adapter: &IoAdapter) -> Result<Vec<ServerP
     if let Some(path) = &adapter.duplicate_options {
         return fail(format!("IoAdapter::options was given options twice for the Engine.IO path {path}; give each path one IoOptions"));
     }
+    if adapter.hook_timeout.is_zero() {
+        return fail("IoAdapter::hook_timeout must be longer than zero".to_string());
+    }
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (index, gateway) in gateways.iter().enumerate() {
         let path = EngineOptions::new().path(gateway.io_path()).normalized_path();
