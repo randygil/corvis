@@ -341,6 +341,12 @@ target `dev`, the job reports everything `dev` changed since `main`, not only th
 the merge base with the pull request's base branch (`github.base_ref`) would show only the latter. Left as designed
 (merge base with `main`) for the maintainer to decide.
 
+Test suites (Windows, `RUSTFLAGS=-D warnings`): `cargo test --workspace --no-fail-fast` passes, 2,048 passed, 0
+failed, 97 ignored over 180 test binaries (a first run right after a reboot failed 34 tests with `AddrInUse` and a
+Postgres connect timeout; all passed when rerun). `cargo test -p corvis --features socket-io`: 1,534 passed, 1 failed,
+56 ignored; the failure, `socket_io_rooms_security::a_broadcast_racing_a_disconnect_never_panics_and_sends_nothing_after_it`
+(`left: 0, right: 18`), is a race that fails 5 times out of 6 on `dev` at `858230c` without this change too.
+
 ### Required checks of `main` (for the maintainer)
 
 Add exactly these job names as required status checks: `doc`, `msrv`, `features`, `lint-ratchet`. `semver` stays
