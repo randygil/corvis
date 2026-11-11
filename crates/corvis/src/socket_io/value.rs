@@ -471,7 +471,8 @@ fn to_json(v: &IoValue, depth: usize, binary_as_null: bool) -> Result<Value, IoV
             if depth + 1 > MAX_DEPTH {
                 return Err(IoValueError::TooDeep);
             }
-            let mut map = serde_json::Map::with_capacity(o.len());
+            // Objects grow as entries are inserted: the growth the cost model of `json_cost` assumes, and charges, for them.
+            let mut map = serde_json::Map::new();
             for (k, x) in o.iter() {
                 reject_reserved_key(k)?;
                 map.insert(k.clone(), to_json(x, depth + 1, binary_as_null)?);
