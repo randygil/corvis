@@ -135,12 +135,14 @@ fn take_stored_user(session: &Session) -> Option<serde_json::Value> {
 impl Session {
     /// The value under `passport.user`, if `passport` is an object that has it.
     pub(crate) fn passport_user(&self) -> Option<serde_json::Value> {
-        self.state().data.get(PASSPORT_KEY).and_then(|p| p.get(USER_KEY)).cloned()
+        self.state().data().get(PASSPORT_KEY).and_then(|p| p.get(USER_KEY)).cloned()
     }
 
     /// Removes `passport.user`, leaving the rest of `passport`.
     pub(crate) fn remove_passport_user(&self) {
-        if let Some(serde_json::Value::Object(passport)) = self.state().data.get_mut(PASSPORT_KEY) {
+        let mut s = self.state();
+        let has_user = s.data().get(PASSPORT_KEY).is_some_and(|p| p.get(USER_KEY).is_some());
+        if has_user && let Some(serde_json::Value::Object(passport)) = s.data_mut().get_mut(PASSPORT_KEY) {
             passport.shift_remove(USER_KEY);
         }
     }

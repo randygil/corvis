@@ -312,3 +312,64 @@ async fn the_tables_shrink_after_a_flood_is_destroyed() {
     assert!(inner.entries.capacity() < grown / 4, "{} of {grown} kept", inner.entries.capacity());
     assert!(inner.by_user.capacity() < grown / 4);
 }
+
+/// The bytes one record of `store` is accounted at (all of its records have the same shape).
+fn entry_size(store: &MemorySessionStore) -> usize {
+    store.total_bytes() / store.len()
+}
+
+/// Spec "Store full of expired records", and the room a large record needs taken from expired records a batch at a
+/// time: a write removes the expired records it needs plus at most one partial batch, never every expired record.
+#[tokio::test(start_paused = true)]
+async fn one_write_purges_a_bounded_number_of_expired_records() {
+    let store = MemorySessionStore::new().max_sessions(10_000);
+    for i in 0..10_000 {
+        store.create(&format!("old{i}"), &record(None, 0), Duration::from_secs(60)).await.unwrap();
+    }
+    tokio::time::advance(Duration::from_secs(61)).await;
+    store.create("new", &record(None, 0), TTL).await.unwrap();
+    assert!(store.load("new").await.unwrap().is_some());
+    assert!(store.len() - 1 >= 9_872, "{} expired records left", store.len() - 1);
+
+    // The byte bound: 2 000 small expired records fill the store and a record 150 times their size needs room, more
+    // than one batch frees.
+    let small = MemorySessionStore::new();
+    small.create("probe00", &record(None, 1000), TTL).await.unwrap();
+    let per_entry = entry_size(&small);
+    let store = MemorySessionStore::new().max_total_bytes(2_000 * per_entry);
+    for i in 0..2_000 {
+        store.create(&format!("old{i:04}"), &record(None, 1000), Duration::from_secs(60)).await.unwrap();
+    }
+    assert_eq!(store.len(), 2_000);
+    tokio::time::advance(Duration::from_secs(61)).await;
+    store.create("big", &record(None, 150 * per_entry), TTL).await.unwrap();
+    let dropped = 2_000 + 1 - store.len();
+    // The expired records that had to go for the big one to fit, at most.
+    let needed = 152;
+    assert!(dropped <= needed + 2 * PURGE_BATCH, "{dropped} expired records were dropped for a record needing about {needed}");
+    assert!(dropped < 2_000 / 2, "{dropped} of 2 000 expired records were dropped by one write");
+}
+
+/// Spec "Expired before live": while the room is made a batch at a time, no live record goes while an expired one is
+/// left.
+#[tokio::test(start_paused = true)]
+async fn expired_records_go_before_live_ones() {
+    let small = MemorySessionStore::new();
+    small.create("probe00", &record(None, 1000), TTL).await.unwrap();
+    let per_entry = entry_size(&small);
+    let store = MemorySessionStore::new().max_total_bytes(250 * per_entry);
+    for i in 0..200 {
+        store.create(&format!("old{i:04}"), &record(None, 1000), Duration::from_secs(60)).await.unwrap();
+    }
+    for i in 0..50 {
+        store.create(&format!("live{i:03}"), &record(None, 1000), Duration::from_secs(3600)).await.unwrap();
+    }
+    assert_eq!(store.len(), 250);
+    tokio::time::advance(Duration::from_secs(61)).await;
+    // Room for about 150 records: more than one batch, fewer than the expired ones.
+    store.create("big", &record(None, 150 * per_entry), TTL).await.unwrap();
+    for i in 0..50 {
+        assert!(store.load(&format!("live{i:03}")).await.unwrap().is_some(), "live{i:03} was evicted");
+    }
+    assert!(store.load("big").await.unwrap().is_some());
+}

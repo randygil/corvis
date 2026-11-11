@@ -67,23 +67,23 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 4. Sessions
 
-- [ ] 4.1 `session/manager.rs`: the counting writer `Measure` with its early stop for the load check and
+- [x] 4.1 `session/manager.rs`: the counting writer `Measure` with its early stop for the load check and
   `check_writable`; test `the_size_limit_holds_at_the_boundary` (spec "Size limit at the boundary"); verify the
   oversized-record tests of `auth_session_review.rs` pass
-- [ ] 4.2 `session/session.rs`: `baseline: Option<Map>`, `data` private with `data()` / `data_mut()`; every writer in
+- [x] 4.2 `session/session.rs`: `baseline: Option<Map>`, `data` private with `data()` / `data_mut()`; every writer in
   `session.rs`, `login.rs` and `middleware.rs` through `data_mut()`; test "A value set to what it was"; verify the
   express-session saving fixture (`tests/auth_session.rs`) and both race suites pass unchanged
-- [ ] 4.3 `State::touch_record` and the unchanged branch of `commit`; `SessionStore::touch` rustdoc (`store.rs:75-78`)
+- [x] 4.3 `State::touch_record` and the unchanged branch of `commit`; `SessionStore::touch` rustdoc (`store.rs:75-78`)
   says the record holds only `cookie` and `__corvis`; test `touch_receives_only_the_timestamps` with the recording store of
   `tests/session_common/` (spec "Touch receives the timestamps")
-- [ ] 4.4 `State::id: Option<String>`, drawn by `Session::id()`, by `commit` for a new record and by its retry; a
+- [x] 4.4 `State::id: Option<String>`, drawn by `Session::id()`, by `commit` for a new record and by its retry; a
   `#[cfg(test)]` draw counter; tests for spec "Anonymous request", "First write" and "Failed draw"
   (`a_failed_draw_at_commit_writes_nothing`); verify the identifier tests ("Identifier shape", "Signed but unknown
   identifier") and the OAuth2 binding tests pass
-- [ ] 4.5 `session/memory.rs`: `purge(now, PURGE_BATCH)` in the room loop; tests
+- [x] 4.5 `session/memory.rs`: `purge(now, PURGE_BATCH)` in the room loop; tests
   `one_write_purges_a_bounded_number_of_expired_records` (spec "Store full of expired records") and "Expired before
   live" in `memory_tests.rs`; verify `tests/auth_session_memory_heap.rs` passes
-- [ ] 4.6 `crates/corvis/tests/auth_hot_path_heap.rs` (own binary, counting allocator like `redact_allocations.rs`,
+- [x] 4.6 `crates/corvis/tests/auth_hot_path_heap.rs` (own binary, counting allocator like `redact_allocations.rs`,
   `#![cfg(feature = "auth-session")]`): bytes allocated by the middleware for an unchanged session of 16 KiB and 64 KiB
   beyond the store's parse (spec "Read-only request with a large session"), and buffers of the record's size per
   `update`; set the bounds from the numbers before and after, and verify by checking out the files of group 4 from `dev`

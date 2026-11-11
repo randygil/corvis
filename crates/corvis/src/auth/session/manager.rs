@@ -27,6 +27,32 @@ const MAX_RAW_COOKIE_BYTES: usize = 3 * MAX_SIGNED_BYTES;
 /// written, where the application can still see the failure.
 pub(crate) const MAX_RECORD_DEPTH: usize = 100;
 
+/// Counts the bytes a serialization writes and stops it once they pass `limit`, so a record is measured without a
+/// buffer and an oversized one costs at most the limit.
+struct Measure {
+    written: usize,
+    limit: usize,
+}
+
+impl std::io::Write for Measure {
+    fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+        self.written = self.written.saturating_add(chunk.len());
+        if self.written > self.limit {
+            return Err(std::io::Error::other("the record is larger than the limit"));
+        }
+        Ok(chunk.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `true` when `record` serializes to at most `limit` bytes.
+pub(crate) fn fits(record: &Value, limit: usize) -> bool {
+    serde_json::to_writer(&mut Measure { written: 0, limit }, record).is_ok()
+}
+
 /// The error of every session fault that reaches the client as a 500. The text is fixed and holds nothing about the
 /// request, the session or the store.
 #[derive(Debug)]
@@ -160,7 +186,7 @@ impl SessionManager {
         // The limit applies to what is read as well as to what is written: a record this large (put there by another
         // writer of a shared store) could never be saved again, so it is no session. It is not deleted and its
         // identifier is not adopted.
-        if serde_json::to_vec(&record).map_or(usize::MAX, |v| v.len()) > self.options.max_session_bytes {
+        if !fits(&record, self.options.max_session_bytes) {
             self.warn_oversized();
             return Ok(session(state));
         }
@@ -194,7 +220,7 @@ impl SessionManager {
     /// The limits of a record the store is asked to keep: its serialized size, and its nesting depth, which must stay
     /// readable (a record deeper than the parser's own limit would be saved and then never loaded).
     fn check_writable(&self, record: &Value) -> Result<(), HttpException> {
-        if serde_json::to_vec(record).map_or(usize::MAX, |v| v.len()) > self.options.max_session_bytes {
+        if !fits(record, self.options.max_session_bytes) {
             return Err(self.fault("a session is larger than max_session_bytes and was not saved", None));
         }
         if super::session::too_deep(record, MAX_RECORD_DEPTH) {
@@ -308,24 +334,19 @@ impl SessionManager {
             // One retry with a new identifier when the first one is taken (a collision of 192-bit identifiers is
             // not expected: it means the store or the generator misbehaves).
             for attempt in 0..2 {
-                let (id, record, ttl, expires, failed) = {
-                    let s = session.state();
-                    (s.id.clone(), s.record(o, now), self.ttl(&s, now), s.cookie_expires(o, now), s.failed)
+                let (id, record, ttl, expires) = {
+                    let mut s = session.state();
+                    // The identifier of a new session is drawn here, when it is written, unless the request asked for
+                    // it. A draw that failed, now or earlier: nothing is written and no weaker identifier is used.
+                    let id = if s.failed { None } else { s.ensure_id().map(str::to_string) };
+                    let Some(id) = id else { return Err(self.fault("the random generator failed", None)) };
+                    (id, s.record(o, now), self.ttl(&s, now), s.cookie_expires(o, now))
                 };
-                // A new identifier could not be generated: nothing is written and no weaker one is used.
-                if failed {
-                    return Err(self.fault("the random generator failed", None));
-                }
                 self.check_writable(&record)?;
                 match self.store_call(o.store.create(&id, &record, ttl)).await {
                     Ok(()) => return Ok(Some(self.cookie_header(&id, expires))),
-                    Err(SessionStoreError::Exists) if attempt == 0 => {
-                        let mut s = session.state();
-                        match super::session::new_id() {
-                            Some(fresh) => s.id = fresh,
-                            None => return Err(self.fault("the random generator failed", None)),
-                        }
-                    }
+                    // The next attempt draws another identifier.
+                    Err(SessionStoreError::Exists) if attempt == 0 => session.state().forget_id(),
                     Err(e) => return Err(self.fault("the store failed while creating a session", Some(&e))),
                 }
             }
@@ -334,7 +355,10 @@ impl SessionManager {
         let write_full = modified || o.resave;
         let (id, record, ttl, expires) = {
             let s = session.state();
-            (s.id.clone(), s.record(o, now), self.ttl(&s, now), s.cookie_expires(o, now))
+            // An unchanged session is touched with its timestamps only: `touch` may not write the data, so it gets none.
+            let record = if write_full { s.record(o, now) } else { s.touch_record(o, now) };
+            // A persisted session always has the identifier it was loaded (or created) under.
+            (s.current_id().unwrap_or_default().to_string(), record, self.ttl(&s, now), s.cookie_expires(o, now))
         };
         let present = if write_full {
             self.check_writable(&record)?;
@@ -362,3 +386,7 @@ impl SessionManager {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "manager_tests.rs"]
+mod tests;

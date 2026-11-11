@@ -588,6 +588,49 @@ passed, 0 failed.
 - The string-payload check lists the sign options as the module merges them: the module's (`algorithm` when it is not
   HS256, `expiresIn`, `issuer`, `audience`), then the call's (`expiresIn` when the module has none, `subject`, `jwtid`,
   `notBefore`). Corvis cannot tell an explicit `algorithm: HS256` from the default, so only another algorithm counts.
+- `sign_at` builds the claims over the payload's map in the original's order of checks; `JwtSignOptions` gained
+  `not_before` and `jwt_id`, with `Debug` listing both.
 - Every caller of `sign` and `sign_with` in the repository (`examples/`, `crates/corvis/tests/`,
   `crates/corvis/src/fuzz_tests.rs`, `bench/auth/`) signs a payload without `iat`, `exp`, `nbf`, `iss`, `aud`, `sub` or
   `jti` claims that meet their option.
+
+### Keys and validations prepared once (group 3)
+
+- `JwtService::new` parses the module encoding key and decoding key and builds the `Validation` of `verify` behind an
+  `Arc`. The per-call keys keep their place in the order of choice (per-call secret, module secret, per-call private
+  key, module private key) and are parsed for their call. A cached parse error is returned as a clone of the
+  `jsonwebtoken::errors::Error`; "secretOrPrivateKey must have a value" and "secret or public key must be provided" come
+  from the call, as before.
+- `verify_claims` became `decode_claims` (no header check); `JwtService::verify` checks the header right after choosing
+  the key, where `verify_claims` did, so the order of its errors is unchanged.
+- The strategy's `Resolved` lost its `algorithms` field: a static key holds its `Validation`, a provider one
+  `Option<Validation>` per key family (`FamilyValidations`). The `Validation` builder moved to `jwt.rs`
+  (`signature_validation`) and serves both.
+- `JwtKey::decoding_key` now returns a reference into the shared `OnceLock`, so neither the strategy nor a provider's
+  clone copies the parsed key; the static key of the strategy clones it once at startup.
+- Counters: `KEY_PARSES` (`jwt.rs` and `auth/jwt/key.rs`), `HEADER_CHECKS` (`jwt.rs`), `VALIDATION_BUILDS`
+  (`auth/jwt/options.rs`), all `#[cfg(test)]` thread-locals. The strategy's unit tests are in `auth/jwt/tests.rs` and
+  drive `JwtStrategy::authenticate` directly with an `ExecutionContext`.
+
+### Sessions (group 4)
+
+- `State::id` is `Option<String>` and private, with `ensure_id` (draws when missing), `current_id` and `forget_id`;
+  `Session::regenerate`, `destroy` and the logins leave it `None`. `data` and `baseline` are private; `data_mut` takes
+  the baseline on the first write. `Session::remove` and `clear` write only when there is something to remove, and
+  `remove_passport_user` only when there is a user, so a read path never copies the data.
+- The draw counter (`ID_DRAWS`) and a switch that makes draws fail (`FAIL_DRAWS`) are `#[cfg(test)]` thread-locals in
+  `session.rs`; the design's "session unit tests of the generator failure" did not exist, so
+  `a_failed_draw_at_commit_writes_nothing` is the first. The manager's unit tests are in `session/manager_tests.rs`.
+- `tests/auth_hot_path_heap.rs` measures, with a thread-local counting allocator, a request to a session route minus
+  the same request to a route outside the cookie path, minus what the store's own `load` and `touch` allocate (measured
+  inside a wrapping store). Before (the session files of `dev`): 359 395 bytes for a 16 KiB session (16 592 bytes of
+  record). After: 3 287 bytes for 16 KiB and for 64 KiB alike. The bound is 4 KiB, as the spec says. The store's
+  `touch` is taken out with its `load`: what it allocates (the small `cookie`/`__corvis` fragment) is the store's work.
+- Record-sized buffers (allocations of at least the record's length) of one `update` request: before 4, of which 2 were
+  the middleware's measuring buffer; after 2, both the store's (its text and the `Arc<str>` copy of it). The test
+  asserts none outside the store. Both assertions fail on the session files of `dev`.
+- `one_write_purges_a_bounded_number_of_expired_records` covers the spec scenario (count bound: 9 936 of 10 000 expired
+  records left) and a byte-bound case that reaches the room loop (a record 150 times the size of the expired ones): on
+  the store of `dev` that write dropped all 2 000 expired records, now at most the ~152 it needs plus two batches. The
+  count-bound scenario of the spec cannot reach the loop: after the first batch the store is always below
+  `max_sessions`, so it passes on the old code too and is kept as written.

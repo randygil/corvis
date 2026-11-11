@@ -335,6 +335,8 @@ pub struct Op {
 pub struct RecordingStore {
     pub inner: MemorySessionStore,
     ops: Mutex<Vec<Op>>,
+    /// The records `touch` received, oldest first.
+    pub touched: Mutex<Vec<Value>>,
     seen: Mutex<Vec<String>>,
     pub fail_load: Mutex<bool>,
     pub fail_writes: Mutex<bool>,
@@ -346,6 +348,7 @@ impl RecordingStore {
         Arc::new(RecordingStore {
             inner: MemorySessionStore::new(),
             ops: Mutex::new(Vec::new()),
+            touched: Mutex::new(Vec::new()),
             seen: Mutex::new(Vec::new()),
             fail_load: Mutex::new(false),
             fail_writes: Mutex::new(false),
@@ -419,6 +422,7 @@ impl SessionStore for RecordingStore {
 
     async fn touch(&self, id: &str, record: &Value, ttl: Duration) -> Result<bool, SessionStoreError> {
         self.note("touch", id, false);
+        self.touched.lock().unwrap().push(record.clone());
         if *self.fail_writes.lock().unwrap() {
             return Err(SessionStoreError::backend("write failed"));
         }

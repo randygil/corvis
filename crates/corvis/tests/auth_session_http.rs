@@ -490,6 +490,25 @@ async fn every_store_call_is_bounded_in_time() {
     assert_eq!(r.json_value(), json!({ "statusCode": 500, "message": "Internal server error" }));
 }
 
+/// Spec "Touch receives the timestamps": a request that loads a session with data and changes nothing gives `touch` a
+/// record with `cookie` and `__corvis` only, none of the data.
+#[tokio::test]
+async fn touch_receives_only_the_timestamps() {
+    let store = RecordingStore::new();
+    let app = app(options().store_arc(store.clone())).await;
+    let cookie = cookie_of(&post(&app, "/set?k=secret&v=data", None).await);
+    let r = post(&app, "/set-same?k=secret", Some(&cookie)).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(get(&app, "/sess", Some(&cookie)).await.status, 200);
+    let touched = store.touched.lock().unwrap().clone();
+    assert_eq!(touched.len(), 2, "a value set to what it was, then a read: two touches");
+    for record in &touched {
+        let keys: Vec<&str> = record.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["cookie", "__corvis"], "{record}");
+    }
+    assert_eq!(data_of(&get(&app, "/sess", Some(&cookie)).await), json!({ "secret": "data" }), "the data is still there");
+}
+
 // ---- lifecycle ----
 
 #[tokio::test]

@@ -36,40 +36,41 @@ impl Session {
             // A login the handler made is the handler's decision: it stands whatever the status.
             s.before_guard_login = None;
         }
-        let previous = std::mem::take(&mut s.data);
+        let previous = std::mem::take(s.data_mut());
         // A login over a session that already had a user is not a fresh proof of identity (a handler calling
         // `log_in` with the user the session restored): if that session was ended meanwhile, it stays ended.
         let had_user = matches!(previous.get(PASSPORT_KEY), Some(Value::Object(p)) if p.get(USER_KEY).is_some_and(|u| !u.is_null()));
         s.regenerate(super::store::now_ms());
         if keep {
             // `passport` merges the previous session into the new one, then sets its own key.
-            s.data = previous;
+            *s.data_mut() = previous;
         } else if !had_user {
             s.fresh_login = true;
         }
-        let mut passport = match s.data.shift_remove(PASSPORT_KEY) {
+        let data = s.data_mut();
+        let mut passport = match data.shift_remove(PASSPORT_KEY) {
             Some(Value::Object(map)) => map,
             _ => Map::new(),
         };
         passport.insert(USER_KEY.to_string(), stored);
-        s.data.insert(PASSPORT_KEY.to_string(), Value::Object(passport));
+        data.insert(PASSPORT_KEY.to_string(), Value::Object(passport));
     }
 
     /// A logout: `passport.user` removed, a new identifier (the old record is destroyed when the request ends) and the
     /// data of before dropped unless `keep`. A session that has no record yet needs no new identifier.
     fn log_out(&self, keep: bool) {
         let mut s = self.state();
-        if let Some(Value::Object(passport)) = s.data.get_mut(PASSPORT_KEY) {
+        if let Some(Value::Object(passport)) = s.data_mut().get_mut(PASSPORT_KEY) {
             passport.shift_remove(USER_KEY);
         }
         if s.persisted {
-            let previous = std::mem::take(&mut s.data);
+            let previous = std::mem::take(s.data_mut());
             s.regenerate(super::store::now_ms());
             if keep {
-                s.data = previous;
+                *s.data_mut() = previous;
             }
         } else if !keep {
-            s.data.clear();
+            s.data_mut().clear();
         }
     }
 }
