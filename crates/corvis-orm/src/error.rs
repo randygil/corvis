@@ -50,18 +50,21 @@ pub enum OrmError {
 
 pub type Result<T, E = OrmError> = std::result::Result<T, E>;
 
+// Every constructor passes the message (and `meta`) through `engine::redact`: an error that quotes its input back never
+// shows the secret part of a marker (`undefined()`, `db_null()`, ...), only its kind.
 impl OrmError {
     pub fn known(code: &str, message: impl Into<String>, meta: Value) -> Self {
-        OrmError::KnownRequest(KnownRequestError { code: code.to_string(), message: message.into(), meta, client_version: CLIENT_VERSION })
+        let (message, meta) = (crate::engine::redact(message.into()), crate::engine::redact_value(meta));
+        OrmError::KnownRequest(KnownRequestError { code: code.to_string(), message, meta, client_version: CLIENT_VERSION })
     }
     pub fn validation(message: impl Into<String>) -> Self {
-        OrmError::Validation(QueryValidationError { message: message.into() })
+        OrmError::Validation(QueryValidationError { message: crate::engine::redact(message.into()) })
     }
     pub fn init(message: impl Into<String>) -> Self {
-        OrmError::Initialization(InitializationError { message: message.into(), error_code: None })
+        OrmError::Initialization(InitializationError { message: crate::engine::redact(message.into()), error_code: None })
     }
     pub fn unknown(message: impl Into<String>) -> Self {
-        OrmError::UnknownRequest(UnknownRequestError { message: message.into() })
+        OrmError::UnknownRequest(UnknownRequestError { message: crate::engine::redact(message.into()) })
     }
 
     /// `P2025` – record required but not found.
@@ -130,6 +133,11 @@ impl OrmError {
         };
         let msg = db.message().to_string();
         let pg = db.try_downcast_ref::<sqlx::postgres::PgDatabaseError>();
+        if pg.is_none()
+            && let Some(e) = sqlite_range_error(&msg)
+        {
+            return e;
+        }
         let code = db.code().map(|c| c.to_string()).unwrap_or_default();
         let model_name = model.map(|m| m.name);
         let columns_to_fields = |cols: Vec<String>| -> Vec<String> {
@@ -147,9 +155,11 @@ impl OrmError {
                 )
             }
             sqlx::error::ErrorKind::ForeignKeyViolation => {
+                // SQLite does not name the constraint; the reference client then reports `constraint: null` there.
                 let (text, constraint) = match db.constraint() {
-                    Some(c) => (format!("constraint: `{c}`"), c.to_string()),
-                    None => ("foreign key".to_string(), "foreign key".to_string()),
+                    Some(c) => (format!("constraint: `{c}`"), json!(c)),
+                    None if pg.is_none() => ("foreign key".to_string(), Value::Null),
+                    None => ("foreign key".to_string(), json!("foreign key")),
                 };
                 Self::known(
                     "P2003",
@@ -159,7 +169,8 @@ impl OrmError {
             }
             sqlx::error::ErrorKind::NotNullViolation => {
                 let cols = columns_to_fields(not_null_columns(&msg));
-                let c = cols.join(", ");
+                // Recorded on SQLite: "(`views`)".
+                let c = if pg.is_none() { cols.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ") } else { cols.join(", ") };
                 Self::known(
                     "P2011",
                     format!("Null constraint violation on the fields: ({c})"),
@@ -248,6 +259,14 @@ impl OrmError {
         Self::known("P2010", format!("Raw query failed. Code: `{code}`. Message: `{message}`"), json!({ "code": code, "message": message }))
     }
 
+    /// The error Postgres gives for a value out of the range of its column (SQLSTATE 22003), worded like the reference
+    /// query engine reports it.
+    fn out_of_range(message: &str, detail: Option<String>) -> Self {
+        Self::unknown(format!(
+            "Error occurred during query execution:\nConnectorError(ConnectorError {{ user_facing_error: None, kind: QueryError(PostgresError {{ code: \"22003\", message: {message:?}, severity: \"ERROR\", detail: {detail:?}, column: None, hint: None }}), transient: false }})"
+        ))
+    }
+
     /// The error raised when a query has an `Int` argument outside the 32-bit range
     /// (parameter `index`, 0-based), worded like the reference query engine.
     pub(crate) fn int_overflow(index: usize, value: i64) -> Self {
@@ -295,6 +314,39 @@ fn pg_severity(s: sqlx::postgres::PgSeverity) -> &'static str {
         Info => "INFO",
         Log => "LOG",
     }
+}
+
+/// The text an SQLite arithmetic update puts in the JSON path error it raises for a result out of the range of `f`'s
+/// column (`Engine::checked_arith`); [`sqlite_range_error`] reads it back from the error message. Made of letters,
+/// digits and punctuation only, so it can be written as an SQL string literal.
+pub(crate) fn sqlite_range_path(f: &crate::meta::FieldMeta) -> String {
+    match f.kind {
+        crate::meta::FieldKind::Decimal => {
+            let (p, s) = crate::engine::decimal_precision(f);
+            format!("{SQLITE_RANGE}decimal:{p}:{s}")
+        }
+        crate::meta::FieldKind::BigInt => format!("{SQLITE_RANGE}bigint"),
+        crate::meta::FieldKind::Float => format!("{SQLITE_RANGE}float"),
+        _ => format!("{SQLITE_RANGE}int"),
+    }
+}
+
+const SQLITE_RANGE: &str = "corvis_orm:out_of_range:";
+
+/// The error of an SQLite message raised by [`sqlite_range_path`]: the one Postgres gives for the same update.
+fn sqlite_range_error(msg: &str) -> Option<OrmError> {
+    let rest = &msg[msg.find(SQLITE_RANGE)? + SQLITE_RANGE.len()..];
+    // The messages of Postgres for the same overflow (recorded: `arith.increment_overflow`, `arith.big_increment_2`,
+    // `arith.ratio_multiply_overflow`).
+    for (kind, message) in [("int", "integer out of range"), ("bigint", "bigint out of range"), ("float", "value out of range: overflow")] {
+        if rest.strip_prefix(kind).is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphanumeric())) {
+            return Some(OrmError::out_of_range(message, None));
+        }
+    }
+    let mut it = rest.strip_prefix("decimal:")?.split(|c: char| !c.is_ascii_digit()).map(str::parse::<u32>);
+    let (p, s) = (it.next()?.ok()?, it.next()?.ok()?);
+    let detail = format!("A field with precision {p}, scale {s} must round to an absolute value less than 10^{}.", p.saturating_sub(s));
+    Some(OrmError::out_of_range("numeric field overflow", Some(detail)))
 }
 
 /// The first `"quoted"` name of a database message (`relation "x" does not exist`).

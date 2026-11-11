@@ -365,6 +365,8 @@ impl OrmClient {
     }
 
     fn log(&self, sql: &Sql) {
+        #[cfg(test)]
+        crate::engine::recorder::record(sql);
         if self.inner.options.log_queries {
             let params = if sql.params.is_empty() { String::new() } else { format!(" -- params: {:?}", sql.params) };
             #[cfg(feature = "corvis")]
@@ -376,15 +378,26 @@ impl OrmClient {
 
     /// Fails like the reference query engine when a parameter cannot be converted: an `Int`
     /// out of range, or a `Decimal` that does not fit a `NUMERIC` (it would be truncated).
+    ///
+    /// Also the last guard of the markers (`engine::markers`): a parameter that holds one fails with a validation error
+    /// and is never sent, stored or logged (`log_queries` runs after this check).
     fn check_params(sql: &Sql) -> Result<()> {
         fn bad(p: &SqlValue, i: usize) -> Option<OrmError> {
             match p {
+                SqlValue::Text(s) if crate::engine::holds_marker(s) => Some(marker_param()),
+                SqlValue::Json(v) if crate::engine::contains_null_marker(v) => Some(marker_param()),
                 SqlValue::OutOfRange(v) => Some(OrmError::int_overflow(i, *v)),
                 SqlValue::Decimal(d) if !d.fits_numeric() => Some(OrmError::conversion(i, crate::decimal::NUMERIC_OVERFLOW)),
                 SqlValue::Cast(v, _) => bad(v, i),
                 SqlValue::Array(items, _) => items.iter().find_map(|x| bad(x, i)),
                 _ => None,
             }
+        }
+        fn marker_param() -> OrmError {
+            OrmError::validation(
+                "A query value holds `undefined`, `DbNull`, `JsonNull` or `AnyNull` where only a plain value can go (inside a \
+                 Json value or as raw SQL argument).",
+            )
         }
         match sql.params.iter().enumerate().find_map(|(i, p)| bad(p, i)) {
             Some(e) => Err(e),
@@ -645,7 +658,7 @@ impl OrmClient {
     /// let rows = tx._query_raw(sql!("SELECT * FROM \"Wallet\" WHERE \"merchantId\" = {id} FOR UPDATE")).await?;
     /// ```
     pub async fn _query_raw(&self, sql: RawSql) -> Result<Vec<Value>> {
-        self.raw_fetch(&sql.to_sql(self.inner.dialect)).await
+        self.raw_fetch(&sql.to_sql(self.inner.dialect)?).await
     }
 
     /// Like [`Self::_query_raw`], deserializing each row into `T` (`$queryRaw<T>`).
@@ -656,7 +669,7 @@ impl OrmClient {
 
     /// `$executeRaw` with a typed statement: the number of affected rows.
     pub async fn _execute_raw(&self, sql: RawSql) -> Result<u64> {
-        self.raw_execute(&sql.to_sql(self.inner.dialect)).await
+        self.raw_execute(&sql.to_sql(self.inner.dialect)?).await
     }
 
     /// `$queryRawUnsafe(sql, ...values)`: rows as JSON objects. Use the native
@@ -695,37 +708,84 @@ impl OrmClient {
         q
     }
 
-    /// `db push`: creates the missing tables, unique indexes and foreign keys.
+    /// `db push`: creates what the models need and the database does not have yet, as the reference client's
+    /// migration for the same models would (tables with their keys, defaults and indexes, implicit many-to-many
+    /// join tables, foreign keys and, on Postgres, enum types and `@@schema` schemas).
+    ///
+    /// Tables that already exist are not altered. A construct `db push` cannot build (an unknown `@db.*` native
+    /// type or index type) is a validation error before any statement runs, and the whole push runs in one
+    /// transaction: when a statement fails, nothing is left behind.
     pub async fn db_push<S: ModelSet>(&self) -> Result<()> {
         self.db_push_models(&S::metas()).await
     }
 
-    /// `db push` for a list of model metadata.
+    /// `db push` for a list of model metadata (see [`Self::db_push`]).
     pub async fn db_push_models(&self, models: &[&'static ModelMeta]) -> Result<()> {
+        let plan = crate::schema::push_plan(self.inner.dialect, models)?;
+        self.ddl_transaction(|tx| async move { tx.push_plan(&plan).await }).await
+    }
+
+    /// `db push --force-reset`: drops the tables of the models (and the join tables between them) and recreates
+    /// them, in one transaction.
+    pub async fn db_push_force_reset<S: ModelSet>(&self) -> Result<()> {
+        let models = S::metas();
+        let drops = crate::schema::drop_statements(self.inner.dialect, &models)?;
+        let plan = crate::schema::push_plan(self.inner.dialect, &models)?;
+        self.ddl_transaction(|tx| async move {
+            for stmt in &drops {
+                tx.run_ddl(stmt).await?;
+            }
+            tx.push_plan(&plan).await
+        })
+        .await
+    }
+
+    /// The SQL that `db_push` would run on an empty database (as a `migrate diff --script` would).
+    pub fn schema_sql<S: ModelSet>(&self) -> Result<Vec<String>> {
+        Ok(crate::schema::push_plan(self.inner.dialect, &S::metas())?.statements(|_| false))
+    }
+
+    /// Runs `f` in a transaction without `maxWait` / `timeout` (like batches: DDL may take long).
+    async fn ddl_transaction<F, Fut>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(OrmClient) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        let forever = Duration::from_secs(60 * 60 * 24 * 365);
+        let opts = TransactionOptions { max_wait: Some(forever), timeout: Some(forever), isolation_level: None };
+        self._transaction_with(opts, f).await
+    }
+
+    /// Creates the URL schema and what `plan` needs that the database does not have yet.
+    async fn push_plan(&self, plan: &crate::schema::PushPlan) -> Result<()> {
         self.ensure_schema().await?;
-        let statements = crate::schema::push_statements(self.inner.dialect, models)?;
-        for stmt in statements {
-            let mut q = Sql::new(self.inner.dialect);
-            q.push(&stmt);
-            self.execute(&q, None).await?;
+        let mut existing = Vec::new();
+        for object in plan.objects() {
+            if self.object_exists(object).await? {
+                existing.push(object);
+            }
+        }
+        for stmt in plan.statements(|o| existing.contains(&o)) {
+            self.run_ddl(&stmt).await?;
         }
         Ok(())
     }
 
-    /// `db push --force-reset`: drops the tables of the models and recreates them.
-    pub async fn db_push_force_reset<S: ModelSet>(&self) -> Result<()> {
-        let models = S::metas();
-        for stmt in crate::schema::drop_statements(self.inner.dialect, &models)? {
-            let mut q = Sql::new(self.inner.dialect);
-            q.push(&stmt);
-            self.execute(&q, None).await?;
-        }
-        self.db_push_models(&models).await
+    /// Whether a schema, type or table exists (Postgres; names resolve through the `search_path`, like the queries).
+    async fn object_exists(&self, object: crate::schema::Object<'_>) -> Result<bool> {
+        use crate::schema::Object;
+        let (sql, name) = match object {
+            Object::Schema(s) => ("SELECT 1 AS one FROM pg_namespace WHERE nspname::text = $1", s),
+            Object::Type(t) => ("SELECT 1 AS one WHERE to_regtype($1) IS NOT NULL", t),
+            Object::Table(t) => ("SELECT 1 AS one WHERE to_regclass($1) IS NOT NULL", t),
+        };
+        Ok(!self.query_raw(sql, vec![Value::String(name.to_string())]).await?.is_empty())
     }
 
-    /// The SQL that `db_push` would run (as a `migrate diff --script` would).
-    pub fn schema_sql<S: ModelSet>(&self) -> Result<Vec<String>> {
-        crate::schema::push_statements(self.inner.dialect, &S::metas())
+    async fn run_ddl(&self, stmt: &str) -> Result<()> {
+        let mut q = Sql::new(self.inner.dialect);
+        q.push(stmt);
+        self.execute(&q, None).await.map(drop)
     }
 }
 

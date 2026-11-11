@@ -245,11 +245,49 @@ impl Engine {
     }
 
     /// Decodes rows selected with [`Engine::select_scalars`].
-    pub(crate) fn decode_scalars(&self, model: &'static ModelMeta, rows: Vec<Vec<Value>>) -> Vec<Map<String, Value>> {
+    pub(crate) fn decode_scalars(&self, model: &'static ModelMeta, rows: Vec<Vec<Value>>) -> Result<Vec<Map<String, Value>>> {
         let d = self.dialect();
         rows.into_iter()
-            .map(|r| model.scalars().zip(r).map(|(f, v)| (f.name.to_string(), crate::db::coerce_field_d(f, v, d))).collect())
+            .map(|r| {
+                model
+                    .scalars()
+                    .zip(r)
+                    .map(|(f, v)| match self.int_out_of_range(model, f, &v) {
+                        Some(e) => Err(e),
+                        None => Ok((f.name.to_string(), crate::db::coerce_field_d(f, v, d))),
+                    })
+                    .collect()
+            })
             .collect()
+    }
+
+    /// `P2023` for an `Int` column holding a value outside 32 bits, which SQLite can store (its integers are 64-bit):
+    /// the reference client fails like this when it reads such a row. A float (`1.5`, `1e30`, which SQLite also
+    /// stores in an `INTEGER` column) fails the same way, never truncated or saturated.
+    ///
+    /// The same for a `BigInt` column holding a float and a `Float` column holding an infinity (SQLite stores both; the
+    /// reference client stores them too and then fails the read with these messages, recorded: `arith.big_after`,
+    /// `arith.ratio_after`).
+    fn int_out_of_range(&self, model: &'static ModelMeta, f: &FieldMeta, v: &Value) -> Option<OrmError> {
+        use crate::meta::FieldKind;
+        if f.list {
+            return None;
+        }
+        let detail = match (f.kind, v) {
+            (FieldKind::Int, Value::Number(n)) if !n.as_i64().is_some_and(|i| i32::try_from(i).is_ok()) => format!(
+                "Conversion failed: Value {n} does not fit in an INT column, try migrating the '{}' column type to BIGINT",
+                f.column
+            ),
+            (FieldKind::BigInt, Value::Number(n)) if n.as_i64().is_none() => {
+                let plain = n.as_f64().map(|x| crate::Decimal::from(x).to_fixed_plain()).unwrap_or_else(|| n.to_string());
+                format!("Could not convert from `BigDecimal({plain})` to `BigInt`")
+            }
+            (FieldKind::Float, Value::String(s)) if matches!(s.as_str(), "inf" | "-inf" | "NaN") => {
+                format!("Could not convert value {s} of the field `{}` to type `Float`.", f.name)
+            }
+            _ => return None,
+        };
+        Some(OrmError::known("P2023", format!("Inconsistent column data: {detail}"), json!({ "modelName": model.name, "message": detail })))
     }
 
     /// Plain scalar rows matching `where` (no relations).
@@ -262,7 +300,7 @@ impl Engine {
             q.push(" LIMIT ").bind(SqlValue::Int(l));
         }
         let rows = self.client.fetch(&q, Some(model)).await?;
-        Ok(self.decode_scalars(model, rows.rows))
+        self.decode_scalars(model, rows.rows)
     }
 
     /// Shapes a fetched record into the output object.
@@ -387,7 +425,7 @@ impl Engine {
             self.limit_sql(&mut q, take.map(|t| t.checked_abs().unwrap_or(i64::MAX)), skip);
         }
         let rows = self.client.fetch(&q, Some(model)).await?;
-        let mut records = self.decode_scalars(model, rows.rows);
+        let mut records = self.decode_scalars(model, rows.rows)?;
         if let Some(fields) = &distinct {
             let mut seen = HashSet::new();
             records.retain(|r| seen.insert(key_of(&fields.iter().map(|f| r.get(f.name).unwrap_or(&Value::Null)).collect::<Vec<_>>())));
@@ -450,7 +488,8 @@ impl Engine {
                 } else {
                     " > "
                 };
-                q.col("t0", f.column).push(op).bind(v);
+                self.operand(q, "t0", f);
+                q.push(op).bind(v);
             }
             q.push(")");
         }
@@ -576,27 +615,24 @@ impl Engine {
                     }
                 }
                 let mut groups: HashMap<String, Vec<Map<String, Value>>> = HashMap::new();
-                if !keys.is_empty() {
-                    let link = if r.target_fields.len() == 1 {
-                        let mut w = Map::new();
-                        w.insert(
-                            r.target_fields[0].name.to_string(),
-                            json!({ "in": keys.iter().map(|k| k[0].clone()).collect::<Vec<_>>() }),
-                        );
-                        Value::Object(w)
-                    } else {
-                        let ors: Vec<Value> = keys
-                            .iter()
-                            .map(|k| {
-                                let mut w = Map::new();
-                                for (tf, v) in r.target_fields.iter().zip(k) {
-                                    w.insert(tf.name.to_string(), v.clone());
-                                }
-                                Value::Object(w)
-                            })
-                            .collect();
-                        json!({ "OR": ors })
-                    };
+                // Single-field keys are one `in` list (bound as one parameter when long); compound keys an `OR` of
+                // groups, split into statements within the parameter limit. Without pagination the children of
+                // each parent are the same whichever statement returns them.
+                let links: Vec<Value> = if keys.is_empty() {
+                    Vec::new()
+                } else if r.target_fields.len() == 1 {
+                    let ids: Vec<Value> = keys.into_iter().map(|mut k| k.swap_remove(0)).collect();
+                    vec![Value::Object(Map::from_iter([(r.target_fields[0].name.to_string(), json!({ "in": ids }))]))]
+                } else {
+                    let as_where =
+                        |k: Vec<Value>| -> Value { Value::Object(r.target_fields.iter().map(|tf| tf.name.to_string()).zip(k).collect()) };
+                    let fields = r.target_fields.len();
+                    self.statement_chunks(keys, |_| fields)
+                        .into_iter()
+                        .map(|chunk| json!({ "OR": chunk.into_iter().map(as_where).collect::<Vec<_>>() }))
+                        .collect()
+                };
+                for link in links {
                     let w = match &user_where {
                         Some(uw) => json!({ "AND": [link, uw.clone()] }),
                         None => link,
@@ -680,8 +716,8 @@ impl Engine {
             return Ok(out);
         }
         let d = self.dialect();
-        let mut q = Sql::new(d);
         if let Some(join) = &r.join {
+            let mut q = Sql::new(d);
             let pf = r.parent_fields[0];
             let tf = r.target_fields[0];
             q.push("SELECT ").col("j", join.parent_column).push(", COUNT(*) FROM ").table(join.schema, &join.table).push(" AS j");
@@ -708,48 +744,53 @@ impl Engine {
             }
             return Ok(out);
         }
-        q.push("SELECT ");
-        for tf in &r.target_fields {
-            q.col("t0", tf.column).push(", ");
-        }
-        q.push("COUNT(*) FROM ").table(r.target.schema, r.target.table).push(" AS t0 WHERE ");
-        if r.target_fields.len() == 1 {
-            q.col("t0", r.target_fields[0].column);
-            let vals = keys.iter().map(|k| self.value(r.target_fields[0], &k[0], false)).collect::<Result<Vec<_>>>()?;
-            self.push_in_list(&mut q, vals, r.target_fields[0].kind, false);
-        } else {
-            q.push("(");
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 {
-                    q.push(" OR ");
-                }
+        // Single-field keys are one `in` list; compound keys an `OR` of groups, one statement per chunk.
+        let chunks = if r.target_fields.len() == 1 { vec![keys] } else { self.statement_chunks(keys, |_| r.target_fields.len()) };
+        for keys in chunks {
+            let mut q = Sql::new(d);
+            q.push("SELECT ");
+            for tf in &r.target_fields {
+                q.col("t0", tf.column).push(", ");
+            }
+            q.push("COUNT(*) FROM ").table(r.target.schema, r.target.table).push(" AS t0 WHERE ");
+            if r.target_fields.len() == 1 {
+                q.col("t0", r.target_fields[0].column);
+                let vals = keys.iter().map(|k| self.value(r.target_fields[0], &k[0], false)).collect::<Result<Vec<_>>>()?;
+                self.push_in_list(&mut q, vals, r.target_fields[0].kind, false);
+            } else {
                 q.push("(");
-                for (j, (tf, v)) in r.target_fields.iter().zip(k.iter()).enumerate() {
-                    if j > 0 {
-                        q.push(" AND ");
+                for (i, k) in keys.iter().enumerate() {
+                    if i > 0 {
+                        q.push(" OR ");
                     }
-                    q.col("t0", tf.column).push(" = ").bind(self.value(tf, v, false)?);
+                    q.push("(");
+                    for (j, (tf, v)) in r.target_fields.iter().zip(k.iter()).enumerate() {
+                        if j > 0 {
+                            q.push(" AND ");
+                        }
+                        q.col("t0", tf.column).push(" = ").bind(self.value(tf, v, false)?);
+                    }
+                    q.push(")");
                 }
                 q.push(")");
             }
-            q.push(")");
-        }
-        if let Some(w) = w {
-            q.push(" AND ");
-            self.where_sql(&mut q, r.target, "t0", w)?;
-        }
-        q.push(" GROUP BY ");
-        for (i, tf) in r.target_fields.iter().enumerate() {
-            if i > 0 {
-                q.push(", ");
+            if let Some(w) = w {
+                q.push(" AND ");
+                self.where_sql(&mut q, r.target, "t0", w)?;
             }
-            q.col("t0", tf.column);
-        }
-        let rows = self.client.fetch(&q, None).await?;
-        for row in rows.rows {
-            let n = row.last().and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0);
-            let k: Vec<Value> = r.target_fields.iter().zip(row).map(|(tf, v)| crate::db::coerce_field_d(tf, v, d)).collect();
-            out.insert(key_of(&k.iter().collect::<Vec<_>>()), n);
+            q.push(" GROUP BY ");
+            for (i, tf) in r.target_fields.iter().enumerate() {
+                if i > 0 {
+                    q.push(", ");
+                }
+                q.col("t0", tf.column);
+            }
+            let rows = self.client.fetch(&q, None).await?;
+            for row in rows.rows {
+                let n = row.last().and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0);
+                let k: Vec<Value> = r.target_fields.iter().zip(row).map(|(tf, v)| crate::db::coerce_field_d(tf, v, d)).collect();
+                out.insert(key_of(&k.iter().collect::<Vec<_>>()), n);
+            }
         }
         Ok(out)
     }
@@ -816,18 +857,22 @@ impl Engine {
 
     /// Re-reads several records by id (createManyAndReturn / updateManyAndReturn), in the given order.
     pub(crate) async fn read_back_many(&self, model: &'static ModelMeta, ids: &[Id], args: &Map<String, Value>) -> Result<Value> {
-        if ids.is_empty() {
-            return Ok(Value::Array(vec![]));
-        }
-        let mut a = Map::new();
-        a.insert("where".into(), json!({ "OR": ids.iter().cloned().map(Value::Object).collect::<Vec<_>>() }));
-        for k in ["select", "include", "omit"] {
-            if let Some(v) = args.get(k) {
-                a.insert(k.into(), v.clone());
-            }
-        }
-        let (rows, sel) = self.fetch_rows(model, a).await?;
         let pk = model.pk();
+        let mut sel = Selection::default();
+        let mut rows = Vec::new();
+        let any_of = |keys: Vec<Id>| json!({ "OR": keys.into_iter().map(Value::Object).collect::<Vec<_>>() });
+        for filter in self.key_filters(&pk, ids.to_vec(), any_of) {
+            let mut a = Map::new();
+            a.insert("where".into(), filter);
+            for k in ["select", "include", "omit"] {
+                if let Some(v) = args.get(k) {
+                    a.insert(k.into(), v.clone());
+                }
+            }
+            let (chunk, s) = self.fetch_rows(model, a).await?;
+            rows.extend(chunk);
+            sel = s;
+        }
         let key = |r: &Map<String, Value>| key_of(&pk.iter().map(|f| r.get(f.name).unwrap_or(&Value::Null)).collect::<Vec<_>>());
         let mut by_id: HashMap<String, Map<String, Value>> = rows.into_iter().map(|r| (key(&r), r)).collect();
         let mut out = Vec::new();

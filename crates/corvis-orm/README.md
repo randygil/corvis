@@ -116,6 +116,9 @@ db.transaction().find_many(json!({
 })).await?;
 ```
 
+`or_undefined` escribe un `NaN` o un infinito como `null`, igual que el cliente original envía `NaN`; un valor que no se puede
+serializar hace fallar la consulta con un error de validación antes de enviar SQL.
+
 ### Transacciones
 
 ```rust
@@ -174,12 +177,37 @@ db.query_raw("SELECT * FROM users WHERE id = $1", vec![json!(1)]).await?;
 - Las filas salen como JSON: `numeric` como string decimal (se deserializa a `Decimal`), `bigint`/`int` como número,
   fechas como ISO 8601 y `json`/`jsonb` tal cual.
 - Cualquier error de la base en SQL crudo es `P2010` (`Raw query failed. Code: ...`), con `meta.code` = SQLSTATE.
+- `RawSql::join` de una lista vacía no entra en pánico: la sentencia lleva el error del cliente de referencia ("Expected
+  `join([])` to be called with an array of multiple elements, but got an empty array"), también si está anidada en otra, y
+  `_query_raw`, `_query_raw_as` y `_execute_raw` fallan con un error de validación sin enviar nada. `RawSql::error()` lo consulta.
 
 ### Decimal y DateTime
 
 `corvis_orm::Decimal` tiene la semántica de decimal.js (precisión 20, `ROUND_HALF_UP`, `toFixed`, `toDecimalPlaces`, `toString`...).
 Se serializa como `toString()` (`"24.5"`) y se lee y escribe sin pérdida en columnas `NUMERIC`. `Decimal.clone({...})` es
 `DecimalCtor::new(&CONFIG)`. `corvis_orm::DateTime` equivale al `Date` de JS: milisegundos y siempre `"2026-01-02T03:04:05.678Z"`.
+
+`Decimal::parse` y `decimal!` aceptan lo mismo que decimal.js (comprobado contra él en `tests/fixtures/decimal_parse.json`): números `0x`, `0b` y `0o` con fracción y exponente binario (`0x1.8p3`) y un `_` entre dos dígitos (`1_000`).
+
+El texto se convierte en `Decimal` solo con conversiones que informan del error: `Decimal::parse`, `"12.5".parse::<Decimal>()`
+y `Decimal::try_from(..)` (de `&str` o `String`) para texto que llega en tiempo de ejecución, y el literal `decimal!("1.50")`,
+que se comprueba al compilar (un literal inválido no compila). Ya no existe `From<&str>` ni `From<String>`: entraban en pánico
+con texto inválido, y como los helpers tipados reciben `impl Into<Decimal>`, un texto de una petición podía tumbar el handler.
+
+```rust
+use corvis_orm::{decimal, Decimal};
+
+let tasa = decimal!("40.50");                        // antes: Decimal::from("40.50")
+let monto: Decimal = entrada.parse()?;               // antes: Decimal::from(entrada.as_str()), que entraba en pánico
+let unitario = D.parse("1234.5678")?;                // antes: D.of("1234.5678")
+db.wallet().find_many(vec![wallet::amount::gte(decimal!("100"))]).await?;
+```
+
+En SQLite, una columna `Decimal` se compara, ordena y agrega como número, como con la migración del cliente de referencia
+(afinidad numérica, 15 dígitos significativos): `db_push` la crea como `DECIMAL`, y las comparaciones, `orderBy`, cursores,
+`_min`/`_max`/`_sum`/`_avg`, `having` y la aritmética leen la columna con `CAST(.. AS NUMERIC)`, así que una columna `TEXT`
+creada por una versión anterior de `db_push` también se compara como número. Ese `CAST` impide usar un índice simple sobre la
+columna en un rango. En Postgres no cambia nada.
 
 ## Integración con Corvis
 
@@ -230,7 +258,7 @@ Si vienes del ecosistema de Node.js, esta tabla relaciona la API del cliente Jav
 | `` $queryRaw`...${x}` `` / `$executeRaw` | `db._query_raw(sql!("...{x}"))` / `_execute_raw(..)` / `_query_raw_as::<T>(..)` |
 | `sql` / `join` / `raw` / `empty` | `sql!(..)` / `RawSql::join(..)` / `RawSql::raw(..)` / `RawSql::empty()` |
 | `$queryRawUnsafe` / `$executeRawUnsafe` | `query_raw(sql, params)` / `execute_raw(sql, params)` |
-| `DbNull` / `JsonNull` / `AnyNull` | `json!({ "$type": "DbNull" })` / `"JsonNull"` / `"AnyNull"` |
+| `DbNull` / `JsonNull` / `AnyNull` | `corvis_orm::db_null()` / `json_null()` / `any_null()` (un objeto `{ "$type": "DbNull" }` es un dato JSON, como en el original) |
 | `undefined` | `corvis_orm::undefined()` / `or_undefined(opcion)` |
 | `Decimal` | `corvis_orm::Decimal` |
 | error de petición conocido (`code`, `meta`) | `OrmError::KnownRequest` (`.code()`, `.meta()`) |
@@ -301,7 +329,11 @@ argumentos. corvis-orm limita lo que podría tumbar el proceso o corromper datos
   Postgres la precisión y la escala de la columna las aplica la base (`numeric field overflow`,
   redondeo a la escala). En SQLite la columna se trata como `@db.Decimal(p, s)` o, por defecto,
   `Decimal(65, 30)`: al escribir se redondea a `s` decimales y se rechaza (error de validación) un
-  valor cuya parte entera no cabe. `db_push` crea los `Decimal` de Postgres como `DECIMAL(65,30)`.
+  valor cuya parte entera no cabe. `db_push` crea los `Decimal` de Postgres como `DECIMAL(65,30)` (o el `@db.Decimal(p, s)`
+  del campo) y los de SQLite como `DECIMAL`.
+- **Helpers tipados.** Un valor que no se puede serializar, o un `f32`/`f64` `NaN` o infinito (solo, en una lista o en un
+  `Option`), hace fallar la consulta con un error de validación antes de enviar SQL; antes se convertía en `null` y el filtro
+  pasaba a ser `IS NULL` / `IS NOT NULL`. Para `null` usa `is_null()`, `is_not_null()` o `set_null()`.
 - **Números.** Un `BigInt` fuera de 64 bits o un byte de `Bytes` fuera de `0..=255` es un error de
   validación, nunca un valor saturado o truncado. En SQL crudo, un `u64` mayor que `i64::MAX` se
   envía como `numeric`.
@@ -309,7 +341,11 @@ argumentos. corvis-orm limita lo que podría tumbar el proceso o corromper datos
   `P2019` (`Provided limit (-1) must be a positive integer.`).
 - **Listas `in`/`notIn` largas** (y las de `include` y `_count`): con más de 1000 elementos van en
   un solo parámetro (`= ANY($1)` en Postgres, `json_each(?)` en SQLite), así que no chocan con el
-  límite de parámetros de la base.
+  límite de parámetros de la base; también con `mode: "insensitive"`. Las listas de claves que arma el
+  motor (la relectura de `createManyAndReturn`/`updateManyAndReturn`, `include` y `_count` sobre claves
+  compuestas, `set`/`disconnect`/`deleteMany` anidados) van en un parámetro si la clave tiene un campo, y
+  si es compuesta se reparten en varias sentencias dentro del límite (en SQLite, además, de 500 grupos
+  como máximo: SQLite rechaza expresiones de más de 1000 niveles y un `OR` largo lo es).
 - **Filtros de texto en `Json` (SQLite).** `string_contains`, `string_starts_with` y
   `string_ends_with` comparan el texto literal: `%`, `_`, `*`, `?` y `[` no son comodines.
 
@@ -353,7 +389,12 @@ permite (o valida el cuerpo con un esquema estricto) en lugar de reenviar el JSO
 ## Qué no está soportado (por ahora)
 
 - MySQL, SQL Server, MongoDB y CockroachDB.
-- `migrate dev`/`diff`/`reset`. `db_push` solo crea las tablas e índices que faltan; no modifica ni elimina columnas.
+- `migrate dev`/`diff`/`reset`. `db_push` crea lo que falta como lo crearía la migración del cliente de referencia para los
+  mismos modelos (tablas con su clave primaria completa, valores por defecto e índices, tablas de unión de las relaciones
+  muchos a muchos implícitas, claves foráneas y, en Postgres, tipos enum, tipos nativos `@db.*`, listas como arreglos y los
+  esquemas de `@@schema`), todo en una transacción; rechaza antes de ejecutar nada lo que no sabe crear (un tipo nativo o un
+  tipo de índice desconocido); y no modifica las tablas que ya existen. Para recrear una base de desarrollo creada por una
+  versión anterior, usa `db_push_force_reset`.
 - Middlewares, `$extends`, `$on` (eventos de log) y métricas.
 - SQL crudo dentro de `_transaction_batch` (úsalo dentro de `_transaction`).
 - Los mensajes de error siguen a la versión 6 del cliente de referencia con su motor nativo. Con la versión 7 y driver

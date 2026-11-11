@@ -56,8 +56,11 @@ async fn filters_combined() {
     assert_eq!(n, 1);
     let n = db.user().count(json!({ "where": { "name": { "not": null } } })).await.unwrap();
     assert_eq!(n, 2);
-    // case sensitivity
+    // Case: on SQLite `contains` folds ASCII letters like the reference client's `LIKE` (recorded in the SQLite
+    // oracle, `sqlite.contains_upper`); `equals` does not.
     let n = db.user().count(json!({ "where": { "name": { "contains": "ana" } } })).await.unwrap();
+    assert_eq!(n, 1);
+    let n = db.user().count(json!({ "where": { "name": "ana" } })).await.unwrap();
     assert_eq!(n, 0);
     let n = db.user().count(json!({ "where": { "name": { "contains": "ana", "mode": "insensitive" } } })).await.unwrap();
     assert_eq!(n, 1);
@@ -454,7 +457,8 @@ async fn postgres_sql_generation() {
     assert_eq!(db.dialect(), corvis_orm::Dialect::Postgres);
     let ddl = db.schema_sql::<(User, Post)>().unwrap();
     assert!(ddl[0].contains("\"id\" BIGSERIAL NOT NULL"), "{}", ddl[0]);
-    assert!(ddl[0].contains("\"created_at\" TIMESTAMPTZ(3) NOT NULL"), "{}", ddl[0]);
+    // Like the reference migration: `TIMESTAMP(3)`, and `@default(now())` computed by the database too.
+    assert!(ddl[0].contains("\"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP"), "{}", ddl[0]);
     assert!(ddl[0].contains("CONSTRAINT \"users_pkey\" PRIMARY KEY (\"id\")"), "{}", ddl[0]);
     let sql = corvis_orm::debug_sql(
         &db,

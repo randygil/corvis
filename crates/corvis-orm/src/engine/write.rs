@@ -40,7 +40,7 @@ fn and(a: Value, b: Option<Value>) -> Value {
     }
 }
 
-/// `where` matching any of `ids`.
+/// `where` matching any of `ids` (one id: the id itself).
 pub(crate) fn ids_filter(ids: &[Id]) -> Value {
     match ids {
         [one] => Value::Object(one.clone()),
@@ -282,6 +282,21 @@ impl Engine {
         self.client.execute(&q, Some(model)).await
     }
 
+    /// `UPDATE t AS t0 SET ... WHERE <one of ids>`, in as many statements as the parameter limit needs (see
+    /// [`Engine::key_filters`]); each statement repeats its part of the list. The number of updated rows.
+    pub(crate) async fn update_by_ids(
+        &self,
+        model: &'static ModelMeta,
+        sets: &[(&'static FieldMeta, SetExpr)],
+        ids: Vec<Id>,
+    ) -> Result<u64> {
+        let mut n = 0;
+        for w in self.key_filters(&model.pk(), ids, |chunk| ids_filter(&chunk)) {
+            n += self.update_where(model, sets, &w, None).await?;
+        }
+        Ok(n)
+    }
+
     /// `UPDATE ... RETURNING <pk>`: the (new) ids of the updated rows.
     async fn update_where_returning(
         &self,
@@ -339,7 +354,16 @@ impl Engine {
                     q.bind(v.clone());
                 }
                 SetExpr::Arith(op, v) => {
-                    q.col(alias, f.column).push(" ").push(op).push(" ").bind(v.clone());
+                    let arith = |q: &mut Sql| {
+                        self.operand(q, alias, f);
+                        q.push(" ").push(op).push(" ").bind(v.clone());
+                    };
+                    match (self.dialect(), f.kind) {
+                        (Dialect::Sqlite, FieldKind::Int | FieldKind::BigInt | FieldKind::Float | FieldKind::Decimal) => {
+                            self.checked_arith(q, f, arith);
+                        }
+                        _ => arith(q),
+                    }
                 }
                 SetExpr::Push(v) => match self.dialect() {
                     Dialect::Postgres => {
@@ -352,6 +376,45 @@ impl Engine {
                 },
             }
         }
+    }
+
+    /// An SQLite arithmetic update (`increment`, ..., written by `arith`) whose result must fit the column: an `Int`
+    /// in 32 bits, a `BigInt` in 64 (an integer, not the float SQLite turns an overflow into), a finite `Float`, a
+    /// `Decimal(p, s)` below `10^(p - s)` in absolute value. Postgres enforces all of them itself; SQLite would store
+    /// what the client then cannot read back (`P2023`), or a Decimal beyond the column. A result out of range takes the `ELSE` branch, a JSON path error that fails the statement, which
+    /// SQLite then undoes as a whole (every row, inside or outside a transaction); `OrmError::from_sqlx` maps it to
+    /// the error Postgres gives. `NULL` (an operand on a `NULL` value, a division by zero) passes.
+    fn checked_arith(&self, q: &mut Sql, f: &FieldMeta, arith: impl Fn(&mut Sql)) {
+        q.push("CASE WHEN (");
+        arith(q);
+        q.push(") IS NULL OR ");
+        match f.kind {
+            FieldKind::Int => {
+                q.push("(");
+                arith(q);
+                q.push(") BETWEEN -2147483648 AND 2147483647");
+            }
+            // An integer past 64 bits becomes a float in SQLite.
+            FieldKind::BigInt => {
+                q.push("typeof(");
+                arith(q);
+                q.push(") = 'integer'");
+            }
+            // An overflow is an infinite float (SQLite has no NaN: `0 * inf` is `NULL`).
+            FieldKind::Float => {
+                q.push("ABS(");
+                arith(q);
+                q.push(") <= 1.7976931348623157e308");
+            }
+            _ => {
+                q.push("ABS(");
+                arith(q);
+                q.push(") < CAST(").bind(SqlValue::Text(super::decimal_bound(f).to_string())).push(" AS NUMERIC)");
+            }
+        }
+        q.push(" THEN ");
+        arith(q);
+        q.push(" ELSE json_extract('{}', '").push(&crate::error::sqlite_range_path(f)).push("') END");
     }
 
     /// `DELETE FROM t AS t0 WHERE <w>`: the number of deleted rows.
@@ -394,7 +457,7 @@ impl Engine {
             }
             if op == "push" {
                 let tmp = Value::Array(list_or_one(val));
-                return Ok(SetExpr::Push(self.value(f, &tmp, false)?));
+                return Ok(SetExpr::Push(self.data_value(f, &tmp)?));
             }
             if !f.kind.is_numeric() {
                 return Err(self.err(format!(
@@ -578,14 +641,10 @@ impl Engine {
             if keys.is_empty() {
                 return Ok(0);
             }
-            q.push(" AND ").ident(join.target_column).push(" IN (");
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 {
-                    q.push(", ");
-                }
-                q.bind(self.value(r.target_fields[0], k, false)?);
-            }
-            q.push(")");
+            let tf = r.target_fields[0];
+            let vals = keys.iter().map(|k| self.value(tf, k, false)).collect::<Result<Vec<_>>>()?;
+            q.push(" AND ").ident(join.target_column);
+            self.push_in_list(&mut q, vals, tf.kind, false);
         }
         self.client.execute(&q, None).await
     }
@@ -720,7 +779,7 @@ impl Engine {
                                     let cur_ids = self.ids_where(r.target, &Value::Object(fk.clone()), None).await?;
                                     let others: Vec<_> = cur_ids.into_iter().filter(|c| !new_ids.contains(c)).collect();
                                     if !others.is_empty() {
-                                        self.update_where(r.target, &fk_sets(true)?, &ids_filter(&others), None).await?;
+                                        self.update_by_ids(r.target, &fk_sets(true)?, others).await?;
                                     }
                                 }
                                 found += self.update_where(r.target, &fk_sets(false)?, w, Some(1)).await? as usize;
@@ -807,13 +866,13 @@ impl Engine {
                             let current = self.ids_where(r.target, &owned(None), None).await?;
                             let drop: Vec<Id> = current.into_iter().filter(|c| !keep.contains(c)).collect();
                             if !drop.is_empty() {
-                                self.update_where(r.target, &fk_sets(true)?, &ids_filter(&drop), None).await?;
+                                self.update_by_ids(r.target, &fk_sets(true)?, drop).await?;
                             }
                             if keep.len() < items.len() {
                                 return Err(self.not_found(format!("Expected {} records to be connected, found only {}.", items.len(), keep.len())));
                             }
                             if !keep.is_empty() {
-                                self.update_where(r.target, &fk_sets(false)?, &ids_filter(&keep), None).await?;
+                                self.update_by_ids(r.target, &fk_sets(false)?, keep).await?;
                             }
                         }
                     }
@@ -839,8 +898,17 @@ impl Engine {
                     }
                     "deleteMany" => {
                         let items = list_or_one(val);
-                        let w = if items.is_empty() { owned(None) } else { owned(Some(json!({ "OR": items }))) };
-                        self.delete_where(r.target, &w, None).await?;
+                        if items.is_empty() {
+                            self.delete_where(r.target, &owned(None), None).await?;
+                        }
+                        // The `OR` of the items, in as many statements as the parameter limit needs.
+                        let params = |w: &Value| {
+                            let mut probe = Sql::new(self.dialect());
+                            self.where_sql(&mut probe, r.target, "t0", w).map_or(0, |_| probe.params.len())
+                        };
+                        for chunk in self.statement_chunks(items, params) {
+                            self.delete_where(r.target, &owned(Some(json!({ "OR": chunk }))), None).await?;
+                        }
                     }
                     "update" => {
                         for item in list_or_one(val) {
@@ -931,7 +999,7 @@ impl Engine {
         }
         let sets: Vec<(&'static FieldMeta, SetExpr)> =
             r.target_fields.iter().map(|tf| (*tf, SetExpr::Value(SqlValue::Null(tf.kind)))).collect();
-        self.update_where(r.target, &sets, &ids_filter(&existing), None).await?;
+        self.update_by_ids(r.target, &sets, existing).await?;
         Ok(())
     }
 

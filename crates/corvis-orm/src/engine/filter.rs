@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value};
 
-use super::{Engine, json_type};
+use super::{Engine, json_type, null_sentinel};
 use crate::db::{Dialect, Sql, SqlValue};
 use crate::error::Result;
 use crate::meta::{FieldKind, FieldMeta, ModelMeta, RelationKind, ResolvedRelation};
@@ -63,26 +63,56 @@ fn json_wrap(v: &Value) -> String {
     Value::Array(vec![v.clone()]).to_string()
 }
 
+/// One segment of a JSON filter `path`: an object key, or an array index on SQLite.
+#[derive(Debug, Clone)]
+struct JsonSeg {
+    key: String,
+    /// Written `[n]` on SQLite. In the list form (`["a", "0"]`) a numeric segment is an index; in the SQLite string
+    /// form (`$.a[0]`, `$.0`, `$."0"`) only `[n]` is (recorded: the reference client reads `$.0` and `$."0"` as the
+    /// key `"0"`).
+    index: bool,
+}
+
+/// The segments of a SQLite-style string path: `$`, then `.key`, `."quoted key"` or `[n]`.
+fn parse_string_path(s: &str) -> Vec<JsonSeg> {
+    let mut out = Vec::new();
+    let mut rest = s.strip_prefix('$').unwrap_or(s);
+    while let Some(c) = rest.chars().next() {
+        rest = &rest[c.len_utf8()..];
+        match c {
+            '.' if rest.starts_with('"') => {
+                let body = &rest[1..];
+                let end = body.find('"').unwrap_or(body.len());
+                out.push(JsonSeg { key: body[..end].to_string(), index: false });
+                rest = body.get(end + 1..).unwrap_or("");
+            }
+            '.' | '[' => {
+                let end = rest.find(['.', '[', ']']).unwrap_or(rest.len());
+                let key = rest[..end].to_string();
+                let index = c == '[' && !key.is_empty() && key.bytes().all(|b| b.is_ascii_digit());
+                if !key.is_empty() {
+                    out.push(JsonSeg { key, index });
+                }
+                rest = &rest[end..];
+                rest = rest.strip_prefix(']').unwrap_or(rest);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The SQLite JSON path (`$."a"[0]`) of a filter path.
-fn sqlite_json_path(p: Option<&[String]>) -> String {
+fn sqlite_json_path(p: Option<&[JsonSeg]>) -> String {
     let mut path = String::from("$");
     for s in p.unwrap_or(&[]) {
-        if s.parse::<usize>().is_ok() {
-            path.push_str(&format!("[{s}]"));
+        if s.index {
+            path.push_str(&format!("[{}]", s.key));
         } else {
-            path.push_str(&format!(".\"{}\"", s.replace('"', "\\\"")));
+            path.push_str(&format!(".\"{}\"", s.key.replace('"', "\\\"")));
         }
     }
     path
-}
-
-/// The `DbNull` / `JsonNull` / `AnyNull` sentinels (`{ "$type": ... }`).
-fn null_sentinel(v: &Value) -> Option<&str> {
-    v.as_object()
-        .filter(|o| o.len() == 1)
-        .and_then(|o| o.get("$type"))
-        .and_then(|t| t.as_str())
-        .filter(|t| matches!(*t, "DbNull" | "JsonNull" | "AnyNull"))
 }
 
 /// What an `orderBy` entry sorts on.
@@ -222,7 +252,8 @@ impl Engine {
             Value::Object(ops) => self.scalar_ops(q, alias, f, ops),
             other => {
                 let val = self.value(f, other, true)?;
-                q.col(alias, f.column).push(" = ").bind(val);
+                self.operand(q, alias, f);
+                q.push(" = ").bind(val);
                 Ok(())
             }
         }
@@ -250,7 +281,7 @@ impl Engine {
             if ci {
                 q.push("LOWER(").col(alias, f.column).push(")");
             } else {
-                q.col(alias, f.column);
+                self.operand(q, alias, f);
             }
         };
         let bind = |q: &mut Sql, v: SqlValue| {
@@ -310,8 +341,18 @@ impl Engine {
                         q.push(if op == "in" { "1=0" } else { "1=1" });
                         continue;
                     }
+                    // Like the reference client: a list item is never `null` (a JavaScript `NaN` arrives as `null`).
+                    if items.iter().any(Value::is_null) {
+                        return Err(self.err(format!(
+                            "Argument `{op}`: Invalid value provided. Expected List{}FieldRefInput or Null, provided a list with Null.",
+                            f.kind.schema_name()
+                        )));
+                    }
                     col(q);
-                    if ci {
+                    if ci && items.len() > IN_LIST_INLINE_MAX {
+                        let vals = items.iter().map(|item| self.value(f, item, false)).collect::<Result<Vec<_>>>()?;
+                        self.push_folded_list(q, vals, op == "notIn");
+                    } else if ci {
                         q.push(if op == "in" { " IN (" } else { " NOT IN (" });
                         for (j, item) in items.iter().enumerate() {
                             if j > 0 {
@@ -327,6 +368,10 @@ impl Engine {
                     }
                 }
                 "lt" | "lte" | "gt" | "gte" => {
+                    // `{ lt: null }` is a missing argument for the reference client (a `NaN` or `Infinity` arrives as `null`).
+                    if val.is_null() {
+                        return Err(self.err(format!("Argument `{op}` is missing.")));
+                    }
                     let v = self.value(f, val, false)?;
                     let sym = match op.as_str() {
                         "lt" => " < ",
@@ -432,6 +477,31 @@ impl Engine {
         }
     }
 
+    /// ` IN (SELECT ..)` / ` NOT IN (SELECT ..)` after `LOWER(col)` for a long `in` / `notIn` with
+    /// `mode: insensitive`: the values in one parameter, each folded by `LOWER` like the short form
+    /// (`LOWER($1), LOWER($2), ...`) folds them. An `IN` subquery is hashed by both databases (Postgres does not hash
+    /// `<> ALL (subquery)`, which compares every row with every value).
+    fn push_folded_list(&self, q: &mut Sql, vals: Vec<SqlValue>, negate: bool) {
+        let raw: Vec<SqlValue> = vals
+            .into_iter()
+            .map(|v| match v {
+                SqlValue::Cast(inner, _) => *inner,
+                other => other,
+            })
+            .collect();
+        q.push(if negate { " NOT IN (SELECT LOWER(" } else { " IN (SELECT LOWER(" });
+        match self.dialect() {
+            Dialect::Postgres => {
+                let arr = SqlValue::Cast(Box::new(SqlValue::Array(raw, FieldKind::String)), "text[]".into());
+                q.push("x) FROM unnest(").bind(arr).push(") AS x)");
+            }
+            Dialect::Sqlite => {
+                let json = Value::Array(raw.iter().map(crate::db::sql_value_json).collect()).to_string();
+                q.push("value) FROM json_each(").bind(SqlValue::Text(json)).push("))");
+            }
+        }
+    }
+
     fn string_match(&self, q: &mut Sql, alias: &str, f: &FieldMeta, op: &str, s: &str, insensitive: bool) {
         let pattern = match op {
             "contains" => format!("%{}%", escape_like(s)),
@@ -447,23 +517,14 @@ impl Engine {
                 q.push("LOWER(").col(alias, f.column).push(") LIKE LOWER(");
                 q.bind(SqlValue::Text(pattern)).push(") ESCAPE '\\'");
             }
-            // SQLite's LIKE is case-insensitive: use exact string functions instead.
-            (Dialect::Sqlite, false) => match if s.is_empty() { "contains" } else { op } {
-                "contains" => {
-                    q.push("INSTR(").col(alias, f.column).push(", ");
-                    q.bind(SqlValue::Text(s.to_string())).push(") > 0");
-                }
-                "startsWith" => {
-                    q.push("SUBSTR(").col(alias, f.column).push(", 1, LENGTH(");
-                    q.bind(SqlValue::Text(s.to_string())).push(")) = ");
-                    q.bind(SqlValue::Text(s.to_string()));
-                }
-                _ => {
-                    q.push("SUBSTR(").col(alias, f.column).push(", -LENGTH(");
-                    q.bind(SqlValue::Text(s.to_string())).push(")) = ");
-                    q.bind(SqlValue::Text(s.to_string()));
-                }
-            },
+            // Like the reference client on SQLite: `LIKE`, which folds ASCII letters only (recorded: `contains: "ANA"`
+            // matches `ana@x.io`, `"JOSÉ"` does not match `José`). Unlike it, `%` and `_` of the input are matched
+            // literally, as on Postgres (the reference client does not escape them on SQLite: `contains: "%"` matches
+            // every row; listed in `tests/sqlite_oracle.rs`).
+            (Dialect::Sqlite, false) => {
+                q.col(alias, f.column).push(" LIKE ");
+                q.bind(SqlValue::Text(pattern)).push(" ESCAPE '\\'");
+            }
         }
     }
 
@@ -567,7 +628,7 @@ impl Engine {
     }
 
     /// The JSON value at `path` (`col #> $1::text[]` / `json_extract(col, ?)`); the path is always a parameter.
-    fn json_at(&self, q: &mut Sql, alias: &str, f: &FieldMeta, path: Option<&[String]>, as_text: bool) {
+    fn json_at(&self, q: &mut Sql, alias: &str, f: &FieldMeta, path: Option<&[JsonSeg]>, as_text: bool) {
         let jsonb = |q: &mut Sql| {
             if f.native_name() == Some("Json") {
                 q.col(alias, f.column).push("::jsonb");
@@ -592,7 +653,7 @@ impl Engine {
                 // The path is one `text[]` parameter: segments never touch the SQL text or an array literal.
                 // One filter uses the path many times: it is bound once and referenced after that.
                 q.bind_shared(|| {
-                    let segments = p.iter().cloned().map(SqlValue::Text).collect();
+                    let segments = p.iter().map(|s| SqlValue::Text(s.key.clone())).collect();
                     SqlValue::Cast(Box::new(SqlValue::Array(segments, FieldKind::String)), "text[]".into())
                 })
                 .push(")");
@@ -620,14 +681,14 @@ impl Engine {
     }
 
     /// SQLite: `json_type(col, path)` (NULL when the path does not exist).
-    fn sqlite_json_type(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[String]>) {
+    fn sqlite_json_type(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[JsonSeg]>) {
         q.push("json_type(").col(alias, f.column).push(", ").bind(SqlValue::Text(sqlite_json_path(p))).push(")");
     }
 
     /// SQLite: true when the value at `path` has the same JSON type as `val` (numbers are one
     /// type), like `jsonb` comparisons never match across types. Without it `json_extract`
     /// would compare an integer with a string or `true` with `1`.
-    fn sqlite_json_same_type(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[String]>, val: &Value) {
+    fn sqlite_json_same_type(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[JsonSeg]>, val: &Value) {
         self.sqlite_json_type(q, alias, f, p);
         q.push(match val {
             Value::Number(_) => " IN ('integer', 'real')",
@@ -645,7 +706,7 @@ impl Engine {
     /// integer, real or unquoted text) and only between values of the same JSON type. A missing
     /// path is NULL (it matches neither the filter nor its negation, like SQL on `jsonb`); `not` matches
     /// every existing value that is not equal, other types included.
-    fn sqlite_json_compare(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[String]>, val: &Value, op: &str) {
+    fn sqlite_json_compare(&self, q: &mut Sql, alias: &str, f: &FieldMeta, p: Option<&[JsonSeg]>, val: &Value, op: &str) {
         let neg = op == "not";
         if val.is_null() {
             // JSON null: `json_extract` cannot tell it from a missing path.
@@ -685,16 +746,26 @@ impl Engine {
             }
         };
         self.check_keys(ops, JSON_OPS)?;
+        // A null sentinel is the whole operand of `equals` / `not` or nothing: inside a value, a list or another
+        // operator it would be compared with (and so sent to the database), nonce included.
+        for (op, val) in ops {
+            let whole = matches!(op.as_str(), "equals" | "not") && null_sentinel(val).is_some();
+            if !whole && super::contains_null_marker(val) {
+                return Err(self.err(super::nested_null_message(op)));
+            }
+        }
         q.reset_shared();
-        let path: Option<Vec<String>> = match ops.get("path") {
+        let path: Option<Vec<JsonSeg>> = match ops.get("path") {
             None | Some(Value::Null) => None,
             Some(Value::Array(a)) if a.len() > MAX_JSON_PATH => return Err(self.path_too_long(a.len())),
-            Some(Value::Array(a)) => Some(a.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect()),
-            Some(Value::String(s)) => {
-                // SQLite / MySQL style `$.a.b[0]`.
-                let s = s.trim_start_matches('$');
-                Some(s.split(['.', '[']).map(|p| p.trim_end_matches(']').trim_matches('"').to_string()).filter(|p| !p.is_empty()).collect())
-            }
+            Some(Value::Array(a)) => Some(
+                a.iter()
+                    .map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string()))
+                    .map(|key| JsonSeg { index: key.parse::<usize>().is_ok(), key })
+                    .collect(),
+            ),
+            // SQLite / MySQL style `$.a.b[0]`.
+            Some(Value::String(s)) => Some(parse_string_path(s)),
             Some(other) => {
                 return Err(
                     self.err(format!("Argument `path`: Invalid value provided. Expected List<String>, provided {}.", json_type(other)))
@@ -1121,13 +1192,13 @@ impl Engine {
     /// Writes the SQL expression an order item sorts on.
     pub(crate) fn order_expr_sql(&self, q: &mut Sql, alias: &str, item: &OrderItem) {
         match &item.expr {
-            OrderExpr::Field(f) => {
-                q.col(alias, f.column);
-            }
+            OrderExpr::Field(f) => self.operand(q, alias, f),
             OrderExpr::RelationField(path, tf) => {
                 // (SELECT tN.col FROM a AS t1 JOIN b AS t2 ON .. WHERE t1 joins parent LIMIT 1)
                 let aliases: Vec<String> = path.iter().map(|_| q.alias()).collect();
-                q.push("(SELECT ").col(aliases.last().unwrap(), tf.column).push(" FROM ");
+                q.push("(SELECT ");
+                self.operand(q, aliases.last().unwrap(), tf);
+                q.push(" FROM ");
                 for (i, r) in path.iter().enumerate() {
                     if i > 0 {
                         q.push(" INNER JOIN ");
@@ -1159,6 +1230,7 @@ impl Engine {
             OrderExpr::Aggregate(agg, f) => {
                 q.push(agg).push("(");
                 match f {
+                    Some(f) if *agg != "COUNT" => self.operand(q, alias, f),
                     Some(f) => {
                         q.col(alias, f.column);
                     }

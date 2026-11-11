@@ -19,12 +19,29 @@
 //! `Decimal::clone_with(...)` is the equivalent of `Decimal.clone({...})`.
 //!
 //! ```
-//! use corvis_orm::Decimal;
-//! let a = Decimal::from("0.1");
-//! assert_eq!((a.clone() + "0.2").to_string(), "0.3");
+//! use corvis_orm::{Decimal, decimal};
+//! let a = decimal!("0.1");
+//! assert_eq!((a.clone() + decimal!("0.2")).to_string(), "0.3");
 //! assert_eq!(Decimal::from(1).div(3).to_string(), "0.33333333333333333333");
-//! assert_eq!(Decimal::from("2.345").to_fixed(2), "2.35");
-//! assert_eq!(Decimal::from("-2.345").to_decimal_places_with(2, Decimal::ROUND_HALF_EVEN).to_string(), "-2.34");
+//! assert_eq!(decimal!("2.345").to_fixed(2), "2.35");
+//! assert_eq!(decimal!("-2.345").to_decimal_places_with(2, Decimal::ROUND_HALF_EVEN).to_string(), "-2.34");
+//! ```
+//!
+//! Text becomes a `Decimal` only through conversions that report invalid input: [`Decimal::parse`], `FromStr`
+//! (`"12.5".parse::<Decimal>()`) and `TryFrom<&str>` / `TryFrom<String>`, for text read at run time, and the
+//! [`decimal!`](crate::decimal!) literal, checked when the program is compiled:
+//!
+//! ```
+//! use corvis_orm::{Decimal, decimal};
+//! assert_eq!(decimal!("1.50"), Decimal::from(1.5));
+//! assert!("12,5".parse::<Decimal>().is_err());
+//! assert!(Decimal::try_from("12,5").is_err());
+//! ```
+//!
+//! An invalid literal does not compile:
+//!
+//! ```compile_fail
+//! let price = corvis_orm::decimal!("1.2.3");
 //! ```
 //!
 //! [decimal.js]: https://mikemcl.github.io/decimal.js/
@@ -216,6 +233,167 @@ fn pow10(n: u64) -> BigUint {
     BigUint::from(10u32).pow(n)
 }
 
+/// Longest text a query may give as a `Decimal`: the digits a Postgres `NUMERIC` holds (131072 before the point, 16383
+/// after it) plus room for a sign, a point and an exponent.
+pub(crate) const MAX_NUMERIC_TEXT: usize = 131_072 + 16_383 + 32;
+
+/// Most fraction bits of a `0x` / `0b` / `0o` text: each bit is one more decimal place, and a `NUMERIC` holds 16383
+/// (the bound is the next multiple of the 4 bits of a hex digit).
+pub(crate) const MAX_RADIX_FRACTION_BITS: usize = 65_536;
+
+/// Whether a query's `Decimal` text is short enough to parse: within [`MAX_NUMERIC_TEXT`], and for a `0x` / `0b` /
+/// `0o` text within [`MAX_RADIX_FRACTION_BITS`] of fraction (its exact value has one decimal digit per bit, and
+/// computing it costs accordingly: a 1 MB hex fraction took seconds). Longer text cannot be a value a `NUMERIC` holds;
+/// the engine refuses it before parsing.
+pub(crate) fn within_numeric_text_bounds(s: &str) -> bool {
+    if s.len() > MAX_NUMERIC_TEXT {
+        return false;
+    }
+    let body = s.strip_prefix(['+', '-']).unwrap_or(s);
+    let bits = match body.get(..2).map(str::to_ascii_lowercase).as_deref() {
+        Some("0x") => 4,
+        Some("0o") => 3,
+        Some("0b") => 1,
+        _ => return true,
+    };
+    let mantissa = body[2..].split(['p', 'P']).next().unwrap_or_default();
+    let fraction_digits = mantissa.split_once('.').map_or(0, |(_, f)| f.len());
+    fraction_digits.saturating_mul(bits) <= MAX_RADIX_FRACTION_BITS
+}
+
+/// Removes each `_` that sits between two decimal digits, like decimal.js (`str.replace(/(\d)_(?=\d)/g, '$1')`).
+fn strip_separators(s: &str) -> String {
+    let b = s.as_bytes();
+    s.char_indices()
+        .filter(|&(i, c)| !(c == '_' && i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).is_some_and(u8::is_ascii_digit)))
+        .map(|(_, c)| c)
+        .collect()
+}
+
+/// A lowercase `0x` / `0b` / `0o` number: `digits[.digits]` or `.digits`, then an optional `p[+-]n` (decimal.js
+/// `isHex` / `isBinary` / `isOctal`). `None` when `s` is not one.
+fn parse_radix(neg: bool, s: &str) -> Option<Decimal> {
+    let (radix, bits, rest) = match s.get(..2)? {
+        "0x" => (16, 4, &s[2..]),
+        "0b" => (2, 1, &s[2..]),
+        "0o" => (8, 3, &s[2..]),
+        _ => return None,
+    };
+    let (mantissa, p) = match rest.split_once('p') {
+        Some((m, e)) => {
+            let digits = e.strip_prefix(['+', '-']).unwrap_or(e);
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let p = digits.bytes().fold(0i64, |p, d| p.saturating_mul(10).saturating_add(i64::from(d - b'0')));
+            (m, if e.starts_with('-') { -p } else { p })
+        }
+        None => (rest, 0),
+    };
+    let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if (int.is_empty() && frac.is_empty()) || !int.chars().chain(frac.chars()).all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    let n = BigUint::parse_bytes(format!("{int}{frac}").as_bytes(), radix)?;
+    Some(binary_scaled(neg, n, bits * frac.len() as u64, p))
+}
+
+/// `n / 2^frac_bits * 2^p`, like decimal.js `parseOther`: the fraction is exact; the binary exponent (a JavaScript
+/// number there, so `p` is rounded to an `f64` first) multiplies by the number `2 ** p` when `|p| < 54`, exactly, and
+/// otherwise by `Decimal.pow(2, p)`, which leaves decimal.js' `external` flag set, so that product is rounded to the
+/// default precision (recorded in `tests/fixtures/decimal_parse.json`: `0xf.fp99999` has 20 digits).
+fn binary_scaled(neg: bool, n: BigUint, frac_bits: u64, p: i64) -> Decimal {
+    if n.is_zero() {
+        return Decimal { kind: Kind::Finite, neg, coeff: BigUint::zero(), exp: 0, cfg: &DEFAULT_CONFIG };
+    }
+    let five = BigUint::from(5u32).pow(u32::try_from(frac_bits).unwrap_or(u32::MAX));
+    let x = Decimal::finite(neg, n * five, -i64::try_from(frac_bits).unwrap_or(i64::MAX), &DEFAULT_CONFIG);
+    let p = p as f64;
+    if p == 0.0 {
+        x
+    } else if p.abs() < 54.0 {
+        x.times_exact(&Decimal::from_f64(2f64.powi(p as i32)))
+    } else {
+        // An `f64` beyond 2^53 is an integer; beyond `i64` the power is out of range anyway (`Decimal::pow`).
+        let p = if p.abs() < 9.2e18 { Decimal::from(p as i64) } else { Decimal::from_f64(p) };
+        x.times(Decimal::from(2).pow(p))
+    }
+}
+
+/// decimal.js `intPow(Ctor, x, n, pr)` of the magnitude `coeff * 10^exp` (non-zero): exponentiation by squaring
+/// where every product keeps only its `ceil(pr / 7) + 4` leading words of 7 digits (decimal.js' base 10^7 digits)
+/// and drops the rest, so no product has more than twice that many digits. When the last product was truncated
+/// and its last kept word is zero, that word becomes 1, so that rounding the result later does not take the
+/// truncated value for an exact one. Returns the unrounded result.
+fn int_pow(coeff: &BigUint, exp: i64, mut n: u64, pr: u32) -> (BigUint, i64) {
+    const WORD: u32 = 10_000_000;
+    let words = i64::from(pr.div_ceil(7)) + 4;
+    // Keeps the `words` leading words of `c * 10^e`; also says whether a non-zero part was dropped.
+    let truncate = |c: BigUint, e: i64| -> (BigUint, i64, bool) {
+        #[cfg(test)]
+        work::note_digits(ndigits(&c));
+        let top = e.saturating_add(ndigits(&c) - 1);
+        let keep_from = top.div_euclid(7).saturating_sub(words - 1).saturating_mul(7);
+        if e >= keep_from {
+            return (c, e, false);
+        }
+        let (q, r) = c.div_rem(&pow10(keep_from.abs_diff(e)));
+        (q, keep_from, !r.is_zero())
+    };
+    let (mut r, mut r_exp) = (BigUint::one(), 0i64);
+    let (mut x, mut x_exp) = (coeff.clone(), exp);
+    let mut truncated = false;
+    loop {
+        let mut last_truncated = false;
+        if n % 2 == 1 {
+            let (c, e, t) = truncate(&r * &x, r_exp.saturating_add(x_exp));
+            (r, r_exp, last_truncated) = (c, e, t);
+            truncated |= t;
+        }
+        n /= 2;
+        if n == 0 {
+            if truncated && last_truncated && (&r % WORD).is_zero() {
+                r += 1u32;
+            }
+            return (r, r_exp);
+        }
+        let (c, e, _) = truncate(&x * &x, x_exp.saturating_mul(2));
+        (x, x_exp) = (c, e);
+    }
+}
+
+/// Test-only measures of work: the longest coefficient (in decimal digits) `pow` built, and the longest text
+/// [`Decimal::parse`] read.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static MAX_DIGITS: Cell<i64> = const { Cell::new(0) };
+        static MAX_PARSED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn note_digits(n: i64) {
+        MAX_DIGITS.with(|m| m.set(m.get().max(n)));
+    }
+
+    pub(super) fn note_parsed(len: usize) {
+        MAX_PARSED.with(|m| m.set(m.get().max(len)));
+    }
+
+    /// Runs `f` and returns the longest coefficient `pow` built meanwhile.
+    pub(crate) fn max_digits(f: impl FnOnce()) -> i64 {
+        MAX_DIGITS.with(|m| m.set(0));
+        f();
+        MAX_DIGITS.with(Cell::get)
+    }
+
+    /// The longest text parsed on this thread since the last call (which resets it).
+    pub(crate) fn take_max_parsed() -> usize {
+        MAX_PARSED.with(|m| m.replace(0))
+    }
+}
+
 /// Number of decimal digits of `n` (1 for zero).
 fn ndigits(n: &BigUint) -> i64 {
     if let Some(v) = n.to_u128() {
@@ -368,10 +546,26 @@ impl Decimal {
         Decimal { kind, neg, coeff: BigUint::zero(), exp: 0, cfg }
     }
 
-    /// `new Decimal(v)`. Panics on invalid strings, like decimal.js throws; use
-    /// [`Decimal::parse`] to handle the error.
+    /// `new Decimal(v)` for a number or another `Decimal`. Text goes through [`Decimal::parse`] (or `TryFrom`,
+    /// `FromStr`), which returns the error decimal.js throws, or the [`decimal!`](crate::decimal!) literal.
     pub fn new(v: impl Into<Decimal>) -> Decimal {
         v.into()
+    }
+
+    /// The value `(-1)^negative * limbs * 10^exp`, where `limbs` are the little-endian 32-bit digits of the
+    /// coefficient. What [`decimal!`](crate::decimal!) expands to: the literal was parsed when the program was
+    /// compiled. Out of decimal.js' exponent range the value is `Infinity` or zero, like [`Decimal::parse`].
+    #[doc(hidden)]
+    pub fn from_literal_parts(negative: bool, limbs: &[u32], exp: i64) -> Decimal {
+        Decimal::finite(negative, BigUint::from_slice(limbs), exp, &DEFAULT_CONFIG)
+    }
+
+    /// The value of a `0x` / `0b` / `0o` literal of [`decimal!`](crate::decimal!): its digits as little-endian 32-bit
+    /// limbs, the bits of its fraction and its binary exponent (`0x1.8p3`: `0x18`, 4, 3), as [`Decimal::parse`]
+    /// computes it.
+    #[doc(hidden)]
+    pub fn from_radix_literal_parts(negative: bool, limbs: &[u32], frac_bits: u64, p: i64) -> Decimal {
+        binary_scaled(negative, BigUint::from_slice(limbs), frac_bits, p)
     }
 
     /// `0`
@@ -411,30 +605,33 @@ impl Decimal {
         self
     }
 
-    /// Parses a decimal.js string: `[+-]digits[.digits][e[+-]n]`, `Infinity`, `NaN`,
-    /// and `0x`/`0b`/`0o` integers.
+    /// Parses a decimal.js string: `[+-]digits[.digits][e[+-]n]`, `Infinity`, `NaN`, and `0x` / `0b` / `0o` numbers
+    /// with an optional fraction and binary exponent (`0x1.8p3`); one `_` between two decimal digits is a separator
+    /// (`1_000`). Checked input by input against decimal.js in `tests/fixtures/decimal_parse.json`.
     pub fn parse(s: &str) -> Result<Decimal, DecimalError> {
-        let (neg, body) = match s.as_bytes().first() {
+        #[cfg(test)]
+        work::note_parsed(s.len());
+        let (neg, raw) = match s.as_bytes().first() {
             Some(b'-') => (true, &s[1..]),
             Some(b'+') => (false, &s[1..]),
             _ => (false, s),
         };
-        let invalid = || DecimalError { message: format!("[DecimalError] Invalid argument: {body}") };
-        if body == "Infinity" {
-            return Ok(Decimal::special(Kind::Infinite, neg, &DEFAULT_CONFIG));
-        }
-        if body == "NaN" {
-            return Ok(Decimal::nan());
-        }
-        let lower = body.to_ascii_lowercase();
-        for (prefix, radix) in [("0x", 16u32), ("0b", 2), ("0o", 8)] {
-            if let Some(digits) = lower.strip_prefix(prefix) {
-                if digits.contains('.') || digits.contains('p') {
-                    return Err(invalid());
-                }
-                let c = BigUint::parse_bytes(digits.as_bytes(), radix).ok_or_else(invalid)?;
-                return Ok(Decimal::finite(neg, c, 0, &DEFAULT_CONFIG));
+        let stripped;
+        let body = if raw.contains('_') {
+            stripped = strip_separators(raw);
+            stripped.as_str()
+        } else {
+            if raw == "Infinity" {
+                return Ok(Decimal::special(Kind::Infinite, neg, &DEFAULT_CONFIG));
             }
+            if raw == "NaN" {
+                return Ok(Decimal::nan());
+            }
+            raw
+        };
+        let invalid = || DecimalError { message: format!("[DecimalError] Invalid argument: {body}") };
+        if let Some(d) = parse_radix(neg, &body.to_ascii_lowercase()) {
+            return Ok(d);
         }
         // /^(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?$/i
         let bytes = body.as_bytes();
@@ -1105,45 +1302,91 @@ impl Decimal {
         self.modulo(y)
     }
 
-    /// `pow` / `toPower`. Integer exponents are computed exactly and rounded to
-    /// `precision`; other exponents go through `f64` (not bit-for-bit decimal.js).
+    /// `pow` / `toPower`, rounded to `precision`. An integer exponent is computed like decimal.js: by squaring, each
+    /// product truncated to `ceil(precision / 7) + 4` words of 7 digits (`intPow`), so the work does not grow with the
+    /// exponent; a result beyond the exponent range is `Infinity` or zero. Other exponents go through `f64` (not
+    /// bit-for-bit decimal.js).
     pub fn pow(&self, y: impl Into<Decimal>) -> Decimal {
         let y = self.arg(y);
         let cfg = self.cfg;
-        if self.is_nan() || y.is_nan() {
-            return self.nan_cfg();
-        }
         if y.is_zero() {
             return Decimal::finite(false, BigUint::one(), 0, cfg);
         }
-        if y.is_integer()
-            && self.is_finite()
-            && let Some(n) = y.to_i64_exact()
-            && n.unsigned_abs() <= 100_000
-        {
-            let k = n.unsigned_abs();
-            if self.is_zero() {
-                return if n < 0 {
-                    Decimal::special(Kind::Infinite, self.neg && k % 2 == 1, cfg)
-                } else {
-                    Decimal::finite(self.neg && k % 2 == 1, BigUint::zero(), 0, cfg)
-                };
-            }
-            let neg = self.neg && k % 2 == 1;
-            // The exponent of the result is outside the range when it does not even fit an i64.
-            let Some(exp) = self.exp.checked_mul(k as i64) else {
-                let big = (self.exp > 0) == (n > 0);
-                return if big { Decimal::special(Kind::Infinite, neg, cfg) } else { Decimal::finite(neg, BigUint::zero(), 0, cfg) };
+        if self.is_nan() || y.is_nan() {
+            return self.nan_cfg();
+        }
+        let n = if y.is_integer() && self.is_finite() { y.to_i64_exact() } else { None };
+        let Some(n) = n else {
+            return self.pow_other(&y);
+        };
+        let k = n.unsigned_abs();
+        let neg = self.neg && k % 2 == 1;
+        if self.is_zero() {
+            return if n < 0 { Decimal::special(Kind::Infinite, neg, cfg) } else { Decimal::finite(neg, BigUint::zero(), 0, cfg) };
+        }
+        if self.coeff.is_one() && self.exp == 0 && !self.neg {
+            return self.clone();
+        }
+        if n == 1 {
+            return self.clone().round_sd(cfg.precision, cfg.rounding).check_range();
+        }
+        // Far beyond the exponent range (decimal.js computes the result and then overflows or underflows it).
+        let e = (self.log10_abs() * k as f64).floor();
+        if e > (MAX_E + 2) as f64 || e < (MIN_E - 2) as f64 {
+            return if (e > 0.0) == (n > 0) {
+                Decimal::special(Kind::Infinite, neg, cfg)
+            } else {
+                Decimal::finite(neg, BigUint::zero(), 0, cfg)
             };
-            let c = self.coeff.pow(k as u32);
-            let r = Decimal::finite(neg, c, exp, cfg);
-            if n < 0 {
-                return Decimal::finite(false, BigUint::one(), 0, cfg).div(r);
+        }
+        let (c, exp) = int_pow(&self.coeff, self.exp, k, cfg.precision);
+        let r = Decimal { kind: Kind::Finite, neg, coeff: c, exp, cfg };
+        if n < 0 {
+            return Decimal::finite(false, BigUint::one(), 0, cfg).div(r.check_range());
+        }
+        r.round_sd(cfg.precision, cfg.rounding).check_range()
+    }
+
+    /// `pow` of a non-integer exponent, of an integer beyond `i64`, or of an infinite base.
+    fn pow_other(&self, y: &Decimal) -> Decimal {
+        let cfg = self.cfg;
+        if self.is_finite() && !self.is_zero() && y.is_finite() {
+            let unit = self.coeff.is_one() && self.exp == 0;
+            if unit && !self.neg {
+                return self.clone();
             }
-            return r.round_sd(cfg.precision, cfg.rounding);
+            if self.neg && !y.is_integer() {
+                return self.nan_cfg();
+            }
+            let neg = self.neg && y.is_odd_integer();
+            if unit {
+                return Decimal::finite(neg, BigUint::one(), 0, cfg);
+            }
+            // decimal.js estimates the exponent of the result first and stops there when it is out of range (an
+            // underflow is a positive zero there).
+            let e = (self.log10_abs() * y.to_number()).floor();
+            if e > (MAX_E + 1) as f64 {
+                return Decimal::special(Kind::Infinite, neg, cfg);
+            }
+            if e < (MIN_E - 1) as f64 {
+                return Decimal::finite(false, BigUint::zero(), 0, cfg);
+            }
         }
         let v = self.to_number().powf(y.to_number());
         Decimal::from_f64(v).with_config(cfg).round_sd(cfg.precision, cfg.rounding)
+    }
+
+    /// `log10(|self|)` as an `f64` (finite, non-zero `self`), from the leading 64 bits of the coefficient.
+    fn log10_abs(&self) -> f64 {
+        let bits = self.coeff.bits();
+        let shift = bits.saturating_sub(64);
+        let top = (&self.coeff >> shift).to_f64().unwrap_or(1.0);
+        top.log10() + shift as f64 * std::f64::consts::LOG10_2 + self.exp as f64
+    }
+
+    /// Whether an integer is odd.
+    fn is_odd_integer(&self) -> bool {
+        self.exp == 0 && self.coeff.is_odd()
     }
     pub fn to_power(&self, y: impl Into<Decimal>) -> Decimal {
         self.pow(y)
@@ -1496,23 +1739,19 @@ impl From<&mut Decimal> for Decimal {
         v.clone()
     }
 }
-impl From<&str> for Decimal {
-    /// Panics on invalid input, like `new Decimal('abc')` throws. Use [`Decimal::parse`] otherwise.
-    fn from(s: &str) -> Self {
-        match Decimal::parse(s) {
-            Ok(d) => d,
-            Err(e) => panic!("{e}"),
-        }
+// Text becomes a `Decimal` only through conversions that can fail (`parse`, `FromStr`, `TryFrom`) or through the
+// compile-time checked `decimal!` literal: a `From<&str>` would have to panic on invalid text, and typed helpers
+// take `impl Into<Decimal>`, so text from a request could crash the handler.
+impl TryFrom<&str> for Decimal {
+    type Error = DecimalError;
+    fn try_from(s: &str) -> Result<Self, DecimalError> {
+        Decimal::parse(s)
     }
 }
-impl From<String> for Decimal {
-    fn from(s: String) -> Self {
-        Decimal::from(s.as_str())
-    }
-}
-impl From<&String> for Decimal {
-    fn from(s: &String) -> Self {
-        Decimal::from(s.as_str())
+impl TryFrom<String> for Decimal {
+    type Error = DecimalError;
+    fn try_from(s: String) -> Result<Self, DecimalError> {
+        Decimal::parse(&s)
     }
 }
 
@@ -1780,20 +2019,108 @@ impl Decimal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decimal;
 
     #[test]
     fn basics() {
-        assert_eq!(Decimal::from("1.50").to_string(), "1.5");
+        assert_eq!(decimal!("1.50").to_string(), "1.5");
         assert_eq!(Decimal::from(-0.0).to_string(), "0");
         assert_eq!(Decimal::from(-0.0).value_of(), "-0");
-        assert_eq!(Decimal::from("1e21").to_string(), "1e+21");
-        assert_eq!(Decimal::from("1e-7").to_string(), "1e-7");
-        assert_eq!(Decimal::from("0.000001").to_string(), "0.000001");
+        assert_eq!(decimal!("1e21").to_string(), "1e+21");
+        assert_eq!(decimal!("1e-7").to_string(), "1e-7");
+        assert_eq!(decimal!("0.000001").to_string(), "0.000001");
         assert_eq!(Decimal::from(1).div(3).to_string(), "0.33333333333333333333");
-        assert_eq!(Decimal::from("123.456").modulo(7).to_string(), "4.456");
+        assert_eq!(decimal!("123.456").modulo(7).to_string(), "4.456");
         assert_eq!(Decimal::from(-0.001).to_fixed(2), "-0.00");
-        assert_eq!(serde_json::to_string(&Decimal::from("-0.004").to_dp(2)).unwrap(), "\"-0\"");
+        assert_eq!(serde_json::to_string(&decimal!("-0.004").to_dp(2)).unwrap(), "\"-0\"");
         assert_eq!(Decimal::from(2).sqrt().to_string(), "1.4142135623730950488");
+    }
+
+    #[test]
+    fn the_literal_macro_gives_what_parse_gives() {
+        macro_rules! same {
+            ($($lit:literal),* $(,)?) => {$(
+                let parsed = Decimal::parse($lit).unwrap();
+                let literal = decimal!($lit);
+                assert_eq!((literal.value_of(), literal.is_negative()), (parsed.value_of(), parsed.is_negative()), $lit);
+            )*};
+        }
+        same!(
+            "0x1.8",
+            "0x1p4",
+            "0x1.8p1",
+            "0x1P-2",
+            "0x.8",
+            "0x1p-53",
+            "0x3p99999",
+            "-0x0",
+            "0b0.0001",
+            "0o1.4",
+            "1_000_000.000_1",
+            "0x1p1_0",
+            "1e1_0",
+            "0",
+            "-0",
+            "+0.000",
+            "1.50",
+            "-1.5e-3",
+            "000123.4500e2",
+            "1e21",
+            "1E+5",
+            ".5",
+            "5.",
+            "0x1F",
+            "0B101",
+            "0o17",
+            "-0xff",
+            "Infinity",
+            "-Infinity",
+            "NaN",
+            "1e9000000000000000",
+            "1e9000000000000001",
+            "-1e-9000000000000001",
+            "123456789012345678901234567890.123456789",
+            "4294967296",
+            "18446744073709551616",
+            "1e-9223372036854775808",
+        );
+    }
+
+    /// A binary exponent costs a bounded amount of work, like decimal.js' `intPow`, which keeps 7 words of 7 digits
+    /// (security review of #188: `0x1p99999` built the 30,103 digits of 2^99999).
+    #[test]
+    fn binary_exponents_do_bounded_work() {
+        for s in ["0x1p99999", "0x1p-99999", "0x1p9007199254740991", "0xf.fp99999", "0x1p54"] {
+            let digits = work::max_digits(|| {
+                Decimal::parse(s).unwrap();
+            });
+            assert!(digits <= 100, "{s}: pow built a {digits}-digit coefficient");
+        }
+        assert!(work::max_digits(|| drop(decimal!("2").pow(1_000_000_i64))) <= 100);
+    }
+
+    /// The scale of the binary NUMERIC is 16 bits on the wire and Postgres takes at most 16383; a larger one is sent
+    /// as the reference client sends it, and Postgres refuses it with `22P03` (recorded: `sec.decimal_filter_scale`).
+    /// The weight and the number of digits must fit 16 bits, or the value is a conversion error before it is sent.
+    #[test]
+    fn numeric_header_at_its_bounds() {
+        let header = |s: &str| pg::numeric_header(&Decimal::parse(s).unwrap());
+        assert_eq!(header("1e-16383").map(|h| h.2), Some(16383));
+        assert_eq!(header("1e-16384").map(|h| h.2), Some(16384));
+        assert_eq!(header("1e-65535").map(|h| h.2), Some(65535));
+        assert_eq!(header("1e-65536"), None);
+        assert!(header("1e131071").is_some());
+        assert_eq!(header("1e131072"), None);
+    }
+
+    #[test]
+    fn text_converts_only_through_fallible_conversions() {
+        assert_eq!(Decimal::try_from("1.5").unwrap(), decimal!("1.5"));
+        assert_eq!(Decimal::try_from(String::from("-2")).unwrap(), decimal!("-2"));
+        for bad in ["12,5", "", "1.2.3", "abc", "1e"] {
+            assert!(Decimal::try_from(bad).is_err(), "{bad}");
+            assert!(bad.parse::<Decimal>().is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -1840,25 +2167,25 @@ mod tests {
     #[test]
     fn numeric_encoding_never_truncates() {
         for s in ["9999e-262144", "5e262144", "1e131072", "1e-65536"] {
-            let d = Decimal::from(s);
+            let d = Decimal::parse(s).unwrap();
             assert!(!d.fits_numeric(), "{s}");
             assert!(encode_numeric(&d).is_err(), "{s}");
         }
         for s in ["1e131071", "-1e-16383", "1e-65535", "123456789.000000001", "9.9999e131071"] {
-            let d = Decimal::from(s);
+            let d = Decimal::parse(s).unwrap();
             assert!(d.fits_numeric(), "{s}");
             let back = decode_numeric(&encode_numeric(&d).unwrap()).unwrap();
             assert!(back == d, "{s}: {back:?}");
         }
         // Long coefficients encode in linear time (one decimal conversion, no per-group division).
-        let d = Decimal::from(format!("1{}.5", "7".repeat(100_000)));
+        let d = Decimal::parse(&format!("1{}.5", "7".repeat(100_000))).unwrap();
         assert_eq!(decode_numeric(&encode_numeric(&d).unwrap()).unwrap(), d);
     }
 
     #[test]
     fn numeric_roundtrip() {
         for s in ["0", "1", "-1", "24.5", "0.0001", "12345678.12345678", "1e30", "-0.00000123", "10000", "99999999999999999999.99"] {
-            let d = Decimal::from(s);
+            let d = Decimal::parse(s).unwrap();
             let back = decode_numeric(&encode_numeric(&d).unwrap()).unwrap();
             assert_eq!(back.to_string(), d.to_string(), "{s}");
         }

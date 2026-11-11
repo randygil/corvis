@@ -9,13 +9,30 @@
 #[path = "common/pg.rs"]
 mod pg;
 
+#[path = "common/oracle.rs"]
+mod compare;
+
 #[allow(dead_code)]
 mod oracle {
     include!("generated/oracle.rs");
 }
 
-use corvis_orm::{DateTime, Decimal, Model, ModelMeta, OrmClient, OrmError, RawSql, ToSqlArg};
-use serde_json::{Value, json};
+use corvis_orm::{DateTime, Decimal, Model, ModelMeta, OrmClient, RawSql, ToSqlArg};
+use serde_json::Value;
+
+/// Cases that differ from the recording on purpose: (label, reason). An entry that no longer differs fails the test,
+/// so the table cannot go stale.
+const KNOWN_DIFFERENCES: &[(&str, &str)] = &[
+    (
+        "json.nested_jsonnull_create",
+        "security review of #188, round 2: a `DbNull` / `JsonNull` / `AnyNull` inside a Json value (not its whole value) is \
+         a validation error in Corvis; the reference client stores its name (`{\"a\": \"JsonNull\"}`)",
+    ),
+    ("json.nested_jsonnull_create_many", "the same, in `createMany`"),
+    ("json.nested_anynull_equals", "the same in a filter, where the reference client compares with `{\"a\": \"AnyNull\"}`"),
+    ("json.nested_after", "follows from `json.nested_jsonnull_create*`: Corvis created neither row"),
+    ("json.nested_cleanup", "the same: Corvis deletes 0 rows where the reference client deletes 2, and then both have the same rows"),
+];
 
 fn meta_of(model: &str) -> &'static ModelMeta {
     match model {
@@ -33,52 +50,6 @@ fn meta_of(model: &str) -> &'static ModelMeta {
     }
 }
 
-/// `updatedAt` values depend on the clock.
-fn normalize(v: &mut Value) {
-    match v {
-        Value::Object(m) => {
-            for (k, x) in m.iter_mut() {
-                if k == "updatedAt" && x.is_string() {
-                    *x = json!("<now>");
-                } else {
-                    normalize(x);
-                }
-            }
-        }
-        Value::Array(a) => a.iter_mut().for_each(normalize),
-        // The recorder (`plain()` in cases.js) writes BigInts beyond Number.MAX_SAFE_INTEGER as strings.
-        Value::Number(n) if n.as_i64().is_some_and(|i| i.unsigned_abs() > 9_007_199_254_740_991) => {
-            *v = Value::String(n.to_string());
-        }
-        _ => {}
-    }
-}
-
-/// The core message (the reference client prefixes it with the invocation and argument tree).
-fn core_message(msg: &str) -> String {
-    let m = msg.trim();
-    m.rsplit("\n\n").next().unwrap_or(m).trim().to_string()
-}
-
-/// The error class names recorded in the fixture (the reference client's `error.name`).
-fn recorded_name(e: &OrmError) -> &'static str {
-    match e {
-        OrmError::KnownRequest(_) => "PrismaClientKnownRequestError",
-        OrmError::Validation(_) => "PrismaClientValidationError",
-        OrmError::Initialization(_) => "PrismaClientInitializationError",
-        OrmError::UnknownRequest(_) => "PrismaClientUnknownRequestError",
-    }
-}
-
-fn error_json(e: &OrmError) -> Value {
-    json!({
-        "name": recorded_name(e),
-        "code": e.code(),
-        "meta": e.meta().cloned(),
-        "message": core_message(e.message()),
-    })
-}
-
 /// `[strings, ...values]` of a tagged `sql` case; `{ $date }`, `{ $decimal }` and `{ $json }` mark typed values.
 fn typed_sql(args: &[Value]) -> RawSql {
     let strings: Vec<String> = args[0].as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect();
@@ -86,7 +57,7 @@ fn typed_sql(args: &[Value]) -> RawSql {
         .iter()
         .map(|v| match v {
             Value::Object(o) if o.contains_key("$date") => DateTime::parse(o["$date"].as_str().unwrap()).unwrap().to_sql_arg(),
-            Value::Object(o) if o.contains_key("$decimal") => Decimal::from(o["$decimal"].as_str().unwrap()).to_sql_arg(),
+            Value::Object(o) if o.contains_key("$decimal") => Decimal::parse(o["$decimal"].as_str().unwrap()).unwrap().to_sql_arg(),
             Value::Object(o) if o.contains_key("$json") => o["$json"].to_sql_arg(),
             Value::Array(a) => a.iter().map(|x| x.as_i64().unwrap()).collect::<Vec<i64>>().to_sql_arg(),
             Value::Number(n) if n.is_i64() => n.as_i64().unwrap().to_sql_arg(),
@@ -99,9 +70,39 @@ fn typed_sql(args: &[Value]) -> RawSql {
 
 #[tokio::test]
 async fn matches_reference_client() {
-    let Some(url) = pg::fresh_db("oracle_rs").await else { return };
+    let Some((url, _drop)) = pg::fresh_db_bounded("oracle_rs", 30).await else { return };
     let db = OrmClient::new(url).unwrap();
     db.db_execute(include_str!("fixtures/oracle/migration.sql")).await.unwrap();
+    run_cases(&db).await;
+}
+
+/// The same cases on a database built by `db push` of the generated models, with the oracle's block of extras (a
+/// `CHECK` and a trigger written by hand after the migration) applied after the push.
+#[tokio::test]
+async fn matches_reference_client_on_a_pushed_database() {
+    let Some((url, _drop)) = pg::fresh_db_bounded("oracle_rs_pushed", 30).await else { return };
+    let db = OrmClient::new(url).unwrap();
+    db.db_push::<(
+        oracle::User,
+        oracle::Profile,
+        oracle::Post,
+        oracle::Comment,
+        oracle::Category,
+        oracle::Group,
+        oracle::Wallet,
+        oracle::Pair,
+        oracle::Entry,
+        oracle::Rate,
+    )>()
+    .await
+    .unwrap();
+    let migration = include_str!("fixtures/oracle/migration.sql");
+    let extras = &migration[migration.find("-- Oracle extras").expect("the migration has its block of extras")..];
+    db.db_execute(extras).await.unwrap();
+    run_cases(&db).await;
+}
+
+async fn run_cases(db: &OrmClient) {
     let cases: Vec<Value> = serde_json::from_str(include_str!("fixtures/oracle/results.json")).unwrap();
     let only = std::env::var("ORACLE_ONLY").ok();
     let mut failures = Vec::new();
@@ -122,38 +123,20 @@ async fn matches_reference_client() {
                 db._execute_raw_unsafe(sql, params).await.map(Value::from)
             }
         } else {
-            db.query_json(meta_of(model), action, c["args"].clone()).await
+            let mut args = c["args"].clone();
+            compare::revive(&mut args);
+            db.query_json(meta_of(model), action, args).await
         };
         if only.as_deref().is_some_and(|o| !label.starts_with(o)) {
             continue;
         }
-        let (got, expected) = match (res, c.get("result"), c.get("error")) {
-            (Ok(mut v), Some(exp), _) => {
-                let mut exp = exp.clone();
-                normalize(&mut v);
-                normalize(&mut exp);
-                (v, exp)
+        let known = KNOWN_DIFFERENCES.iter().find(|(l, _)| *l == label);
+        match (compare::compare(c, res), known) {
+            (Some(diff), None) => failures.push(diff),
+            (None, Some((_, reason))) => {
+                failures.push(format!("[{label}] is listed in KNOWN_DIFFERENCES ({reason}) but no longer differs: remove the entry"));
             }
-            (Err(e), _, Some(exp)) => {
-                let mut exp = exp.clone();
-                let is_validation = exp["name"] == "PrismaClientValidationError";
-                exp["message"] = json!(core_message(exp["message"].as_str().unwrap_or("")));
-                let mut got = error_json(&e);
-                if is_validation {
-                    // The argument tree of validation errors is not reproduced: compare the name only.
-                    got = json!({ "name": got["name"] });
-                    exp = json!({ "name": exp["name"] });
-                }
-                (got, exp)
-            }
-            (Ok(v), None, Some(exp)) => (json!({ "ok": v }), json!({ "error": exp })),
-            (Err(e), Some(exp), _) => (json!({ "error": error_json(&e) }), json!({ "ok": exp })),
-            _ => unreachable!(),
-        };
-        // Compare as text so that key order matters too.
-        let (g, x) = (serde_json::to_string(&got).unwrap(), serde_json::to_string(&expected).unwrap());
-        if g != x {
-            failures.push(format!("[{label}]\n  expected: {x}\n  got:      {g}"));
+            _ => {}
         }
     }
     if !failures.is_empty() {

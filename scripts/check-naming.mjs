@@ -64,9 +64,11 @@ const ALLOW = [
   { path: 'crates/corvis/tests/fixtures/**', reason: 'oracle scripts and recorded output of the original Node libraries' },
   { path: 'crates/corvis-orm/tests/fixtures/**', reason: 'oracle schema and recorded output of the original client' },
   { path: 'crates/corvis-swagger/tests/fixtures/**', reason: 'oracle script and recorded output of the original OpenAPI plugin' },
-  { path: 'crates/corvis-orm/tests/pg_oracle.rs', reason: 'maps errors to the original client error class names of the recorded oracle' },
+  { path: 'crates/corvis-orm/tests/common/oracle.rs', reason: 'maps errors to the original client error class names of the recorded oracles' },
+  { path: 'crates/corvis-orm/tests/sqlite_oracle.rs', pattern: /@prisma\/client/, reason: 'checks that the SQLite oracle names the original client it was recorded with' },
   { path: 'crates/corvis-orm/tests/generated/*.rs', reason: 'generated from the reference apps\' schemas; header paths and copied schema comments' },
   { path: 'crates/corvis-orm/tests/pg_houseplan.rs', pattern: /houseplan\/api\/prisma\/migrations/, reason: 'migrations folder of the reference app the test runs' },
+  { path: 'crates/corvis-orm/tests/db_push.rs', pattern: /houseplan\/api\/prisma\/migrations/, reason: 'migrations folder of the reference app whose catalog the test compares' },
 
   // Out of scope here, with their own tasks.
   { path: 'crates/corvis-orm/README.md', pattern: /prisma\/(?:migrations|schema\.prisma)/, reason: `${COMPAT}: folder layout in the corvis-orm README` },
@@ -156,7 +158,7 @@ function selfTest() {
   expect('"nested" and "nesting" pass', run('crates/corvis/src/lib.rs', '// nested routes, nesting depth, the soonest').length === 0)
   expect('schema.prisma passes', run('crates/corvis-orm/src/lib.rs', '//! The `schema.prisma` equivalent; reads *.prisma files').length === 0)
   expect('_prisma_migrations passes', run('crates/corvis-orm/src/client.rs', '// writes to "_prisma_migrations"').length === 0)
-  expect('an allowlisted fixture passes', run('crates/corvis-orm/tests/pg_oracle.rs', '"PrismaClientKnownRequestError",').length === 0)
+  expect('an allowlisted fixture passes', run('crates/corvis-orm/tests/common/oracle.rs', '"PrismaClientKnownRequestError",').length === 0)
   expect('an allowlist pattern only hides what it matches',
     run('crates/corvis-orm/src/migrate.rs', '// https://pris.ly/d/migrate-resolve, as in Nest').length === 1)
   expect('an entry with an empty reason fails', validate([{ path: 'x', reason: '' }]).length === 1)

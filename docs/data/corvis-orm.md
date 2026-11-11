@@ -155,6 +155,17 @@ The first argument of `for_root_async` and `for_root_from_config` says whether t
 
 `push` does not modify or drop existing columns: use migrations for production.
 
+### What `push` creates
+
+`push` (and `db.db_push::<(A, B)>()`) creates what the models need and the database does not have yet, the way the original client's migration for the same models would:
+
+- Tables with every column, its type, nullability and default (`now()` as `CURRENT_TIMESTAMP`, `dbgenerated(..)`, literals, enum defaults by their `@map` value), and the primary key over all `@id` / `@@id` fields, named like the reference (`<table>_pkey` or `map:`).
+- Unique indexes for `@unique` and `@@unique`, plain indexes for `@@index` (with `USING HASH`, `GIN`, `GIST`, `SPGIST` or `BRIN` on Postgres), and the join table of every implicit many-to-many relation (`_CategoryToPost`, columns `A` and `B`), all named like the reference.
+- Foreign keys with their `onDelete` / `onUpdate` actions (on SQLite inside `CREATE TABLE`).
+- On Postgres: enum types (`CREATE TYPE "role_t" AS ENUM (...)`), the `@@schema` schemas, scalar lists as arrays (`INTEGER[]`), the `@db.*` native types (`UUID`, `DATE`, `VARCHAR(n)`, `TIMESTAMPTZ(p)`, `DECIMAL(p,s)`, `JSON`, ...) and `TIMESTAMP(3)` for a `DateTime` without one. On SQLite, `Decimal` columns are `DECIMAL` and scalar lists are JSON text (a Corvis extension: the original does not support lists on SQLite).
+
+The whole push runs in one transaction: if a statement fails, nothing is left behind. A construct it cannot build (a native type or an index type it does not know) is a validation error that names the model, the field and the construct, before any statement runs. Tables that already exist are left as they are, so a database pushed by an earlier version of Corvis keeps its old column types (`TIMESTAMPTZ(3)`, `TEXT` for enums and decimals); re-create a development database with `db_push_force_reset::<Models>()`, which drops the tables of the models (and the join tables between them) and pushes them again, in one transaction.
+
 ## Connection pool
 
 The pool is sized and timed from the database URL, the same way the original client does it, so an app that keeps its `DATABASE_URL` keeps its pool:
@@ -337,6 +348,45 @@ The closure commits if it returns `Ok` and rolls back if it returns `Err`. `_tra
 
 `sql!("SELECT ... WHERE id = {id}")` builds a parameterized query: every `{expr}` is a parameter, never concatenated text. It runs with `db._query_raw(..)`, `_query_raw_as::<T>(..)` or `_execute_raw(..)`.
 
+`RawSql::join(values, ",", "(", ")")` of an empty list does not panic: the statement carries the original client's error ("Expected `join([])` to be called with an array of multiple elements, but got an empty array"), also when it is nested in another one, and running it fails with a validation error before anything is sent.
+
+### Decimals
+
+Text becomes a `Decimal` only through conversions that report invalid input: `Decimal::parse`, `"12.5".parse::<Decimal>()` and `Decimal::try_from(..)` for text that arrives at run time, and the `decimal!("1.50")` literal, checked when the program is compiled (an invalid literal does not compile). `From<&str>` and `From<String>` no longer exist: they panicked on invalid text, and since the typed helpers take `impl Into<Decimal>`, text from a request could crash the handler.
+
+```rust
+use corvis_orm::{decimal, Decimal};
+
+let rate = decimal!("40.50");                   // was: Decimal::from("40.50")
+let amount: Decimal = input.parse()?;           // was: Decimal::from(input.as_str()), which panicked
+let users = db.wallet().find_many(vec![wallet::amount::gte(decimal!("100"))]).await?;
+```
+
+A `DecimalCtor` (`Decimal.clone({...})`) reads text with `D.parse("1234.5678")?` instead of `D.of("1234.5678")`. Parsing and `decimal!` accept what decimal.js accepts, checked input by input against it: `0x`, `0b` and `0o` numbers with a fraction and a binary exponent (`0x1.8p3`), and one `_` between two digits (`1_000`).
+
+`"NaN"`, `"Infinity"` and `"-Infinity"` are not `Decimal` input in a query: a filter or a write that gives them to a `Decimal` field fails with a validation error on both databases, as with the original. On SQLite they used to be compared as text. A `Float` field takes no text at all (`"Infinity"` included), as in the original. A `Decimal` text longer than any `NUMERIC` can hold (more than 147,487 characters, or a `0x` / `0b` / `0o` text with more than 65,536 bits of fraction) is refused before it is parsed.
+
+`corvis_orm::or_undefined(value)` writes a non-finite float as `null`, like the original sends `NaN`, but a value that fails to serialize makes the query fail with a validation error instead of becoming `null`.
+
+### Json nulls
+
+A `Json` field has two nulls: the database `NULL` and the JSON value `null`. Write them with `corvis_orm::db_null()` (the database `NULL`), `corvis_orm::json_null()` (the JSON `null`) and, in filters, `corvis_orm::any_null()` (either):
+
+```rust
+db.query_json(User::meta(), "update", json!({ "where": { "id": 1 }, "data": { "data": corvis_orm::db_null() } })).await?;
+let empty = db.query_json(User::meta(), "findMany", json!({ "where": { "data": { "equals": corvis_orm::any_null() } } })).await?;
+```
+
+They are whole values only: the value of a Json field in `data`, or the operand of `equals` / `not` in a Json filter. Inside a Json value (`{ "deletedAt": corvis_orm::json_null() }`, `[corvis_orm::db_null()]`), as an item of a `Json[]` field, or given to another operator they make the query fail with a validation error. The original stores the name there (`{ "deletedAt": "JsonNull" }`); write `null` for the JSON `null` inside a value. Like `undefined()`, these values carry a secret of the process: arguments built with them are for the ORM only, never for a response or a log (see [Security](#security)).
+
+::: warning Changed: `{ "$type": "DbNull" }` is JSON data
+The plain object `{ "$type": "DbNull" }` (and `"JsonNull"`, `"AnyNull"`) used to mean these nulls. A request body can carry that object, so a client could turn its JSON value into a database `NULL` or into an `IS NULL` filter. It is now JSON data like any other object, as in the original client, where only `DbNull`, `JsonNull` and `AnyNull` themselves are the nulls. Replace `json!({ "$type": "DbNull" })` with `corvis_orm::db_null()`, and the same for the other two.
+:::
+
+### Typed helpers and non-finite floats
+
+A value given to a typed helper (`user::score::equals(..)`, `set`, `increment`, `has`, `push`, ...) that fails to serialize, or an `f32` / `f64` that is `NaN` or infinite (alone, in a list or in an `Option`), makes the query fail with a validation error before any SQL runs. It used to become `null`, so `score::equals(f64::NAN)` read the rows where `score IS NULL` and `score::not(f64::NAN)` changed every row with a score. Write `is_null()`, `is_not_null()` or `set_null()` for `null`.
+
 ## HTTP errors
 
 Queries return `OrmError`, with the `P2xxx` codes of the reference client (`P2002` duplicate unique key, `P2025` record not found, ...). There are two ways to turn them into responses:
@@ -385,14 +435,40 @@ From code: `db.migrate_deploy(dir).await` and `db.migrate_status(dir).await`. Th
 ## Security
 
 - In production with Postgres, use `sslmode=verify-full` in the URL; `prefer` (the default) does not protect against an attacker on the network. TLS comes from the `tls-rustls` feature (a default one); connection errors show only `host:port`, never the user, the password or the query string.
-- Passing a request's JSON directly to a query gives the client all the operators, `select` and `include`. Build the arguments from the fields the route allows, or validate the body with a strict schema.
+- The JSON form of a query is a query language, not data. A `serde_json::Value` taken from a request must never be forwarded as `where` or `data`: it gives the client every operator, `select` and `include`, and many shapes match every row, as in the original client: `{ "token": {} }`, `{ "token": { "notIn": [] } }`, `{ "AND": [] }`, or an object whose duplicated key leaves `{}`. A lookup by a secret such as `{ "reset_token": body["token"] }` then finds any user. Build the arguments from validated fields of the types the route expects (`body.token: String`), or validate the body with a strict schema first.
 - Arguments nested more than 125 levels deep are rejected before they are processed (`max_query_depth`, adjustable with `OrmClientOptions::max_query_depth(n)`).
 - A `where` with a NUL character (`\u0000`) in a string, a JSON `path` segment or a JSON key is a validation error on every database, before any SQL runs. PostgreSQL cannot store NUL in `text` or `jsonb`, and the original client answers with a raw database error; Corvis answers with a validation error (`400` through `OrmExceptionFilter`) instead.
 - In unique inputs (`findUnique`, `update`, `upsert`, `delete`, ...) the `@id` and `@unique` fields only accept the value (`{ email: "a@b.c" }`), never a filter such as `{ equals }` or `{ not }`, nor `null`.
 - Out-of-range numbers are errors, never truncated values: a `BigInt` beyond 64 bits, a `Bytes` byte outside `0..=255`, a `Decimal` that does not fit a Postgres `NUMERIC`, or a negative `limit` in `update_many`/`delete_many` (`P2019`).
 - `update`, `delete` and the `*_many` operations repeat their `where` in the `UPDATE`/`DELETE`, so optimistic concurrency (`where: { id, version }`) has a single winner.
 - `log_queries` writes the parameter values to the logs.
+- `corvis_orm::undefined()` and the Json nulls are values no request can produce: each carries a random marker drawn when the process starts, one per kind. A string or an object that arrives in a request body is always data, never "leave this condition out" or "compare with `NULL`". The marker is never stored (a Json null is accepted only as a whole value, see [Json nulls](#json-nulls)), never sent to the database, and the ORM's errors and the `Debug` output of its typed parameters show only its kind (`undefined`, `DbNull`).
+- **Arguments built with `undefined()`, `or_undefined(..)`, `db_null()`, `json_null()` or `any_null()` are for the ORM only.** Never serialize such a value into a response, a log line or a message: for example, a list endpoint that echoes "the filter applied" built as `json!({ "status": or_undefined(status) })` would send the marker's secret to the client, who could then send it back and drop conditions again. Build what you echo from your own validated fields (`status: Option<Status>`), and do not log the arguments (`{:?}` of a `json!` value shows the secret). This is the application's responsibility until the ORM takes its arguments as a type of its own: today they are `serde_json::Value`, a type the ORM cannot tell apart from any other JSON once it leaves the query, so it cannot redact a response or a log it does not write.
 - The SQLite that `sqlx` 0.8 bundles is older than 3.54.0 and has a known flaw (RUSTSEC-2026-0459): opening a database file together with a crafted `-wal` file can return stale bytes from the process's memory in query results. Only open SQLite files your application created; never a database or `-wal` file that a less trusted party could have written. The upgrade is tracked in [#155](https://github.com/randygil/corvis/issues/155).
+
+## PostgreSQL and SQLite differences
+
+Most queries give the same results on both databases. These do not. Each row was recorded with the original client on
+both databases (the oracles of `crates/corvis-orm/tests/`), and Corvis does what the original does, except where the
+last column says otherwise.
+
+| What | PostgreSQL | SQLite |
+|---|---|---|
+| `contains`, `startsWith`, `endsWith` | Case-sensitive | `LIKE`: folds ASCII letters only (`"ANA"` matches `"ana@x.io"`, `"JOSÉ"` does not match `"José"`). The original reads `%` and `_` of the input as wildcards there (`contains: "%"` matches every row); Corvis matches them literally, as on Postgres |
+| `mode: "insensitive"` | Folds every letter (`ILIKE`, `LOWER`) | The original rejects `mode` on SQLite. Corvis accepts it as an extension: `LOWER` folds ASCII letters only |
+| JSON `path` | A list (`["a", "0"]`) | The original takes one string (`"$.a[0]"`; `"$.0"` and `'$."0"'` are the key `"0"`) and rejects the list form and the `array_*` filters. Corvis also accepts both as an extension, a numeric segment of a list being an array index |
+| `search` | Full-text search (`to_tsquery`; the original needs the `fullTextSearchPostgres` preview feature) | Not in the original. Corvis extension: every term must appear in the text (`INSTR`), case-insensitive |
+| `createMany` with `skipDuplicates` | `ON CONFLICT DO NOTHING` | Not in the original. Corvis extension: `INSERT OR IGNORE` |
+| `Decimal` | Exact, with the precision and scale of the column | A number with 15 significant digits (numeric affinity), like the original's SQLite migration; `_avg` keeps 16 significant digits. Comparisons, ordering and aggregates read the column with `CAST(.. AS NUMERIC)`, so they are numeric on `TEXT` columns of earlier pushes too; the cast keeps a plain index on the column from serving a range |
+| Writing a `Decimal` beyond the column's precision | Fails (`numeric field overflow`) | The original stores it (`1e100`). Corvis refuses a value beyond `Decimal(65, 30)` (or the field's `@db.Decimal(p, s)`), the bound of its security review, and an arithmetic update (`increment`, `multiply`, ...) whose result leaves it: the statement fails with the error Postgres gives and SQLite undoes it, every row of it |
+| Writing an `Int` beyond 32 bits | Fails (conversion error) | The original stores it, and then every read of the row fails with `P2023`, so one value breaks every list of the table. Corvis refuses it with the error Postgres gives, before any SQL runs (security over parity) |
+| Filtering on an `Int` beyond 32 bits, or a `Decimal` beyond `NUMERIC` | Fails (conversion error) | Runs, comparing numbers |
+| Scalar lists (`String[]`) | Arrays | JSON text (a Corvis extension; the original does not support lists on SQLite) |
+| `NaN` and infinite floats | Sent as `null` by the original (`ratio: NaN` is `ratio IS NULL`) | The same. Corvis sends `null` too in JSON arguments; its typed helpers refuse such values instead (see above) |
+| `divide: 0` | Fails (`22012`, division by zero); `null` stays `null` | The result is `null`: `P2011` on a required column, `null` stored in an optional one |
+| `increment` past the range of an `Int` | Fails (`22003`) | The original stores the value (SQLite integers are 64-bit) and reading the row fails with `P2023` (`Value 2147483648 does not fit in an INT column`). Corvis fails the statement with the error Postgres gives (`22003`, `integer out of range`), and SQLite undoes it |
+| An `Int` column holding a fraction or a number beyond 32 bits (written by another program) | Cannot happen | Reading the row fails with `P2023`, never a truncated or saturated value |
+| `increment` / `multiply` past the range of a `BigInt` or to an infinite `Float` | Fails (`22003`, `bigint out of range` / `value out of range: overflow`) | The original stores a float in the `BigInt` column, or `inf`, and every read of the row then fails with `P2023`. Corvis fails the statement with the error Postgres gives, and SQLite undoes it. A `BigInt` column holding a float or a `Float` column holding an infinity (written by another program) reads as `P2023`, like in the original |
 
 ## What is not supported
 

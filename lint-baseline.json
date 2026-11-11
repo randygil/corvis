@@ -154,7 +154,7 @@
       },
       "missing_debug_implementations": {
         "crates/corvis/src/__private.rs": 9,
-        "crates/corvis/src/application.rs": 4,
+        "crates/corvis/src/application.rs": 5,
         "crates/corvis/src/application/introspection.rs": 2,
         "crates/corvis/src/auth/authenticator.rs": 1,
         "crates/corvis/src/auth/guard.rs": 1,
@@ -435,11 +435,10 @@
         "crates/corvis-orm/src/decimal.rs": 1,
         "crates/corvis-orm/src/meta.rs": 1,
         "crates/corvis-orm/src/query.rs": 1,
-        "crates/corvis-orm/src/raw.rs": 1,
         "crates/corvis-orm/src/util.rs": 1
       },
       "clippy::panic": {
-        "crates/corvis-orm/src/decimal.rs": 2
+        "crates/corvis-orm/src/decimal.rs": 1
       },
       "clippy::print_stderr": {
         "crates/corvis-orm/src/bin/corvis-orm.rs": 1
@@ -456,7 +455,7 @@
         "crates/corvis-orm/src/engine/write.rs": 6,
         "crates/corvis-orm/src/meta.rs": 4,
         "crates/corvis-orm/src/query.rs": 1,
-        "crates/corvis-orm/src/schema.rs": 2,
+        "crates/corvis-orm/src/schema.rs": 1,
         "crates/corvis-orm/src/util.rs": 2
       },
       "missing_debug_implementations": {
@@ -472,7 +471,7 @@
         "crates/corvis-orm/src/migrate.rs": 4,
         "crates/corvis-orm/src/module.rs": 9,
         "crates/corvis-orm/src/psl.rs": 58,
-        "crates/corvis-orm/src/query.rs": 17,
+        "crates/corvis-orm/src/query.rs": 15,
         "crates/corvis-orm/src/raw.rs": 3,
         "crates/corvis-orm/src/serde_helpers.rs": 2,
         "crates/corvis-orm/src/transaction.rs": 12

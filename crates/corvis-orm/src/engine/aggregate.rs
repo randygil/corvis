@@ -165,6 +165,7 @@ impl Engine {
         }
         q.push(sql_func(group)).push("(");
         match f {
+            Some(f) if group != "_count" => self.operand(q, alias, f),
             Some(f) => {
                 q.col(alias, f.column);
             }
@@ -180,6 +181,14 @@ impl Engine {
 
     /// Converts a decoded aggregate into the output type of the reference client.
     fn agg_value(&self, a: &Agg, v: Value) -> Value {
+        // SQLite computes `AVG` as a double; the reference client keeps 16 significant digits of it (recorded:
+        // `3002399751580330` for 9007199254740991 / 3, `"1.333333333333333"` for a `Decimal` 4 / 3).
+        let v = match (a.group, self.dialect(), v.as_f64()) {
+            ("_avg", Dialect::Sqlite, Some(x)) if x.is_finite() => {
+                format!("{x:.15e}").parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(v, Value::Number)
+            }
+            _ => v,
+        };
         match (a.group, a.field) {
             ("_count", _) => Value::from(v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or(0)),
             (_, Some(f)) if f.kind == FieldKind::Decimal => coerce(FieldKind::Decimal, v),
@@ -538,6 +547,19 @@ impl Engine {
         Ok(())
     }
 
+    /// Binds the value an aggregate of `f` is compared with. An aggregate has no type affinity in SQLite, so
+    /// a `Decimal` operand (bound as text) is cast to a number there; otherwise the number would be compared
+    /// with a string.
+    fn bind_agg_operand(&self, q: &mut Sql, group: &str, f: &'static FieldMeta, v: &Value) -> Result<()> {
+        let value = self.agg_operand(group, f, v)?;
+        if group != "_count" && self.numeric_operand(f) {
+            q.push("CAST(").bind(value).push(" AS NUMERIC)");
+        } else {
+            q.bind(value);
+        }
+        Ok(())
+    }
+
     /// The value bound when comparing an aggregate of `f`.
     fn agg_operand(&self, group: &str, f: &'static FieldMeta, v: &Value) -> Result<SqlValue> {
         let bad = |expected: &str| {
@@ -569,13 +591,14 @@ impl Engine {
             if i > 0 {
                 q.push(" AND ");
             }
+            // The reference client refuses `null` in an aggregate filter (recorded: `having.*_null`), where a field
+            // filter takes `equals: null` / `not: null` as `IS NULL` / `IS NOT NULL`.
+            if val.is_null() && matches!(op.as_str(), "equals" | "lt" | "lte" | "gt" | "gte" | "not") {
+                return Err(self.err(format!("Argument `{op}` must not be null.")));
+            }
             match op.as_str() {
                 "equals" | "lt" | "lte" | "gt" | "gte" => {
                     self.agg_expr_sql(q, "t0", group, field);
-                    if val.is_null() {
-                        q.push(" IS NULL");
-                        continue;
-                    }
                     let sym = match op.as_str() {
                         "equals" => " = ",
                         "lt" => " < ",
@@ -583,14 +606,20 @@ impl Engine {
                         "gt" => " > ",
                         _ => " >= ",
                     };
-                    let v = self.agg_operand(group, f, val)?;
-                    q.push(sym).bind(v);
+                    q.push(sym);
+                    self.bind_agg_operand(q, group, f, val)?;
                 }
                 "in" | "notIn" => {
                     let items = match val {
                         Value::Array(a) => a.clone(),
                         other => vec![other.clone()],
                     };
+                    if items.iter().any(Value::is_null) {
+                        return Err(self.err(format!(
+                            "Argument `{op}`: Invalid value provided. Expected List{}FieldRefInput, provided a list with Null.",
+                            f.kind.schema_name()
+                        )));
+                    }
                     if items.is_empty() {
                         q.push(if op == "in" { "1=0" } else { "1=1" });
                         continue;
@@ -601,24 +630,19 @@ impl Engine {
                         if j > 0 {
                             q.push(", ");
                         }
-                        let v = self.agg_operand(group, f, it)?;
-                        q.bind(v);
+                        self.bind_agg_operand(q, group, f, it)?;
                     }
                     q.push(")");
                 }
                 "not" => match val {
-                    Value::Null => {
-                        self.agg_expr_sql(q, "t0", group, field);
-                        q.push(" IS NOT NULL");
-                    }
                     Value::Object(_) => {
                         q.push("NOT ");
                         self.agg_filter_sql(q, group, f, val)?;
                     }
                     other => {
                         self.agg_expr_sql(q, "t0", group, field);
-                        let v = self.agg_operand(group, f, other)?;
-                        q.push(" <> ").bind(v);
+                        q.push(" <> ");
+                        self.bind_agg_operand(q, group, f, other)?;
                     }
                 },
                 other => {

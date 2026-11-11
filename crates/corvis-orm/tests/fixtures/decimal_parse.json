@@ -1,0 +1,533 @@
+{
+ "recorded_with": "decimal.js 10.6.0",
+ "script": "corvis-tests/tmp/orm/decimal_parse/cases.js",
+ "cases": [
+  {
+   "input": "1.50",
+   "value": "1.5",
+   "negative": false
+  },
+  {
+   "input": "-0",
+   "value": "0",
+   "negative": true
+  },
+  {
+   "input": "+0.000",
+   "value": "0",
+   "negative": false
+  },
+  {
+   "input": ".5",
+   "value": "0.5",
+   "negative": false
+  },
+  {
+   "input": "5.",
+   "value": "5",
+   "negative": false
+  },
+  {
+   "input": "1e5",
+   "value": "100000",
+   "negative": false
+  },
+  {
+   "input": "1E-5",
+   "value": "0.00001",
+   "negative": false
+  },
+  {
+   "input": "1e+5",
+   "value": "100000",
+   "negative": false
+  },
+  {
+   "input": "000123.4500e2",
+   "value": "12345",
+   "negative": false
+  },
+  {
+   "input": "1e",
+   "error": "[DecimalError] Invalid argument: 1e"
+  },
+  {
+   "input": "1e+",
+   "error": "[DecimalError] Invalid argument: 1e+"
+  },
+  {
+   "input": ".",
+   "error": "[DecimalError] Invalid argument: ."
+  },
+  {
+   "input": "",
+   "error": "[DecimalError] Invalid argument: "
+  },
+  {
+   "input": "-",
+   "error": "[DecimalError] Invalid argument: "
+  },
+  {
+   "input": "+",
+   "error": "[DecimalError] Invalid argument: "
+  },
+  {
+   "input": "1_000",
+   "value": "1000",
+   "negative": false
+  },
+  {
+   "input": "+1",
+   "value": "1",
+   "negative": false
+  },
+  {
+   "input": "--1",
+   "error": "[DecimalError] Invalid argument: -1"
+  },
+  {
+   "input": "+-1",
+   "error": "[DecimalError] Invalid argument: -1"
+  },
+  {
+   "input": " 1",
+   "error": "[DecimalError] Invalid argument:  1"
+  },
+  {
+   "input": "1 ",
+   "error": "[DecimalError] Invalid argument: 1 "
+  },
+  {
+   "input": "1,5",
+   "error": "[DecimalError] Invalid argument: 1,5"
+  },
+  {
+   "input": "12,5",
+   "error": "[DecimalError] Invalid argument: 12,5"
+  },
+  {
+   "input": "1.2.3",
+   "error": "[DecimalError] Invalid argument: 1.2.3"
+  },
+  {
+   "input": "abc",
+   "error": "[DecimalError] Invalid argument: abc"
+  },
+  {
+   "input": "1e5.5",
+   "error": "[DecimalError] Invalid argument: 1e5.5"
+  },
+  {
+   "input": "0.0e0",
+   "value": "0",
+   "negative": false
+  },
+  {
+   "input": "Infinity",
+   "value": "Infinity",
+   "negative": false
+  },
+  {
+   "input": "-Infinity",
+   "value": "-Infinity",
+   "negative": true
+  },
+  {
+   "input": "+Infinity",
+   "value": "Infinity",
+   "negative": false
+  },
+  {
+   "input": "infinity",
+   "error": "[DecimalError] Invalid argument: infinity"
+  },
+  {
+   "input": "INFINITY",
+   "error": "[DecimalError] Invalid argument: INFINITY"
+  },
+  {
+   "input": "NaN",
+   "value": "NaN",
+   "negative": false
+  },
+  {
+   "input": "-NaN",
+   "value": "NaN",
+   "negative": false
+  },
+  {
+   "input": "nan",
+   "error": "[DecimalError] Invalid argument: nan"
+  },
+  {
+   "input": "Inf",
+   "error": "[DecimalError] Invalid argument: Inf"
+  },
+  {
+   "input": "0x1f",
+   "value": "31",
+   "negative": false
+  },
+  {
+   "input": "0X1F",
+   "value": "31",
+   "negative": false
+  },
+  {
+   "input": "-0x1f",
+   "value": "-31",
+   "negative": true
+  },
+  {
+   "input": "+0x1f",
+   "value": "31",
+   "negative": false
+  },
+  {
+   "input": "0x",
+   "error": "[DecimalError] Invalid argument: 0x"
+  },
+  {
+   "input": "0x+1f",
+   "error": "[DecimalError] Invalid argument: 0x+1f"
+  },
+  {
+   "input": "0x-1f",
+   "error": "[DecimalError] Invalid argument: 0x-1f"
+  },
+  {
+   "input": "0x1_f",
+   "error": "[DecimalError] Invalid argument: 0x1_f"
+  },
+  {
+   "input": "0x_1f",
+   "error": "[DecimalError] Invalid argument: 0x_1f"
+  },
+  {
+   "input": "0xg",
+   "error": "[DecimalError] Invalid argument: 0xg"
+  },
+  {
+   "input": "0x1.8",
+   "value": "1.5",
+   "negative": false
+  },
+  {
+   "input": "0x1p4",
+   "value": "16",
+   "negative": false
+  },
+  {
+   "input": "0x1.8p1",
+   "value": "3",
+   "negative": false
+  },
+  {
+   "input": "0x1P-2",
+   "value": "0.25",
+   "negative": false
+  },
+  {
+   "input": "0x.8",
+   "value": "0.5",
+   "negative": false
+  },
+  {
+   "input": "0x1.",
+   "value": "1",
+   "negative": false
+  },
+  {
+   "input": "0b101",
+   "value": "5",
+   "negative": false
+  },
+  {
+   "input": "0B101",
+   "value": "5",
+   "negative": false
+  },
+  {
+   "input": "0b2",
+   "error": "[DecimalError] Invalid argument: 0b2"
+  },
+  {
+   "input": "0b1.1",
+   "value": "1.5",
+   "negative": false
+  },
+  {
+   "input": "0b1p3",
+   "value": "8",
+   "negative": false
+  },
+  {
+   "input": "0o17",
+   "value": "15",
+   "negative": false
+  },
+  {
+   "input": "0O17",
+   "value": "15",
+   "negative": false
+  },
+  {
+   "input": "0o8",
+   "error": "[DecimalError] Invalid argument: 0o8"
+  },
+  {
+   "input": "0o1.4",
+   "value": "1.5",
+   "negative": false
+  },
+  {
+   "input": "0o1p1",
+   "value": "2",
+   "negative": false
+  },
+  {
+   "input": "0x1fffffffffffffffffffffffff",
+   "value": "2.535301200456458802993406410751e+30",
+   "negative": false
+  },
+  {
+   "input": "0xp1",
+   "error": "[DecimalError] Invalid argument: 0xp1"
+  },
+  {
+   "input": "0x1p",
+   "error": "[DecimalError] Invalid argument: 0x1p"
+  },
+  {
+   "input": "0x1p+",
+   "error": "[DecimalError] Invalid argument: 0x1p+"
+  },
+  {
+   "input": "0x1e2",
+   "value": "482",
+   "negative": false
+  },
+  {
+   "input": "0x1p-1",
+   "value": "0.5",
+   "negative": false
+  },
+  {
+   "input": "0b0.0001",
+   "value": "0.0625",
+   "negative": false
+  },
+  {
+   "input": "0o.7",
+   "value": "0.875",
+   "negative": false
+  },
+  {
+   "input": "0x0",
+   "value": "0",
+   "negative": false
+  },
+  {
+   "input": "-0x0",
+   "value": "0",
+   "negative": true
+  },
+  {
+   "input": "0x0p5",
+   "value": "0",
+   "negative": false
+  },
+  {
+   "input": "0b.",
+   "error": "[DecimalError] Invalid argument: 0b."
+  },
+  {
+   "input": "0x1p0",
+   "value": "1",
+   "negative": false
+  },
+  {
+   "input": "1__0",
+   "error": "[DecimalError] Invalid argument: 1__0"
+  },
+  {
+   "input": "_1",
+   "error": "[DecimalError] Invalid argument: _1"
+  },
+  {
+   "input": "1_",
+   "error": "[DecimalError] Invalid argument: 1_"
+  },
+  {
+   "input": "1._5",
+   "error": "[DecimalError] Invalid argument: 1._5"
+  },
+  {
+   "input": "1_.5",
+   "error": "[DecimalError] Invalid argument: 1_.5"
+  },
+  {
+   "input": "1.5_5",
+   "value": "1.55",
+   "negative": false
+  },
+  {
+   "input": "1e1_0",
+   "value": "10000000000",
+   "negative": false
+  },
+  {
+   "input": "1e_1",
+   "error": "[DecimalError] Invalid argument: 1e_1"
+  },
+  {
+   "input": "-1_0",
+   "value": "-10",
+   "negative": true
+  },
+  {
+   "input": "0_1",
+   "value": "1",
+   "negative": false
+  },
+  {
+   "input": "1_000_000.000_1",
+   "value": "1000000.0001",
+   "negative": false
+  },
+  {
+   "input": "0x1p1_0",
+   "value": "1024",
+   "negative": false
+  },
+  {
+   "input": "0b1_0",
+   "value": "2",
+   "negative": false
+  },
+  {
+   "input": "0x1_0",
+   "value": "16",
+   "negative": false
+  },
+  {
+   "input": "0o1_7",
+   "value": "15",
+   "negative": false
+  },
+  {
+   "input": "Infinit_y",
+   "error": "[DecimalError] Invalid argument: Infinit_y"
+  },
+  {
+   "input": "1_0_0",
+   "value": "100",
+   "negative": false
+  },
+  {
+   "input": "0x1p99999",
+   "value": "4.9950104650719225397e+30102",
+   "negative": false
+  },
+  {
+   "input": "0x1p100000",
+   "value": "9.9900209301438450794e+30102",
+   "negative": false
+  },
+  {
+   "input": "0x1p100001",
+   "value": "1.9980041860287690159e+30103",
+   "negative": false
+  },
+  {
+   "input": "0x1p-100000",
+   "value": "1.0009989037986941668e-30103",
+   "negative": false
+  },
+  {
+   "input": "0x1p-100001",
+   "value": "5.0049945189934708341e-30104",
+   "negative": false
+  },
+  {
+   "input": "0x1p999999999",
+   "value": "2.3064880005845346966e+301029995",
+   "negative": false
+  },
+  {
+   "input": "0x1p-999999999",
+   "value": "4.3355959352338680043e-301029996",
+   "negative": false
+  },
+  {
+   "input": "0x1p9007199254740991",
+   "value": "1.4918194546311814862e+2711437152599295",
+   "negative": false
+  },
+  {
+   "input": "0x1p-9007199254740991",
+   "value": "6.70322401880210975e-2711437152599296",
+   "negative": false
+  },
+  {
+   "input": "0x1p99999999999999999999999",
+   "value": "Infinity",
+   "negative": false
+  },
+  {
+   "input": "0x1p-99999999999999999999999",
+   "value": "0",
+   "negative": false
+  },
+  {
+   "input": "0xf.fp99999",
+   "value": "7.9607979287083765476e+30103",
+   "negative": false
+  },
+  {
+   "input": "0x1.8p-99999",
+   "value": "3.0029967113960825004e-30103",
+   "negative": false
+  },
+  {
+   "input": "0x3p99999",
+   "value": "1.4985031395215767619e+30103",
+   "negative": false
+  },
+  {
+   "input": "-0x1p-54",
+   "value": "-5.5511151231257827021e-17",
+   "negative": true
+  },
+  {
+   "input": "0x1p53",
+   "value": "9007199254740992",
+   "negative": false
+  },
+  {
+   "input": "0x1p54",
+   "value": "18014398509481984",
+   "negative": false
+  },
+  {
+   "input": "0x.1p-9223372036854775808",
+   "value": "0",
+   "negative": false
+  },
+  {
+   "input": "0x123456789abcdefp777",
+   "value": "6.5169416916707466423e+250",
+   "negative": false
+  },
+  {
+   "input": "0b1011p-1000",
+   "value": "1.0265899803535407669e-300",
+   "negative": false
+  },
+  {
+   "input": "0o777p300",
+   "value": "1.0409253839069223901e+93",
+   "negative": false
+  }
+ ]
+}

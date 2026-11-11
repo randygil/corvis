@@ -743,7 +743,12 @@ fn decode_sqlite(rows: &[SqliteRow]) -> std::result::Result<Rows, sqlx::Error> {
             let ty = raw.type_info().name().to_uppercase();
             let v = match ty.as_str() {
                 "INTEGER" | "INT" | "BIGINT" | "INT8" | "BOOLEAN" | "BOOL" => Value::from(row.try_get_unchecked::<i64, _>(i)?),
-                "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" => Value::from(row.try_get_unchecked::<f64, _>(i)?),
+                // JSON has no infinity: `"inf"` / `"-inf"` (what `Engine::decode_scalars` reports as `P2023`), never
+                // the `null` `Value::from` would make of it.
+                "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" => match row.try_get_unchecked::<f64, _>(i)? {
+                    x if x.is_finite() => Value::from(x),
+                    x => Value::String(x.to_string()),
+                },
                 "BLOB" => Value::from(row.try_get_unchecked::<Vec<u8>, _>(i)?),
                 _ => Value::from(row.try_get_unchecked::<String, _>(i)?),
             };

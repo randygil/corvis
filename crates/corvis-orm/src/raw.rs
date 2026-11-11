@@ -31,20 +31,38 @@ pub enum RawArg {
 
 /// A SQL statement with bound values. Build it with [`sql!`](crate::sql),
 /// [`RawSql::new`], [`RawSql::join`], [`RawSql::raw`] or [`RawSql::empty`].
+///
+/// A statement built from invalid parts (an empty [`RawSql::join`], strings and values that do not alternate)
+/// carries the error, also when it is nested in another statement; running it fails with a validation error
+/// before anything is sent.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RawSql {
     /// The literal parts; always `values.len() + 1` of them.
     strings: Vec<String>,
     values: Vec<SqlValue>,
+    error: Option<String>,
 }
 
+/// The message of the reference client for `join([])`.
+const EMPTY_JOIN: &str = "Expected `join([])` to be called with an array of multiple elements, but got an empty array";
+
 impl RawSql {
-    /// `sql(strings, ...values)`: `strings` must have one more element than `values`.
-    /// Nested [`RawSql`] values are inlined.
+    fn invalid(message: String) -> Self {
+        RawSql { strings: vec![String::new()], values: Vec::new(), error: Some(message) }
+    }
+
+    /// `sql(strings, ...values)`: `strings` must have one more element than `values` (otherwise the statement
+    /// carries an error). Nested [`RawSql`] values are inlined.
     pub fn new<S: Into<String>>(strings: Vec<S>, values: Vec<RawArg>) -> Self {
         let strings: Vec<String> = strings.into_iter().map(Into::into).collect();
-        assert_eq!(strings.len(), values.len() + 1, "RawSql::new: expected one more string than values");
-        let mut out = RawSql { strings: vec![String::new()], values: Vec::new() };
+        if strings.len() != values.len() + 1 {
+            return RawSql::invalid(format!(
+                "`RawSql::new` expects one more string than values, got {} strings and {} values",
+                strings.len(),
+                values.len()
+            ));
+        }
+        let mut out = RawSql::empty();
         let mut strings = strings.into_iter();
         out.push_text(&strings.next().unwrap_or_default());
         for (v, s) in values.into_iter().zip(strings) {
@@ -62,25 +80,28 @@ impl RawSql {
 
     /// `raw(text)`: literal SQL without parameters. Never use it with user input.
     pub fn raw(text: impl Into<String>) -> Self {
-        RawSql { strings: vec![text.into()], values: Vec::new() }
+        RawSql { strings: vec![text.into()], values: Vec::new(), error: None }
     }
 
     /// `empty`
     pub fn empty() -> Self {
-        RawSql { strings: vec![String::new()], values: Vec::new() }
+        RawSql { strings: vec![String::new()], values: Vec::new(), error: None }
     }
 
     /// `join(values, separator = ",", prefix = "", suffix = "")`.
     ///
-    /// # Panics
-    /// When `values` is empty ("Expected `join([])` to be called with an array of multiple elements").
+    /// An empty `values` gives a statement that carries the reference client's error ("Expected `join([])` to be
+    /// called with an array of multiple elements, but got an empty array"): running it fails with a validation
+    /// error, before anything is sent.
     pub fn join<I>(values: I, separator: &str, prefix: &str, suffix: &str) -> Self
     where
         I: IntoIterator,
         I::Item: ToSqlArg,
     {
         let args: Vec<RawArg> = values.into_iter().map(|v| v.to_sql_arg()).collect();
-        assert!(!args.is_empty(), "Expected `join([])` to be called with an array of multiple elements, but got an empty array");
+        if args.is_empty() {
+            return RawSql::invalid(EMPTY_JOIN.to_string());
+        }
         let mut strings = vec![prefix.to_string()];
         strings.extend(std::iter::repeat_n(separator.to_string(), args.len() - 1));
         strings.push(suffix.to_string());
@@ -94,6 +115,9 @@ impl RawSql {
     }
 
     fn append(&mut self, other: RawSql) {
+        if self.error.is_none() {
+            self.error = other.error;
+        }
         let mut parts = other.strings.into_iter();
         self.push_text(&parts.next().unwrap_or_default());
         for (v, s) in other.values.into_iter().zip(parts) {
@@ -110,6 +134,11 @@ impl RawSql {
     /// The bound values.
     pub fn values(&self) -> &[SqlValue] {
         &self.values
+    }
+
+    /// Why the statement cannot run, when it was built from invalid parts (an empty [`RawSql::join`], ...).
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     /// `sql.text`: the statement with Postgres placeholders (`$1`, `$2`, ...).
@@ -136,12 +165,15 @@ impl RawSql {
         out
     }
 
-    /// The statement for `dialect`, with its parameters.
-    pub(crate) fn to_sql(&self, dialect: Dialect) -> Sql {
+    /// The statement for `dialect`, with its parameters, or the validation error it carries.
+    pub(crate) fn to_sql(&self, dialect: Dialect) -> crate::error::Result<Sql> {
+        if let Some(e) = &self.error {
+            return Err(crate::error::OrmError::validation(e.clone()));
+        }
         let mut q = Sql::new(dialect);
         q.push(&self.render(dialect));
         q.params = self.values.iter().cloned().map(|v| raw_param(v, dialect)).collect();
-        q
+        Ok(q)
     }
 }
 
@@ -305,5 +337,40 @@ mod tests {
         assert_eq!(RawSql::raw("NOW()").text(), "NOW()");
         let none: Option<i32> = None;
         assert_eq!(none.to_sql_arg(), RawArg::Value(SqlValue::Null(FieldKind::BigInt)));
+    }
+
+    fn empty_join() -> RawSql {
+        RawSql::join(Vec::<i32>::new(), ",", "(", ")")
+    }
+
+    #[test]
+    fn an_empty_join_carries_the_reference_error() {
+        assert_eq!(empty_join().error(), Some(EMPTY_JOIN));
+        let e = empty_join().to_sql(Dialect::Postgres).unwrap_err();
+        assert!(e.is_validation() && e.message() == EMPTY_JOIN, "{e}");
+    }
+
+    #[test]
+    fn a_nested_error_reaches_the_outer_statement() {
+        let inner = RawSql::new(vec!["id IN ", ""], vec![empty_join().to_sql_arg()]);
+        let outer = RawSql::new(vec!["SELECT * FROM t WHERE ", " AND x = ", ""], vec![inner.to_sql_arg(), 1.to_sql_arg()]);
+        assert_eq!(outer.error(), Some(EMPTY_JOIN));
+        assert!(outer.to_sql(Dialect::Sqlite).is_err());
+        // The first error wins.
+        let mismatched = RawSql::new(vec!["a", "b", "c"], vec![1.to_sql_arg()]);
+        assert!(mismatched.error().unwrap().contains("3 strings and 1 values"), "{mismatched:?}");
+        let both = RawSql::new(vec!["", " ", ""], vec![mismatched.to_sql_arg(), empty_join().to_sql_arg()]);
+        assert!(both.error().unwrap().contains("3 strings and 1 values"));
+    }
+
+    #[tokio::test]
+    async fn running_an_empty_join_fails_before_anything_is_sent() {
+        let db = crate::OrmClient::new("sqlite::memory:").unwrap();
+        let ids = empty_join();
+        let (res, sent) = crate::engine::recorder::capture(db._query_raw(crate::sql!("SELECT 1 AS one WHERE 1 IN {ids}"))).await;
+        assert!(res.unwrap_err().is_validation());
+        let (res, more) = crate::engine::recorder::capture(db._execute_raw(crate::sql!("DELETE FROM t WHERE id IN {ids}"))).await;
+        assert_eq!(res.unwrap_err().message(), EMPTY_JOIN);
+        assert!(sent.is_empty() && more.is_empty(), "{sent:?} {more:?}");
     }
 }

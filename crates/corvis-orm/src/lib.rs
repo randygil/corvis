@@ -33,6 +33,10 @@
 
 #![forbid(unsafe_code)]
 
+// Unit tests derive models, whose generated code names the crate by its path.
+#[cfg(test)]
+extern crate self as corvis_orm;
+
 mod client;
 pub mod codegen;
 mod datetime;
@@ -74,7 +78,7 @@ pub use query::{
 pub use raw::{Bytes, RawArg, RawSql, ToSqlArg};
 pub use transaction::{Batch, BatchQuery, IsolationLevel, TransactionOptions};
 
-pub use corvis_orm_macros::{Model, OrmEnum, sql};
+pub use corvis_orm_macros::{Model, OrmEnum, decimal, sql};
 pub use serde;
 pub use serde_json;
 
@@ -90,7 +94,7 @@ pub mod actions {
 pub mod prelude {
     pub use crate::{
         BatchPayload, DateTime, Decimal, DecimalConfig, DecimalCtor, IsolationLevel, Model, OrmClient, OrmEnum, OrmError, RawSql,
-        SortOrder, TransactionOptions, or_undefined, sql, undefined,
+        SortOrder, TransactionOptions, any_null, db_null, decimal, json_null, or_undefined, sql, undefined,
     };
     #[cfg(feature = "corvis")]
     pub use crate::{OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};
@@ -107,14 +111,69 @@ pub mod prelude {
 ///                "currency": corvis_orm::undefined() }
 /// })).await?;
 /// ```
+///
+/// # Security
+///
+/// The value is a string that carries a secret of this process, which is what makes it impossible to forge from a
+/// request. An argument value built with it (or with [`or_undefined`], [`db_null`], [`json_null`], [`any_null`]) is
+/// for the ORM only: never serialize it into a response, a log line or a message. A client that read the secret could
+/// send it back and drop the condition it stands in. Build what you echo to the client (an applied filter, a
+/// pagination header) from your own validated fields. The ORM keeps it out of its own errors, `Debug` output and SQL
+/// parameters, but it cannot see what the application does with its `Value`; until the arguments are a type of their
+/// own instead of `serde_json::Value`, that is the application's responsibility.
 pub fn undefined() -> serde_json::Value {
-    serde_json::Value::String(engine::UNDEFINED.to_string())
+    engine::undefined_marker()
+}
+
+/// The database `NULL` of a Json field (`DbNull`): in `data` it stores `NULL`, in `equals` / `not` it compares with
+/// `NULL`. A plain `{ "$type": "DbNull" }` object is JSON data, like any other object a request may carry.
+///
+/// Like [`json_null`] and [`any_null`], it is only ever the whole value of a Json field or of `equals` / `not`:
+/// inside a Json value, a `Json[]` list or another operator the query fails with a validation error.
+///
+/// # Security
+///
+/// Its `$type` tag carries a secret of this process. An argument value built with it is for the ORM only: never
+/// serialize it into a response, a log line or a message; see [`undefined`].
+pub fn db_null() -> serde_json::Value {
+    engine::null_marker(engine::NullKind::Db)
+}
+
+/// The JSON `null` value of a Json field (`JsonNull`), as opposed to the database `NULL` ([`db_null`]).
+///
+/// # Security
+///
+/// For the ORM only, like [`db_null`]: never serialize an argument value built with it into a response, a log line
+/// or a message; see [`undefined`].
+pub fn json_null() -> serde_json::Value {
+    engine::null_marker(engine::NullKind::Json)
+}
+
+/// Either null of a Json field (`AnyNull`): in a filter it matches the database `NULL` and the JSON `null`.
+///
+/// # Security
+///
+/// For the ORM only, like [`db_null`]: never serialize an argument value built with it into a response, a log line
+/// or a message; see [`undefined`].
+pub fn any_null() -> serde_json::Value {
+    engine::null_marker(engine::NullKind::Any)
 }
 
 /// `Some(v)` -> `v`, `None` -> [`undefined()`] (`value ?? undefined`).
+///
+/// A non-finite float becomes `null`, as the reference client sends `NaN` (recorded). A value whose `Serialize`
+/// fails does not: the query it is part of fails with a validation error before any SQL runs, as JavaScript fails
+/// on a value `JSON.stringify` cannot write.
+///
+/// # Security
+///
+/// `None` gives [`undefined()`], which carries a secret of this process: an argument value built with `or_undefined`
+/// is for the ORM only. Never serialize it into a response (for example to echo the filter a list applied), a log
+/// line or a message; build what you echo from your own validated fields. See [`undefined`].
 pub fn or_undefined<T: serde::Serialize>(v: Option<T>) -> serde_json::Value {
-    match v {
-        Some(v) => serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+    match v.map(serde_json::to_value) {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => engine::invalid_argument(format!("Failed to serialize `{}` as a query value: {e}", std::any::type_name::<T>())),
         None => undefined(),
     }
 }

@@ -6,7 +6,15 @@
 
 mod aggregate;
 mod filter;
+#[cfg(test)]
+mod key_list_tests;
+#[cfg(test)]
+mod pg_sql_snapshot;
 mod read;
+#[cfg(test)]
+pub(crate) mod recorder;
+#[cfg(test)]
+mod sqlite_operand_tests;
 mod write;
 
 use std::fmt::Display;
@@ -18,12 +26,21 @@ use crate::db::{Dialect, SqlValue, parse_datetime};
 use crate::error::{OrmError, Result, suggest};
 use crate::meta::{DefaultValue, FieldKind, FieldMeta, ModelMeta, ResolvedRelation, resolve_relation};
 
+/// Most `OR`ed groups (key groups, `deleteMany` items) one engine-built statement takes. SQLite parses
+/// `a OR b OR ...` as a left-deep tree and rejects an expression deeper than 1000 levels (`SQLITE_MAX_EXPR_DEPTH`);
+/// Postgres accepts long lists but plans them slowly (a statement with 16383 two-field groups did not finish in half
+/// an hour). Lists of single-field keys longer than this are one `in` list instead.
+const OR_GROUPS_PER_STATEMENT: usize = 500;
+
 /// Executes an action against a model.
 pub(crate) async fn run(client: OrmClient, model: &'static ModelMeta, action: &'static str, args: Value) -> Result<Value> {
     let e = Engine { client, action, root: model };
     let mut args = args;
     // Before anything walks the arguments recursively (`strip_undefined`, `where_sql`, ...).
     check_depth(&e, args_depth_limit(&e.client), &mut args)?;
+    if let Some(msg) = find_invalid_argument(&args) {
+        return Err(e.err(msg));
+    }
     strip_undefined(&mut args);
     let args = match args {
         Value::Null => Map::new(),
@@ -107,11 +124,176 @@ fn depth_error(e: &Engine, max: usize) -> OrmError {
     e.err(format!("Query arguments are nested too deeply: the maximum depth is {max} (`max_query_depth`)."))
 }
 
+/// The in-band markers the JSON builders put in query arguments: [`crate::undefined`] and [`invalid_argument`].
+///
+/// Query arguments are JSON, and a request can carry any JSON string, NUL characters included, so a fixed marker
+/// text could be forged by a client (sending it removed the filter condition it stood in). Each marker therefore
+/// carries a random nonce drawn once per process from the operating system (two v4 UUIDs, 244 random bits), one nonce
+/// per kind of marker, and never written anywhere a client can read it: a Json null is refused anywhere but as the
+/// whole value of a Json field or of a filter that takes it ([`contains_null_marker`]), no parameter sent to the
+/// database holds a marker (`OrmClient::check_params`), and every error message is passed through [`redact`]. A string
+/// that is not the exact marker of this process is an ordinary string, and a string with a NUL character fails the
+/// query.
+///
+/// The null sentinels of Json fields ([`crate::db_null`], [`crate::json_null`], [`crate::any_null`]) are
+/// `{ "$type": <tag> }` objects whose tag carries a nonce: a plain `{ "$type": "DbNull" }` is JSON data, as in the
+/// reference client (recorded: `json.plain_type_*`). Their tags hold no NUL character, since `where` arguments refuse
+/// strings with one.
+///
+/// Comparing a string with a marker is not constant-time: the time of one `==` on a 64-character nonce is far below
+/// what a client can measure through a query, and a client never sees which comparison ran.
+struct Markers {
+    undefined: String,
+    invalid: String,
+    /// The `$type` tags of `DbNull`, `JsonNull` and `AnyNull`, in that order.
+    nulls: [String; 3],
+    /// The secret part of each marker (`corvis_orm::<kind>::<nonce>`) and the word [`redact`] puts in its place.
+    secrets: [(String, &'static str); 5],
+}
+
+/// The names of the null sentinels, in the order of [`Markers::nulls`].
+const NULL_NAMES: [&str; 3] = ["DbNull", "JsonNull", "AnyNull"];
+
+/// What every marker text contains (the cheap test of [`redact`] and `check_params`).
+pub(crate) const MARKER_PREFIX: &str = "corvis_orm::";
+
+fn markers() -> &'static Markers {
+    static MARKERS: std::sync::OnceLock<Markers> = std::sync::OnceLock::new();
+    MARKERS.get_or_init(|| {
+        let secret = |kind: &str| format!("{MARKER_PREFIX}{kind}::{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        let (undefined, invalid) = (secret("undefined"), secret("invalid"));
+        let nulls = NULL_NAMES.map(secret);
+        let secrets = [
+            (undefined.clone(), "undefined"),
+            (invalid.clone(), "invalid"),
+            (nulls[0].clone(), NULL_NAMES[0]),
+            (nulls[1].clone(), NULL_NAMES[1]),
+            (nulls[2].clone(), NULL_NAMES[2]),
+        ];
+        Markers { undefined: format!("\u{0}{undefined}\u{0}"), invalid: format!("\u{0}{invalid}\u{0}"), nulls, secrets }
+    })
+}
+
+/// `text` with the secret part of every marker replaced by its kind (`undefined`, `DbNull`, ...): what an error
+/// message, a `Debug` output or a log line shows when the input it quotes back holds a marker.
+pub(crate) fn redact(text: String) -> String {
+    if !text.contains(MARKER_PREFIX) {
+        return text;
+    }
+    markers().secrets.iter().fold(text, |t, (secret, word)| if t.contains(secret.as_str()) { t.replace(secret.as_str(), word) } else { t })
+}
+
+/// [`redact`] for every string and key of a JSON value (the `meta` of an error).
+pub(crate) fn redact_value(v: Value) -> Value {
+    match v {
+        Value::String(s) => Value::String(redact(s)),
+        Value::Array(a) => Value::Array(a.into_iter().map(redact_value).collect()),
+        Value::Object(m) => Value::Object(m.into_iter().map(|(k, v)| (redact(k), redact_value(v))).collect()),
+        other => other,
+    }
+}
+
+/// Whether `text` holds the secret part of a marker of this process.
+pub(crate) fn holds_marker(text: &str) -> bool {
+    text.contains(MARKER_PREFIX) && markers().secrets.iter().any(|(secret, _)| text.contains(secret.as_str()))
+}
+
+/// Whether a Json null sentinel (or any marker text) is anywhere inside `v`, `v` itself included.
+pub(crate) fn contains_null_marker(v: &Value) -> bool {
+    let mut stack = vec![v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::String(s) if holds_marker(s) => return true,
+            Value::Array(a) => stack.extend(a),
+            Value::Object(m) => {
+                if m.keys().any(|k| holds_marker(k)) {
+                    return true;
+                }
+                stack.extend(m.values());
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The message of the validation error of a Json null that is not the whole value of argument `arg`.
+pub(crate) fn nested_null_message(arg: &str) -> String {
+    format!(
+        "Argument `{arg}`: Invalid value provided. `DbNull`, `JsonNull` and `AnyNull` can only be the whole value of a Json \
+         field (or of `equals` / `not` in a Json filter), never part of a Json value."
+    )
+}
+
 /// The value of [`crate::undefined`]: JS `undefined` inside query arguments.
-pub(crate) const UNDEFINED: &str = "\u{0}corvis_orm::undefined\u{0}";
+pub(crate) fn undefined_marker() -> Value {
+    Value::String(markers().undefined.clone())
+}
+
+/// The null sentinels of Json fields, in the order of [`NULL_NAMES`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NullKind {
+    Db = 0,
+    Json = 1,
+    Any = 2,
+}
+
+/// The sentinel of `kind`.
+pub(crate) fn null_marker(kind: NullKind) -> Value {
+    serde_json::json!({ "$type": markers().nulls[kind as usize] })
+}
+
+/// `"DbNull"`, `"JsonNull"` or `"AnyNull"` when `v` is that sentinel of this process.
+pub(crate) fn null_sentinel(v: &Value) -> Option<&'static str> {
+    let tag = v.as_object().filter(|o| o.len() == 1)?.get("$type")?.as_str()?;
+    markers().nulls.iter().position(|m| m == tag).map(|i| NULL_NAMES[i])
+}
+
+/// A JSON value that makes the query it is put in fail with `message` (a validation error) before any SQL runs: how
+/// a JSON builder such as [`crate::or_undefined`] reports a value it could not convert.
+pub(crate) fn invalid_argument(message: String) -> Value {
+    Value::String(format!("{}{message}", markers().invalid))
+}
+
+/// The message of the first [`invalid_argument`] in `v`, if any.
+fn find_invalid_argument(v: &Value) -> Option<&str> {
+    let prefix = markers().invalid.as_str();
+    let mut stack = vec![v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::String(s) => {
+                if let Some(message) = s.strip_prefix(prefix) {
+                    return Some(message);
+                }
+            }
+            Value::Array(a) => stack.extend(a.iter().rev()),
+            Value::Object(m) => stack.extend(m.values().rev()),
+            _ => {}
+        }
+    }
+    None
+}
 
 fn is_undefined(v: &Value) -> bool {
-    matches!(v, Value::String(s) if s == UNDEFINED)
+    matches!(v, Value::String(s) if *s == markers().undefined)
+}
+
+#[cfg(test)]
+mod marker_tests {
+    /// A leaked label of one kind (a Json null stored or shown) reveals nothing of another (security review of #188,
+    /// round 2: one nonce served every marker).
+    #[test]
+    fn every_marker_kind_has_its_own_nonce() {
+        let m = super::markers();
+        let nonce = |s: &str| s.trim_matches('\0').rsplit("::").next().unwrap_or_default().to_string();
+        let all = [nonce(&m.undefined), nonce(&m.invalid), nonce(&m.nulls[0]), nonce(&m.nulls[1]), nonce(&m.nulls[2])];
+        for (i, a) in all.iter().enumerate() {
+            assert_eq!(a.len(), 64, "{a}");
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "two marker kinds share a nonce");
+            }
+        }
+    }
 }
 
 /// Drops `undefined` object entries and list items, like `JSON.stringify` does.
@@ -228,6 +410,69 @@ impl Engine {
         }
     }
 
+    /// Parameters an engine-built list may bind in one statement: half the database's limit (32766 on SQLite,
+    /// 65535 on Postgres), leaving the other half to the rest of the statement.
+    fn list_param_budget(&self) -> usize {
+        match self.dialect() {
+            Dialect::Sqlite => 32766 / 2,
+            Dialect::Postgres => 65535 / 2,
+        }
+    }
+
+    /// Splits `items` into the groups of one statement each: at most [`Engine::list_param_budget`] parameters
+    /// (`params` gives those of an item) and at most [`OR_GROUPS_PER_STATEMENT`] items. A list that fits in one
+    /// statement stays one group, so the statement is the one written before chunking existed.
+    pub(crate) fn statement_chunks<T>(&self, items: Vec<T>, params: impl Fn(&T) -> usize) -> Vec<Vec<T>> {
+        let budget = self.list_param_budget();
+        let max_items = OR_GROUPS_PER_STATEMENT;
+        let mut chunks: Vec<Vec<T>> = Vec::new();
+        let mut used = 0;
+        for item in items {
+            let n = params(&item);
+            match chunks.last_mut() {
+                Some(chunk) if chunk.len() < max_items && used + n <= budget => chunk.push(item),
+                _ => {
+                    chunks.push(vec![item]);
+                    used = 0;
+                }
+            }
+            used += n;
+        }
+        chunks
+    }
+
+    /// The `where` filters, one per statement, that together match the rows whose key (`fields`) is one of `keys`.
+    ///
+    /// A list that fits in one statement is written by `shape` (the caller's `OR` of the keys, as before chunking
+    /// existed). A longer list of single-field keys is one `in` filter, bound as one parameter; a longer list of
+    /// compound keys is split into several statements of one `shape` each (see [`Engine::statement_chunks`]).
+    pub(crate) fn key_filters(&self, fields: &[&'static FieldMeta], keys: Vec<Id>, shape: impl Fn(Vec<Id>) -> Value) -> Vec<Value> {
+        let chunks = self.statement_chunks(keys, |_| fields.len());
+        if let ([f], [_, _, ..]) = (fields, chunks.as_slice()) {
+            let values: Vec<Value> = chunks.into_iter().flatten().map(|mut k| k.remove(f.name).unwrap_or(Value::Null)).collect();
+            return vec![Value::Object(Map::from_iter([(f.name.to_string(), serde_json::json!({ "in": values }))]))];
+        }
+        chunks.into_iter().map(shape).collect()
+    }
+
+    /// `true` when `f` is read through `CAST(.. AS NUMERIC)` wherever it is compared, sorted, aggregated or used in
+    /// arithmetic: a `Decimal` on SQLite. Its column may be `DECIMAL` (numeric affinity, what `db push` and the
+    /// reference migration create) or `TEXT` (created by `db push` of earlier versions), and only the cast makes a
+    /// `TEXT` column compare as numbers. Postgres columns are `numeric` and are never cast.
+    pub(crate) fn numeric_operand(&self, f: &FieldMeta) -> bool {
+        self.dialect() == Dialect::Sqlite && f.kind == FieldKind::Decimal && !f.list
+    }
+
+    /// `alias."column"` as an operand of a comparison, an ordering, an aggregate or arithmetic
+    /// (see [`Engine::numeric_operand`]). Only the quoted column is wrapped, never a value.
+    pub(crate) fn operand(&self, q: &mut crate::db::Sql, alias: &str, f: &FieldMeta) {
+        if self.numeric_operand(f) {
+            q.push("CAST(").col(alias, f.column).push(" AS NUMERIC)");
+        } else {
+            q.col(alias, f.column);
+        }
+    }
+
     /// The `::cast` a Postgres parameter for `f` needs (enums, json, ...), if any.
     fn pg_cast(&self, f: &FieldMeta, list: bool) -> Option<String> {
         if self.dialect() != Dialect::Postgres {
@@ -294,9 +539,14 @@ impl Engine {
     }
 
     fn scalar_value(&self, f: &FieldMeta, v: &Value, allow_null: bool) -> Result<SqlValue> {
-        // `DbNull` / `JsonNull` / `AnyNull` sentinels (`{ "$type": ... }`).
+        // A marker must never be stored: one inside a Json value (or an item of a `Json[]`) would be read back by
+        // whoever reads the row, nonce included.
+        if f.kind == FieldKind::Json && (f.list || null_sentinel(v).is_none()) && contains_null_marker(v) {
+            return Err(self.err(nested_null_message(f.name)));
+        }
+        // The `DbNull` / `JsonNull` / `AnyNull` sentinels, as the whole value of the field.
         if f.kind == FieldKind::Json
-            && let Some(t) = v.as_object().and_then(|o| o.get("$type")).and_then(|t| t.as_str())
+            && let Some(t) = null_sentinel(v)
         {
             match t {
                 "DbNull" | "AnyNull" => {
@@ -332,11 +582,14 @@ impl Engine {
                     },
                     _ => return Err(bad()),
                 };
-                match i32::try_from(i) {
-                    Ok(i) if self.dialect() == Dialect::Postgres => SqlValue::Int32(i),
-                    Ok(i) => SqlValue::Int(i as i64),
+                match (i32::try_from(i), self.dialect()) {
+                    (Ok(i), Dialect::Postgres) => SqlValue::Int32(i),
                     // Like the reference client, the query fails when the parameter is converted (`ToSql`).
-                    Err(_) => SqlValue::OutOfRange(i),
+                    (Err(_), Dialect::Postgres) => SqlValue::OutOfRange(i),
+                    // SQLite integers are 64-bit and the reference client binds them as such (recorded: a filter
+                    // with 3000000000 runs, a write stores it, and reading it into an `Int` field fails, see
+                    // `Engine::int_out_of_range`).
+                    (_, Dialect::Sqlite) => SqlValue::Int(i),
                 }
             }
             // Out of the 64-bit range is an error, never a saturated value.
@@ -356,22 +609,24 @@ impl Engine {
                 Value::String(s) => SqlValue::Int(s.parse::<i64>().map_err(|_| bad())?),
                 _ => return Err(bad()),
             },
+            // Never text: `"Infinity"` is a validation error for the reference client too (recorded:
+            // `fin.ratio_text_infinity`), and SQLite would store it as an infinite float no read can convert.
             FieldKind::Float => match v {
                 Value::Number(n) => SqlValue::Float(n.as_f64().ok_or_else(bad)?),
-                Value::String(s) if s == "NaN" || s == "Infinity" || s == "-Infinity" => {
-                    SqlValue::Float(s.replace("Infinity", "inf").parse().unwrap_or(f64::NAN))
-                }
                 _ => return Err(bad()),
             },
             FieldKind::Decimal => {
                 let d = self.decimal_input(f, v)?;
-                // A value that does not fit a NUMERIC stays a `Decimal`: running the query fails
-                // with a conversion error (`check_params`), as in the reference engine, before
-                // anything tries to print it.
-                if self.dialect() == Dialect::Postgres || !d.fits_numeric() {
-                    SqlValue::Decimal(d)
-                } else {
-                    SqlValue::Text(d.to_fixed_plain())
+                match self.dialect() {
+                    // A value that does not fit a NUMERIC stays a `Decimal`: running the query fails with a
+                    // conversion error (`check_params`), as in the reference engine, before anything tries to
+                    // print it.
+                    Dialect::Postgres => SqlValue::Decimal(d),
+                    // SQLite reads the text as a number (`CAST(? AS NUMERIC)`, recorded: `lt: "1e140000"` matches
+                    // every row, `lte: "9999e-262144"` none). The shortest form keeps it short: a fixed-point
+                    // expansion of `1e131071` would be a 131,072-digit parameter. Writes are bounded and rounded
+                    // before they get here (`Engine::data_value`).
+                    Dialect::Sqlite => SqlValue::Text(d.to_string()),
                 }
             }
             FieldKind::Boolean => SqlValue::Bool(v.as_bool().ok_or_else(bad)?),
@@ -448,8 +703,14 @@ impl Engine {
                     self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided Float.", f.name))
                 })?),
             },
-            Value::String(s) => crate::Decimal::parse(s)
-                .map_err(|_| self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name)))?,
+            // `NaN` and `±Infinity` are not decimal text for the reference engine either (recorded: `dec.*`, a
+            // validation error on both databases); SQLite would otherwise compare them as text. A text no `NUMERIC` can
+            // hold is refused before it is parsed (`decimal::within_numeric_text_bounds`).
+            Value::String(s) => Some(s.as_str())
+                .filter(|s| crate::decimal::within_numeric_text_bounds(s))
+                .and_then(|s| crate::Decimal::parse(s).ok())
+                .filter(crate::Decimal::is_finite)
+                .ok_or_else(|| self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name)))?,
             other => {
                 return Err(self.err(format!(
                     "Argument `{}`: Invalid value provided. Expected Decimal, provided {}.",
@@ -462,22 +723,28 @@ impl Engine {
 
     /// A value written to a column (`data` of creates, updates and upserts).
     ///
-    /// Postgres enforces the precision and scale of `NUMERIC(p, s)` columns itself. SQLite has
-    /// no such type (corvis-orm stores decimals as exact text), so a `Decimal` is checked
-    /// against the column it stands for, `@db.Decimal(p, s)` or the default `Decimal(65, 30)`:
-    /// it is rounded to `s` decimal places like Postgres does, and a value whose integer part
-    /// does not fit is rejected. This also bounds what a short input such as `"1e100000"` stores.
+    /// Postgres enforces the precision and scale of `NUMERIC(p, s)` columns itself. SQLite does not: a
+    /// `DECIMAL` column has numeric affinity and keeps what it is given as a 64-bit integer or float (15
+    /// significant digits), like with the reference client's own SQLite migration. So a `Decimal` is
+    /// checked against the column it stands for, `@db.Decimal(p, s)` or the default `Decimal(65, 30)`: it
+    /// is rounded to `s` decimal places like Postgres does, and a value whose integer part does not fit is
+    /// rejected. This also bounds what a short input such as `"1e100000"` stores.
+    ///
+    /// An `Int` beyond 32 bits is refused on SQLite with the error Postgres gives (`OrmError::int_overflow`), before
+    /// any SQL runs. The reference client writes it (SQLite integers have 64 bits) and then fails every read of the
+    /// row (`P2023`), so one such value breaks every list of the table: a deliberate difference, kept for safety
+    /// (`err.int_overflow_create` in `tests/sqlite_oracle.rs`). Filters keep 64-bit operands, as recorded.
     pub(crate) fn data_value(&self, f: &FieldMeta, v: &Value) -> Result<SqlValue> {
+        if self.dialect() == Dialect::Sqlite && f.kind == FieldKind::Int {
+            return self.value(f, v, false).map(int32_only);
+        }
         if self.dialect() != Dialect::Sqlite || f.kind != FieldKind::Decimal || f.list || !(v.is_string() || v.is_number()) {
             return self.value(f, v, false);
         }
         let d = self.decimal_input(f, v)?;
-        if !d.is_finite() {
-            return self.value(f, v, false);
-        }
         let (p, s) = decimal_precision(f);
         let r = d.to_decimal_places_with(s, crate::Decimal::ROUND_HALF_UP);
-        if !r.is_zero() && r.abs().gte(crate::Decimal::from(10).pow(p as i64 - s as i64)) {
+        if !r.is_zero() && r.abs().gte(decimal_bound(f)) {
             return Err(self.err(format!(
                 "Argument `{}`: Invalid value provided. A Decimal({p}, {s}) value must round to an absolute value less than 10^{}.",
                 f.name,
@@ -610,7 +877,7 @@ fn fits_i64(x: f64) -> bool {
 }
 
 /// `(precision, scale)` of a `Decimal` column: `@db.Decimal(p, s)` or the default `(65, 30)`.
-fn decimal_precision(f: &FieldMeta) -> (u32, u32) {
+pub(crate) fn decimal_precision(f: &FieldMeta) -> (u32, u32) {
     let parsed = f.native_type.filter(|_| f.native_name() == Some("Decimal")).and_then(|t| {
         let args = t.split_once('(')?.1.trim_end_matches(')');
         let mut it = args.split(',').map(|x| x.trim().parse::<u32>());
@@ -619,6 +886,21 @@ fn decimal_precision(f: &FieldMeta) -> (u32, u32) {
         (s <= p).then_some((p, s))
     });
     parsed.unwrap_or((65, 30))
+}
+
+/// `10^(p - s)` of a Decimal column: what its values must stay below in absolute value.
+pub(crate) fn decimal_bound(f: &FieldMeta) -> crate::Decimal {
+    let (p, s) = decimal_precision(f);
+    crate::Decimal::from(10).pow(i64::from(p - s))
+}
+
+/// An SQLite `Int` write beyond 32 bits becomes [`SqlValue::OutOfRange`], which fails the query before it runs.
+fn int32_only(v: SqlValue) -> SqlValue {
+    match v {
+        SqlValue::Int(i) if i32::try_from(i).is_err() => SqlValue::OutOfRange(i),
+        SqlValue::Array(items, k) => SqlValue::Array(items.into_iter().map(int32_only).collect(), k),
+        other => other,
+    }
 }
 
 /// The message of a UUID parse error, worded like the `uuid` crate used by the reference query engine.
