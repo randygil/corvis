@@ -160,7 +160,7 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 10. Measurements and review
 
-- [ ] 10.1 `bash bench/auth/run.sh --label after` on the finished branch, same machine and parameters as 1.4; fill
+- [x] 10.1 `bash bench/auth/run.sh --label after` on the finished branch, same machine and parameters as 1.4; fill
   design.md "Measurements"; explain any scenario more than 5% slower; check each number of the table of design.md Decision
   1 moved as named
 - [ ] 10.2 Security review of the change with the `security-reviewer` agent over the invariants table of design.md

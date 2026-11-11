@@ -519,18 +519,48 @@ on the finished branch, same machine, same `CONNS`, `DURATION` and rate.
 
 Machine: Intel Core i9-14900KF, Windows 11 Pro 10.0.26300, rustc 1.99.0, oha 1.16.0. Parameters: `CONNS=50`,
 `DURATION=10`, `WARMUP=3`, `RATE=1000`, `OHA_THREADS=4` (the defaults of `run.sh`). Before: `d46758a` (the `dev` this
-change starts from, with only `bench/auth/` added), 2026-11-11.
+change starts from, with only `bench/auth/` added), 2026-11-11. After: `0308ff5` (the finished branch), same day, same
+parameters.
 
 | Scenario | req/s before | req/s after | p99 before | p99 after | allocations / request before → after | bytes / request before → after |
 |---|---|---|---|---|---|---|
-| `jwt-hs256` | 67345 | | 1.519 ms | | 93 → | 24776 → |
-| `jwt-provider-rs256` | 64499 | | 2.16 ms | | 125 → | 31495 → |
-| `service-verify-rs256` | 72429 | | 1.719 ms | | 107 → | 29330 → |
-| `service-sign-hs256` | 67799 | | 1.192 ms | | 81 → | 24515 → |
-| `service-sign-rs256` | 13538 | | 6.355 ms | | 135 → | 41580 → |
-| `session-none` | 70323 | | 1.075 ms | | 54 → | 22035 → |
-| `session-read` | 26258 | | 4.477 ms | | 4665 → | 573709 → |
-| `session-write` | 23175 | | 4.594 ms | | 4642 → | 651137 → |
+| `jwt-hs256` | 67345 | 88859 | 1.519 ms | 1.09 ms | 93 → 87 | 24776 → 24465 |
+| `jwt-provider-rs256` | 64499 | 72865 | 2.16 ms | 2.286 ms | 125 → 93 | 31495 → 26700 |
+| `service-verify-rs256` | 72429 | 66808 | 1.719 ms | 2.347 ms | 107 → 78 | 29330 → 25029 |
+| `service-sign-hs256` | 67799 | 81745 | 1.192 ms | 1.082 ms | 81 → 79 | 24515 → 24438 |
+| `service-sign-rs256` | 13538 | 13222 | 6.355 ms | 7.164 ms | 135 → 104 | 41580 → 29844 |
+| `session-none` | 70323 | 56346 | 1.075 ms | 1.526 ms | 54 → 53 | 22035 → 21995 |
+| `session-read` | 26258 | 44960 | 4.477 ms | 3.144 ms | 4665 → 1830 | 573709 → 250893 |
+| `session-write` | 23175 | 23647 | 4.594 ms | 6.382 ms | 4642 → 4625 | 651137 → 585817 |
+
+**Scenarios more than 5% slower** (task 10.1): `service-verify-rs256` (−7.8%) and `session-none` (−20%). Both were
+measured twice more on the same "after" binary right away (`SKIP_BUILD=1`): `session-none` gave 73 677 and 50 203 req/s
+(p99 1.02 and 1.51 ms), `service-verify-rs256` 53 768 and 58 179 req/s (p99 1.68 and 1.75 ms, the "before" p99 was
+1.72 ms). One binary moves by ±20% between consecutive runs on this machine (other agents build in the shared target
+while it runs), so the throughput differences of these two scenarios are inside the noise; what the change does to
+them is deterministic and smaller: `session-none` now draws no identifier and allocates one block less, and
+`service-verify-rs256` parses no PEM and builds no `Validation` per call (29 fewer allocations, 4.3 KB less per
+request). Nothing in either path got more work. `service-sign-rs256` (−2%) is within 5%; what remains there is
+`jsonwebtoken` parsing the RSA private key's DER on every signature, out of reach (Decision 3).
+
+**The numbers of Decision 1, checked:**
+
+- `JwtService` keys: no module key parse per `sign`/`verify` (`module_keys_are_parsed_once`: two parses at `new`, none
+  in 100 sign and verify calls); allocations per request 107 → 78 (`service-verify-rs256`) and 135 → 104
+  (`service-sign-rs256`).
+- `JwtKey`: one parse for 100 requests of a provider returning clones (`a_cached_provider_key_is_parsed_once`);
+  `jwt-provider-rs256` 125 → 93 allocations, 31.5 → 26.7 KB per request.
+- Header and validation: one header check per strategy request (`the_header_is_checked_once_per_token`), no
+  `Validation` built per request (`prepared_validations_follow_the_key_family`); `jwt-hs256` 93 → 87 allocations.
+- Session passes: the middleware's own bytes for an unchanged session, beyond the store's parse, 359 395 → 3 287 for
+  16 KiB, and 3 287 for 64 KiB (`tests/auth_hot_path_heap.rs`, bound 4 KiB); `session-read` 4 665 → 1 830 allocations
+  and 574 → 251 KB per request (the rest is the memory store's parse of the record), 26 258 → 44 960 req/s.
+- `update`: record-sized buffers 4 → 2 per request, none outside the store (`tests/auth_hot_path_heap.rs`).
+- Identifier: none drawn for a request without a cookie that saves nothing (`an_anonymous_request_draws_no_identifier`).
+- Purge: a write removes at most what it needs plus two batches (`one_write_purges_a_bounded_number_of_expired_records`;
+  the store of `dev` removed all 2 000 expired records in that case).
+- HMAC keys: no key setup per signed-cookie verification (the keyed HMAC is cloned); part of `session-read`'s drop.
+- API key: no extension written inside an application (`no_extension_is_written_inside_an_application`).
 
 ## Implementation notes
 
