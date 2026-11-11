@@ -426,7 +426,9 @@ async fn load(load: Load) -> Result<Value, Failure> {
     let began = Instant::now();
     go.send(true)?;
     let mut latencies = Vec::with_capacity(load.connections * load.messages);
-    let finished = tokio::time::timeout(Duration::from_secs(600), futures::future::join_all(runs)).await.map_err(|_| "the run took longer than 600 s")?;
+    let finished = tokio::time::timeout(Duration::from_secs(600), futures::future::join_all(runs))
+        .await
+        .map_err(|_| "the run took longer than 600 s")?;
     let seconds = began.elapsed().as_secs_f64();
     let after = stats(load.port, "/stats").await?;
     for run in finished {
