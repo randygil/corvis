@@ -6,6 +6,8 @@
 // - inherit:  license, authors, repository, homepage, edition and rust-version come from [workspace.package]
 // - deps:     every dependency on another workspace crate has a version requirement (not `*`), and one on a
 //             proc-macro crate is pinned with `=` to the version of both crates
+// - shared:   a crates.io dependency that two or more published crates declare (in any dependency section) comes from
+//             [workspace.dependencies] in every one of them (`name = { workspace = true }`, extra features allowed)
 //
 // Run from anywhere: `node scripts/check-crate-files.mjs`. Prints one line per problem and exits 1 if there is any.
 import { execFileSync } from 'node:child_process'
@@ -82,6 +84,53 @@ for (const pkg of published) {
     const target = byName.get(dep.name)
     if (target && dep.kind === 'dev' && dep.req === '*') bad(name, `dev-dependency \`${dep.name}\` has no version`)
   }
+}
+
+// Shared dependencies. Cargo metadata resolves `workspace = true`, so the manifests are read as text: one entry per
+// `name = ...` line of a dependency section, or per `[dependencies.name]` table.
+const declarations = new Map() // dependency -> [{ crate, inherited }]
+for (const pkg of published) {
+  for (const { name, inherited } of dependencyDeclarations(fs.readFileSync(pkg.manifest_path, 'utf8'))) {
+    if (byName.has(name)) continue // workspace crates are checked above
+    if (!declarations.has(name)) declarations.set(name, [])
+    declarations.get(name).push({ crate: pkg.name, inherited })
+  }
+}
+for (const [dep, decls] of [...declarations].sort(([a], [b]) => a.localeCompare(b))) {
+  const crates = [...new Set(decls.map((d) => d.crate))]
+  if (crates.length < 2) continue
+  const own = [...new Set(decls.filter((d) => !d.inherited).map((d) => d.crate))]
+  if (own.length) {
+    bad(own.join(', '), `dependency \`${dep}\` is declared by ${crates.join(', ')}; declare it once in [workspace.dependencies] and use \`${dep} = { workspace = true }\``)
+  }
+}
+
+/** The dependencies a manifest declares, each with whether it comes from [workspace.dependencies]. */
+function dependencyDeclarations(manifest) {
+  const out = []
+  let section = ''
+  let table = null // the entry of a `[dependencies.name]` table
+  for (const line of manifest.split(/\r?\n/)) {
+    const header = /^\s*\[([^\]]+)\]\s*(#.*)?$/.exec(line)
+    if (header) {
+      section = header[1].trim()
+      table = null
+      const named = /^(?:target\..+\.)?(?:dev-|build-)?dependencies\.([A-Za-z0-9_-]+)$/.exec(section)
+      if (named) {
+        table = { name: named[1], inherited: false }
+        out.push(table)
+      }
+      continue
+    }
+    if (table) {
+      if (/^\s*workspace\s*=\s*true\b/.test(line)) table.inherited = true
+      continue
+    }
+    if (!/^(?:target\..+\.)?(?:dev-|build-)?dependencies$/.test(section)) continue
+    const entry = /^\s*([A-Za-z0-9_-]+)(\.workspace)?\s*=\s*(.*)$/.exec(line)
+    if (entry) out.push({ name: entry[1], inherited: Boolean(entry[2]) || /\bworkspace\s*=\s*true\b/.test(entry[3]) })
+  }
+  return out
 }
 
 if (problems.length) {
