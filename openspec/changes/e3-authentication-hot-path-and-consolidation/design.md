@@ -517,13 +517,46 @@ observe or add public API and are listed for the maintainer to confirm.
 Filled by tasks 1.4 and 10.1: `bash bench/auth/run.sh --label before` on `dev` before any framework edit, `--label after`
 on the finished branch, same machine, same `CONNS`, `DURATION` and rate.
 
+Machine: Intel Core i9-14900KF, Windows 11 Pro 10.0.26300, rustc 1.99.0, oha 1.16.0. Parameters: `CONNS=50`,
+`DURATION=10`, `WARMUP=3`, `RATE=1000`, `OHA_THREADS=4` (the defaults of `run.sh`). Before: `d46758a` (the `dev` this
+change starts from, with only `bench/auth/` added), 2026-11-11.
+
 | Scenario | req/s before | req/s after | p99 before | p99 after | allocations / request before → after | bytes / request before → after |
 |---|---|---|---|---|---|---|
-| `jwt-hs256` | | | | | | |
-| `jwt-provider-rs256` | | | | | | |
-| `service-verify-rs256` | | | | | | |
-| `service-sign-hs256` | | | | | | |
-| `service-sign-rs256` | | | | | | |
-| `session-none` | | | | | | |
-| `session-read` | | | | | | |
-| `session-write` | | | | | | |
+| `jwt-hs256` | 67345 | | 1.519 ms | | 93 → | 24776 → |
+| `jwt-provider-rs256` | 64499 | | 2.16 ms | | 125 → | 31495 → |
+| `service-verify-rs256` | 72429 | | 1.719 ms | | 107 → | 29330 → |
+| `service-sign-hs256` | 67799 | | 1.192 ms | | 81 → | 24515 → |
+| `service-sign-rs256` | 13538 | | 6.355 ms | | 135 → | 41580 → |
+| `session-none` | 70323 | | 1.075 ms | | 54 → | 22035 → |
+| `session-read` | 26258 | | 4.477 ms | | 4665 → | 573709 → |
+| `session-write` | 23175 | | 4.594 ms | | 4642 → | 651137 → |
+
+## Implementation notes
+
+### Findings re-checked (task 1.1)
+
+Every line of "Findings as checked" and of the invariants table was read again on `d46758a` (the `dev` this change
+starts from, two commits after `db5b4f6`; neither touched the authentication module). The facts hold; the lines that
+moved by a few:
+
+- M1, S1: unchanged lines in `jwt.rs`.
+- S6: the local strategy's validator call is `local/strategy.rs:354-378`; `login_tracker`'s panic (N6) is at
+  `local/strategy.rs:214` with its `# Panics` section at 207-210.
+- S11: the application registers the names at `application.rs:558` (not 556); the request keeps them as
+  `Request::app_redaction` (`http/request.rs:111`).
+- N6: the refresh warning is at `oauth2/client.rs:646`.
+- Everything else is at the lines given.
+
+`cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2"` passed before any edit: 1598
+passed, 0 failed.
+
+### The benchmark (tasks 1.2 to 1.4)
+
+- The server counts allocations in 64 shards (one per thread, each on its own cache lines) summed by
+  `/__bench/stats`. A first version with one pair of global counters made `session-read` and `session-write` measure
+  the counters (4.7k req/s, against 26k with the shards: about 4 600 allocations per request on 32 threads contend on
+  one cache line); the "before" numbers above come from the sharded version, run before any framework edit.
+- The latency run uses the same `CONNS` as the closed loop run, at `RATE` requests per second.
+- The seeded session holds 128 small objects (about 16 KiB of JSON) rather than one long string, so its parse, its
+  copies and its comparison cost what a real session's do.

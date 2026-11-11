@@ -7,23 +7,23 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 1. Benchmark and baseline
 
-- [ ] 1.1 Re-check every line of design.md "Findings as checked" and of the invariants table against `dev`; note moved
+- [x] 1.1 Re-check every line of design.md "Findings as checked" and of the invariants table against `dev`; note moved
   lines or changed facts at the top of design.md under "Implementation notes"; verify `cargo test -p corvis --features
   "auth-local auth-api-key auth-session auth-oauth2"` passes before any edit
-- [ ] 1.2 `bench/auth/Cargo.toml` and `bench/auth/src/main.rs`: workspace member `corvis-auth-bench` (`publish = false`,
+- [x] 1.2 `bench/auth/Cargo.toml` and `bench/auth/src/main.rs`: workspace member `corvis-auth-bench` (`publish = false`,
   `corvis` with `jwt` and `auth-session`), added to `members` in the root `Cargo.toml`; the routes of design.md Decision 1
   (JWT strategy with a static HMAC key, a key provider returning clones of one cached RS256 `JwtKey`, a guard calling
   `JwtService::verify_or_unauthorized` with RS256 keys, `JwtService::sign` with HS256 and RS256, the session routes under
   the cookie path `/session`), setup routes that issue the tokens and seed a 16 KiB session, a counting global allocator,
   a request counter and `GET /__bench/stats`; listens on `127.0.0.1` only; verify `cargo build --release -p
   corvis-auth-bench` with no warnings
-- [ ] 1.3 `bench/auth/run.sh` and `bench/auth/README.md`, following `bench/run.sh` (Git Bash, `oha`, `CONNS`, `DURATION`,
+- [x] 1.3 `bench/auth/run.sh` and `bench/auth/README.md`, following `bench/run.sh` (Git Bash, `oha`, `CONNS`, `DURATION`,
   `WARMUP`, `RATE`, `SCENARIOS`, `SKIP_BUILD`, `--label`): check each scenario's status and body, measure closed loop
   and at a fixed rate, read the stats before and after, write `bench/auth/results/<label>.json` (add `bench/auth/results/`
   to `.gitignore`) and print the Markdown table; verify spec `bench/auth-hot-path` ("Full run", "Unexpected answer",
   "Allocations per request", "Missing binary", "Before and after") by running it, and that no `bench/auth/target`
   appears
-- [ ] 1.4 Baseline: `bash bench/auth/run.sh --label before` on `dev` before any framework edit; copy the table into
+- [x] 1.4 Baseline: `bash bench/auth/run.sh --label before` on `dev` before any framework edit; copy the table into
   design.md "Measurements" with the machine and parameters
 
 ## 2. `JwtService::sign` from the original's recording
