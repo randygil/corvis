@@ -28,18 +28,18 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 2. `JwtService::sign` from the original's recording
 
-- [ ] 2.1 `crates/corvis/tests/fixtures/auth/package.json` and `package-lock.json`: pin `@nestjs/jwt` 11.0.2 and
+- [x] 2.1 `crates/corvis/tests/fixtures/auth/package.json` and `package-lock.json`: pin `@nestjs/jwt` 11.0.2 and
   `jsonwebtoken` 9.0.3 as direct dependencies; verify `npm ci && node jwt.mjs` writes a `jwt.json` identical to the
   committed one
-- [ ] 2.2 `crates/corvis/tests/fixtures/auth/jwt_sign.mjs`: the recorder of design.md Decision 2 (header comment like
+- [x] 2.2 `crates/corvis/tests/fixtures/auth/jwt_sign.mjs`: the recorder of design.md Decision 2 (header comment like
   `jwt.mjs`: what it records, how to run it, the format, the clock), the 34 cases of the table, the `divergence` of case 31;
   run it twice and verify the two `jwt_sign.json` are identical; commit `jwt_sign.json`
-- [ ] 2.3 Compare the recording with "Rules expected" of Decision 2 and write every difference under "Implementation
+- [x] 2.3 Compare the recording with "Rules expected" of Decision 2 and write every difference under "Implementation
   notes" (the recording wins); add a case for any branch of the original found while reading it that the table misses
-- [ ] 2.4 `crates/corvis/src/jwt.rs`: the private `sign_at(payload, opts, now)` seam called by `sign_with`, and the unit test
+- [x] 2.4 `crates/corvis/src/jwt.rs`: the private `sign_at(payload, opts, now)` seam called by `sign_with`, and the unit test
   `sign_matches_the_recorded_original` replaying `jwt_sign.json`; run it on the unchanged signing code and list the cases
   that fail under "Implementation notes"
-- [ ] 2.5 Implement the recorded rules in `sign_at` (checks and their order, `iat` from the payload, `nbf` and `exp` from
+- [x] 2.5 Implement the recorded rules in `sign_at` (checks and their order, `iat` from the payload, `nbf` and `exp` from
   it, conflicts with the original's texts, the claim order, the header without `typ` for a non-object payload); add
   `not_before` and `jwt_id` to `JwtSignOptions` (rustdoc with the original's option names; `Debug` lists them); verify the
   replay passes, with any remaining case marked as a divergence with its reason, and `cargo test -p corvis --lib jwt`

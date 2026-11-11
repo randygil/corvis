@@ -560,3 +560,34 @@ passed, 0 failed.
 - The latency run uses the same `CONNS` as the closed loop run, at `RATE` requests per second.
 - The seeded session holds 128 small objects (about 16 KiB of JSON) rather than one long string, so its parse, its
   copies and its comparison cost what a real session's do.
+
+### The `sign` recording (tasks 2.1 to 2.5)
+
+- The fixture package pins `@nestjs/jwt` 11.0.2 and `jsonwebtoken` 9.0.3. The JWT module declares a peer dependency on
+  `@nestjs/common` up to 11 while the package uses 12.4.0 (the version the other recorders need), so `package.json`
+  carries an `overrides` entry that satisfies the peer with the package's own `@nestjs/common`; `npm ci` installs it as
+  it is. `jsonwebtoken` was already 9.0.3 through `passport-jwt`, so the lockfile only adds the JWT module and its types,
+  and `node jwt.mjs` writes a `jwt.json` identical to the committed one.
+- Two runs of `node jwt_sign.mjs` write identical files.
+- Cases added to the 34 of the table, for branches of the original the table does not cover (35 to 40): a string payload
+  with an asymmetric module (the module's `algorithm` counts as a sign option), a number payload with a sign option, a
+  boolean payload, a `null` payload, a negative payload `iat`, and a payload claim set to `null` together with its option.
+- Recording against "Rules expected": one difference. A non-object payload other than a string is not always refused:
+  an array or `null` is (`Expected "payload" to be a plain object.`), but a number or a boolean is signed as its JSON
+  text with a header without `typ`, unless an option that only applies to objects is set (`invalid expiresIn option for
+  number payload`). Everything else holds as written: the checks and their order, `iat` truthy or the clock (an `iat` of
+  0 is replaced in place by the clock), `floor(iat + ms / 1000)`, the conflicts with the original's texts (two forms:
+  `Bad "options.expiresIn" option the payload already has an "exp" property.` for `exp`/`nbf`, `Bad "options.issuer"
+  option. The payload already has an "iss" property.` for the four appended claims), the order `iat`, `nbf`, `exp`,
+  `aud`, `iss`, `sub`, `jti`, and `exp` reported before `iss` when both conflict (case 26).
+- The replay on the signing code of `dev` failed 32 of the 40 cases: every case with a payload `iat`, every conflict,
+  every non-numeric time claim, `aud`/`iss` order, `jti`, `nbf`, every non-object payload and RS256 (whose payload has an
+  `iat`). It passed 1, 2, 7, 12, 17, 31, 32 and 34.
+- After the change every case matches; the only divergence is case 31 (`mutatePayload`), whose token is the same and
+  whose changed caller object Corvis cannot reproduce (it borrows the payload).
+- The string-payload check lists the sign options as the module merges them: the module's (`algorithm` when it is not
+  HS256, `expiresIn`, `issuer`, `audience`), then the call's (`expiresIn` when the module has none, `subject`, `jwtid`,
+  `notBefore`). Corvis cannot tell an explicit `algorithm: HS256` from the default, so only another algorithm counts.
+- Every caller of `sign` and `sign_with` in the repository (`examples/`, `crates/corvis/tests/`,
+  `crates/corvis/src/fuzz_tests.rs`, `bench/auth/`) signs a payload without `iat`, `exp`, `nbf`, `iss`, `aud`, `sub` or
+  `jti` claims that meet their option.

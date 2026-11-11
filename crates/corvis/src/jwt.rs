@@ -14,7 +14,7 @@ use std::future::Future;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Validation};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::di::{DynamicModule, Module, ModuleDefinition, Provider, ResolveCtx, Token};
 use crate::http::{HttpException, UnauthorizedException};
@@ -103,14 +103,23 @@ impl std::fmt::Debug for JwtModuleOptions {
     }
 }
 
-/// Per-call sign options (`jwtService.sign(payload, { expiresIn, secret, privateKey })`). `Debug` shows whether a
-/// secret or key is set, never its value.
+/// Per-call sign options (`jwtService.sign(payload, { expiresIn, subject, jwtid, notBefore, secret, privateKey })`).
+/// Build it with `..Default::default()`. `Debug` shows whether a secret or key is set, never its value.
 #[derive(Clone, Default)]
 pub struct JwtSignOptions {
+    /// `expiresIn`: overrides the module's `expires_in`. `exp` is counted from the payload's `iat` when it has one.
     pub expires_in: Option<String>,
+    /// `secret`: an HMAC secret for this call, taken before the module's keys.
     pub secret: Option<String>,
+    /// `subject`: the `sub` claim. A payload that already has `sub` is an error.
     pub subject: Option<String>,
+    /// `privateKey`: a PEM key for this call (`RS*`/`PS*`/`ES*`/`EdDSA`).
     pub private_key: Option<String>,
+    /// `notBefore`: a timespan with the grammar of `expires_in`; `nbf` is counted from the payload's `iat` when it has
+    /// one, from the clock otherwise. A payload that already has `nbf` is an error.
+    pub not_before: Option<String>,
+    /// `jwtid`: the `jti` claim. A payload that already has `jti` is an error.
+    pub jwt_id: Option<String>,
 }
 
 impl std::fmt::Debug for JwtSignOptions {
@@ -121,6 +130,8 @@ impl std::fmt::Debug for JwtSignOptions {
             .field("secret", &set(self.secret.is_some()))
             .field("subject", &self.subject)
             .field("private_key", &set(self.private_key.is_some()))
+            .field("not_before", &self.not_before)
+            .field("jwt_id", &self.jwt_id)
             .finish()
     }
 }
@@ -185,6 +196,14 @@ pub fn parse_duration_secs(s: &str) -> Option<i64> {
 }
 
 const EXPIRES_IN_ERROR: &str = "\"expiresIn\" should be a number of seconds or string representing a timespan eg: \"1d\", \"20h\", 60";
+const NOT_BEFORE_ERROR: &str = "\"notBefore\" should be a number of seconds or string representing a timespan eg: \"1d\", \"20h\", 60";
+
+/// node-jsonwebtoken's `timespan(value, iat)`: `floor(iat + milliseconds / 1000)`, as an integer claim. `None` when
+/// `value` is not a timespan or the result is beyond `Number.MAX_SAFE_INTEGER`.
+fn timespan(value: &str, timestamp: f64) -> Option<Value> {
+    let at = (timestamp + parse_timespan_ms(value)? / 1000.0).floor();
+    (at.abs() <= MAX_SAFE_INTEGER).then(|| Value::from(at as i64))
+}
 
 fn encoding_key(alg: Algorithm, key: &str) -> crate::Result<EncodingKey> {
     let pem = key.as_bytes();
@@ -517,15 +536,43 @@ impl JwtService {
         JwtService { options }
     }
 
-    /// `jwtService.sign(payload)`. Adds `iat` (and `exp` when `expires_in` is configured).
+    /// `jwtService.sign(payload)`: [`sign_with`](Self::sign_with) without per-call options.
     pub fn sign(&self, payload: &impl Serialize) -> crate::Result<String> {
         self.sign_with(payload, JwtSignOptions::default())
     }
 
-    /// Fails like node-jsonwebtoken when the key is empty (`secretOrPrivateKey must have a
-    /// value`) or `expires_in` is not a valid timespan.
+    /// `jwtService.sign(payload, options)`, with the rules of the original (`jsonwebtoken` 9 under the JWT module),
+    /// verified against a recording of it:
+    ///
+    /// - an object payload's `iat`, `exp` and `nbf` must be numbers (`"iat" should be a number of seconds`);
+    /// - `iat` is the payload's when it is a number other than 0, the clock otherwise; `nbf` (`not_before`) and `exp`
+    ///   (`expires_in`, per call or of the module) are counted from it;
+    /// - a payload claim together with its option is an error, never overwritten: `exp` with `expires_in`, `nbf` with
+    ///   `not_before`, `aud` with the module `audience`, `iss` with the module `issuer`, `sub` with `subject`, `jti`
+    ///   with `jwt_id` (`Bad "options.subject" option. The payload already has an "sub" property.`);
+    /// - the claims are added after the payload's own keys in the order `iat`, `nbf`, `exp`, `aud`, `iss`, `sub`, `jti`
+    ///   (a payload `iat` keeps its place);
+    /// - a string payload is signed as it is, with a header without `typ`, and is refused when any sign option is set;
+    ///   a number or a boolean is signed as its JSON text, without `typ`; an array or `null` is refused.
+    ///
+    /// It also fails when no key is set (`secretOrPrivateKey must have a value`), the key does not parse, or
+    /// `expires_in` / `not_before` is not a valid timespan. A bare number is a number of seconds.
     pub fn sign_with(&self, payload: &impl Serialize, opts: JwtSignOptions) -> crate::Result<String> {
+        self.sign_at(payload, opts, chrono::Utc::now().timestamp())
+    }
+
+    /// [`sign_with`](Self::sign_with) at the clock `now` (seconds), so a test can replay recorded tokens.
+    fn sign_at(&self, payload: &impl Serialize, opts: JwtSignOptions, now: i64) -> crate::Result<String> {
         let alg = self.options.algorithm;
+        let claims = serde_json::to_value(payload)?;
+        // The JWT module refuses a string payload with sign options before anything else.
+        if claims.is_string() {
+            let names = self.sign_option_names(&opts);
+            if !names.is_empty() {
+                anyhow::bail!("Payload as string is not allowed with the following sign options: {}", names.join(", "));
+            }
+        }
+        // `jsonwebtoken` checks the key before the payload.
         // The first non-empty key wins: per-call secret, module secret, per-call private key, module private key.
         let key =
             [opts.secret.as_deref(), Some(self.options.secret.as_str()), opts.private_key.as_deref(), self.options.private_key.as_deref()]
@@ -534,34 +581,114 @@ impl JwtService {
                 .find(|k| !k.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("secretOrPrivateKey must have a value"))?
                 .to_string();
-        let mut claims = serde_json::to_value(payload)?;
-        if let Value::Object(map) = &mut claims {
-            let now = chrono::Utc::now().timestamp();
-            map.entry("iat").or_insert(Value::from(now));
-            if let Some(expires_in) = opts.expires_in.as_deref().or(self.options.expires_in.as_deref()) {
-                let secs = parse_duration_secs(expires_in).ok_or_else(|| anyhow::anyhow!(EXPIRES_IN_ERROR))?;
-                let exp = now.checked_add(secs).filter(|e| (*e as f64).abs() <= MAX_SAFE_INTEGER);
-                let exp = exp.ok_or_else(|| anyhow::anyhow!(EXPIRES_IN_ERROR))?;
-                map.insert("exp".into(), Value::from(exp));
+        let encoding = encoding_key(alg, &key)?;
+        let (object, body) = match claims {
+            Value::Object(map) => (true, serde_json::to_vec(&Value::Object(self.claims_of(map, &opts, now)?))?),
+            Value::String(text) => (false, text.into_bytes()),
+            Value::Array(_) | Value::Null => anyhow::bail!("Expected \"payload\" to be a plain object."),
+            other => {
+                let set = self.object_option_names(&opts);
+                if !set.is_empty() {
+                    let kind = if other.is_boolean() { "boolean" } else { "number" };
+                    anyhow::bail!("invalid {} option for {kind} payload", set.join(","));
+                }
+                (false, serde_json::to_vec(&other)?)
             }
-            if let Some(iss) = &self.options.issuer {
-                map.entry("iss").or_insert(Value::from(iss.clone()));
-            }
-            if let Some(aud) = &self.options.audience {
-                map.entry("aud").or_insert(Value::from(aud.clone()));
-            }
-            if let Some(sub) = opts.subject {
-                map.insert("sub".into(), Value::from(sub));
-            }
-        }
-        // node-jsonwebtoken (jws) writes the header as `{"alg":..,"typ":"JWT"}`, in that order;
-        // the `jsonwebtoken` crate serializes `typ` first, so the header is built by hand.
+        };
+        // node-jsonwebtoken (jws) writes the header as `{"alg":..,"typ":"JWT"}`, in that order, and without `typ` for a
+        // payload that is not an object; the `jsonwebtoken` crate serializes `typ` first, so the header is built by hand.
         use base64::Engine as _;
         let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-        let header = format!("{{\"alg\":\"{alg:?}\",\"typ\":\"JWT\"}}");
-        let message = format!("{}.{}", b64(header.as_bytes()), b64(&serde_json::to_vec(&claims)?));
-        let signature = jsonwebtoken::crypto::sign(message.as_bytes(), &encoding_key(alg, &key)?, alg)?;
+        let header = if object { format!("{{\"alg\":\"{alg:?}\",\"typ\":\"JWT\"}}") } else { format!("{{\"alg\":\"{alg:?}\"}}") };
+        let message = format!("{}.{}", b64(header.as_bytes()), b64(&body));
+        let signature = jsonwebtoken::crypto::sign(message.as_bytes(), &encoding, alg)?;
         Ok(format!("{message}.{signature}"))
+    }
+
+    /// The claims of an object payload, by the rules of [`sign_with`](Self::sign_with), in the original's order of
+    /// checks.
+    fn claims_of(&self, mut map: Map<String, Value>, opts: &JwtSignOptions, now: i64) -> crate::Result<Map<String, Value>> {
+        for (key, value) in &map {
+            if matches!(key.as_str(), "iat" | "exp" | "nbf") && !value.is_number() {
+                anyhow::bail!("\"{key}\" should be a number of seconds");
+            }
+        }
+        let expires_in = opts.expires_in.as_deref().or(self.options.expires_in.as_deref());
+        if map.contains_key("exp") && expires_in.is_some() {
+            anyhow::bail!("Bad \"options.expiresIn\" option the payload already has an \"exp\" property.");
+        }
+        if map.contains_key("nbf") && opts.not_before.is_some() {
+            anyhow::bail!("Bad \"options.notBefore\" option the payload already has an \"nbf\" property.");
+        }
+        // `payload.iat || now`: an `iat` of 0 is replaced by the clock, in place.
+        let timestamp = match map.get("iat").and_then(Value::as_f64) {
+            Some(iat) if iat != 0.0 => iat,
+            _ => {
+                map.insert("iat".into(), Value::from(now));
+                now as f64
+            }
+        };
+        if let Some(not_before) = &opts.not_before {
+            map.insert("nbf".into(), timespan(not_before, timestamp).ok_or_else(|| anyhow::anyhow!(NOT_BEFORE_ERROR))?);
+        }
+        if let Some(expires_in) = expires_in {
+            map.insert("exp".into(), timespan(expires_in, timestamp).ok_or_else(|| anyhow::anyhow!(EXPIRES_IN_ERROR))?);
+        }
+        let added = [
+            ("audience", "aud", self.options.audience.as_ref()),
+            ("issuer", "iss", self.options.issuer.as_ref()),
+            ("subject", "sub", opts.subject.as_ref()),
+            ("jwtid", "jti", opts.jwt_id.as_ref()),
+        ];
+        for (option, claim, value) in added {
+            let Some(value) = value else { continue };
+            if map.contains_key(claim) {
+                anyhow::bail!("Bad \"options.{option}\" option. The payload already has an \"{claim}\" property.");
+            }
+            map.insert(claim.into(), Value::String(value.clone()));
+        }
+        Ok(map)
+    }
+
+    /// The names of the original's sign options this call has, in the order the JWT module lists them: the module's
+    /// (`algorithm` when it is not the default HS256), then the call's.
+    fn sign_option_names(&self, opts: &JwtSignOptions) -> Vec<&'static str> {
+        let o = &self.options;
+        let mut names = Vec::new();
+        if o.algorithm != Algorithm::HS256 {
+            names.push("algorithm");
+        }
+        if o.expires_in.is_some() || opts.expires_in.is_some() {
+            names.push("expiresIn");
+        }
+        for (name, set) in [("issuer", o.issuer.is_some()), ("audience", o.audience.is_some())] {
+            if set {
+                names.push(name);
+            }
+        }
+        for (name, set) in [("subject", opts.subject.is_some()), ("jwtid", opts.jwt_id.is_some()), ("notBefore", opts.not_before.is_some())]
+        {
+            if set {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// The options `jsonwebtoken` accepts only with an object payload, in its order.
+    fn object_option_names(&self, opts: &JwtSignOptions) -> Vec<&'static str> {
+        let o = &self.options;
+        [
+            ("expiresIn", o.expires_in.is_some() || opts.expires_in.is_some()),
+            ("notBefore", opts.not_before.is_some()),
+            ("audience", o.audience.is_some()),
+            ("issuer", o.issuer.is_some()),
+            ("subject", opts.subject.is_some()),
+            ("jwtid", opts.jwt_id.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, set)| set.then_some(name))
+        .collect()
     }
 
     /// `await jwtService.signAsync(payload)`.
@@ -844,4 +971,83 @@ mod tests {
 
     const TEST_RSA_PRIVATE: &str = include_str!("../tests/fixtures/jwt_rsa_private.pem");
     const TEST_RSA_PUBLIC: &str = include_str!("../tests/fixtures/jwt_rsa_public.pem");
+
+    /// What the original `JwtService.sign` returned or threw, recorded by `tests/fixtures/auth/jwt_sign.mjs`.
+    const SIGN_FIXTURE: &str = include_str!("../tests/fixtures/auth/jwt_sign.json");
+
+    /// An option of the recording as Corvis takes it: a timespan string as it is, a number `n` as `"n"` (a bare number
+    /// is seconds in Corvis, the documented reading).
+    fn option_text(value: &Value) -> Option<String> {
+        match value {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }
+    }
+
+    fn fixture_module(module: &Value) -> JwtModuleOptions {
+        let key = |name: &Value| match name.as_str() {
+            Some("s1") => "corvis-jwt-secret-one-0123456789abcdef",
+            Some("rsa") => TEST_RSA_PRIVATE,
+            other => panic!("unknown key {other:?}"),
+        };
+        let mut options = match (module.get("secret"), module.get("privateKey")) {
+            (Some(secret), None) => JwtModuleOptions::new(key(secret)),
+            (None, Some(private)) => JwtModuleOptions::new("").private_key(key(private)),
+            _ => panic!("a module has a secret or a private key: {module}"),
+        };
+        if let Some(alg) = module.get("algorithm").and_then(Value::as_str) {
+            options = options.algorithm(serde_json::from_value(Value::String(alg.into())).unwrap());
+        }
+        options.expires_in = module.get("expiresIn").and_then(option_text);
+        options.issuer = module.get("issuer").and_then(option_text);
+        options.audience = module.get("audience").and_then(option_text);
+        options
+    }
+
+    fn fixture_call(call: &Value) -> JwtSignOptions {
+        let field = |name: &str| call.get(name).and_then(option_text);
+        JwtSignOptions {
+            expires_in: field("expiresIn"),
+            subject: field("subject"),
+            jwt_id: field("jwtid"),
+            not_before: field("notBefore"),
+            // `mutatePayload` has no counterpart: Corvis borrows the payload (the case carries a divergence).
+            ..Default::default()
+        }
+    }
+
+    /// `JwtService::sign` returns what the original returns, byte for byte, or fails with its error text, for every
+    /// recorded case at the recorded clock; a case with a `divergence` returns what the divergence says.
+    #[test]
+    fn sign_matches_the_recorded_original() {
+        let fixture: Value = serde_json::from_str(SIGN_FIXTURE).unwrap();
+        let clock = fixture["clock"].as_i64().unwrap();
+        let mut failures = Vec::new();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(cases.len() >= 34, "the recording has the cases of the design");
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let service = JwtService::new(fixture_module(&case["module"]));
+            let options = if case["call"].is_null() { JwtSignOptions::default() } else { fixture_call(&case["call"]) };
+            let expected = match &case["divergence"] {
+                Value::Null => {
+                    assert_eq!(case["payloadAfter"], case["payload"], "{name}: the original copies the payload");
+                    &case["result"]
+                }
+                divergence => {
+                    assert!(divergence["reason"].as_str().is_some_and(|r| !r.is_empty()), "{name}: a divergence has its reason");
+                    &divergence["result"]
+                }
+            };
+            let got = match service.sign_at(&case["payload"], options, clock) {
+                Ok(token) => serde_json::json!({ "token": token }),
+                Err(e) => serde_json::json!({ "error": e.to_string() }),
+            };
+            if &got != expected {
+                failures.push(format!("{name}: expected {expected}, got {got}"));
+            }
+        }
+        assert!(failures.is_empty(), "{} case(s) differ:\n{}", failures.len(), failures.join("\n"));
+    }
 }
