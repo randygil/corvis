@@ -87,37 +87,37 @@ to applications and clients" says so.
 
 ## 6. Connect sequence (Decision 5, #183)
 
-- [ ] 6.1 `socket.rs`: `Phase::Joining`; `is_live` true for it; emits, `AckSender::send` and `register_broadcast_ack` refuse;
+- [x] 6.1 `socket.rs`: `Phase::Joining`; `is_live` true for it; emits, `AckSender::send` and `register_broadcast_ack` refuse;
   `disconnect_with` on a joining socket tears it down silently; `namespace.rs`: `add_socket` inserts only while `Joining`
   (phase read under the table's write lock); `LocalNamespace::sockets_by_ids` leaves joining sockets out; rustdoc of
   `socket`, `sockets`, `socket_count` (Review note 2); verify `cargo test -p corvis --features socket-io --lib`
-- [ ] 6.2 `client.rs` `connect`: steps 1-6 of Decision 5 (no `nsps()` across the adapter or a send; CONNECT queued and the phase
+- [x] 6.2 `client.rs` `connect`: steps 1-6 of Decision 5 (no `nsps()` across the adapter or a send; CONNECT queued and the phase
   set under the socket's state lock; an own-room failure answers CONNECT_ERROR `Internal server error` and removes the slot);
   `begin_connect` keeps the id-check failure as it is; the connect step hook in `testing` (parks `connect` after a chosen
   step, test builds of the integration suites only through the hidden module); verify `cargo test -p corvis --features
   socket-io --test socket_io`
-- [ ] 6.3 `InMemoryAdapter::add_all`: the other-socket-id test against `sids` under the write lock, one `is_live` for the
+- [x] 6.3 `InMemoryAdapter::add_all`: the other-socket-id test against `sids` under the write lock, one `is_live` for the
   joining socket; unit test: an `add_all` of 1,000 names makes one liveness lookup (a test-build counter in `LocalNamespace`);
   a test that joins a joining socket's id between steps 2 and 3 and finds itself expelled; verify the id-room tests of
   `socket_io/tests/` and `--lib fuzz`
-- [ ] 6.4 `crates/corvis/tests/socket_io_connect_order.rs` (multi-thread runtime, 4 workers): one test per scenario of the spec
+- [x] 6.4 `crates/corvis/tests/socket_io_connect_order.rs` (multi-thread runtime, 4 workers): one test per scenario of the spec
   requirements "A connecting socket is registered before its CONNECT" and "No connection lock is held across the adapter", and
   the teardown at each of steps 1-5; update the CONNECT failure tests to the MODIFIED requirement "A panicking adapter does not
   leave a connecting socket behind" (both scenarios of the own room); replace `socket_of` in
   `tests/socket_io_rooms_security.rs` with direct lookups; verify the new suite passes 5 runs in a row and
   `--test socket_io_rooms_security`
-- [ ] 6.5 The lock order of Decision 5 in the `adapter/mod.rs` module docs and in Implementation notes; verify no
+- [x] 6.5 The lock order of Decision 5 in the `adapter/mod.rs` module docs and in Implementation notes; verify no
   `nsps()` guard is alive across a call into the adapter, a handler or the engine (read the diff of `client.rs`)
 
 ## 7. CONNECT in a write of its own (Decision 6, #184)
 
-- [ ] 7.1 `ws.rs` / `engine`: acknowledgement on the last item of `push_group`, `take_batch` acknowledging taken items,
+- [x] 7.1 `ws.rs` / `engine`: acknowledgement on the last item of `push_group`, `take_batch` acknowledging taken items,
   `EngineSocket::send_all_written` returning a future of `bool`; unit tests: acknowledged when written (WebSocket writer),
   when taken (polling), `false` when discarded or closed; verify `cargo test -p corvis --features socket-io --lib`
-- [ ] 7.2 `connect` queues CONNECT with `send_all_written`, sets `joined_once` when the socket is `Connected`, waits for the
+- [x] 7.2 `connect` queues CONNECT with `send_all_written`, sets `joined_once` when the socket is `Connected`, waits for the
   write or the close before the connection handlers and `mark_ready`; `IoNamespace::on_connection` rustdoc ("after the CONNECT
   packet was written"); verify `cargo test -p corvis --features socket-io --test socket_io`
-- [ ] 7.3 Tests for the scenarios "Polling", "WebSocket" and "Connection closes before the write" of the spec requirement
+- [x] 7.3 Tests for the scenarios "Polling", "WebSocket" and "Connection closes before the write" of the spec requirement
   "CONNECT leaves in a write of its own" (unit tests over the session outbox and the in-process transport of
   `socket_io/tests.rs`); verify they pass
 - [ ] 7.4 Run the upstream suite 20 times in a row (`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test
@@ -125,47 +125,47 @@ to applications and clients" says so.
 
 ## 8. Address key (Decision 7)
 
-- [ ] 8.1 `EngineSocket::address_key()`; `IoSocket::resolve_ack` passes it; test for the scenario of the spec requirement "The
+- [x] 8.1 `EngineSocket::address_key()`; `IoSocket::resolve_ack` passes it; test for the scenario of the spec requirement "The
   answer budget keys answers by the session's address"; verify
   `one_address_cannot_fill_the_answer_budget_and_make_the_calls_of_others_fail` passes unchanged
 
 ## 9. `Connection` struct (Decision 8)
 
-- [ ] 9.1 `client.rs`: `Connection` owning the loop state, methods for `handle_message`, `admit`, `handle_packet`, one method for
+- [x] 9.1 `client.rs`: `Connection` owning the loop state, methods for `handle_message`, `admit`, `handle_packet`, one method for
   the outcomes of a `Flow`; no `#[allow(clippy::too_many_arguments)]` left in the file; verify
   `cargo clippy -p corvis --no-default-features --features socket-io -- -D warnings` and the suites `socket_io`,
   `socket_io_accounting`, `socket_io_lingering`, `socket_io_security`, `socket_io_transit`
 
 ## 10. One place for each duplicated rule (Decision 9)
 
-- [ ] 10.1 `RoomLimits` with `check` and `check_name`, used by `IoSocket::join`, `InMemoryAdapter::add_all`,
+- [x] 10.1 `RoomLimits` with `check` and `check_name`, used by `IoSocket::join`, `InMemoryAdapter::add_all`,
   `BroadcastOperator::valid_rooms` and `with_rooms`; verify the room-limit tests of `socket_io_rooms`,
   `socket_io_rooms_security` and `fuzz_adapter` pass unchanged
-- [ ] 10.2 `SocketState::register_ack` used by `emit_with_ack_within` and `register_broadcast_ack`; verify the pending-ack tests
+- [x] 10.2 `SocketState::register_ack` used by `emit_with_ack_within` and `register_broadcast_ack`; verify the pending-ack tests
   of `socket_io` and `socket_io/tests/`
-- [ ] 10.3 The engine's three limiters replaced by a `WarnLimiter` (static kinds, empty namespace); `WarnLimiter` with the nested
+- [x] 10.3 The engine's three limiters replaced by a `WarnLimiter` (static kinds, empty namespace); `WarnLimiter` with the nested
   map and lazy messages (`impl FnOnce() -> String`), "since the last one" in the text; unit tests: a dropped line allocates
   nothing (a test-build counter of message closures called), the cap counts both levels; verify the `warn.rs` tests and
   `--test socket_io_log`
 
 ## 11. API hygiene and the nice-to-have items (Decisions 10, 11, 13, 14)
 
-- [ ] 11.1 `socket_io/testing.rs` (`#[doc(hidden)]`) with the hooks of Decision 10; remove them from the trait, from
+- [x] 11.1 `socket_io/testing.rs` (`#[doc(hidden)]`) with the hooks of Decision 10; remove them from the trait, from
   `InMemoryAdapter`, `IoSocket`, `IoNamespace` and `socket_io/mod.rs`; `Membership.examined` under `cfg(test)`; update
   `tests/socket_io_rooms.rs`, `socket_io_rooms_memory.rs`, `socket_io_memory.rs`, `socket_io_accounting.rs`; verify the suites
-- [ ] 11.2 `#[non_exhaustive]` on the seven enums with a `compile_fail` doctest each; verify
+- [x] 11.2 `#[non_exhaustive]` on the seven enums with a `compile_fail` doctest each; verify
   `cargo test -p corvis --features socket-io --doc`
-- [ ] 11.3 Dead code (`ServerInner.closed`, `IoSocket::send_encoded`, the unused parameter of `handshake_refused`) and the two
+- [x] 11.3 Dead code (`ServerInner.closed`, `IoSocket::send_encoded`, the unused parameter of `handshake_refused`) and the two
   comments; verify `cargo build -p corvis --features socket-io` without warnings
-- [ ] 11.4 `parse_json` without matching error text, tests at `MAX_DEPTH` and `MAX_DEPTH + 1`; `begin_connect` returning
+- [x] 11.4 `parse_json` without matching error text, tests at `MAX_DEPTH` and `MAX_DEPTH + 1`; `begin_connect` returning
   `Result<(), ProtocolViolation>`; verify `--lib socket_io::parser` and `--lib fuzz`
-- [ ] 11.5 Weak connection callback in `IoServer::new`, strong one installed by `attach`; test: an unattached `IoServer` dropped
+- [x] 11.5 Weak connection callback in `IoServer::new`, strong one installed by `attach`; test: an unattached `IoServer` dropped
   is freed; verify the lifetime and shutdown tests of `socket_io` pass unchanged
-- [ ] 11.6 `WriteEnd::Refused` as a peer close in `engine/websocket.rs`; test of design.md Decision 13 (200 iterations, reason
+- [x] 11.6 `WriteEnd::Refused` as a peer close in `engine/websocket.rs`; test of design.md Decision 13 (200 iterations, reason
   always `transport close`); verify `--test engine_io_ws`
-- [ ] 11.7 `HandshakeData` stores the session's resolved address; `ip()` returns a copy of it; the `value.rs` sentence on the
+- [x] 11.7 `HandshakeData` stores the session's resolved address; `ip()` returns a copy of it; the `value.rs` sentence on the
   CI job of the counting-allocator tests; verify `--test trust_proxy` and the `ip()` tests
-- [ ] 11.8 Split `adapter.rs` into `adapter/mod.rs`, `adapter/memory.rs`, `ack.rs`, `info.rs` with the same public paths; split
+- [x] 11.8 Split `adapter.rs` into `adapter/mod.rs`, `adapter/memory.rs`, `ack.rs`, `info.rs` with the same public paths; split
   `socket_io/tests/review1.rs` into files named after behavior and rename tests that name a review round; verify
   `cargo test -p corvis --features socket-io -- --list | wc -l` gives the same count before and after the split and no
   import outside `socket_io/` changed
@@ -185,7 +185,7 @@ to applications and clients" says so.
 
 ## 13. Benchmark after
 
-- [ ] 13.1 After run on the same machine and matrix as 2.3; "Benchmark after" table in Implementation notes with, per decision,
+- [x] 13.1 After run on the same machine and matrix as 2.3; "Benchmark after" table in Implementation notes with, per decision,
   the figure it had to move (Decision 2: allocations per received message down by at least six, `emit` rate not lower;
   Decision 3: bytes per polling request and per CONNECT down by about the 4 KiB of headers; Decision 4: bytes per
   `server-emit` message from about five payloads to about two, one payload and one allocation less per broadcast recipient);
@@ -193,10 +193,10 @@ to applications and clients" says so.
 
 ## 14. Docs and review
 
-- [ ] 14.1 Rustdoc of every item whose behavior or place changed (`on_connection`, `socket`, `sockets`, `socket_count`,
+- [x] 14.1 Rustdoc of every item whose behavior or place changed (`on_connection`, `socket`, `sockets`, `socket_count`,
   `Handshake`, the seven enums, `testing`, `Adapter` lock rules); verify `cargo doc -p corvis --features socket-io --no-deps`
   without warnings and `cargo test -p corvis --features socket-io --doc`
-- [ ] 14.2 Docs: in the "Socket.IO (preview)" section of `docs/websockets/adapter.md`, when connection handlers run, the
+- [x] 14.2 Docs: in the "Socket.IO (preview)" section of `docs/websockets/adapter.md`, when connection handlers run, the
   CONNECT_ERROR on an adapter failure at connect, lookup by id right after connecting, the handshake memory (one request per
   session), the non-exhaustive enums; translate in `docs/es/websockets/adapter.md`; `bench/socket-io/README.md` linked from
   `bench/README.md`; verify `npm run docs:check` in `docs/`
@@ -204,7 +204,7 @@ to applications and clients" says so.
   reentrant adapters; the wakeup protocol and lost wakeups; the engine's request handling for `sid` requests; the
   `tokio-tungstenite` upgrade and the message limits; the answer budget key); repeat rounds until no open finding; record
   findings and fixes in design.md under "Security review"; verify every finding has a regression test or a recorded reason
-- [ ] 14.4 Add design.md "What the Redis adapter (#36) needs from this change" to the review notes of
+- [x] 14.4 Add design.md "What the Redis adapter (#36) needs from this change" to the review notes of
   `openspec/changes/e2-socket-io-redis-adapter/design.md`, and correct its file list for the split of Decision 14; verify
   `openspec validate e2-socket-io-redis-adapter --strict`
 

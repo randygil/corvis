@@ -744,3 +744,115 @@ the 4 KiB cookie that Decision 3 removes.
   lines now carry that suffix too.
 - Left as it was: the `allow_request` hook's panic line is not rate limited (it was not one of the three, and a panic
   of the application's own hook is not something this change was asked to bound); listed as a follow-up.
+
+### Group 7, task 7.4: the upstream suite after the change (acceptance not met)
+
+The suite was run after the rebase on `ed1e480`, against Corvis alone (`the_protocol_suite_passes_against_corvis`,
+`--test-threads=1`), 10 runs on this branch and, for comparison in the same hour on the same machine, 10 runs on `dev`
+(`ed1e480`, the code without this change):
+
+| | Runs passed | Failing tests seen |
+|---|---|---|
+| `dev` | 1 of 10 | `should allow connection to the main namespace` (and `... with a payload`), `... to a custom namespace` (and `... with a payload`), `should connect then disconnect from a custom namespace`, `should disconnect from the main namespace` |
+| this branch | 1 of 10 | the same tests, and once `should ignore HTTP requests with same sid after upgrade` (also seen on `dev` in a separate run) |
+
+The control (the suite against the Node reference) failed most runs on `dev` in that hour too (timeouts), where it had
+passed 3 of 8 in the morning. The failures are the suite's own pattern: it waits for one frame with a `once` listener and
+registers the listener for the next one after an `await`, so it loses a frame whenever two arrive in one read, and its
+300/200 ms heartbeat turns any delay into a ping in place of the expected frame. Decision 6 is implemented (the connection
+handlers run after the CONNECT write; over WebSocket the write is the `sink.send` of the writer, flushed; over polling the
+take of a poll), and the unit and integration tests show CONNECT and the handlers' first emit in separate writes
+(`the_connection_handlers_wait_for_the_connect_write`, `connection_handlers_run_after_connect_and_before_the_first_event`,
+`over_polling_connect_is_answered_alone_and_the_handlers_event_in_the_next_poll`,
+`over_websocket_the_handlers_event_follows_connect_as_its_own_frame`), but two separate writes on loopback still reach a
+client that is slower than the server in one read: the gap between them is the time the CONNECT write's acknowledgement
+takes to wake the connect task (microseconds), shorter than Node's, whose next write waits for the previous write's
+callback on a later turn of its event loop. Making the gap longer (a timer, a yield) would be the "yield in the writer"
+the design rejected, and orders nothing. The acceptance (20 of 20) is therefore not met and #184 is not closed by this
+change; what would close it is a fix of the suite's listener pattern (a buffered `waitFor`) applied by
+`fetch-suites.mjs`, or keeping the conformance test advisory: a decision for the maintainer, listed as a follow-up.
+`socket_io_diff` was not run 20 times for the same reason (it shares the client pattern).
+
+### Group 11
+
+- `corvis::socket_io::testing` (hidden) holds: `pause_connect`/`ConnectPause`/`ConnectStep`, `adapter`, `in_memory`,
+  `membership_size`, `check_invariants`, `has_socket` (on a namespace), `adapter_size`, `adapter_invariants`,
+  `adapter_has_socket` (on an `InMemoryAdapter` a test adapter wraps), `buffered_amount`, `same_request`,
+  `poll_pending`, `post_active` (engine sessions, for group 12), `probe_decode`, `probe_auth`, `DecodeProbe`. The trait
+  lost its three hooks and gained `Any` as a supertrait (the tests find the in-memory adapter by downcast; no burden on
+  implementors, every `'static` type is `Any`); `InMemoryAdapter::size` is crate-private and returns an error instead of
+  panicking; `Membership.examined` exists only under `cfg(test)`; `IoNamespace::adapter` and `IoSocket::buffered_amount`
+  are crate-private. The test adapter of `tests/socket_io_rooms.rs` keeps the `Arc<InMemoryAdapter>` it wraps in its
+  knobs and asks `testing::adapter_size` for it.
+- `#[non_exhaustive]` on the seven enums, each with a `compile_fail` doctest that matches every variant without a
+  wildcard (they pass: the match does not compile).
+- Dead code: `ServerInner.closed`, `IoSocket::send_encoded`, the parameter of `handshake_refused` (now a free function).
+  Comments: `Polled::Packets`, `warn.rs`.
+- `parse_json` maps errors only through the seed's cell (its depth bound, 127, is below `serde_json`'s 128); the
+  existing `nesting_is_bounded_without_recursing_beyond_the_limit` pins 127 levels decoded and 128 `TooDeep`.
+  `begin_connect` returns `Result<(), ProtocolViolation>`.
+- `IoServer::new` installs a callback that holds the server weakly; `attach` installs the strong one (not after a
+  close). Test `a_server_that_is_never_attached_is_freed_when_its_last_handle_drops` (fails with the old strong callback).
+- `WriteEnd::Refused` ends the WebSocket loop as a peer close with a close frame. Test
+  `a_close_frame_while_the_server_writes_ends_the_session_as_a_transport_close` (200 rounds, 1 MiB queued); the old arm
+  also ended as `transport close` in practice (the session's default reason), so the test pins the outcome rather than
+  failing before the change.
+- The split: `adapter/mod.rs` (with the lock order in its module docs), `adapter/memory.rs`, `ack.rs`, `info.rs`; the
+  public paths are re-exported unchanged, no file outside `socket_io/` changed for it. `tests/review1.rs` became
+  `tests/review/{probe,id_rooms,ack_budget,adapter_contract,debug_output,connect_failures}.rs` (no test named a round).
+  `cargo test -p corvis --features socket-io -- --list` gives 1,755 tests before and after.
+- The lint ratchet (from #191) found two counts above the baseline after the split and the encoder change: one
+  `expect_used` (the encoder wrote numbers with `write!(..).expect(..)`; it now appends decimal digits itself) and four
+  `missing_docs` (the fields of `SocketInfo`, now in a private module re-exported publicly, where the hidden `adapter`
+  module had kept them out of the count; documented). The baseline only moves the file paths of the split; on Windows
+  `expect_used` reads one below the Linux baseline because of a `cfg(unix)` line in `application.rs`, untouched.
+
+### Group 8
+
+The code was already there (#35). Test `malformed_forwarded_addresses_from_one_peer_share_one_share_of_the_answer_budget`
+(three sessions of one peer behind `TrustProxy::All` with forwarded addresses that do not parse: one address entry in
+the answer budget, held answers at most its share, the calls past it end with `ResponsesTooLarge`). It passes on `dev`
+as well, since #35 made the change; it pins it.
+
+### Group 12 (partly done)
+
+- `eventually(what, condition)` and `EVENTUALLY` (30 s) in `tests/engine_support/mod.rs`; `testing::poll_pending` and
+  `testing::post_active` give the engine tests a condition for "the request reached the server".
+- Rewritten: `engine_io.rs` (the three sleeps that waited for a pending poll or a held `POST`), `engine_io_security.rs`
+  (the held-`POST` waits at 105, 193 and 409, and the hoarders at 465). Left with a comment that says why: the waits that
+  observe that reads stay paused while the peer keeps writing (an absence nothing else shows) and the "not before" wait
+  past `first_request_timeout`. Each rewritten suite passed 5 runs in a row.
+- Not done: `socket_io_accounting.rs` (184, 202, 256, 277, 437-554), `socket_io_lingering.rs` (153, 204), the
+  `elapsed()` upper bounds of `engine_io_security.rs` (571, 586-604), `settle_until` in place of `settle()` and the
+  session tests' `advance`, and the grep of task 12.4. They are listed as unticked; the time went to the connect
+  sequence and the measurements above.
+
+### 13.1 Benchmark after
+
+The same command and matrix as 2.3, on the same machine, on the final code of this change (`bench/socket-io/results.md`
+is this table):
+
+| Scenario | Transport | Connections | Messages | Payload | Runs | Messages/s | p50 (ms) | p99 (ms) | Max (ms) | Allocations/msg | Bytes/msg | Peak RSS (MiB) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| broadcast | polling | 200 | 100 | 64 B | 3 | 2257744 (2120778 to 2413826) | 3.43 (3.32 to 3.55) | 5.85 (5.71 to 6.12) | 7.07 (7.05 to 7.37) | 0.9 (0.8 to 1.0) | 848 (836 to 913) | 52.5 (48.9 to 54.0) |
+| broadcast | polling | 200 | 100 | 16384 B | 3 | 51954 (50480 to 67371) | 253.81 (198.72 to 271.95) | 371.93 (280.61 to 373.45) | 379.61 (288.26 to 391.37) | 0.8 (0.8 to 0.8) | 42936 (42717 to 43089) | 81.5 (74.6 to 81.6) |
+| broadcast | websocket | 1000 | 100 | 64 B | 3 | 219039 (209138 to 223443) | 8.20 (8.17 to 8.25) | 28.08 (24.71 to 28.82) | 53.02 (44.84 to 56.22) | 1.0 (1.0 to 1.0) | 133 (133 to 133) | 77.3 (74.0 to 78.8) |
+| broadcast | websocket | 1000 | 100 | 16384 B | 3 | 47360 (46243 to 54073) | 19.56 (18.25 to 19.89) | 73.88 (73.23 to 87.11) | 190.41 (142.01 to 222.62) | 1.0 (1.0 to 1.0) | 16716 (16716 to 16716) | 93.5 (89.8 to 95.6) |
+| emit | polling | 200 | 100 | 64 B | 3 | 50070 (48573 to 50342) | 3.77 (3.73 to 3.92) | 7.90 (7.87 to 7.96) | 12.54 (11.44 to 12.83) | 51.0 (51.0 to 51.0) | 20125 (20125 to 20126) | 47.1 (46.7 to 47.9) |
+| emit | websocket | 1000 | 100 | 64 B | 3 | 98017 (96494 to 100814) | 9.25 (8.91 to 9.43) | 24.00 (23.58 to 25.26) | 42.46 (39.16 to 44.19) | 19.0 (19.0 to 19.0) | 1077 (1077 to 1077) | 84.4 (81.3 to 87.5) |
+| server-emit | polling | 200 | 100 | 64 B | 3 | 1439947 (1089461 to 1447744) | 3.18 (2.10 to 3.19) | 6.75 (5.96 to 7.11) | 8.87 (8.78 to 10.09) | 8.2 (8.1 to 8.8) | 1375 (1361 to 1646) | 51.7 (47.3 to 53.8) |
+| server-emit | polling | 200 | 100 | 16384 B | 3 | 48231 (47917 to 50664) | 3.58 (3.49 to 3.63) | 15.48 (14.46 to 17.61) | 29.39 (26.33 to 42.43) | 18.9 (18.8 to 19.0) | 122715 (122618 to 122953) | 59.9 (59.4 to 61.1) |
+| server-emit | websocket | 1000 | 100 | 64 B | 3 | 215966 (209138 to 227486) | 3.03 (2.81 to 3.13) | 19.51 (15.27 to 22.47) | 46.08 (44.63 to 50.07) | 7.2 (7.2 to 7.2) | 444 (443 to 445) | 77.7 (75.1 to 79.1) |
+| server-emit | websocket | 1000 | 100 | 16384 B | 3 | 46872 (43056 to 56675) | 0.63 (0.63 to 0.74) | 15.57 (14.53 to 17.51) | 135.19 (85.45 to 183.35) | 8.2 (8.2 to 8.2) | 82507 (82507 to 82508) | 111.0 (108.7 to 112.9) |
+
+Per decision, the figure it had to move:
+
+| Decision | Figure | Before | After | Met |
+|---|---|---|---|---|
+| 2 (release wakeups) | allocations per message, `emit` over WebSocket (1,000 x 100, 64 B) | 39.0 | 19.0 | yes (20 fewer; at least 6 asked), and the rate rose from 55,823 to 98,017 messages/s |
+| 3 (one request per session) | bytes per message, `emit` over polling (one `POST` and one `GET` per message, 4 KiB cookie) | 25,757 | 20,125 | partly: 5.6 KB less per message, but not "the headers" (see group 4: the header bytes were never copied; what went is the header map, the URI and the parsed query of each request) |
+| 4 (fewer copies) | bytes per `server-emit` message, WebSocket, 16 KiB | 115,431 (7.0 payloads) | 82,507 (5.0 payloads) | partly: two payloads less; the target of about two needs the `tokio-tungstenite` upgrade (the fallback was taken) and counts the application's own copy of the payload into its arguments, which the benchmark makes |
+| 4 | per broadcast recipient, WebSocket, 16 KiB: bytes / allocations | 16,764 / 3.0 | 16,716 / 1.0 | allocations yes (two fewer: the size vector and the group vector); the payload copy per recipient stays until the upgrade |
+
+All rates went up and the latencies down, most in the polling scenarios (`emit` over polling doubled), where the request
+copies and the per-message registrations went away. The figures are from one machine; the comparison is what counts.
