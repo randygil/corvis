@@ -428,7 +428,9 @@ async fn the_test_client_answers_like_a_listening_server() {
     let c = request(&app);
     let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
     let origin = [("origin", "http://localhost:3000")];
-    let cases: [(&str, &str, &[(&str, &str)], &str); 12] = [
+    // Method, path, headers, body.
+    type Case<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], &'a str);
+    let cases: [Case; 12] = [
         ("GET", "/health", &[], ""),
         ("GET", "/api/v1/invoices", &origin, ""),
         ("HEAD", "/api/v1/invoices", &[], ""),
