@@ -2044,5 +2044,5 @@ async fn the_auth_of_many_sockets_in_many_namespaces_adds_up_on_the_address_and_
 }
 
 mod gateways;
-mod review1;
+mod review;
 mod rooms;

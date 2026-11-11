@@ -46,10 +46,12 @@ pub mod adapter;
 #[doc(hidden)]
 pub mod engine;
 
+mod ack;
 mod broadcast;
 mod budget;
 mod client;
 pub(crate) mod gateway;
+mod info;
 mod namespace;
 mod options;
 mod parser;
