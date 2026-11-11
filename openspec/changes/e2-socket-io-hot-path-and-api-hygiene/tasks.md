@@ -174,12 +174,12 @@ to applications and clients" says so.
 
 - [ ] 12.1 `eventually(deadline, condition)` in `tests/engine_support/mod.rs`; `settle_until(condition)` replacing `settle()` in
   `socket_io/tests.rs` and `advance` in `engine/session.rs` tests; verify the unit suites pass 5 runs in a row
-- [ ] 12.2 `tests/socket_io_accounting.rs` (lines 184, 202, 256, 277 and 437-554 of design.md's table): sleeps replaced by
+- [x] 12.2 `tests/socket_io_accounting.rs` (lines 184, 202, 256, 277 and 437-554 of design.md's table): sleeps replaced by
   conditions or markers, wall-clock upper bounds removed, "not before" bounds kept against the configured value; verify 5 runs
   in a row
-- [ ] 12.3 `tests/socket_io_lingering.rs` (153, 204), `tests/engine_io.rs` (242, 275, 293), `tests/engine_io_security.rs`
+- [x] 12.3 `tests/socket_io_lingering.rs` (153, 204), `tests/engine_io.rs` (242, 275, 293), `tests/engine_io_security.rs`
   (105, 125, 193, 218, 312-316, 332, 409, 431, 465, 566-571, 591); verify 5 runs in a row each
-- [ ] 12.4 Grep the socket-io and engine-io suites for `sleep(` and `elapsed()` once more and justify each one left (a
+- [x] 12.4 Grep the socket-io and engine-io suites for `sleep(` and `elapsed()` once more and justify each one left (a
   "not before" bound, a peer that must be slow, a load generator) in a comment beside it; verify the grep result in
   Implementation notes
 

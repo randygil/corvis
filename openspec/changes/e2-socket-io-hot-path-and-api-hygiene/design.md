@@ -822,10 +822,17 @@ as well, since #35 made the change; it pins it.
   (the held-`POST` waits at 105, 193 and 409, and the hoarders at 465). Left with a comment that says why: the waits that
   observe that reads stay paused while the peer keeps writing (an absence nothing else shows) and the "not before" wait
   past `first_request_timeout`. Each rewritten suite passed 5 runs in a row.
-- Not done: `socket_io_accounting.rs` (184, 202, 256, 277, 437-554), `socket_io_lingering.rs` (153, 204), the
-  `elapsed()` upper bounds of `engine_io_security.rs` (571, 586-604), `settle_until` in place of `settle()` and the
-  session tests' `advance`, and the grep of task 12.4. They are listed as unticked; the time went to the connect
-  sequence and the measurements above.
+- Finished after the report: `socket_io_accounting.rs`, `socket_io_lingering.rs`, the wall-clock upper bounds of
+  `engine_io_security.rs` and `engine_io_ws.rs`, and the sweep of task 12.4 over every socket-io and engine-io suite
+  (below). One hook was added under `corvis::socket_io::testing`: `unread_bytes(&IoSocket)` (what the socket's session
+  holds against its unread budget), so the accounting test can wait for a packet to reach the server before its client
+  leaves. The synchronous `auth` test counts per thread (a thread-local in its allocator), so it no longer waits for the
+  heap of the test before it to go quiet.
+- `settle_until(condition)` was not done. `settle()` (40 `yield_now`) and the session tests' `advance` (5) stay: they
+  count turns of the single-threaded runtime on the paused clock, which is neither a sleep nor wall-clock time. The
+  generic replacement tried, a timer on the paused clock (which only completes when no task is ready), breaks the
+  exact-time tests: the timer wheel's 1 ms resolution moves the clock under them (13 tests failed). Writing a condition
+  at each of the ~150 call sites is what remains; `settle()` says so in its rustdoc.
 
 ### 13.1 Benchmark after
 
@@ -893,3 +900,24 @@ copies and the per-message registrations went away. The figures are from one mac
   the delta: the suite loses a frame whenever two arrive in one read (its listener is registered after an `await`), and
   the Node reference fails the same way on this machine. What this change guarantees, and its tests pin, is the order and
   the separate writes of "CONNECT leaves in a write of its own". Task 7.4 and the suite part of 15.3 stay unticked.
+
+### 12.4: the waits left in the socket-io and engine-io suites, and why
+
+Rewritten to conditions (`eventually`, `testing::poll_pending`, `testing::post_active`, `testing::unread_bytes`, an
+acknowledged `echo` round trip, or the paused clock where the code reads tokio time): every wait for something that has
+an observable end. Removed: every wall-clock upper bound (`elapsed() < ...`). What is left, each with a comment beside it:
+
+| Where | What | Why it stays |
+|---|---|---|
+| `socket_io.rs:149`, `socket_io_rooms.rs:464`, `engine_io_security.rs:310, 570`, `engine_io_ws.rs:189, 253, 313` | `elapsed() >= configured` | "Not before" bounds against the configured timeout, over real sockets |
+| `socket_io_security.rs:110`, `engine_io_security.rs:327` | a wait shorter or longer than the configured timeout, then a check that nothing closed | "Not before" bounds over real sockets (the server's timers run on the real clock there) |
+| `socket_io_accounting.rs:159` (`Handlers::settle`), `socket_io_memory.rs:219, 273`, `socket_io_rooms_review_memory.rs:137` | a quiet period before reading how much a flood got in | The end of admissions is an absence over real sockets (a paused reader resumes on any release): no state says every flooding reader stopped for good. A shorter wait makes the bound weaker, never wrong |
+| `socket_io_gateways.rs:1291`, `socket_io_log.rs:74, 110`, `socket_io_security.rs:197`, `engine_io_security.rs:127, 212, 429` | a quiet period before checking that something did not happen (a discarded event's handler, a second log line, a 33rd handler, reads past a pause) | Absence of an effect on another task, with nothing that marks its end |
+| `socket_io_rooms_memory.rs:90`, `socket_io_transit.rs:72` (`settled`) | a quiet heap before or while measuring | The heap of a server on real sockets has no "done" condition; it guards the measurement, it orders nothing |
+| `socket_io_accounting.rs:132`, `socket_io_security.rs:146`, `engine_io_security.rs:645`, `engine_support/io_app.rs:77` | a handler, middleware or hook that takes time | The load of the test (slow application code), not a synchronisation; `io_app` is compared with the Node application, which does the same |
+| `engine_io_ws.rs:182` | a producer's pace of sending | The application's behavior while the peer does not read |
+| `engine_support/mod.rs:32` | the re-check cadence inside `eventually` | Decides nothing: only the condition does |
+| `socket_io_accounting.rs:483, 516` | `elapsed()` read for messages and a "not before" bound | No upper bound left |
+
+Each rewritten suite passed 5 runs in a row (`socket_io_accounting`, `socket_io_lingering`, `engine_io_security`,
+`engine_io`); the swept ones passed in one run before the final checks.
