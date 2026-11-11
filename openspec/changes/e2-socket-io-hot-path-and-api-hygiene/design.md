@@ -511,3 +511,89 @@ These settle the open questions and override the design where they differ.
    task starts.
 7. The security review is mandatory before the merge: the connect sequence (phases, teardown, lock order), the wakeup protocol,
    the request handling of the engine, the `tokio-tungstenite` upgrade.
+
+## Implementation notes
+
+### 1.1 The findings against `dev` with #35 merged (`bd398aa`)
+
+Every cited line was read again on `dev` at `bd398aa` (the merge of #35, the gateway adapter). Moved lines and what #35
+changed:
+
+| Finding | Where now | What changed |
+|---|---|---|
+| Wakeup registration allocates | `ws.rs:531-541` (`changed`), callers `client.rs:236`, `engine/websocket.rs:123`, `engine/polling.rs:161` | Unchanged |
+| `notify_waiters` on every release | `ws.rs:654-680` (`wake`, `roll_back`, `release`); `OutQueue::wake` at `ws.rs:117-120` | Unchanged |
+| Handshake copied per socket and per poll | `client.rs:551` (`shared.engine.handshake().clone()` into `Handshake::new`, which wraps it in an `Arc` of its own: one copy per socket); `engine/mod.rs:536` (`dispatch(handshake.clone(), ..)`); `Query::parse` at `engine/mod.rs:563` | #35 made `HandshakeData.request` an `Arc<Request>` (`Handshake::request_arc`, used by the gateway's execution contexts) and detached the session's request from the read buffer when the session opens (`Request::detached`, `engine/mod.rs:415`). The per-socket copy remains, so Decision 3 still applies; the `Arc` it asks for replaces the per-socket one. `Request::detached` stays: the session keeps the detached request, once |
+| Comments that say the opposite | `adapter.rs:175-177`, `budget.rs:3-12`, `socket.rs:154` (`Handshake`) | Unchanged |
+| Copies per emit | `parser.rs:286-304`, `client.rs:80`, `engine/packet.rs:150-158`, `engine/websocket.rs:43-47`, `ws.rs:148` | Unchanged |
+| Client mutex across the adapter | `client.rs:584-601` | Unchanged. #35 added the share check of pending disconnect hooks to `begin_connect` (`client.rs:535-543`) under the same `nsps()` lock; it only reads the lingering table (a leaf lock) |
+| `add_all` lookups under the write lock | `adapter.rs:1035-1071`, `is_socket_id` at `adapter.rs:388` | Unchanged |
+| Answer budget address key | `socket.rs:705` | **Already done by #35**: the socket keeps the session's `address_key` (`SocketInner::address`, `socket.rs:257,341`) and `resolve_ack` passes it to `respond_charged`; `EngineSocket::address_key()` exists (`engine/mod.rs:905`). Decision 7 reduces to its test (task 8.1) |
+| Eight parameters, triplicated flow handling | `client.rs:347`, `client.rs:385`, `client.rs:238-251`, `298-311` | Unchanged |
+| Room validation four times | `socket.rs:565-577`, `adapter.rs:1038-1052`, `broadcast.rs:232-254`, `broadcast.rs:418-429` | Unchanged |
+| Ack registration twice | `socket.rs:656-669`, `socket.rs:714-726` | Unchanged |
+| Hand-written limiters | `engine/mod.rs:121-140` (overflow), `485-491` (hook timeout), `496-503` (session cap) | #35 added a fourth caller of the session-cap limiter (`OpenError::PendingHooks`, `engine/mod.rs:462-468`) |
+| `WarnLimiter` allocates first | `warn.rs:41`, `warn.rs:74` and callers | Unchanged; #35 added callers (`IoSocket::warn`, `gateway.rs`) that `format!` before calling |
+| Test hooks in the public API | `adapter.rs:749-766`, `adapter.rs:979-1006`, `adapter.rs:774-790`, `mod.rs:80-123`, `socket.rs:679-684`, `namespace.rs:127-131` | Unchanged |
+| Enums without `#[non_exhaustive]` | `socket.rs:31,94,138`, `adapter.rs:54,92`, `broadcast.rs:98`, `engine/session.rs:38` | #35 added `EmitError::NotStarted` |
+| Tests with `sleep` or wall-clock bounds | as cited | Re-checked in group 12 |
+| Dead code | `server.rs:39,139,207`, `socket.rs:488-495`, `engine/mod.rs:376` | Unchanged |
+| Contradicting comments | `engine/session.rs:292`, `warn.rs:66` | Unchanged |
+| Errors typed by text | `parser.rs:594-607`, `client.rs:521` | Unchanged |
+| Reference cycle | `server.rs:142-151` | Unchanged |
+| `WriteEnd::Refused` | `engine/websocket.rs:187-194` | Unchanged |
+| `ip()` per call | `socket.rs:207-210`, `socket.rs:378-380` | #35 resolves it once per `Handshake` (a `OnceLock`): once per socket, still a `String` per call. Decision 13 still moves it to the session's resolved address |
+| `contains_binary` | `value.rs`, `parser.rs:250-253` | Unchanged |
+
+What #35 put on the paths this change redesigns, kept as invariants of this change, each with the tests that pin it:
+
+| Invariant (#35) | Where | Pinned by |
+|---|---|---|
+| An address at its share of pending disconnect hooks gets no new session (`503`) and no CONNECT to a namespace with disconnect hooks (`CONNECT_ERROR` `Too many pending disconnects`), checked before any socket or slot exists | `engine/mod.rs::caps_ok`, `client.rs::begin_connect` | `an_address_at_its_share_of_pending_hooks_gets_no_session_until_they_drain`, `one_session_joining_and_leaving_in_a_loop_is_refused_at_its_addresss_share`, `twenty_victims_hooks_run_while_one_address_keeps_rejoining` |
+| Disconnect hooks run exactly once on every path | `gateway.rs::on_connected` (`once`), `gateway/disconnect.rs` | lifecycle tests of `socket_io_gateways.rs` and `socket_io_gateways_security.rs`, `disconnect_hooks_run_in_a_bounded_number_of_tasks_and_every_one_runs_once` |
+| The connection hooks finish before any event of that socket is dispatched; events start in arrival order (tickets taken by the dispatcher, which the connection calls in arrival order) | `gateway.rs` (`Gate`, `Ticket`), `client.rs::dispatch` | `events_written_with_the_connect_start_in_arrival_order_while_the_gate_opens`, `events_held_behind_a_slow_connection_hook_start_in_arrival_order`, `tickets_start_in_the_order_they_were_taken_whatever_the_order_they_are_polled_in` |
+| The body copies of a gateway handler are charged at their real size, the packet's charge as credit, before any guard runs | `gateway.rs::dispatch_event` (`IoSocket::try_charge`) | `the_copies_of_a_body_stay_within_their_charge_for_one_and_two_body_parameters`, `an_event_that_finds_no_room_for_its_copies_is_answered_with_exception_and_its_handler_does_not_run`, `the_heap_of_events_in_flight_stays_within_the_unread_budget_times_a_constant` |
+| Global connection guards run once per gateway of the namespace | `gateway.rs::run_connection_guards` | `the_global_guards_run_for_every_gateway_of_a_namespace_whatever_the_provider_order` |
+| A socket holds its connection weakly; the session's request is detached from the read buffer | `socket.rs` (`SocketInner::client`), `engine/mod.rs::open_session` | `a_socket_queued_for_its_disconnect_hooks_gives_its_auth_charge_back_and_keeps_no_session`, `the_sockets_of_pending_disconnect_hooks_pin_at_most_the_byte_cap` |
+
+Interactions with the decisions:
+
+- Decision 3: the session keeps an `Arc<Request>` of the detached request and `HandshakeData.request` takes that `Arc`
+  (no second `Arc::new`), so `Handshake::request_arc` hands out the session's request. `LEFT_SOCKET_HEAP` counts
+  `size_of::<Request>()` for a request allocation: a socket a disconnect hook keeps can outlive its session and then
+  holds the session's request alone, so the constant keeps counting it (an upper bound), and `request_cost` in
+  `gateway/disconnect.rs` keeps charging the request's contents per pending socket. That over-counts only when several
+  sockets of one connection are pending at once, bounded by the namespaces with disconnect hooks.
+- Decisions 5 and 6: #35's gate opens after the connection hooks, which run among the connection handlers; the
+  dispatcher's tickets are taken in arrival order by the connection loop, after `wait_ready`. The new order (handlers
+  after the CONNECT write, then `mark_ready`) keeps both: events still wait for `ready`, and `ready` is set after the
+  handlers. The CONNECT-time share check stays in `begin_connect`, before any socket exists.
+
+The untouched tree passes `cargo test -p corvis --features socket-io --no-fail-fast`: 1,646 passed, 0 failed, 56
+ignored (112 test binaries).
+
+### 1.2 The upstream suite before the change
+
+`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_conformance`, 8 runs on `bd398aa`. The
+file has two tests that run at the same time: the suite against Corvis and, as a control, against the Node reference.
+
+| Run | Against Corvis | Against the Node reference |
+|---|---|---|
+| 1 | pass | fail: `should connect then disconnect from a custom namespace` (timeout) |
+| 2 | **fail: `should allow connection to the main namespace`, `expected '2' to deeply equal '42["auth",{}]'`** | fail: `should connect then disconnect from a custom namespace` (timeout) |
+| 3 | pass | pass |
+| 4 | pass | fail: `should close the session upon ping timeout` (`expected 200 to deeply equal 400`) |
+| 5 | pass | pass |
+| 6 | **fail: `should connect then disconnect from a custom namespace` (timeout)** | fail: `should close the session upon ping timeout` |
+| 7 | pass | pass |
+| 8 | pass | fail: `should close the session upon ping timeout` |
+
+Corvis failed 2 runs of 8. Run 2 is the failure #184 describes. Run 6 is the same cause in another test: that test also
+waits for CONNECT and then registers the listener for `auth` after an `await` (`test-suite.js:539-540`), so it loses
+the `auth` frame when both arrive in one read and times out. The control failed 5 runs of 8, with the same `custom
+namespace` timeout and with the ping-timeout test, whose 300/200 ms heartbeat is tight while two suites, two servers
+and the build share the machine: the suite itself is timing-sensitive under load, whatever the server. Decision 6
+removes the cause on Corvis' side (CONNECT and what the connection handler emits leave in separate writes, as in the
+reference), but separate writes can still reach a slow client in one read, as they do from the reference. For the
+acceptance runs of task 7.4 the two tests are therefore run one at a time (`-- --test-threads=1`), so the control
+measures the suite and not the contention between the two runs; the result of each test is recorded separately.
