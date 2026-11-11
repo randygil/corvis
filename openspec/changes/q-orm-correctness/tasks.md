@@ -156,8 +156,9 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 - [x] 11.1 `cargo build --workspace --all-targets` with no warnings
 - [x] 11.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
   `cargo clippy -p corvis-orm --no-default-features -- -D warnings`
-- [ ] 11.3 `CORVIS_ORM_PG_REQUIRED=1 cargo test --workspace` passes, including `pg_oracle` (and its pushed run),
+- [x] 11.3 `CORVIS_ORM_PG_REQUIRED=1 cargo test --workspace` passes, including `pg_oracle` (and its pushed run),
   `sqlite_oracle`, `db_push`, `sqlite_decimal`, `typed_params`, `parameter_limits` and the snapshot test of 1.2
+  (2114 passed, 0 failed, 97 ignored; `sqlite_oracle` does not exist yet, see 3.3)
 - [x] 11.4 Per-feature checks: `cargo check -p corvis-orm --tests --no-default-features` and
   `cargo check -p corvis-orm --tests --no-default-features --features corvis`, with no warnings
 - [ ] 11.5 Regression tests: one per spec scenario, as listed in groups 2-9

@@ -573,3 +573,13 @@ path; `.map(Decimal::from)` on an `Option<&str>`; `acc.plus(x.to_fixed(2).as_str
 in decimal terms; `DEFAULT_SPLIT_TOLERANCE_USD`, a `&str` constant used as a `Decimal`). The facten binaries
 (`src/bin/seed.rs:126`, `PRISMA_DECIMAL.of(pct)`) were not reached because the library failed first. The list with
 file, line, before and after was handed to the maintainer with the report.
+
+### Final checks (after the last code change, `e694504` + test fix `4053653`)
+
+`cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo clippy -p corvis-orm
+--no-default-features -D warnings`, `cargo check -p corvis-orm --tests --no-default-features` (and `--features corvis`),
+`cargo doc -p corvis-orm --no-deps`: clean. `CORVIS_ORM_PG_REQUIRED=1 CORVIS_TESTS_DIR=.. cargo test --workspace
+--no-fail-fast`: 2114 passed, 0 failed, 97 ignored (`fuzz_filters` included). `cargo deny check`, `node
+scripts/check-naming.mjs` (one allowlist entry added: the houseplan migrations folder in `tests/db_push.rs`), `npm run
+docs:check` and `openspec validate q-orm-correctness --strict`: pass. No test database of this change is left on the
+server.
