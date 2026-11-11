@@ -126,6 +126,16 @@ jobs:
         run: cargo test -p corvis --features socket-io --no-fail-fast
       - name: Test the tls feature
         run: cargo test -p corvis --features tls --lib --test tls --test tls_ws --test tls_provider --no-fail-fast
+      # The property tests of the unit suites (the HTTP/1 framing check among them) also run here: keep the seed of a
+      # failing case, as the fuzz job does.
+      - name: Upload the proptest seeds
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions-linux
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
+          retention-days: 14
 
   test-windows:
     name: test (windows-latest)
@@ -149,6 +159,14 @@ jobs:
         run: cargo test --workspace --no-fail-fast
       - name: Test the tls feature
         run: cargo test -p corvis --features tls --lib --test tls --test tls_ws --test tls_provider --no-fail-fast
+      - name: Upload the proptest seeds
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions-windows
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
+          retention-days: 14
 
   # The property-based suites with more cases than the 2,000 that `cargo test` runs. Dev profile, so debug
   # assertions and overflow checks stay on.

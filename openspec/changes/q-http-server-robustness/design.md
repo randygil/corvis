@@ -296,6 +296,32 @@ moved:
 No conflict with e3 (`http/res.rs` edits are in other functions) nor with e2 (no edit to `server.rs`).
 `cargo test -p corvis` on the untouched tree: 1,172 passed, 0 failed, 54 ignored.
 
+### Issue #205: the framing check and hyper on a `Transfer-Encoding` value with obs-text (group 10)
+
+The minimal input printed by the CI failure (no seed was kept) is a `POST` with a chunked body of no chunks and one
+trailer, `Transfer-Encoding: chunked, chunked` spliced into the head, and the space after that header's colon replaced
+by the byte 0x80: `Transfer-Encoding:\x80chunked, chunked`. Replayed through the property's assertions
+(`a_transfer_encoding_value_that_is_not_visible_ascii_is_read_as_hyper_reads_it`), it failed exactly as in CI:
+`hyper answered [400] (body errors 0), check ending None`.
+
+The check was wrong. Hyper 1.12 decides whether a request is chunked with `headers::is_chunked_`, which reads the value
+through `HeaderValue::to_str`: a value with a byte outside visible ASCII and tab (obs-text, which httparse accepts in a
+value) is "not chunked", so the last `Transfer-Encoding` is not `chunked` and hyper answers `400`
+(`transfer_encoding_invalid`). The check compared bytes and read `chunked`, so it went on framing a body and later
+requests hyper never reads. The disagreement was on the safe side (hyper refused the request and closed the
+connection), but the check exists so that the two never read a stream differently. Fix: `ends_in_chunked` returns
+`false` for a value that is not visible ASCII, so the head is handed to hyper and the stream ends there, the rule for
+every `Transfer-Encoding` hyper does not take as chunked. Unit cases added to `heads_hyper_handles_alone_are_handed_off`.
+`Content-Length` needed no change (`1*DIGIT` already excludes such bytes).
+
+Checking the fix with 200,000 cases found a second failure, this time in the test's model of hyper: a mutation spliced
+`Connection: close` and then deleted the space after the colon; hyper (rightly) ended the connection after that
+request, and the property, which only recognized `connection: close` with the space, expected one request more. The
+model now reads `Connection` lines as hyper does (`asks_to_close`, comma-separated tokens, any spacing), pinned by
+`connection_close_without_a_space_ends_the_stream_for_the_model_too`; its seed is kept in
+`crates/corvis/proptest-regressions/server/h1_framing/tests.txt`. After both, 200,000 and 600,000 cases pass. The test
+jobs of `ci.yml` now upload `proptest-regressions/` on failure, as the fuzz job does, so the next seed is not lost.
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.

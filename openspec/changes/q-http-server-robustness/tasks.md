@@ -112,6 +112,16 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 - [ ] 9.9 The security review of 8.2 is closed; a "Verification" table (checks and results, as in the archived changes)
   is added to design.md
 
+## 10. Framing check against hyper (issue #205, added to this change)
+
+- [x] 10.1 Replay the minimal failing input of the CI failure of
+  `mutated_streams_are_read_by_hyper_as_the_check_reads_them` as a fixed test through the property's own assertions
+  (`check_mutated_stream`); verify it fails as in CI (`hyper answered [400] (body errors 0), check ending None`)
+- [x] 10.2 Decide which side is wrong and fix it (design.md "Implementation notes", issue #205); verify the framing
+  tests and the property with 200,000 cases
+- [x] 10.3 The test jobs of `ci.yml` (Linux and Windows) upload `proptest-regressions/` when they fail, as the fuzz job
+  does
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` (the new `http/server-lifecycle` capability and the deltas of `http/responses`

@@ -300,6 +300,10 @@ fn heads_hyper_handles_alone_are_handed_off() {
         b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding:\r\n\r\n",
+        // A value that is not visible ASCII is not `chunked` for hyper, whatever its last coding (#205).
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: \x80, chunked\r\n\r\n",
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding:\x80chunked\r\n\r\n",
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\x7f, chunked\r\n\r\n",
         // Content-Length that is not one number.
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\n",
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4, 5\r\n\r\n",
@@ -865,6 +869,18 @@ fn request_of(head: &[u8]) -> Option<(String, String)> {
     target.starts_with('/').then(|| (method.to_string(), target.to_string()))
 }
 
+/// A `Connection` line with the token `close`, as hyper reads it (`connection_has`): comma-separated tokens of a
+/// visible-ASCII value, with or without whitespace after the colon. The bytes may also be body data, which only makes
+/// the property ask less.
+fn asks_to_close(out: &[u8]) -> bool {
+    out.split(|&b| b == b'\n').any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(colon) = line.iter().position(|&b| b == b':') else { return false };
+        line[..colon].eq_ignore_ascii_case(b"connection")
+            && std::str::from_utf8(&line[colon + 1..]).is_ok_and(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close")))
+    })
+}
+
 fn status_codes(response: &[u8]) -> Vec<u16> {
     let mut codes = Vec::new();
     let mut i = 0;
@@ -985,7 +1001,7 @@ fn check_mutated_stream(stream: &[u8], cuts: &[prop::sample::Index]) -> Result<(
     // reading by design: HTTP/1.0 without keep-alive, `Connection: close` and `CONNECT` end the connection.
     let stops = o.out.windows(8).any(|w| w == b"HTTP/1.0")
         || o.out.windows(8).any(|w| w.eq_ignore_ascii_case(b"CONNECT "))
-        || o.out.windows(17).any(|w| w.eq_ignore_ascii_case(b"connection: close"));
+        || asks_to_close(&o.out);
     if r.ok && errors == 0 && r.body_errors == 0 && o.ending.is_none() && !stops {
         prop_assert_eq!(seen as u64, o.completed);
     }
@@ -1020,6 +1036,24 @@ fn a_transfer_encoding_value_that_is_not_visible_ascii_is_read_as_hyper_reads_it
         b"POST /r0 HTTP/1.1\r\nHost: x\r\nX-H0: v0 w\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding:\x80chunked, chunked\r\n\r\n";
     assert!(stream.starts_with(head), "{:?}", String::from_utf8_lossy(&stream));
     if let Err(e) = check_mutated_stream(&stream, &[]) {
+        panic!("{e}");
+    }
+}
+
+/// Found while checking #205 with 200,000 cases (its seed is in `proptest-regressions/`): a mutation spliced
+/// `Connection: close` into the second request and then deleted the space after its colon. Hyper ends the connection
+/// after that request, as it should; the property's model of hyper only knew the spelling with the space and expected
+/// the third request to be read. The check was right, the model was wrong.
+#[test]
+fn connection_close_without_a_space_ends_the_stream_for_the_model_too() {
+    let stream: &[u8] = b"\r\nPOST /r0 HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n1;\r\n\0\r\n00000010\r\n\
+        \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\r\n0\r\nX-T0: tv0\r\nX-T1: tv1\r\n\r\n\
+        POST /r1 HTTP/1.1\r\nHost: x\r\nX-H0: v0 w\r\nX-H1: v1 w\r\nExpect: 100-continue\r\nContent-Length: 6\r\n\
+        Connection:close\r\n\r\nexpect\r\nPOST /r2 HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
+    assert!(asks_to_close(stream));
+    assert!(!asks_to_close(b"GET / HTTP/1.1\r\nConnection: keep-alive\r\nX-Connection: close\r\n\r\n"));
+    assert!(asks_to_close(b"GET / HTTP/1.1\r\nconnection: Upgrade ,  CLOSE\r\n\r\n"));
+    if let Err(e) = check_mutated_stream(stream, &[]) {
         panic!("{e}");
     }
 }
