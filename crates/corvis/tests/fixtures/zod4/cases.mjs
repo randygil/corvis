@@ -1,8 +1,11 @@
 // Generates `parse.json` with the results of real zod 4.4.3 for the cases below.
 // The Rust side (`tests/zod4_fixtures.rs`) builds the same schemas by name.
 //
-// Usage (from a folder with `zod@4.4.3` installed):
-//   node <repo>/crates/corvis/tests/fixtures/zod4/cases.mjs > <repo>/crates/corvis/tests/fixtures/zod4/parse.json
+// Usage, from this folder (`package.json` pins zod 4.4.3; `TZ=UTC` because V8's legacy date parser reads local time):
+//   npm ci && TZ=UTC node cases.mjs > parse.json
+//
+// Encodings: `{ "$undefined": true }` is `undefined`; a non-finite number is `{ "$number": "NaN" | "Infinity" |
+// "-Infinity" }`; a BigInt is `"12n"`; a case whose schema throws when it is built is `{ name, construct: { throws } }`.
 import { createRequire } from "node:module";
 
 const require = createRequire(process.cwd() + "/");
@@ -20,7 +23,11 @@ function c(name, schema, inputs, opts = {}) {
   cases.push({ name, schema, inputs, opts });
 }
 
-const replacer = (_k, v) => (typeof v === "bigint" ? `${v}n` : v);
+const replacer = (_k, v) => {
+  if (typeof v === "bigint") return `${v}n`;
+  if (typeof v === "number" && !Number.isFinite(v)) return { $number: String(v) };
+  return v;
+};
 
 // ----- primitives -----------------------------------------------------------
 c("string", () => z.string(), ["a", "", 1, null, U, true, [], {}]);
@@ -279,6 +286,54 @@ c("es.formats", () => z.object({ e: z.email(), u: z.uuid(), d: z.iso.datetime(),
 c("es.values", () => z.object({ e: z.enum(["a", "b"]), l: z.literal("x"), m: z.number().multipleOf(3) }).strict(), [{ e: "c", l: "y", m: 4, extra: 1 }, { e: "a", l: "x", m: 3, k1: 1, k2: 2 }], es);
 c("es.misc", () => z.object({ u: z.union([z.string(), z.number()]), r: z.record(z.string().min(2), z.string()), d: z.discriminatedUnion("t", [z.object({ t: z.literal("a") })]) }), [{ u: true, r: { a: "x" }, d: { t: "b" } }], es);
 
+// ----- edges of the JavaScript primitives (lengths, numbers, patterns, coercion, dates) ---------
+// The same cases run against `zod/v3` below, where the schema exists there too.
+const edges = (z) => {
+  const e = [];
+  const add = (name, schema, inputs) => e.push([name, schema, inputs]);
+  add("string.min.astral", () => z.string().min(2), ["😀", "a", "é", "a😀", "ab"]);
+  add("string.max.astral", () => z.string().max(1), ["😀", "a", "é", "a😀", "ab"]);
+  add("string.length.astral", () => z.string().length(2), ["😀", "a", "é", "a😀", "ab"]);
+  add("number.multipleOf.big", () => z.number().multipleOf(1), [12345.00001, 1000000000000.5, 3, 1e21]);
+  add("number.multipleOf.tenth", () => z.number().multipleOf(0.1), [0.3, 0.30000000000000004, 1.1, 2.55]);
+  add("number.multipleOf.hundredth", () => z.number().multipleOf(0.01), [19.99, 0.07, 1.005]);
+  add("string.email.edges", () => z.string().email(), [".a@b.co", "a..b@b.co", "A@B.CO", "a@b.c", "a_b@c-d.ef"]);
+  add("string.cuid.edges", () => z.string().cuid(), ["CJLD2CJXH0000QZRMN831I7RN", "cjld2cjxh0000qzrmn831i7rn", "c-abcdefgh", "cabc"]);
+  add("string.url.edges", () => z.string().url(), ["mailto:a@b.co", "http://", "https://corvis.dev", "foo:bar", "//x.com", "javascript:alert(1)"]);
+  add("coerce.number.edges", () => z.coerce.number(), ["inf", "Infinity", "-Infinity", "0x10", " 12 ", "1e3", " 5", "1_0", ".5", "5.", "+5"]);
+  add("coerce.string.edges", () => z.coerce.string(), [1e21, 1.5, [1, 2], {}, true, 0.30000000000000004]);
+  add("string.trim.edges", () => z.string().trim(), ["﻿a﻿", "\u0085a\u0085", " a　"]);
+  add("number.min.big", () => z.number().min(1e21), [0]);
+  add("number.max.small", () => z.number().max(1e-7), [1]);
+  add("date.coerce.edges", () => z.coerce.date(), [
+    "999999999999999999-01-01",
+    "Jan 1 999999999999999999",
+    "1/1/99999999999999999999 UTC",
+    "1/1/2000 10:00 +9999999999999999",
+    "275761-01-01",
+    "+275760-09-13T00:00:00.000Z",
+    "+275760-09-13T00:00:00.001Z",
+    "-271821-04-20T00:00:00.000Z",
+  ]);
+  return e;
+};
+for (const [name, schema, inputs] of edges(z)) c(name, schema, inputs);
+
+// Check-like wrappers keep the structure of what they wrap (discriminated union options, template literal parts).
+const duOf = (option) => () => z.discriminatedUnion("kind", [option()]);
+const kindA = () => z.object({ kind: z.literal("a") });
+c("du.overwrite", duOf(() => kindA().overwrite((v) => v)), [{ kind: "a" }, { kind: "b" }]);
+c("du.check", duOf(() => kindA().check(() => {})), [{ kind: "a" }, { kind: "b" }]);
+c("du.refine", duOf(() => kindA().refine(() => true)), [{ kind: "a" }, { kind: "b" }]);
+c("du.optional", duOf(() => kindA().optional()), [{ kind: "a" }]);
+c("du.nullable", duOf(() => kindA().nullable()), [{ kind: "a" }]);
+c("du.default", duOf(() => kindA().default({ kind: "a" })), [{ kind: "a" }]);
+c("du.catch", duOf(() => kindA().catch({ kind: "a" })), [{ kind: "a" }]);
+c("du.readonly", duOf(() => kindA().readonly()), [{ kind: "a" }]);
+c("templateLiteral.overwrite", () => z.templateLiteral(["id-", z.number().overwrite((v) => v)]), ["id-5", "id-x"]);
+c("templateLiteral.check", () => z.templateLiteral(["id-", z.number().check(() => {})]), ["id-5", "id-x"]);
+c("literal.empty", () => z.literal([]), ["a"]);
+
 // ----- zod 3 (`zod/v3`, selected with `z::set_version(ZodVersion::V3)`) -----------
 // Same names as above: the Rust schema is the same, only the version changes.
 const casesV3 = [];
@@ -349,6 +404,10 @@ c3("coerce.number", () => z3.coerce.number(), ["abc", "42", ""]);
 c3("coerce.string", () => z3.coerce.string(), [12, null]);
 c3("coerce.boolean", () => z3.coerce.boolean(), ["false", ""]);
 c3("error.format", () => z3.object({ a: z3.string(), b: z3.object({ c: z3.number() }), d: z3.array(z3.string()) }).refine(() => false, "raiz"), [{ b: { c: "x" }, d: [1, "a", 2] }], { fmt: true });
+for (const [name, schema, inputs] of edges(z3)) c3(name, schema, inputs);
+c3("string.ip.edges", () => z3.string().ip(), ["::ffff:1.2.3.4", "fe80::1%eth0", "01.2.3.4", "1.2.3.4", "::1"]);
+c3("object.required.refine", () => z3.object({ a: z3.string().optional().refine(() => true) }).required(), [{}]);
+c3("discriminatedUnion.refinedKey", () => z3.discriminatedUnion("type", [z3.object({ type: z3.literal("a").refine(() => true), a: z3.string() })]), [{ type: "a", a: "x" }, { type: "b" }]);
 
 // ----- json schema ---------------------------------------------------------------
 const jsonSchemas = [];
@@ -474,7 +533,13 @@ function issuesOf(error) {
 const out = { zod: zodVersion, cases: [], casesV3: [], jsonSchemas: [] };
 for (const [list, target, v3] of [[cases, out.cases, false], [casesV3, out.casesV3, true]])
 for (const { name, schema, inputs, opts } of list) {
-  const s = schema();
+  let s;
+  try {
+    s = schema();
+  } catch (e) {
+    target.push({ name, construct: { throws: String(e.message) } });
+    continue;
+  }
   const results = [];
   for (const raw of inputs) {
     const input = dec(raw);
