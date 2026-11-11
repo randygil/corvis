@@ -78,7 +78,7 @@ pub use query::{
 pub use raw::{Bytes, RawArg, RawSql, ToSqlArg};
 pub use transaction::{Batch, BatchQuery, IsolationLevel, TransactionOptions};
 
-pub use corvis_orm_macros::{Model, OrmEnum, sql};
+pub use corvis_orm_macros::{Model, OrmEnum, decimal, sql};
 pub use serde;
 pub use serde_json;
 
@@ -94,7 +94,7 @@ pub mod actions {
 pub mod prelude {
     pub use crate::{
         BatchPayload, DateTime, Decimal, DecimalConfig, DecimalCtor, IsolationLevel, Model, OrmClient, OrmEnum, OrmError, RawSql,
-        SortOrder, TransactionOptions, or_undefined, sql, undefined,
+        SortOrder, TransactionOptions, decimal, or_undefined, sql, undefined,
     };
     #[cfg(feature = "corvis")]
     pub use crate::{OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};

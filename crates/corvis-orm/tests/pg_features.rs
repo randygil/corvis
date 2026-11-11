@@ -159,7 +159,7 @@ async fn typed_raw_queries() {
         d: DateTime,
         b: i64,
     }
-    let price = Decimal::from("10.25");
+    let price = corvis_orm::decimal!("10.25");
     let when = DateTime::parse("2024-05-06T10:00:00.000Z").unwrap();
     let rows: Vec<Row> = db._query_raw_as(sql!("SELECT {price} * 2 AS n, {when} AS d, {7}::bigint AS b")).await.unwrap();
     assert_eq!((rows[0].n.to_string(), rows[0].d.to_iso_string(), rows[0].b), ("20.5".into(), "2024-05-06T10:00:00.000Z".into(), 7));

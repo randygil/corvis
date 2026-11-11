@@ -86,7 +86,7 @@ fn typed_sql(args: &[Value]) -> RawSql {
         .iter()
         .map(|v| match v {
             Value::Object(o) if o.contains_key("$date") => DateTime::parse(o["$date"].as_str().unwrap()).unwrap().to_sql_arg(),
-            Value::Object(o) if o.contains_key("$decimal") => Decimal::from(o["$decimal"].as_str().unwrap()).to_sql_arg(),
+            Value::Object(o) if o.contains_key("$decimal") => Decimal::parse(o["$decimal"].as_str().unwrap()).unwrap().to_sql_arg(),
             Value::Object(o) if o.contains_key("$json") => o["$json"].to_sql_arg(),
             Value::Array(a) => a.iter().map(|x| x.as_i64().unwrap()).collect::<Vec<i64>>().to_sql_arg(),
             Value::Number(n) if n.is_i64() => n.as_i64().unwrap().to_sql_arg(),

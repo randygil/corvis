@@ -19,12 +19,29 @@
 //! `Decimal::clone_with(...)` is the equivalent of `Decimal.clone({...})`.
 //!
 //! ```
-//! use corvis_orm::Decimal;
-//! let a = Decimal::from("0.1");
-//! assert_eq!((a.clone() + "0.2").to_string(), "0.3");
+//! use corvis_orm::{Decimal, decimal};
+//! let a = decimal!("0.1");
+//! assert_eq!((a.clone() + decimal!("0.2")).to_string(), "0.3");
 //! assert_eq!(Decimal::from(1).div(3).to_string(), "0.33333333333333333333");
-//! assert_eq!(Decimal::from("2.345").to_fixed(2), "2.35");
-//! assert_eq!(Decimal::from("-2.345").to_decimal_places_with(2, Decimal::ROUND_HALF_EVEN).to_string(), "-2.34");
+//! assert_eq!(decimal!("2.345").to_fixed(2), "2.35");
+//! assert_eq!(decimal!("-2.345").to_decimal_places_with(2, Decimal::ROUND_HALF_EVEN).to_string(), "-2.34");
+//! ```
+//!
+//! Text becomes a `Decimal` only through conversions that report invalid input: [`Decimal::parse`], `FromStr`
+//! (`"12.5".parse::<Decimal>()`) and `TryFrom<&str>` / `TryFrom<String>`, for text read at run time, and the
+//! [`decimal!`](crate::decimal!) literal, checked when the program is compiled:
+//!
+//! ```
+//! use corvis_orm::{Decimal, decimal};
+//! assert_eq!(decimal!("1.50"), Decimal::from(1.5));
+//! assert!("12,5".parse::<Decimal>().is_err());
+//! assert!(Decimal::try_from("12,5").is_err());
+//! ```
+//!
+//! An invalid literal does not compile:
+//!
+//! ```compile_fail
+//! let price = corvis_orm::decimal!("1.2.3");
 //! ```
 //!
 //! [decimal.js]: https://mikemcl.github.io/decimal.js/
@@ -368,10 +385,18 @@ impl Decimal {
         Decimal { kind, neg, coeff: BigUint::zero(), exp: 0, cfg }
     }
 
-    /// `new Decimal(v)`. Panics on invalid strings, like decimal.js throws; use
-    /// [`Decimal::parse`] to handle the error.
+    /// `new Decimal(v)` for a number or another `Decimal`. Text goes through [`Decimal::parse`] (or `TryFrom`,
+    /// `FromStr`), which returns the error decimal.js throws, or the [`decimal!`](crate::decimal!) literal.
     pub fn new(v: impl Into<Decimal>) -> Decimal {
         v.into()
+    }
+
+    /// The value `(-1)^negative * limbs * 10^exp`, where `limbs` are the little-endian 32-bit digits of the
+    /// coefficient. What [`decimal!`](crate::decimal!) expands to: the literal was parsed when the program was
+    /// compiled. Out of decimal.js' exponent range the value is `Infinity` or zero, like [`Decimal::parse`].
+    #[doc(hidden)]
+    pub fn from_literal_parts(negative: bool, limbs: &[u32], exp: i64) -> Decimal {
+        Decimal::finite(negative, BigUint::from_slice(limbs), exp, &DEFAULT_CONFIG)
     }
 
     /// `0`
@@ -1496,23 +1521,19 @@ impl From<&mut Decimal> for Decimal {
         v.clone()
     }
 }
-impl From<&str> for Decimal {
-    /// Panics on invalid input, like `new Decimal('abc')` throws. Use [`Decimal::parse`] otherwise.
-    fn from(s: &str) -> Self {
-        match Decimal::parse(s) {
-            Ok(d) => d,
-            Err(e) => panic!("{e}"),
-        }
+// Text becomes a `Decimal` only through conversions that can fail (`parse`, `FromStr`, `TryFrom`) or through the
+// compile-time checked `decimal!` literal: a `From<&str>` would have to panic on invalid text, and typed helpers
+// take `impl Into<Decimal>`, so text from a request could crash the handler.
+impl TryFrom<&str> for Decimal {
+    type Error = DecimalError;
+    fn try_from(s: &str) -> Result<Self, DecimalError> {
+        Decimal::parse(s)
     }
 }
-impl From<String> for Decimal {
-    fn from(s: String) -> Self {
-        Decimal::from(s.as_str())
-    }
-}
-impl From<&String> for Decimal {
-    fn from(s: &String) -> Self {
-        Decimal::from(s.as_str())
+impl TryFrom<String> for Decimal {
+    type Error = DecimalError;
+    fn try_from(s: String) -> Result<Self, DecimalError> {
+        Decimal::parse(&s)
     }
 }
 
@@ -1780,20 +1801,68 @@ impl Decimal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decimal;
 
     #[test]
     fn basics() {
-        assert_eq!(Decimal::from("1.50").to_string(), "1.5");
+        assert_eq!(decimal!("1.50").to_string(), "1.5");
         assert_eq!(Decimal::from(-0.0).to_string(), "0");
         assert_eq!(Decimal::from(-0.0).value_of(), "-0");
-        assert_eq!(Decimal::from("1e21").to_string(), "1e+21");
-        assert_eq!(Decimal::from("1e-7").to_string(), "1e-7");
-        assert_eq!(Decimal::from("0.000001").to_string(), "0.000001");
+        assert_eq!(decimal!("1e21").to_string(), "1e+21");
+        assert_eq!(decimal!("1e-7").to_string(), "1e-7");
+        assert_eq!(decimal!("0.000001").to_string(), "0.000001");
         assert_eq!(Decimal::from(1).div(3).to_string(), "0.33333333333333333333");
-        assert_eq!(Decimal::from("123.456").modulo(7).to_string(), "4.456");
+        assert_eq!(decimal!("123.456").modulo(7).to_string(), "4.456");
         assert_eq!(Decimal::from(-0.001).to_fixed(2), "-0.00");
-        assert_eq!(serde_json::to_string(&Decimal::from("-0.004").to_dp(2)).unwrap(), "\"-0\"");
+        assert_eq!(serde_json::to_string(&decimal!("-0.004").to_dp(2)).unwrap(), "\"-0\"");
         assert_eq!(Decimal::from(2).sqrt().to_string(), "1.4142135623730950488");
+    }
+
+    #[test]
+    fn the_literal_macro_gives_what_parse_gives() {
+        macro_rules! same {
+            ($($lit:literal),* $(,)?) => {$(
+                let parsed = Decimal::parse($lit).unwrap();
+                let literal = decimal!($lit);
+                assert_eq!((literal.value_of(), literal.is_negative()), (parsed.value_of(), parsed.is_negative()), $lit);
+            )*};
+        }
+        same!(
+            "0",
+            "-0",
+            "+0.000",
+            "1.50",
+            "-1.5e-3",
+            "000123.4500e2",
+            "1e21",
+            "1E+5",
+            ".5",
+            "5.",
+            "0x1F",
+            "0B101",
+            "0o17",
+            "-0xff",
+            "Infinity",
+            "-Infinity",
+            "NaN",
+            "1e9000000000000000",
+            "1e9000000000000001",
+            "-1e-9000000000000001",
+            "123456789012345678901234567890.123456789",
+            "4294967296",
+            "18446744073709551616",
+            "1e-9223372036854775808",
+        );
+    }
+
+    #[test]
+    fn text_converts_only_through_fallible_conversions() {
+        assert_eq!(Decimal::try_from("1.5").unwrap(), decimal!("1.5"));
+        assert_eq!(Decimal::try_from(String::from("-2")).unwrap(), decimal!("-2"));
+        for bad in ["12,5", "", "1.2.3", "abc", "1e"] {
+            assert!(Decimal::try_from(bad).is_err(), "{bad}");
+            assert!(bad.parse::<Decimal>().is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -1840,25 +1909,25 @@ mod tests {
     #[test]
     fn numeric_encoding_never_truncates() {
         for s in ["9999e-262144", "5e262144", "1e131072", "1e-65536"] {
-            let d = Decimal::from(s);
+            let d = Decimal::parse(s).unwrap();
             assert!(!d.fits_numeric(), "{s}");
             assert!(encode_numeric(&d).is_err(), "{s}");
         }
         for s in ["1e131071", "-1e-16383", "1e-65535", "123456789.000000001", "9.9999e131071"] {
-            let d = Decimal::from(s);
+            let d = Decimal::parse(s).unwrap();
             assert!(d.fits_numeric(), "{s}");
             let back = decode_numeric(&encode_numeric(&d).unwrap()).unwrap();
             assert!(back == d, "{s}: {back:?}");
         }
         // Long coefficients encode in linear time (one decimal conversion, no per-group division).
-        let d = Decimal::from(format!("1{}.5", "7".repeat(100_000)));
+        let d = Decimal::parse(&format!("1{}.5", "7".repeat(100_000))).unwrap();
         assert_eq!(decode_numeric(&encode_numeric(&d).unwrap()).unwrap(), d);
     }
 
     #[test]
     fn numeric_roundtrip() {
         for s in ["0", "1", "-1", "24.5", "0.0001", "12345678.12345678", "1e30", "-0.00000123", "10000", "99999999999999999999.99"] {
-            let d = Decimal::from(s);
+            let d = Decimal::parse(s).unwrap();
             let back = decode_numeric(&encode_numeric(&d).unwrap()).unwrap();
             assert_eq!(back.to_string(), d.to_string(), "{s}");
         }

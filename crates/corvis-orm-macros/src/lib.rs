@@ -70,6 +70,21 @@ pub fn sql(input: TokenStream) -> TokenStream {
     }
 }
 
+/// `decimal!("1.50")`: a `corvis_orm::Decimal` literal, checked when the program is compiled with the grammar of
+/// `Decimal::parse` (`[+-]digits[.digits][e[+-]n]`, `Infinity`, `NaN`, `0x` / `0b` / `0o` integers). An invalid
+/// literal does not compile; the expansion parses nothing at run time and cannot fail.
+#[proc_macro]
+pub fn decimal(input: TokenStream) -> TokenStream {
+    let lit = syn::parse_macro_input!(input as syn::LitStr);
+    let text = lit.value();
+    match decimal_literal::expand(&text) {
+        Ok(ts) => ts.into(),
+        Err(why) => syn::Error::new(lit.span(), format!("invalid decimal literal \"{text}\": {why}")).to_compile_error().into(),
+    }
+}
+
+mod decimal_literal;
+
 fn expand_sql(lit: &syn::LitStr) -> syn::Result<TokenStream2> {
     let text = lit.value();
     let mut strings: Vec<String> = vec![String::new()];

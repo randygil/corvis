@@ -647,7 +647,7 @@ impl OrmClient {
     /// let rows = tx._query_raw(sql!("SELECT * FROM \"Wallet\" WHERE \"merchantId\" = {id} FOR UPDATE")).await?;
     /// ```
     pub async fn _query_raw(&self, sql: RawSql) -> Result<Vec<Value>> {
-        self.raw_fetch(&sql.to_sql(self.inner.dialect)).await
+        self.raw_fetch(&sql.to_sql(self.inner.dialect)?).await
     }
 
     /// Like [`Self::_query_raw`], deserializing each row into `T` (`$queryRaw<T>`).
@@ -658,7 +658,7 @@ impl OrmClient {
 
     /// `$executeRaw` with a typed statement: the number of affected rows.
     pub async fn _execute_raw(&self, sql: RawSql) -> Result<u64> {
-        self.raw_execute(&sql.to_sql(self.inner.dialect)).await
+        self.raw_execute(&sql.to_sql(self.inner.dialect)?).await
     }
 
     /// `$queryRawUnsafe(sql, ...values)`: rows as JSON objects. Use the native
