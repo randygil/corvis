@@ -9,17 +9,17 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 
 ## 1. Reconcile
 
-- [ ] 1.1 Re-check every file and line of design.md "Findings as checked" against `dev`; record moved lines and any
+- [x] 1.1 Re-check every file and line of design.md "Findings as checked" against `dev`; record moved lines and any
   conflict with changes merged meanwhile (e3 in `http/res.rs`, e2 in `server.rs`) in a new "Implementation notes" section
   of design.md before any other task; verify `cargo test -p corvis` passes on the untouched tree
 
 ## 2. Accept errors (design.md Decision 1)
 
-- [ ] 2.1 `crates/corvis/src/server/accept.rs`: crate-private `Acceptor` trait implemented for `TcpListener`,
+- [x] 2.1 `crates/corvis/src/server/accept.rs`: crate-private `Acceptor` trait implemented for `TcpListener`,
   `is_connection_error`, the backoff (5 ms doubling to 1 s, reset on success, interruptible by the shutdown future, no
   permit held while waiting) and the once-a-minute warning with the count; `serve` uses it; verify
   `cargo test -p corvis --test transport_security --test http2_limits`
-- [ ] 2.2 Unit tests in `server/accept.rs` on the paused clock for the three scenarios of the spec requirement "Accept
+- [x] 2.2 Unit tests in `server/accept.rs` on the paused clock for the three scenarios of the spec requirement "Accept
   errors do not spin" (schedule, one line per burst, immediate retry of a connection error, shutdown during a wait);
   verify they pass 5 runs in a row
 

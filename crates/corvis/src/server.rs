@@ -26,6 +26,7 @@ use tokio::time::{Instant, Sleep};
 use crate::http::{Body, HttpException, Request, Response};
 use crate::router::{AppShared, dispatch};
 
+mod accept;
 mod h1_framing;
 #[cfg(feature = "tls")]
 pub mod tls;
@@ -2290,54 +2291,39 @@ pub(crate) async fn serve(
     let stream_cap = options.http2_max_concurrent_streams.max(1) as usize;
     let permits = options.max_connections.map(|n| Arc::new(tokio::sync::Semaphore::new(n.max(1))));
     tokio::pin!(shutdown);
-    loop {
-        let permit = match &permits {
-            Some(p) => tokio::select! {
-                permit = p.clone().acquire_owned() => permit.ok(),
-                _ = &mut shutdown => break,
-            },
-            None => None,
+    let mut accept_errors = accept::AcceptErrors::new(|line| crate::logger::Logger::new("CorvisServer").warn(line));
+    while let Some((stream, remote, permit)) = accept_errors.accept(&listener, permits.as_ref(), shutdown.as_mut()).await {
+        let _ = stream.set_nodelay(true);
+        if options.send_timeout.is_some() {
+            limit_unsent_bytes(&stream);
+        }
+        let state = Arc::new(ConnState { cancel_ceiling: options.http2_max_cancelled_streams, ..ConnState::default() });
+        let ctx = ConnCtx {
+            shared: shared.clone(),
+            opts: options.clone(),
+            builder: builder.clone(),
+            stream_cap,
+            remote,
+            state,
+            stop: stop_tx.subscribe(),
         };
-        tokio::select! {
-            accepted = listener.accept() => {
-                let (stream, remote) = match accepted {
-                    Ok(x) => x,
-                    Err(_) => continue,
-                };
-                let _ = stream.set_nodelay(true);
-                if options.send_timeout.is_some() {
-                    limit_unsent_bytes(&stream);
-                }
-                let state = Arc::new(ConnState { cancel_ceiling: options.http2_max_cancelled_streams, ..ConnState::default() });
-                let ctx = ConnCtx {
-                    shared: shared.clone(),
-                    opts: options.clone(),
-                    builder: builder.clone(),
-                    stream_cap,
-                    remote,
-                    state,
-                    stop: stop_tx.subscribe(),
-                };
-                match &transport {
-                    Transport::Plain => {
-                        tokio::spawn(run_connection(ctx, ServerIo::Plain(stream), permit, Proto::Auto));
-                    }
-                    #[cfg(feature = "tls")]
-                    Transport::Tls(settings) => {
-                        let settings = settings.clone();
-                        tokio::spawn(async move {
-                            let mut ctx = ctx;
-                            let Some((io, proto)) = handshake(settings, stream, ctx.state.clone(), &mut ctx.stop).await else { return };
-                            ctx.builder = match proto {
-                                Proto::H2Only => ctx.builder.http2_only(),
-                                _ => ctx.builder.http1_only(),
-                            };
-                            run_connection(ctx, io, permit, proto).await;
-                        });
-                    }
-                }
+        match &transport {
+            Transport::Plain => {
+                tokio::spawn(run_connection(ctx, ServerIo::Plain(stream), permit, Proto::Auto));
             }
-            _ = &mut shutdown => break,
+            #[cfg(feature = "tls")]
+            Transport::Tls(settings) => {
+                let settings = settings.clone();
+                tokio::spawn(async move {
+                    let mut ctx = ctx;
+                    let Some((io, proto)) = handshake(settings, stream, ctx.state.clone(), &mut ctx.stop).await else { return };
+                    ctx.builder = match proto {
+                        Proto::H2Only => ctx.builder.http2_only(),
+                        _ => ctx.builder.http1_only(),
+                    };
+                    run_connection(ctx, io, permit, proto).await;
+                });
+            }
         }
     }
     drop(listener);
