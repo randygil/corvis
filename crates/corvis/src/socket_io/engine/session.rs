@@ -101,6 +101,14 @@ impl QueueItem for Packet {
     fn size(&self) -> usize {
         self.polling_len() + 16
     }
+
+    /// A Socket.IO CONNECT (`40`: an Engine.IO message holding a packet of type `0`, which only the Socket.IO encoder
+    /// frames) closes a poll response: the connection handlers queue their packets right after it, and they leave
+    /// in the next one, as with the reference server when a poll was waiting. A WebSocket writes every packet as a
+    /// frame of its own anyway.
+    fn ends_batch(&self) -> bool {
+        matches!(self, Packet::Message(EngineMessage::Framed(text)) if text.starts_with("40"))
+    }
 }
 
 /// The heartbeat of a v4 session: the server pings after `interval`, waits `timeout` for the pong, and a pong
@@ -461,18 +469,6 @@ impl Session {
         }
         let result = self.outbox.push_group(messages.into_iter().map(Packet::Message).collect());
         self.queued(result)
-    }
-
-    /// Queues a message like `send` and returns a future that resolves once the transport took it: `true` when it was
-    /// written to the WebSocket or taken into a poll response, `false` when the session discarded it or closed first.
-    pub(crate) fn send_written(&self, message: EngineMessage) -> Result<impl std::future::Future<Output = bool> + use<>, SendError> {
-        if self.lock().ready != Ready::Open {
-            return Err(SendError::Closed);
-        }
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let result = self.outbox.push(Packet::Message(message), Some(tx));
-        self.queued(result)?;
-        Ok(async move { matches!(rx.await, Ok(Ok(()))) })
     }
 
     fn queue(&self, packet: Packet) -> Result<(), SendError> {
@@ -1071,6 +1067,25 @@ mod session_tests {
         for _ in 0..5 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_response_closes_after_a_socket_io_connect() {
+        let session = open(EngineOptions::new(), TransportKind::Polling);
+        drain(&session);
+        let framed = |text: &str| Packet::Message(EngineMessage::Framed(text.to_string()));
+        let texts = [r#"42["before"]"#, r#"40/chat,{"sid":"a"}"#, r#"42/chat,["hello"]"#, r#"40{"sid":"b"}"#, r#"42["after"]"#];
+        for text in texts {
+            session.send(EngineMessage::Framed(text.to_string())).unwrap();
+        }
+        // What was queued before a CONNECT leaves with it; what follows it waits for the next response.
+        assert_eq!(drain(&session), vec![framed(texts[0]), framed(texts[1])]);
+        assert_eq!(drain(&session), vec![framed(texts[2]), framed(texts[3])]);
+        assert_eq!(drain(&session), vec![framed(texts[4])]);
+        // A message of the application that reads `40` on the wire is not a Socket.IO CONNECT.
+        session.send(EngineMessage::Text("0".to_string())).unwrap();
+        session.send(EngineMessage::Text("1".to_string())).unwrap();
+        assert_eq!(drain(&session).len(), 2);
     }
 
     #[tokio::test(start_paused = true)]

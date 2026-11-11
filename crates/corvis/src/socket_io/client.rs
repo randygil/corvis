@@ -652,28 +652,22 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
         socket.disconnect_with(DisconnectReason::ServerNamespaceDisconnect, false);
         return;
     };
-    let written = match socket.announce(|| shared.engine.send_written(EngineMessage::Framed(encoded.text))) {
+    match socket.announce(|| shared.engine.send(EngineMessage::Framed(encoded.text))) {
         // Torn down meanwhile.
         None => return,
-        Some(Ok(written)) => written,
+        Some(Ok(())) => {}
         // The session is closing (or closed for a full send buffer): nothing of the socket stays.
         Some(Err(_)) => {
             socket.disconnect_with(DisconnectReason::TransportClose, false);
             return;
         }
-    };
+    }
     shared.joined_once.store(true, Ordering::SeqCst);
     namespace.connect_step(ConnectStep::Announced).await;
-    // 5. The connection handlers run once CONNECT was handed to the transport, so what they emit leaves in a later
-    //    write (the reference server's order). A connection that ends first runs none: `terminate` disconnects the
-    //    socket. Packets of the client wait for `ready` meanwhile.
-    let delivered = tokio::select! {
-        delivered = written => delivered,
-        _ = shared.engine.closed() => false,
-    };
-    if !delivered {
-        return;
-    }
+    // 5. The connection handlers, right after the announce (the reference server's `_onconnect` then `connection`): the
+    //    socket receives broadcasts from now on, so the hook where an application authenticates it cannot wait for
+    //    the client (over long-polling, CONNECT is only written when the client polls). Packets of the client wait
+    //    for `ready` meanwhile.
     if socket.is_phase(Phase::Connected) {
         for handler in namespace.connection_handlers() {
             let s = socket.clone();

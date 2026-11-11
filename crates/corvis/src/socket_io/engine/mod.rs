@@ -884,13 +884,6 @@ impl EngineSocket {
         self.session.send_all(messages)
     }
 
-    /// Queues a message like [`send`](Self::send) and returns a future that resolves once the transport took it: `true`
-    /// when it was written to the WebSocket or taken into a poll response, `false` when the session discarded it or
-    /// closed first. What is queued after it leaves in a later write.
-    pub(crate) fn send_written(&self, message: EngineMessage) -> Result<impl std::future::Future<Output = bool> + use<>, SendError> {
-        self.session.send_written(message)
-    }
-
     /// Counts `count` handlers that outlive this session against its client address, until the guard says they are
     /// done or is dropped. At `max_lingering_per_ip` of them an address gets no new sessions (`503`). `None` when the
     /// server is gone.
@@ -1115,15 +1108,17 @@ impl EngineSocket {
 
     /// Everything queued for the client since the last call, messages only (no open or ping packets).
     pub(crate) fn take_sent(&self) -> Vec<EngineMessage> {
-        self.session
-            .outbox
-            .take_batch(usize::MAX, |p| p.polling_len() + 1)
-            .into_iter()
-            .filter_map(|p| match p {
+        let mut sent = Vec::new();
+        loop {
+            let batch = self.session.outbox.take_batch(usize::MAX, |p| p.polling_len() + 1);
+            if batch.is_empty() {
+                return sent;
+            }
+            sent.extend(batch.into_iter().filter_map(|p| match p {
                 packet::Packet::Message(m) => Some(m),
                 _ => None,
-            })
-            .collect()
+            }));
+        }
     }
 }
 

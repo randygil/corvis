@@ -69,6 +69,11 @@ pub(crate) enum PushError {
 /// What a queue holds: it reports the bytes an item counts against the queue's limit.
 pub(crate) trait QueueItem {
     fn size(&self) -> usize;
+
+    /// Whether a batch taken from the queue (`OutQueue::take_batch`) closes after this item.
+    fn ends_batch(&self) -> bool {
+        false
+    }
 }
 
 impl QueueItem for Message {
@@ -219,13 +224,11 @@ impl<M: QueueItem> OutQueue<M> {
     }
 
     /// Takes queued items in order while `cost` of the taken ones stays within `budget`; always at least one
-    /// when any is queued. Taken items no longer count against the limit, and their acknowledgements are answered:
-    /// for a queue drained by responses (a poll), being taken is being handed to the transport.
+    /// when any is queued, and none after an item that ends a batch. Taken items no longer count against the limit.
     #[cfg_attr(not(feature = "socket-io"), allow(dead_code))]
     pub(crate) fn take_batch(&self, budget: usize, mut cost: impl FnMut(&M) -> usize) -> Vec<M> {
         let mut s = self.lock();
         let mut taken = Vec::new();
-        let mut acks = Vec::new();
         let mut spent = 0usize;
         while let Some((m, _, _)) = s.items.front() {
             let c = cost(m);
@@ -233,14 +236,13 @@ impl<M: QueueItem> OutQueue<M> {
                 break;
             }
             spent += c;
-            let (m, size, ack) = s.items.pop_front().expect("front exists");
+            let (m, size, _) = s.items.pop_front().expect("front exists");
             s.queued -= size;
+            let ends = m.ends_batch();
             taken.push(m);
-            acks.extend(ack);
-        }
-        drop(s);
-        for ack in acks {
-            let _ = ack.send(Ok(()));
+            if ends {
+                break;
+            }
         }
         taken
     }
