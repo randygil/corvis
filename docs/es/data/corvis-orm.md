@@ -155,6 +155,17 @@ Opciones de `OrmModuleOptions`:
 
 `push` no modifica ni elimina columnas existentes: para producción usa migraciones.
 
+### Qué crea `push`
+
+`push` (y `db.db_push::<(A, B)>()`) crea lo que los modelos necesitan y la base todavía no tiene, como lo haría la migración del cliente original para los mismos modelos:
+
+- Tablas con cada columna, su tipo, si admite nulos y su valor por defecto (`now()` como `CURRENT_TIMESTAMP`, `dbgenerated(..)`, literales, enums por su valor de `@map`), y la clave primaria sobre todos los campos `@id` / `@@id`, con el nombre de la referencia (`<tabla>_pkey` o `map:`).
+- Índices únicos para `@unique` y `@@unique`, índices simples para `@@index` (con `USING HASH`, `GIN`, `GIST`, `SPGIST` o `BRIN` en Postgres) y la tabla de unión de cada relación muchos a muchos implícita (`_CategoryToPost`, columnas `A` y `B`), todos con los nombres de la referencia.
+- Claves foráneas con sus acciones `onDelete` / `onUpdate` (en SQLite, dentro de `CREATE TABLE`).
+- En Postgres: tipos enum (`CREATE TYPE "role_t" AS ENUM (...)`), los esquemas de `@@schema`, las listas escalares como arreglos (`INTEGER[]`), los tipos nativos `@db.*` (`UUID`, `DATE`, `VARCHAR(n)`, `TIMESTAMPTZ(p)`, `DECIMAL(p,s)`, `JSON`, ...) y `TIMESTAMP(3)` para un `DateTime` sin tipo nativo. En SQLite, las columnas `Decimal` son `DECIMAL` y las listas escalares son texto JSON (una extensión de Corvis: el original no admite listas en SQLite).
+
+Todo el `push` corre en una transacción: si una sentencia falla, no queda nada a medias. Lo que no sabe crear (un tipo nativo o un tipo de índice que no conoce) es un error de validación que nombra el modelo, el campo y la construcción, antes de ejecutar ninguna sentencia. Las tablas que ya existen se dejan como están, así que una base creada con `push` por una versión anterior de Corvis conserva sus tipos de columna antiguos (`TIMESTAMPTZ(3)`, `TEXT` para enums y decimales); para recrear una base de desarrollo usa `db_push_force_reset::<Modelos>()`, que elimina las tablas de los modelos (y las tablas de unión entre ellos) y las vuelve a crear, en una transacción.
+
 ## Pool de conexiones
 
 El pool se dimensiona y se limita en tiempo desde la URL de la base de datos, igual que lo hace el cliente original, así que una app que conserva su `DATABASE_URL` conserva su pool:
@@ -337,6 +348,26 @@ La closure hace commit si devuelve `Ok` y rollback si devuelve `Err`. `_transact
 
 `sql!("SELECT ... WHERE id = {id}")` construye una consulta parametrizada: cada `{expr}` es un parámetro, nunca texto concatenado. Se ejecuta con `db._query_raw(..)`, `_query_raw_as::<T>(..)` o `_execute_raw(..)`.
 
+`RawSql::join(valores, ",", "(", ")")` de una lista vacía no entra en pánico: la sentencia lleva el error del cliente original ("Expected `join([])` to be called with an array of multiple elements, but got an empty array"), también si está anidada en otra, y al ejecutarla falla con un error de validación sin enviar nada.
+
+### Decimales
+
+El texto se convierte en `Decimal` solo con conversiones que informan de una entrada inválida: `Decimal::parse`, `"12.5".parse::<Decimal>()` y `Decimal::try_from(..)` para texto que llega en tiempo de ejecución, y el literal `decimal!("1.50")`, que se comprueba al compilar (un literal inválido no compila). Ya no existen `From<&str>` ni `From<String>`: entraban en pánico con texto inválido y, como los helpers tipados reciben `impl Into<Decimal>`, un texto de una petición podía tumbar el handler.
+
+```rust
+use corvis_orm::{decimal, Decimal};
+
+let tasa = decimal!("40.50");                   // antes: Decimal::from("40.50")
+let monto: Decimal = entrada.parse()?;          // antes: Decimal::from(entrada.as_str()), que entraba en pánico
+let billeteras = db.wallet().find_many(vec![wallet::amount::gte(decimal!("100"))]).await?;
+```
+
+Un `DecimalCtor` (`Decimal.clone({...})`) lee texto con `D.parse("1234.5678")?` en lugar de `D.of("1234.5678")`.
+
+### Helpers tipados y números no finitos
+
+Un valor que recibe un helper tipado (`user::score::equals(..)`, `set`, `increment`, `has`, `push`, ...) y que no se puede serializar, o un `f32` / `f64` que es `NaN` o infinito (solo, en una lista o en un `Option`), hace fallar la consulta con un error de validación antes de enviar SQL. Antes se convertía en `null`, así que `score::equals(f64::NAN)` leía las filas con `score IS NULL` y `score::not(f64::NAN)` cambiaba todas las filas con un valor. Para `null` usa `is_null()`, `is_not_null()` o `set_null()`.
+
 ## Errores HTTP
 
 Las consultas devuelven `OrmError`, con los códigos `P2xxx` del cliente de referencia (`P2002` clave única duplicada, `P2025` registro no encontrado, ...). Hay dos formas de convertirlos en respuestas:
@@ -393,6 +424,22 @@ Desde código: `db.migrate_deploy(dir).await` y `db.migrate_status(dir).await`. 
 - `update`, `delete` y las operaciones `*_many` repiten su `where` en el `UPDATE`/`DELETE`, así que la concurrencia optimista (`where: { id, version }`) tiene un solo ganador.
 - `log_queries` escribe los valores de los parámetros en los logs.
 - El SQLite que incluye `sqlx` 0.8 es anterior a la 3.54.0 y tiene un fallo conocido (RUSTSEC-2026-0459): abrir un archivo de base de datos junto con un archivo `-wal` manipulado puede devolver en los resultados bytes viejos de la memoria del proceso. Abre solo archivos SQLite que haya creado tu aplicación, nunca una base de datos o un `-wal` que pueda haber escrito alguien menos confiable. La actualización se sigue en [#155](https://github.com/randygil/corvis/issues/155).
+
+## Diferencias entre PostgreSQL y SQLite
+
+La mayoría de las consultas dan los mismos resultados en las dos bases. Estas no:
+
+| Qué | PostgreSQL | SQLite |
+|---|---|---|
+| `mode: "insensitive"` | Pliega todas las letras (`ILIKE`, `LOWER`) | `LOWER` solo pliega letras ASCII: `"JOSÉ"` no coincide con `"josé"` |
+| `path` de JSON con un segmento numérico (`["0"]`) | Siempre la clave `"0"` (o el índice `0` de un arreglo) | Un índice de arreglo; para la clave de un objeto escribe la forma de texto `'$."0"'` |
+| `search` | Búsqueda de texto completo (`to_tsquery` y sus operadores) | Cada término debe aparecer en el texto (`INSTR`), sin distinguir mayúsculas |
+| `Decimal` | Exacto, con la precisión y la escala de la columna | Un número con 15 dígitos significativos (afinidad numérica), como con la migración SQLite del original. Las comparaciones, el orden y las agregaciones leen la columna con `CAST(.. AS NUMERIC)`, así que también son numéricas en columnas `TEXT` creadas por versiones anteriores de `push`; el `CAST` impide que un índice simple sobre la columna sirva para un rango |
+| Listas escalares (`String[]`) | Arreglos | Texto JSON (una extensión de Corvis; el original no admite listas en SQLite) |
+| `divide: 0` | Falla (`22012`, división por cero) | `null` |
+| `increment` fuera del rango de un `Int` | Falla | El valor se guarda; leerlo en un campo `i32` falla después |
+
+Las dos últimas filas describen lo que hace Corvis hoy; igualarlas al cliente original en cada base queda pendiente de grabar los resultados del original en SQLite.
 
 ## Qué no está soportado
 

@@ -67,6 +67,7 @@ const ALLOW = [
   { path: 'crates/corvis-orm/tests/pg_oracle.rs', reason: 'maps errors to the original client error class names of the recorded oracle' },
   { path: 'crates/corvis-orm/tests/generated/*.rs', reason: 'generated from the reference apps\' schemas; header paths and copied schema comments' },
   { path: 'crates/corvis-orm/tests/pg_houseplan.rs', pattern: /houseplan\/api\/prisma\/migrations/, reason: 'migrations folder of the reference app the test runs' },
+  { path: 'crates/corvis-orm/tests/db_push.rs', pattern: /houseplan\/api\/prisma\/migrations/, reason: 'migrations folder of the reference app whose catalog the test compares' },
 
   // Out of scope here, with their own tasks.
   { path: 'crates/corvis-orm/README.md', pattern: /prisma\/(?:migrations|schema\.prisma)/, reason: `${COMPAT}: folder layout in the corvis-orm README` },
