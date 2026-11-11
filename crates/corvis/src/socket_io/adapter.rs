@@ -528,12 +528,12 @@ impl Drop for AckHold {
     fn drop(&mut self) {
         let mut s = self.budget.lock();
         s.used = s.used.saturating_sub(self.bytes);
-        if let Some(address) = self.address.take() {
-            if let Some(held) = s.addresses.get_mut(&address) {
-                *held = held.saturating_sub(self.bytes);
-                if *held == 0 {
-                    s.addresses.remove(&address);
-                }
+        if let Some(address) = self.address.take()
+            && let Some(held) = s.addresses.get_mut(&address)
+        {
+            *held = held.saturating_sub(self.bytes);
+            if *held == 0 {
+                s.addresses.remove(&address);
             }
         }
     }

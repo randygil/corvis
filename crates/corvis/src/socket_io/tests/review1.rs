@@ -697,12 +697,12 @@ async fn the_own_room_of_a_connecting_socket_expels_whoever_joined_its_id_during
 /// The ack id of the first `q` event in what a connection was sent.
 fn question_id(sent: &[Out]) -> u64 {
     for out in sent {
-        if let Out::T(text) = out {
-            if let Some(rest) = text.strip_prefix('2') {
-                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-                if rest[digits.len()..].starts_with("[\"q\"") {
-                    return digits.parse().unwrap();
-                }
+        if let Out::T(text) = out
+            && let Some(rest) = text.strip_prefix('2')
+        {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            if rest[digits.len()..].starts_with("[\"q\"") {
+                return digits.parse().unwrap();
             }
         }
     }
@@ -771,10 +771,10 @@ async fn one_address_cannot_fill_the_answer_budget_and_make_the_calls_of_others_
     advance(61_000).await;
     let mut too_large = 0;
     for task in tasks {
-        if let Err(e) = task.await.unwrap() {
-            if *e.kind() == BroadcastAckErrorKind::ResponsesTooLarge {
-                too_large += 1;
-            }
+        if let Err(e) = task.await.unwrap()
+            && *e.kind() == BroadcastAckErrorKind::ResponsesTooLarge
+        {
+            too_large += 1;
         }
     }
     assert!(too_large > 0, "the answers over the share ended their calls with ResponsesTooLarge");
