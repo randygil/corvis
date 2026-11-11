@@ -96,7 +96,7 @@ establezca tienen el mismo efecto.
 
 Como la clave es la que las aplicaciones ya usan, un guard global que se salta las rutas cuya metadata `"isPublic"` es
 `true` sigue funcionando con `#[public]` sin cambios; ver [Rutas públicas con un guard global](/es/guards#rutas-publicas-con-un-guard-global)
-y [Autenticación](/es/security/authentication#activar-la-autenticacion-en-todas-las-rutas). Ahí está también la trampa:
+y [Autenticación](/es/security/authentication#proteger-todo-por-defecto). Ahí está también la trampa:
 `#[public]` es una declaración para la verificación y para tus guards. Un guard que no lee la metadata seguirá
 rechazando la ruta.
 

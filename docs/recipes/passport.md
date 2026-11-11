@@ -1,12 +1,22 @@
 ---
-status: partial
+status: documented
 ---
 
 # Passport (authentication)
 
 Corvis has the **strategy model** of Passport and its integration for the original framework: strategies registered by name, an `AuthGuard` that runs them, the user on the request and the `401` the original answers when every strategy fails. Its behavior is checked against the original passport integration (12.0.1) over `passport` 0.7.0 with recorded responses.
 
-What is available now is the core: the `Strategy` trait you implement for your own strategies, `AuthGuard`, `PassportModule` and the `User<T>` parameter, and the [JWT strategy](#the-jwt-strategy), the [local strategy](#local-strategy-username-and-password) (username and password, with the `auth-local` feature) and [API keys](#api-keys) (the `auth-api-key` feature), plus the guide to [writing a strategy](#writing-a-strategy) of your own. [Sessions](#sessions) (the `auth-session` feature) log a user in and restore it on later requests. [OAuth2 login](#oauth2-google-github-and-others) (Google, GitHub and any provider, with the `auth-oauth2` feature) does the authorization code flow. A [guard of your own over `JwtModule`](#alternative-jwtmodule-guards) stays available.
+Five strategies are available, each behind a cargo feature, and the `Strategy` trait lets you [write your own](#writing-a-strategy):
+
+| Strategy | Cargo feature | Port of | Section |
+|---|---|---|---|
+| JWT | `jwt` (on by default) | `passport-jwt` 4.0.1 | [The JWT strategy](#the-jwt-strategy) |
+| Local (username and password) | `auth-local` | `passport-local` 1.0.0 | [Local strategy](#local-strategy-username-and-password) |
+| API key | `auth-api-key` | `passport-headerapikey` 1.2.2 | [API keys](#api-keys) |
+| Session | `auth-session` | `passport.session()` over `express-session` | [Sessions](#sessions) |
+| OAuth2 (Google, GitHub and any provider) | `auth-oauth2` (brings `auth-session`) | `passport-oauth2` 1.8.0 and its Google and GitHub profiles | [OAuth2](#oauth2-google-github-and-others) |
+
+This page is the reference. It is organized as the model, writing a strategy, `AuthGuard`, then one section per strategy with its options, limits and the differences from its original, then the [index of the differences](#differences-from-the-original-by-strategy), how the port is tested, and the [alternative](#alternative-jwtmodule-guards) of a guard of your own over `JwtModule`. To choose a strategy and see a working application, read the guide, [Authentication](/security/authentication) (the code is in `examples/auth-app`); to bring a Passport setup over, [Migrating from Passport](/recipes/passport-migration); for what the module protects and what it leaves to you, [Securing authentication](/security/authentication-security) and the [threat model](/security/authentication-threat-model).
 
 ## The model
 
@@ -850,9 +860,25 @@ The callback registers `code` and `state` as credential query parameters, so `Lo
 
 `crates/corvis/tests/fixtures/auth/oauth2.mjs` runs the four packages against a fake provider and records the authorization redirects, the token and profile requests, the profiles handed to `validate()`, 14 callback outcomes and the refresh request (`oauth2.json`); `crates/corvis/tests/auth_oauth2_original.rs` replays them against a mock provider on `127.0.0.1` with no Node and no network, and asserts the marked divergences from the specification. `examples/cats-app` has a GitHub login whose endpoints come from configuration, tested against a local mock provider.
 
+## Differences from the original, by strategy
+
+Every strategy keeps its own list of deliberate differences next to its options. This is the index; the
+[migration page](/recipes/passport-migration#what-answers-differently-on-purpose) has the same differences as tables
+(what the original does, what Corvis does and why), built from the cases the differential tests mark as divergences.
+
+| Area | Where its list is |
+|---|---|
+| Strategy core and `AuthGuard` (startup errors, WebSocket gateways, the typed user, sessions opt-in) | [Differences from the original](#differences-from-the-original) |
+| JWT | [Differences from `passport-jwt`](#differences-from-passport-jwt) |
+| Local | [Differences from passport-local](#differences-from-passport-local) |
+| API keys | [Differences from passport-headerapikey](#differences-from-passport-headerapikey) |
+| OAuth2 | [Differences from `passport-oauth2`](#differences-from-passport-oauth2) |
+| Sessions | [Divergences from the original](/http/session#divergences-from-the-original) |
+| Signed cookies | [Signed cookies](/http/cookies#signed-cookies) |
+
 ## Differential testing
 
-Every case above is recorded from the original: `crates/corvis/tests/fixtures/auth/strategies.mjs` runs the original passport integration (12.0.1) over `passport` 0.7.0 with custom `passport-strategy` 1.0.0 strategies driven to each outcome, and `tests/auth_strategies.rs` replays the recorded responses against the same routes in Corvis, with no Node needed at test time. Each strategy kind that arrives later adds its own cases.
+Every case above is recorded from the original: `crates/corvis/tests/fixtures/auth/strategies.mjs` runs the original passport integration (12.0.1) over `passport` 0.7.0 with custom `passport-strategy` 1.0.0 strategies driven to each outcome, and `tests/auth_strategies.rs` replays the recorded responses against the same routes in Corvis, with no Node needed at test time. Each strategy has its own recorded cases, described in its section ("Testing against the original").
 
 ## Alternative: `JwtModule` + guards
 
@@ -884,4 +910,4 @@ impl CanActivate for AuthGuard {
 }
 ```
 
-The full flow (login, guard, current user, roles) is explained in [Authentication](/security/authentication) and [Authorization](/security/authorization). For a username and password login, Passport's "local step" is an endpoint of your own that verifies the password (see [Encryption and hashing](/security/encryption-and-hashing)) and returns the token.
+Prefer the strategies above: they give you the startup checks, the uniform `401`, the deadlines, chains and the redacted request log. The path with a guard of your own is the right one when you need a rule no strategy expresses. The full flow with strategies (login, guard, current user, roles) is explained in [Authentication](/security/authentication) and [Authorization](/security/authorization).

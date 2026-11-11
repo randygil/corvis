@@ -94,7 +94,7 @@ again inside a public controller. `#[set_metadata(PUBLIC_METADATA, true)]`, the 
 
 Because the key is the one applications already use, a global guard that skips routes whose `"isPublic"` metadata is
 `true` keeps working with `#[public]` unchanged; see [Public routes with a global guard](/guards#public-routes-with-a-global-guard)
-and [Authentication](/security/authentication#enabling-authentication-on-all-routes). That is also the catch: `#[public]`
+and [Authentication](/security/authentication#protecting-everything-by-default). That is also the catch: `#[public]`
 is a declaration for the check and for your guards. A guard that does not read the metadata will still reject the route.
 
 ## Which guards count

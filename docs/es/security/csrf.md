@@ -13,7 +13,7 @@ Según cómo autentiques, estas son las alternativas reales:
 
 ## Si autenticas con `Authorization: Bearer`
 
-Es el flujo de [Autenticación](/es/security/authentication) con `JwtModule`. El navegador nunca añade
+Es el flujo de [Autenticación](/es/security/authentication) con la estrategia `jwt`. El navegador nunca añade
 esa cabecera por su cuenta, así que un sitio ajeno no puede forjar una petición autenticada. No
 necesitas protección CSRF adicional, siempre que no guardes además el token en una cookie.
 

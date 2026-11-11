@@ -13,7 +13,7 @@ Depending on how you authenticate, these are the real alternatives:
 
 ## If you authenticate with `Authorization: Bearer`
 
-This is the flow from [Authentication](/security/authentication) with `JwtModule`. The browser never adds
+This is the flow from [Authentication](/security/authentication) with the `jwt` strategy. The browser never adds
 that header on its own, so a third-party site cannot forge an authenticated request. You
 do not need additional CSRF protection, as long as you do not also store the token in a cookie.
 

@@ -104,19 +104,19 @@ check that the property now fails locally, then fix the bug and commit the seed 
 
 ## Smoke test of the examples
 
-Close every roadmap phase with a smoke test of the examples. It starts the real `blog-orm`, `tertulia` and `cats-app`
+Close every roadmap phase with a smoke test of the examples. It starts the real `blog-orm`, `tertulia`, `cats-app` and `auth-app`
 binaries, sends the documented requests and checks status codes and key fields. It builds nothing, so build the
 examples first:
 
 ```sh
-cargo build -p blog-orm -p tertulia -p cats-app
+cargo build -p blog-orm -p tertulia -p cats-app -p auth-app
 node scripts/smoke-examples.mjs            # or name the examples: node scripts/smoke-examples.mjs cats-app
 ```
 
 The binaries come from `$CARGO_TARGET_DIR/debug` (`target/debug` when the variable is not set). Each server binds to
 `127.0.0.1` on a free port, runs in a temporary directory with a temporary SQLite database and a random `JWT_SECRET`,
-and is stopped at the end, when the temporary files are removed too. The script exits with status 1 when a check
-fails. It is not part of CI.
+and is stopped at the end, when the temporary files are removed too (`auth-app` starts with `--dev`, which generates its
+secrets and starts its mock OAuth2 provider). The script exits with status 1 when a check fails. It is not part of CI.
 
 ## Continuous integration
 

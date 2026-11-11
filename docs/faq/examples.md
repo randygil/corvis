@@ -4,7 +4,7 @@ status: documented
 
 # Examples
 
-The repository includes three complete applications in `examples/`. They are part of the Cargo
+The repository includes four complete applications in `examples/`. They are part of the Cargo
 workspace, so they run from the repository root with `cargo run -p <name>`.
 
 ## `cats-app`: the full tour
@@ -45,6 +45,28 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/login \
 `JWT_SECRET` is required: without it (or with an empty value) the application does not start, because a
 well-known default secret would let anyone forge tokens. `.env.example` leaves it empty on purpose. The server
 listens on `127.0.0.1` only.
+
+## `auth-app`: authentication only
+
+```bash
+cargo run -p auth-app -- --dev
+# http://127.0.0.1:3000, with a mock OAuth2 provider on 127.0.0.1 and secrets made for this run
+```
+
+A small application that is only about authentication, and the one the code samples of the
+[authentication guide](/security/authentication) are copied from. It uses every built-in strategy: local login with
+hashed passwords (argon2id, and one bcrypt hash that is replaced on its first login), JWT access tokens, an API key for
+machine clients, sessions with login and logout, and an OAuth2 login against a mock provider that is part of the example,
+so it needs no account anywhere. It also shows a chain of strategies, an optional guard, a roles guard after
+`AuthGuard`, login rate limiting per client and per account, an origin check against login CSRF and route posture
+enforced at startup (it has no global guard).
+
+Without `--dev` there are no default secrets: the application refuses to start, naming the variable, until the four
+secrets and the OAuth2 client are set (see `examples/auth-app/.env.example`). The README of the example has a `curl`
+walkthrough of every route. Its tests (`cargo test -p auth-app`) need neither the network nor Node.
+
+Which one to read: `auth-app` to learn authentication; `cats-app` to see authentication inside a larger application,
+with a global guard; `tertulia` for authentication at a WebSocket handshake.
 
 ## `blog-orm`: REST API with a database
 
@@ -91,7 +113,8 @@ as is.
 ## Example tests
 
 The examples have integration tests in their `tests/` folders: `tertulia` (startup and chat over WebSocket),
-`cats-app` (startup without `JWT_SECRET` and the OpenAPI document) and `blog-orm` (the `published` filter). To run
+`cats-app` (startup without `JWT_SECRET` and the OpenAPI document), `auth-app` (every authentication flow, with a mock
+OAuth2 provider) and `blog-orm` (the `published` filter). To run
 all the workspace tests:
 
 ```bash

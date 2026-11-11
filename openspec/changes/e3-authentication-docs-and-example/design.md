@@ -311,3 +311,113 @@ These settle the open questions and override the design where they differ.
    is filed for the maintainer to decide one, and the section is added when it exists.
 7. The full divergence list lives in the migration page.
 8. Implemented after #46 lands; a deferred high or critical finding of #46 blocks this change.
+
+## Implementation notes
+
+Written while implementing, after everything of the epic was merged into `dev` (task 1.1 and later).
+
+### What task 1.1 found (the design against the merged code)
+
+- **Prerequisites hold.** #42, #41, #45, #44, #43 and #46 are merged. The findings register of the threat model defers
+  nothing of high or critical severity (only #173, #174, #172, #170, #171, #177 and #178, all medium or lower), so the change
+  is not blocked.
+- **Names and APIs confirmed.** `AuthGuard::{new, chain, default, optional, on_failure, skip_public, log_in}`,
+  `Authenticator::{log_in, log_out}`, `corvis::auth::local::login_tracker`, `PasswordHasher::{verify_or_dummy, needs_rehash,
+  hash}`, `ExpectedApiKey::{new, matches}`, `SessionModule::for_root_async`, `SessionSerializer`, `OAuth2Options::new`,
+  `OAuth2Endpoints`, `OAuth2Validator`, `ThrottlerStorage::with_named_tracker` and the startup warning for a throttler after
+  an `AuthGuard` exist as designed. The generic OAuth2 profile reads `sub` (a document without one fails the callback with
+  a `500`, which a test pins).
+- **Pages.** `recipes/passport.md` is 887 lines (not 157) with a section per strategy and its own difference lists,
+  `security/authentication.md` kept the hand-written walkthrough, `security/authentication-threat-model.md` has the defaults
+  table and the findings register, `security/authorization.md` still defined an `AuthGuard` of its own. `http/session.md`,
+  `http/cookies.md` and `security/rate-limiting.md` (with the login recipe) were already updated by their changes.
+  `security/csrf.md` stays `unavailable` (no CSRF middleware exists) and `security/encryption-and-hashing.md` stays
+  `partial` (it documents hashing and no general encryption); neither status is this change's to move.
+- **Fixture marks.** The `divergence` marks are not only per case: `oauth2.json` and `signed_cookies.json` carry them at
+  other levels of the document. There are 24 distinct marks (by file and the start of the reason), all with a row on the
+  migration page.
+- **Review note 4** (a test that the differences index covers every mark, "only if #46 shipped `auth_source_checks.rs` as
+  designed"). The file exists, but a test there would be a change under `crates/`, which this change promises not to
+  make (task 6.6). The check lives in the example crate instead (`tests/docs_divergences.rs`): each row of the migration
+  page carries an HTML comment with the fixture and the start of the reason, and the test fails for a mark with no row and
+  for a marker with no mark.
+- **Stale sentences (task 1.2).** `recipes/passport.md` (the introduction and the last sentence of "Differential testing"),
+  `security/authentication.md` ("What Corvis does not include", and the whole hand-written walkthrough, which is now an
+  alternative), `security/authorization.md` (the `AuthGuard` type of its own and the registration sample), the link
+  `#enabling-authentication-on-all-routes` of `security/route-posture.md` and the sentence of `security/csrf.md` that called
+  the bearer flow "the flow with `JwtModule`". No other page says that strategies, sessions or hashing are missing
+  (searched for the issue numbers, "arrive", "does not include" and "unavailable" in both languages).
+
+### Decisions and deviations
+
+- **`create_app(Settings)` and the settings.** A static `#[module]` cannot receive a value at runtime, and the tests need
+  an application per mock-provider port in one process, so `create_app` runs `CorvisFactory::create::<AppModule>()` inside a
+  `tokio::task_local!` scope that holds the `Settings`, and a global `SettingsModule` provides them to the other modules.
+  The secrets are read by `Settings::from_env()` (or `Settings::from_lookup(..)` over any source, which the tests use), so the
+  startup scenarios ("Missing secret", "Short secret", "Copying the example environment file") run against the settings and
+  not against `create_app`: the error is the same, the example's `main` calls `from_env()` first. The spec text was adjusted.
+- **A fourth secret.** `OAUTH_STATE_SECRET` signs the OAuth2 state cookie, as the reference says to use a secret of its own;
+  the design listed three secrets.
+- **No `PassportModule` and no `AuthModule`.** Nothing in the example needs a default strategy, and the strategies are
+  providers of `AppModule`, which keeps `app_module.rs` the one place the guide's registration sample comes from.
+- **Cookie names in `--dev`.** `__Host-` needs `Secure`, so with `Secure` off the session cookie is `sid` and the state
+  cookie has no prefix (the framework warns for both). Outside `--dev` they are `__Host-sid` and `__Host-oauth2.provider`; a
+  test (`tests/production.rs`) pins it.
+- **Password hashes are constants**, made with `PasswordHasher` (the commands are in the doc comment of `src/users.rs`),
+  not computed at startup: no plain password is in the source and startup stays fast. The demo passwords are in the README
+  and printed by `--dev`; the table is a demo and says so.
+- **Retry header.** The per-account limit is the named throttler `login`, so its `429` carries `Retry-After-login`; the
+  per-client limit (`default`) carries `Retry-After`. The spec scenario was adjusted.
+- **A mock provider without a framework dependency.** `src/mock_provider.rs` is a small HTTP/1.1 server over
+  `corvis::tokio` (authorize, token, userinfo). It checks the client secret, the redirect URI, the PKCE verifier and that a
+  code is single use, and counts token and userinfo requests. It needs `sha2` and `base64`, already in the workspace lock at
+  the versions the framework uses (no new crate version), and `rand` as `cats-app` does.
+- **The origin check is copied from `cats-app`** (`src/same_origin.rs`, with its unit tests): the framework has no such guard.
+  Proposed issue below.
+- **Samples are kept in step by a test**, `tests/docs_samples.rs`: a Rust block whose first line names a file under
+  `examples/` must appear in that file (split at `// ...`, blank and comment-only lines ignored), in both languages, and the
+  Spanish page must carry the same number of samples. This replaces the manual comparison of task 5.1.
+- **`scripts/smoke-examples.mjs`** has an `auth-app` suite (the real binary with `--dev`, including the OAuth2 login through the
+  mock provider), and `CONTRIBUTING.md` lists it.
+- **Spanish pages** were written with the `docs-writer` agent from the final English pages, then checked by the docs check
+  and the samples test.
+
+### Proposed issues (for the maintainer's session to file)
+
+- **Trim `examples/cats-app`** (Review note 5): remove its GitHub login, API key and session pieces, or point them at
+  `examples/auth-app`, now that a dedicated example exists. The specs of #42 and #43 require some of those pieces there, so
+  the change must amend them.
+- **A security policy for the repository** (Review note 6): add `SECURITY.md` with a contact and a disclosure process, then
+  add "Reporting a vulnerability" to `security/authentication-security.md`.
+- **Ship an origin-check guard in the framework**: `SameOriginGuard` exists twice (`cats-app`, `auth-app`) and the guide tells
+  applications to write one. A guard in `corvis::auth` (or the http module) with the same allow-list rules would be tested once.
+- **Build the application from runtime configuration**: a `#[module]` cannot take a value, so `auth-app` passes `Settings`
+  through a task-local scope during bootstrap. A public way to create an application from a `DynamicModule` root, or to
+  override a provider at creation, would remove the workaround.
+
+## Security review
+
+A review of `examples/auth-app` before the merge found five things, all fixed in the example and its pages (no change under
+`crates/`). Each has a test.
+
+1. **Equal secrets (medium).** `Settings::from_lookup` accepted the same value for several secrets; with
+   `SERVICE_API_KEY == JWT_SECRET` the holder of the service key could sign tokens for any user. Fixed: a repeated value among
+   the four secrets is refused, naming both variables and never the value. Test: `two_secrets_with_the_same_value_are_refused_without_printing_it`
+   (`tests/startup.rs`).
+2. **The per-account login limit was per route (medium).** The default throttler key includes `Class:handler`, so
+   `/auth/login` and `/session/login` each allowed the full number of attempts for one account. Fixed: a named key generator
+   (`account`, the tracker alone) selected with `.key_generator("account")` on both routes. Tests:
+   `the_account_limit_is_shared_by_both_login_routes` (`tests/throttle.rs`, alternating the routes). `security/rate-limiting.md`
+   (both languages) now says the default key is per route and how to share a limit.
+3. **Mock provider `/authorize` (low, dev tooling).** It accepted any `redirect_uri` (open redirect) and put the decoded `state`
+   in `Location` (header injection). Fixed: the redirect URI must equal the registered one, control characters are refused, and
+   the state is percent-encoded. Tests: `another_redirect_uri_is_refused`, `control_characters_cannot_inject_headers`,
+   `the_state_is_encoded_in_the_location` (`tests/mock_provider.rs`).
+4. **The `login` throttler counted every route per client address (low).** `/feed` carried `x-ratelimit-limit-login`. Fixed:
+   `skip_throttle(["login"])` on every controller and route that is not a login route. Test:
+   `the_login_limit_applies_to_the_login_routes_only`. The README and `.env.example` now say that behind a proxy
+   `TRUST_PROXY` (read by `main`, `app.set_trust_proxy(..)`) must be set, or every client shares one counter.
+5. **`SameOriginGuard` ignored the scheme (low).** Comparing `Origin` with `Host` accepted `https://host` for an `http` site.
+   Fixed: the policy takes the scheme of the deployment (`https`, `http` only in `--dev`) from the settings, so the guard is now
+   injectable (`#[use_guards(SameOriginGuard, ..)]`), and the guide's samples follow. Tests: `a_scheme_mismatch_is_another_site`
+   (unit), `an_origin_with_another_scheme_is_another_site` (`tests/csrf.rs`) and the `https` case of `tests/production.rs`.

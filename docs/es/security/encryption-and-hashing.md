@@ -8,6 +8,9 @@ Corvis incluye **hashing de contraseñas** (`PasswordHasher`, con la feature de 
 
 ## Hashing de contraseñas
 
+La [guía de autenticación](/es/security/authentication#usuario-y-contrasena) muestra el hasher dentro de un login, y
+[Proteger la autenticación](/es/security/authentication-security#lista-de-comprobacion-antes-de-salir-a-produccion) lista qué hacer con él antes de desplegar.
+
 Activa la feature en `Cargo.toml`:
 
 ```toml

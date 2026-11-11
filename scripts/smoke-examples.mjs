@@ -1,7 +1,7 @@
 // Smoke test of the example applications: starts each example binary, sends the documented requests and checks
-// status codes and key fields. It builds nothing: run `cargo build -p blog-orm -p tertulia -p cats-app` first.
+// status codes and key fields. It builds nothing: run `cargo build -p blog-orm -p tertulia -p cats-app -p auth-app` first.
 //
-//   node scripts/smoke-examples.mjs [blog-orm|tertulia|cats-app ...]
+//   node scripts/smoke-examples.mjs [blog-orm|tertulia|cats-app|auth-app ...]
 //
 // The binaries come from `$CARGO_TARGET_DIR/debug` (or `target/debug`). Every server binds to 127.0.0.1 on a free
 // port, runs in its own temporary directory with a temporary SQLite database and a random JWT secret, and is killed
@@ -43,13 +43,13 @@ function freePort() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-async function start(name, env) {
+async function start(name, env, args = []) {
   const bin = exe(name)
   if (!fs.existsSync(bin)) throw new Error(`${bin} not found: run \`cargo build -p ${name}\` first`)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `corvis-smoke-${name}-`))
   tempDirs.add(dir)
   const port = await freePort()
-  const child = spawn(bin, [], {
+  const child = spawn(bin, args, {
     cwd: dir, // no .env and no stray database file in the repository
     env: { ...process.env, PORT: String(port), DATABASE_URL: `file:${path.join(dir, 'smoke.db').replaceAll('\\', '/')}`, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -65,7 +65,7 @@ async function start(name, env) {
     if (exited !== null) throw new Error(`${name} exited with ${exited} at startup:\n${log}`)
     try {
       await fetch(base + '/', { signal: AbortSignal.timeout(500) })
-      return { base, child }
+      return { base, child, log: () => log }
     } catch {
       await sleep(100)
     }
@@ -73,8 +73,9 @@ async function start(name, env) {
   throw new Error(`${name} did not answer on ${base}:\n${log}`)
 }
 
-async function req(base, method, url, { body, token } = {}) {
-  const headers = {}
+async function req(base, method, url, { body, token, cookie, headers: extra } = {}) {
+  const headers = { ...extra }
+  if (cookie) headers.cookie = cookie
   if (body !== undefined) headers['content-type'] = 'application/json'
   if (token) headers.authorization = `Bearer ${token}`
   const res = await fetch(base + url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual' })
@@ -83,7 +84,7 @@ async function req(base, method, url, { body, token } = {}) {
   try {
     json = JSON.parse(text)
   } catch {}
-  return { status: res.status, text, json, type: res.headers.get('content-type') ?? '' }
+  return { status: res.status, text, json, type: res.headers.get('content-type') ?? '', setCookie: res.headers.getSetCookie?.() ?? [], location: res.headers.get('location') }
 }
 
 /** First chunk of a Server-Sent Events stream. */
@@ -185,6 +186,52 @@ const suites = {
     check('GET /docs-json documents the cats routes', r.status === 200 && !!r.json?.paths?.['/api/v1/cats'] && !!r.json?.components?.schemas?.CreateCatDto, `${r.status} ${r.text.slice(0, 120)}`)
     const sse = await firstSseChunk(base, '/api/v1/cats/stream')
     check('GET /api/v1/cats/stream sends a first event', sse.status === 200 && sse.type.includes('text/event-stream') && sse.text.includes('data:'), `${sse.status} ${sse.type} ${sse.text}`)
+  },
+
+  async 'auth-app'() {
+    // `--dev` generates the secrets, starts the mock OAuth2 provider on 127.0.0.1 and prints the service API key.
+    const { base, log } = await start('auth-app', {}, ['--dev'])
+    const key = /service API key for X-Api-Key: (\S+)/.exec(log())?.[1]
+    check('--dev prints the service API key', typeof key === 'string' && key.length >= 32)
+    let r = await req(base, 'GET', '/')
+    check('GET / is public (200)', r.status === 200, `${r.status} ${r.text}`)
+    r = await req(base, 'GET', '/me')
+    check('GET /me without a token is 401', r.status === 401 && r.text === '{"message":"Unauthorized","statusCode":401}', `${r.status} ${r.text}`)
+    r = await req(base, 'POST', '/auth/login', { body: { username: 'john', password: 'wrong-password' } })
+    check('POST /auth/login with a wrong password is 401', r.status === 401, `${r.status} ${r.text}`)
+    r = await req(base, 'POST', '/auth/login', { body: { username: 'john', password: 'john-demo-pass' } })
+    const token = r.json?.access_token
+    check('POST /auth/login returns a token (200)', r.status === 200 && typeof token === 'string', `${r.status} ${r.text}`)
+    r = await req(base, 'GET', '/me', { token })
+    check('GET /me with the token is 200', r.status === 200 && r.json?.username === 'john', `${r.status} ${r.text}`)
+    r = await req(base, 'GET', '/reports', { headers: { 'x-api-key': key } })
+    check('GET /reports with the service key is 200', r.status === 200 && r.json?.caller?.service === 'reports', `${r.status} ${r.text}`)
+    r = await req(base, 'GET', '/reports', { headers: { 'x-api-key': 'wrong' } })
+    check('GET /reports with a wrong key is 401', r.status === 401, `${r.status} ${r.text}`)
+    r = await req(base, 'GET', '/admin/users', { token })
+    check('GET /admin/users as admin is 200', r.status === 200 && Array.isArray(r.json), `${r.status} ${r.text}`)
+    r = await req(base, 'POST', '/session/login', { body: { username: 'maria', password: 'maria-demo-pass' } })
+    const cookie = r.setCookie[0]?.split(';')[0]
+    check('POST /session/login sets a session cookie (200)', r.status === 200 && cookie?.startsWith('sid='), `${r.status} ${r.setCookie}`)
+    r = await req(base, 'GET', '/session/me', { cookie })
+    check('GET /session/me with the cookie is 200', r.status === 200 && r.json?.username === 'maria', `${r.status} ${r.text}`)
+    r = await req(base, 'POST', '/session/logout', { cookie })
+    check('POST /session/logout is 204', r.status === 204, `${r.status} ${r.text}`)
+    r = await req(base, 'GET', '/session/me', { cookie })
+    check('the cookie is anonymous after the logout (401)', r.status === 401, `${r.status} ${r.text}`)
+    // OAuth2 against the mock provider: the redirects are followed by hand, carrying the state cookie.
+    r = await req(base, 'GET', '/auth/provider')
+    const state = r.setCookie[0]?.split(';')[0]
+    check('GET /auth/provider redirects to the mock provider (302)', r.status === 302 && r.location?.startsWith('http://127.0.0.1:'), `${r.status} ${r.location}`)
+    const approved = await fetch(r.location, { redirect: 'manual' })
+    const callback = approved.headers.get('location')
+    check('the mock provider redirects back to the callback (302)', approved.status === 302 && callback?.includes('/auth/provider/callback?code='), `${approved.status} ${callback}`)
+    const target = new URL(callback)
+    r = await req(base, 'GET', target.pathname + target.search, { cookie: state })
+    const session = r.setCookie.map((c) => c.split(';')[0]).find((c) => c.startsWith('sid='))
+    check('the callback logs in (200, session cookie)', r.status === 200 && !!session, `${r.status} ${r.text}`)
+    r = await req(base, 'GET', '/session/me', { cookie: session })
+    check('GET /session/me after the OAuth2 login is 200', r.status === 200 && r.json?.username?.startsWith('provider:'), `${r.status} ${r.text}`)
   },
 }
 

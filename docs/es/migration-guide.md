@@ -39,6 +39,7 @@ Ver [Módulos](/es/modules), [Providers](/es/providers) y [Providers personaliza
 | Metadata | `#[set_metadata("roles", ["admin"])]` |
 | Guards, interceptors, pipes y filtros por ruta | `#[use_guards(...)]`, `#[use_interceptors(...)]`, `#[use_pipes(...)]`, `#[use_filters(...)]` |
 | Lanzar una excepción HTTP | Devolver `Err(NotFoundException::new("..."))` en un `HttpResult` |
+| Una estrategia de Passport y su guard (`AuthGuard('jwt')`) | Un validador, `Provider::strategy::<JwtStrategy<V>>()` y `#[use_guards(AuthGuard::new("jwt"))]`; ver [Migrar desde Passport](/es/recipes/passport-migration) |
 
 Los atributos de clase (`#[use_guards]`, `#[set_metadata]`...) van **debajo** de `#[controller]`, porque Rust procesa los atributos en orden.
 

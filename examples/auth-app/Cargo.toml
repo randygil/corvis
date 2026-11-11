@@ -1,0 +1,13 @@
+[package]
+name = "auth-app"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+corvis = { path = "../../crates/corvis", features = ["auth-local", "auth-api-key", "auth-session", "auth-oauth2"] }
+serde = { version = "1", features = ["derive"] }
+rand = "0.8"
+# The mock OAuth2 provider checks the PKCE challenge: the same versions the framework already uses.
+sha2 = "0.10"
+base64 = "0.22"

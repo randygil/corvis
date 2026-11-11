@@ -4,7 +4,7 @@ status: documented
 
 # Ejemplos
 
-El repositorio incluye tres aplicaciones completas en `examples/`. Forman parte del workspace de
+El repositorio incluye cuatro aplicaciones completas en `examples/`. Forman parte del workspace de
 Cargo, así que se ejecutan desde la raíz del repositorio con `cargo run -p <nombre>`.
 
 ## `cats-app`: el recorrido completo
@@ -45,6 +45,28 @@ curl -X POST http://127.0.0.1:3000/api/v1/auth/login \
 `JWT_SECRET` es obligatoria: sin ella (o con un valor vacío) la aplicación no arranca, porque un secreto por
 defecto conocido permitiría a cualquiera falsificar tokens. `.env.example` la deja vacía a propósito. El servidor
 escucha solo en `127.0.0.1`.
+
+## `auth-app`: solo autenticación
+
+```bash
+cargo run -p auth-app -- --dev
+# http://127.0.0.1:3000, con un proveedor OAuth2 simulado en 127.0.0.1 y secretos generados para esta ejecución
+```
+
+Una aplicación pequeña que trata solo de autenticación, y de la que se copian los ejemplos de código de la
+[guía de autenticación](/es/security/authentication). Usa todas las estrategias incluidas: login local con contraseñas
+hasheadas (argon2id, y un hash bcrypt que se reemplaza en su primer login), tokens de acceso JWT, una API key para
+clientes máquina, sesiones con login y logout, y un login OAuth2 contra un proveedor simulado que forma parte del ejemplo,
+así que no necesita una cuenta en ningún sitio. También muestra una cadena de estrategias, un guard opcional, un guard de
+roles después de `AuthGuard`, límite de intentos de login por cliente y por cuenta, una comprobación de origen contra el
+CSRF de login y la postura de rutas exigida al arrancar (no tiene guard global).
+
+Sin `--dev` no hay secretos por defecto: la aplicación se niega a arrancar, nombrando la variable, hasta que se definen los
+cuatro secretos y el cliente OAuth2 (ver `examples/auth-app/.env.example`). El README del ejemplo tiene un recorrido con
+`curl` de todas las rutas. Sus pruebas (`cargo test -p auth-app`) no necesitan red ni Node.
+
+Cuál leer: `auth-app` para aprender autenticación; `cats-app` para ver la autenticación dentro de una aplicación más
+grande, con un guard global; `tertulia` para la autenticación en un handshake de WebSocket.
 
 ## `blog-orm`: API REST con base de datos
 
@@ -91,7 +113,8 @@ tal cual.
 ## Pruebas de los ejemplos
 
 Los ejemplos tienen pruebas de integración en sus carpetas `tests/`: `tertulia` (arranque y chat por WebSocket),
-`cats-app` (arranque sin `JWT_SECRET` y documento OpenAPI) y `blog-orm` (el filtro `published`). Para ejecutar todas
+`cats-app` (arranque sin `JWT_SECRET` y documento OpenAPI), `auth-app` (todos los flujos de autenticación, con un
+proveedor OAuth2 simulado) y `blog-orm` (el filtro `published`). Para ejecutar todas
 las pruebas del workspace:
 
 ```bash

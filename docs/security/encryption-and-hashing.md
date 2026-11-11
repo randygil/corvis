@@ -8,6 +8,9 @@ Corvis includes **password hashing** (`PasswordHasher`, behind the `auth-local` 
 
 ## Password hashing
 
+The [authentication guide](/security/authentication#username-and-password) shows the hasher inside a login, and
+[Securing authentication](/security/authentication-security#checklist-before-going-live) lists what to do with it before you deploy.
+
 Turn the feature on in `Cargo.toml`:
 
 ```toml

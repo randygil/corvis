@@ -23,17 +23,18 @@ interface, and no network access is needed.
 - **THEN** tokens and session cookies of the previous run are refused
 
 ### Requirement: No default secrets
-Without `--dev`, application creation SHALL fail unless `JWT_SECRET`, `SESSION_SECRET` and `SERVICE_API_KEY` are set
-with at least 32 bytes each and the OAuth2 client settings are present. The error MUST name the variable and MUST NOT
+Without `--dev`, loading the settings (`Settings::from_env()`, which `main` calls before `create_app`) SHALL fail unless
+`JWT_SECRET`, `SESSION_SECRET`, `OAUTH_STATE_SECRET` and `SERVICE_API_KEY` are set with at least 32 bytes each and the OAuth2
+client settings are present. The error MUST name the variable and MUST NOT
 print its value. `.env.example` MUST NOT contain a value that works.
 
 #### Scenario: Missing secret
-- **WHEN** `auth_app::create_app()` runs without `SESSION_SECRET`
-- **THEN** it returns an error whose text contains `SESSION_SECRET`
+- **WHEN** the settings are loaded without `SESSION_SECRET`
+- **THEN** loading returns an error whose text contains `SESSION_SECRET`
 
 #### Scenario: Short secret
 - **WHEN** `JWT_SECRET` is 16 bytes long
-- **THEN** application creation fails, the error names `JWT_SECRET` and the minimum, and does not contain the value
+- **THEN** loading the settings fails, the error names `JWT_SECRET` and the minimum, and does not contain the value
 
 #### Scenario: Copying the example environment file
 - **WHEN** a user copies `.env.example` to `.env` without editing it
@@ -135,7 +136,8 @@ routes per client and per account with `login_tracker`. Startup MUST log no guar
 
 #### Scenario: Attempts over the limit
 - **WHEN** one account receives more login attempts than its limit, from one client
-- **THEN** the next attempt is answered `429` with `Retry-After`
+- **THEN** the next attempt is answered `429` with the retry header of the throttler that blocked it (`Retry-After-login` for the
+  per-account limit, `Retry-After` for the per-client one)
 
 #### Scenario: Other routes keep the global limit
 - **WHEN** `GET /me` is requested after the login limit was reached
