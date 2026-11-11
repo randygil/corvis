@@ -220,3 +220,122 @@ These settle the open questions this change can settle and override the design w
 3. `semver` is informational until the first crates.io release.
 4. `rust-version` is raised if 1.89 does not build; the change does not pin old dependency versions to keep it.
 5. The required checks added to `main` are exactly `doc`, `msrv`, `features`, `lint-ratchet`.
+
+## Implementation notes
+
+Measured on `dev` at `858230c` (2026-11-11) with the pinned toolchain 1.99.0, on Windows and, for every count the CI
+jobs depend on, on Linux (a `rust:1.99.0-bookworm` container sharing the Cargo target directory).
+
+### Task 1.1: rustdoc warnings
+
+`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` on the untouched tree: 8 warnings, so all
+are fixed here (Decision 2, at most 30). Both known links are among them.
+
+| Crate | File:line | Lint | Fix |
+|---|---|---|---|
+| `corvis` | `src/z/regex.rs:58` | `private_intra_doc_links` (`BACKTRACK_LIMIT`, private module) | named without a link |
+| `corvis` | `src/posture.rs:298`, `:300` | `redundant_explicit_links` | explicit target removed |
+| `corvis` | `src/z/locales.rs:8` | `redundant_explicit_links` | explicit target removed |
+| `corvis-macros` | `src/lib.rs:243`, `:247` | `broken_intra_doc_links` (`[subscribe_message]` in the doc of two misplaced-attribute macros) | `` `#[subscribe_message]` `` in backticks, like `` `#[routes]` `` in the same message |
+| `corvis-swagger` | `src/explorer.rs:31` | `broken_intra_doc_links` (`crate::model`) | points to `SwaggerType` and the `api_extra_models!` macro |
+| `corvis-swagger` | `src/scalar.rs:142` | `private_intra_doc_links` (`escape_inline_json`) | named without a link |
+
+The misplaced-attribute macros use one literal for the doc and for the `compile_error!` text, so the compile errors of
+a misplaced `#[public]` and `#[use_filters]` now show `` `#[subscribe_message]` `` in backticks (no test matches that
+text).
+
+Found while running it: the binary of `corvis-cli` is named `corvis`, like the library, so one `cargo doc --workspace`
+run documents both into `target/doc/corvis` at the same time. Cargo only warns ("output filename collision"), but on
+Windows one local run failed with "Access denied" on a file of that folder. The `doc` job therefore runs two steps,
+`cargo doc --workspace --exclude corvis-cli --no-deps --all-features` and then `cargo doc -p corvis-cli --no-deps
+--all-features`: the same crates and lints as the design's command, without the collision.
+
+### Task 1.2: lint candidates
+
+`cargo clippy --workspace --all-targets` with every candidate of Decision 1 at `warn`, on Linux, before `clippy.toml`
+allowed `unwrap`, `expect` and `panic` in tests. Library code is what `--lib --bins` reports; test code is the rest
+(`#[cfg(test)]` modules, integration tests). Published crates only, library / test:
+
+| Lint | corvis | corvis-cli | corvis-macros | corvis-orm | corvis-orm-macros | corvis-swagger | corvis-swagger-macros |
+|---|---|---|---|---|---|---|---|
+| `missing_docs` | 1210 / 505 | 0 / 0 | 0 / 0 | 229 / 51 | 1 / 0 | 76 / 81 | 0 / 0 |
+| `unreachable_pub` | 32 / 537 | 59 / 1 | 25 / 0 | 14 / 103 | 0 / 0 | 0 / 0 | 10 / 0 |
+| `missing_debug_implementations` | 180 / 470 | 0 / 0 | 0 / 0 | 10 / 3 | 0 / 0 | 7 / 19 | 0 / 0 |
+| `unsafe_op_in_unsafe_fn` | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| `clippy::unwrap_used` | 149 / 2607 | 0 / 69 | 2 / 16 | 29 / 796 | 7 / 0 | 9 / 29 | 0 / 2 |
+| `clippy::expect_used` | 38 / 103 | 1 / 1 | 1 / 0 | 6 / 6 | 0 / 0 | 1 / 0 | 0 / 0 |
+| `clippy::panic` | 21 / 116 | 0 / 1 | 0 / 2 | 2 / 19 | 0 / 0 | 5 / 0 | 0 / 0 |
+| `clippy::todo`, `unimplemented`, `dbg_macro` | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| `clippy::undocumented_unsafe_blocks` | 0 / 8 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| `clippy::missing_panics_doc` | 91 / 8 | 0 / 0 | 0 / 0 | 6 / 0 | 0 / 0 | 1 / 0 | 0 / 0 |
+| `clippy::missing_errors_doc` | 137 / 2 | 0 / 0 | 0 / 0 | 41 / 2 | 0 / 0 | 3 / 0 | 0 / 0 |
+| `clippy::print_stdout` | 0 / 9 | 21 / 6 | 0 / 0 | 7 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| `clippy::print_stderr` | 5 / 13 | 7 / 0 | 0 / 0 | 1 / 1 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+Windows differs by a handful (`corvis`: `expect_used` 37 in library code, `unwrap_used` 2603 in tests), from code under
+`cfg(target_os = "linux")`. The floor (zero everywhere, on both platforms) is `unsafe_op_in_unsafe_fn`,
+`clippy::dbg_macro`, `clippy::todo` and `clippy::unimplemented`. `undocumented_unsafe_blocks` has findings only in
+test code of `corvis` (the counting global allocators of the memory tests, 42 blocks in 9 files with all features);
+fixing them means editing test files that open branches also touch, so it stays in the ratchet, counted in test code. Every other candidate goes to the
+ratchet.
+
+With the floor in place, `cargo clippy -p <the seven> --all-features --all-targets -- -D warnings` passes on Linux and
+`cargo clippy --workspace --all-targets -- -D warnings` on Windows: the floor needed no source change.
+
+The committed baseline (`node scripts/lint-ratchet.mjs --update` on Linux, all features, library code) is larger than
+the library column above where features add code: `corvis` `missing_docs` 1262, `missing_errors_doc` 179,
+`expect_used` 51, `unreachable_pub` 55, `missing_debug_implementations` 182; `undocumented_unsafe_blocks` in tests
+42; 67 unexplained `ignore` fences in `corvis`, 14 in `corvis-orm`, 5 in `corvis-swagger`, 1 in each of
+`corvis-macros` and `corvis-orm-macros`. 2,679 findings in total.
+
+### Task 1.3: MSRV
+
+`cargo +1.89 check --locked -p <the seven published crates>`, with default features and with `--all-features`, passes
+on Windows and on Linux. `rust-version` stays `1.89`; README and the docs need no change (neither states it).
+
+### Decisions taken while implementing
+
+- **Ratchet scope.** The script runs clippy with `-p` on the seven published crates and `--all-features`, so code
+  behind a feature is counted and the counts do not depend on which features the examples enable (with `--workspace`,
+  the examples' features changed the counts of `corvis` by about 5%).
+- **What counts in test code.** Only `undocumented_unsafe_blocks` (marked `tests: true` in the script). The API lints
+  (`missing_docs`, `unreachable_pub`, `missing_debug_implementations`, `missing_*_doc`) mean nothing in tests, the spec
+  excludes `unwrap_used`, `expect_used` and `panic` there, and printing is what tests do.
+- **Baseline layout.** `lint-baseline.json` holds counts per crate, lint and file. The comparison is on the sum per
+  crate and lint, as designed; the files only serve to name the findings of the files whose count went up. One line
+  per file also lets two branches that lower different files of one crate merge without a conflict.
+- **`--update` does not raise a count** unless `--allow-increase` is passed too (for a toolchain bump), so running it
+  by habit cannot hide a regression; a raise shows in the diff of `lint-baseline.json` and needs a reason.
+- **Unknown lints** are recognized by rustc's `E0602` (a lint named on the command line that the toolchain does not
+  know); `unknown_lints` only covers attributes.
+- **`ignore` fences** are counted in doc comments (`///`, `//!`) under each crate's `src/`; a fence whose info string
+  carries a parenthesized reason is not counted.
+- **`features` denies warnings** (`RUSTFLAGS: -D warnings`), like the clippy loop over the `corvis` features: an import
+  unused under one feature fails there.
+- **`proptest`** also moved to `[workspace.dependencies]`: it is a dev-dependency of `corvis` and `corvis-orm`, and the
+  shared-dependency rule counts every dependency section. `flate2` and `brotli`, declared twice inside `corvis`
+  (optional dependency and dev-dependency), are not shared by two crates and stay as they are.
+- **Tool versions.** `cargo-hack@0.6.46` and `cargo-semver-checks@0.51.0`, the latest versions in the manifests of the
+  pinned `taiki-e/install-action` (v2.90.2).
+
+### Task 3.4: deliberate failures (local; nothing pushed, so no run ids)
+
+On a temporary edit of `corvis-swagger` (an `unwrap()` in `serialize_config_to_js`, an `unwrap()` in a `#[test]` of
+`document.rs`, a doc link to a missing item and an ```` ```ignore (needs a server) ```` fence), reverted afterwards:
+
+- `node scripts/lint-ratchet.mjs` (Linux) exited 1 with `corvis-swagger: clippy::unwrap_used: 9 -> 10 (above the
+  baseline)` and `crates/corvis-swagger/src/scalar.rs:150:22: clippy::unwrap_used`, plus the new `missing_panics_doc`
+  of that function. The `unwrap()` in the test and the fence with a reason were not counted.
+- The `doc` command exited 101 with `crates\corvis-swagger\src\scalar.rs:144:57: error: unresolved link to
+  missing_item`.
+
+### Required checks of `main` (for the maintainer)
+
+Add exactly these job names as required status checks: `doc`, `msrv`, `features`, `lint-ratchet`. `semver` stays
+informational. `CONTRIBUTING.md` lists the full set.
+
+### Security review
+
+Not needed: no input parsing, limits, authentication, SQL or file system code changes. The new jobs keep the
+workflow's `permissions: contents: read`, `persist-credentials: false`, no secrets and the same SHA-pinned third-party
+actions; `actionlint` 1.7.7 (with shellcheck) passes on both workflows.
