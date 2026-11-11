@@ -20,6 +20,19 @@ mod oracle {
 use corvis_orm::{DateTime, Decimal, Model, ModelMeta, OrmClient, RawSql, ToSqlArg};
 use serde_json::Value;
 
+/// Cases that differ from the recording on purpose: (label, reason). An entry that no longer differs fails the test,
+/// so the table cannot go stale.
+const KNOWN_DIFFERENCES: &[(&str, &str)] = &[
+    (
+        "json.nested_jsonnull_create",
+        "security review of #188, round 2: a `DbNull` / `JsonNull` / `AnyNull` inside a Json value (not its whole value) is \
+         a validation error in Corvis; the reference client stores its name (`{\"a\": \"JsonNull\"}`)",
+    ),
+    ("json.nested_jsonnull_create_many", "the same, in `createMany`"),
+    ("json.nested_anynull_equals", "the same in a filter, where the reference client compares with `{\"a\": \"AnyNull\"}`"),
+    ("json.nested_after", "follows from `json.nested_jsonnull_create*`: Corvis created neither row"),
+];
+
 fn meta_of(model: &str) -> &'static ModelMeta {
     match model {
         "user" => oracle::User::meta(),
@@ -56,7 +69,7 @@ fn typed_sql(args: &[Value]) -> RawSql {
 
 #[tokio::test]
 async fn matches_reference_client() {
-    let Some(url) = pg::fresh_db("oracle_rs").await else { return };
+    let Some((url, _drop)) = pg::fresh_db_bounded("oracle_rs", 30).await else { return };
     let db = OrmClient::new(url).unwrap();
     db.db_execute(include_str!("fixtures/oracle/migration.sql")).await.unwrap();
     run_cases(&db).await;
@@ -116,7 +129,14 @@ async fn run_cases(db: &OrmClient) {
         if only.as_deref().is_some_and(|o| !label.starts_with(o)) {
             continue;
         }
-        failures.extend(compare::compare(c, res));
+        let known = KNOWN_DIFFERENCES.iter().find(|(l, _)| *l == label);
+        match (compare::compare(c, res), known) {
+            (Some(diff), None) => failures.push(diff),
+            (None, Some((_, reason))) => {
+                failures.push(format!("[{label}] is listed in KNOWN_DIFFERENCES ({reason}) but no longer differs: remove the entry"));
+            }
+            _ => {}
+        }
     }
     if !failures.is_empty() {
         panic!("{} of {} cases differ from the reference client:\n{}", failures.len(), cases.len(), failures.join("\n"));

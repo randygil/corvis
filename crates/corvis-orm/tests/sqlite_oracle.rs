@@ -60,6 +60,33 @@ const KNOWN_DIFFERENCES: &[(&str, &[Db], &str)] = &[
         "follows from `arith.increment_overflow`: the row keeps 2147483647 and reads, where the reference client fails \
          with `P2023`",
     ),
+    (
+        "json.nested_jsonnull_create",
+        &[Db::Migrated, Db::Pushed],
+        "security review of #188, round 2: a `DbNull` / `JsonNull` / `AnyNull` inside a Json value (not its whole value) \
+         is a validation error in Corvis; the reference client stores its name (`{\"a\": \"JsonNull\"}`)",
+    ),
+    ("json.nested_jsonnull_create_many", &[Db::Migrated, Db::Pushed], "the same, in `createMany`"),
+    (
+        "json.nested_anynull_equals",
+        &[Db::Migrated, Db::Pushed],
+        "the same in a filter, where the reference client compares with `{\"a\": \"AnyNull\"}`",
+    ),
+    ("json.nested_after", &[Db::Migrated, Db::Pushed], "follows from `json.nested_jsonnull_create*`: Corvis created neither row"),
+    (
+        "arith.big_increment_2",
+        &[Db::Migrated, Db::Pushed],
+        "a `BigInt` arithmetic update past 64 bits fails like on Postgres (`bigint out of range`) and SQLite undoes it; the \
+         reference client stores a float there and then fails every read of the row with `P2023`",
+    ),
+    ("arith.big_after", &[Db::Migrated, Db::Pushed], "follows from `arith.big_increment_2`: the row keeps its value and reads"),
+    (
+        "arith.ratio_multiply_overflow",
+        &[Db::Migrated, Db::Pushed],
+        "a `Float` arithmetic update to an infinite value fails like on Postgres (`value out of range: overflow`); the \
+         reference client stores `inf` and then fails every read of the row with `P2023`",
+    ),
+    ("arith.ratio_after", &[Db::Migrated, Db::Pushed], "follows from `arith.ratio_multiply_overflow`"),
 ];
 
 fn meta_of(model: &str) -> &'static ModelMeta {

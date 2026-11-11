@@ -211,6 +211,24 @@ fn is_undefined(v: &Value) -> bool {
     matches!(v, Value::String(s) if *s == markers().undefined)
 }
 
+#[cfg(test)]
+mod marker_tests {
+    /// A leaked label of one kind (a Json null stored or shown) reveals nothing of another (security review of #188,
+    /// round 2: one nonce served every marker).
+    #[test]
+    fn every_marker_kind_has_its_own_nonce() {
+        let m = super::markers();
+        let nonce = |s: &str| s.trim_matches('\0').rsplit("::").next().unwrap_or_default().to_string();
+        let all = [nonce(&m.undefined), nonce(&m.invalid), nonce(&m.nulls[0]), nonce(&m.nulls[1]), nonce(&m.nulls[2])];
+        for (i, a) in all.iter().enumerate() {
+            assert_eq!(a.len(), 64, "{a}");
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "two marker kinds share a nonce");
+            }
+        }
+    }
+}
+
 /// Drops `undefined` object entries and list items, like `JSON.stringify` does.
 pub(crate) fn strip_undefined(v: &mut Value) {
     match v {

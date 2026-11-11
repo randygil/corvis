@@ -32,3 +32,29 @@ async fn decimal_operands_are_short_on_sqlite() {
         assert!(longest < 40, "{op} {v}: a {longest}-byte parameter");
     }
 }
+
+/// A `Decimal` text longer than any `NUMERIC` can be (security review of #188, round 2: a 1 MB hex fraction took
+/// seconds to parse) is refused before it is parsed; up to the bound it is parsed as before.
+#[tokio::test]
+async fn decimal_text_beyond_numeric_is_refused_before_parsing() {
+    let db = OrmClient::new("sqlite::memory:").unwrap();
+    db.db_push::<Amount>().await.unwrap();
+    let refused = [
+        "1".repeat(1_000_000),
+        format!("0x0.{}", "f".repeat(1_000_000)),
+        format!("0x1.{}p0", "f".repeat(16_385)),
+        format!("0b0.{}", "1".repeat(65_537)),
+        format!("1{}", "0".repeat(131_072 + 16_383 + 32)),
+    ];
+    for text in refused {
+        crate::decimal::work::take_max_parsed();
+        let r = db.query_json(Amount::meta(), "findMany", json!({ "where": { "amount": { "lt": text.clone() } } })).await;
+        let parsed = crate::decimal::work::take_max_parsed();
+        assert!(r.as_ref().is_err_and(crate::OrmError::is_validation), "{} chars: {r:?}", text.len());
+        assert_eq!(parsed, 0, "{} chars: the text was parsed", text.len());
+    }
+    for text in ["1".repeat(131_072), format!("0x1.{}", "f".repeat(16_384)), format!("0.{}1", "0".repeat(16_381))] {
+        let r = db.query_json(Amount::meta(), "findMany", json!({ "where": { "amount": { "lt": text.clone() } } })).await;
+        assert!(r.is_ok(), "{} chars: {r:?}", text.len());
+    }
+}

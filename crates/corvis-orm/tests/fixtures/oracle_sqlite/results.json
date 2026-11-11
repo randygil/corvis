@@ -39,7 +39,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T13:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.601Z",
+    "updatedAt": "2026-11-11T20:54:32.966Z",
     "data": {
      "z": 1,
      "a": [
@@ -75,7 +75,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-02T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.612Z",
+    "updatedAt": "2026-11-11T20:54:32.972Z",
     "data": null,
     "meta": null,
     "active": true,
@@ -180,7 +180,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-03T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.619Z",
+    "updatedAt": "2026-11-11T20:54:32.977Z",
     "data": null,
     "meta": null,
     "active": true,
@@ -255,7 +255,7 @@
      "big": 9007199254740991,
      "birthday": "1990-05-06T13:00:00.000Z",
      "createdAt": "2024-01-01T00:00:00.000Z",
-     "updatedAt": "2026-11-11T20:07:52.601Z",
+     "updatedAt": "2026-11-11T20:54:32.966Z",
      "data": {
       "z": 1,
       "a": [
@@ -586,7 +586,7 @@
      "big": 9007199254740991,
      "birthday": "1990-05-06T13:00:00.000Z",
      "createdAt": "2024-01-01T00:00:00.000Z",
-     "updatedAt": "2026-11-11T20:07:52.601Z",
+     "updatedAt": "2026-11-11T20:54:32.966Z",
      "data": {
       "z": 1,
       "a": [
@@ -611,7 +611,7 @@
      "big": 0,
      "birthday": null,
      "createdAt": "2024-01-02T00:00:00.000Z",
-     "updatedAt": "2026-11-11T20:07:52.612Z",
+     "updatedAt": "2026-11-11T20:54:32.972Z",
      "data": null,
      "meta": null,
      "active": true,
@@ -627,7 +627,7 @@
      "big": 0,
      "birthday": null,
      "createdAt": "2024-01-03T00:00:00.000Z",
-     "updatedAt": "2026-11-11T20:07:52.619Z",
+     "updatedAt": "2026-11-11T20:54:32.977Z",
      "data": null,
      "meta": null,
      "active": true,
@@ -654,7 +654,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T13:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.601Z",
+    "updatedAt": "2026-11-11T20:54:32.966Z",
     "data": {
      "z": 1,
      "a": [
@@ -869,7 +869,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-03T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.619Z",
+    "updatedAt": "2026-11-11T20:54:32.977Z",
     "data": null,
     "meta": null,
     "active": true,
@@ -954,7 +954,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-03T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.619Z",
+    "updatedAt": "2026-11-11T20:54:32.977Z",
     "data": null,
     "meta": null,
     "active": true,
@@ -1194,7 +1194,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T13:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.601Z",
+    "updatedAt": "2026-11-11T20:54:32.966Z",
     "active": true,
     "managerId": null
    }
@@ -1227,7 +1227,7 @@
     "ratio": null,
     "big": 0,
     "birthday": null,
-    "updatedAt": "2026-11-11T20:07:52.619Z",
+    "updatedAt": "2026-11-11T20:54:32.977Z",
     "data": null,
     "meta": null,
     "active": true,
@@ -3233,7 +3233,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-03T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.801Z",
+    "updatedAt": "2026-11-11T20:54:33.074Z",
     "data": null,
     "meta": null,
     "active": true,
@@ -3287,7 +3287,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T13:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:07:52.770Z",
+    "updatedAt": "2026-11-11T20:54:33.062Z",
     "data": null,
     "meta": {
      "k": "v"
@@ -12293,6 +12293,318 @@
    }
   },
   {
+   "label": "json.nested_jsonnull_create",
+   "model": "user",
+   "action": "create",
+   "args": {
+    "select": {
+     "data": true
+    },
+    "data": {
+     "email": "nested-null@x.io",
+     "data": {
+      "a": {
+       "$type": "JsonNull"
+      }
+     },
+     "createdAt": "2024-03-05T00:00:00.000Z"
+    }
+   },
+   "result": {
+    "data": {
+     "a": "JsonNull"
+    }
+   }
+  },
+  {
+   "label": "json.nested_dbnull_list_update",
+   "model": "user",
+   "action": "update",
+   "args": {
+    "where": {
+     "email": "plain-type@x.io"
+    },
+    "select": {
+     "data": true
+    },
+    "data": {
+     "data": [
+      {
+       "$type": "DbNull"
+      }
+     ]
+    }
+   },
+   "error": {
+    "name": "PrismaClientValidationError",
+    "code": null,
+    "meta": null,
+    "message": "\nInvalid `prisma.user.update()` invocation:\n\n{\n  where: {\n    email: \"plain-type@x.io\"\n  },\n  select: {\n    data: true\n  },\n  data: {\n    data: [\n      Prisma.DbNull\n    ]\n    ~~~~~~~~~~~~~~~\n  }\n}\n\nArgument `data`: Invalid value provided. Expected NullableJsonNullValueInput or Json, provided (Enum)."
+   }
+  },
+  {
+   "label": "json.nested_anynull_equals",
+   "model": "user",
+   "action": "findMany",
+   "args": {
+    "where": {
+     "data": {
+      "equals": {
+       "a": {
+        "$type": "AnyNull"
+       }
+      }
+     }
+    },
+    "select": {
+     "email": true
+    },
+    "orderBy": {
+     "id": "asc"
+    }
+   },
+   "result": []
+  },
+  {
+   "label": "json.nested_jsonnull_create_many",
+   "model": "user",
+   "action": "createMany",
+   "args": {
+    "data": [
+     {
+      "email": "nested-null-2@x.io",
+      "data": {
+       "a": [
+        {
+         "$type": "JsonNull"
+        }
+       ]
+      },
+      "createdAt": "2024-03-05T00:00:00.000Z"
+     }
+    ]
+   },
+   "result": {
+    "count": 1
+   }
+  },
+  {
+   "label": "json.nested_after",
+   "model": "user",
+   "action": "findMany",
+   "args": {
+    "where": {
+     "email": {
+      "startsWith": "nested-null"
+     }
+    },
+    "select": {
+     "email": true,
+     "data": true
+    },
+    "orderBy": {
+     "id": "asc"
+    }
+   },
+   "result": [
+    {
+     "email": "nested-null@x.io",
+     "data": {
+      "a": "JsonNull"
+     }
+    },
+    {
+     "email": "nested-null-2@x.io",
+     "data": {
+      "a": [
+       "JsonNull"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "label": "arith.big_increment_1",
+   "model": "user",
+   "action": "update",
+   "args": {
+    "where": {
+     "email": "arith@x.io"
+    },
+    "select": {
+     "big": true
+    },
+    "data": {
+     "big": {
+      "increment": 4611686018427388000
+     }
+    }
+   },
+   "result": {
+    "big": "4611686018427388000"
+   }
+  },
+  {
+   "label": "arith.big_increment_2",
+   "model": "user",
+   "action": "update",
+   "args": {
+    "where": {
+     "email": "arith@x.io"
+    },
+    "select": {
+     "big": true
+    },
+    "data": {
+     "big": {
+      "increment": 4611686018427388000
+     }
+    }
+   },
+   "error": {
+    "name": "PrismaClientKnownRequestError",
+    "code": "P2023",
+    "meta": {
+     "modelName": "User",
+     "message": "Could not convert from `BigDecimal(9223372036854776000)` to `BigInt`"
+    },
+    "message": "\nInvalid `prisma.user.update()` invocation:\n\n\nInconsistent column data: Could not convert from `BigDecimal(9223372036854776000)` to `BigInt`"
+   }
+  },
+  {
+   "label": "arith.big_after",
+   "model": "user",
+   "action": "findUnique",
+   "args": {
+    "where": {
+     "email": "arith@x.io"
+    },
+    "select": {
+     "big": true
+    }
+   },
+   "error": {
+    "name": "PrismaClientKnownRequestError",
+    "code": "P2023",
+    "meta": {
+     "modelName": "User",
+     "message": "Could not convert from `BigDecimal(9223372036854776000)` to `BigInt`"
+    },
+    "message": "\nInvalid `prisma.user.findUnique()` invocation:\n\n\nInconsistent column data: Could not convert from `BigDecimal(9223372036854776000)` to `BigInt`"
+   }
+  },
+  {
+   "label": "arith.ratio_set_huge",
+   "model": "user",
+   "action": "update",
+   "args": {
+    "where": {
+     "email": "arith@x.io"
+    },
+    "select": {
+     "ratio": true
+    },
+    "data": {
+     "ratio": 1e+308
+    }
+   },
+   "result": {
+    "ratio": 1e+308
+   }
+  },
+  {
+   "label": "arith.ratio_multiply_overflow",
+   "model": "user",
+   "action": "update",
+   "args": {
+    "where": {
+     "email": "arith@x.io"
+    },
+    "select": {
+     "ratio": true
+    },
+    "data": {
+     "ratio": {
+      "multiply": 10
+     }
+    }
+   },
+   "error": {
+    "name": "PrismaClientKnownRequestError",
+    "code": "P2023",
+    "meta": {
+     "modelName": "User",
+     "message": "Could not convert value inf of the field `ratio` to type `Float`."
+    },
+    "message": "\nInvalid `prisma.user.update()` invocation:\n\n\nInconsistent column data: Could not convert value inf of the field `ratio` to type `Float`."
+   }
+  },
+  {
+   "label": "arith.ratio_after",
+   "model": "user",
+   "action": "findUnique",
+   "args": {
+    "where": {
+     "email": "arith@x.io"
+    },
+    "select": {
+     "ratio": true
+    }
+   },
+   "error": {
+    "name": "PrismaClientKnownRequestError",
+    "code": "P2023",
+    "meta": {
+     "modelName": "User",
+     "message": "Could not convert value inf of the field `ratio` to type `Float`."
+    },
+    "message": "\nInvalid `prisma.user.findUnique()` invocation:\n\n\nInconsistent column data: Could not convert value inf of the field `ratio` to type `Float`."
+   }
+  },
+  {
+   "label": "fin.ratio_text_infinity",
+   "model": "user",
+   "action": "update",
+   "args": {
+    "where": {
+     "email": "arith@x.io"
+    },
+    "select": {
+     "ratio": true
+    },
+    "data": {
+     "ratio": "Infinity"
+    }
+   },
+   "error": {
+    "name": "PrismaClientValidationError",
+    "code": null,
+    "meta": null,
+    "message": "\nInvalid `prisma.user.update()` invocation:\n\n{\n  where: {\n    email: \"arith@x.io\"\n  },\n  select: {\n    ratio: true\n  },\n  data: {\n    ratio: \"Infinity\"\n           ~~~~~~~~~~\n  }\n}\n\nArgument `ratio`: Invalid value provided. Expected Float, NullableFloatFieldUpdateOperationsInput or Null, provided String."
+   }
+  },
+  {
+   "label": "fin.ratio_text_nan_filter",
+   "model": "user",
+   "action": "findMany",
+   "args": {
+    "where": {
+     "ratio": {
+      "lt": "NaN"
+     }
+    },
+    "select": {
+     "email": true
+    }
+   },
+   "error": {
+    "name": "PrismaClientValidationError",
+    "code": null,
+    "meta": null,
+    "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    ratio: {\n      lt: \"NaN\"\n          ~~~~~\n    }\n  },\n  select: {\n    email: true\n  }\n}\n\nArgument `lt`: Invalid value provided. Expected Float or FloatFieldRefInput, provided String."
+   }
+  },
+  {
    "label": "sqlite.dec_seed",
    "model": "rate",
    "action": "createMany",
@@ -12890,6 +13202,12 @@
     },
     {
      "email": "plain-type@x.io"
+    },
+    {
+     "email": "nested-null@x.io"
+    },
+    {
+     "email": "nested-null-2@x.io"
     }
    ]
   },
@@ -12986,6 +13304,12 @@
      "email": "jose@x.io"
     },
     {
+     "email": "nested-null-2@x.io"
+    },
+    {
+     "email": "nested-null@x.io"
+    },
+    {
      "email": "plain-type@x.io"
     }
    ]
@@ -13031,6 +13355,12 @@
     },
     {
      "email": "jose@x.io"
+    },
+    {
+     "email": "nested-null-2@x.io"
+    },
+    {
+     "email": "nested-null@x.io"
     },
     {
      "email": "plain-type@x.io"

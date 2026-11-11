@@ -334,24 +334,35 @@ fn int_pow(coeff: &BigUint, exp: i64, mut n: u64, pr: u32) -> (BigUint, i64) {
     }
 }
 
-/// Test-only measure of the work of `pow`: the longest coefficient (in decimal digits) it built.
+/// Test-only measures of work: the longest coefficient (in decimal digits) `pow` built, and the longest text
+/// [`Decimal::parse`] read.
 #[cfg(test)]
-mod work {
+pub(crate) mod work {
     use std::cell::Cell;
 
     thread_local! {
         static MAX_DIGITS: Cell<i64> = const { Cell::new(0) };
+        static MAX_PARSED: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(super) fn note_digits(n: i64) {
         MAX_DIGITS.with(|m| m.set(m.get().max(n)));
     }
 
+    pub(super) fn note_parsed(len: usize) {
+        MAX_PARSED.with(|m| m.set(m.get().max(len)));
+    }
+
     /// Runs `f` and returns the longest coefficient `pow` built meanwhile.
-    pub(super) fn max_digits(f: impl FnOnce()) -> i64 {
+    pub(crate) fn max_digits(f: impl FnOnce()) -> i64 {
         MAX_DIGITS.with(|m| m.set(0));
         f();
         MAX_DIGITS.with(Cell::get)
+    }
+
+    /// The longest text parsed on this thread since the last call (which resets it).
+    pub(crate) fn take_max_parsed() -> usize {
+        MAX_PARSED.with(|m| m.replace(0))
     }
 }
 
@@ -570,6 +581,8 @@ impl Decimal {
     /// with an optional fraction and binary exponent (`0x1.8p3`); one `_` between two decimal digits is a separator
     /// (`1_000`). Checked input by input against decimal.js in `tests/fixtures/decimal_parse.json`.
     pub fn parse(s: &str) -> Result<Decimal, DecimalError> {
+        #[cfg(test)]
+        work::note_parsed(s.len());
         let (neg, raw) = match s.as_bytes().first() {
             Some(b'-') => (true, &s[1..]),
             Some(b'+') => (false, &s[1..]),
