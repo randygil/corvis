@@ -525,7 +525,9 @@ fn hidden_by(engine: &str, route: &str) -> bool {
     let wanted: Vec<&str> = engine.split('/').filter(|s| !s.is_empty()).collect();
     let segments: Vec<&str> = route.split('/').filter(|s| !s.is_empty()).collect();
     // The route needs a segment below the path: `/status` itself is not under `/status/`.
-    segments.len() > wanted.len() && wanted.iter().zip(&segments).all(|(w, s)| literal(s) && w == s)
+    // The router matches static segments without regard to ASCII case; the engine matches its path as written. A route
+    // `/Status/ping` is reached at `/status/ping` too, which the engine path `/status` takes.
+    segments.len() > wanted.len() && wanted.iter().zip(&segments).all(|(w, s)| literal(s) && w.eq_ignore_ascii_case(s))
 }
 
 // ----------------------------------------------------------------------------------------------------- runtime
@@ -1037,6 +1039,10 @@ async fn build(
                 hooks: hooks.clone(),
             });
             namespace.set_dispatcher(dispatcher(runtime.clone()));
+            // Its sockets leave hooks pending: a CONNECT from an address at its share is refused.
+            if runtime.gateways.iter().any(|g| g.info.io_on_disconnect.is_some()) {
+                namespace.limit_pending_hooks();
+            }
             if adapter.guard_connections {
                 let guards = runtime.clone();
                 namespace.use_middleware(move |socket| {
@@ -1104,6 +1110,8 @@ mod tests {
         assert!(!hidden_by("/status/", "/:any/ping"), "a parameter is hidden only for one value");
         assert!(!hidden_by("/status/", "/*rest"));
         assert!(!hidden_by("/api/rt/", "/api/other/x"));
+        assert!(hidden_by("/status/", "/Status/ping"), "the router ignores ASCII case in static segments");
+        assert!(hidden_by("/STATUS/", "/status/ping"));
     }
 
     #[test]

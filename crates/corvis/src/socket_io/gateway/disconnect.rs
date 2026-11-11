@@ -5,8 +5,14 @@
 //!
 //! - **A share per client address.** The hooks an address has pending, and the bytes they pin, are counted against it
 //!   in the Engine.IO server's lingering table (#33), under the session's address key. An address at its share
-//!   ([`ADDRESS_SHARE_DIVISOR`]th of either cap) is answered `503` on new sessions until its hooks drain, so it cannot
-//!   add pending hooks except from the sessions it already has open. Within its share a hook is never skipped.
+//!   ([`ADDRESS_SHARE_DIVISOR`]th of either cap) is answered `503` on new sessions and `CONNECT_ERROR` ("Too many pending
+//!   disconnects") on a CONNECT to a namespace with disconnect hooks, until its hooks drain. A pending hook comes only
+//!   from a socket of such a namespace, and such a socket only from a CONNECT that passed that check, so the hooks an
+//!   address has pending on one Engine.IO server are at most `share - 1` plus its sockets in those namespaces that were
+//!   connected (or connecting) when it reached the share: `share - 1 + max_sessions_per_ip x K`, `K` the namespaces with
+//!   disconnect hooks on that path (a session holds at most one socket per namespace). [`HookQueue::push`] therefore
+//!   admits the leave of a socket whose address is already over its share: it was let in below it, and the bound holds.
+//!   Within that bound a hook is never skipped.
 //! - **Fair workers.** At most [`DISCONNECT_WORKERS`] hooks run at once, at most [`DISCONNECT_WORKERS_PER_ADDRESS`] of
 //!   them for one address, and a free worker takes the next address in round-robin order: a socket's hook starts after
 //!   at most one hook of each other address that had hooks waiting before it, however many each of them queued.
@@ -164,7 +170,8 @@ impl HookQueue {
     }
 
     /// Queues the `handle_disconnect` hooks of a socket that left (called once per socket). Dropped, and logged, only
-    /// when the application's caps are full.
+    /// when the application's caps are full. A socket whose address is over its share is admitted: it passed the share
+    /// at its CONNECT, so its address's pending hooks stay within the bound of the module documentation.
     pub(crate) fn push(self: &Arc<Self>, gateways: Arc<Vec<Arc<GatewayRuntime>>>, socket: IoSocket) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
         let bytes = pending_cost(&socket);

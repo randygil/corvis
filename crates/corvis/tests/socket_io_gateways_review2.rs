@@ -284,6 +284,99 @@ async fn a_victims_disconnect_hook_starts_after_at_most_one_hook_per_other_addre
     app.close().await.unwrap();
 }
 
+/// One open session joins `/d` and leaves it, again and again, until a CONNECT is refused or `limit` cycles are done.
+/// Returns the session, the cycles done and the refusal (if any). The connection handles its packets in order, so each
+/// leave is queued before the next CONNECT is looked at.
+async fn rejoin_until_refused(addr: SocketAddr, source: u8, who: &str, limit: usize) -> (Raw, usize, Option<String>) {
+    let mut client = Raw::connect_from(addr, local(source)).await;
+    for done in 0..limit {
+        client.send(&format!(r#"0/d,{{"who":"{who}"}}"#)).await;
+        let answer = client.recv_text().await;
+        if !answer.starts_with("0/d,") {
+            return (client, done, Some(answer));
+        }
+        client.send("1/d,").await;
+    }
+    (client, limit, None)
+}
+
+/// Round 3 (the reviewer's e1): the share was checked only when a session opened, so one open session could join and
+/// leave a namespace with disconnect hooks in a loop until the application's cap was full. Now a CONNECT from an address
+/// at its share is refused with `CONNECT_ERROR`, before any socket exists, and another address's hook runs once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_session_joining_and_leaving_in_a_loop_is_refused_at_its_addresss_share() {
+    // 128 pending hooks in the application: each address's share is 2.
+    let (mut app, addr) = start::<PresenceModule>(IoAdapter::new().max_pending_disconnect_hooks(128)).await;
+    let record = app.get::<Record>().unwrap();
+    let (mut attacker, cycles, refusal) = rejoin_until_refused(addr, 170, "a", 1_000).await;
+    assert_eq!(cycles, 2, "two hooks pending reach the share of 2; refused with {refusal:?}");
+    assert_eq!(refusal.as_deref(), Some(r#"4/d,{"message":"Too many pending disconnects"}"#));
+    // The session stays usable, and its next attempts are refused the same way while its hooks wait.
+    attacker.send(r#"0/d,{"who":"a"}"#).await;
+    assert_eq!(attacker.recv_text().await, r#"4/d,{"message":"Too many pending disconnects"}"#);
+    // Another address is not affected: its hook runs, once.
+    visit(addr, 171, "victim").await;
+    record.wait_until("the victim's hook to start", |r| r.count("start:victim") == 1).await;
+    record.gate.0.add_permits(3);
+    record.wait_until("every hook to end", |r| r.count("end:") == 3).await;
+    assert_eq!(record.count("start:victim"), 1);
+    assert_eq!(record.count("start:a"), 2);
+    // Once its hooks drained the address joins again.
+    let rejoined = async {
+        loop {
+            attacker.send(r#"0/d,{"who":"a"}"#).await;
+            if attacker.recv_text().await.starts_with("0/d,") {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), rejoined).await.expect("the address joins again once its hooks drained");
+    app.close().await.unwrap();
+}
+
+/// Round 3 (the reviewer's e2): one address keeps joining and leaving while 20 users from other addresses leave; all 20
+/// of their hooks run. Without the CONNECT check the loop fills the application's cap (640 here) and theirs are dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn twenty_victims_hooks_run_while_one_address_keeps_rejoining() {
+    const CAP: usize = 640;
+    const VICTIMS: u8 = 20;
+    let (mut app, addr) = start::<PresenceModule>(IoAdapter::new().max_pending_disconnect_hooks(CAP)).await;
+    let record = app.get::<Record>().unwrap();
+    // Two sessions of one address, each looping until refused (or past the cap, which only an unchecked loop reaches).
+    let (first, second) = tokio::join!(rejoin_until_refused(addr, 180, "a", CAP + 50), rejoin_until_refused(addr, 180, "a", CAP + 50));
+    // Each victim leaves and marks on `/m`: once the marker is handled, its leave was queued (or dropped).
+    for v in 0..VICTIMS {
+        let mut victim = Raw::connect_from(addr, local(200 + v)).await;
+        victim.join("/d", Some(&format!(r#"{{"who":"victim{v}"}}"#))).await;
+        victim.join("/m", None).await;
+        victim.send("1/d,").await;
+        victim.send(&format!(r#"2/m,["mark",{}]"#, 100 + v as u64)).await;
+        let marker = format!("mark:{}", 100 + v as u64);
+        record.wait_until("a victim's marker", |r| r.count(&marker) == 1).await;
+    }
+    // A free worker takes an admitted victim's hook at once (8 workers at most are the looping address's); a dropped one
+    // never starts, which the deadline turns into a count.
+    let all_started = async {
+        record.wait_until("the victims' hooks to start", |r| r.count("start:victim") == VICTIMS as usize).await;
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(15), all_started).await;
+    assert_eq!(record.count("start:victim"), VICTIMS as usize, "every victim's hook runs");
+    assert!(first.2.is_some() && second.2.is_some(), "both loops were refused: {} and {} cycles", first.1, second.1);
+    assert!(first.1 + second.1 <= CAP / 64 + 1, "the address stopped at its share: {} cycles", first.1 + second.1);
+    record.gate.0.add_permits(CAP + 100);
+    record.wait_until("the victims' hooks to end", |r| r.count("end:victim") == VICTIMS as usize).await;
+    let entries = record.entries.lock().unwrap().clone();
+    for v in 0..VICTIMS {
+        for what in ["start", "end"] {
+            let entry = format!("{what}:victim{v}");
+            assert_eq!(entries.iter().filter(|e| **e == entry).count(), 1, "{entry} happened once");
+        }
+    }
+    drop((first, second));
+    app.close().await.unwrap();
+}
+
 /// The status line of a polling handshake from `source`.
 async fn handshake_status(addr: SocketAddr, source: u8) -> u16 {
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
@@ -337,6 +430,21 @@ pub struct StatusPathGateway;
 #[module(controllers = [StatusController], providers = [StatusPathGateway])]
 pub struct HiddenRouteModule;
 
+/// The router matches static segments without regard to ASCII case: `/Status/ping` is reached at `/status/ping`.
+#[controller("Status")]
+pub struct UpperStatusController;
+
+#[routes]
+impl UpperStatusController {
+    #[get("ping")]
+    fn ping(&self) -> &'static str {
+        "pong"
+    }
+}
+
+#[module(controllers = [UpperStatusController], providers = [StatusPathGateway])]
+pub struct HiddenUpperRouteModule;
+
 #[websocket_gateway(path = "/realtime")]
 pub struct RealtimeGateway;
 
@@ -349,6 +457,10 @@ async fn an_engine_path_under_which_a_route_lives_fails_at_startup_naming_both()
     app.use_websocket_adapter(IoAdapter::new());
     let message = format!("{:#}", app.init().await.unwrap_err());
     assert!(message.contains("/status/") && message.contains("StatusPathGateway") && message.contains("GET /status/ping"), "{message}");
+    let mut app = CorvisFactory::create::<HiddenUpperRouteModule>().await.unwrap();
+    app.use_websocket_adapter(IoAdapter::new());
+    let message = format!("{:#}", app.init().await.unwrap_err());
+    assert!(message.contains("StatusPathGateway") && message.contains("/Status/ping"), "{message}");
     // Under the default adapter the gateway's `path` is a WebSocket path and hides nothing.
     let mut app = CorvisFactory::create::<HiddenRouteModule>().await.unwrap();
     app.init().await.unwrap();

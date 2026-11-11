@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use futures::future::BoxFuture;
@@ -94,6 +94,9 @@ pub(crate) struct NamespaceInner {
     sockets: RwLock<HashMap<String, IoSocket>>,
     /// The id of the next server-side acknowledgement: a counter per namespace starting at 0, as Node's `_ids`.
     next_ack_id: AtomicU64,
+    /// Set by the gateway layer when the namespace has disconnect hooks: a CONNECT from an address at its share of pending
+    /// hooks is refused (see `IoNamespace::limit_pending_hooks`).
+    limits_pending_hooks: AtomicBool,
 }
 
 impl std::fmt::Debug for IoNamespace {
@@ -116,6 +119,7 @@ impl IoNamespace {
             dispatcher: RwLock::new(None),
             sockets: RwLock::new(HashMap::new()),
             next_ack_id: AtomicU64::new(0),
+            limits_pending_hooks: AtomicBool::new(false),
         });
         IoNamespace { inner }
     }
@@ -203,6 +207,16 @@ impl IoNamespace {
     /// Installs the dispatcher of events without a handler on the socket (the gateway layer's), replacing a previous one.
     pub(crate) fn set_dispatcher(&self, dispatcher: Dispatcher) {
         *self.inner.dispatcher.write().unwrap_or_else(|e| e.into_inner()) = Some(dispatcher);
+    }
+
+    /// Every socket that leaves this namespace leaves a hook pending (the gateways' `handle_disconnect`): from now on a
+    /// CONNECT from a client address at its share of pending hooks is answered `CONNECT_ERROR` before any socket exists.
+    pub(crate) fn limit_pending_hooks(&self) {
+        self.inner.limits_pending_hooks.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn limits_pending_hooks(&self) -> bool {
+        self.inner.limits_pending_hooks.load(Ordering::SeqCst)
     }
 
     pub(crate) fn dispatcher(&self) -> Option<Dispatcher> {

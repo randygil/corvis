@@ -234,6 +234,8 @@ enum OpenError {
     Closing,
     TooManySessions,
     TooManyFromAddress,
+    /// The address is at its share of the hooks a layer on top runs after its sockets left.
+    PendingHooks,
 }
 
 /// Reads an address as a proxy may have written it: `203.0.113.7`, `203.0.113.7:40000`, `2001:db8::1`,
@@ -440,7 +442,7 @@ impl EngineServer {
         if let Some((hooks, bytes)) = self.inner.options.pending_hook_share
             && (lingering.hooks >= hooks || lingering.hook_bytes >= bytes)
         {
-            return Err(OpenError::TooManyFromAddress);
+            return Err(OpenError::PendingHooks);
         }
         Ok(())
     }
@@ -455,6 +457,13 @@ impl EngineServer {
             }
             OpenError::TooManyFromAddress => {
                 self.warn_session_cap(format!("max_sessions_per_ip ({})", self.inner.options.max_sessions_per_ip));
+                self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
+            }
+            OpenError::PendingHooks => {
+                let (hooks, bytes) = self.inner.options.pending_hook_share.unwrap_or_default();
+                self.warn_session_cap(format!(
+                    "the share of one client address of the pending disconnect hooks ({hooks} hooks or {bytes} bytes)"
+                ));
                 self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
             }
         }
@@ -879,6 +888,16 @@ impl EngineSocket {
             l.hook_bytes = l.hook_bytes.saturating_add(bytes);
         });
         Some(HookLinger { server, key, bytes })
+    }
+
+    /// Whether the session's client address is at its share of pending hooks (`EngineOptions::pending_hook_share`): its
+    /// count or its bytes. A layer on top refuses what would add one more (a CONNECT to a namespace with disconnect
+    /// hooks); new sessions are refused by the handshake itself.
+    pub(crate) fn pending_hook_share_reached(&self) -> bool {
+        let Some(server) = self.session.server() else { return false };
+        let Some((hooks, bytes)) = server.options.pending_hook_share else { return false };
+        let linger = server.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(&self.session.addr_key).copied().unwrap_or_default();
+        linger.hooks >= hooks || linger.hook_bytes >= bytes
     }
 
     /// The key the session is counted under in the per-address caps, the unread budget and the lingering table: the

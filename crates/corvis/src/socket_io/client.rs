@@ -513,6 +513,9 @@ fn dispatch(
     }));
 }
 
+/// The `CONNECT_ERROR` message for a client address at its share of pending disconnect hooks.
+pub(crate) const TOO_MANY_PENDING_DISCONNECTS: &str = "Too many pending disconnects";
+
 /// CONNECT: looks the namespace up and starts the connection attempt. `Err` for a namespace that is already joined or
 /// pending.
 fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: String, auth: Option<IoValue>) -> Result<(), ()> {
@@ -528,6 +531,15 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
         }
         if matches!(nsps.get(&name), Some(Slot::Pending | Slot::Joined(_))) {
             return Err(());
+        }
+        // A socket of this namespace leaves a disconnect hook pending when it goes. An address at its share of pending
+        // hooks gets no new socket here, as it gets no new session at the handshake: an open session joining and leaving
+        // in a loop cannot pile hooks up either. Refused before any socket exists, with a fixed message.
+        if namespace.limits_pending_hooks() && shared.engine.pending_hook_share_reached() {
+            drop(nsps);
+            let error = IoValue::object([("message", IoValue::from(TOO_MANY_PENDING_DISCONNECTS))]);
+            let _ = shared.send_packet(&Packet { nsp: name, body: Body::ConnectError(error) });
+            return Ok(());
         }
         nsps.insert(name.clone(), Slot::Pending);
     }

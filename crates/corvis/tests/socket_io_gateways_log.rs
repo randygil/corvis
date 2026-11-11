@@ -248,6 +248,37 @@ impl corvis::OnGatewayDisconnect<corvis::socket_io::IoSocket> for DeparturesGate
 #[module(providers = [Departures, DeparturesGateway])]
 pub struct DeparturesModule;
 
+/// An address refused a session because it is at its share of pending disconnect hooks is logged as that, not as
+/// `max_sessions_per_ip`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_503_for_the_share_of_pending_hooks_has_its_own_log_line() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _serial = SERIAL.lock().await;
+    let mut app = app_of::<DeparturesModule>().await;
+    // 128 pending hooks in the application: the share of an address is 2.
+    app.use_websocket_adapter(IoAdapter::new().max_pending_disconnect_hooks(128));
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let departures = app.get::<Departures>().unwrap();
+    let source = std::net::IpAddr::from([127, 0, 0, 60]);
+    for n in 0..2 {
+        let mut client = Raw::connect_from(addr, source).await;
+        client.join("/departures", Some(r#"{"who":"x"}"#)).await;
+        client.close().await;
+        departures.wait_started(n + 1).await;
+    }
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind(std::net::SocketAddr::new(source, 0)).unwrap();
+    let mut stream = socket.connect(addr).await.unwrap();
+    stream.write_all(b"GET /socket.io/?EIO=4&transport=polling HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut head = [0u8; 12];
+    stream.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head[9..12], b"503");
+    let found = warnings();
+    assert!(found.iter().any(|w| w.contains("pending disconnect hooks") && !w.contains("max_sessions_per_ip")), "{found:?}");
+    departures.gate.0.add_permits(2);
+    app.close().await.unwrap();
+}
+
 /// The one case in which a disconnect hook is dropped: the application is at its cap of pending hooks. Four may be
 /// pending; five sockets leave, from five addresses (each within its share of one), while the hooks block: four hooks
 /// run, the fifth is dropped, and the drop is logged (rate limited) without anything the client sent.
