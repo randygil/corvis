@@ -55,7 +55,7 @@ pub struct ApiController;
 #[routes]
 impl ApiController {
     #[get("me")]
-    #[use_guards(AuthGuard::chain(["clean", "ignoring", "lenient", "url", "failing", "cookie", "hostcookie"]))]
+    #[use_guards(AuthGuard::chain(["clean", "ignoring", "lenient", "url", "failing", "cookie", "hostcookie", "uppercookie"]))]
     fn me(&self, user: User<Claims>) -> Value {
         json!({ "sub": user.sub })
     }
@@ -97,6 +97,13 @@ jwt_app!(
     "hostcookie",
     JwtStrategyOptions::new().jwt_from_request(ExtractJwt::from_cookie("__Host-jwt")).secret_or_key(JwtKey::secret(SECRET))
 );
+// Browsers apply the rules of the prefix whatever its letter case.
+jwt_app!(
+    Upper,
+    UpperModule,
+    "uppercookie",
+    JwtStrategyOptions::new().jwt_from_request(ExtractJwt::from_cookie("__HOST-jwt")).secret_or_key(JwtKey::secret(SECRET))
+);
 
 #[module(
     providers = [
@@ -107,6 +114,7 @@ jwt_app!(
         Provider::strategy::<JwtStrategy<Failing>>(),
         Provider::strategy::<JwtStrategy<Plain>>(),
         Provider::strategy::<JwtStrategy<Prefixed>>(),
+        Provider::strategy::<JwtStrategy<Upper>>(),
     ],
     controllers = [ApiController],
 )]
@@ -157,6 +165,7 @@ async fn risky_options_log_one_warning_each_naming_the_strategy() {
     // A cookie extractor whose name has no `__Host-` prefix warns, naming the strategy and the cookie; one with it does not.
     assert!(has("cookie", "the cookie \"jwt\", which has no __Host- prefix"), "{found:?}");
     assert!(!found.iter().any(|w| w.contains("\"hostcookie\"")), "{found:?}");
+    assert!(!found.iter().any(|w| w.contains("\"uppercookie\"")), "a cookie named __HOST-jwt logs no warning: {found:?}");
     assert!(!found.iter().any(|w| w.contains("\"clean\"")), "{found:?}");
 }
 

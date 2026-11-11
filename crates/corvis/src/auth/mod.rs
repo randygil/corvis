@@ -28,6 +28,8 @@
 
 #[cfg(feature = "auth-api-key")]
 pub mod api_key;
+#[cfg(any(feature = "jwt", feature = "auth-api-key"))]
+mod auth_header;
 mod authenticator;
 mod guard;
 #[cfg(feature = "auth-local")]

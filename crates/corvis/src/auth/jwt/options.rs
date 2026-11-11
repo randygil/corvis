@@ -252,8 +252,8 @@ impl FamilyValidations {
 
 /// How the strategy gets its key, with the `Validation` built once at startup.
 pub(crate) enum KeySource {
-    Static { key: DecodingKey, validation: Validation },
-    Provider { provider: Arc<dyn JwtKeyProvider>, validations: FamilyValidations },
+    Static { key: DecodingKey, validation: Box<Validation> },
+    Provider { provider: Arc<dyn JwtKeyProvider>, validations: Box<FamilyValidations> },
 }
 
 /// The options after the startup checks.
@@ -321,9 +321,10 @@ impl JwtStrategyOptions {
         let key = match (&self.key, &self.provider) {
             (Some(_), Some(_)) => return Err("both secret_or_key and secret_or_key_provider are set; give one".into()),
             (None, None) => return Err("no key: set secret_or_key or secret_or_key_provider".into()),
-            (None, Some(provider)) => {
-                KeySource::Provider { provider: provider.clone(), validations: FamilyValidations::new(self.algorithms.as_deref()) }
-            }
+            (None, Some(provider)) => KeySource::Provider {
+                provider: provider.clone(),
+                validations: Box::new(FamilyValidations::new(self.algorithms.as_deref())),
+            },
             (Some(key), None) => {
                 check_secret(key)?;
                 let family = key.family();
@@ -346,7 +347,7 @@ impl JwtStrategyOptions {
                 };
                 // `allowed` is never empty: an empty list, and a key family without defaults, were refused above.
                 let validation = validation(allowed).ok_or("algorithms is an empty list")?;
-                KeySource::Static { key: decoding, validation }
+                KeySource::Static { key: decoding, validation: Box::new(validation) }
             }
         };
         let mut warnings = Vec::new();
@@ -361,7 +362,7 @@ impl JwtStrategyOptions {
                 .push("the token is read from the URL query: URLs end up in access logs, browser history and Referer headers".to_string());
         }
         for name in extractor.cookie_names() {
-            if !name.starts_with("__Host-") {
+            if !crate::http::res::has_cookie_prefix(&name, "__Host-") {
                 warnings.push(format!(
                     "the token is read from the cookie \"{name}\", which has no __Host- prefix: a page on a sibling subdomain can plant a cookie of that name (a request that carries it twice is refused, but a planted one can still be the only one); name it __Host-... on a Secure HTTPS host with Path=/ and no Domain"
                 ));

@@ -1,19 +1,21 @@
-//! Parsing of the provider's JSON, which is untrusted.
+//! Parsing of untrusted JSON: token payloads and the answers of an OAuth2 provider.
 //!
-//! `serde_json::Value` (and `IgnoredAny`) treat the key `$serde_json::private::RawValue` specially when the
-//! `raw_value` feature is on, which an application that uses the ORM has (sqlx turns it on): such a key makes the
-//! parser read a nested document again with a fresh recursion budget. This visitor has no special key, so the parser's
-//! own depth limit (128) is the only budget whatever features are enabled. A duplicate key keeps the last value.
+//! `serde_json::Value`'s own deserializer (and `IgnoredAny`) treat the key `$serde_json::private::RawValue` specially
+//! when the `raw_value` feature is on, which another crate of the build may enable (sqlx does, in an application that
+//! uses the ORM): such a key makes the parser read the inner string again with a fresh recursion budget, so nested keys
+//! could exhaust the stack. [`PlainJson`] has no special keys and no re-entrant parsing: the parser's recursion limit of
+//! 128 is the only depth budget, whatever features are enabled. A duplicate key keeps the last value.
 
 use serde_json::{Map, Value};
 
-struct Plain(Value);
+/// A JSON value built by the text parser alone (see the module documentation).
+pub(crate) struct PlainJson(pub(crate) Value);
 
-impl<'de> serde::Deserialize<'de> for Plain {
+impl<'de> serde::Deserialize<'de> for PlainJson {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::{MapAccess, SeqAccess, Visitor};
-        struct V;
-        impl<'de> Visitor<'de> for V {
+        struct Plain;
+        impl<'de> Visitor<'de> for Plain {
             type Value = Value;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("any JSON value")
@@ -41,29 +43,30 @@ impl<'de> serde::Deserialize<'de> for Plain {
             }
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
                 let mut items = Vec::new();
-                while let Some(Plain(item)) = seq.next_element()? {
+                while let Some(PlainJson(item)) = seq.next_element()? {
                     items.push(item);
                 }
                 Ok(Value::Array(items))
             }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
                 let mut out = Map::new();
-                while let Some((key, Plain(value))) = map.next_entry::<String, Plain>()? {
+                while let Some((key, PlainJson(value))) = map.next_entry::<String, PlainJson>()? {
                     out.insert(key, value);
                 }
                 Ok(Value::Object(out))
             }
         }
-        deserializer.deserialize_any(V).map(Plain)
+        deserializer.deserialize_any(Plain).map(PlainJson)
     }
 }
 
-/// Parses untrusted JSON bytes: `None` for anything that is not one complete valid document.
+/// Parses untrusted JSON bytes with [`PlainJson`]: `None` for anything that is not one complete valid document.
 pub(crate) fn parse(bytes: &[u8]) -> Option<Value> {
-    serde_json::from_slice::<Plain>(bytes).ok().map(|p| p.0)
+    serde_json::from_slice::<PlainJson>(bytes).ok().map(|p| p.0)
 }
 
 /// Parses untrusted JSON bytes that must be an object.
+#[cfg(feature = "auth-oauth2")]
 pub(crate) fn parse_object(bytes: &[u8]) -> Option<Map<String, Value>> {
     match parse(bytes)? {
         Value::Object(map) => Some(map),
@@ -81,6 +84,11 @@ mod tests {
         assert!(parse(b"{").is_none());
         assert!(parse(b"{} x").is_none());
         assert!(parse(b"").is_none());
+    }
+
+    #[cfg(feature = "auth-oauth2")]
+    #[test]
+    fn an_object_is_required_where_one_is_expected() {
         assert!(parse_object(b"[1]").is_none());
         assert!(parse_object(b"\"s\"").is_none());
         assert!(parse_object(br#"{"a":1}"#).is_some());

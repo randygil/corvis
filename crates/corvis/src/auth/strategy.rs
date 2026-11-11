@@ -149,12 +149,7 @@ impl AuthenticatedUser {
     /// [`Authenticator`](super::Authenticator) turns it into a failure of the strategy and nothing stores it. A
     /// strategy whose users can legitimately be one of these wraps them in a struct.
     pub fn is_empty(&self) -> bool {
-        match &self.json {
-            Value::Null | Value::Bool(false) => true,
-            Value::Number(n) => n.as_f64() == Some(0.0),
-            Value::String(s) => s.is_empty(),
-            _ => false,
-        }
+        is_empty_json(&self.json)
     }
 
     /// Stores the user on the request: the typed value and the JSON user. An empty user is not stored (`false`).
@@ -165,6 +160,17 @@ impl AuthenticatedUser {
         req.insert(AuthUserSlot(self.typed.clone()));
         req.set_user_value(self.json.clone());
         true
+    }
+}
+
+/// `true` for the values a JavaScript `!value` test rejects, the ones that never stand for a user: `null`, `false`,
+/// the number `0` (also `-0` and `0.0`) and the empty string.
+pub(crate) fn is_empty_json(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(false) => true,
+        Value::Number(n) => n.as_f64() == Some(0.0),
+        Value::String(s) => s.is_empty(),
+        _ => false,
     }
 }
 

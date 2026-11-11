@@ -99,23 +99,23 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
   `every_framework_503_has_the_same_bytes` (spec "Busy hasher and slow validator on one route", "OAuth2 at its limit"),
   comparing the body text, not the parsed JSON; verify `tests/auth_callback_timeouts.rs` and
   `tests/auth_api_key_options.rs`
-- [ ] 5.3 `crates/corvis/src/untrusted_json.rs` (cfg `any(feature = "jwt", feature = "auth-oauth2")`); `jwt.rs` and
+- [x] 5.3 `crates/corvis/src/untrusted_json.rs` (cfg `any(feature = "jwt", feature = "auth-oauth2")`); `jwt.rs` and
   `oauth2/json.rs` use it; verify `tests/auth_jwt_header.rs` and the OAuth2 JSON tests, and `cargo check -p corvis
   --no-default-features --features auth-oauth2` and `--features jwt`
-- [ ] 5.4 `crates/corvis/src/auth/auth_header.rs`: the tokenizer of design.md Decision 11; the JWT extractor and the API key
+- [x] 5.4 `crates/corvis/src/auth/auth_header.rs`: the tokenizer of design.md Decision 11; the JWT extractor and the API key
   `bearer()` source use it; `extract_bearer_token` rustdoc; verify the `jwt.json` and `api_key.json` replays and the
   extractor unit tests (no-break space, non-UTF-8 bytes, the 640-byte window)
-- [ ] 5.5 `is_empty_json` in `auth/strategy.rs`, used by `AuthenticatedUser::is_empty` and the session; `has_cookie_prefix`
+- [x] 5.5 `is_empty_json` in `auth/strategy.rs`, used by `AuthenticatedUser::is_empty` and the session; `has_cookie_prefix`
   in `http/res.rs`, used by the four prefix checks; the OAuth2 `valid_cookie_name` renamed `is_token_cookie_name` with
   its comment; test that a JWT cookie named `__HOST-jwt` logs no startup warning (`tests/auth_jwt_log.rs`)
-- [ ] 5.6 Before editing `oauth2/state.rs`, record the outputs of `derive_verifier`, `session_binding` and `user_binding`
+- [x] 5.6 Before editing `oauth2/state.rs`, record the outputs of `derive_verifier`, `session_binding` and `user_binding`
   for fixed inputs as constants; then `CookieKeys::mac` and the three derivations through it; test `derivations_are_unchanged`
-- [ ] 5.7 `CookieKeys` keeps a keyed `Hmac<Sha256>` per secret; verify the `HMAC_RUNS` tests, `tests/signed_cookies.rs`
+- [x] 5.7 `CookieKeys` keeps a keyed `Hmac<Sha256>` per secret; verify the `HMAC_RUNS` tests, `tests/signed_cookies.rs`
   (the recorded fixture) and `debug_of_every_public_type`
 
 ## 6. Fixes
 
-- [ ] 6.1 `oauth2/state.rs`: `StateCookie::read` through `cookie_values`; test `a_state_cookie_sent_twice_is_no_state`
+- [x] 6.1 `oauth2/state.rs`: `StateCookie::read` through `cookie_values`; test `a_state_cookie_sent_twice_is_no_state`
   (spec "Planted second cookie", "One cookie") with the mock provider's request counter at 0
 - [ ] 6.2 `Request::typed_user::<T>()` in `http/request.rs` (with the `auth` items it needs; rustdoc); the rustdoc of `User<T>`,
   `AuthUserSlot` and `Request::set_user` per design.md Decision 13e; tests for spec "A guard reads the typed user", "Route

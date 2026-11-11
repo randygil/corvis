@@ -8,12 +8,12 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use http::HeaderMap;
-use http::header::AUTHORIZATION;
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::key::{ApiKey, constant_time_eq};
 use super::options::{ApiKeyStrategyOptions, Place, Resolved};
+use crate::auth::auth_header;
 use crate::auth::outcome::{user_outcome, with_deadline};
 use crate::auth::warn_limit::WarnLimiter;
 use crate::auth::{AuthenticateOptions, Strategy, StrategyOutcome};
@@ -203,40 +203,16 @@ fn read_header(headers: &HeaderMap, name: &http::HeaderName, prefix: Option<&str
     if key.is_empty() { Read::Absent } else { Read::Key(latin1(key)) }
 }
 
-/// JavaScript's `\s` inside the latin1 range, as bytes.
-fn is_space(b: u8) -> bool {
-    matches!(b, b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ' | 0xa0)
-}
-
 /// `Authorization: Bearer <key>` as `passport-jwt` parses it (`/(\S+)\s+(\S+)/`, the scheme ignoring case), over the
 /// first value of the header only and without scanning more than `max + 128` bytes of leading space, scheme and
-/// separator.
+/// separator, nor more than `max` bytes of key.
 fn read_bearer(headers: &HeaderMap, max: usize) -> Read {
-    let Some(value) = headers.get_all(AUTHORIZATION).iter().next() else { return Read::Absent };
-    let bytes = value.as_bytes();
-    let window = bytes.len().min(max + 128);
-    let mut i = 0;
-    while i < window && is_space(bytes[i]) {
-        i += 1;
-    }
-    let scheme_start = i;
-    while i < window && !is_space(bytes[i]) && i - scheme_start <= 16 {
-        i += 1;
-    }
-    if !bytes[scheme_start..i].eq_ignore_ascii_case(b"bearer") {
+    let Some(value) = auth_header::first_value(headers) else { return Read::Absent };
+    let Some(credentials) = auth_header::parse(value, Some(max + 128)) else { return Read::Absent };
+    if !credentials.scheme.eq_ignore_ascii_case(b"bearer") {
         return Read::Absent;
     }
-    while i < window && is_space(bytes[i]) {
-        i += 1;
-    }
-    let key_start = i;
-    while i < bytes.len() && !is_space(bytes[i]) {
-        i += 1;
-        if i - key_start > max {
-            return Read::Invalid(TOO_LONG);
-        }
-    }
-    let key = &bytes[key_start..i];
+    let Ok(key) = credentials.token(Some(max)) else { return Read::Invalid(TOO_LONG) };
     if key.is_empty() {
         return Read::Absent;
     }

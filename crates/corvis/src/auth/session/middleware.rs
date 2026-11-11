@@ -125,7 +125,7 @@ async fn restore_user(manager: &SessionManager, session: &Session, req: &Request
 /// `""`) is dropped from the session instead.
 fn take_stored_user(session: &Session) -> Option<serde_json::Value> {
     let stored = session.passport_user()?;
-    if super::login::is_empty_json(&stored) {
+    if crate::auth::strategy::is_empty_json(&stored) {
         session.remove_passport_user();
         return None;
     }

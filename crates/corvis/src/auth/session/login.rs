@@ -6,19 +6,9 @@ use serde_json::{Map, Value};
 use super::middleware::SessionUser;
 use super::session::{PASSPORT_KEY, Session, USER_KEY};
 use crate::auth::authenticator::internal;
+use crate::auth::strategy::is_empty_json;
 use crate::auth::{AuthenticatedUser, Authenticator};
 use crate::http::{HttpException, Request};
-
-/// `true` for the values a JavaScript `!value` test rejects, the ones that never stand for a user: `null`, `false`,
-/// the number `0` and the empty string.
-pub(crate) fn is_empty_json(value: &Value) -> bool {
-    match value {
-        Value::Null | Value::Bool(false) => true,
-        Value::Number(n) => n.as_f64() == Some(0.0),
-        Value::String(s) => s.is_empty(),
-        _ => false,
-    }
-}
 
 impl Session {
     /// A login: a new identifier (the old record is destroyed when the request ends), the data of before dropped

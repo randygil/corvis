@@ -6,7 +6,7 @@
 //! expires with its lifetime.
 
 use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde_json::{Value, json};
@@ -50,8 +50,14 @@ pub(crate) fn is_state_shape(state: &str) -> bool {
 /// URL cannot either. A key rotation between the redirect and the callback makes the derivation differ, and the
 /// provider then rejects the exchange (one failed login, for logins that straddle a rotation).
 pub(crate) fn derive_verifier(keys: &CookieKeys, strategy: &str, state: &str, issued: i64) -> String {
-    let signed = keys.sign(&format!("corvis-oauth2-pkce-v1|{strategy}|{state}|{issued}"));
-    let signature = signed.rsplit('.').next().unwrap_or("");
+    keyed_digest(keys, &format!("corvis-oauth2-pkce-v1|{strategy}|{state}|{issued}"))
+}
+
+/// The base64url SHA-256 of the base64 (standard, unpadded) HMAC of `input` with the first cookie secret: the
+/// signature `CookieKeys::sign` writes for `input`, digested, which is what the derivations have always computed, so a
+/// flow started before an upgrade completes after it.
+fn keyed_digest(keys: &CookieKeys, input: &str) -> String {
+    let signature = STANDARD_NO_PAD.encode(keys.mac(input));
     URL_SAFE_NO_PAD.encode(Sha256::digest(signature.as_bytes()))
 }
 
@@ -92,9 +98,7 @@ pub(crate) fn session_binding(
     if session.is_new() && !session.manager().options.save_uninitialized {
         return Some(NO_SESSION.to_string());
     }
-    let signed = keys.sign(&format!("corvis-oauth2-session-v1|{strategy}|{state}|{}", session.id()));
-    let signature = signed.rsplit('.').next().unwrap_or("");
-    Some(URL_SAFE_NO_PAD.encode(Sha256::digest(signature.as_bytes())))
+    Some(keyed_digest(keys, &format!("corvis-oauth2-session-v1|{strategy}|{state}|{}", session.id())))
 }
 
 /// `true` when the callback's binding (see [`session_binding`]) is the one the flow was started with. A flow without a
@@ -118,14 +122,10 @@ const NO_USER: &str = "-";
 pub(crate) fn user_binding(keys: Option<&CookieKeys>, strategy: &str, state: &str, user: Option<&Value>) -> String {
     let Some(user) = user else { return NO_USER.to_string() };
     let input = format!("corvis-oauth2-user-v1|{strategy}|{state}|{user}");
-    let digest = match keys {
-        Some(keys) => {
-            let signed = keys.sign(&input);
-            Sha256::digest(signed.rsplit('.').next().unwrap_or("").as_bytes())
-        }
-        None => Sha256::digest(input.as_bytes()),
-    };
-    URL_SAFE_NO_PAD.encode(digest)
+    match keys {
+        Some(keys) => keyed_digest(keys, &input),
+        None => URL_SAFE_NO_PAD.encode(Sha256::digest(input.as_bytes())),
+    }
 }
 
 /// `true` when the callback may complete the flow for the user its request carries. A callback with no user has
@@ -278,12 +278,19 @@ impl StateCookie {
         o
     }
 
-    /// The flows the request's cookie holds (none for a missing, unsigned, tampered, oversized or foreign cookie).
+    /// The flows the request's cookie holds (none for a missing, unsigned, tampered, oversized or foreign cookie). A
+    /// name sent more than once holds none: a cookie planted from a sibling subdomain would otherwise sit next to the
+    /// browser's own, as the session cookie and the JWT cookie extractor already treat it.
     pub(crate) fn read(&self, req: &crate::http::Request, strategy: &str) -> FlowSet {
-        let Some(raw) = req.cookie(&self.name) else { return FlowSet::default() };
+        // A signed value is at most `MAX_SIGNED_BYTES`; its percent-encoded form at most three times that.
+        let mut values = req.cookie_values(&self.name, 2, 3 * crate::http::signed_cookie::MAX_SIGNED_BYTES);
+        if values.len() != 1 {
+            return FlowSet::default();
+        }
+        let raw = values.swap_remove(0);
         let Some(encoded) = self.keys.unsign(&raw) else { return FlowSet::default() };
         let Some(bytes) = URL_SAFE_NO_PAD.decode(encoded.as_bytes()).ok() else { return FlowSet::default() };
-        let Some(value) = super::json::parse(&bytes) else { return FlowSet::default() };
+        let Some(value) = crate::untrusted_json::parse(&bytes) else { return FlowSet::default() };
         FlowSet::decode(&value, strategy, false)
     }
 
@@ -560,7 +567,7 @@ mod tests {
         let header = c.write(&set, "google");
         assert!(keys().unsign(&value_of(&header)).unwrap().len() <= MAX_COOKIE_VALUE);
         let value = keys().unsign(&value_of(&header)).unwrap();
-        let record = super::super::json::parse(&URL_SAFE_NO_PAD.decode(value).unwrap()).unwrap();
+        let record = crate::untrusted_json::parse(&URL_SAFE_NO_PAD.decode(value).unwrap()).unwrap();
         let kept = FlowSet::decode(&record, "google", false);
         assert!(!kept.is_empty() && kept.flows.len() < 4);
         assert_eq!(kept.flows.last().unwrap().state, flow(3, 0).state, "the newest flow is kept");
@@ -592,6 +599,38 @@ mod tests {
         assert!(user_matches(&started_by(Some(&by_ana)), NO_USER));
         assert!(user_matches(&started_by(Some(NO_USER)), NO_USER));
         assert!(user_matches(&started_by(None), NO_USER));
+    }
+
+    /// The outputs of the three derivations for fixed inputs, recorded from the code before `CookieKeys::mac` existed
+    /// (when they cut the signature out of `CookieKeys::sign`): a flow started before an upgrade completes after it.
+    #[tokio::test]
+    async fn derivations_are_unchanged() {
+        const VERIFIER: &str = "SBkl6F0dGkOVg0rAG85vrFKsP0Ok27Yc18_OC4yFGtI";
+        const USER: &str = "LfP3SFQswwuaKnltNRa7SVMCyuxEMiJq2migh-vcGS0";
+        const PLAIN_USER: &str = "LRuiTRixsnsaAjb-onel02zWX9y8r5Awg-jB19Hj-LY";
+        const SESSION: &str = "qDLE7mdq4suSE_3wWg5BXiCo25J4GoMd71Yz94wabgc";
+        let state = flow(1, 0).state;
+        let verifier = derive_verifier(&keys(), "google", &state, 1_700_000_000);
+        let user = user_binding(Some(&keys()), "link", &state, Some(&json!({ "id": 1 })));
+        let plain_user = user_binding(None, "link", &state, Some(&json!({ "id": 1 })));
+        // A session the store has, under a fixed identifier.
+        let store = std::sync::Arc::new(crate::auth::session::MemorySessionStore::new());
+        let id = "fixed-session-identifier-0123456789";
+        let record = json!({ "cookie": { "originalMaxAge": null, "expires": null, "secure": true, "httpOnly": true, "path": "/" } });
+        crate::auth::session::SessionStore::create(&*store, id, &record, std::time::Duration::from_secs(3600)).await.unwrap();
+        let options = crate::auth::session::SessionOptions::with_secrets([KEY]).unwrap().store_arc(store);
+        let manager = std::sync::Arc::new(crate::auth::session::SessionManager::new(options).unwrap());
+        let mut headers = http::HeaderMap::new();
+        let cookie = format!("connect.sid={}", crate::http::res::encode_uri_component(&keys().sign(id)));
+        headers.insert("cookie", http::HeaderValue::from_str(&cookie).unwrap());
+        let req = crate::http::Request::new(http::Method::GET, http::Uri::from_static("/"), headers, bytes::Bytes::new()).unwrap();
+        let session = manager.load(&req).await.unwrap();
+        assert!(!session.is_new(), "the session was loaded");
+        let bound = session_binding(&keys(), "google", &state, Some(&session)).unwrap();
+        assert_eq!(verifier, VERIFIER);
+        assert_eq!(user, USER);
+        assert_eq!(plain_user, PLAIN_USER);
+        assert_eq!(bound, SESSION);
     }
 
     #[test]

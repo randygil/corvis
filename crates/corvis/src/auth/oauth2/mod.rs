@@ -19,7 +19,6 @@
 //! - nothing that holds a token, a secret, a code or personal data prints it with `Debug`.
 
 mod client;
-mod json;
 mod options;
 mod profile;
 mod redeem;

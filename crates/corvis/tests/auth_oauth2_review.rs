@@ -32,6 +32,36 @@ fn gated(gate: &Arc<Notify>) -> impl Fn(&Recorded) -> Reply + Send + Sync + 'sta
     }
 }
 
+// ---- the state cookie sent twice (#186) ----
+
+/// Spec "Planted second cookie" and "One cookie": a callback that carries the valid state cookie of its flow and a
+/// second cookie of the same name is refused as one without a state, before any request to the provider; with the
+/// valid cookie alone the flow completes.
+#[tokio::test]
+async fn a_state_cookie_sent_twice_is_no_state() {
+    let mock = Mock::start(standard).await;
+    let (app, _) = google_app(&mock).await;
+    let l = login(&app, "/auth/google").await;
+    let cookie = l.cookie.clone().unwrap();
+    let (name, _) = cookie.split_once('=').unwrap();
+    let target = format!("/auth/google/callback?code=c&state={}", l.state());
+    for planted in [format!("{cookie}; {name}=planted"), format!("{name}=planted; {cookie}"), format!("{cookie}; {cookie}")] {
+        let r = get(&app, &target, Some(&planted)).await;
+        assert_eq!((r.status, r.json_value()), (401, unauthorized()), "{planted}");
+        assert_eq!(mock.count(), 0, "{planted}: the provider received a request");
+    }
+    // A login start with two cookies of the name begins from an empty set: the new flow is the only one it writes.
+    let again = login_with_cookie(&app, "/auth/google", Some(&format!("{cookie}; {name}=planted"))).await;
+    let fresh = again.cookie.clone().expect("the login start writes its flow");
+    let r = get(&app, &target, Some(&fresh)).await;
+    assert_eq!((r.status, r.json_value()), (401, unauthorized()), "the first flow was not carried into the new cookie");
+    assert_eq!(mock.count(), 0);
+    // The valid cookie alone still completes the first flow.
+    let r = get(&app, &target, Some(&cookie)).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(tokens(&mock), 1);
+}
+
 // ---- M1: one client replaying its own flow ----
 
 #[tokio::test]

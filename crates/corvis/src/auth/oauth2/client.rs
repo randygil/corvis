@@ -375,7 +375,7 @@ fn parse_form(body: &[u8]) -> Option<serde_json::Map<String, serde_json::Value>>
 fn parse_members(answer: &Answer) -> Option<serde_json::Map<String, serde_json::Value>> {
     let media = media_type(answer.content_type.as_deref());
     if is_json(&media) {
-        super::json::parse_object(&answer.body)
+        crate::untrusted_json::parse_object(&answer.body)
     } else if media == "application/x-www-form-urlencoded" || media == "text/plain" {
         parse_form(&answer.body)
     } else {
@@ -596,7 +596,7 @@ fn json_answer_any(answer: Answer) -> Result<serde_json::Value, OAuth2Error> {
     if !is_json(&media_type(answer.content_type.as_deref())) {
         return Err(OAuth2Error::InvalidResponse);
     }
-    super::json::parse(&answer.body).ok_or(OAuth2Error::InvalidResponse)
+    crate::untrusted_json::parse(&answer.body).ok_or(OAuth2Error::InvalidResponse)
 }
 
 /// Exchanges refresh tokens with the same client and limits as the login: build it from the options of a strategy and

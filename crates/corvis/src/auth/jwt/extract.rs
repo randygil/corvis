@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use http::HeaderMap;
-use http::header::AUTHORIZATION;
 
+use crate::auth::auth_header;
 use crate::http::Request;
 use crate::http::body_parser::latin1;
 
@@ -150,23 +150,18 @@ impl JwtExtractor {
     }
 }
 
-/// JavaScript's `\s` inside the latin1 range (headers are latin1 in Node): tab, line feeds, form feed, space and the
-/// no-break space.
-fn is_js_space(c: char) -> bool {
-    matches!(c, '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' ' | '\u{a0}')
-}
-
-/// The groups of `/(\S+)\s+(\S+)/` at its first match: the first two runs of non-space characters.
-fn auth_groups(value: &str) -> Option<(&str, &str)> {
-    let mut runs = value.split(is_js_space).filter(|r| !r.is_empty());
-    Some((runs.next()?, runs.next()?))
+/// `true` when the latin1 bytes `found` are `scheme`, ignoring ASCII case.
+fn is_scheme(found: &[u8], scheme: &str) -> bool {
+    scheme.chars().count() == found.len() && scheme.chars().zip(found).all(|(c, &b)| c.eq_ignore_ascii_case(&char::from(b)))
 }
 
 fn auth_header(headers: &HeaderMap, scheme: &str) -> Option<String> {
-    // Node keeps the first value of a repeated `Authorization` header and drops the others.
-    let value = latin1(headers.get_all(AUTHORIZATION).iter().next()?.as_bytes());
-    let (found, token) = auth_groups(&value)?;
-    found.eq_ignore_ascii_case(scheme).then(|| token.to_string())
+    let credentials = auth_header::parse(auth_header::first_value(headers)?, None)?;
+    if !is_scheme(credentials.scheme, scheme) {
+        return None;
+    }
+    let token = credentials.token(None).ok()?;
+    (!token.is_empty()).then(|| latin1(token))
 }
 
 /// Headers whose repeated values Node drops after the first (`IncomingMessage` `_addHeaderLine`).

@@ -22,6 +22,7 @@ use crate::auth::warn_limit::WarnLimiter;
 use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::{ExecutionContext, GuardPhase};
 use crate::di::{DiError, Injectable, ResolveCtx};
+use crate::http::res::has_cookie_prefix;
 use crate::http::{HttpException, Request};
 use crate::logger::Logger;
 
@@ -159,7 +160,7 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
                             V::NAME
                         ));
                     }
-                    if !has_host_prefix(&name) {
+                    if !has_cookie_prefix(&name, "__Host-") {
                         log.warn(format!(
                             "strategy \"{}\": the state cookie \"{name}\" has no __Host- prefix, so a page on a sibling subdomain can plant its own state cookie and sign a victim in to the attacker's account (login CSRF): name it __Host-... on a Secure HTTPS host, or keep the application off a domain shared with untrusted subdomains",
                             V::NAME
@@ -176,7 +177,7 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
                             "state_in_session: the session cookie is SameSite=Strict, so the callback would arrive without the session".into(),
                         ));
                     }
-                    if !has_host_prefix(&manager.options.name) {
+                    if !has_cookie_prefix(&manager.options.name, "__Host-") {
                         log.warn(format!(
                             "strategy \"{}\": the session cookie \"{}\" that keeps the login state has no __Host- prefix, so a page on a sibling subdomain can plant its own session cookie and sign a victim in to the attacker's account (login CSRF): name the session cookie __Host-... on a Secure HTTPS host with Path=/ and no Domain",
                             V::NAME,
@@ -207,11 +208,6 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
         }
         .boxed()
     }
-}
-
-/// Whether a cookie name carries the `__Host-` prefix (browsers compare it case-insensitively).
-fn has_host_prefix(name: &str) -> bool {
-    name.len() >= 7 && name.as_bytes()[..7].eq_ignore_ascii_case(b"__Host-")
 }
 
 /// The key a client's slots are counted under: the address the request resolved to (so `trust proxy` is honoured),

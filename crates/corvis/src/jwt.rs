@@ -20,6 +20,7 @@ use serde_json::{Map, Value};
 
 use crate::di::{DynamicModule, Module, ModuleDefinition, Provider, ResolveCtx, Token};
 use crate::http::{HttpException, UnauthorizedException};
+use crate::untrusted_json::PlainJson;
 
 pub use jsonwebtoken::Algorithm as JwtAlgorithm;
 
@@ -363,67 +364,6 @@ pub(crate) enum HeaderProblem {
     Malformed,
     /// The header has a `crit` member (RFC 7515 section 4.1.11); Corvis supports no critical extensions.
     Crit,
-}
-
-/// A JSON value built by the text parser alone. `serde_json::Value`'s own deserializer is not used on bytes an
-/// attacker controls: with the `raw_value` feature (which another crate of the build may enable) it treats the key
-/// `$serde_json::private::RawValue` specially and parses the inner string again with a fresh recursion budget, so
-/// nested keys could exhaust the stack. This visitor has no special keys and no re-entrant parsing: the parser's
-/// recursion limit of 128 is the only depth budget, whatever features are enabled.
-pub(crate) struct PlainJson(pub(crate) Value);
-
-impl<'de> serde::Deserialize<'de> for PlainJson {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::{MapAccess, SeqAccess, Visitor};
-        struct Plain;
-        impl<'de> Visitor<'de> for Plain {
-            type Value = Value;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("any JSON value")
-            }
-            fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
-                Ok(Value::Bool(v))
-            }
-            fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
-                Ok(Value::from(v))
-            }
-            fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
-                Ok(Value::from(v))
-            }
-            fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
-                Ok(Value::from(v))
-            }
-            fn visit_str<E>(self, v: &str) -> Result<Value, E> {
-                Ok(Value::String(v.to_owned()))
-            }
-            fn visit_string<E>(self, v: String) -> Result<Value, E> {
-                Ok(Value::String(v))
-            }
-            fn visit_unit<E>(self) -> Result<Value, E> {
-                Ok(Value::Null)
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
-                let mut items = Vec::new();
-                while let Some(PlainJson(item)) = seq.next_element()? {
-                    items.push(item);
-                }
-                Ok(Value::Array(items))
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
-                let mut out = serde_json::Map::new();
-                while let Some((key, PlainJson(value))) = map.next_entry::<String, PlainJson>()? {
-                    out.insert(key, value);
-                }
-                Ok(Value::Object(out))
-            }
-        }
-        deserializer.deserialize_any(Plain).map(PlainJson)
-    }
-}
-
-/// Parses untrusted JSON bytes with [`PlainJson`].
-pub(crate) fn parse_untrusted(bytes: &[u8]) -> Option<Value> {
-    serde_json::from_slice::<PlainJson>(bytes).ok().map(|p| p.0)
 }
 
 /// What the header check needs to know about a document, found without keeping any of it.
@@ -811,11 +751,17 @@ impl JwtService {
         let payload = token.split('.').nth(1)?;
         use base64::Engine;
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
-        parse_untrusted(&bytes)
+        crate::untrusted_json::parse(&bytes)
     }
 }
 
-/// Extracts the bearer token from the `Authorization` header.
+/// Extracts the bearer token from the `Authorization` header: the value is split at its first space, the scheme
+/// compared with `bearer` ignoring ASCII case, and the rest trimmed (so `Bearer a b` gives `a b`); a value that is not
+/// visible ASCII gives none.
+///
+/// This is not the JWT strategy's parser: [`ExtractJwt::from_auth_header_as_bearer_token`](crate::auth::jwt::ExtractJwt::from_auth_header_as_bearer_token)
+/// follows `passport-jwt` (any JavaScript whitespace between scheme and token, words after the token ignored). Use
+/// that one for the strategy's rules; this helper keeps its own, which applications already rely on.
 pub fn extract_bearer_token(req: &crate::http::Request) -> Option<String> {
     let h = req.header("authorization")?;
     let (kind, token) = h.split_once(' ')?;

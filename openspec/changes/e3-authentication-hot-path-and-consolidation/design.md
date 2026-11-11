@@ -634,3 +634,36 @@ passed, 0 failed.
   the store of `dev` that write dropped all 2 000 expired records, now at most the ~152 it needs plus two batches. The
   count-bound scenario of the spec cannot reach the loop: after the first batch the store is always below
   `max_sessions`, so it passes on the old code too and is kept as written.
+
+### Consolidation (group 5) and fixes (group 6)
+
+- `WarnLimiter::line` builds the message only when it is written. The hasher's own limiter is gone; its keys were
+  `&'static str`, the shared one takes `&str` (its five reasons stay far under the cap of 64).
+- `auth::outcome` holds `service_unavailable` (compiled with any of `jwt`, `auth-local`, `auth-api-key`,
+  `auth-oauth2`) and `with_deadline` / `user_outcome` (with any of the first three, the only users), so no feature
+  combination leaves dead code. The JWT key provider's deadline keeps its own `timeout` (it maps to `Denied`, not to an
+  outcome) and builds its `503` with `service_unavailable`.
+- `every_framework_503_has_the_same_bytes` (`tests/auth_local.rs`) compares the text of the busy hasher's and the slow
+  validator's `503` on one route; the OAuth2 strategy at its limit is compared with the same text in
+  `too_many_requests_in_flight_answer_503_without_contacting_the_provider` (`tests/auth_oauth2.rs`), where the mock
+  provider that holds the slot already lives. The JWT, local and API key deadlines already used this body
+  (`tests/auth_callback_timeouts.rs`, `tests/auth_api_key_options.rs`).
+- `untrusted_json.rs` is compiled with `jwt` or `auth-oauth2`; `parse_object` only with `auth-oauth2`, its only user.
+- `auth::auth_header` parses the scheme and finds where the token starts; the token is read by `Credentials::token`,
+  with or without a length limit, so the API key source still refuses an over-long key while scanning it. One edge of
+  the API key source changes: a value whose leading space and scheme reach exactly the end of the `max + 128` window
+  with `bearer` and continue with a non-space byte (the scheme cut by the window) was read as a key starting there, with
+  no separator; it is now no key, which is what `passport-jwt`'s expression gives (no separator, no second group). The
+  scheme length cap of 17 bytes of the old scanner is gone: the window bounds the scan, and a scheme longer than six
+  bytes was never `bearer`. The `jwt.json` and `api_key.json` replays and the extractor tests pass unchanged.
+- `has_cookie_prefix` is compiled with `jwt` or `auth-session`.
+- `derivations_are_unchanged` holds the outputs of `derive_verifier`, `session_binding` (a session loaded under a fixed
+  identifier) and `user_binding` (keyed and plain) recorded from the code before the change; they match after it.
+- `CookieKeys` keeps one keyed `Hmac<Sha256>` per secret (no copy of the secret otherwise); `mac` is compiled with
+  `auth-oauth2`, its only user. `HMAC_RUNS` still counts one run per secret.
+- `StateCookie::read` decodes at most two values of the name, each up to three times `MAX_SIGNED_BYTES` raw, as the
+  session does; `a_state_cookie_sent_twice_is_no_state` (`tests/auth_oauth2_review.rs`) plants the second cookie
+  before and after the real one and sends the real one twice.
+- The busy-hasher test holds the slot with `hold_slot` (`HeldSlot` frees it on drop) and shares the slow hasher with
+  `every_framework_503_has_the_same_bytes`, so the two take turns through a `tokio::sync::Mutex`; 20 runs in a row
+  passed.
