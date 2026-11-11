@@ -665,7 +665,7 @@ impl UnreadGauge {
     }
 
     /// The most waiters this level, or one above it, ever had at once.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "socket-io"))]
     pub(crate) fn peak_waiters(&self) -> usize {
         let above = self.parent.as_ref().map_or(0, |p| p.peak_waiters());
         self.peak_waiters.load(Ordering::SeqCst).max(above)
