@@ -30,9 +30,12 @@ pub fn normalize(v: &mut Value) {
 /// `{ "$float": "NaN" | "Infinity" | "-Infinity" }` in the recorded arguments is a non-finite JavaScript number. The
 /// reference client sends it as JSON `null` (`JSON.stringify(NaN)`, recorded in `fin.*`), so a JSON query carries
 /// `null` too; the typed helpers refuse such values instead (`tests/typed_params.rs`).
+///
+/// `{ "$json": v }` is `v` as plain JSON data, not revived (a request body can carry `{ "$type": "DbNull" }`).
 pub fn revive(v: &mut Value) {
     match v {
         Value::Object(m) if m.len() == 1 && m.contains_key("$float") => *v = Value::Null,
+        Value::Object(m) if m.len() == 1 && m.contains_key("$json") => *v = m["$json"].take(),
         Value::Object(m) => m.values_mut().for_each(revive),
         Value::Array(a) => a.iter_mut().for_each(revive),
         _ => {}

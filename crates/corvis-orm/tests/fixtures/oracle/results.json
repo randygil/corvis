@@ -62,7 +62,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.691Z",
+   "updatedAt": "2026-11-11T20:07:34.989Z",
    "data": {
     "a": [
      1,
@@ -101,7 +101,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-02T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.717Z",
+   "updatedAt": "2026-11-11T20:07:34.995Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -209,7 +209,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.723Z",
+   "updatedAt": "2026-11-11T20:07:34.999Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -297,7 +297,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T00:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:01:13.691Z",
+    "updatedAt": "2026-11-11T20:07:34.989Z",
     "data": {
      "a": [
       1,
@@ -664,7 +664,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T00:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:01:13.691Z",
+    "updatedAt": "2026-11-11T20:07:34.989Z",
     "data": {
      "a": [
       1,
@@ -692,7 +692,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-02T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:01:13.717Z",
+    "updatedAt": "2026-11-11T20:07:34.995Z",
     "data": null,
     "meta": {},
     "active": true,
@@ -711,7 +711,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-03T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:01:13.723Z",
+    "updatedAt": "2026-11-11T20:07:34.999Z",
     "data": null,
     "meta": {},
     "active": true,
@@ -751,7 +751,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.691Z",
+   "updatedAt": "2026-11-11T20:07:34.989Z",
    "data": {
     "a": [
      1,
@@ -969,7 +969,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.723Z",
+   "updatedAt": "2026-11-11T20:07:34.999Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -1057,7 +1057,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.723Z",
+   "updatedAt": "2026-11-11T20:07:34.999Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -1310,7 +1310,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.691Z",
+   "updatedAt": "2026-11-11T20:07:34.989Z",
    "active": true,
    "managerId": null
   }
@@ -1346,7 +1346,7 @@
    "ratio": null,
    "big": 0,
    "birthday": null,
-   "updatedAt": "2026-11-11T20:01:13.723Z",
+   "updatedAt": "2026-11-11T20:07:34.999Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -3611,7 +3611,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.924Z",
+   "updatedAt": "2026-11-11T20:07:35.199Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -3679,7 +3679,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:01:13.908Z",
+   "updatedAt": "2026-11-11T20:07:35.175Z",
    "data": null,
    "meta": {
     "k": "v"
@@ -13100,6 +13100,236 @@
    "code": null,
    "meta": null,
    "message": "\nInvalid `prisma.post.groupBy()` invocation:\n\n{\n  select: {\n    _sum: {\n      select: {\n        views: true\n      }\n    },\n    published: true\n  },\n  by: [\n    \"published\"\n  ],\n  having: {\n    views: {\n      _sum: {\n        in: [\n          null,\n          5\n        ]\n        ~~~~~~\n      }\n    }\n  },\n  orderBy: {\n    published: \"asc\"\n  }\n}\n\nArgument `in`: Invalid value provided. Expected ListIntFieldRefInput, provided (Null, Int)."
+  }
+ },
+ {
+  "label": "json.plain_type_create",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "plain-type@x.io",
+    "data": {
+     "$json": {
+      "$type": "DbNull"
+     }
+    },
+    "createdAt": "2024-03-04T00:00:00.000Z"
+   },
+   "select": {
+    "data": true
+   }
+  },
+  "result": {
+   "data": {
+    "$type": "DbNull"
+   }
+  }
+ },
+ {
+  "label": "json.plain_type_equals",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "equals": {
+      "$json": {
+       "$type": "DbNull"
+      }
+     }
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "email": "plain-type@x.io"
+   }
+  ]
+ },
+ {
+  "label": "json.plain_anynull_equals",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "equals": {
+      "$json": {
+       "$type": "AnyNull"
+      }
+     }
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": []
+ },
+ {
+  "label": "json.plain_type_update",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "email": "plain-type@x.io"
+   },
+   "data": {
+    "data": {
+     "$json": {
+      "$type": "JsonNull"
+     }
+    }
+   },
+   "select": {
+    "data": true
+   }
+  },
+  "result": {
+   "data": {
+    "$type": "JsonNull"
+   }
+  }
+ },
+ {
+  "label": "json.plain_type_where",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "$json": {
+      "$type": "AnyNull"
+     }
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    data: {\n      $type: \"AnyNull\"\n    }\n    ~~~~~~~~~~~~~~~~~~\n  },\n  select: {\n    email: true\n  },\n  orderBy: {\n    id: \"asc\"\n  }\n}\n\nArgument `data`: Invalid value provided. Expected JsonNullableFilter, provided JSON."
+  }
+ },
+ {
+  "label": "dec.lt_neg_infinity",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "balance": {
+     "lt": "-Infinity"
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    balance: {\n      lt: \"-Infinity\"\n          ~~~~~~~~~~~\n    }\n  },\n  select: {\n    email: true\n  },\n  orderBy: {\n    id: \"asc\"\n  }\n}\n\nInvalid value for argument `lt`: invalid digit found in string. Expected decimal String."
+  }
+ },
+ {
+  "label": "dec.lt_nan",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "balance": {
+     "lt": "NaN"
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    balance: {\n      lt: \"NaN\"\n          ~~~~~\n    }\n  },\n  select: {\n    email: true\n  },\n  orderBy: {\n    id: \"asc\"\n  }\n}\n\nInvalid value for argument `lt`: invalid digit found in string. Expected decimal String."
+  }
+ },
+ {
+  "label": "dec.equals_infinity",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "balance": "Infinity"
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    balance: \"Infinity\"\n             ~~~~~~~~~~\n  },\n  select: {\n    email: true\n  },\n  orderBy: {\n    id: \"asc\"\n  }\n}\n\nInvalid value for argument `balance`: invalid digit found in string. Expected decimal String."
+  }
+ },
+ {
+  "label": "dec.set_infinity",
+  "model": "user",
+  "action": "updateMany",
+  "args": {
+   "where": {
+    "email": "plain-type@x.io"
+   },
+   "data": {
+    "balance": "Infinity"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.updateMany()` invocation:\n\n{\n  where: {\n    email: \"plain-type@x.io\"\n  },\n  data: {\n    balance: \"Infinity\"\n             ~~~~~~~~~~\n  }\n}\n\nInvalid value for argument `balance`: invalid digit found in string. Expected decimal String."
+  }
+ },
+ {
+  "label": "dec.after_set",
+  "model": "user",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "email": "plain-type@x.io"
+   },
+   "select": {
+    "balance": true
+   }
+  },
+  "result": {
+   "balance": "0"
   }
  }
 ]
