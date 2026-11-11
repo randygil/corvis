@@ -187,7 +187,7 @@ created. Where Node has no bound, Corvis differs on purpose; each difference is 
 | Pending requests per session | one `GET` and one `POST` | same | `400` and `transport error` |
 | `ping_interval` / `ping_timeout` | 25 s / 20 s | same | `ping timeout` |
 | `upgrade_timeout`, upgrades in progress | 10 s, one per session | same | the candidate is closed, the session stays |
-| `max_buffered_amount` (queued for the client) | 8 MiB | none | the send fails, the queue is discarded, `transport error` |
+| `max_buffered_amount` (queued for the client; a Socket.IO packet counts the buffer it was encoded into, at most an eighth more than its length) | 8 MiB | none | the send fails, the queue is discarded, `transport error` |
 | `max_unread_bytes` (received, not yet read; each message counts its length plus 64 bytes, empty ones too) | 16 MiB | none | WebSocket reads pause; the `POST` answer waits |
 | `max_total_unread_bytes` (the same, across all sessions; at least `max_unread_bytes`) | 256 MiB | none | while exceeded, sessions holding more than a fair share (`max(16 KiB, total / max_sessions)`) pause and their `POST`s wait; the others keep reading. Worst case: `max_total_unread_bytes + max_sessions * fair share + max_sessions * max_http_buffer_size` (one message per session, which dominates with the defaults) |
 | `max_sessions` | 10,000 | none | handshake answered `503` with `{"code":3,"message":"Too many sessions"}` |
@@ -289,14 +289,17 @@ Reserved event names (`connect`, `connect_error`, `disconnect`, `disconnecting`,
 be emitted by the server, and a packet from a client that uses one is undecodable.
 
 When a socket connects: once its connect middleware passed, the socket is added to the namespace and to the room of
-its own id, then CONNECT is queued, and its connection handlers run once CONNECT was written (handed to the WebSocket, or
-taken by a poll), so what they emit leaves in a later write, as with the reference server; over polling that is the
-next poll. `io.of(name).socket(id)` finds a socket from the moment its client can know its id, with no retry: a socket
-returned there, by `sockets()` or counted by `socket_count()`, may still be joining (or already leaving), and its `emit`
-then fails with `NotConnected`; broadcasts and bulk operations skip a socket until its CONNECT is queued. If the adapter
-fails to add the socket to the room of its own id (it panics or returns an error), the client gets CONNECT_ERROR
-`Internal server error`, nothing of the socket stays, and the connection stays open. A connection that closes before
-CONNECT was written runs no connection handler.
+its own id, then CONNECT is queued, and its connection handlers run right away, whether or not the client has collected
+CONNECT yet. From that moment the socket receives broadcasts, so the connection handler (or a gateway's
+`handle_connection`) is the place to check the socket and disconnect it. What the handlers emit leaves after CONNECT:
+over polling, a response ends after CONNECT, so their packets come with the next poll, as with the reference server.
+`io.of(name).socket(id)` finds a socket from the moment its client can know its id, with no retry: a socket returned
+there, by `sockets()` or counted by `socket_count()`, may still be joining (or already leaving), and its `emit` then
+fails with `NotConnected`; broadcasts and bulk operations skip a socket until its CONNECT is queued. If the adapter fails
+to add the socket to the room of its own id (it panics or returns an error), the client gets CONNECT_ERROR
+`Internal server error`, nothing of the socket stays, and the connection stays open. A socket that never connected
+(refused by its middleware, or whose connect failed) runs no `on_disconnecting` or `on_disconnect` handler, and what was
+registered on it is dropped.
 
 The request that opened the Engine.IO session is kept once per session and shared by every socket of the connection
 (`socket.handshake().request()`): at most one request per session, bounded by the HTTP server's header limit, and not

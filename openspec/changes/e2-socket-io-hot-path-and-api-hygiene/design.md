@@ -229,10 +229,9 @@ After the middleware passes, `connect` does, with no connection lock held across
    including `disconnect(true)` on the connection: nothing deadlocks.
 4. If 3 failed (panic or `Err`): the socket is torn down silently (step "Teardown" below), its slot is removed (not `Left`:
    the client never joined), and the client receives CONNECT_ERROR `Internal server error`, as for a panic in the id check.
-5. Under the socket's state lock: if the phase is still `Joining`, queue CONNECT with a write acknowledgement (Decision 6)
-   and set the phase to `Connected`; otherwise (a teardown ran) do nothing. A refused queue (closed, or full, which closes the
+5. Under the socket's state lock: if the phase is still `Joining`, queue CONNECT and set the phase to `Connected`; otherwise (a teardown ran) do nothing. A refused queue (closed, or full, which closes the
    session) leaves the phase `Joining` and the socket is torn down after the lock is released.
-6. `joined_once`, then Decision 6.
+6. `joined_once`, then the connection handlers and `mark_ready` (Decision 6).
 
 Teardown of a joining socket (`disconnect_with` on a `Joining` socket: from `terminate`, from server shutdown, or from step 4):
 phase `Disconnected`, `adapter.del_all`, `remove_socket`, `forget`; no `disconnecting` / `disconnect` handlers and no
@@ -273,38 +272,39 @@ Alternatives considered: keep the lock and only reorder (rejected: the deadlock 
 register" (rejected: that is #183); register in the table but keep the phase `Connected` from the start (rejected: an emit by
 a thread that found the socket by enumeration could precede CONNECT).
 
-### 6. CONNECT in a write of its own
+### 6. Connection handlers right after the announce; CONNECT alone in its poll response
 
-The connection handlers run only after CONNECT was handed to the transport. Mechanism:
+Revised after the security review (see "Security review (round 1)"): the first version of this decision made the
+connection handlers wait for the CONNECT write, which on long-polling is the client's next `GET`.
 
-- `EngineSocket::send_all_written(messages) -> Result<Written, SendError>` queues the group like `send_all` and returns a
-  future that resolves `true` when the group's last message was handed to the transport and `false` when the session
-  discarded it or closed first. The outbox already carries an optional acknowledgement per item (`OutQueue::push`, `Ack`);
-  `push_group` gains it for the last item. WebSocket: `write_loop_with` sends it after `sink.send` returned (it already does).
-  Polling: `take_batch` sends it for the items it takes into a response (today it drops them).
-- In `connect`, step 5 queues CONNECT with `send_all_written`; after the state lock is released, `connect` waits for
-  `Written` or for the connection to close, then runs the connection handlers and `mark_ready`. If the write did not happen
-  the connection is ending: `terminate` disconnects the socket, and `connect` returns.
-- Packets of the client that arrive meanwhile wait for `ready` as today; the wait is bounded by the connection itself (a
-  WebSocket write that never completes is cut by the server's write deadline; a polling client that never polls is closed by
-  the heartbeat). `connect_timeout` no longer applies once the socket is `Connected` (`joined_once` is set in step 6).
+- The connection handlers and `mark_ready` run right after step 5, in the same task and with no wait, whatever the
+  transport and whether or not the client collected CONNECT: the order of `dev` and of the reference server
+  (`_onconnect` queues CONNECT, then `connection` is emitted). From step 5 the socket is selected by broadcasts, so the
+  hook where an application checks a socket (`on_connection`, a gateway's `handle_connection`) cannot depend on the
+  client. Packets of the client that arrive meanwhile wait for `ready` as before.
+- CONNECT still leaves alone: `QueueItem::ends_batch` (false by default) is true for an Engine.IO message framed by the
+  Socket.IO encoder whose packet is a CONNECT (`40`), and `OutQueue::take_batch` closes a poll response after such an
+  item, so what the handlers emit leaves in the next response, as with the reference server when a poll was waiting. A
+  WebSocket writes every packet as a frame of its own already. Nothing waits for a write, so the outbox needs no
+  acknowledgement for it.
+- A socket that never connected (refused by a middleware, the connection closed during the middleware, or a failure
+  before CONNECT) runs no `disconnecting` or `disconnect` callback, as with the reference server (`_onclose` returns
+  early for a socket that is not connected), and what was registered on it is dropped when the attempt ends: a callback
+  that holds a clone of the socket would otherwise keep the socket and its handshake alive for good.
 
-This is the reference order: CONNECT is written, then the handler runs, and what it emits goes in a later write (WebSocket:
-a separate frame written after the CONNECT frame was flushed; polling: the next response, since a response that carries
-CONNECT was taken before the handler could emit). Visible to applications: connection handlers start one write later than
-today, at most one poll round trip on polling. #35's `handle_connection` hook runs among the connection handlers and keeps
-its guarantee ("finishes before any event of that socket is dispatched").
+Tests: polling, the client posts `40` with no `GET` pending and the connection handler emits `auth`: the first `GET`
+answers exactly the CONNECT packet and the second the event
+(`over_polling_connect_is_answered_alone_and_the_handlers_event_in_the_next_poll`, and
+`a_poll_response_closes_after_a_socket_io_connect` over the session's outbox); WebSocket: the event is a frame of its
+own after CONNECT (`over_websocket_the_handlers_event_follows_connect_as_its_own_frame`); the regression tests of the
+security review (below).
 
-Number it must move: the upstream suite (`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test
-socket_io_conformance`) passes 20 runs in a row (task 1.2 records the failure rate before: about 2 to 3 in 8). Tests,
-deterministic: polling, the client posts `40` with no `GET` pending and the connection handler emits `auth`: the first `GET`
-answers exactly the CONNECT packet and the second the event (unit test over the session's outbox: the handler has not run
-until the CONNECT item is taken); WebSocket, a unit test with the in-process transport of `socket_io/tests.rs`: the
-connection handler does not run until the test drains the CONNECT item, and the first emit is a separate item.
+This does not fix the upstream suite's instability (#184, task 7.4); neither did the wait.
 
-Alternatives considered: stop `take_batch` at a CONNECT and yield in the writer after it (rejected: a yield orders nothing
-across threads, and the WebSocket writer already flushes per frame; the handler emitting before the CONNECT write is the
-cause); delay only the first emit (rejected: any emit of any task would need the same rule).
+Alternatives considered: wait for the CONNECT write (implemented first, removed after the security review); run the
+handlers at the write or after a deadline, whichever comes first (rejected: the client still controls a window in which
+an unchecked socket receives broadcasts); delay only the first emit (rejected: any emit of any task would need the same
+rule).
 
 ### 7. The answer budget uses the session's address key
 
@@ -453,6 +453,7 @@ comes near one has a test that pins it (existing, kept passing, or new):
 | One shared encoding per broadcast; each recipient bounded by `max_buffered_amount`; lengths of shared messages | #34 round 1 | 4 | `a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reaches`, `many_slow_clients_never_hold_the_broadcast_back_and_each_is_cut_at_its_own_bound`, length unit tests |
 | WebSocket message limits (`max_message_size`, `max_frame_size`) | #32 | 4 (upgrade) | `engine_io_security.rs`, `ws_security.rs` size tests |
 | Nothing the application emits precedes CONNECT; a packet behind CONNECT waits for the connection handlers | #33 Implementation notes | 5, 6 | new connect-order tests; existing `socket_io.rs` ordering tests |
+| The connection handlers run as soon as the socket is announced, without waiting for its client | this change, security review round 1 | 6 | `the_connection_handler_runs_before_the_client_polls_and_a_socket_it_refuses_gets_no_broadcast`, `the_connection_hook_runs_for_a_polling_client_that_does_not_poll_and_a_socket_it_refuses_gets_no_broadcast` |
 | No client in another socket's id room; own room expels; no id that is already a room | #34 round 1 F1, round 2 lead | 5 | `a_client_cannot_join_the_room_of_another_sockets_id`, `the_own_room_of_a_connecting_socket_expels_whoever_joined_its_id_during_the_middleware`, `no_socket_is_given_an_id_that_is_already_a_room`, plus a new test joining a joining socket's id between steps 2 and 3 |
 | No membership left behind by a socket that went away | #34 Decision 4 | 5 | `a_join_racing_a_disconnect_leaves_no_membership_behind`, `churn_leaves_the_maps_empty`, the fuzz properties, new teardown-during-joining tests |
 | Adapter panics and errors at CONNECT leave nothing behind | #34 round 2 L1/L2, round 3 | 5 | the three CONNECT tests, updated to the CONNECT_ERROR outcome (spec delta) |
@@ -465,8 +466,9 @@ comes near one has a test that pins it (existing, kept passing, or new):
 | What | Before | After | Consequence |
 |---|---|---|---|
 | Adapter fails joining the own room | CONNECT sent, then the socket disconnected and the connection closed | CONNECT_ERROR `Internal server error`, the connection stays | The client sees a refused connection instead of a dropped one (spec delta of `ws/socket-io-rooms`) |
-| CONNECT and the first emit of a connection handler | Often one read on WebSocket, one response on polling | Separate writes, separate responses | Matches the reference server; the upstream suite stabilizes |
-| When connection handlers run | Right after CONNECT was queued | After CONNECT was written (polling: taken by a poll) | Up to one poll round trip later on polling; events wait for the handlers as before |
+| CONNECT and the first emit of a connection handler over polling | Often one response | Separate responses (a response ends after CONNECT) | Matches the reference server when a poll was waiting; over WebSocket they were and stay separate frames |
+| Send buffer charge of a Socket.IO packet | Its length | The allocation of its buffer (at most an eighth more than its length) | A send fails with `Full` up to an eighth earlier for a client that does not read |
+| Callbacks registered on a socket that never connected | Not run; kept for as long as the socket (for good if one held the socket) | Not run; dropped when the attempt ends | Memory only |
 | Lookup by id | Could miss a socket whose client knew the id | Never misses; may also return a socket that is joining (its `emit` fails with `NotConnected`) | Applications that look sockets up from another channel stop needing retries |
 | Seven public enums | Exhaustive | `#[non_exhaustive]` | Downstream exhaustive matches need a wildcard arm |
 | Test hooks | On the trait and on public types (hidden) | In `corvis::socket_io::testing` (hidden) | Only code that used hidden items changes |
@@ -478,7 +480,8 @@ comes near one has a test that pins it (existing, kept passing, or new):
   `Connection` struct (Decision 8) is done after the connect sequence so #35's dispatcher hook moves once.
 - The `tokio-tungstenite` upgrade touches the gateway layer and its tests → isolated task, all WebSocket suites run, fallback in
   Decision 4.
-- Waiting for the CONNECT write delays connection handlers → bounded by the connection itself; documented; matches the reference.
+- The connection handlers run before the client collected CONNECT, so they may emit while CONNECT is still queued → a poll
+  response ends after CONNECT, and what they emit leaves after it on both transports.
 - The `Joining` phase adds a state every phase check must consider → one place lists who skips it (Decision 5), and the tests
   drive a teardown at each step.
 - Wall-clock tests turned into condition waits can hang on a regression → every wait has a deadline that fails with a message.
@@ -506,7 +509,8 @@ These settle the open questions and override the design where they differ.
    there may still be joining or already leaving, and that `emit` then fails with `NotConnected`.
 3. The module is `corvis::socket_io::testing`, `#[doc(hidden)]`.
 4. `ip()` keeps returning `String`; it stops resolving the proxy chain on every call. A `&str` accessor is a possible later issue.
-5. Connection handlers wait for the CONNECT write on both transports.
+5. Connection handlers wait for the CONNECT write on both transports. Overridden by the security review (round 1): they run
+   right after the announce, and a poll response ends after CONNECT instead (Decision 6).
 6. Implemented after #35 lands; task 1.1 is mandatory and its findings are written in "Implementation notes" before any other
    task starts.
 7. The security review is mandatory before the merge: the connect sequence (phases, teardown, lock order), the wakeup protocol,
@@ -566,7 +570,7 @@ Interactions with the decisions:
   sockets of one connection are pending at once, bounded by the namespaces with disconnect hooks.
 - Decisions 5 and 6: #35's gate opens after the connection hooks, which run among the connection handlers; the
   dispatcher's tickets are taken in arrival order by the connection loop, after `wait_ready`. The new order (handlers
-  after the CONNECT write, then `mark_ready`) keeps both: events still wait for `ready`, and `ready` is set after the
+  right after the announce, then `mark_ready`; Decision 6) keeps both: events still wait for `ready`, and `ready` is set after the
   handlers. The CONNECT-time share check stays in `begin_connect`, before any socket exists.
 
 The untouched tree passes `cargo test -p corvis --features socket-io --no-fail-fast`: 1,646 passed, 0 failed, 56
@@ -708,18 +712,16 @@ the 4 KiB cookie that Decision 3 removes.
 - `connect` after the middleware: (1) under `nsps()`, the slot and the phase `Joining`; (2) `add_socket`, which inserts
   only while the phase is `Joining`, read under the table's write lock; (3) `join_own_room` with no lock of the
   connection held; a failure tears the socket down and answers CONNECT_ERROR `Internal server error`; (4)
-  `IoSocket::announce`: under the socket's state lock, CONNECT queued with `EngineSocket::send_written` and the phase
-  set to `Connected`; a refused queue tears it down; (5) `joined_once`, then wait for the write or the close, then the
-  connection handlers and `mark_ready`.
+  `IoSocket::announce`: under the socket's state lock, CONNECT queued and the phase set to `Connected`; a refused queue
+  tears it down; (5) `joined_once`, then the connection handlers and `mark_ready` (after the security review; the
+  first version waited for the CONNECT write here).
 - Deviation from Decision 5, step 1: the phase is set while `nsps()` is held, as the design's step 1 says, so `nsps()`
   is not quite a leaf: a socket's state lock is taken inside it there. Nothing takes `nsps()` while holding a state lock
   (`disconnect_with` releases the state lock before `forget`; `terminate` releases `nsps()` before it disconnects), so
   the order holds. Setting the phase after releasing `nsps()` would let a `terminate` in between find the socket still
   `Pending`, skip it, and leave it to join a closed connection.
-- Deviation from Decision 6: `EngineSocket::send_written` queues one message with an acknowledgement (CONNECT has no
-  attachments) instead of a `send_all_written` for groups; `push_group` did not need an acknowledgement. `take_batch`
-  answers the acknowledgements of the items it takes (a poll); the WebSocket writer already answered after
-  `sink.send` (written and flushed); a discarded or closed queue drops them, which resolves the wait with `false`.
+- The first version of Decision 6 (`EngineSocket::send_written`, acknowledgements answered by `take_batch`, the wait in
+  `connect`) was removed after the security review; see "Security review (round 1)".
 - `InMemoryAdapter::add_all` tests the names against its own `sids` map; `LocalNamespace::is_socket_id` is gone. The
   only liveness lookup left under the membership lock is the joining socket's own (`is_live(id)`).
 - Test hooks for the sequence: `corvis::socket_io::testing::{pause_connect, ConnectStep, ConnectPause}` (a pause at
@@ -759,10 +761,10 @@ The suite was run after the rebase on `ed1e480`, against Corvis alone (`the_prot
 The control (the suite against the Node reference) failed most runs on `dev` in that hour too (timeouts), where it had
 passed 3 of 8 in the morning. The failures are the suite's own pattern: it waits for one frame with a `once` listener and
 registers the listener for the next one after an `await`, so it loses a frame whenever two arrive in one read, and its
-300/200 ms heartbeat turns any delay into a ping in place of the expected frame. Decision 6 is implemented (the connection
-handlers run after the CONNECT write; over WebSocket the write is the `sink.send` of the writer, flushed; over polling the
-take of a poll), and the unit and integration tests show CONNECT and the handlers' first emit in separate writes
-(`the_connection_handlers_wait_for_the_connect_write`, `connection_handlers_run_after_connect_and_before_the_first_event`,
+300/200 ms heartbeat turns any delay into a ping in place of the expected frame. These runs were made with the first
+version of Decision 6 (the connection handlers ran after the CONNECT write; over WebSocket the write is the `sink.send`
+of the writer, flushed; over polling the take of a poll), and the unit and integration tests showed CONNECT and the
+handlers' first emit in separate writes (`connection_handlers_run_after_connect_and_before_the_first_event`,
 `over_polling_connect_is_answered_alone_and_the_handlers_event_in_the_next_poll`,
 `over_websocket_the_handlers_event_follows_connect_as_its_own_frame`), but two separate writes on loopback still reach a
 client that is slower than the server in one read: the gap between them is the time the CONNECT write's acknowledgement
@@ -898,8 +900,9 @@ copies and the per-message registrations went away. The figures are from one mac
   allocation for the `POST` stays under 16 KiB beyond what the HTTP server allocates for the same request.
 - **#184 is not fixed by this change and stays open on its own.** The scenario "Upstream suite is stable" was removed from
   the delta: the suite loses a frame whenever two arrive in one read (its listener is registered after an `await`), and
-  the Node reference fails the same way on this machine. What this change guarantees, and its tests pin, is the order and
-  the separate writes of "CONNECT leaves in a write of its own". Task 7.4 and the suite part of 15.3 stay unticked.
+  the Node reference fails the same way on this machine. What this change guarantees, and its tests pin, is the order of
+  "A connecting socket is registered before its CONNECT" and the poll response that ends after CONNECT ("CONNECT leaves
+  alone"). Task 7.4 and the suite part of 15.3 stay unticked.
 
 ### 12.4: the waits left in the socket-io and engine-io suites, and why
 
@@ -912,7 +915,7 @@ an observable end. Removed: every wall-clock upper bound (`elapsed() < ...`). Wh
 | `socket_io.rs:149`, `socket_io_rooms.rs:464`, `engine_io_security.rs:310, 570`, `engine_io_ws.rs:189, 253, 313` | `elapsed() >= configured` | "Not before" bounds against the configured timeout, over real sockets |
 | `socket_io_security.rs:110`, `engine_io_security.rs:327` | a wait shorter or longer than the configured timeout, then a check that nothing closed | "Not before" bounds over real sockets (the server's timers run on the real clock there) |
 | `socket_io_accounting.rs:159` (`Handlers::settle`), `socket_io_memory.rs:219, 273`, `socket_io_rooms_review_memory.rs:137` | a quiet period before reading how much a flood got in | The end of admissions is an absence over real sockets (a paused reader resumes on any release): no state says every flooding reader stopped for good. A shorter wait makes the bound weaker, never wrong |
-| `socket_io_gateways.rs:1291`, `socket_io_log.rs:74, 110`, `socket_io_security.rs:197`, `engine_io_security.rs:127, 212, 429` | a quiet period before checking that something did not happen (a discarded event's handler, a second log line, a 33rd handler, reads past a pause) | Absence of an effect on another task, with nothing that marks its end |
+| `socket_io_gateways.rs:1320`, `socket_io_log.rs:74, 110`, `socket_io_security.rs:197`, `engine_io_security.rs:127, 212, 429` | a quiet period before checking that something did not happen (a discarded event's handler, a second log line, a 33rd handler, reads past a pause) | Absence of an effect on another task, with nothing that marks its end |
 | `socket_io_rooms_memory.rs:90`, `socket_io_transit.rs:72` (`settled`) | a quiet heap before or while measuring | The heap of a server on real sockets has no "done" condition; it guards the measurement, it orders nothing |
 | `socket_io_accounting.rs:132`, `socket_io_security.rs:146`, `engine_io_security.rs:645`, `engine_support/io_app.rs:77` | a handler, middleware or hook that takes time | The load of the test (slow application code), not a synchronisation; `io_app` is compared with the Node application, which does the same |
 | `engine_io_ws.rs:182` | a producer's pace of sending | The application's behavior while the peer does not read |
@@ -921,3 +924,58 @@ an observable end. Removed: every wall-clock upper bound (`elapsed() < ...`). Wh
 
 Each rewritten suite passed 5 runs in a row (`socket_io_accounting`, `socket_io_lingering`, `engine_io_security`,
 `engine_io`); the swept ones passed in one run before the final checks.
+
+## Security review (round 1)
+
+**F1 (high): over long-polling, the connection hook could be skipped by a client that never polls.** In the first version
+of Decision 6, `connect` announced the socket (CONNECT queued, phase `Connected`: from then on it is selected by
+broadcasts and receives `send_shared`) and then waited for CONNECT to be written before running the connection handlers
+and `mark_ready`. Over long-polling "written" meant "taken by a `GET`", which the client decides: a client that `POST`ed
+CONNECT and never polled kept a socket that was connected, received every broadcast of the namespace into its queue, and
+never went through `on_connection` or a gateway's `handle_connection`, the documented place to authenticate a socket and
+disconnect it (`docs/websockets/guards.md`). Only the heartbeat ended it, and a client that polls once after the
+broadcast it wants collects it.
+
+Fix (Decision 6, revised): the connection handlers and `mark_ready` run right after the announce, as on `dev` and in the
+reference server; the wait, `EngineSocket::send_written`, `Session::send_written` and the acknowledgements `take_batch`
+answered for it are removed (no phase or other bookkeeping existed only for the wait). "CONNECT leaves alone" is kept in
+the transport: `take_batch` closes a poll response after a Socket.IO CONNECT (`QueueItem::ends_batch`). Unit tests that
+had been changed for the wait went back to their `dev` form; the two that tested the wait itself
+(`the_connection_handlers_wait_for_the_connect_write`,
+`a_connection_that_closes_before_the_connect_write_runs_no_handler_and_loses_its_socket`) were removed, and the
+teardown at each step of the sequence stays pinned by `socket_io_connect_order.rs`.
+
+Regression tests, written first and seen failing on `cd8672c`:
+
+- `socket_io::tests::the_connection_handler_runs_before_the_client_polls_and_a_socket_it_refuses_gets_no_broadcast`
+  (in-process, paused clock): a member joins `/chat`, a task broadcasts `news` in a loop, a second client sends
+  `0/chat,` without a token and nothing takes its queue; the `on_connection` handler disconnects a socket without a
+  token. On `cd8672c` it failed with "the connection handler of the client that does not poll: not within 10,000 turns of
+  the runtime". Now the handler runs, and what the client collects is its CONNECT and its DISCONNECT, with no `news`.
+- `socket_io_gateways.rs::the_connection_hook_runs_for_a_polling_client_that_does_not_poll_and_a_socket_it_refuses_gets_no_broadcast`
+  (real polling transport): a client `POST`s `40/life,{"token":"refuse"}` with no `GET`; the gateway's
+  `handle_connection` disconnects it. On `cd8672c` it failed with "`life-refused` was not logged within 10 s; log:
+  ["init:/chat", "life-connection:member"]" (the WebSocket member's hook ran, the polling client's never did). Now the
+  hook runs before any `GET`, a broadcast after it reaches the member and not the client, and the client's first `GET`
+  answers its CONNECT alone and the second its DISCONNECT.
+
+Hardening notes of the review:
+
+- **Spare capacity of a queued packet.** The encoder keeps up to an eighth of a buffer's length as spare capacity, which
+  `max_buffered_amount` did not count. A framed text is now charged its capacity (`QueueItem::size` of `Packet`), which
+  costs nothing; shrinking every buffer to fit would reallocate, and may copy, on every emit. Test:
+  `a_framed_text_counts_against_the_send_buffer_with_its_spare_capacity` (failed with 916 for 1,016 under the old rule).
+- **Callbacks of a socket that never connected.** On an own-room failure, the `disconnecting` and `disconnect` callbacks
+  a middleware registered did not run (right: the client never saw the socket connected, and the reference server runs
+  no `disconnect` for a socket that is not connected) but were kept inside the socket, so one holding a clone of the
+  socket made a cycle that nothing freed. The same held for a socket its middleware refused, and for one whose
+  connection closed during the middleware (`PendingGuard`). Both paths now drop them without running them
+  (`IoSocket::release_callbacks`). Tests:
+  `the_disconnect_callbacks_of_a_socket_whose_own_room_failed_are_released_without_running` and
+  `the_disconnect_callbacks_of_a_socket_a_middleware_refused_are_released_without_running`, both failed on the release
+  assertion before.
+
+Left as it is, and outside this finding: a gateway's `handle_connection` runs in a task of its own (as on `dev`), so a
+broadcast that runs between the announce and the hook's `disconnect` can still reach the socket, even when the hook
+disconnects before its first `await`; NestJS calls `handleConnection` synchronously from the `connection` event. The
+window is bounded by the scheduling of one task, no longer by the client. A follow-up for the maintainer.

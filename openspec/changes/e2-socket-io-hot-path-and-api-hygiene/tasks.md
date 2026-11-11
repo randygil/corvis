@@ -123,6 +123,11 @@ to applications and clients" says so.
 - [ ] 7.4 Run the upstream suite 20 times in a row (`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test
   socket_io_conformance`) and `socket_io_diff` once; record the 20 results in Implementation notes; verify 20 of 20 pass
 
+Revised by the security review, round 1 (design.md Decision 6 and "Security review (round 1)"): the wait of 7.2 and the
+acknowledgements of 7.1 were removed; the connection handlers run right after the announce, `take_batch` ends a poll
+response after a CONNECT, and the tests of 7.3 follow the requirements "Connection handlers run when the socket is
+announced" and "CONNECT leaves alone".
+
 ## 8. Address key (Decision 7)
 
 - [x] 8.1 `EngineSocket::address_key()`; `IoSocket::resolve_ack` passes it; test for the scenario of the spec requirement "The
