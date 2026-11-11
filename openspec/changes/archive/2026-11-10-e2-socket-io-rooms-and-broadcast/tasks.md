@@ -96,7 +96,7 @@ clock; no retries.
   leave, the own-id room, operators and `within` as Node's `in`, terminal operations are `async`, broadcast
   acknowledgements, the limits table of design.md Decision 8 and the divergences, the adapter option with Redis
   announced for #36) and translate it in `docs/es/websockets/adapter.md`; verify `npm run docs:check` in `docs/`
-- [ ] 6.3 Security review of the change with the `security-reviewer` agent (room limits, operator errors that must
+- [x] 6.3 Security review of the change with the `security-reviewer` agent (room limits, operator errors that must
   not widen a broadcast, fan-out memory, lock discipline and the join / disconnect race, broadcast acknowledgement
   tracking and its cap, the adapter trait as an extension point); repeat rounds until no open finding; record
   findings and their fixes in design.md under "Security review"; verify every finding has a regression test or a
@@ -113,9 +113,9 @@ clock; no retries.
 - [x] 7.4 Regression tests: one per spec scenario (unit, integration, security or harness scenario), as listed in
   groups 1-5
 - [x] 7.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
-- [ ] 7.6 Framework runtime code changed (`crates/corvis/src/socket_io/`): run the `corvis-parity` check and verify
+- [x] 7.6 Framework runtime code changed (`crates/corvis/src/socket_io/`): run the `corvis-parity` check and verify
   the three port apps keep 0 apidiff differences
-- [ ] 7.7 The security review of 6.3 is closed before archiving
+- [x] 7.7 The security review of 6.3 is closed before archiving
 
 ## 8. Security review, round 1 (fixes)
 
@@ -162,6 +162,24 @@ clock; no retries.
 - [x] 10.2 An `Err` from the own-room `add_all` at CONNECT is treated like a panic; test
   `an_error_from_add_all_of_the_own_room_during_connect_closes_the_connection_like_a_panic`
 - [x] 10.3 Docs (English and Spanish) and design.md "Security review (round 3)"
+
+## Verification
+
+Checked on `dev` at 2b32212 (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed, after two room tests that run on several workers were made to wait for the registration of the socket (#183) and the fuzz job got a longer time limit |
+| `cargo test -p corvis --features socket-io` with `CORVIS_NODE_DIFF=1` | 1533 passed, 2 failed, 56 ignored in the full run; the two failures were the protocol suites (one timing case each, against Corvis and against the Node reference alike) under the load of the full run; rerun alone, `socket_io_conformance`, `engine_io_conformance` and `socket_io_diff` pass |
+| `cargo test --workspace` | 2031 passed, 17 failed, 97 ignored; the 17 are the tests of `transport_security`, which could not create their upload directory among about 1,200 leftovers in the temporary directory; rerun alone, 31 passed, and the leftovers were removed |
+| `cargo check -p corvis --tests --features <f>` for compression, auth-local, auth-api-key, auth-session, auth-oauth2, socket-io | no warnings |
+| `cargo deny check`, `node scripts/check-naming.mjs`, docs check | ok |
+| Security review, round 1 | findings fixed (section 8) |
+| Security review, round 2 | 1 medium (answers of an ack-collecting broadcast charged to the answering client), 2 low (adapter panic during CONNECT left a session or a socket behind), fixed (section 9) |
+| Security review, round 3 | the fixes of round 2 held under the reviewer's proofs of concept; 1 low (one address could fill the answer budget) fixed with a share per address (section 10), verified by its regression test, which fails without the share |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 598 checks equal, 0 different (run inside the quiet hours, which leaves 38 checks out); route tables identical; databases equivalent |
 
 ## Workflow follow-up
 
