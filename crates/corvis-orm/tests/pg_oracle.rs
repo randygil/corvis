@@ -54,6 +54,18 @@ fn normalize(v: &mut Value) {
     }
 }
 
+/// `{ "$float": "NaN" | "Infinity" | "-Infinity" }` in the recorded arguments is a non-finite JavaScript number. The
+/// reference client sends it as JSON `null` (`JSON.stringify(NaN)`), so a JSON query carries `null` too; the typed
+/// helpers refuse such values instead (`tests/typed_params.rs`).
+fn revive(v: &mut Value) {
+    match v {
+        Value::Object(m) if m.len() == 1 && m.contains_key("$float") => *v = Value::Null,
+        Value::Object(m) => m.values_mut().for_each(revive),
+        Value::Array(a) => a.iter_mut().for_each(revive),
+        _ => {}
+    }
+}
+
 /// The core message (the reference client prefixes it with the invocation and argument tree).
 fn core_message(msg: &str) -> String {
     let m = msg.trim();
@@ -152,7 +164,9 @@ async fn run_cases(db: &OrmClient) {
                 db._execute_raw_unsafe(sql, params).await.map(Value::from)
             }
         } else {
-            db.query_json(meta_of(model), action, c["args"].clone()).await
+            let mut args = c["args"].clone();
+            revive(&mut args);
+            db.query_json(meta_of(model), action, args).await
         };
         if only.as_deref().is_some_and(|o| !label.starts_with(o)) {
             continue;

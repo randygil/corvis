@@ -112,13 +112,16 @@ async fn postgres_sql_of_the_oracle_cases_is_unchanged() {
     let expected = std::fs::read_to_string(FIXTURE).expect("tests/fixtures/pg_sql_snapshot.json is missing");
     let expected: Vec<Value> = serde_json::from_str(&expected).unwrap();
     let got: Vec<Value> = serde_json::from_str(&got).unwrap();
+    // The snapshot covers the cases recorded when it was taken; cases appended to the oracle later run too (later
+    // cases see their effects) but have no snapshot.
+    assert!(got.len() >= expected.len(), "oracle cases were removed");
     let mut diffs = Vec::new();
     for (g, x) in got.iter().zip(expected.iter()) {
+        assert_eq!(g["label"], x["label"], "the oracle cases changed order");
         if g != x {
             let statements = |v: &Value| serde_json::from_value::<Vec<Recorded>>(v["statements"].clone()).unwrap();
             diffs.push(format!("[{}]\n  expected: {:#?}\n  got:      {:#?}", x["label"], statements(x), statements(g)));
         }
     }
-    assert_eq!(got.len(), expected.len(), "the number of oracle cases changed");
     assert!(diffs.is_empty(), "{} oracle cases send different SQL to Postgres:\n{}", diffs.len(), diffs.join("\n"));
 }

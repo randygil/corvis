@@ -311,6 +311,13 @@ impl Engine {
                         q.push(if op == "in" { "1=0" } else { "1=1" });
                         continue;
                     }
+                    // Like the reference client: a list item is never `null` (a JavaScript `NaN` arrives as `null`).
+                    if items.iter().any(Value::is_null) {
+                        return Err(self.err(format!(
+                            "Argument `{op}`: Invalid value provided. Expected List{}FieldRefInput or Null, provided a list with Null.",
+                            f.kind.schema_name()
+                        )));
+                    }
                     col(q);
                     if ci && items.len() > IN_LIST_INLINE_MAX {
                         let vals = items.iter().map(|item| self.value(f, item, false)).collect::<Result<Vec<_>>>()?;
@@ -331,6 +338,10 @@ impl Engine {
                     }
                 }
                 "lt" | "lte" | "gt" | "gte" => {
+                    // `{ lt: null }` is a missing argument for the reference client (a `NaN` or `Infinity` arrives as `null`).
+                    if val.is_null() {
+                        return Err(self.err(format!("Argument `{op}` is missing.")));
+                    }
                     let v = self.value(f, val, false)?;
                     let sym = match op.as_str() {
                         "lt" => " < ",

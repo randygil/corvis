@@ -62,7 +62,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.208Z",
+   "updatedAt": "2026-11-11T14:16:56.398Z",
    "data": {
     "a": [
      1,
@@ -101,7 +101,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-02T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.251Z",
+   "updatedAt": "2026-11-11T14:16:56.407Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -209,7 +209,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.263Z",
+   "updatedAt": "2026-11-11T14:16:56.413Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -297,7 +297,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T00:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-07T17:38:07.208Z",
+    "updatedAt": "2026-11-11T14:16:56.398Z",
     "data": {
      "a": [
       1,
@@ -664,7 +664,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T00:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-07T17:38:07.208Z",
+    "updatedAt": "2026-11-11T14:16:56.398Z",
     "data": {
      "a": [
       1,
@@ -692,7 +692,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-02T00:00:00.000Z",
-    "updatedAt": "2026-11-07T17:38:07.251Z",
+    "updatedAt": "2026-11-11T14:16:56.407Z",
     "data": null,
     "meta": {},
     "active": true,
@@ -711,7 +711,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-03T00:00:00.000Z",
-    "updatedAt": "2026-11-07T17:38:07.263Z",
+    "updatedAt": "2026-11-11T14:16:56.413Z",
     "data": null,
     "meta": {},
     "active": true,
@@ -751,7 +751,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.208Z",
+   "updatedAt": "2026-11-11T14:16:56.398Z",
    "data": {
     "a": [
      1,
@@ -969,7 +969,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.263Z",
+   "updatedAt": "2026-11-11T14:16:56.413Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -1057,7 +1057,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.263Z",
+   "updatedAt": "2026-11-11T14:16:56.413Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -1310,7 +1310,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.208Z",
+   "updatedAt": "2026-11-11T14:16:56.398Z",
    "active": true,
    "managerId": null
   }
@@ -1346,7 +1346,7 @@
    "ratio": null,
    "big": 0,
    "birthday": null,
-   "updatedAt": "2026-11-07T17:38:07.263Z",
+   "updatedAt": "2026-11-11T14:16:56.413Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -3611,7 +3611,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.696Z",
+   "updatedAt": "2026-11-11T14:16:56.708Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -3679,7 +3679,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-07T17:38:07.676Z",
+   "updatedAt": "2026-11-11T14:16:56.689Z",
    "data": null,
    "meta": {
     "k": "v"
@@ -12253,5 +12253,734 @@
    }
   },
   "result": 0
+ },
+ {
+  "label": "fin.create_nan",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "fin-nan@x.io",
+    "ratio": {
+     "$float": "NaN"
+    },
+    "createdAt": "2024-03-01T00:00:00.000Z"
+   },
+   "select": {
+    "email": true
+   }
+  },
+  "result": {
+   "email": "fin-nan@x.io"
+  }
+ },
+ {
+  "label": "fin.create_null",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "fin-null@x.io",
+    "ratio": null,
+    "createdAt": "2024-03-01T00:00:00.000Z"
+   },
+   "select": {
+    "email": true
+   }
+  },
+  "result": {
+   "email": "fin-null@x.io"
+  }
+ },
+ {
+  "label": "fin.create_one",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "fin-one@x.io",
+    "ratio": 1.5,
+    "createdAt": "2024-03-01T00:00:00.000Z"
+   },
+   "select": {
+    "email": true
+   }
+  },
+  "result": {
+   "email": "fin-one@x.io"
+  }
+ },
+ {
+  "label": "fin.read",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    }
+   },
+   "select": {
+    "email": true,
+    "ratio": true
+   },
+   "orderBy": {
+    "email": "asc"
+   }
+  },
+  "result": [
+   {
+    "email": "fin-nan@x.io",
+    "ratio": null
+   },
+   {
+    "email": "fin-null@x.io",
+    "ratio": null
+   },
+   {
+    "email": "fin-one@x.io",
+    "ratio": 1.5
+   }
+  ]
+ },
+ {
+  "label": "fin.equals_nan",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    },
+    "ratio": {
+     "$float": "NaN"
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "email": "asc"
+   }
+  },
+  "result": [
+   {
+    "email": "fin-nan@x.io"
+   },
+   {
+    "email": "fin-null@x.io"
+   }
+  ]
+ },
+ {
+  "label": "fin.equals_op_nan",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    },
+    "ratio": {
+     "equals": {
+      "$float": "NaN"
+     }
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "email": "asc"
+   }
+  },
+  "result": [
+   {
+    "email": "fin-nan@x.io"
+   },
+   {
+    "email": "fin-null@x.io"
+   }
+  ]
+ },
+ {
+  "label": "fin.not_nan",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    },
+    "ratio": {
+     "not": {
+      "$float": "NaN"
+     }
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "email": "asc"
+   }
+  },
+  "result": [
+   {
+    "email": "fin-one@x.io"
+   }
+  ]
+ },
+ {
+  "label": "fin.lt_infinity",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    },
+    "ratio": {
+     "lt": {
+      "$float": "Infinity"
+     }
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "email": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    email: {\n      startsWith: \"fin-\"\n    },\n    ratio: {\n+     lt: Float\n    }\n  },\n  select: {\n    email: true\n  },\n  orderBy: {\n    email: \"asc\"\n  }\n}\n\nArgument `lt` is missing."
+  }
+ },
+ {
+  "label": "fin.in_nan",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    },
+    "ratio": {
+     "in": [
+      {
+       "$float": "NaN"
+      },
+      1.5
+     ]
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "email": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    email: {\n      startsWith: \"fin-\"\n    },\n    ratio: {\n      in: [\n        NaN,\n        1.5\n      ]\n      ~~~~~\n    }\n  },\n  select: {\n    email: true\n  },\n  orderBy: {\n    email: \"asc\"\n  }\n}\n\nArgument `in`: Invalid value provided. Expected ListFloatFieldRefInput or Null, provided (Null, Float)."
+  }
+ },
+ {
+  "label": "fin.set_infinity",
+  "model": "user",
+  "action": "updateMany",
+  "args": {
+   "where": {
+    "email": "fin-one@x.io"
+   },
+   "data": {
+    "ratio": {
+     "$float": "-Infinity"
+    }
+   }
+  },
+  "result": {
+   "count": 1
+  }
+ },
+ {
+  "label": "fin.read_after_set",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    }
+   },
+   "select": {
+    "email": true,
+    "ratio": true
+   },
+   "orderBy": {
+    "email": "asc"
+   }
+  },
+  "result": [
+   {
+    "email": "fin-nan@x.io",
+    "ratio": null
+   },
+   {
+    "email": "fin-null@x.io",
+    "ratio": null
+   },
+   {
+    "email": "fin-one@x.io",
+    "ratio": null
+   }
+  ]
+ },
+ {
+  "label": "fin.delete_not_nan",
+  "model": "user",
+  "action": "deleteMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    },
+    "ratio": {
+     "not": {
+      "$float": "NaN"
+     }
+    }
+   }
+  },
+  "result": {
+   "count": 0
+  }
+ },
+ {
+  "label": "fin.remaining",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "fin-"
+    }
+   },
+   "select": {
+    "email": true
+   },
+   "orderBy": {
+    "email": "asc"
+   }
+  },
+  "result": [
+   {
+    "email": "fin-nan@x.io"
+   },
+   {
+    "email": "fin-null@x.io"
+   },
+   {
+    "email": "fin-one@x.io"
+   }
+  ]
+ },
+ {
+  "label": "arith.create",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "arith@x.io",
+    "ratio": 2.5,
+    "balance": "10",
+    "createdAt": "2024-03-02T00:00:00.000Z"
+   },
+   "select": {
+    "ratio": true,
+    "balance": true
+   }
+  },
+  "result": {
+   "ratio": 2.5,
+   "balance": "10"
+  }
+ },
+ {
+  "label": "arith.create_null",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "arith-null@x.io",
+    "createdAt": "2024-03-02T00:00:00.000Z"
+   },
+   "select": {
+    "ratio": true
+   }
+  },
+  "result": {
+   "ratio": null
+  }
+ },
+ {
+  "label": "arith.post",
+  "model": "post",
+  "action": "create",
+  "args": {
+   "data": {
+    "title": "arith",
+    "views": 7,
+    "createdAt": "2024-03-02T00:00:00.000Z"
+   },
+   "select": {
+    "title": true,
+    "views": true
+   }
+  },
+  "result": {
+   "title": "arith",
+   "views": 7
+  }
+ },
+ {
+  "label": "arith.divide_zero_int",
+  "model": "post",
+  "action": "updateMany",
+  "args": {
+   "where": {
+    "title": "arith"
+   },
+   "data": {
+    "views": {
+     "divide": 0
+    }
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.updateMany()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"22012\", message: \"division by zero\", severity: \"ERROR\", detail: None, column: None, hint: None }), transient: false })"
+  }
+ },
+ {
+  "label": "arith.after_divide_int",
+  "model": "post",
+  "action": "findFirst",
+  "args": {
+   "where": {
+    "title": "arith"
+   },
+   "select": {
+    "views": true
+   }
+  },
+  "result": {
+   "views": 7
+  }
+ },
+ {
+  "label": "arith.divide_zero_float",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "email": "arith@x.io"
+   },
+   "data": {
+    "ratio": {
+     "divide": 0
+    }
+   },
+   "select": {
+    "ratio": true
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.update()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"22012\", message: \"division by zero\", severity: \"ERROR\", detail: None, column: None, hint: None }), transient: false })"
+  }
+ },
+ {
+  "label": "arith.divide_zero_float_null",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "email": "arith-null@x.io"
+   },
+   "data": {
+    "ratio": {
+     "divide": 0
+    }
+   },
+   "select": {
+    "ratio": true
+   }
+  },
+  "result": {
+   "ratio": null
+  }
+ },
+ {
+  "label": "arith.divide_zero_decimal",
+  "model": "user",
+  "action": "update",
+  "args": {
+   "where": {
+    "email": "arith@x.io"
+   },
+   "data": {
+    "balance": {
+     "divide": 0
+    }
+   },
+   "select": {
+    "balance": true
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.user.update()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"22012\", message: \"division by zero\", severity: \"ERROR\", detail: None, column: None, hint: None }), transient: false })"
+  }
+ },
+ {
+  "label": "arith.after_divide",
+  "model": "user",
+  "action": "findUnique",
+  "args": {
+   "where": {
+    "email": "arith@x.io"
+   },
+   "select": {
+    "ratio": true,
+    "balance": true
+   }
+  },
+  "result": {
+   "ratio": 2.5,
+   "balance": "10"
+  }
+ },
+ {
+  "label": "arith.set_max_int",
+  "model": "post",
+  "action": "updateMany",
+  "args": {
+   "where": {
+    "title": "arith"
+   },
+   "data": {
+    "views": 2147483647
+   }
+  },
+  "result": {
+   "count": 1
+  }
+ },
+ {
+  "label": "arith.increment_overflow",
+  "model": "post",
+  "action": "updateMany",
+  "args": {
+   "where": {
+    "title": "arith"
+   },
+   "data": {
+    "views": {
+     "increment": 1
+    }
+   }
+  },
+  "error": {
+   "name": "PrismaClientUnknownRequestError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.updateMany()` invocation:\n\n\nError occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"22003\", message: \"integer out of range\", severity: \"ERROR\", detail: None, column: None, hint: None }), transient: false })"
+  }
+ },
+ {
+  "label": "arith.after_overflow",
+  "model": "post",
+  "action": "findFirst",
+  "args": {
+   "where": {
+    "title": "arith"
+   },
+   "select": {
+    "views": true
+   }
+  },
+  "result": {
+   "views": 2147483647
+  }
+ },
+ {
+  "label": "dialect.create_jose",
+  "model": "user",
+  "action": "create",
+  "args": {
+   "data": {
+    "email": "jose@x.io",
+    "name": "José",
+    "data": {
+     "0": "zero",
+     "a": [
+      10,
+      20
+     ]
+    },
+    "createdAt": "2024-03-03T00:00:00.000Z"
+   },
+   "select": {
+    "email": true
+   }
+  },
+  "result": {
+   "email": "jose@x.io"
+  }
+ },
+ {
+  "label": "dialect.contains_insensitive_accent",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "name": {
+     "contains": "JOSÉ",
+     "mode": "insensitive"
+    }
+   },
+   "select": {
+    "email": true
+   }
+  },
+  "result": [
+   {
+    "email": "jose@x.io"
+   }
+  ]
+ },
+ {
+  "label": "dialect.equals_insensitive_accent",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "name": {
+     "equals": "josé",
+     "mode": "insensitive"
+    }
+   },
+   "select": {
+    "email": true
+   }
+  },
+  "result": [
+   {
+    "email": "jose@x.io"
+   }
+  ]
+ },
+ {
+  "label": "dialect.json_path_zero_on_object",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "path": [
+      "0"
+     ],
+     "equals": "zero"
+    }
+   },
+   "select": {
+    "email": true
+   }
+  },
+  "result": [
+   {
+    "email": "jose@x.io"
+   }
+  ]
+ },
+ {
+  "label": "dialect.json_path_zero_on_array",
+  "model": "user",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "data": {
+     "path": [
+      "a",
+      "0"
+     ],
+     "equals": 10
+    }
+   },
+   "select": {
+    "email": true
+   }
+  },
+  "result": [
+   {
+    "email": "jose@x.io"
+   }
+  ]
+ },
+ {
+  "label": "dialect.search_two_terms",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "title": {
+     "search": "arith & P1"
+    }
+   },
+   "select": {
+    "title": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": []
+ },
+ {
+  "label": "dialect.search_one_term",
+  "model": "post",
+  "action": "findMany",
+  "args": {
+   "where": {
+    "title": {
+     "search": "arith"
+    }
+   },
+   "select": {
+    "title": true
+   },
+   "orderBy": {
+    "id": "asc"
+   }
+  },
+  "result": [
+   {
+    "title": "arith"
+   }
+  ]
  }
 ]
