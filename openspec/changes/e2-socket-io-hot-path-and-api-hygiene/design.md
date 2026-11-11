@@ -975,6 +975,21 @@ Hardening notes of the review:
   `the_disconnect_callbacks_of_a_socket_a_middleware_refused_are_released_without_running`, both failed on the release
   assertion before.
 
+Checks after the fix (on `03e5801`): `cargo fmt --check`, workspace clippy, the socket-io clippy without default
+features, the eight per-feature checks and `cargo build --workspace --all-targets`: clean. `cargo test --workspace
+--no-fail-fast`: 2,645 passed, 0 failed, 101 ignored (190 binaries); `cargo test -p corvis --features socket-io
+--no-fail-fast`: 1,702 passed, 0 failed, 57 ignored (114 binaries); fuzz with `PROPTEST_CASES=20000`: 32 and 16
+passed; `socket_io_connect_order` and `socket_io_gateways` 5 of 5; ratchet (only the known Windows difference,
+`expect_used` 50 for the Linux 51), naming, crate files, `cargo deny check`, `npm run docs:check` (179 + 179 pages) and
+`openspec validate --strict`: pass.
+
+The `emit` rows of the benchmark, rerun with the binary of `cd8672c` and the binary of the fix alternated, three rounds
+each in the same hour (each round is itself the median of 3 runs): allocations and bytes per message did not change (51.0
+and 20,125 over polling, 19.0 and 1,077 over WebSocket). Rates, `cd8672c` then the fix: polling 49,341 / 50,725 / 49,852
+and 50,682 / 49,130 / 49,079 msg/s; WebSocket 90,042 / 85,059 / 97,021 and 91,375 / 96,420 / 96,074 msg/s. No
+regression; the WebSocket rate of this machine moves by 10% from run to run (13.1's 98,017 was another hour).
+`results.md` keeps the table of 13.1.
+
 Left as it is, and outside this finding: a gateway's `handle_connection` runs in a task of its own (as on `dev`), so a
 broadcast that runs between the announce and the hook's `disconnect` can still reach the socket, even when the hook
 disconnects before its first `await`; NestJS calls `handleConnection` synchronously from the `connection` event. The
