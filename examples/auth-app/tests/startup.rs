@@ -51,7 +51,9 @@ fn a_missing_secret_names_the_variable() {
 
 #[test]
 fn a_missing_oauth_setting_names_the_variable() {
-    for name in ["OAUTH_AUTHORIZE_URL", "OAUTH_TOKEN_URL", "OAUTH_USERINFO_URL", "OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET", "OAUTH_REDIRECT_URI"] {
+    for name in
+        ["OAUTH_AUTHORIZE_URL", "OAUTH_TOKEN_URL", "OAUTH_USERINFO_URL", "OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET", "OAUTH_REDIRECT_URI"]
+    {
         let mut vars = valid();
         vars.remove(name);
         let err = format!("{:#}", load(&vars).unwrap_err());

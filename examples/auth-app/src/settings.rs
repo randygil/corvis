@@ -61,7 +61,10 @@ impl Settings {
             let value = get(name).filter(|v| !v.is_empty()).ok_or_else(|| corvis::anyhow::anyhow!("{name} is required"))?;
             if value.len() < MIN_SECRET_BYTES {
                 // The message holds the length, never the value.
-                corvis::anyhow::bail!("{name} must have at least {MIN_SECRET_BYTES} bytes, it has {} (generate one with `openssl rand -hex 32`)", value.len());
+                corvis::anyhow::bail!(
+                    "{name} must have at least {MIN_SECRET_BYTES} bytes, it has {} (generate one with `openssl rand -hex 32`)",
+                    value.len()
+                );
             }
             Ok(value)
         };
@@ -134,7 +137,9 @@ impl SettingsModule {
     pub fn module() -> DynamicModule {
         DynamicModule::new::<SettingsModule>()
             .provider(Provider::use_factory(Token::of::<Settings>(), |_ctx| async move {
-                current::SETTINGS.try_with(|settings| settings.clone()).map_err(|_| corvis::anyhow::anyhow!("no Settings: build the application with create_app"))
+                current::SETTINGS
+                    .try_with(|settings| settings.clone())
+                    .map_err(|_| corvis::anyhow::anyhow!("no Settings: build the application with create_app"))
             }))
             .export(Token::of::<Settings>())
             .global(true)

@@ -152,12 +152,8 @@ async fn the_session_identifier_changes_at_login() {
     let first = session_of(&c, "john", "john-demo-pass").await;
     // Logging in again with the cookie in hand (what a fixation attack plants) gives another identifier, and the old
     // one is anonymous.
-    let again = c
-        .post("/session/login")
-        .header("cookie", &first)
-        .json(&json!({ "username": "maria", "password": "maria-demo-pass" }))
-        .send()
-        .await;
+    let again =
+        c.post("/session/login").header("cookie", &first).json(&json!({ "username": "maria", "password": "maria-demo-pass" })).send().await;
     assert_eq!(again.status, 200);
     let second = cookie_of(&again);
     assert_ne!(second, first);
@@ -221,7 +217,13 @@ async fn the_provider_login_ends_with_a_session() {
     assert!(!done.text().contains("mock-"), "the provider's token never reaches the response");
 
     // The callback logged in to the session: its cookie is the one the response set last.
-    let session = done.headers.get_all("set-cookie").iter().map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string()).find(|c| c.starts_with("sid=")).expect("a session cookie");
+    let session = done
+        .headers
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
+        .find(|c| c.starts_with("sid="))
+        .expect("a session cookie");
     let me = c.get("/session/me").header("cookie", &session).send().await;
     assert_eq!(me.status, 200, "{}", me.text());
     assert_eq!(me.json_value()["username"], "provider:Mock Person");
@@ -304,7 +306,13 @@ async fn an_unverified_email_never_links_to_an_account() {
     let done = provider_login(&h, &c).await;
     assert_eq!(done.status, 200, "{}", done.text());
     assert_eq!(done.json_value()["username"], "provider:Impostor");
-    let session = done.headers.get_all("set-cookie").iter().map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string()).find(|c| c.starts_with("sid=")).unwrap();
+    let session = done
+        .headers
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
+        .find(|c| c.starts_with("sid="))
+        .unwrap();
     let me = c.get("/session/me").header("cookie", &session).send().await.json_value();
     assert_eq!(me["roles"], json!(["user"]));
     assert_ne!(me["id"], json!(1));

@@ -35,7 +35,10 @@ async fn the_cookies_are_host_prefixed_and_secure() {
     assert_eq!(login.status, 200, "{}", login.text());
     let header = set_cookie(&login);
     assert!(header.starts_with("__Host-sid=s%3A"), "{header}");
-    assert!(header.contains("Secure") && header.contains("HttpOnly") && header.contains("Path=/") && !header.contains("Domain"), "{header}");
+    assert!(
+        header.contains("Secure") && header.contains("HttpOnly") && header.contains("Path=/") && !header.contains("Domain"),
+        "{header}"
+    );
 
     let start = c.get("/auth/provider").send().await;
     assert_eq!(start.status, 302);

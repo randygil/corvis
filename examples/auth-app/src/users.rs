@@ -69,7 +69,10 @@ impl UsersService {
     /// The account and the stored hash of `username`. An account made by a provider login has no password.
     pub fn credentials(&self, username: &str) -> Option<(Account, String)> {
         let users = self.users.lock().unwrap_or_else(|e| e.into_inner());
-        users.iter().find(|u| u.account.username == username && !u.password_hash.is_empty()).map(|u| (u.account.clone(), u.password_hash.clone()))
+        users
+            .iter()
+            .find(|u| u.account.username == username && !u.password_hash.is_empty())
+            .map(|u| (u.account.clone(), u.password_hash.clone()))
     }
 
     /// Every account, without its hash or its e-mail address.

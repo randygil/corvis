@@ -72,7 +72,13 @@ fn check_page(root: &Path, page_path: &str) -> usize {
         let source = significant(&read(&root.join(&sample.file)));
         for (n, part) in sample.parts.iter().enumerate() {
             if !contains_run(&source, part) {
-                problems.push(format!("docs/{page_path}:{} part {} of the sample for {} is not in the file:\n    {}", sample.line, n + 1, sample.file, part.join("\n    ")));
+                problems.push(format!(
+                    "docs/{page_path}:{} part {} of the sample for {} is not in the file:\n    {}",
+                    sample.line,
+                    n + 1,
+                    sample.file,
+                    part.join("\n    ")
+                ));
             }
         }
     }

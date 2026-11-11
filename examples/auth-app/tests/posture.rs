@@ -78,7 +78,13 @@ async fn every_route_is_guarded_or_marked_public() {
     let feed = find(&report, "/feed", RequestMethod::Get);
     assert_eq!((&feed.status, feed.public_source), (&PostureStatus::Public, Some(PublicSource::Handler)));
     // The login routes are protected by the guard of their strategy.
-    for (path, method) in [("/auth/login", RequestMethod::Post), ("/session/login", RequestMethod::Post), ("/auth/provider", RequestMethod::Get), ("/auth/provider/callback", RequestMethod::Get), ("/me", RequestMethod::Get)] {
+    for (path, method) in [
+        ("/auth/login", RequestMethod::Post),
+        ("/session/login", RequestMethod::Post),
+        ("/auth/provider", RequestMethod::Get),
+        ("/auth/provider/callback", RequestMethod::Get),
+        ("/me", RequestMethod::Get),
+    ] {
         assert_eq!(find(&report, path, method).status, PostureStatus::Protected, "{path}");
     }
     // `RolesGuard` and the throttler are not access control: the `AuthGuard` before them is.

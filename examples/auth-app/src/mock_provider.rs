@@ -241,10 +241,13 @@ fn userinfo(state: &State, req: &Req) -> Answer {
 
 /// `a=1&b=%2F` as a map (the last value of a repeated name wins: this is a test double).
 fn form(text: &str) -> HashMap<String, String> {
-    text.split('&').filter(|p| !p.is_empty()).map(|pair| {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        (percent_decode(k), percent_decode(v))
-    }).collect()
+    text.split('&')
+        .filter(|p| !p.is_empty())
+        .map(|pair| {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            (percent_decode(k), percent_decode(v))
+        })
+        .collect()
 }
 
 fn percent_decode(text: &str) -> String {

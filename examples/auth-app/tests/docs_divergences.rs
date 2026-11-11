@@ -19,7 +19,9 @@ fn collect(file: &str, value: &Value, out: &mut BTreeSet<String>) {
         Value::Object(map) => {
             let reason = match map.get("divergence") {
                 Some(Value::String(s)) => Some(s.clone()),
-                Some(Value::Object(d)) => Some(d.get("reason").and_then(Value::as_str).map_or_else(|| value_text(&map["divergence"]), str::to_string)),
+                Some(Value::Object(d)) => {
+                    Some(d.get("reason").and_then(Value::as_str).map_or_else(|| value_text(&map["divergence"]), str::to_string))
+                }
                 _ => None,
             };
             if let Some(reason) = reason {
@@ -52,14 +54,14 @@ fn every_fixture_divergence_has_a_row_on_the_migration_page() {
     assert!(marks.len() >= 20, "the fixtures were not read: {marks:?}");
 
     let page = std::fs::read_to_string(root().join("docs/recipes/passport-migration.md")).unwrap().replace("\r\n", "\n");
-    let markers: BTreeSet<String> = page
-        .split("<!-- divergence: ")
-        .skip(1)
-        .filter_map(|rest| rest.split_once(" -->").map(|(key, _)| key.to_string()))
-        .collect();
+    let markers: BTreeSet<String> =
+        page.split("<!-- divergence: ").skip(1).filter_map(|rest| rest.split_once(" -->").map(|(key, _)| key.to_string())).collect();
 
     let missing: Vec<_> = marks.difference(&markers).collect();
-    assert!(missing.is_empty(), "fixture divergences with no row on docs/recipes/passport-migration.md (add a row with the marker):\n{missing:#?}");
+    assert!(
+        missing.is_empty(),
+        "fixture divergences with no row on docs/recipes/passport-migration.md (add a row with the marker):\n{missing:#?}"
+    );
     let stale: Vec<_> = markers.difference(&marks).collect();
     assert!(stale.is_empty(), "markers on the page for divergences that no fixture marks any more:\n{stale:#?}");
 }
