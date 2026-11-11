@@ -475,3 +475,24 @@ walks the years with a prime stride (1,000,003) instead.
 `js_date_parse_is_total` failed on the code of before the fix (the parser of the previous commit restored for one run,
 then put back): minimal input `"1Jan.9223372036854775807-"`, "attempt to multiply with overflow". An offset of an empty
 digit run still reads as `0`, as before; only a numeral that does not fit in `i64` is now an invalid date.
+
+Task 3.2's zod 3 half (`date.coerce.edges` in `casesV3`) passes with Decision 6 (task 6.1), which moves zod 3 mode off
+chrono; the zod 4 half passed with 3.2.
+
+### 4. zod 3 mode
+
+- `float_safe_remainder_v3` ports zod 3's `floatSafeRemainder` (`toString()` fraction digits, `toFixed`, `parseInt`),
+  with `js::to_fixed` and `js::parse_int` added for it. `js::to_fixed` rounds a tie to the larger magnitude as
+  ECMAScript does (Rust's own formatting rounds it to even); its unit test holds values printed by Node 24. The
+  existing guard `multipleOf(0)` → no issue is kept (zod 3 would give `NaN !== 0`, an issue; no fixture records it).
+- `z.coerce.number()` in zod 3 mode reads every JSON value with `js::to_number` (`Number(x)`), so `[5]` is now `5` as in
+  JavaScript (before: `NaN`). A missing value keeps today's `Required` issue (not recorded).
+- An infinite coerced number is the recorded divergence of 2.2: answered with the issues recorded for
+  `coerce.number.finite` (a zod 3 case added for this, `z3.coerce.number().finite()`), which the replay reads in its
+  `divergence` table.
+- Patterns: `V3_EMAIL`, `V3_CUID` and `V3_IPV6` are `JsRegex` statics with zod 3's sources and flags; zod 3's
+  `ipv4Regex` has the source of `regexes::IPV4` and reuses it; `url` is `url::Url::parse` (`new URL`). The `regex`
+  statics `EMAIL`, `CUID`, `URL` and `fmt_num` / `num_value` are removed.
+- Follow-up found while porting: `JsRegex` translates the `i` flag to the `regex` crate's Unicode case folding, under
+  which `[A-Z]` also matches U+017F and U+212A; V8 without the `u` flag does not. It affects every `i` pattern of both
+  modes (zod 3's email and cuid included), not only this change.

@@ -3,7 +3,6 @@
 //!
 //! Each node implements zod 3 semantics in `check` (kept as they were) and zod 4 in `run_v4`.
 
-use std::net::IpAddr;
 use std::sync::{Arc, LazyLock};
 
 use base64::Engine;
@@ -15,26 +14,23 @@ use super::core::{CheckOpts, CheckRunner, ErrorMap, ErrorParam, Payload, RawIssu
 use super::regex::JsRegex;
 use super::{JsonSchemaGen, ParseCtx, Schema, TypeErrors, ZodIssueCode, ZodType, invalid_type, js, regexes, v3_via_v4};
 
-static EMAIL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_'+\-.]*[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$").unwrap());
+// The patterns of zod 3 (`zod/v3`) where they are not those of `regexes` (its `ipv4Regex` is `regexes::IPV4`).
+static V3_EMAIL: LazyLock<JsRegex> =
+    LazyLock::new(|| JsRegex::new(r"^(?!\.)(?!.*\.\.)([A-Z0-9_'+\-\.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\-]*\.)+[A-Z]{2,}$", "i"));
+static V3_CUID: LazyLock<JsRegex> = LazyLock::new(|| JsRegex::new(r"^c[^\s-]{8,}$", "i"));
+static V3_IPV6: LazyLock<JsRegex> = LazyLock::new(|| {
+    JsRegex::new(
+        r"^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$",
+        "",
+    )
+});
 static UUID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap());
-static CUID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^c[^\s-]{8,}$").unwrap());
-static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^\s/?#]+[^\s]*$").unwrap());
 static DATETIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z$").unwrap());
 static DATETIME_OFFSET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)$").unwrap());
 static DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap());
 static TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{2}:\d{2}(:\d{2}(\.\d+)?)?$").unwrap());
-
-/// Formats a number like JavaScript does (`5` instead of `5.0`).
-pub(crate) fn fmt_num(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") }
-}
-
-pub(crate) fn num_value(n: f64) -> Value {
-    if n.fract() == 0.0 && n.abs() < 9.007_199_254_740_992e15 { json!(n as i64) } else { json!(n) }
-}
 
 pub(crate) fn issue_params(pairs: &[(&str, Value)]) -> Map<String, Value> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
@@ -1141,12 +1137,7 @@ impl ZodType for ZString {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
         let mut s = match input {
             Some(Value::String(s)) => s.clone(),
-            Some(other) if self.coerce => match other {
-                Value::Null => "null".to_string(),
-                Value::Bool(b) => b.to_string(),
-                Value::Number(n) => n.to_string(),
-                v => v.to_string(),
-            },
+            Some(other) if self.coerce => js::to_js_string(other),
             None if self.coerce => "undefined".to_string(),
             other => {
                 invalid_type(ctx, "string", other, &self.errors);
@@ -1154,8 +1145,9 @@ impl ZodType for ZString {
             }
         };
         let mut ok = true;
+        // `str.length`; zod 3 runs its transforms (`trim`, ...) in order with the checks.
+        let mut len = js::js_len(&s);
         for c in &self.checks {
-            let len = s.chars().count();
             let fail = |ctx: &mut ParseCtx, code: ZodIssueCode, default: String, p: Map<String, Value>| {
                 ctx.add(code, c.message.clone().unwrap_or(default), p);
             };
@@ -1207,10 +1199,11 @@ impl ZodType for ZString {
                 }
                 StrKind::Format(f) => {
                     let bad = match f.legacy {
-                        Legacy::Email => (!EMAIL.is_match(&s)).then_some(("email", "Invalid email")),
-                        Legacy::Url => (!URL.is_match(&s)).then_some(("url", "Invalid url")),
+                        Legacy::Email => (!V3_EMAIL.test(&s)).then_some(("email", "Invalid email")),
+                        // `new URL(input)`.
+                        Legacy::Url => url::Url::parse(&s).is_err().then_some(("url", "Invalid url")),
                         Legacy::Uuid => (!UUID.is_match(&s)).then_some(("uuid", "Invalid uuid")),
-                        Legacy::Cuid => (!CUID.is_match(&s)).then_some(("cuid", "Invalid cuid")),
+                        Legacy::Cuid => (!V3_CUID.test(&s)).then_some(("cuid", "Invalid cuid")),
                         Legacy::Datetime(offset) => {
                             let re = if offset { &DATETIME_OFFSET } else { &DATETIME };
                             (!re.is_match(&s) || chrono::DateTime::parse_from_rfc3339(&normalize_seconds(&s)).is_err())
@@ -1219,7 +1212,7 @@ impl ZodType for ZString {
                         Legacy::Date => (!DATE.is_match(&s) || chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").is_err())
                             .then_some(("date", "Invalid date")),
                         Legacy::Time => (!TIME.is_match(&s)).then_some(("time", "Invalid time")),
-                        Legacy::Ip => s.parse::<IpAddr>().is_err().then_some(("ip", "Invalid ip")),
+                        Legacy::Ip => (!regexes::IPV4.test(&s) && !V3_IPV6.test(&s)).then_some(("ip", "Invalid ip")),
                         Legacy::None => None,
                     };
                     if f.legacy != Legacy::None {
@@ -1256,12 +1249,12 @@ impl ZodType for ZString {
                         invalid(ctx, json!({ "includes": p }), &format!("Invalid input: must include \"{p}\""));
                     }
                 }
-                StrKind::Trim => s = s.trim().to_string(),
-                StrKind::ToLower => s = s.to_lowercase(),
-                StrKind::ToUpper => s = s.to_uppercase(),
-                StrKind::Normalize(form) => s = js_normalize(&s, form),
-                StrKind::Slugify => s = slugify(&s),
-                _ => {}
+                kind => {
+                    if let Some(next) = v3_transform(kind, &s) {
+                        s = next;
+                        len = js::js_len(&s);
+                    }
+                }
             }
         }
         if ok { Ok(Some(Value::String(s))) } else { Err(()) }
@@ -1312,6 +1305,18 @@ impl ZodType for ZString {
         string_json_schema(&self.bag(), jsg, json);
         Ok(())
     }
+}
+
+/// The string a zod 3 transform (`trim`, `toLowerCase`, ...) makes of `s`; `None` for a check.
+fn v3_transform(kind: &StrKind, s: &str) -> Option<String> {
+    Some(match kind {
+        StrKind::Trim => js::js_trim(s).to_string(),
+        StrKind::ToLower => s.to_lowercase(),
+        StrKind::ToUpper => s.to_uppercase(),
+        StrKind::Normalize(form) => js_normalize(s, form),
+        StrKind::Slugify => slugify(s),
+        _ => return None,
+    })
 }
 
 /// `2024-01-01T10:00Z` → `2024-01-01T10:00:00Z` so chrono can parse it.
@@ -1396,6 +1401,18 @@ pub(crate) fn float_safe_remainder(val: f64, step: f64) -> f64 {
     let rounded = ratio.round();
     let tolerance = f64::EPSILON * ratio.abs().max(1.0);
     if (ratio - rounded).abs() < tolerance { 0.0 } else { ratio - rounded }
+}
+
+/// zod 3's `floatSafeRemainder`: both numbers scaled to integers by the larger count of fraction digits in their
+/// `toString()`. zod 3 refuses `0.30000000000000004` as a multiple of `0.1`, which zod 4's algorithm
+/// (`float_safe_remainder`) accepts (`number.multipleOf.tenth` in the zod fixture).
+pub(crate) fn float_safe_remainder_v3(val: f64, step: f64) -> f64 {
+    let decimals = |x: f64| js::num_to_string(x).split_once('.').map_or(0, |(_, fraction)| fraction.len());
+    let digits = decimals(val).max(decimals(step));
+    let scaled = |x: f64| js::parse_int(&js::to_fixed(x, digits).replacen('.', "", 1));
+    // `toString()` has at most 17 significant digits plus an exponent suffix, so `digits` is at most 22 and the power
+    // of ten is exact.
+    (scaled(val) % scaled(step)) / 10f64.powi(i32::try_from(digits).unwrap_or(i32::MAX))
 }
 
 impl ZNumber {
@@ -1697,14 +1714,8 @@ pub(crate) fn number_json_schema(b: &NumBag, jsg: &JsonSchemaGen, json: &mut Map
 impl ZodType for ZNumber {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
         let n: f64 = match input {
-            Some(Value::Number(n)) => n.as_f64().unwrap_or(f64::NAN),
-            Some(other) if self.coerce => match other {
-                Value::String(s) if s.trim().is_empty() => 0.0,
-                Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
-                Value::Bool(b) => f64::from(u8::from(*b)),
-                Value::Null => 0.0,
-                _ => f64::NAN,
-            },
+            Some(Value::Number(n)) => js::json_f64(n),
+            Some(other) if self.coerce => js::to_number(Some(other)),
             other => {
                 invalid_type(ctx, "number", other, &self.errors);
                 return Err(());
@@ -1751,15 +1762,15 @@ impl ZodType for ZNumber {
                 NumKind::Min(v, inclusive) if (inclusive && n < v) || (!inclusive && n <= v) => {
                     ok = false;
                     let d = if inclusive {
-                        format!("Number must be greater than or equal to {}", fmt_num(v))
+                        format!("Number must be greater than or equal to {}", js::num_to_string(v))
                     } else {
-                        format!("Number must be greater than {}", fmt_num(v))
+                        format!("Number must be greater than {}", js::num_to_string(v))
                     };
                     ctx.add(
                         ZodIssueCode::TooSmall,
                         msg(d),
                         issue_params(&[
-                            ("minimum", num_value(v)),
+                            ("minimum", js::num_json(v)),
                             ("type", json!("number")),
                             ("inclusive", json!(inclusive)),
                             ("exact", json!(false)),
@@ -1769,27 +1780,27 @@ impl ZodType for ZNumber {
                 NumKind::Max(v, inclusive) if (inclusive && n > v) || (!inclusive && n >= v) => {
                     ok = false;
                     let d = if inclusive {
-                        format!("Number must be less than or equal to {}", fmt_num(v))
+                        format!("Number must be less than or equal to {}", js::num_to_string(v))
                     } else {
-                        format!("Number must be less than {}", fmt_num(v))
+                        format!("Number must be less than {}", js::num_to_string(v))
                     };
                     ctx.add(
                         ZodIssueCode::TooBig,
                         msg(d),
                         issue_params(&[
-                            ("maximum", num_value(v)),
+                            ("maximum", js::num_json(v)),
                             ("type", json!("number")),
                             ("inclusive", json!(inclusive)),
                             ("exact", json!(false)),
                         ]),
                     );
                 }
-                NumKind::MultipleOf(m) if m != 0.0 && ((n / m).round() * m - n).abs() > 1e-9 * n.abs().max(1.0) => {
+                NumKind::MultipleOf(m) if m != 0.0 && float_safe_remainder_v3(n, m) != 0.0 => {
                     ok = false;
                     ctx.add(
                         ZodIssueCode::NotMultipleOf,
-                        msg(format!("Number must be a multiple of {}", fmt_num(m))),
-                        issue_params(&[("multipleOf", num_value(m))]),
+                        msg(format!("Number must be a multiple of {}", js::num_to_string(m))),
+                        issue_params(&[("multipleOf", js::num_json(m))]),
                     );
                 }
                 NumKind::Finite if !n.is_finite() => {
@@ -1805,7 +1816,13 @@ impl ZodType for ZNumber {
         // Keep the original JSON number when it was not coerced (preserves u64/i64 exactly).
         match input {
             Some(v @ Value::Number(_)) => Ok(Some(v.clone())),
-            _ => Ok(Some(num_value(n))),
+            // zod 3 returns the infinite number a coercion gives (`"Infinity"`); a JSON value cannot hold it, so it is
+            // refused with zod 3's issue for an infinite number (a recorded divergence).
+            _ if n.is_infinite() => {
+                ctx.add(ZodIssueCode::NotFinite, "Number must be finite", Map::new());
+                Err(())
+            }
+            _ => Ok(Some(js::num_json(n))),
         }
     }
 
@@ -3253,5 +3270,37 @@ pub mod coerce {
     /// `z.coerce.date()`.
     pub fn date() -> ZDate {
         ZDate::new().coerce()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// zod 3 mode checks with zod 3's own patterns, on the JavaScript engine: the email pattern keeps its lookaheads
+    /// (which the `regex` crate cannot express) and its `i` flag.
+    #[test]
+    fn zod3_patterns_are_zod3_sources() {
+        assert_eq!(V3_EMAIL.to_string(), r"/^(?!\.)(?!.*\.\.)([A-Z0-9_'+\-\.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\-]*\.)+[A-Z]{2,}$/i");
+        assert_eq!(V3_CUID.to_string(), r"/^c[^\s-]{8,}$/i");
+        assert!(V3_IPV6.source().contains("fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}"));
+    }
+
+    /// The email pattern needs the bounded backtracking engine (lookaheads); the others run in linear time.
+    #[test]
+    fn which_zod3_patterns_are_linear() {
+        assert!(!V3_EMAIL.is_linear());
+        assert!(V3_CUID.is_linear());
+        assert!(V3_IPV6.is_linear());
+        assert!(regexes::IPV4.is_linear());
+    }
+
+    #[test]
+    fn zod3_remainder_scales_by_the_fraction_digits() {
+        assert_eq!(float_safe_remainder_v3(0.3, 0.1), 0.0);
+        assert_ne!(float_safe_remainder_v3(0.30000000000000004, 0.1), 0.0);
+        assert_ne!(float_safe_remainder_v3(12345.00001, 1.0), 0.0);
+        assert_eq!(float_safe_remainder_v3(1e21, 1.0), 0.0);
+        assert_eq!(float_safe_remainder(0.30000000000000004, 0.1), 0.0, "zod 4 accepts it");
     }
 }

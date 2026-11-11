@@ -12053,6 +12053,37 @@
      ]
     }
    ]
+  },
+  {
+   "name": "coerce.number.finite",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "Infinity",
+     "success": false,
+     "issues": [
+      {
+       "code": "not_finite",
+       "message": "Number must be finite",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "-Infinity",
+     "success": false,
+     "issues": [
+      {
+       "code": "not_finite",
+       "message": "Number must be finite",
+       "path": []
+      }
+     ]
+    }
+   ]
   }
  ],
  "jsonSchemas": [

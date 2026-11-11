@@ -42,14 +42,14 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 4. zod 3 mode (Decisions 3 and 4)
 
-- [ ] 4.1 `ZString::check` (`types.rs`): length with `js::js_len` (once, and again after a transform), `trim` with
+- [x] 4.1 `ZString::check` (`types.rs`): length with `js::js_len` (once, and again after a transform), `trim` with
   `js::js_trim`, `coerce` with `js::to_js_string`; messages with `js::num_to_string`; remove `fmt_num`, replace
   `num_value` with `js::num_json`; verify the `*.astral`, `string.trim.edges`, `coerce.string.edges`,
   `number.min.big`, `number.max.small` V3 cases pass and `zod4_parse_fixtures` still passes
-- [ ] 4.2 `ZNumber::check`: `z.coerce.number()` through `js::string_to_number` / `js::to_number`; `multipleOf` through
+- [x] 4.2 `ZNumber::check`: `z.coerce.number()` through `js::string_to_number` / `js::to_number`; `multipleOf` through
   `float_safe_remainder`, or `float_safe_remainder_v3` if the cases differ (comment naming them); verify
   `coerce.number.edges` and `number.multipleOf.*` V3 cases
-- [ ] 4.3 zod 3 email, cuid and ip patterns as `JsRegex` (reusing `regexes::` statics with identical sources), `url` as
+- [x] 4.3 zod 3 email, cuid and ip patterns as `JsRegex` (reusing `regexes::` statics with identical sources), `url` as
   recorded; remove the unused `regex`-crate statics; unit test that the zod 3 email pattern is the `JsRegex` of zod 3's
   source and a test naming which zod 3 patterns are linear; verify the `string.*.edges` V3 cases and the `regex.rs` tests
 

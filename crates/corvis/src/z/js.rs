@@ -150,46 +150,118 @@ pub fn string_to_number(s: &str) -> f64 {
             return acc;
         }
     }
-    if is_decimal_literal(t) { t.parse::<f64>().unwrap_or(f64::NAN) } else { f64::NAN }
+    if decimal_prefix(t) == Some(t.len()) { t.parse::<f64>().unwrap_or(f64::NAN) } else { f64::NAN }
 }
 
-fn is_decimal_literal(t: &str) -> bool {
+/// The length of the longest prefix of `t` that is a `StrDecimalLiteral` without `Infinity` (`-1.5e3`, `.5`, `5.`);
+/// `None` when no prefix is.
+fn decimal_prefix(t: &str) -> Option<usize> {
     let b = t.as_bytes();
-    let mut i = 0;
-    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
-        i += 1;
-    }
-    let int_start = i;
-    while i < b.len() && b[i].is_ascii_digit() {
-        i += 1;
-    }
-    let int_digits = i - int_start;
-    let mut frac_digits = 0;
-    if i < b.len() && b[i] == b'.' {
-        i += 1;
-        let fs = i;
+    let digits_from = |mut i: usize| {
         while i < b.len() && b[i].is_ascii_digit() {
             i += 1;
         }
-        frac_digits = i - fs;
+        i
+    };
+    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let int_end = digits_from(i);
+    let mut mantissa_digits = int_end - i;
+    i = int_end;
+    if b.get(i) == Some(&b'.') {
+        let frac_end = digits_from(i + 1);
+        mantissa_digits += frac_end - (i + 1);
+        i = frac_end;
     }
-    if int_digits == 0 && frac_digits == 0 {
-        return false;
+    if mantissa_digits == 0 {
+        return None;
     }
-    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
-        i += 1;
-        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
-            i += 1;
-        }
-        let es = i;
-        while i < b.len() && b[i].is_ascii_digit() {
-            i += 1;
-        }
-        if i == es {
-            return false;
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(b.get(i + 1), Some(b'+' | b'-')));
+        let exp_end = digits_from(i + 1 + sign);
+        if exp_end > i + 1 + sign {
+            i = exp_end;
         }
     }
-    i == b.len()
+    Some(i)
+}
+
+/// `parseFloat(string)`: the longest decimal prefix after leading white space, `NaN` when there is none.
+pub fn parse_float(s: &str) -> f64 {
+    let t = s.trim_start_matches(is_js_whitespace);
+    for (text, value) in [("Infinity", f64::INFINITY), ("+Infinity", f64::INFINITY), ("-Infinity", f64::NEG_INFINITY)] {
+        if t.starts_with(text) {
+            return value;
+        }
+    }
+    decimal_prefix(t).map_or(f64::NAN, |n| t[..n].parse::<f64>().unwrap_or(f64::NAN))
+}
+
+/// `parseInt(string, 10)`: the leading decimal digits after white space and an optional sign, `NaN` when there are
+/// none.
+pub fn parse_int(s: &str) -> f64 {
+    let t = s.trim_start_matches(is_js_whitespace);
+    let (neg, rest) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let digits = &rest[..rest.bytes().position(|c| !c.is_ascii_digit()).unwrap_or(rest.len())];
+    // The digits are a valid decimal literal, so the parse succeeds and rounds like JavaScript.
+    let n = if digits.is_empty() { f64::NAN } else { digits.parse::<f64>().unwrap_or(f64::NAN) };
+    if neg { -n } else { n }
+}
+
+/// `Number.prototype.toFixed(digits)`: rounded to the nearest, a tie to the larger magnitude; `String(x)` for a
+/// non-finite `x` or `|x| >= 1e21`.
+pub fn to_fixed(x: f64, digits: usize) -> String {
+    if !x.is_finite() || x.abs() >= 1e21 {
+        return num_to_string(x);
+    }
+    // The exact decimal expansion of `|x|` (a double has finitely many fraction digits), rounded half up by hand:
+    // Rust's own rounding of a tie is to even.
+    let exact = format!("{:.*}", exact_fraction_digits(x).max(digits), x.abs());
+    let (int, frac) = exact.split_once('.').unwrap_or((exact.as_str(), ""));
+    let mut kept: Vec<u8> = int.bytes().chain(frac.bytes().take(digits)).collect();
+    if frac.as_bytes().get(digits).is_some_and(|d| *d >= b'5') {
+        let mut i = kept.len();
+        loop {
+            if i == 0 {
+                kept.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if kept[i] == b'9' {
+                kept[i] = b'0';
+            } else {
+                kept[i] += 1;
+                break;
+            }
+        }
+    }
+    let point = kept.len() - digits;
+    let mut out = String::with_capacity(kept.len() + 2);
+    if x < 0.0 {
+        out.push('-');
+    }
+    out.extend(kept[..point].iter().map(|b| char::from(*b)));
+    if digits > 0 {
+        out.push('.');
+        out.extend(kept[point..].iter().map(|b| char::from(*b)));
+    }
+    out
+}
+
+/// How many fraction digits the exact decimal expansion of a finite `x` has.
+fn exact_fraction_digits(x: f64) -> usize {
+    if x == 0.0 {
+        return 0;
+    }
+    let bits = x.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i64;
+    let mantissa = bits & ((1 << 52) - 1);
+    let (mantissa, exponent) = if biased == 0 { (mantissa, -1074) } else { (mantissa | (1 << 52), biased - 1075) };
+    let exponent = exponent + i64::from(mantissa.trailing_zeros());
+    usize::try_from(-exponent).unwrap_or(0)
 }
 
 /// `Number(value)` for JSON values (`None` = `undefined`).
@@ -697,6 +769,39 @@ mod tests {
         assert_eq!(date_to_iso(to_date(Some(&json!(null)))).unwrap(), "1970-01-01T00:00:00.000Z");
         assert!(parse_date("x").is_nan());
         assert_eq!(date_to_iso(parse_date("2024-02-29T10:20:30.5+02:00")).unwrap(), "2024-02-29T08:20:30.500Z");
+    }
+
+    /// Expected values printed by Node 24 (`x.toFixed(d)`, `parseFloat(s)`, `parseInt(s, 10)`).
+    #[test]
+    fn to_fixed_parse_float_and_parse_int() {
+        for (x, d, want) in [
+            (0.5, 0, "1"),
+            (2.5, 0, "3"),
+            (1.005, 2, "1.00"),
+            (1.45, 1, "1.4"),
+            (-1.5, 0, "-2"),
+            (-0.0000001, 2, "-0.00"),
+            (0.0, 2, "0.00"),
+            (1e21, 2, "1e+21"),
+            (123.456, 10, "123.4560000000"),
+            (100000000000000.125, 2, "100000000000000.13"),
+            (0.30000000000000004, 17, "0.30000000000000004"),
+        ] {
+            assert_eq!(to_fixed(x, d), want, "({x}).toFixed({d})");
+        }
+        for (s, want) in
+            [(" 1.5abc", 1.5), ("0x10", 0.0), (".5", 0.5), ("5.", 5.0), ("-.5e1x", -5.0), ("1e", 1.0), ("Infinityx", f64::INFINITY)]
+        {
+            assert_eq!(parse_float(s), want, "parseFloat({s:?})");
+        }
+        assert_eq!(parse_float("-Infinity"), f64::NEG_INFINITY);
+        assert_eq!(parse_float("  \u{a0} 7"), 7.0);
+        assert!(parse_float("+.").is_nan() && parse_float("").is_nan());
+        for (s, want) in [("030", 30.0), ("-12x", -12.0), ("+5", 5.0), (" 9007199254740993", 9007199254740992.0), ("1e3", 1.0)] {
+            assert_eq!(parse_int(s), want, "parseInt({s:?}, 10)");
+        }
+        assert!(parse_int("x").is_nan());
+        assert!(parse_int("-0") == 0.0 && parse_int("-0").is_sign_negative());
     }
 
     /// A year, an offset or a numeral too large to compute is an invalid date (V8 answers Invalid Date for each;

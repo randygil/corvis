@@ -408,6 +408,9 @@ for (const [name, schema, inputs] of edges(z3)) c3(name, schema, inputs);
 c3("string.ip.edges", () => z3.string().ip(), ["::ffff:1.2.3.4", "fe80::1%eth0", "01.2.3.4", "1.2.3.4", "::1"]);
 c3("object.required.refine", () => z3.object({ a: z3.string().optional().refine(() => true) }).required(), [{}]);
 c3("discriminatedUnion.refinedKey", () => z3.discriminatedUnion("type", [z3.object({ type: z3.literal("a").refine(() => true), a: z3.string() })]), [{ type: "a", a: "x" }, { type: "b" }]);
+// zod 3's issue for an infinite number: what zod 3 mode answers for `coerce.number.edges` <- "Infinity", which it
+// cannot return in a JSON value.
+c3("coerce.number.finite", () => z3.coerce.number().finite(), ["Infinity", "-Infinity"]);
 
 // ----- json schema ---------------------------------------------------------------
 const jsonSchemas = [];

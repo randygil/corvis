@@ -392,6 +392,7 @@ fn schema(name: &str) -> z::Schema {
         "string.url.edges" => s(z::string().url()),
         "string.ip.edges" => s(z::string().ip()),
         "coerce.number.edges" => s(z::coerce::number()),
+        "coerce.number.finite" => s(z::coerce::number().finite()),
         "coerce.string.edges" => s(z::coerce::string()),
         "string.trim.edges" => s(z::string().trim()),
         "number.min.big" => s(z::number().min(1e21)),
@@ -568,6 +569,19 @@ fn recorded_non_finite(v: &Value) -> Option<&str> {
     v.get("$number").and_then(Value::as_str)
 }
 
+/// The recorded divergences: a result Corvis cannot reproduce, and the recorded case and input whose issues it
+/// answers instead. zod 3 returns the infinite number `z.coerce.number()` makes of `"Infinity"`; zod 3 mode works on
+/// JSON values and refuses it with zod 3's issue for an infinite number.
+fn divergence<'a>(fx: &'a Value, list: &str, name: &str, input: &Value) -> Option<&'a Value> {
+    let instead = match (list, name) {
+        ("casesV3", "coerce.number.edges") => "coerce.number.finite",
+        _ => return None,
+    };
+    let case = fx[list].as_array()?.iter().find(|c| c["name"] == instead)?;
+    let result = case["results"].as_array()?.iter().find(|r| r["input"] == *input)?;
+    Some(&result["issues"])
+}
+
 #[test]
 fn zod4_parse_fixtures() {
     run_parse_fixtures("cases", z::ZodVersion::V4);
@@ -631,6 +645,13 @@ fn run_parse_fixtures(list: &str, version: z::ZodVersion) {
                     continue;
                 }
                 if let Some(want) = recorded_non_finite(&expected["data"]) {
+                    if let Some(instead) = divergence(&fx, list, name, &expected["input"]) {
+                        match schema.parse_opt(input.as_ref(), &opts) {
+                            Err(e) if same(&e.to_json(), instead) => {}
+                            got => failures.entry(label).or_default().push(format!("divergence: got {got:?}, want {instead}")),
+                        }
+                        continue;
+                    }
                     match z::parse_val(&schema, input.as_ref(), &opts) {
                         Ok(z::Val::Num(n)) if z::js::num_to_string(n) == want => {}
                         got => failures.entry(label).or_default().push(format!("data: got {got:?}, want {want}")),
