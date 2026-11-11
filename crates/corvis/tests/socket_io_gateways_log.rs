@@ -189,3 +189,98 @@ async fn panics_and_internal_errors_are_logged_rate_limited_and_never_with_clien
     assert!((1..=2).contains(&handler_lines), "30 panics are logged by the rate limit, not one line each: {handler_lines} lines");
     app.close().await.unwrap();
 }
+
+// ------------------------------------------------------------------- a disconnect hook dropped at the application's cap
+
+#[injectable]
+pub struct Departures {
+    #[default]
+    started: std::sync::Arc<Mutex<Vec<String>>>,
+    #[default]
+    changed: std::sync::Arc<tokio::sync::Notify>,
+    #[default]
+    gate: std::sync::Arc<DepartureGate>,
+}
+
+pub struct DepartureGate(tokio::sync::Semaphore);
+
+impl Default for DepartureGate {
+    fn default() -> Self {
+        DepartureGate(tokio::sync::Semaphore::new(0))
+    }
+}
+
+impl Departures {
+    async fn wait_started(&self, count: usize) {
+        let wait = async {
+            loop {
+                let notified = self.changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.started.lock().unwrap().len() >= count {
+                    return;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), wait).await.expect("the hooks to start");
+    }
+}
+
+#[websocket_gateway("/departures")]
+pub struct DeparturesGateway {
+    departures: std::sync::Arc<Departures>,
+}
+
+#[handlers]
+impl DeparturesGateway {}
+
+#[async_trait]
+impl corvis::OnGatewayDisconnect<corvis::socket_io::IoSocket> for DeparturesGateway {
+    async fn handle_disconnect(&self, socket: corvis::socket_io::IoSocket) {
+        let who = socket.handshake().auth().get("who").and_then(Value::as_str).unwrap_or("?").to_string();
+        self.departures.started.lock().unwrap().push(who);
+        self.departures.changed.notify_waiters();
+        self.departures.gate.0.acquire().await.unwrap().forget();
+    }
+}
+
+#[module(providers = [Departures, DeparturesGateway])]
+pub struct DeparturesModule;
+
+/// The one case in which a disconnect hook is dropped: the application is at its cap of pending hooks. Four may be
+/// pending; five sockets leave, from five addresses (each within its share of one), while the hooks block: four hooks
+/// run, the fifth is dropped, and the drop is logged (rate limited) without anything the client sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_disconnect_hook_is_dropped_only_at_the_applications_cap_and_the_drop_is_logged() {
+    let _serial = SERIAL.lock().await;
+    let mut app = app_of::<DeparturesModule>().await;
+    app.use_websocket_adapter(IoAdapter::new().max_pending_disconnect_hooks(4));
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let departures = app.get::<Departures>().unwrap();
+    for n in 0..5u8 {
+        let mut client = Raw::connect_from(addr, std::net::IpAddr::from([127, 0, 0, 40 + n])).await;
+        client.join("/departures", Some(&format!(r#"{{"who":"secret-client-{n}"}}"#))).await;
+        client.close().await;
+        if n < 4 {
+            // The first four are pending (and running) before the next leaves.
+            departures.wait_started(n as usize + 1).await;
+        }
+    }
+    let dropped = || warnings().iter().filter(|w| w.contains("was dropped")).cloned().collect::<Vec<_>>();
+    let wait = async {
+        while dropped().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), wait).await.expect("the drop to be logged");
+    let lines = dropped();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("4 handle_disconnect hooks are pending") && !lines[0].contains("secret"), "{}", lines[0]);
+    // The pending hooks run; the dropped one never did (a worker was free for it).
+    departures.gate.0.add_permits(5);
+    let mut started = departures.started.lock().unwrap().clone();
+    started.sort();
+    assert_eq!(started, ["secret-client-0", "secret-client-1", "secret-client-2", "secret-client-3"]);
+    app.close().await.unwrap();
+}
