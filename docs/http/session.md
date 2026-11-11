@@ -4,7 +4,7 @@ status: documented
 
 # Session
 
-Server-side sessions work like `express-session`: the browser holds a signed cookie with an identifier, and the
+Server-side sessions work like `express-session` (the [authentication guide](/security/authentication#sessions) shows login and logout with them, and [Securing authentication](/security/authentication-security) what to do before you deploy): the browser holds a signed cookie with an identifier, and the
 data lives in a store on the server. The session cookie and the stored records use the same format as
 `express-session` 1.19.0, so a Node application and a Corvis one that share a secret and a store can read each other's
 sessions (see [Cross-reading with a Node app](#cross-reading-with-a-node-app)).

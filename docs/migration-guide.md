@@ -39,6 +39,7 @@ See [Modules](/modules), [Providers](/providers), and [Custom providers](/fundam
 | Metadata | `#[set_metadata("roles", ["admin"])]` |
 | Per-route guards, interceptors, pipes, and filters | `#[use_guards(...)]`, `#[use_interceptors(...)]`, `#[use_pipes(...)]`, `#[use_filters(...)]` |
 | Throwing an HTTP exception | Returning `Err(NotFoundException::new("..."))` in an `HttpResult` |
+| A Passport strategy and its guard (`AuthGuard('jwt')`) | A validator, `Provider::strategy::<JwtStrategy<V>>()` and `#[use_guards(AuthGuard::new("jwt"))]`; see [Migrating from Passport](/recipes/passport-migration) |
 
 Class attributes (`#[use_guards]`, `#[set_metadata]`...) go **below** `#[controller]`, because Rust processes attributes in order.
 

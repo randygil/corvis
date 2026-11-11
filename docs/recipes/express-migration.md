@@ -83,6 +83,8 @@ async fn magic(&self, #[query("token")] token: Option<String>, #[res] res: Res) 
 }
 ```
 
+Cookies you build by hand are fine for a flag or a preference. For real authentication, Corvis has [server-side sessions](/http/session) that read and write the same cookie and records as `express-session`, and strategies for everything Passport does: see the [authentication guide](/security/authentication) and [Migrating from Passport](/recipes/passport-migration).
+
 With `#[res]` the return value is ignored and the response stays open until you call `send`, `json`, `end`, `redirect` or `send_status`. With `#[res(passthrough)]` you only adjust headers or cookies and Corvis serializes the return value as usual:
 
 ```rust

@@ -305,7 +305,8 @@ A login route is where password guessing happens, and the work it asks of the se
 write, a request to an OAuth2 provider) is what an attacker spends your resources on. Two things protect it: a limit per
 **client** and a limit per **account**, and both must run **before** the authentication.
 
-The recipe below limits the local strategy's login to 10 attempts a minute per client address and 5 attempts per account
+The [authentication guide](/security/authentication#username-and-password) shows the login route, and `examples/auth-app` runs
+this recipe on its token and session logins and limits both routes of its OAuth2 login. The recipe below limits the local strategy's login to 10 attempts a minute per client address and 5 attempts per account
 every five minutes, from any number of addresses. `login_tracker` returns the tracker of the second limit: it reads the
 username the local strategy will read from the same request, with the same options (the field name, `user[email]` style
 paths, the body first and then the query when the strategy reads it, the length limit), so moving the username to another

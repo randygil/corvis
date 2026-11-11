@@ -149,7 +149,7 @@ async fn announce(&self, #[param("room")] room: String, #[body] dto: Announcemen
 
 ## Public routes with a global guard
 
-A typical setup installs an `AuthGuard` as a global guard (`examples/cats-app` does). Public routes are marked with `#[public]`, which stores the metadata entry `PUBLIC_METADATA` (`"isPublic"`) with the value `true`. The guard reads it with `Reflector`:
+A typical setup installs an `AuthGuard` as a global guard (`examples/cats-app` does). The `AuthGuard` of `corvis::auth` runs [strategies](/security/authentication) (JWT, username and password, API keys, sessions, OAuth2) and builds the global form with `.skip_public()`; the guard below is the one you write yourself. Public routes are marked with `#[public]`, which stores the metadata entry `PUBLIC_METADATA` (`"isPublic"`) with the value `true`. The guard reads it with `Reflector`:
 
 ```rust
 use corvis::PUBLIC_METADATA;
