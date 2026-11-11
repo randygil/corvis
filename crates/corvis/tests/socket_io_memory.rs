@@ -290,3 +290,110 @@ async fn an_honest_address_is_served_while_another_holds_its_maximum() {
     drop((attackers, honest));
     fx.io.close();
 }
+
+/// A cookie of `len` bytes.
+fn cookie(len: usize) -> String {
+    format!("c={}", "x".repeat(len - 2))
+}
+
+/// Joins namespace `nsp` on a raw WebSocket client and returns the socket id.
+async fn join_ws(ws: &mut engine_support::WsClient, nsp: &str) -> String {
+    engine_support::send_text(ws, &format!("40{nsp},")).await;
+    loop {
+        let text = engine_support::next_text(ws).await;
+        if text.starts_with(&format!("40{nsp},")) {
+            let json: serde_json::Value = serde_json::from_str(&text[text.find('{').unwrap()..]).unwrap();
+            return json["sid"].as_str().unwrap().to_string();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sockets_of_one_connection_share_its_handshake_request() {
+    let _guard = ONE_AT_A_TIME.lock().await;
+    const COOKIE: usize = 16 * 1024;
+    let fx = start(IoOptions::new(), |io| {
+        for n in 0..10 {
+            io.of(&format!("/n{n}")).unwrap();
+        }
+    })
+    .await;
+    let url = format!("ws://{}/socket.io/?EIO=4&transport=websocket", fx.addr);
+    let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(url).unwrap();
+    request.headers_mut().insert("cookie", cookie(COOKIE).parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(request).await.expect("WebSocket handshake");
+    let _open = engine_support::next_text(&mut ws).await;
+    let mut ids = vec![join_ws(&mut ws, "/n0").await];
+    let mut growth = Vec::new();
+    for n in 1..10 {
+        let before = live();
+        ids.push(join_ws(&mut ws, &format!("/n{n}")).await);
+        growth.push(live() - before);
+    }
+    println!("heap growth per extra socket with a {COOKIE}-byte cookie: {growth:?}");
+    for (n, grew) in growth.iter().enumerate() {
+        assert!(*grew < COOKIE as isize, "socket {} grew the heap by {grew} bytes", n + 1);
+    }
+    let sockets: Vec<_> =
+        ids.iter().enumerate().map(|(n, id)| fx.io.of(&format!("/n{n}")).unwrap().socket(id).expect("connected")).collect();
+    for socket in &sockets[1..] {
+        assert!(std::ptr::eq(socket.handshake().request(), sockets[0].handshake().request()), "a socket holds a request of its own");
+    }
+    assert_eq!(sockets[0].handshake().headers().get("cookie").map(|v| v.len()), Some(COOKIE));
+    drop(sockets);
+    fx.io.close();
+}
+
+/// One request on a kept-alive connection, written as prepared bytes; returns the status line.
+async fn exchange(stream: &mut tokio::net::TcpStream, request: &[u8]) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    stream.write_all(request).await.unwrap();
+    let mut response = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 1024];
+    loop {
+        let n = stream.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "the server closed the connection");
+        response.extend_from_slice(&chunk[..n]);
+        let text = String::from_utf8_lossy(&response);
+        if let Some(end) = text.find("\r\n\r\n") {
+            let length: usize = text[..end]
+                .lines()
+                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap()))
+                .unwrap_or(0);
+            if response.len() >= end + 4 + length {
+                return text.lines().next().unwrap().to_string();
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_post_of_an_existing_session_copies_nothing_of_its_request() {
+    let _guard = ONE_AT_A_TIME.lock().await;
+    const COOKIE: usize = 16 * 1024;
+    let fx = start(IoOptions::new(), |_| {}).await;
+    let (sid, _) = engine_support::open_polling(fx.addr).await;
+    let post = |target: &str| {
+        format!(
+            "POST {target} HTTP/1.1\r\nHost: x\r\nCookie: {}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: 1\r\n\r\n6",
+            cookie(COOKIE)
+        )
+        .into_bytes()
+    };
+    // The peak of one request on a kept-alive connection that already served one like it (its read buffer is grown).
+    let peak_of = async |request: &[u8], status: &str| {
+        let mut stream = tokio::net::TcpStream::connect(fx.addr).await.unwrap();
+        assert!(exchange(&mut stream, request).await.contains(status));
+        let before = live();
+        reset_peak();
+        assert!(exchange(&mut stream, request).await.contains(status));
+        PEAK.load(Ordering::SeqCst) - before
+    };
+    // What the HTTP server itself allocates for these bytes (reading, parsing, answering a route that does not exist),
+    // then what the engine adds to it for a `POST` of a session.
+    let server = peak_of(&post("/nothing-here"), "404").await;
+    let engine = peak_of(&post(&engine_support::poll_url(&sid)), "200").await;
+    println!("a request with a {COOKIE}-byte cookie: {server} bytes at its peak for the HTTP server, {engine} as a POST of a session");
+    assert!(engine - server < COOKIE as isize, "the POST allocated {} bytes more than the HTTP server needs for it", engine - server);
+    fx.io.close();
+}

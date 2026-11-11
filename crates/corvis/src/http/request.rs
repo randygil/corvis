@@ -82,6 +82,32 @@ impl Request {
         Ok(req)
     }
 
+    /// A request of an existing Engine.IO session (a poll or a `POST`): the method, URI and headers moved from the
+    /// hyper parts and the peer, with an empty query and body. The engine only checks it (origin, CORS, method) and
+    /// never hands it to application code, which sees the session's handshake: so the application's query parser does
+    /// not run and nothing is copied.
+    #[cfg(feature = "socket-io")]
+    pub(crate) fn for_engine_poll(parts: http::request::Parts, remote: SocketAddr) -> Self {
+        Request {
+            method: parts.method,
+            uri: parts.uri,
+            version: parts.version,
+            headers: parts.headers,
+            raw_body: Bytes::new(),
+            body: Value::Null,
+            body_error: None,
+            client_aborted: false,
+            params: HashMap::new(),
+            query: Map::new(),
+            query_parser: super::body_parser::QueryParser::default(),
+            app_redaction: None,
+            remote_addr: Some(remote),
+            trust_proxy: super::proxy_addr::TrustProxy::default(),
+            extensions: Arc::new(RwLock::new(http::Extensions::new())),
+            route_path: None,
+        }
+    }
+
     /// The same request with its header names and values and its URI in allocations of their own. A request parsed from
     /// the wire holds them as slices of the connection's read buffer (up to the server's `max_header_size`), so a
     /// request kept for long (an Engine.IO session's handshake, and the sockets and hooks that share it) would keep that

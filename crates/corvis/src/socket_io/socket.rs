@@ -152,6 +152,12 @@ pub enum AckError {
 }
 
 /// What a client sent in its CONNECT packet and how it arrived (`socket.handshake` in Node).
+///
+/// The request is the one that opened the Engine.IO session, kept once per session and shared by every socket of the
+/// connection (and by the execution contexts of a gateway): not a copy per socket. It is bounded by the HTTP server's
+/// header limit (`max_header_size`), so the server holds at most `max_sessions` of them, and it is not charged to the
+/// unread budget, like the rest of a session's fixed state: a charge for as long as the session lives would occupy part
+/// of its fair share and of its address's quota for good.
 #[derive(Debug, Clone)]
 pub struct Handshake {
     data: Arc<HandshakeData>,
@@ -160,10 +166,10 @@ pub struct Handshake {
 #[derive(Debug)]
 struct HandshakeData {
     auth: Value,
+    /// The session's request (`EngineSocket::handshake_arc`).
     request: Arc<Request>,
-    /// `request.ip()`, resolved the first time it is asked for: a gateway reads it for every message, and resolving it
-    /// walks the handshake's `X-Forwarded-For`.
-    ip: std::sync::OnceLock<String>,
+    /// The client address the session resolved when it opened (`EngineSocket::ip_arc`).
+    ip: Arc<str>,
     issued_at: SystemTime,
     /// What `auth` occupies, charged to the connection's session and address for as long as the handshake lives (the
     /// socket's life, or that of a `fetch_sockets` result that shares it): `auth` is a `serde_json::Value`, whose
@@ -173,16 +179,8 @@ struct HandshakeData {
 }
 
 impl Handshake {
-    pub(crate) fn new(auth: Value, request: Request, charge: Option<Held>) -> Self {
-        Handshake {
-            data: Arc::new(HandshakeData {
-                auth,
-                request: Arc::new(request),
-                ip: std::sync::OnceLock::new(),
-                issued_at: SystemTime::now(),
-                charge: Mutex::new(charge),
-            }),
-        }
+    pub(crate) fn new(auth: Value, request: Arc<Request>, ip: Arc<str>, charge: Option<Held>) -> Self {
+        Handshake { data: Arc::new(HandshakeData { auth, request, ip, issued_at: SystemTime::now(), charge: Mutex::new(charge) }) }
     }
 
     /// The `auth` object of the CONNECT packet (`{}` when the client sent none).
@@ -204,9 +202,9 @@ impl Handshake {
         self.data.request.headers()
     }
 
-    /// The client address (it follows `set_trust_proxy`).
+    /// The client address (it follows `set_trust_proxy`), as the session resolved it when it opened.
     pub fn ip(&self) -> String {
-        self.data.ip.get_or_init(|| self.data.request.ip()).clone()
+        self.data.ip.to_string()
     }
 
     /// When the CONNECT packet was handled.

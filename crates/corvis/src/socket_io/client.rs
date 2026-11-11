@@ -555,7 +555,7 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
     // for as long as the handshake lives.
     let auth = auth.and_then(|v| v.to_json().ok()).unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let charge = shared.engine.hold(json_cost(&auth));
-    let handshake = Handshake::new(auth, shared.engine.handshake().clone(), Some(charge));
+    let handshake = Handshake::new(auth, shared.engine.handshake_arc(), shared.engine.ip_arc(), Some(charge));
     let Some(socket) = IoSocket::new(namespace, shared.clone(), handshake) else {
         // The adapter panicked while the id was checked: the attempt is refused, and the slot is free again.
         shared.nsps().remove(&name);

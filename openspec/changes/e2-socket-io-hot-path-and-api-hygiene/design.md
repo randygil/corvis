@@ -620,3 +620,49 @@ Two things found while making the run: the benchmark first ran out of ephemeral 
 client closes stay in `TIME_WAIT`, and a run opens thousands), so its client sockets are reset on close (zero linger);
 and the polling `emit` figure (25,757 bytes per message for a 64-byte payload) is dominated by the per-request copy of
 the 4 KiB cookie that Decision 3 removes.
+
+### Group 3: release wakeups
+
+- `UnreadGauge::register` replaces `changed`: three `Option<Notified>` in an `async` block over `tokio::select!` and a
+  guard (`Registered`) that gives the waiter counts back; no allocation. Each level's notification is created before its
+  count is incremented, so a release that reads the count wakes a notification that already exists. `wake` returns at
+  once on a chained gauge with no registered waiter; the gateway's gauge keeps `notify_one`. `new` asserts a chain of
+  at most three.
+- The callers look, register only when blocked, and look again: the WebSocket reader and the held `POST` in place; the
+  connection loop registers on the turn after one that found it blocked (`blocked`), and a turn that finds it blocked
+  without a registration goes round once more, registered, before it waits.
+- `OutQueue::watching` counts the watchers in `wait_ready`; a push notifies `watchers` only when one is counted.
+- Tests: `releases_with_nobody_waiting_send_no_notification` (10,000 releases, a rollback, 0 notifications at every
+  level), `a_registration_counts_one_waiter_per_level_until_its_wait_ends_or_is_dropped`,
+  `a_registration_that_lands_around_a_release_never_misses_it` (registration before the release, after its
+  subtraction at each of the three levels, and after it: never paused and unwoken),
+  `pushes_with_no_pending_poll_notify_no_watcher_and_a_poll_never_misses_an_item`, and
+  `socket_io::tests::a_connection_under_its_limits_never_registers_for_a_release` (10,000 events: the peak of waiters
+  on the session's chain stays 0). The interleaving, stampede and stress tests of `gauge_tests` pass with `changed`
+  renamed to `register` and nothing else changed.
+
+### Group 4: one handshake request per session
+
+- **The finding was narrower than the review said.** `Request::clone` does not copy the header bytes: a header value
+  is a reference-counted `Bytes`, so a clone copies the header map's structure, the URI, the parsed query and the body
+  value. Measured with a 16 KiB cookie (`tests/socket_io_memory.rs`): each socket after the first grew the heap by
+  about 3.4 KB before and 1.7 KB after (the rest is the socket itself); a `POST` of a session peaked at 55,440 bytes
+  before and 53,951 after, of which 51,385 are the HTTP server's own for the same bytes (a request to a route that does
+  not exist). The copies are gone, but the figures of Decision 3 ("about 4 KiB less per request") were not there to
+  remove. The test that failed before the change is the identity one (`std::ptr::eq` of `Handshake::request()` of two
+  sockets, which needs no `testing` hook); the heap bounds of the spec scenarios hold before and after, and are kept as
+  regression bounds: per extra socket under the cookie size, and a `POST` under the cookie size beyond the HTTP
+  server's own allocation for the same request (`a_post_of_an_existing_session_copies_nothing_of_its_request`; the
+  spec's "less than 16 KiB beyond its body" cannot hold literally, since the HTTP server alone peaks at three times
+  the headers).
+- `Session.handshake` is `Arc<Request>` (the detached request of #35), `Session.ip` is `Arc<str>`;
+  `EngineSocket::handshake_arc` and `ip_arc` hand them to `Handshake::new`, which no longer wraps a copy. `Handshake::ip`
+  returns a copy of the session's resolved address (Decision 13, task 11.7) instead of resolving `X-Forwarded-For` once
+  per socket.
+- `EngineServer::handle` parses `Query` (three fields) from the URI, builds the request once and passes it by reference;
+  a request with a `sid` that is not an upgrade is built by `Request::for_engine_poll` (moved parts, no query parsing).
+  `reserve` debug-asserts that the request it gets carries no `sid`. `handshake_refused` lost its unused parameter and
+  became a free function; `open_refused` and `open_session` take what they use.
+- Unit test `the_query_keeps_only_the_three_parameters_the_engine_reads` (10,000 extra parameters).
+- `cargo doc -p corvis --features socket-io --no-deps`: no warning in `socket_io/` or `ws.rs` (the warnings it prints
+  are in `z/regex.rs` and `posture.rs`, untouched here).

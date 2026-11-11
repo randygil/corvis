@@ -173,8 +173,9 @@ enum HandshakeRepr {
 }
 
 /// What a client sent when it connected (`socket.handshake`). For a socket of this process it shares the socket's own
-/// handshake instead of copying it (a cookie-heavy handshake is hundreds of kilobytes); it serializes as plain data
-/// so another process can describe a socket it does not hold.
+/// handshake instead of copying it, and that handshake shares the request its Engine.IO session keeps once for all the
+/// sockets of the connection (see [`Handshake`](super::Handshake)); it serializes as plain data so another process can
+/// describe a socket it does not hold.
 ///
 /// `Debug` hides credentials: it prints the names of the headers and of the `auth` keys, never their values, and the
 /// URL without its query.

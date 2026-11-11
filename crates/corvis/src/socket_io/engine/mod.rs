@@ -273,6 +273,15 @@ pub(crate) fn address_key(ip: &str, peer: Option<std::net::SocketAddr>) -> Strin
     }
 }
 
+/// The JSON error that refuses a handshake; an upgrade's connection is closed after it.
+fn handshake_refused(upgrade: bool, status: StatusCode, code: u8, message: &str) -> hyper::Response<ResBody> {
+    let mut resp = polling::json_error(status, code, message);
+    if upgrade {
+        resp.headers_mut().insert(http::header::CONNECTION, HeaderValue::from_static("close"));
+    }
+    resp
+}
+
 /// An Engine.IO server. Cheap to clone; all clones are the same server.
 #[derive(Clone)]
 pub struct EngineServer {
@@ -365,26 +374,13 @@ impl EngineServer {
         self.inner.path.starts_with(&other.inner.path) || other.inner.path.starts_with(&self.inner.path)
     }
 
-    fn handshake_refused(
-        &self,
-        handshake: &Request,
-        upgrade: bool,
-        status: StatusCode,
-        code: u8,
-        message: &str,
-    ) -> hyper::Response<ResBody> {
-        let _ = handshake;
-        let mut resp = polling::json_error(status, code, message);
-        if upgrade {
-            resp.headers_mut().insert(http::header::CONNECTION, HeaderValue::from_static("close"));
-        }
-        resp
-    }
-
     /// Reserves a slot for a handshake under the lock that `close()` and `remove` take, checking the `closed`
     /// flag and both caps against the sessions and the other reservations: a client over a cap is answered `503`
     /// without the `allow_request` hook running, and concurrent handshakes cannot overshoot a cap.
     fn reserve(&self, handshake: &Request) -> Result<Reservation, OpenError> {
+        // Only a handshake opens a session: the request of an existing session is built without the application's
+        // query parser (`Request::for_engine_poll`) and must never reach the hook or a session.
+        debug_assert!(Query::parse(handshake.uri().query()).sid().is_none(), "a request of an existing session is no handshake");
         let mut store = self.inner.sessions.write().unwrap_or_else(|e| e.into_inner());
         let key = address_key(&handshake.ip(), handshake.remote_addr());
         self.caps_ok(&store, &key)?;
@@ -395,7 +391,7 @@ impl EngineServer {
 
     /// Creates a session from a reservation. The `closed` flag is checked again and the session inserted under
     /// the one lock that `close()` and `remove` take, so a handshake cannot slip in after a close.
-    fn open_session(&self, transport: TransportKind, handshake: Request, mut reservation: Reservation) -> Result<Arc<Session>, OpenError> {
+    fn open_session(&self, transport: TransportKind, handshake: &Request, mut reservation: Reservation) -> Result<Arc<Session>, OpenError> {
         let mut store = self.inner.sessions.write().unwrap_or_else(|e| e.into_inner());
         let key = reservation.key.clone();
         reservation.release(&mut store);
@@ -412,7 +408,7 @@ impl EngineServer {
             Arc::downgrade(&self.inner),
             id.clone(),
             transport,
-            handshake.detached(),
+            Arc::new(handshake.detached()),
             self.inner.options.clone(),
             Some(self.inner.parent_gauge(&key)),
         );
@@ -448,23 +444,23 @@ impl EngineServer {
     }
 
     /// The response for a handshake that could not open a session.
-    fn open_refused(&self, handshake: &Request, upgrade: bool, error: OpenError) -> hyper::Response<ResBody> {
+    fn open_refused(&self, upgrade: bool, error: OpenError) -> hyper::Response<ResBody> {
         match error {
-            OpenError::Closing => self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Server is closing"),
+            OpenError::Closing => handshake_refused(upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Server is closing"),
             OpenError::TooManySessions => {
                 self.warn_session_cap(format!("max_sessions ({})", self.inner.options.max_sessions));
-                self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
+                handshake_refused(upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
             }
             OpenError::TooManyFromAddress => {
                 self.warn_session_cap(format!("max_sessions_per_ip ({})", self.inner.options.max_sessions_per_ip));
-                self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
+                handshake_refused(upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
             }
             OpenError::PendingHooks => {
                 let (hooks, bytes) = self.inner.options.pending_hook_share.unwrap_or_default();
                 self.warn_session_cap(format!(
                     "the share of one client address of the pending disconnect hooks ({hooks} hooks or {bytes} bytes)"
                 ));
-                self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
+                handshake_refused(upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
             }
         }
     }
@@ -523,20 +519,29 @@ impl EngineServer {
         let upgrade = crate::http_adapter::is_upgrade_request(&req);
         let on_upgrade = if upgrade { Some(hyper::upgrade::on(&mut req)) } else { None };
         let (parts, body) = req.into_parts();
-        let Ok(handshake) = Request::for_upgrade(parts, remote, parser) else {
-            return polling::json_error(StatusCode::BAD_REQUEST, 3, "Bad request");
+        let query = Query::parse(parts.uri.query());
+        // A request of an existing session (a poll or a `POST`) is only checked (origin, CORS, method) and never kept nor
+        // handed to application code: the session keeps the request that opened it. So it is built without the
+        // application's query parser, and nothing of it is copied.
+        let request = if !upgrade && query.sid().is_some() {
+            Request::for_engine_poll(parts, remote)
+        } else {
+            match Request::for_upgrade(parts, remote, parser) {
+                Ok(request) => request,
+                Err(_) => return polling::json_error(StatusCode::BAD_REQUEST, 3, "Bad request"),
+            }
         };
-        let cors = self.inner.options.cors.clone();
+        let cors = self.inner.options.cors.as_ref();
         if !upgrade
-            && let Some(cors) = &cors
-            && cors.is_preflight(&handshake)
+            && let Some(cors) = cors
+            && cors.is_preflight(&request)
         {
-            return crate::server::into_hyper(cors.preflight(&handshake), false);
+            return crate::server::into_hyper(cors.preflight(&request), false);
         }
-        let mut response = self.dispatch(handshake.clone(), body, on_upgrade, upgrade, request_timeout).await;
-        if !upgrade && let Some(cors) = &cors {
+        let mut response = self.dispatch(&request, &query, body, on_upgrade, upgrade, request_timeout).await;
+        if !upgrade && let Some(cors) = cors {
             let mut carrier = crate::http::Response::new();
-            cors.apply(&handshake, &mut carrier);
+            cors.apply(&request, &mut carrier);
             for (name, value) in carrier.headers().iter() {
                 if name == http::header::VARY
                     && let Some(current) = response.headers().get(http::header::VARY).and_then(|v| v.to_str().ok())
@@ -554,19 +559,19 @@ impl EngineServer {
 
     async fn dispatch(
         &self,
-        handshake: Request,
+        handshake: &Request,
+        query: &Query,
         body: Incoming,
         on_upgrade: Option<hyper::upgrade::OnUpgrade>,
         upgrade: bool,
         request_timeout: Option<Duration>,
     ) -> hyper::Response<ResBody> {
-        let query = Query::parse(handshake.uri().query());
         let options = &self.inner.options;
         let abort =
             |code: u8| -> hyper::Response<ResBody> { if upgrade { polling::abort_upgrade(code) } else { polling::abort_request(code) } };
 
         // Node's `verify`, in its order.
-        let transport = match query.get("transport") {
+        let transport = match query.transport() {
             Some("polling") => TransportKind::Polling,
             Some("websocket") => TransportKind::WebSocket,
             _ => return abort(0),
@@ -576,7 +581,7 @@ impl EngineServer {
         {
             return abort(3);
         }
-        let sid = query.get("sid").filter(|s| !s.is_empty());
+        let sid = query.sid();
         let session = match sid {
             Some(sid) => {
                 // The shape is checked before any lookup: an attacker-sized string never reaches the map.
@@ -588,7 +593,7 @@ impl EngineServer {
                 if !upgrade && (transport != TransportKind::Polling || session.transport() != TransportKind::Polling) {
                     return abort(3);
                 }
-                if query.get("EIO") != Some("4") {
+                if query.eio() != Some("4") {
                     return abort(3);
                 }
                 Some(session)
@@ -610,12 +615,12 @@ impl EngineServer {
         {
             let origin = origin.to_str().unwrap_or("");
             if !allowed.iter().any(|a| a.eq_ignore_ascii_case(origin)) {
-                return self.handshake_refused(&handshake, upgrade, StatusCode::FORBIDDEN, 4, "Forbidden");
+                return handshake_refused(upgrade, StatusCode::FORBIDDEN, 4, "Forbidden");
             }
         }
 
         if upgrade {
-            return self.upgrade(handshake, on_upgrade, session, transport, &query).await;
+            return self.upgrade(handshake, on_upgrade, session, transport, query).await;
         }
         match session {
             Some(session) => match *handshake.method() {
@@ -623,26 +628,26 @@ impl EngineServer {
                 http::Method::POST => polling::post(&session, handshake.headers(), body, request_timeout).await,
                 _ => polling::empty(StatusCode::INTERNAL_SERVER_ERROR),
             },
-            None => self.handshake_polling(handshake, &query).await,
+            None => self.handshake_polling(handshake, query).await,
         }
     }
 
-    async fn handshake_polling(&self, handshake: Request, query: &Query) -> hyper::Response<ResBody> {
-        if query.get("EIO") != Some("4") {
+    async fn handshake_polling(&self, handshake: &Request, query: &Query) -> hyper::Response<ResBody> {
+        if query.eio() != Some("4") {
             return polling::abort_request(5);
         }
         // Before the hook: a client over a cap is answered without invoking it, and the slot stays reserved while
         // the hook runs.
-        let reservation = match self.reserve(&handshake) {
+        let reservation = match self.reserve(handshake) {
             Ok(reservation) => reservation,
-            Err(error) => return self.open_refused(&handshake, false, error),
+            Err(error) => return self.open_refused(false, error),
         };
-        if !self.admitted(&handshake).await {
-            return self.handshake_refused(&handshake, false, StatusCode::FORBIDDEN, 4, "Forbidden");
+        if !self.admitted(handshake).await {
+            return handshake_refused(false, StatusCode::FORBIDDEN, 4, "Forbidden");
         }
-        let session = match self.open_session(TransportKind::Polling, handshake.clone(), reservation) {
+        let session = match self.open_session(TransportKind::Polling, handshake, reservation) {
             Ok(session) => session,
-            Err(error) => return self.open_refused(&handshake, false, error),
+            Err(error) => return self.open_refused(false, error),
         };
         // The handshake request is the session's first poll: it carries the open packet, and what the connection
         // callback sends goes out with the next poll.
@@ -655,7 +660,7 @@ impl EngineServer {
 
     async fn upgrade(
         &self,
-        handshake: Request,
+        handshake: &Request,
         on_upgrade: Option<hyper::upgrade::OnUpgrade>,
         session: Option<Arc<Session>>,
         transport: TransportKind,
@@ -685,19 +690,19 @@ impl EngineServer {
                 if transport != TransportKind::WebSocket {
                     return polling::abort_upgrade(3);
                 }
-                if query.get("EIO") != Some("4") {
+                if query.eio() != Some("4") {
                     return polling::abort_upgrade(5);
                 }
-                let reservation = match self.reserve(&handshake) {
+                let reservation = match self.reserve(handshake) {
                     Ok(reservation) => reservation,
-                    Err(error) => return self.open_refused(&handshake, true, error),
+                    Err(error) => return self.open_refused(true, error),
                 };
-                if !self.admitted(&handshake).await {
-                    return self.handshake_refused(&handshake, true, StatusCode::FORBIDDEN, 4, "Forbidden");
+                if !self.admitted(handshake).await {
+                    return handshake_refused(true, StatusCode::FORBIDDEN, 4, "Forbidden");
                 }
-                let session = match self.open_session(TransportKind::WebSocket, handshake.clone(), reservation) {
+                let session = match self.open_session(TransportKind::WebSocket, handshake, reservation) {
                     Ok(session) => session,
-                    Err(error) => return self.open_refused(&handshake, true, error),
+                    Err(error) => return self.open_refused(true, error),
                 };
                 (session, websocket::Role::First)
             }
@@ -725,21 +730,42 @@ impl EngineServer {
     }
 }
 
-/// The query string as Node's `URLSearchParams` makes it into an object: a parameter given more than once keeps
-/// its last value.
-pub(crate) struct Query(HashMap<String, String>);
+/// The three parameters of the query string the engine reads, as Node's `URLSearchParams` gives them: a parameter
+/// given more than once keeps its last value. Nothing else of the query is kept, whatever it holds, so the work and
+/// the memory are bounded by the request line itself.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Query {
+    sid: Option<String>,
+    transport: Option<String>,
+    eio: Option<String>,
+}
 
 impl Query {
     fn parse(query: Option<&str>) -> Query {
-        let mut map = HashMap::new();
-        for (k, v) in form_urlencoded::parse(query.unwrap_or("").as_bytes()) {
-            map.insert(k.into_owned(), v.into_owned());
+        let mut parsed = Query::default();
+        for (key, value) in form_urlencoded::parse(query.unwrap_or("").as_bytes()) {
+            let slot = match &*key {
+                "sid" => &mut parsed.sid,
+                "transport" => &mut parsed.transport,
+                "EIO" => &mut parsed.eio,
+                _ => continue,
+            };
+            *slot = Some(value.into_owned());
         }
-        Query(map)
+        parsed
     }
 
-    fn get(&self, key: &str) -> Option<&str> {
-        self.0.get(key).map(String::as_str)
+    /// The session id; an empty one is no session id (a handshake).
+    fn sid(&self) -> Option<&str> {
+        self.sid.as_deref().filter(|s| !s.is_empty())
+    }
+
+    fn transport(&self) -> Option<&str> {
+        self.transport.as_deref()
+    }
+
+    fn eio(&self) -> Option<&str> {
+        self.eio.as_deref()
     }
 }
 
@@ -844,9 +870,19 @@ impl EngineSocket {
         &self.session.handshake
     }
 
+    /// The same request, shared: a layer on top keeps it for its sockets without copying it.
+    pub(crate) fn handshake_arc(&self) -> Arc<Request> {
+        self.session.handshake.clone()
+    }
+
     /// The client address, resolved once when the session was opened (it follows `set_trust_proxy`).
     pub fn ip(&self) -> &str {
         &self.session.ip
+    }
+
+    /// The same address, shared.
+    pub(crate) fn ip_arc(&self) -> Arc<str> {
+        self.session.ip.clone()
     }
 
     /// The transport in use now.
@@ -1033,7 +1069,7 @@ impl EngineServer {
         let peer: std::net::SocketAddr = format!("{address}:1").parse().unwrap();
         let handshake = Request::for_upgrade(parts, peer, &Default::default()).unwrap();
         let reservation = self.reserve(&handshake).ok().expect("a free slot");
-        let session = self.open_session(TransportKind::WebSocket, handshake, reservation).ok().expect("an open session");
+        let session = self.open_session(TransportKind::WebSocket, &handshake, reservation).ok().expect("an open session");
         self.notify_connection(&session);
         EngineSocket { session }
     }
@@ -1122,6 +1158,19 @@ mod tests {
     }
 
     #[test]
+    fn the_query_keeps_only_the_three_parameters_the_engine_reads() {
+        let extra: String = (0..10_000).map(|i| format!("&k{i}=v{i}")).collect();
+        let query = Query::parse(Some(&format!("EIO=4&transport=polling&sid=abc{extra}")));
+        let bare = Query::parse(Some("EIO=4&transport=polling&sid=abc"));
+        assert_eq!(query, bare, "10,000 extra parameters change nothing and nothing of them is kept");
+        assert_eq!((query.eio(), query.transport(), query.sid()), (Some("4"), Some("polling"), Some("abc")));
+        // The last value of a repeated parameter wins, as in `URLSearchParams`; an empty `sid` is a handshake.
+        let repeated = Query::parse(Some("transport=websocket&transport=polling&sid="));
+        assert_eq!((repeated.transport(), repeated.sid()), (Some("polling"), None));
+        assert_eq!(Query::parse(Some("s%69d=x")).sid(), Some("x"), "keys are decoded before they are compared");
+    }
+
+    #[test]
     fn a_client_cannot_pick_a_new_key_per_request_with_a_malformed_forwarded_address() {
         let peer: Option<std::net::SocketAddr> = Some("198.51.100.9:5000".parse().unwrap());
         let keys: std::collections::HashSet<String> = (0..50).map(|i| address_key(&format!("junk-{i}"), peer)).collect();
@@ -1134,11 +1183,11 @@ mod tests {
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
         let handshake = Request::for_upgrade(parts, "127.0.0.1:1".parse().unwrap(), &Default::default()).unwrap();
         let reservation = server.reserve(&handshake).ok().unwrap();
-        assert!(server.open_session(TransportKind::Polling, handshake.clone(), reservation).is_ok());
+        assert!(server.open_session(TransportKind::Polling, &handshake, reservation).is_ok());
         let late = server.reserve(&handshake).ok().unwrap();
         server.close();
         // A reservation taken before the close does not open a session after it.
-        assert!(matches!(server.open_session(TransportKind::Polling, handshake.clone(), late), Err(OpenError::Closing)));
+        assert!(matches!(server.open_session(TransportKind::Polling, &handshake, late), Err(OpenError::Closing)));
         assert!(matches!(server.reserve(&handshake), Err(OpenError::Closing)));
         assert_eq!(server.session_count(), 0);
         assert!(server.inner.sessions.read().unwrap().per_ip.is_empty(), "the address counts are released with the sessions");
@@ -1152,7 +1201,7 @@ mod tests {
     fn open_socket(server: &EngineServer, transport: TransportKind) -> EngineSocket {
         let handshake = test_handshake();
         let reservation = server.reserve(&handshake).ok().unwrap();
-        let session = server.open_session(transport, handshake, reservation).ok().unwrap();
+        let session = server.open_session(transport, &handshake, reservation).ok().unwrap();
         EngineSocket { session }
     }
 

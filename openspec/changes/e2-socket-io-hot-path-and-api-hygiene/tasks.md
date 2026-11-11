@@ -50,16 +50,16 @@ to applications and clients" says so.
 
 ## 4. One handshake request per session (Decision 3)
 
-- [ ] 4.1 `engine/session.rs` and `engine/mod.rs`: `Session.handshake: Arc<Request>`, `EngineSocket::handshake()` unchanged,
+- [x] 4.1 `engine/session.rs` and `engine/mod.rs`: `Session.handshake: Arc<Request>`, `EngineSocket::handshake()` unchanged,
   crate-internal `handshake_arc()`; `socket.rs`: `HandshakeData.request: Arc<Request>`; `client.rs:521` shares instead of
   cloning; verify `cargo test -p corvis --features socket-io --test socket_io --test socket_io_rooms`
-- [ ] 4.2 `EngineServer::handle` / `dispatch`: the request built once and passed by reference; `Query` with three fields;
+- [x] 4.2 `EngineServer::handle` / `dispatch`: the request built once and passed by reference; `Query` with three fields;
   `Request::for_engine_poll` for requests with a `sid` (no query parsing, never handed to application code, debug assertion);
   tests: the three scenarios of the spec requirement "The handshake request is kept once per session" (counting allocator in
   `tests/socket_io_memory.rs`, `testing::same_request`); verify `cargo test -p corvis --features socket-io --test engine_io
   --test engine_io_security --test socket_io_memory` and that the transport-confusion, origin and shape-check tests pass
   unchanged
-- [ ] 4.3 Correct the docs that claimed otherwise: `HandshakeInfo` rustdoc (`adapter.rs`, `info.rs` after group 11),
+- [x] 4.3 Correct the docs that claimed otherwise: `HandshakeInfo` rustdoc (`adapter.rs`, `info.rs` after group 11),
   `budget.rs` module docs, `Handshake` rustdoc: one request per session, bounded by `max_header_size`, not charged, and why;
   verify `cargo doc -p corvis --features socket-io --no-deps` without warnings
 

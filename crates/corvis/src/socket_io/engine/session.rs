@@ -305,8 +305,13 @@ pub(crate) struct Session {
     pub(crate) log_id: u64,
     pub(crate) options: Arc<EngineOptions>,
     server: Weak<ServerInner>,
-    pub(crate) handshake: Request,
-    pub(crate) ip: String,
+    /// The request that opened the session, in allocations of its own (`Request::detached`), kept once: every socket of
+    /// a layer on top shares it. Bounded by the HTTP server's header limit; not charged to the unread budget, like the
+    /// session's other fixed state.
+    pub(crate) handshake: Arc<Request>,
+    /// The client address, resolved once when the session opened (it follows `set_trust_proxy`); shared by the
+    /// sockets of a layer on top.
+    pub(crate) ip: Arc<str>,
     /// The key this session is counted under in the per-address cap.
     pub(crate) addr_key: String,
     pub(crate) outbox: Arc<OutQueue<Packet>>,
@@ -327,7 +332,7 @@ impl Session {
         server: Weak<ServerInner>,
         id: String,
         transport: TransportKind,
-        handshake: Request,
+        handshake: Arc<Request>,
         options: Arc<EngineOptions>,
         total_unread: Option<Arc<UnreadGauge>>,
     ) -> Arc<Session> {
@@ -341,7 +346,7 @@ impl Session {
             server,
             handshake,
             addr_key: super::address_key(&ip, handshake_peer),
-            ip,
+            ip: Arc::from(ip),
             outbox: Arc::new(OutQueue::new(options.max_buffered_amount)),
             unread: Arc::new(UnreadGauge::new(options.max_unread_bytes, total_unread).with_fair_share(options.fair_unread_share())),
             inbox: Mutex::new(Some(inbox)),
@@ -1016,7 +1021,7 @@ mod session_tests {
         let remote = "127.0.0.1:1".parse().unwrap();
         let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
         // No server: removing the session from the store is a no-op.
-        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), None)
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, Arc::new(handshake), Arc::new(options), None)
     }
 
     fn drain(session: &Session) -> Vec<Packet> {
@@ -1304,7 +1309,7 @@ mod review_tests {
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
         let remote = "127.0.0.1:1".parse().unwrap();
         let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
-        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), total)
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, Arc::new(handshake), Arc::new(options), total)
     }
 
     async fn advance(ms: u64) {
@@ -1406,7 +1411,7 @@ mod review_round_two_tests {
         let (parts, _) = http::Request::builder().uri("/socket.io/?EIO=4&transport=polling").body(()).unwrap().into_parts();
         let remote = "127.0.0.1:1".parse().unwrap();
         let handshake = Request::for_upgrade(parts, remote, &Default::default()).unwrap();
-        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, handshake, Arc::new(options), total)
+        Session::open(Weak::new(), "aaaaaaaaaaaaaaaaaaaa".to_string(), transport, Arc::new(handshake), Arc::new(options), total)
     }
 
     async fn advance(ms: u64) {
