@@ -296,7 +296,8 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 for (i, (ty, role, data, pipes)) in params.iter().enumerate() {
                     let id = format_ident!("__a{}", i);
                     if role == "socket" {
-                        lets.push(quote!(let #id: #ty = ::corvis::websockets::client_from_any(&__client)?;));
+                        lets.push(quote!(let #id: #ty = ::corvis::websockets::socket_from_any::<#ty>(&__client)?;));
+                        ws_enhancers.push(quote!(.socket_kind(<#ty as ::corvis::websockets::GatewaySocket>::KIND)));
                     } else if role == "ip" {
                         lets.push(quote!(let #id: #ty = ::corvis::__private::ws_ip_arg::<#ty>(&__client)?;));
                     } else {

@@ -216,6 +216,30 @@ impl CorvisApplication {
         self
     }
 
+    /// Chooses how the application's gateways are served, once, before `init()`: [`WsAdapter`](crate::websockets::WsAdapter)
+    /// (the default: `{ event, data }` JSON frames on the gateway's path) or, with the `socket-io` feature,
+    /// `corvis::socket_io::IoAdapter`, which serves every gateway over Socket.IO. After `init()` it logs a warning and
+    /// has no effect: gateways are built once. It changes only the gateways of this application: `corvis::ws` servers,
+    /// `on_upgrade` listeners and other applications are not affected.
+    ///
+    /// ```
+    /// use corvis::prelude::*;
+    /// use corvis::websockets::WsAdapter;
+    ///
+    /// # fn demo(mut app: CorvisApplication) {
+    /// app.use_websocket_adapter(WsAdapter);
+    /// # }
+    /// ```
+    #[cfg(feature = "websockets")]
+    pub fn use_websocket_adapter(&mut self, adapter: impl crate::websockets::GatewayAdapter) -> &mut Self {
+        if self.initialized {
+            Logger::new("CorvisApplication").warn("use_websocket_adapter() has no effect after the application was initialized");
+        } else {
+            self.config.router.gateway_adapter = adapter.__corvis_choice();
+        }
+        self
+    }
+
     /// `app.useGlobalPipes(new ValidationPipe())`.
     pub fn use_global_pipes(&mut self, pipe: impl PipeTransform) -> &mut Self {
         self.config.router.global_pipes.push(Arc::new(pipe));
@@ -293,16 +317,15 @@ impl CorvisApplication {
             _ => self.config.route_posture.clone(),
         };
         #[cfg(feature = "websockets")]
-        let gateways = crate::websockets::posture_gateways(shared.gateways.values().map(|g| g.as_ref()));
+        let gateways = crate::websockets::posture_gateways(
+            shared.gateways.values().chain(shared.io_gateways.iter()).map(|g| g.as_ref()),
+            &self.config.router.gateway_adapter,
+        );
         #[cfg(not(feature = "websockets"))]
         let gateways: Vec<crate::posture::GatewayPosture> = Vec::new();
         let mut unchecked: Vec<crate::posture::UncheckedSurface> =
             shared.static_dirs.iter().map(|d| crate::posture::UncheckedSurface::StaticFiles { serve_root: d.serve_root.clone() }).collect();
-        unchecked.extend(gateways.iter().map(|g| crate::posture::UncheckedSurface::WsHandshake {
-            path: g.path.clone(),
-            gateway: g.name.clone(),
-            verify_client: g.verify_client,
-        }));
+        unchecked.extend(gateways.iter().map(|g| g.unchecked_surface(true)));
         let listeners = shared.http_server.upgrade_listener_count();
         if listeners > 0 {
             unchecked.push(crate::posture::UncheckedSurface::UpgradeListeners { count: listeners });
@@ -563,10 +586,16 @@ impl CorvisApplication {
         }
         #[cfg(feature = "websockets")]
         let compiled_gateways = crate::websockets::compile_gateways(&self.container, &self.config.router).await?;
+        // Configuration errors of the Socket.IO adapter (paths, `cors`, options, duplicate events) come before the
+        // route posture check and before any code of a gateway.
+        #[cfg(feature = "socket-io")]
+        if let crate::websockets::GatewayAdapterChoice::SocketIo(adapter) = &self.config.router.gateway_adapter {
+            crate::socket_io::gateway_validate(&compiled_gateways, adapter)?;
+        }
         // Before module middleware `configure`, gateway `after_init` and the init hooks: a failing check must not have
         // run user code.
         #[cfg(feature = "websockets")]
-        let gateway_posture = crate::websockets::posture_gateways(&compiled_gateways);
+        let gateway_posture = crate::websockets::posture_gateways(&compiled_gateways, &self.config.router.gateway_adapter);
         #[cfg(not(feature = "websockets"))]
         let gateway_posture = Vec::new();
         // Strategy names are checked with the route posture, before middleware `configure` and the init hooks.
@@ -585,7 +614,14 @@ impl CorvisApplication {
         crate::posture::check_routes(&router, &gateway_posture, &self.config.route_posture)?;
         let module_middleware = build_middleware(&self.container, &router, &self.config.router).await?;
         #[cfg(feature = "websockets")]
-        let gateways = crate::websockets::start_gateways(compiled_gateways).await;
+        let (gateways, io_gateways) = match &self.config.router.gateway_adapter {
+            crate::websockets::GatewayAdapterChoice::Ws => (crate::websockets::start_gateways(compiled_gateways).await, Vec::new()),
+            #[cfg(feature = "socket-io")]
+            crate::websockets::GatewayAdapterChoice::SocketIo(adapter) => {
+                let started = crate::socket_io::gateway_start(compiled_gateways, adapter, &self.get_http_server()).await?;
+                (std::collections::HashMap::new(), started)
+            }
+        };
         self.shared = Some(Arc::new(AppShared {
             router,
             global_middleware: self.config.global_middleware.clone(),
@@ -599,6 +635,8 @@ impl CorvisApplication {
             request_scope: self.container.has_request_scoped(),
             #[cfg(feature = "websockets")]
             gateways,
+            #[cfg(feature = "websockets")]
+            io_gateways,
             http_server: self.get_http_server(),
             http_settings: self.config.http_settings.clone(),
         }));

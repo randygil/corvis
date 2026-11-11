@@ -118,6 +118,9 @@ pub enum EmitError {
     /// The adapter failed.
     #[error("{0}")]
     Adapter(AdapterError),
+    /// An [`IoGatewayServer`](super::IoGatewayServer) was used before its gateway started: it has no namespace yet.
+    #[error("the gateway has not started: its server handle is not bound to a namespace yet")]
+    NotStarted,
 }
 
 impl From<AdapterError> for EmitError {
@@ -156,7 +159,10 @@ pub struct Handshake {
 #[derive(Debug)]
 struct HandshakeData {
     auth: Value,
-    request: Request,
+    request: Arc<Request>,
+    /// `request.ip()`, resolved the first time it is asked for: a gateway reads it for every message, and resolving it
+    /// walks the handshake's `X-Forwarded-For`.
+    ip: std::sync::OnceLock<String>,
     issued_at: SystemTime,
     /// What `auth` occupies, charged to the connection's session and address for as long as the handshake lives (the
     /// socket's life, or that of a `fetch_sockets` result that shares it): `auth` is a `serde_json::Value`, whose
@@ -166,7 +172,7 @@ struct HandshakeData {
 
 impl Handshake {
     pub(crate) fn new(auth: Value, request: Request, charge: Option<Held>) -> Self {
-        Handshake { data: Arc::new(HandshakeData { auth, request, issued_at: SystemTime::now(), _charge: charge }) }
+        Handshake { data: Arc::new(HandshakeData { auth, request: Arc::new(request), ip: std::sync::OnceLock::new(), issued_at: SystemTime::now(), _charge: charge }) }
     }
 
     /// The `auth` object of the CONNECT packet (`{}` when the client sent none).
@@ -179,13 +185,18 @@ impl Handshake {
         &self.data.request
     }
 
+    /// The same request, shared: a gateway's execution contexts hold it without copying its headers.
+    pub(crate) fn request_arc(&self) -> Arc<Request> {
+        self.data.request.clone()
+    }
+
     pub fn headers(&self) -> &http::HeaderMap {
         self.data.request.headers()
     }
 
     /// The client address (it follows `set_trust_proxy`).
     pub fn ip(&self) -> String {
-        self.data.request.ip()
+        self.data.ip.get_or_init(|| self.data.request.ip()).clone()
     }
 
     /// When the CONNECT packet was handled.

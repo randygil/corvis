@@ -10,11 +10,14 @@ use serde::Serialize;
 
 use super::adapter::{Adapter, LocalNamespace};
 use super::options::IoOptions;
-use super::socket::IoSocket;
-use super::value::IoValue;
+use super::socket::{AckSender, IoSocket};
+use super::value::{Args, IoValue};
 
 pub(crate) type Middleware = Arc<dyn Fn(IoSocket) -> BoxFuture<'static, Result<(), ConnectError>> + Send + Sync>;
 pub(crate) type ConnectionHandler = Arc<dyn Fn(IoSocket) + Send + Sync>;
+/// Consulted for an event the socket has no handler of its own for: the future that handles it, or `None` for an event
+/// nobody handles (it is dropped). The gateway layer installs one per namespace.
+pub(crate) type Dispatcher = Arc<dyn Fn(IoSocket, &str, Args, Option<AckSender>) -> Option<BoxFuture<'static, ()>> + Send + Sync>;
 
 /// Why connect middleware refused a connection: it becomes the CONNECT_ERROR packet the client receives,
 /// `{"message": <message>}` plus `"data"` when the error carries data (what `err.message` and `err.data` are in the
@@ -84,6 +87,7 @@ pub(crate) struct NamespaceInner {
     initialized: tokio::sync::OnceCell<()>,
     middleware: RwLock<Vec<Middleware>>,
     connection: RwLock<Vec<ConnectionHandler>>,
+    dispatcher: RwLock<Option<Dispatcher>>,
     sockets: RwLock<HashMap<String, IoSocket>>,
     /// The id of the next server-side acknowledgement: a counter per namespace starting at 0, as Node's `_ids`.
     next_ack_id: AtomicU64,
@@ -106,6 +110,7 @@ impl IoNamespace {
             initialized: tokio::sync::OnceCell::new(),
             middleware: RwLock::new(Vec::new()),
             connection: RwLock::new(Vec::new()),
+            dispatcher: RwLock::new(None),
             sockets: RwLock::new(HashMap::new()),
             next_ack_id: AtomicU64::new(0),
         });
@@ -190,6 +195,15 @@ impl IoNamespace {
     /// The connected socket with this id.
     pub fn socket(&self, id: &str) -> Option<IoSocket> {
         self.inner.sockets.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
+    }
+
+    /// Installs the dispatcher of events without a handler on the socket (the gateway layer's), replacing a previous one.
+    pub(crate) fn set_dispatcher(&self, dispatcher: Dispatcher) {
+        *self.inner.dispatcher.write().unwrap_or_else(|e| e.into_inner()) = Some(dispatcher);
+    }
+
+    pub(crate) fn dispatcher(&self) -> Option<Dispatcher> {
+        self.inner.dispatcher.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub(crate) fn middleware(&self) -> Vec<Middleware> {

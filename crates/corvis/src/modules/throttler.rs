@@ -1180,6 +1180,10 @@ fn request_ip(ctx: &ExecutionContext) -> String {
     if let Some(client) = ctx.switch_to_ws().get_client::<crate::websockets::WsClient>() {
         return client.ip().to_owned();
     }
+    #[cfg(feature = "socket-io")]
+    if let Some(socket) = ctx.switch_to_ws().get_client::<crate::socket_io::IoSocket>() {
+        return socket.ip();
+    }
     ctx.request().ip()
 }
 

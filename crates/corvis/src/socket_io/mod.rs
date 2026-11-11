@@ -34,7 +34,10 @@
 //! Rooms and broadcast: `socket.join(room)`, `io.to(room).except(other).emit(...)`, `socket.broadcast().emit(...)`
 //! (see [`BroadcastOperator`](crate::socket_io::BroadcastOperator)); the rooms of a namespace live in an adapter, in memory by default.
 //!
-//! Not supported (yet): gateways over Socket.IO, a Redis adapter, dynamic namespaces,
+//! Gateways: `use_websocket_adapter(IoAdapter::new())` serves the application's `#[websocket_gateway]` classes over Socket.IO (see
+//! [`IoAdapter`]).
+//!
+//! Not supported (yet): a Redis adapter, dynamic namespaces,
 //! connection state recovery, `volatile` and `compress` flags, catch-all listeners, custom parsers, Engine.IO v3
 //! clients and serving the client bundle.
 
@@ -46,6 +49,7 @@ pub mod engine;
 mod broadcast;
 mod budget;
 mod client;
+mod gateway;
 mod namespace;
 mod options;
 mod parser;
@@ -62,6 +66,8 @@ mod fuzz_parser;
 pub use adapter::{AdapterError, HandshakeInfo, RoomError, SocketInfo};
 pub use broadcast::{BroadcastAckError, BroadcastAckErrorKind, BroadcastOperator, IntoRooms, RemoteSocket};
 pub use engine::options::{Admission, EngineOptions, EngineOptionsError};
+pub(crate) use gateway::{start as gateway_start, validate as gateway_validate};
+pub use gateway::{DEFAULT_HOOK_TIMEOUT, IoAdapter, IoGatewayBroadcast, IoGatewayServer};
 pub use namespace::{ConnectError, IoNamespace};
 pub use options::{IoOptions, IoOptionsError};
 pub use server::{IoServer, NamespaceNameError};

@@ -31,6 +31,45 @@ pub struct WsEnhancers {
     pub metadata: Vec<(String, Value)>,
     /// The `#[message_body]` parameters of a handler, in order (`kind` is `Body`).
     pub params: Vec<crate::router::controller::ParamDef>,
+    /// The adapter each `#[connected_socket]` parameter of a handler belongs to (its type's kind), so a mismatch with
+    /// the application's adapter is a startup error.
+    pub socket_kinds: Vec<GatewayAdapterKind>,
+}
+
+/// Which transport a gateway handle belongs to: the `ws`-style adapter (`WsClient`, `WsServer`) or Socket.IO
+/// (`IoSocket`, `IoGatewayServer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GatewayAdapterKind {
+    Ws,
+    SocketIo,
+}
+
+impl GatewayAdapterKind {
+    /// How a message names the adapter.
+    pub fn describe(self) -> &'static str {
+        match self {
+            GatewayAdapterKind::Ws => "default WebSocket adapter",
+            GatewayAdapterKind::SocketIo => "Socket.IO adapter",
+        }
+    }
+}
+
+/// The `cors` option of `#[websocket_gateway]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorsDecl {
+    /// `cors = true`: any origin, without credentials.
+    Any,
+    /// `cors = "https://a"` or `cors = ["https://a", "https://b"]`.
+    Origins(Vec<String>),
+}
+
+/// What `#[websocket_gateway]` declared for the Socket.IO adapter: `namespace` (or the positional literal), `path`
+/// (the Engine.IO path) and `cors`. The `ws` adapter reads `GatewayInfo::path` instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IoGatewayDecl {
+    pub namespace: Option<String>,
+    pub path: Option<String>,
+    pub cors: Option<CorsDecl>,
 }
 
 impl WsEnhancers {
@@ -59,6 +98,11 @@ impl WsEnhancers {
     }
     pub fn param(mut self, p: crate::router::controller::ParamDef) -> Self {
         self.params.push(p);
+        self
+    }
+    /// Records the adapter of a `#[connected_socket]` parameter.
+    pub fn socket_kind(mut self, kind: GatewayAdapterKind) -> Self {
+        self.socket_kinds.push(kind);
         self
     }
 }
@@ -119,11 +163,20 @@ pub type GatewayHook = Arc<dyn Fn(Arc<dyn Any + Send + Sync>) -> BoxFuture<'stat
 #[derive(Clone)]
 pub struct GatewayInfo {
     pub path: String,
+    /// The Socket.IO view of the gateway's options (see [`IoGatewayDecl`]).
+    pub io: IoGatewayDecl,
     pub on_init: Option<GatewayHook>,
     pub on_connection: Option<GatewayHook>,
     pub on_disconnect: Option<GatewayHook>,
-    /// The `#[websocket_server]` field of this gateway instance (a `WsServer`), if any.
+    /// The hooks implemented for the Socket.IO handles (`OnGatewayInit<IoNamespace>`, `OnGatewayConnection<IoSocket>`,
+    /// `OnGatewayDisconnect<IoSocket>`).
+    pub io_on_init: Option<GatewayHook>,
+    pub io_on_connection: Option<GatewayHook>,
+    pub io_on_disconnect: Option<GatewayHook>,
+    /// The `#[websocket_server]` field of this gateway instance (a `WsServer` or an `IoGatewayServer`), if any.
     pub server: Option<Arc<dyn Any + Send + Sync>>,
+    /// The adapter the `#[websocket_server]` field's type belongs to.
+    pub server_kind: Option<GatewayAdapterKind>,
     /// Class-level enhancers (`#[use_guards]`, `#[use_interceptors]`, `#[use_pipes]`, `#[set_metadata]`).
     pub enhancers: WsEnhancers,
 }

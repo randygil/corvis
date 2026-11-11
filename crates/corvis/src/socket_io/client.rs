@@ -473,14 +473,24 @@ fn dispatch(
     charge: Charge,
     inflight: &mut FuturesUnordered<BoxFuture<'static, ()>>,
 ) {
-    let Some(handler) = socket.handler(name) else { return };
+    // A handler registered on the socket wins; otherwise the namespace's dispatcher (the gateways') may take the event.
+    let own = socket.handler(name);
+    let dispatcher = if own.is_none() { socket.namespace().dispatcher() } else { None };
+    if own.is_none() && dispatcher.is_none() {
+        return;
+    }
     let ack = id.map(|id| AckSender::new(socket.clone(), id));
     let namespace = socket.namespace().name().to_string();
     let args = Args::new(args);
     let handler_socket = socket.clone();
-    let created = std::panic::catch_unwind(AssertUnwindSafe(|| handler(handler_socket, args, ack)));
+    let created = match (own, dispatcher) {
+        (Some(handler), _) => std::panic::catch_unwind(AssertUnwindSafe(|| Some(handler(handler_socket, args, ack)))),
+        (None, Some(dispatcher)) => std::panic::catch_unwind(AssertUnwindSafe(|| dispatcher(handler_socket, name, args, ack))),
+        (None, None) => return,
+    };
     let future = match created {
-        Ok(future) => future,
+        Ok(Some(future)) => future,
+        Ok(None) => return,
         Err(_) => {
             shared.warnings.panicked("an event handler", &namespace);
             return;

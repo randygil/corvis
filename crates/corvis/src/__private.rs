@@ -386,8 +386,17 @@ pub fn extract_arg<T: DeserializeOwned>(args: &mut [Value], i: usize, kind: Para
 /// handshake (resolved with `trust proxy`), converted like a controller's `#[ip]`.
 #[cfg(feature = "websockets")]
 pub fn ws_ip_arg<T: DeserializeOwned>(client: &Arc<dyn std::any::Any + Send + Sync>) -> Result<T, HttpException> {
-    let client = crate::websockets::client_from_any(client)?;
-    crate::common::lenient::from_value::<T>(Value::String(client.ip().to_owned())).map_err(|e| BadRequestException::new(format!("ip: {e}")))
+    let ip = match client.downcast_ref::<crate::websockets::WsClient>() {
+        Some(client) => client.ip().to_owned(),
+        #[cfg(feature = "socket-io")]
+        None => match client.downcast_ref::<crate::socket_io::IoSocket>() {
+            Some(socket) => socket.ip(),
+            None => return Err(HttpException::new("invalid socket", 500)),
+        },
+        #[cfg(not(feature = "socket-io"))]
+        None => return Err(HttpException::new("invalid socket", 500)),
+    };
+    crate::common::lenient::from_value::<T>(Value::String(ip)).map_err(|e| BadRequestException::new(format!("ip: {e}")))
 }
 
 /// Serializes metadata values for `#[set_metadata]`.

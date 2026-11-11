@@ -313,6 +313,9 @@ pub(crate) struct RouterConfig {
     /// Whether global guards, interceptors and pipes also apply to gateway handlers
     /// (`apply_global_enhancers_to_gateways`).
     pub gateway_global_enhancers: bool,
+    /// How gateways are served (`use_websocket_adapter`): the `ws`-style protocol unless an adapter was selected.
+    #[cfg(feature = "websockets")]
+    pub gateway_adapter: crate::websockets::GatewayAdapterChoice,
 }
 
 impl Default for RouterConfig {
@@ -326,6 +329,8 @@ impl Default for RouterConfig {
             global_pipes: Vec::new(),
             global_filters: Vec::new(),
             gateway_global_enhancers: true,
+            #[cfg(feature = "websockets")]
+            gateway_adapter: crate::websockets::GatewayAdapterChoice::default(),
         }
     }
 }
@@ -570,6 +575,10 @@ pub(crate) struct AppShared {
     pub request_scope: bool,
     #[cfg(feature = "websockets")]
     pub gateways: HashMap<String, Arc<crate::websockets::GatewayRuntime>>,
+    /// The gateways served over Socket.IO (empty under the `ws` adapter): they are reached through the Engine.IO paths,
+    /// never by `match_upgrade`, so they are not in `gateways`.
+    #[cfg(feature = "websockets")]
+    pub io_gateways: Vec<Arc<crate::websockets::GatewayRuntime>>,
     /// The server exposed through `HttpAdapterHost` (raw `upgrade` listeners).
     pub http_server: crate::http_adapter::HttpServer,
     /// `X-Powered-By` / ETag settings (`app.set` / `app.disable`).

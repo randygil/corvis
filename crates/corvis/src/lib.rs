@@ -287,7 +287,7 @@ pub use modules::throttler::{
 };
 #[cfg(feature = "websockets")]
 pub use websockets::{
-    GatewayOptions, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsClient, WsException, WsResponse, WsServer,
+    GatewayOptions, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsAdapter, WsClient, WsException, WsResponse, WsServer,
 };
 
 /// Everything you need in a typical application: `use corvis::prelude::*;`.
@@ -314,6 +314,8 @@ pub mod prelude {
     #[cfg(feature = "compression")]
     pub use crate::{CompressionOptions, should_compress};
     pub use crate::{HttpAdapterHost, StreamableFileOptions};
+    #[cfg(feature = "socket-io")]
+    pub use crate::socket_io::{IoAdapter, IoGatewayServer};
     pub use async_trait::async_trait;
     pub use serde_json::Value;
     pub use std::sync::Arc;

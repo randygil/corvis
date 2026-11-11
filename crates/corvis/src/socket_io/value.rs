@@ -435,22 +435,29 @@ impl IoValue {
 
     /// The same value as plain JSON; fails when it holds binary data.
     pub fn to_json(&self) -> Result<Value, IoValueError> {
-        to_json(self, 0)
+        to_json(self, 0, false)
+    }
+
+    /// The same value as plain JSON, with every binary value replaced by `null`: the form a gateway's message pipeline
+    /// sees (it has no binary type).
+    pub(crate) fn to_json_binary_as_null(&self) -> Result<Value, IoValueError> {
+        to_json(self, 0, true)
     }
 }
 
-fn to_json(v: &IoValue, depth: usize) -> Result<Value, IoValueError> {
+fn to_json(v: &IoValue, depth: usize, binary_as_null: bool) -> Result<Value, IoValueError> {
     Ok(match v {
         IoValue::Null => Value::Null,
         IoValue::Bool(b) => Value::Bool(*b),
         IoValue::Number(n) => Value::Number(n.clone()),
         IoValue::String(s) => Value::String(s.clone()),
+        IoValue::Binary(_) if binary_as_null => Value::Null,
         IoValue::Binary(_) => return Err(IoValueError::ContainsBinary),
         IoValue::Array(a) => {
             if depth + 1 > MAX_DEPTH {
                 return Err(IoValueError::TooDeep);
             }
-            Value::Array(a.iter().map(|x| to_json(x, depth + 1)).collect::<Result<_, _>>()?)
+            Value::Array(a.iter().map(|x| to_json(x, depth + 1, binary_as_null)).collect::<Result<_, _>>()?)
         }
         IoValue::Object(o) => {
             if depth + 1 > MAX_DEPTH {
@@ -459,7 +466,7 @@ fn to_json(v: &IoValue, depth: usize) -> Result<Value, IoValueError> {
             let mut map = serde_json::Map::new();
             for (k, x) in o.iter() {
                 reject_reserved_key(k)?;
-                map.insert(k.clone(), to_json(x, depth + 1)?);
+                map.insert(k.clone(), to_json(x, depth + 1, binary_as_null)?);
             }
             Value::Object(map)
         }
