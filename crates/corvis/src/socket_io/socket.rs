@@ -528,8 +528,9 @@ impl IoSocket {
         self
     }
 
-    /// Adds a function that runs once the socket left its namespace. Synchronous; a panic is logged. Each socket
-    /// reports each of the two exactly once.
+    /// Adds a function that runs once the socket left its namespace. Synchronous; a panic is logged. Each socket that
+    /// connected reports each of the two exactly once; one that never did (a middleware refused it, or its connection
+    /// failed before CONNECT) reports neither, and what it registered is dropped.
     pub fn on_disconnect(&self, f: impl Fn(&IoSocket, DisconnectReason) + Send + Sync + 'static) -> &Self {
         self.inner.disconnect.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::new(f));
         self
@@ -902,7 +903,17 @@ impl IoSocket {
             client.forget_unannounced(self.inner.nsp.name(), self);
         }
         self.inner.handshake.release_charge();
+        self.release_callbacks();
+    }
+
+    /// Drops, without running any, what was registered on a socket that never connected: its event handlers and its
+    /// `disconnecting` and `disconnect` callbacks. A socket that never connected reports no disconnect (the reference
+    /// server's `_onclose` returns early for it), and a callback that holds a clone of the socket would otherwise keep
+    /// the socket, and whatever the callbacks capture, alive for good.
+    pub(crate) fn release_callbacks(&self) {
         drop(std::mem::take(&mut *self.inner.handlers.write().unwrap_or_else(|e| e.into_inner())));
+        drop(std::mem::take(&mut *self.inner.disconnecting.lock().unwrap_or_else(|e| e.into_inner())));
+        drop(std::mem::take(&mut *self.inner.disconnect.lock().unwrap_or_else(|e| e.into_inner())));
     }
 }
 

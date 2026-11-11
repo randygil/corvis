@@ -98,8 +98,14 @@ pub enum SendError {
 }
 
 impl QueueItem for Packet {
+    /// What the packet holds while queued: a framed text is the Socket.IO encoder's buffer, which may keep up to an
+    /// eighth of its length as spare capacity, so it is charged its allocation and not its length.
     fn size(&self) -> usize {
-        self.polling_len() + 16
+        let held = match self {
+            Packet::Message(EngineMessage::Framed(text)) => text.capacity(),
+            _ => self.polling_len(),
+        };
+        held + 16
     }
 
     /// A Socket.IO CONNECT (`40`: an Engine.IO message holding a packet of type `0`, which only the Socket.IO encoder
@@ -1067,6 +1073,21 @@ mod session_tests {
         for _ in 0..5 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_framed_text_counts_against_the_send_buffer_with_its_spare_capacity() {
+        let session = open(EngineOptions::new().max_buffered_amount(2_000), TransportKind::Polling);
+        drain(&session);
+        let framed = |len: usize, capacity: usize| {
+            let mut text = String::with_capacity(capacity);
+            text.push_str(&"4".repeat(len));
+            EngineMessage::Framed(text)
+        };
+        session.send(framed(900, 1_000)).unwrap();
+        assert_eq!(session.outbox.buffered(), 1_000 + 16, "charged its allocation, not its 900 bytes");
+        // 1,016 + 900 + 16 would fit by length; by allocation it does not.
+        assert_eq!(session.send(framed(900, 1_000)), Err(SendError::Full));
     }
 
     #[tokio::test(start_paused = true)]

@@ -199,7 +199,8 @@ impl EngineOptions {
     }
 
     /// The most bytes queued for one session and not yet written. A send above it fails and closes the session
-    /// with `transport error`. Node has no limit.
+    /// with `transport error`. A Socket.IO packet counts the buffer it was encoded into, spare capacity included (at
+    /// most an eighth of its length). Node has no limit.
     pub fn max_buffered_amount(mut self, bytes: usize) -> Self {
         self.max_buffered_amount = bytes;
         self

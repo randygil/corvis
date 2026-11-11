@@ -60,3 +60,58 @@ async fn a_panic_in_add_all_of_the_own_room_during_connect_refuses_the_attempt_a
 async fn an_error_from_add_all_of_the_own_room_during_connect_refuses_the_attempt_like_a_panic() {
     an_own_room_failure_refuses_the_attempt(|knobs| &knobs.fail_add_all).await;
 }
+
+/// Set when the value is dropped.
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// A middleware registers `disconnecting` and `disconnect` callbacks that hold a clone of the socket, then the attempt
+/// fails (`refuse` decides how). A socket that never connected reports no disconnect, as with the reference server (its
+/// `_onclose` returns early for a socket that is not connected), and the callbacks are released: one that holds the
+/// socket would otherwise keep it, its handshake and everything they capture alive for good.
+async fn callbacks_of_an_attempt_that_never_connected_are_released_without_running(refuse: bool) {
+    let (io, knobs, _) = probe_server(options());
+    let ran = Arc::new(AtomicUsize::new(0));
+    let released = Arc::new(AtomicBool::new(false));
+    {
+        let (ran, released) = (ran.clone(), released.clone());
+        io.use_middleware(move |socket| {
+            let flag = Arc::new(DropFlag(released.clone()));
+            for disconnecting in [true, false] {
+                let (ran, kept, flag) = (ran.clone(), socket.clone(), flag.clone());
+                let callback = move |_: &IoSocket, _: DisconnectReason| {
+                    let _ = (&kept, &flag);
+                    ran.fetch_add(1, Ordering::SeqCst);
+                };
+                if disconnecting {
+                    socket.on_disconnecting(callback);
+                } else {
+                    socket.on_disconnect(callback);
+                }
+            }
+            async move { if refuse { Err(ConnectError::new("refused")) } else { Ok(()) } }
+        });
+    }
+    knobs.fail_add_all.store(!refuse, Ordering::SeqCst);
+    let conn = io.conn();
+    conn.text("0");
+    let expected = if refuse { r#"4{"message":"refused"}"# } else { r#"4{"message":"Internal server error"}"# };
+    assert_eq!(conn.sent().await, [t(expected)]);
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "no disconnect callback ran for a socket that never connected");
+    assert!(released.load(Ordering::SeqCst), "the callbacks, and the socket they hold, were released");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_disconnect_callbacks_of_a_socket_whose_own_room_failed_are_released_without_running() {
+    callbacks_of_an_attempt_that_never_connected_are_released_without_running(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_disconnect_callbacks_of_a_socket_a_middleware_refused_are_released_without_running() {
+    callbacks_of_an_attempt_that_never_connected_are_released_without_running(true).await;
+}

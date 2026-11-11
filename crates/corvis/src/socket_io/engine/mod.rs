@@ -996,7 +996,7 @@ impl EngineSocket {
         self.session.close_reason()
     }
 
-    /// Bytes queued for the client and not yet written.
+    /// Bytes queued for the client and not yet written, as `max_buffered_amount` counts them.
     pub fn buffered_amount(&self) -> usize {
         self.session.outbox.buffered()
     }

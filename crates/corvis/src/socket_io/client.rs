@@ -168,9 +168,11 @@ fn emit_error(error: SendError) -> EmitError {
     }
 }
 
-/// Frees the slot of a connection attempt that ends without joining (an error, a close, a dropped task).
+/// Frees the slot of a connection attempt that ends without joining (an error, a close, a dropped task), and releases
+/// the callbacks its middleware registered on the socket, which never run.
 struct PendingGuard {
     shared: Arc<ClientShared>,
+    socket: IoSocket,
     name: String,
     armed: bool,
 }
@@ -178,10 +180,13 @@ struct PendingGuard {
 impl Drop for PendingGuard {
     fn drop(&mut self) {
         if self.armed {
-            let mut nsps = self.shared.nsps();
-            if matches!(nsps.get(&self.name), Some(Slot::Pending)) {
-                nsps.remove(&self.name);
+            {
+                let mut nsps = self.shared.nsps();
+                if matches!(nsps.get(&self.name), Some(Slot::Pending)) {
+                    nsps.remove(&self.name);
+                }
             }
+            self.socket.release_callbacks();
         }
     }
 }
@@ -598,7 +603,7 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
     let namespace = socket.namespace();
     let _attempt = namespace.connect_attempt();
     let name = namespace.name().to_string();
-    let mut guard = PendingGuard { shared: shared.clone(), name: name.clone(), armed: true };
+    let mut guard = PendingGuard { shared: shared.clone(), socket: socket.clone(), name: name.clone(), armed: true };
     let outcome = tokio::select! {
         outcome = run_middleware(&namespace, &socket, shared.options.middleware_timeout, &shared.warnings) => outcome,
         // The connection closed while the middleware ran: no CONNECT_ERROR, no handlers (the guard frees the slot).
