@@ -22,6 +22,7 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use super::options::{ClientAuth, OAuth2HttpOptions, OAuth2Options, host_is_loopback};
 use super::profile::{self, OAuth2Profile};
 use super::secret::{ClientSecret, OAuth2Token};
+use crate::auth::warn_limit::WarnLimiter;
 use crate::logger::Logger;
 
 /// The header block of a response may not be larger than this.
@@ -603,12 +604,20 @@ fn json_answer_any(answer: Answer) -> Result<serde_json::Value, OAuth2Error> {
 /// call [`refresh`](OAuth2Client::refresh) when an access token has expired. The framework stores no token and
 /// refreshes nothing by itself.
 ///
+/// Each call opens its own connection to the provider (TLS handshake included) and closes it when the answer is read
+/// (`connection: close`): there is no pool. That keeps one exchange from ever reading another's answer, and costs a
+/// handshake per call, which suits the occasional refresh; an application that refreshes in bulk should batch on its
+/// side. The in-flight limit and the timeouts of the options apply to every call.
+///
+/// A failed refresh logs one warning a minute at most, with the count of those dropped.
+///
 /// ```ignore
 /// let client = OAuth2Client::new(GoogleAuth::options_for(&config))?;
 /// let tokens = client.refresh(stored_refresh_token).await?;
 /// ```
 pub struct OAuth2Client {
     provider: Provider,
+    warnings: WarnLimiter,
 }
 
 impl std::fmt::Debug for OAuth2Client {
@@ -633,7 +642,12 @@ impl OAuth2Client {
             return Err(super::options::OAuth2OptionsError(format!("invalid OAuth2 options: {}", problems.join("; "))));
         }
         let provider = Provider::new(&options).map_err(|p| super::options::OAuth2OptionsError(format!("invalid OAuth2 options: {p}")))?;
-        Ok(OAuth2Client { provider })
+        Ok(OAuth2Client { provider, warnings: WarnLimiter::new(Duration::from_secs(60)) })
+    }
+
+    /// The warning for a failed refresh at `now`, at most one a minute.
+    fn refresh_warning(&self, error: &OAuth2Error, now: std::time::Instant) -> Option<String> {
+        self.warnings.line("refresh-failed", now, || format!("refresh request to {} failed: {error}", self.provider.token_host()))
     }
 
     /// `grant_type=refresh_token` with the client credentials, as `passport-oauth2-refresh` sends it.
@@ -642,8 +656,10 @@ impl OAuth2Client {
             return Err(OAuth2Error::InvalidResponse);
         }
         let result = self.provider.token(Grant::Refresh { refresh_token }).await;
-        if let Err(error) = &result {
-            Logger::new("OAuth2Client").warn(format!("refresh request to {} failed: {error}", self.provider.token_host()));
+        if let Err(error) = &result
+            && let Some(line) = self.refresh_warning(error, std::time::Instant::now())
+        {
+            Logger::new("OAuth2Client").warn(line);
         }
         let result = result?;
         Ok(OAuth2TokenSet { access_token: result.access_token, refresh_token: result.refresh_token, params: result.response })
@@ -656,6 +672,24 @@ mod tests {
 
     fn answer(status: u16, content_type: &str, body: &str) -> Answer {
         Answer { status, content_type: Some(content_type.to_string()), body: body.as_bytes().to_vec() }
+    }
+
+    /// Two failed refreshes within a minute log one line; the next minute's line counts the one dropped.
+    #[test]
+    fn a_failed_refresh_logs_one_line_a_minute() {
+        let options = OAuth2Options::new(
+            super::super::options::OAuth2Endpoints::new("https://p.example/a", "https://p.example/t"),
+            "id",
+            "secret",
+            "https://app.example/cb",
+        );
+        let client = OAuth2Client::new(options).unwrap();
+        let t0 = std::time::Instant::now();
+        let first = client.refresh_warning(&OAuth2Error::Timeout, t0).expect("the first one is written");
+        assert!(first.contains("p.example") && !first.contains("more since"), "{first}");
+        assert_eq!(client.refresh_warning(&OAuth2Error::Timeout, t0 + Duration::from_secs(1)), None);
+        let later = client.refresh_warning(&OAuth2Error::Timeout, t0 + Duration::from_secs(61)).expect("a minute later");
+        assert!(later.ends_with("(1 more since the last warning)"), "{later}");
     }
 
     #[test]

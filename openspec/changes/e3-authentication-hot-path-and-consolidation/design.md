@@ -667,3 +667,21 @@ passed, 0 failed.
 - The busy-hasher test holds the slot with `hold_slot` (`HeldSlot` frees it on drop) and shares the slow hasher with
   `every_framework_503_has_the_same_bytes`, so the two take turns through a `tokio::sync::Mutex`; 20 runs in a row
   passed.
+- `Request::typed_user` reads `AuthUserSlot` only. Its integration tests are in `tests/auth_session_http.rs`, where a
+  session user exists for "Route without an AuthGuard"; "A guard reads the typed user" uses the harness's `header`
+  strategy instead of `jwt` (the slot is the same whatever strategy fills it), and "Foreign extension" a guard that
+  inserts an `Account`, with a unit test of the same rule in `http/request.rs`.
+- The API key strategy's mark moved to `Resolved::mark_query_names`, skipped for a name the application's redaction
+  holds (`Request::app_redacts`, compiled with `auth-api-key`).
+- Poisoned locks: besides `insert`, `get` and `remove`, `RequestRejected::is_marked` reads a poisoned lock too.
+  Otherwise the mark the router writes while a panic unwinds (now possible through the tolerant `insert`) would be
+  invisible to the session middleware, which keeps a guard login unless it sees the mark or an `Err`. With the old
+  `insert`, `a_handler_that_panics_with_a_poisoned_lock_is_a_500` aborts the test process (exit 0xc0000409, a panic
+  while panicking); now it is a 500 with no login.
+
+### Nice to have (group 7)
+
+- `GuardKind`, `NoteLevel` and `Phase` as designed; `OAuth2Token` compares with `ct_eq`.
+- `AuthGuard::names` returns `&[String]` (both kinds of list borrowed) through `Authenticator::default_names`; the
+  public `default_strategies` keeps returning a `Vec`.
+- `OAuth2Client` keeps a `WarnLimiter`; `a_failed_refresh_logs_one_line_a_minute` tests the line it writes.

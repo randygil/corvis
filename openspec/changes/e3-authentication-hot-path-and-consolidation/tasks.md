@@ -117,13 +117,13 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 - [x] 6.1 `oauth2/state.rs`: `StateCookie::read` through `cookie_values`; test `a_state_cookie_sent_twice_is_no_state`
   (spec "Planted second cookie", "One cookie") with the mock provider's request counter at 0
-- [ ] 6.2 `Request::typed_user::<T>()` in `http/request.rs` (with the `auth` items it needs; rustdoc); the rustdoc of `User<T>`,
+- [x] 6.2 `Request::typed_user::<T>()` in `http/request.rs` (with the `auth` items it needs; rustdoc); the rustdoc of `User<T>`,
   `AuthUserSlot` and `Request::set_user` per design.md Decision 13e; tests for spec "A guard reads the typed user", "Route
   without an AuthGuard" and `typed_user_never_reads_a_foreign_extension`; verify `roles_guard_without_an_auth_guard`
-- [ ] 6.3 `api_key/strategy.rs`: the mark only without an application redaction holding the names; unit test that no
+- [x] 6.3 `api_key/strategy.rs`: the mark only without an application redaction holding the names; unit test that no
   extension is written inside an application and `a_strategy_outside_an_application_still_marks_its_names`; verify the
   redaction tests of `tests/auth_api_key*.rs`
-- [ ] 6.4 `http/request.rs`: `insert`, `get`, `remove` recover a poisoned lock; unit test that they work after a poisoning
+- [x] 6.4 `http/request.rs`: `insert`, `get`, `remove` recover a poisoned lock; unit test that they work after a poisoning
   panic, and `a_handler_that_panics_with_a_poisoned_lock_is_a_500`
 - [x] 6.5 `local/hasher.rs`: hidden `PasswordHasher::hold_slot` and `HeldSlot`; rewrite
   `a_busy_hasher_answers_503_for_every_user` (`tests/auth_local.rs`) to hold the slot, with no thread and no sleep; verify
@@ -131,11 +131,11 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 7. Nice to have
 
-- [ ] 7.1 `GuardKind`, `NoteLevel`, `Phase` (design.md Decision 13f); constant-time `PartialEq` for `OAuth2Token` with a unit
+- [x] 7.1 `GuardKind`, `NoteLevel`, `Phase` (design.md Decision 13f); constant-time `PartialEq` for `OAuth2Token` with a unit
   test of equal and unequal tokens
-- [ ] 7.2 `Authenticator::default_names` and the borrowed names in `AuthGuard::names`; verify the default-strategy tests
-- [ ] 7.3 The doc comment of `oauth2/options.rs:732-734` moved; `every_outcome_can_be_built` matches each outcome
-- [ ] 7.4 `OAuth2Client` rustdoc (one connection per call); the `refresh` warning through a `WarnLimiter`, with a test that
+- [x] 7.2 `Authenticator::default_names` and the borrowed names in `AuthGuard::names`; verify the default-strategy tests
+- [x] 7.3 The doc comment of `oauth2/options.rs:732-734` moved; `every_outcome_can_be_built` matches each outcome
+- [x] 7.4 `OAuth2Client` rustdoc (one connection per call); the `refresh` warning through a `WarnLimiter`, with a test that
   two failures within a minute log one line
 
 ## 8. Example

@@ -78,6 +78,19 @@ impl Request {
         }
     }
 
+    /// `true` when the names registered for the whole application hide the values of `name` on this request already, so
+    /// a per-request mark would add nothing.
+    #[cfg(feature = "auth-api-key")]
+    pub(crate) fn app_redacts(&self, name: &str) -> bool {
+        self.app_redaction.as_deref().is_some_and(|app| app.all || app.names.iter().any(|n| n == name))
+    }
+
+    /// The names marked on this request with [`Request::redact_query_param`], `None` when nothing was marked.
+    #[cfg(test)]
+    pub(crate) fn marked_query_params(&self) -> Option<Vec<String>> {
+        self.extensions.read().unwrap_or_else(|e| e.into_inner()).get::<RedactedParams>().map(|m| m.names.clone())
+    }
+
     /// Sets the names registered for the whole application (see [`AppRedaction`]).
     #[cfg(test)]
     pub(crate) fn with_app_redaction(mut self, app: Option<std::sync::Arc<AppRedaction>>) -> Self {

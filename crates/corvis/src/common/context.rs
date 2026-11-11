@@ -164,7 +164,8 @@ impl RequestRejected {
 
     #[cfg(feature = "auth-session")]
     pub(crate) fn is_marked(extensions: &std::sync::RwLock<http::Extensions>) -> bool {
-        extensions.read().is_ok_and(|e| e.get::<RequestRejected>().is_some())
+        // A lock a panic poisoned still holds the mark (the router marks the request while that panic unwinds).
+        extensions.read().unwrap_or_else(|e| e.into_inner()).get::<RequestRejected>().is_some()
     }
 }
 

@@ -270,22 +270,37 @@ impl Request {
         self.cookie(name).and_then(|v| keys.unsign(&v))
     }
 
-    /// Attaches a value to the request (like `req.user = user`). Shared by all clones.
+    /// Attaches a value to the request (like `req.user = user`). Shared by all clones. A panic elsewhere that poisoned
+    /// the extensions' lock does not stop it, as with the rest of `Request`.
     pub fn insert<T: Clone + Send + Sync + 'static>(&self, value: T) {
-        self.extensions.write().unwrap().insert(value);
+        self.extensions.write().unwrap_or_else(|e| e.into_inner()).insert(value);
     }
     /// Reads a value previously attached with [`Request::insert`].
     pub fn get<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
-        self.extensions.read().unwrap().get::<T>().cloned()
+        self.extensions.read().unwrap_or_else(|e| e.into_inner()).get::<T>().cloned()
     }
     pub fn remove<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
-        self.extensions.write().unwrap().remove::<T>()
+        self.extensions.write().unwrap_or_else(|e| e.into_inner()).remove::<T>()
     }
 
-    /// `req.user` convention used by passport-like guards: stores a JSON value. It also drops the typed user an
-    /// [`AuthGuard`](crate::auth::AuthGuard) stored earlier, so `request.user()` and `User<T>` never disagree:
-    /// after this call `User<T>` answers 401, because it reflects only what an `AuthGuard` stored. A value that
-    /// does not serialize leaves both users as they were.
+    /// The typed user of the request, for guards (a handler takes a [`User<T>`](crate::auth::User) parameter): a clone
+    /// of what an [`AuthGuard`](crate::auth::AuthGuard) stored, or of what the session middleware restored (or
+    /// `Authenticator::log_in` stored), when it is a `T`. It reads that slot only, never another request extension of
+    /// the same type, so a guard that inserts a `T` does not make a user. On a route without an `AuthGuard` it is the
+    /// session's user, which nothing about the request itself has checked; see the authentication threat model.
+    ///
+    /// ```ignore
+    /// let roles = request.typed_user::<Account>().map(|a| a.roles).unwrap_or_default();
+    /// ```
+    pub fn typed_user<T: Clone + 'static>(&self) -> Option<T> {
+        crate::auth::AuthUserSlot::read::<T>(self)
+    }
+
+    /// `req.user` convention used by passport-like guards: stores a JSON value. It also drops the typed user (what an
+    /// [`AuthGuard`](crate::auth::AuthGuard) stored, or what the session middleware restored), so `request.user()` and
+    /// `User<T>` never disagree: after this call `User<T>` answers 401 and [`typed_user`](Self::typed_user) gives
+    /// `None`, because they read only the typed user's own slot. A value that does not serialize leaves both users as
+    /// they were.
     pub fn set_user(&self, user: impl serde::Serialize) {
         if let Ok(v) = serde_json::to_value(user) {
             self.remove::<crate::auth::AuthUserSlot>();
@@ -499,5 +514,46 @@ mod cookie_tests {
         let req = request(&["a=%61%61%61%61%61%61"]);
         assert_eq!(req.cookie_values("a", 2, 5), [""]);
         assert_eq!(req.cookie_values("a", 2, 100), ["aaaaaa"]);
+    }
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Account {
+        id: u32,
+    }
+
+    /// A value inserted by another guard is a plain extension, never the typed user.
+    #[test]
+    fn typed_user_never_reads_a_foreign_extension() {
+        let req = Request::empty();
+        req.insert(Account { id: 7 });
+        assert_eq!(req.typed_user::<Account>(), None);
+        req.insert(crate::auth::AuthUserSlot(std::sync::Arc::new(Account { id: 1 })));
+        assert_eq!(req.typed_user::<Account>(), Some(Account { id: 1 }));
+        assert_eq!(req.typed_user::<String>(), None, "another type is no user");
+        req.set_user(serde_json::json!({ "id": 2 }));
+        assert_eq!(req.typed_user::<Account>(), None, "set_user drops the typed user");
+    }
+
+    /// `insert`, `get` and `remove` work on extensions whose lock a panic poisoned.
+    #[test]
+    fn extensions_survive_a_poisoned_lock() {
+        let req = Request::empty();
+        req.insert(1u8);
+        let shared = req.extensions.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = shared.write().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(req.extensions.is_poisoned());
+        assert_eq!(req.get::<u8>(), Some(1));
+        req.insert(2u16);
+        assert_eq!(req.remove::<u16>(), Some(2));
+        assert_eq!(req.get::<u16>(), None);
     }
 }

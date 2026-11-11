@@ -235,6 +235,17 @@ fn read_query(req: &Request, name: &str, max: usize) -> Read {
 }
 
 impl Resolved {
+    /// Marks the query names the key is read from as sensitive for this request's log line. An application registers
+    /// them for every request at startup, so inside one nothing is written; the mark covers a strategy used outside an
+    /// application (a guard tested on its own).
+    pub(super) fn mark_query_names(&self, req: &Request) {
+        for name in &self.query_names {
+            if !req.app_redacts(name) {
+                req.redact_query_param(name);
+            }
+        }
+    }
+
     /// The one key of a request, or the reason it has none. Every source is read; a value that is present but
     /// unusable fails the attempt, and two sources with different keys fail it too.
     pub(super) fn extract(&self, req: &Request) -> Result<String, &'static str> {
@@ -313,11 +324,7 @@ impl<V: ApiKeyValidator> Strategy for ApiKeyStrategy<V> {
 
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
-        // The names are also registered for the whole application at startup; the mark stays so a request that
-        // reaches here is covered when the strategy is used outside an application (tests of a guard).
-        for name in &self.resolved.query_names {
-            req.redact_query_param(name);
-        }
+        self.resolved.mark_query_names(req);
         let key = match self.resolved.extract(req) {
             Ok(key) => ApiKey::new(key),
             Err(reason) => return fail(reason),
@@ -408,6 +415,33 @@ mod tests {
         assert_eq!(bearer(b"abc"), Err(MISSING));
         assert_eq!(bearer(b"Bearerabc"), Err(MISSING));
         assert_eq!(bearer(b"Bearer\x85abc"), Err(MISSING));
+    }
+
+    fn query_strategy() -> Resolved {
+        resolved(ApiKeyStrategyOptions::new().source(ApiKeySource::query("api_key")))
+    }
+
+    /// Inside an application the names are registered for every request: the strategy writes no extension.
+    #[test]
+    fn no_extension_is_written_inside_an_application() {
+        let app = std::sync::Arc::new(crate::http::AppRedaction::new(["api_key".to_string()]));
+        let req = request("/d?api_key=SECRET", &[]).with_app_redaction(Some(app));
+        query_strategy().mark_query_names(&req);
+        assert_eq!(req.marked_query_params(), None);
+        assert!(!req.redacted_url().contains("SECRET"), "the application's names hide it");
+        // An application whose names do not hold the strategy's still gets the mark.
+        let other = std::sync::Arc::new(crate::http::AppRedaction::new(["token".to_string()]));
+        let req = request("/d?api_key=SECRET", &[]).with_app_redaction(Some(other));
+        query_strategy().mark_query_names(&req);
+        assert_eq!(req.marked_query_params(), Some(vec!["api_key".to_string()]));
+    }
+
+    #[test]
+    fn a_strategy_outside_an_application_still_marks_its_names() {
+        let req = request("/d?api_key=SECRET&page=2", &[]);
+        query_strategy().mark_query_names(&req);
+        assert_eq!(req.marked_query_params(), Some(vec!["api_key".to_string()]));
+        assert_eq!(req.redacted_url(), "/d?api_key=REDACTED&page=2");
     }
 
     #[test]

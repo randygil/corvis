@@ -147,7 +147,12 @@ impl Authenticator {
 
     /// The default strategy names configured with `PassportModule::register`, if any.
     pub fn default_strategies(&self) -> Option<Vec<String>> {
-        self.registry().and_then(|r| r.default.clone())
+        self.default_names().map(<[String]>::to_vec)
+    }
+
+    /// [`default_strategies`](Self::default_strategies), borrowed.
+    pub(crate) fn default_names(&self) -> Option<&[String]> {
+        self.registry().and_then(|r| r.default.as_deref())
     }
 
     /// Runs the strategies called `names` in order against the request of `ctx`:

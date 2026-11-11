@@ -105,6 +105,43 @@ impl Strategy for HeaderStrategy {
     }
 }
 
+/// What [`TypedUserGuard`] found, for the handler to echo.
+#[derive(Clone)]
+pub struct SeenByGuard(pub Option<Account>);
+
+/// Reads `Request::typed_user::<Account>()` and lets the request through.
+#[injectable]
+pub struct TypedUserGuard;
+
+#[async_trait]
+impl corvis::CanActivate for TypedUserGuard {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        let req = ctx.switch_to_http().get_request();
+        req.insert(SeenByGuard(req.typed_user::<Account>()));
+        Ok(true)
+    }
+
+    fn controls_access(&self) -> bool {
+        false
+    }
+}
+
+/// Inserts an `Account` as a plain request extension: it is not a user.
+#[injectable]
+pub struct PlantingGuard;
+
+#[async_trait]
+impl corvis::CanActivate for PlantingGuard {
+    async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        ctx.switch_to_http().get_request().insert(account("1").unwrap());
+        Ok(true)
+    }
+
+    fn controls_access(&self) -> bool {
+        false
+    }
+}
+
 /// A second guard that refuses (a second factor that was not passed).
 #[injectable]
 pub struct DenyGuard;
@@ -204,6 +241,26 @@ impl Routes {
     #[get("who")]
     fn who(&self, req: Request) -> Value {
         json!({ "user": req.user() })
+    }
+
+    /// No `AuthGuard`: `User<T>` is the session user, typed.
+    #[get("who-typed")]
+    fn who_typed(&self, user: User<Account>) -> Value {
+        json!({ "user": user.0 })
+    }
+
+    /// A guard after `AuthGuard` that reads the typed user.
+    #[get("typed-guard")]
+    #[use_guards(AuthGuard::new("header"), TypedUserGuard)]
+    fn typed_guard(&self, req: Request) -> Value {
+        json!({ "seen": req.get::<SeenByGuard>().map(|s| s.0) })
+    }
+
+    /// A guard that plants an `Account` as a plain extension, then one that reads the typed user.
+    #[get("foreign-extension")]
+    #[use_guards(PlantingGuard, TypedUserGuard)]
+    fn foreign_extension(&self, req: Request) -> Value {
+        json!({ "seen": req.get::<SeenByGuard>().map(|s| s.0) })
     }
 
     #[public]
@@ -467,6 +524,8 @@ pub async fn app_with(
             Provider::strategy::<HeaderStrategy>(),
             Provider::strategy::<SessionStrategy<Accounts>>(),
             Provider::class::<DenyGuard>(),
+            Provider::class::<TypedUserGuard>(),
+            Provider::class::<PlantingGuard>(),
         ])
         .controller::<Routes>();
     let module = extra(builder).compile().await.unwrap();

@@ -7,7 +7,7 @@ use subtle::ConstantTimeEq;
 ///
 /// The framework stores no token. If the application stores one (to call the provider's API later), it should keep it
 /// encrypted at rest and tied to the user record, never in a cookie or in the session of the browser.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct OAuth2Token(String);
 
 impl OAuth2Token {
@@ -20,6 +20,15 @@ impl OAuth2Token {
         &self.0
     }
 }
+
+/// Compares in time that depends on the lengths only, never on where two tokens differ.
+impl PartialEq for OAuth2Token {
+    fn eq(&self, other: &Self) -> bool {
+        ct_eq(self.0.as_bytes(), other.0.as_bytes())
+    }
+}
+
+impl Eq for OAuth2Token {}
 
 /// Prints no value.
 impl std::fmt::Debug for OAuth2Token {
@@ -84,6 +93,16 @@ mod tests {
         // Ambiguous (and so a compile error) if `OAuth2Token: Serialize`.
         <OAuth2Token as NotSerialize<_>>::check();
         <ClientSecret as NotSerialize<_>>::check();
+    }
+
+    #[test]
+    fn tokens_compare_by_value() {
+        let token = |s: &str| OAuth2Token::new(s.to_string());
+        assert_eq!(token("tok-1"), token("tok-1"));
+        assert_ne!(token("tok-1"), token("tok-2"));
+        assert_ne!(token("tok-1"), token("tok-10"), "different lengths");
+        assert_ne!(token(""), token("a"));
+        assert_eq!(token(""), token(""));
     }
 
     #[test]

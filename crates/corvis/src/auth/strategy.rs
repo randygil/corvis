@@ -115,7 +115,8 @@ impl std::fmt::Debug for AuthenticatedUser {
     }
 }
 
-/// The typed user of the request, set by `AuthGuard` and read only by `User<T>`.
+/// The typed user of the request, set by `AuthGuard`, by the session middleware when it restores the session's user
+/// and by `Authenticator::log_in`; read only by `User<T>` and `Request::typed_user`.
 #[derive(Clone)]
 pub(crate) struct AuthUserSlot(pub(crate) Arc<dyn Any + Send + Sync>);
 
@@ -231,14 +232,17 @@ mod tests {
     #[test]
     fn every_outcome_can_be_built() {
         let user = AuthenticatedUser::new(1u8).unwrap();
-        let outcomes = [
-            StrategyOutcome::Success { user, info: Some(serde_json::json!("x")) },
-            StrategyOutcome::Fail { challenge: Some(serde_json::json!("c")), status: Some(400) },
-            StrategyOutcome::Redirect { url: "/x".into(), status: None },
-            StrategyOutcome::Pass,
-            StrategyOutcome::Error(crate::http::UnauthorizedException::empty()),
-        ];
-        assert_eq!(outcomes.len(), 5);
+        let success = StrategyOutcome::Success { user, info: Some(serde_json::json!("x")) };
+        assert!(
+            matches!(&success, StrategyOutcome::Success { user, info: Some(info) } if user.json() == &serde_json::json!(1) && info == "x")
+        );
+        let fail = StrategyOutcome::Fail { challenge: Some(serde_json::json!("c")), status: Some(400) };
+        assert!(matches!(&fail, StrategyOutcome::Fail { challenge: Some(c), status: Some(400) } if c == "c"));
+        let redirect = StrategyOutcome::Redirect { url: "/x".into(), status: None };
+        assert!(matches!(&redirect, StrategyOutcome::Redirect { url, status: None } if url == "/x"));
+        assert!(matches!(StrategyOutcome::Pass, StrategyOutcome::Pass));
+        let error = StrategyOutcome::Error(crate::http::UnauthorizedException::empty());
+        assert!(matches!(&error, StrategyOutcome::Error(e) if e.get_status() == 401));
     }
 
     #[test]

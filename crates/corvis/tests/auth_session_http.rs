@@ -651,6 +651,29 @@ impl SessionOptionsExt {
 
 // ---- the session user and the guards ----
 
+/// Spec "Route without an AuthGuard": `User<T>` on a route without an `AuthGuard` is the session's user, typed, as
+/// `Request::user()` is; without a session user it is the 401.
+#[tokio::test]
+async fn a_route_without_an_auth_guard_sees_the_session_user_typed() {
+    let app = app(options()).await;
+    let cookie = login(&app, "1").await;
+    let r = get(&app, "/who-typed", Some(&cookie)).await;
+    assert_eq!((r.status, r.json_value()["user"].clone()), (200, json!({ "id": "1", "name": "ana" })), "{}", r.text());
+    assert_eq!(get(&app, "/who-typed", None).await.status, 401);
+}
+
+/// Spec "A guard reads the typed user" and "Foreign extension": a guard after an `AuthGuard` reads the user the
+/// strategy returned with `Request::typed_user`, without deserializing the JSON user; an `Account` another guard
+/// inserted is no user.
+#[tokio::test]
+async fn a_guard_reads_the_typed_user_and_never_a_foreign_extension() {
+    let app = app(options()).await;
+    let r = send(&app, "GET", "/typed-guard", None, &[("x-user", "2")]).await;
+    assert_eq!((r.status, r.json_value()["seen"].clone()), (200, json!({ "id": "2", "name": "bob" })), "{}", r.text());
+    let r = get(&app, "/foreign-extension", None).await;
+    assert_eq!((r.status, r.json_value()["seen"].clone()), (200, Value::Null), "{}", r.text());
+}
+
 #[tokio::test]
 async fn the_session_user_reaches_a_guard_and_the_handler() {
     let app = app(options()).await;
