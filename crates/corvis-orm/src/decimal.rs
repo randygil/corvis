@@ -286,6 +286,27 @@ fn binary_scaled(neg: bool, n: BigUint, frac_bits: u64, p: i64) -> Decimal {
     }
 }
 
+/// Test-only measure of the work of `pow`: the longest coefficient (in decimal digits) it built.
+#[cfg(test)]
+mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static MAX_DIGITS: Cell<i64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn note_digits(n: i64) {
+        MAX_DIGITS.with(|m| m.set(m.get().max(n)));
+    }
+
+    /// Runs `f` and returns the longest coefficient `pow` built meanwhile.
+    pub(super) fn max_digits(f: impl FnOnce()) -> i64 {
+        MAX_DIGITS.with(|m| m.set(0));
+        f();
+        MAX_DIGITS.with(Cell::get)
+    }
+}
+
 /// Number of decimal digits of `n` (1 for zero).
 fn ndigits(n: &BigUint) -> i64 {
     if let Some(v) = n.to_u128() {
@@ -1223,6 +1244,8 @@ impl Decimal {
                 return if big { Decimal::special(Kind::Infinite, neg, cfg) } else { Decimal::finite(neg, BigUint::zero(), 0, cfg) };
             };
             let c = self.coeff.pow(k as u32);
+            #[cfg(test)]
+            work::note_digits(ndigits(&c));
             let r = Decimal::finite(neg, c, exp, cfg);
             if n < 0 {
                 return Decimal::finite(false, BigUint::one(), 0, cfg).div(r);
@@ -1928,6 +1951,19 @@ mod tests {
             "18446744073709551616",
             "1e-9223372036854775808",
         );
+    }
+
+    /// A binary exponent costs a bounded amount of work, like decimal.js' `intPow`, which keeps 7 words of 7 digits
+    /// (security review of #188: `0x1p99999` built the 30,103 digits of 2^99999).
+    #[test]
+    fn binary_exponents_do_bounded_work() {
+        for s in ["0x1p99999", "0x1p-99999", "0x1p9007199254740991", "0xf.fp99999", "0x1p54"] {
+            let digits = work::max_digits(|| {
+                Decimal::parse(s).unwrap();
+            });
+            assert!(digits <= 100, "{s}: pow built a {digits}-digit coefficient");
+        }
+        assert!(work::max_digits(|| drop(decimal!("2").pow(1_000_000_i64))) <= 100);
     }
 
     #[test]

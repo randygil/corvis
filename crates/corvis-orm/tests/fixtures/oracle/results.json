@@ -62,7 +62,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.398Z",
+   "updatedAt": "2026-11-11T20:01:13.691Z",
    "data": {
     "a": [
      1,
@@ -101,7 +101,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-02T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.407Z",
+   "updatedAt": "2026-11-11T20:01:13.717Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -209,7 +209,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.413Z",
+   "updatedAt": "2026-11-11T20:01:13.723Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -297,7 +297,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T00:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T14:16:56.398Z",
+    "updatedAt": "2026-11-11T20:01:13.691Z",
     "data": {
      "a": [
       1,
@@ -664,7 +664,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T00:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T14:16:56.398Z",
+    "updatedAt": "2026-11-11T20:01:13.691Z",
     "data": {
      "a": [
       1,
@@ -692,7 +692,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-02T00:00:00.000Z",
-    "updatedAt": "2026-11-11T14:16:56.407Z",
+    "updatedAt": "2026-11-11T20:01:13.717Z",
     "data": null,
     "meta": {},
     "active": true,
@@ -711,7 +711,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-03T00:00:00.000Z",
-    "updatedAt": "2026-11-11T14:16:56.413Z",
+    "updatedAt": "2026-11-11T20:01:13.723Z",
     "data": null,
     "meta": {},
     "active": true,
@@ -751,7 +751,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.398Z",
+   "updatedAt": "2026-11-11T20:01:13.691Z",
    "data": {
     "a": [
      1,
@@ -969,7 +969,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.413Z",
+   "updatedAt": "2026-11-11T20:01:13.723Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -1057,7 +1057,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.413Z",
+   "updatedAt": "2026-11-11T20:01:13.723Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -1310,7 +1310,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.398Z",
+   "updatedAt": "2026-11-11T20:01:13.691Z",
    "active": true,
    "managerId": null
   }
@@ -1346,7 +1346,7 @@
    "ratio": null,
    "big": 0,
    "birthday": null,
-   "updatedAt": "2026-11-11T14:16:56.413Z",
+   "updatedAt": "2026-11-11T20:01:13.723Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -3611,7 +3611,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.708Z",
+   "updatedAt": "2026-11-11T20:01:13.924Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -3679,7 +3679,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T14:16:56.689Z",
+   "updatedAt": "2026-11-11T20:01:13.908Z",
    "data": null,
    "meta": {
     "k": "v"
@@ -12982,5 +12982,124 @@
     "title": "arith"
    }
   ]
+ },
+ {
+  "label": "having.lt_null",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "_sum": {
+    "views": true
+   },
+   "having": {
+    "views": {
+     "_sum": {
+      "lt": null
+     }
+    }
+   },
+   "orderBy": {
+    "published": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.groupBy()` invocation:\n\n{\n  select: {\n    _sum: {\n      select: {\n        views: true\n      }\n    },\n    published: true\n  },\n  by: [\n    \"published\"\n  ],\n  having: {\n    views: {\n      _sum: {\n+       lt: Int\n      }\n    }\n  },\n  orderBy: {\n    published: \"asc\"\n  }\n}\n\nArgument `lt` must not be null."
+  }
+ },
+ {
+  "label": "having.equals_null",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "_sum": {
+    "views": true
+   },
+   "having": {
+    "views": {
+     "_sum": {
+      "equals": null
+     }
+    }
+   },
+   "orderBy": {
+    "published": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.groupBy()` invocation:\n\n{\n  select: {\n    _sum: {\n      select: {\n        views: true\n      }\n    },\n    published: true\n  },\n  by: [\n    \"published\"\n  ],\n  having: {\n    views: {\n      _sum: {\n+       equals: Int\n      }\n    }\n  },\n  orderBy: {\n    published: \"asc\"\n  }\n}\n\nArgument `equals` must not be null."
+  }
+ },
+ {
+  "label": "having.not_null",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "_sum": {
+    "views": true
+   },
+   "having": {
+    "views": {
+     "_sum": {
+      "not": null
+     }
+    }
+   },
+   "orderBy": {
+    "published": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.groupBy()` invocation:\n\n{\n  select: {\n    _sum: {\n      select: {\n        views: true\n      }\n    },\n    published: true\n  },\n  by: [\n    \"published\"\n  ],\n  having: {\n    views: {\n      _sum: {\n+       not: Int\n      }\n    }\n  },\n  orderBy: {\n    published: \"asc\"\n  }\n}\n\nArgument `not` must not be null."
+  }
+ },
+ {
+  "label": "having.in_null",
+  "model": "post",
+  "action": "groupBy",
+  "args": {
+   "by": [
+    "published"
+   ],
+   "_sum": {
+    "views": true
+   },
+   "having": {
+    "views": {
+     "_sum": {
+      "in": [
+       null,
+       5
+      ]
+     }
+    }
+   },
+   "orderBy": {
+    "published": "asc"
+   }
+  },
+  "error": {
+   "name": "PrismaClientValidationError",
+   "code": null,
+   "meta": null,
+   "message": "\nInvalid `prisma.post.groupBy()` invocation:\n\n{\n  select: {\n    _sum: {\n      select: {\n        views: true\n      }\n    },\n    published: true\n  },\n  by: [\n    \"published\"\n  ],\n  having: {\n    views: {\n      _sum: {\n        in: [\n          null,\n          5\n        ]\n        ~~~~~~\n      }\n    }\n  },\n  orderBy: {\n    published: \"asc\"\n  }\n}\n\nArgument `in`: Invalid value provided. Expected ListIntFieldRefInput, provided (Null, Int)."
+  }
  }
 ]

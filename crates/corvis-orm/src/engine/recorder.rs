@@ -11,6 +11,9 @@ use crate::db::{Sql, SqlValue};
 pub(crate) struct Recorded {
     pub sql: String,
     pub params: Vec<String>,
+    /// The byte length of each text parameter (0 for the others); not part of the Postgres SQL snapshot.
+    #[serde(skip)]
+    pub text_lengths: Vec<usize>,
 }
 
 tokio::task_local! {
@@ -28,7 +31,15 @@ pub(crate) async fn capture<F: Future>(f: F) -> (F::Output, Vec<Recorded>) {
 /// Called by the client for every statement it sends; a no-op outside [`capture`].
 pub(crate) fn record(sql: &Sql) {
     let _ = STATEMENTS.try_with(|log| {
-        let entry = Recorded { sql: sql.text.clone(), params: sql.params.iter().map(param_type).collect() };
+        let text_lengths = sql
+            .params
+            .iter()
+            .map(|p| match p {
+                SqlValue::Text(s) => s.len(),
+                _ => 0,
+            })
+            .collect();
+        let entry = Recorded { sql: sql.text.clone(), params: sql.params.iter().map(param_type).collect(), text_lengths };
         log.lock().unwrap_or_else(|e| e.into_inner()).push(entry);
     });
 }

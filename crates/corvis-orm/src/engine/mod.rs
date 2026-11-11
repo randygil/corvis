@@ -13,6 +13,8 @@ mod pg_sql_snapshot;
 mod read;
 #[cfg(test)]
 pub(crate) mod recorder;
+#[cfg(test)]
+mod sqlite_operand_tests;
 mod write;
 
 use std::fmt::Display;

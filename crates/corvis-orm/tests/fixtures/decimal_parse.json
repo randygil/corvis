@@ -423,6 +423,111 @@
    "input": "1_0_0",
    "value": "100",
    "negative": false
+  },
+  {
+   "input": "0x1p99999",
+   "value": "4.9950104650719225397e+30102",
+   "negative": false
+  },
+  {
+   "input": "0x1p100000",
+   "value": "9.9900209301438450794e+30102",
+   "negative": false
+  },
+  {
+   "input": "0x1p100001",
+   "value": "1.9980041860287690159e+30103",
+   "negative": false
+  },
+  {
+   "input": "0x1p-100000",
+   "value": "1.0009989037986941668e-30103",
+   "negative": false
+  },
+  {
+   "input": "0x1p-100001",
+   "value": "5.0049945189934708341e-30104",
+   "negative": false
+  },
+  {
+   "input": "0x1p999999999",
+   "value": "2.3064880005845346966e+301029995",
+   "negative": false
+  },
+  {
+   "input": "0x1p-999999999",
+   "value": "4.3355959352338680043e-301029996",
+   "negative": false
+  },
+  {
+   "input": "0x1p9007199254740991",
+   "value": "1.4918194546311814862e+2711437152599295",
+   "negative": false
+  },
+  {
+   "input": "0x1p-9007199254740991",
+   "value": "6.70322401880210975e-2711437152599296",
+   "negative": false
+  },
+  {
+   "input": "0x1p99999999999999999999999",
+   "value": "Infinity",
+   "negative": false
+  },
+  {
+   "input": "0x1p-99999999999999999999999",
+   "value": "0",
+   "negative": false
+  },
+  {
+   "input": "0xf.fp99999",
+   "value": "7.9607979287083765476e+30103",
+   "negative": false
+  },
+  {
+   "input": "0x1.8p-99999",
+   "value": "3.0029967113960825004e-30103",
+   "negative": false
+  },
+  {
+   "input": "0x3p99999",
+   "value": "1.4985031395215767619e+30103",
+   "negative": false
+  },
+  {
+   "input": "-0x1p-54",
+   "value": "-5.5511151231257827021e-17",
+   "negative": true
+  },
+  {
+   "input": "0x1p53",
+   "value": "9007199254740992",
+   "negative": false
+  },
+  {
+   "input": "0x1p54",
+   "value": "18014398509481984",
+   "negative": false
+  },
+  {
+   "input": "0x.1p-9223372036854775808",
+   "value": "0",
+   "negative": false
+  },
+  {
+   "input": "0x123456789abcdefp777",
+   "value": "6.5169416916707466423e+250",
+   "negative": false
+  },
+  {
+   "input": "0b1011p-1000",
+   "value": "1.0265899803535407669e-300",
+   "negative": false
+  },
+  {
+   "input": "0o777p300",
+   "value": "1.0409253839069223901e+93",
+   "negative": false
   }
  ]
 }
