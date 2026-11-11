@@ -86,7 +86,7 @@ impl Request {
     }
 
     /// The names marked on this request with [`Request::redact_query_param`], `None` when nothing was marked.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "auth-api-key"))]
     pub(crate) fn marked_query_params(&self) -> Option<Vec<String>> {
         self.extensions.read().unwrap_or_else(|e| e.into_inner()).get::<RedactedParams>().map(|m| m.names.clone())
     }

@@ -145,7 +145,7 @@ Las diferencias de tiempo que quedan son las que controlas tú. Los hashes guard
 
 ### Un hasher ocupado
 
-Argon2 cuesta memoria y tiempo a propósito, y una avalancha de logins hace cola en los `max_concurrent` huecos. La cola tiene un límite: esperan como máximo `max_waiting` llamadas, cada una como mucho `acquire_timeout`. Una llamada que encuentra la cola llena, o espera demasiado, falla con `PasswordError::Busy` sin ninguna derivación de clave. Un validador de login lo convierte en `503 Service Unavailable`, igual para todos los usuarios para no revelar nada de la cuenta, con `PasswordError::into_http_exception` (cualquier otro error se convierte en un `500` vacío):
+Argon2 cuesta memoria y tiempo a propósito, y una avalancha de logins hace cola en los `max_concurrent` huecos. La cola tiene un límite: esperan como máximo `max_waiting` llamadas, cada una como mucho `acquire_timeout`. Una llamada que encuentra la cola llena, o espera demasiado, falla con `PasswordError::Busy` sin ninguna derivación de clave. Un validador de login lo convierte en `503 Service Unavailable` con el cuerpo `{"statusCode":503,"message":"Service Unavailable"}`, igual para todos los usuarios para no revelar nada de la cuenta, con `PasswordError::into_http_exception` (cualquier otro error se convierte en un `500` vacío):
 
 ```rust
 .map_err(PasswordError::into_http_exception)?

@@ -145,15 +145,15 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 9. Docs and naming
 
-- [ ] 9.1 Rustdoc for every public item added or changed (`JwtSignOptions::{not_before, jwt_id}`, `JwtService::sign` with
+- [x] 9.1 Rustdoc for every public item added or changed (`JwtSignOptions::{not_before, jwt_id}`, `JwtService::sign` with
   its rules, `Request::typed_user`, `User<T>`, `SessionStore::touch`, `OAuth2Client`, `extract_bearer_token`); verify
   `cargo doc -p corvis --all-features --no-deps` without warnings and `cargo test -p corvis --doc --all-features`
-- [ ] 9.2 Docs, English then Spanish (`docs/` and `docs/es/`), with the `docs-writer` agent: `recipes/passport-migration.md`
+- [x] 9.2 Docs, English then Spanish (`docs/` and `docs/es/`), with the `docs-writer` agent: `recipes/passport-migration.md`
   (the `jwt.sign` row: the claim rules, `not_before`, `jwt_id`, and any recorded divergence), `recipes/passport.md` (lines
   193 and 199: the session user is a typed user; `Request::typed_user` for guards; the `503` body where it is quoted),
   `http/session.md` (the `touch` row of the store table), `security/encryption-and-hashing.md` (the busy hasher's body if
   quoted); verify `npm run docs:check` in `docs/`
-- [ ] 9.3 Rename `tests/auth_session_review.rs` → `auth_session_races.rs`, `auth_session_review2.rs` →
+- [x] 9.3 Rename `tests/auth_session_review.rs` → `auth_session_races.rs`, `auth_session_review2.rs` →
   `auth_session_guard_login.rs`, `auth_oauth2_review.rs` → `auth_oauth2_abuse.rs` (header comments keep their origin);
   update the links in `security/authentication-threat-model.md` in both languages and any reference in `.github/`; verify
   `cargo test -p corvis --test auth_source_checks` and `node scripts/check-naming.mjs`

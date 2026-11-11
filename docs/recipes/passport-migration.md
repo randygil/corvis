@@ -138,6 +138,25 @@ differ per user.
 | `ignoreExpiration: true` | `.ignore_expiration(true)`, with a startup warning |
 | `passReqToCallback` | always on: `validate(req, payload)` |
 | `jwt.sign(payload, { expiresIn })` (`jsonwebtoken`) | `JwtService::sign` with `JwtModuleOptions::expires_in(..)`, or `sign_with(.., JwtSignOptions { expires_in, .. })` |
+| `jwt.sign(payload, { notBefore, jwtid })` | `JwtSignOptions { not_before, jwt_id, .. }` |
+
+`sign` and `sign_with` follow the rules of the original JWT module (11.0.2 over `jsonwebtoken` 9.0.3), checked against a
+recording of it:
+
+- An object payload's `iat`, `exp` and `nbf` must be numbers; otherwise the error is `"iat" should be a number of seconds`.
+- `iat` is the payload's when it is a number other than `0`, and the clock otherwise. `nbf` (`not_before`) and `exp`
+  (`expires_in`, per call or from the module) are counted from that `iat`. A bare number in `expires_in` or `not_before`
+  is seconds.
+- A payload claim together with its option is an error; nothing is overwritten. The pairs are `exp` and `expires_in`, `nbf`
+  and `not_before`, `aud` and the module's `audience`, `iss` and the module's `issuer`, `sub` and `subject`, `jti` and
+  `jwt_id`. The error texts are the original's, for example `Bad "options.subject" option. The payload already has an "sub" property.`
+- The claims are added after the payload's own keys, in the order `iat`, `nbf`, `exp`, `aud`, `iss`, `sub`, `jti`.
+- A string payload is signed as it is, with a header without `typ`, and is refused when any sign option is set
+  (`Payload as string is not allowed with the following sign options: expiresIn`). A number or a boolean is signed as its
+  JSON text, also without `typ`. An array or `null` is refused (`Expected "payload" to be a plain object.`).
+
+`not_before` and `jwt_id` are public fields of `JwtSignOptions`, so a struct literal needs `..Default::default()`. Earlier
+versions of Corvis overwrote `exp` and `sub`, and let the payload win for `iss` and `aud`.
 
 Every option, the extractors and the algorithm rules are in [the JWT reference](/recipes/passport#the-jwt-strategy).
 
@@ -232,6 +251,7 @@ have no request to record. They are the same differences the reference lists nex
 | a payload that is a string is handed to `validate` | the payload must be a JSON object | a validator always reads claims <!-- divergence: jwt.json: a payload that is not an object fails; t --> |
 | `fromHeader` finds only names written in lowercase | header names are matched ignoring case | HTTP headers are case-insensitive <!-- divergence: jwt.json: the header name is matched case-insensit --> |
 | no limit on the token length | 8192 bytes by default, checked before decoding | bounded work for an unauthenticated request <!-- divergence: jwt.json: the original has no token length limit;  --> |
+| `mutatePayload: true` writes the claims into the caller's object | there is no such option: the payload is borrowed and the caller's value never changes (the token is the same) | a function that signs does not change its argument <!-- divergence: jwt_sign.json: Corvis borrows the payload and never cha --> |
 | the first cookie of a name wins | a cookie sent twice is no token | a cookie planted from a sibling subdomain must not authenticate |
 | the key provider and `validate` wait forever | both have a deadline and answer a `503` that is the same for every token | a slow dependency must not hold every request |
 | any secret length, `ES512` | an HMAC secret under 32 bytes stops startup; `ES512` is not available | RFC 7518 section 3.2; `jsonwebtoken` 9 has no `ES512` |

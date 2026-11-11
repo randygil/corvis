@@ -685,3 +685,18 @@ passed, 0 failed.
 - `AuthGuard::names` returns `&[String]` (both kinds of list borrowed) through `Authenticator::default_names`; the
   public `default_strategies` keeps returning a `Vec`.
 - `OAuth2Client` keeps a `WarnLimiter`; `a_failed_refresh_logs_one_line_a_minute` tests the line it writes.
+
+### Example, docs and naming (groups 8 and 9)
+
+- `roles_guard_without_an_auth_guard` (`tests/auth_invariants.rs`) keeps its own `RolesGuard` that reads
+  `user_as`: it pins the invariant for a guard written that way, and passes unchanged. The example's guard reads
+  `typed_user`.
+- `cargo doc -p corvis --all-features --no-deps` prints four warnings, all in files this change does not touch
+  (`z/regex.rs`, `posture.rs`, `z/locales.rs`); none comes from the items added or changed here.
+- The docs were written with the `docs-writer` agent and reviewed: the migration page has the `sign` rules, the new
+  options and a divergence row for `mutatePayload` (with the marker `examples/auth-app/tests/docs_divergences.rs`
+  checks); the passport recipe has the session user as a typed user, `Request::typed_user`, the repeated state cookie,
+  the `__Host-` prefix in any case, `extract_bearer_token`'s own rules and the OAuth2 `503` body; the session page has
+  the `touch` row; the hashing page has the busy hasher's body. The log-line suffix and the tolerant locks (behaviors 7
+  and 8 of the list above) are not documented: log lines are not an API, and a panic that poisons the extensions is not
+  something an application does on purpose.

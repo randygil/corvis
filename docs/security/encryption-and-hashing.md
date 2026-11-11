@@ -145,7 +145,7 @@ The remaining timing differences are the ones you control. Stored hashes with an
 
 ### A busy hasher
 
-Argon2 costs memory and time on purpose, and a flood of logins queues behind the `max_concurrent` slots. The queue is bounded: at most `max_waiting` calls wait, each for at most `acquire_timeout`. A call that finds the queue full, or waits too long, fails with `PasswordError::Busy` without any key derivation. A login validator turns that into `503 Service Unavailable`, the same for every user so it reveals nothing about the account, with `PasswordError::into_http_exception` (any other error becomes an empty `500`):
+Argon2 costs memory and time on purpose, and a flood of logins queues behind the `max_concurrent` slots. The queue is bounded: at most `max_waiting` calls wait, each for at most `acquire_timeout`. A call that finds the queue full, or waits too long, fails with `PasswordError::Busy` without any key derivation. A login validator turns that into `503 Service Unavailable` with the body `{"statusCode":503,"message":"Service Unavailable"}`, the same for every user so it reveals nothing about the account, with `PasswordError::into_http_exception` (any other error becomes an empty `500`):
 
 ```rust
 .map_err(PasswordError::into_http_exception)?

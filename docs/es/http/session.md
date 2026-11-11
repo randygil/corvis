@@ -301,7 +301,7 @@ Implementa `SessionStore`, un trait asíncrono:
 | `load(id) -> Result<Option<Value>, _>` | el registro, o `None` |
 | `create(id, &record, ttl)` | debe fallar con `SessionStoreError::Exists`, dejando el registro, cuando el identificador existe |
 | `update(id, &record, ttl) -> Result<bool, _>` | `Ok(false)` sin escribir nada cuando el registro no existe |
-| `touch(id, &record, ttl) -> Result<bool, _>` | **obligatorio, sin implementación por defecto.** Debe renovar solo la expiración y las claves `cookie` y `__corvis`, nunca los datos: la copia de `record` se leyó al empezar la petición y puede estar desactualizada, así que una petición sin modificaciones no debe sobrescribir lo que guardó otra. `Ok(false)` sin escribir nada cuando el registro no existe |
+| `touch(id, &record, ttl) -> Result<bool, _>` | **obligatorio, sin implementación por defecto.** Debe renovar solo la expiración y las claves `cookie` y `__corvis`, nunca los datos. El `record` que recibe contiene solo `cookie` y `__corvis`, ninguno de los datos de la sesión, así que un almacén que leyera los datos en `touch` (el contrato ya lo prohibía) no encuentra ninguno. Los datos de la petición estarían desactualizados de todos modos, se leyeron al empezar la petición, así que una petición sin modificaciones no debe sobrescribir lo que guardó otra. `Ok(false)` sin escribir nada cuando el registro no existe |
 | `destroy(id) -> Result<bool, _>` | `Ok(true)` cuando se eliminó un registro, `Ok(false)` cuando ya no estaba (no es un error). El middleware lo usa para saber que otra petición terminó la sesión |
 | `in_process() -> bool` | `false` por defecto; `true` hace que el arranque registre el aviso de memoria |
 | `validate() -> Result<(), String>` | se comprueba al arrancar |

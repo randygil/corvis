@@ -329,7 +329,7 @@ async fn one_write_purges_a_bounded_number_of_expired_records() {
     tokio::time::advance(Duration::from_secs(61)).await;
     store.create("new", &record(None, 0), TTL).await.unwrap();
     assert!(store.load("new").await.unwrap().is_some());
-    assert!(store.len() - 1 >= 9_872, "{} expired records left", store.len() - 1);
+    assert!(store.len() > 9_872, "{} expired records left besides the new session", store.len() - 1);
 
     // The byte bound: 2 000 small expired records fill the store and a record 150 times their size needs room, more
     // than one batch frees.
