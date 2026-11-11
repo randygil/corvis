@@ -112,7 +112,7 @@ pub mod prelude {
 /// })).await?;
 /// ```
 pub fn undefined() -> serde_json::Value {
-    serde_json::Value::String(engine::UNDEFINED.to_string())
+    engine::undefined_marker()
 }
 
 /// `Some(v)` -> `v`, `None` -> [`undefined()`] (`value ?? undefined`).

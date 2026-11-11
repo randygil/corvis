@@ -124,31 +124,61 @@ fn depth_error(e: &Engine, max: usize) -> OrmError {
     e.err(format!("Query arguments are nested too deeply: the maximum depth is {max} (`max_query_depth`)."))
 }
 
-/// The value of [`crate::undefined`]: JS `undefined` inside query arguments.
-pub(crate) const UNDEFINED: &str = "\u{0}corvis_orm::undefined\u{0}";
+/// The in-band markers the JSON builders put in query arguments: [`crate::undefined`] and [`invalid_argument`].
+///
+/// Query arguments are JSON, and a request can carry any JSON string, NUL characters included, so a fixed marker
+/// text could be forged by a client (sending it removed the filter condition it stood in). Each marker therefore
+/// carries a random nonce drawn once per process from the operating system (two v4 UUIDs, 244 random bits) and never
+/// written anywhere a client can read it; a string that is not the exact marker of this process is an ordinary
+/// string, and a string with a NUL character fails the query.
+struct Markers {
+    undefined: String,
+    invalid: String,
+}
 
-/// The prefix of a value [`invalid_argument`] stands for (NUL characters cannot come from a request: they are
-/// rejected in strings).
-const INVALID: &str = "\u{0}corvis_orm::invalid\u{0}";
+fn markers() -> &'static Markers {
+    static MARKERS: std::sync::OnceLock<Markers> = std::sync::OnceLock::new();
+    MARKERS.get_or_init(|| {
+        let nonce = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        Markers {
+            undefined: format!("\u{0}corvis_orm::undefined::{nonce}\u{0}"),
+            invalid: format!("\u{0}corvis_orm::invalid::{nonce}\u{0}"),
+        }
+    })
+}
+
+/// The value of [`crate::undefined`]: JS `undefined` inside query arguments.
+pub(crate) fn undefined_marker() -> Value {
+    Value::String(markers().undefined.clone())
+}
 
 /// A JSON value that makes the query it is put in fail with `message` (a validation error) before any SQL runs: how
 /// a JSON builder such as [`crate::or_undefined`] reports a value it could not convert.
 pub(crate) fn invalid_argument(message: String) -> Value {
-    Value::String(format!("{INVALID}{message}"))
+    Value::String(format!("{}{message}", markers().invalid))
 }
 
 /// The message of the first [`invalid_argument`] in `v`, if any.
 fn find_invalid_argument(v: &Value) -> Option<&str> {
-    match v {
-        Value::String(s) => s.strip_prefix(INVALID),
-        Value::Array(a) => a.iter().find_map(find_invalid_argument),
-        Value::Object(m) => m.values().find_map(find_invalid_argument),
-        _ => None,
+    let prefix = markers().invalid.as_str();
+    let mut stack = vec![v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::String(s) => {
+                if let Some(message) = s.strip_prefix(prefix) {
+                    return Some(message);
+                }
+            }
+            Value::Array(a) => stack.extend(a.iter().rev()),
+            Value::Object(m) => stack.extend(m.values().rev()),
+            _ => {}
+        }
     }
+    None
 }
 
 fn is_undefined(v: &Value) -> bool {
-    matches!(v, Value::String(s) if s == UNDEFINED)
+    matches!(v, Value::String(s) if *s == markers().undefined)
 }
 
 /// Drops `undefined` object entries and list items, like `JSON.stringify` does.
