@@ -126,7 +126,10 @@ const BAD: Unserializable = Unserializable(1.0);
 async fn assert_filter_refused(db: &OrmClient, p: WhereParam<Reading>, what: &str) {
     let w = p.clone();
     assert_validation(db.reading().find_many(vec![p]).exec().await, &format!("find_many {what}"));
-    assert_validation(db.reading().update_many(vec![w.clone()]).data(vec![reading::label::set("changed")]).exec().await, &format!("update_many {what}"));
+    assert_validation(
+        db.reading().update_many(vec![w.clone()]).data(vec![reading::label::set("changed")]).exec().await,
+        &format!("update_many {what}"),
+    );
     assert_validation(db.reading().delete_many(vec![w]).exec().await, &format!("delete_many {what}"));
     assert_eq!(scores(db).await.len(), 3, "{what}: rows were deleted");
 }

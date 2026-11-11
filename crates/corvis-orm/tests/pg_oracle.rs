@@ -102,6 +102,36 @@ async fn matches_reference_client() {
     let Some(url) = pg::fresh_db("oracle_rs").await else { return };
     let db = OrmClient::new(url).unwrap();
     db.db_execute(include_str!("fixtures/oracle/migration.sql")).await.unwrap();
+    run_cases(&db).await;
+}
+
+/// The same cases on a database built by `db push` of the generated models, with the oracle's block of extras (a
+/// `CHECK` and a trigger written by hand after the migration) applied after the push.
+#[tokio::test]
+async fn matches_reference_client_on_a_pushed_database() {
+    let Some(url) = pg::fresh_db("oracle_rs_pushed").await else { return };
+    let db = OrmClient::new(url).unwrap();
+    db.db_push::<(
+        oracle::User,
+        oracle::Profile,
+        oracle::Post,
+        oracle::Comment,
+        oracle::Category,
+        oracle::Group,
+        oracle::Wallet,
+        oracle::Pair,
+        oracle::Entry,
+        oracle::Rate,
+    )>()
+    .await
+    .unwrap();
+    let migration = include_str!("fixtures/oracle/migration.sql");
+    let extras = &migration[migration.find("-- Oracle extras").expect("the migration has its block of extras")..];
+    db.db_execute(extras).await.unwrap();
+    run_cases(&db).await;
+}
+
+async fn run_cases(db: &OrmClient) {
     let cases: Vec<Value> = serde_json::from_str(include_str!("fixtures/oracle/results.json")).unwrap();
     let only = std::env::var("ORACLE_ONLY").ok();
     let mut failures = Vec::new();

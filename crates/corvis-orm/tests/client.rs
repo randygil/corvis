@@ -454,7 +454,8 @@ async fn postgres_sql_generation() {
     assert_eq!(db.dialect(), corvis_orm::Dialect::Postgres);
     let ddl = db.schema_sql::<(User, Post)>().unwrap();
     assert!(ddl[0].contains("\"id\" BIGSERIAL NOT NULL"), "{}", ddl[0]);
-    assert!(ddl[0].contains("\"created_at\" TIMESTAMPTZ(3) NOT NULL"), "{}", ddl[0]);
+    // Like the reference migration: `TIMESTAMP(3)`, and `@default(now())` computed by the database too.
+    assert!(ddl[0].contains("\"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP"), "{}", ddl[0]);
     assert!(ddl[0].contains("CONSTRAINT \"users_pkey\" PRIMARY KEY (\"id\")"), "{}", ddl[0]);
     let sql = corvis_orm::debug_sql(
         &db,

@@ -131,7 +131,8 @@ async fn create_many_and_return(db: &OrmClient, n: usize) {
 
 async fn update_many_and_return(db: &OrmClient, n: usize) {
     seed(db, "items", "\"name\"", &concat(db, "n"), n).await;
-    let rows = q(db, meta::<Item>(), "updateManyAndReturn", json!({ "where": { "name": { "startsWith": "n" } }, "data": { "name": "u" } })).await;
+    let rows =
+        q(db, meta::<Item>(), "updateManyAndReturn", json!({ "where": { "name": { "startsWith": "n" } }, "data": { "name": "u" } })).await;
     let rows = rows.as_array().unwrap();
     assert_eq!(rows.len(), n);
     assert!(rows.iter().all(|r| r["name"] == "u"));
@@ -140,7 +141,8 @@ async fn update_many_and_return(db: &OrmClient, n: usize) {
 async fn include_over_a_compound_key(db: &OrmClient, n: usize) {
     seed(db, "pairs", "\"a\", \"b\"", &format!("{}, x", concat(db, "p")), n).await;
     seed(db, "entries", "\"pair_a\", \"pair_b\"", &format!("{}, x", concat(db, "p")), n).await;
-    let pairs = q(db, meta::<Pair>(), "findMany", json!({ "include": { "entries": true, "_count": { "select": { "entries": true } } } })).await;
+    let pairs =
+        q(db, meta::<Pair>(), "findMany", json!({ "include": { "entries": true, "_count": { "select": { "entries": true } } } })).await;
     let pairs = pairs.as_array().unwrap();
     assert_eq!(pairs.len(), n);
     for p in pairs {
@@ -176,7 +178,13 @@ async fn m2m_disconnect(db: &OrmClient, n: usize) {
     seed(db, "Tag", "\"id\"", "x", n).await;
     seed(db, "_ParentToTag", "\"A\", \"B\"", "1, x", n).await;
     let all: Vec<Value> = (1..=n).map(|i| json!({ "id": i })).collect();
-    let parent = q(db, meta::<Parent>(), "update", json!({ "where": { "id": 1 }, "data": { "tags": { "disconnect": all } }, "include": { "_count": true } })).await;
+    let parent = q(
+        db,
+        meta::<Parent>(),
+        "update",
+        json!({ "where": { "id": 1 }, "data": { "tags": { "disconnect": all } }, "include": { "_count": true } }),
+    )
+    .await;
     assert_eq!(parent["_count"]["tags"], 0, "{parent}");
 }
 
