@@ -728,9 +728,16 @@ llega justo cuando se abre la compuerta no puede adelantar a los que esperaban.
   atiende por turnos a las direcciones con hooks en espera: el hook de un socket empieza después de, como máximo, un hook de
   cada otra dirección que tenía hooks esperando antes que él, por muchos que haya encolado cada una.
 - Cada dirección tiene un 64.º de los topes de la aplicación: mientras sus hooks pendientes (en espera o en curso) lleguen a
-  ese número, o retengan esa cantidad de bytes, las sesiones nuevas desde ella se responden con `503` hasta que se vacíen. Así
-  una dirección no puede acumular hooks salvo desde las sesiones que ya tiene abiertas, y dentro de su parte **no se omite
-  ningún hook**.
+  ese número, o retengan esa cantidad de bytes, las sesiones nuevas desde ella se responden con `503`, y un CONNECT desde
+  ella a un namespace con hooks de desconexión se responde con `CONNECT_ERROR` (`Too many pending disconnects`) antes de que
+  exista ningún socket, hasta que se vacíen. Un hook pendiente solo sale de un socket de un namespace así, y un socket así
+  solo de un CONNECT que pasó esa comprobación, de modo que en una ruta de Engine.IO una dirección tiene como máximo
+  `parte - 1 + max_sessions_per_ip x K` hooks pendientes (`K`, los namespaces con hooks de desconexión en esa ruta: una
+  sesión tiene como máximo un socket por namespace), que retienen como máximo
+  `parte en bytes + max_sessions_per_ip x K x (lo que retiene un socket)` bytes. Los sockets que la dirección ya tenía conectados cuando llegó a su parte pueden irse igualmente, y sus
+  hooks se encolan (es el segundo término); dentro de esa cota **no se omite ningún hook**. Los clientes detrás de una misma
+  dirección (un NAT, o un proxy inverso sin `trust_proxy`) comparten los 8 trabajadores y la parte: mientras está llena
+  reciben `503` en sesiones nuevas y `CONNECT_ERROR` en esos namespaces.
 - Como máximo hay `IoAdapter::max_pending_disconnect_hooks` (10.000) hooks pendientes en la aplicación, que retienen como
   máximo `IoAdapter::max_pending_disconnect_hook_bytes` (64 MiB). Un socket que se va mientras cualquiera de los dos topes
   está lleno es **el único caso en que se descarta un hook**; se registra (con límite de frecuencia). Como cada dirección se
@@ -801,7 +808,7 @@ Socket.IO y salas, fijados con `IoAdapter::options`, más estos:
 | Handlers en curso por conexión, **incluidos los eventos que esperan a `handle_connection`** | 32 (`max_inflight`) | se pausa la lectura |
 | Hooks del ciclo de vida | 30 s (`IoAdapter::hook_timeout`) | se desconecta el socket; `init()` falla |
 | Hooks `handle_disconnect` en curso | 32 en la aplicación, 8 por dirección de cliente | los demás esperan su turno |
-| Hooks `handle_disconnect` pendientes, y los bytes que retienen sus sockets | 10.000 y 64 MiB en la aplicación (`IoAdapter::max_pending_disconnect_hooks`, `max_pending_disconnect_hook_bytes`); un 64.º de cada uno por dirección de cliente | en la parte de la dirección: sesiones nuevas desde ella con `503`; en el tope de la aplicación: el hook se descarta y se registra |
+| Hooks `handle_disconnect` pendientes, y los bytes que retienen sus sockets | 10.000 y 64 MiB en la aplicación (`IoAdapter::max_pending_disconnect_hooks`, `max_pending_disconnect_hook_bytes`); un 64.º de cada uno por dirección de cliente | en la parte de la dirección: sesiones nuevas desde ella con `503`, un CONNECT desde ella a un namespace con hooks de desconexión con `CONNECT_ERROR`; en el tope de la aplicación: el hook se descarta y se registra (llenarlo exige muchas direcciones a la vez, como los topes de sesiones) |
 | Namespaces a los que llega un cliente | los que declaran los gateways | `CONNECT_ERROR` `Invalid namespace` |
 | Handlers por evento y namespace | 1 | `init()` falla |
 | Confirmaciones por evento | como máximo 1, con un argumento | n/a |

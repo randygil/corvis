@@ -709,8 +709,15 @@ gate opens cannot overtake the ones that waited.
   waiting in turn: a socket's hook starts after at most one hook of each other address that had hooks waiting before it,
   however many each of them queued.
 - Each address has a 64th of the application's caps: while its pending hooks (waiting or running) reach that count, or pin
-  that many bytes, new sessions from it are answered `503` until they drain. So an address cannot pile up hooks except
-  from the sessions it already has open, and within its share **no hook is skipped**.
+  that many bytes, new sessions from it are answered `503`, and a CONNECT from it to a namespace with disconnect hooks is
+  answered `CONNECT_ERROR` (`Too many pending disconnects`) before any socket exists, until they drain. A pending hook comes
+  only from a socket of such a namespace, and such a socket only from a CONNECT that passed that check, so on one Engine.IO
+  path an address has at most `share - 1 + max_sessions_per_ip x K` hooks pending (`K` the namespaces with disconnect
+  hooks on that path: a session holds at most one socket per namespace), pinning at most
+  `byte share + max_sessions_per_ip x K x (what one socket pins)` bytes. The sockets an address already had connected when it reached its share may still
+  leave, and their hooks are queued (that is the second term); within this bound **no hook is skipped**. Clients behind one
+  address (a NAT, or a reverse proxy without `trust_proxy`) share the 8 workers and the share: while it is full they get
+  `503` on new sessions and `CONNECT_ERROR` on those namespaces.
 - At most `IoAdapter::max_pending_disconnect_hooks` (10,000) hooks are pending in the application, pinning at most
   `IoAdapter::max_pending_disconnect_hook_bytes` (64 MiB). A socket that leaves while either cap is full is **the one case in
   which a hook is dropped**; it is logged (rate limited). Since every address is held to its share, filling a cap takes many
@@ -777,7 +784,7 @@ sections, set through `IoAdapter::options`, plus these:
 | Handlers in flight per connection, **including events waiting for `handle_connection`** | 32 (`max_inflight`) | reads pause |
 | Lifecycle hooks | 30 s (`IoAdapter::hook_timeout`) | the socket is disconnected; `init()` fails |
 | `handle_disconnect` hooks running | 32 in the application, 8 per client address | the others wait their turn |
-| Pending `handle_disconnect` hooks, and the bytes their sockets pin | 10,000 and 64 MiB in the application (`IoAdapter::max_pending_disconnect_hooks`, `max_pending_disconnect_hook_bytes`); a 64th of each per client address | at the address's share: new sessions from it `503`; at the application's cap: the hook is dropped and logged |
+| Pending `handle_disconnect` hooks, and the bytes their sockets pin | 10,000 and 64 MiB in the application (`IoAdapter::max_pending_disconnect_hooks`, `max_pending_disconnect_hook_bytes`); a 64th of each per client address | at the address's share: new sessions from it `503`, a CONNECT from it to a namespace with disconnect hooks `CONNECT_ERROR`; at the application's cap: the hook is dropped and logged (filling it takes many addresses at once, like the session caps) |
 | Namespaces a client can reach | the ones gateways declare | `CONNECT_ERROR` `Invalid namespace` |
 | Handlers per event per namespace | 1 | `init()` fails |
 | Acknowledgements per event | at most 1, one argument | n/a |
