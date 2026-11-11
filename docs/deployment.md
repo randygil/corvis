@@ -106,7 +106,15 @@ app.enable_shutdown_hooks();
 app.listen(port).await
 ```
 
-With `enable_shutdown_hooks()`, on receiving `SIGINT` (Ctrl+C) or `SIGTERM` (on Unix) the server stops accepting connections, waits up to 10 seconds for in-flight requests to finish, and runs `on_module_destroy`, `before_application_shutdown`, and `on_application_shutdown` (see [Lifecycle events](/fundamentals/lifecycle-events)). This is what orchestrators expect when replacing an instance. On Windows only Ctrl+C is listened for.
+With `enable_shutdown_hooks()`, on receiving `SIGINT` (Ctrl+C) or `SIGTERM` (on Unix) the server stops accepting connections, closes the idle ones, waits up to `shutdown_timeout` (10 seconds by default) for in-flight requests to finish, and runs `on_module_destroy`, `before_application_shutdown`, and `on_application_shutdown` (see [Lifecycle events](/fundamentals/lifecycle-events)). This is what orchestrators expect when replacing an instance. On Windows only Ctrl+C is listened for.
+
+```rust
+app.set_server_options(ServerOptions::new().shutdown_timeout(Duration::from_secs(25))); // None: wait without limit
+```
+
+When the time is up, whatever the server started and is still running is cancelled before the hooks run: connections are closed, handlers are dropped at the `.await` they were waiting on (a database transaction they had open is never committed), and so are TLS handshakes and the reads that discard unread request bodies. One warning line says how many connections were cut. So no handler of the server uses a database pool or another provider that `on_module_destroy` already closed. Not covered: tasks the application spawns itself (`tokio::spawn` in a handler), WebSocket connections, and code that blocks a thread without awaiting. Keep `shutdown_timeout` below the time your orchestrator waits before killing the process (Kubernetes: `terminationGracePeriodSeconds`, 30 s by default).
+
+If the process runs out of file descriptors, accepting new connections fails until some close: the server then waits before trying again (5 ms, doubling up to 1 s) instead of spinning, and logs a warning at most once a minute with the number of failures.
 
 ## Health checks
 

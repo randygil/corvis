@@ -103,7 +103,7 @@ async fn main() -> corvis::Result<()> {
 
 With `enable_shutdown_hooks()`, on receiving the signal:
 
-1. the server stops accepting connections and waits for the ones in progress to finish;
+1. the server stops accepting connections and waits for the requests in progress to finish, up to `ServerOptions::shutdown_timeout` (10 s by default; `None` waits without limit); past it, the requests still running are cancelled and their connections closed;
 2. the shutdown sequence runs, with `signal` equal to `Some("SIGINT")` or `Some("SIGTERM")`;
 3. `listen` returns.
 
@@ -121,6 +121,8 @@ impl BeforeApplicationShutdown for JobsService {
 
 ::: info Connections during shutdown
 When shutdown is started by a signal, the HTTP connections have already finished before `on_module_destroy` is called. Hooks are for closing your own resources (queues, database connections, files), not for continuing to serve requests.
+
+A request still running at the `shutdown_timeout` deadline is cancelled, not left running: its handler future is dropped at the `.await` it was waiting on, before the hooks run. A database transaction it had open is never committed (with the ORM, its connection goes back to the pool and the transaction is rolled back). A handler that must always finish needs a longer `shutdown_timeout`, or `None`. What the server does not cancel: tasks the application spawns itself (`tokio::spawn` in a handler), WebSocket connections, and code that blocks a thread without awaiting (`spawn_blocking` work runs to its end).
 :::
 
 ## Contexts without a server

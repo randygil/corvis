@@ -379,6 +379,21 @@ two lines, the second counting the 67 errors after the first.
   which never call `switch_to_http().get_response()`. Their two handled `#[res]` handlers (consi
   `settlement.controller.rs` `report`, houseplan `auth.controller.rs` `magic`) end the response on every `Ok` path.
 
+### One request path (groups 5 and 6)
+
+- `RequestBody` (`UnsyncBoxBody<Bytes, Box<dyn Error + Send + Sync>>`) is the boxed body; `PendingBody::new` boxes any
+  body (also used by the Engine.IO polling drain). `BodySource::Stream` holds the `PendingBody` itself.
+- `respond` takes `&ServerTasks` for the drain; the test client keeps a `ServerTasks` of its own (its in-memory drains
+  end at once). The test client reads `ServerOptions` through a new crate-private accessor,
+  `CorvisApplication::server_options` (the only edit to `application.rs`).
+- "Same answer as a listening server" (`the_test_client_answers_like_a_listening_server` in `express_parity.rs`, 12
+  requests: JSON, HEAD, `304`, `400`, `404`, files, CORS, a malformed body): equal status, headers and body apart from
+  `Date` and one framing header of the transport: hyper writes `Content-Length` for a body of known size when the
+  response has none. The test asserts that this header equals the body's length rather than ignoring it. Writing it in
+  the test client too would change the headers that many existing tests see, for a header the transport owns.
+- Task 6.4: `cargo test --workspace` passed in full (2,666 passed, 0 failed): no test relied on the test client
+  ignoring a body limit.
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.

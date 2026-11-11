@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, Full};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -28,8 +28,9 @@ use crate::common::interceptor::CorvisInterceptor;
 use crate::common::pipe::PipeTransform;
 use crate::di::container::Overrides;
 use crate::di::{DiError, DynamicModule, Injectable, Module, ModuleDefinition, ModuleImport, Provider, Token};
+use crate::router::AppShared;
 use crate::router::controller::{Controller, ControllerDef};
-use crate::router::{AppShared, dispatch};
+use crate::server::{ServerOptions, ServerTasks};
 
 /// The synthetic root module of a testing module.
 #[derive(Default)]
@@ -243,9 +244,16 @@ pub fn request(app: &CorvisApplication) -> TestClient {
     TestClient::new(app)
 }
 
+/// An in-memory HTTP client. A request goes through the path a listening server gives it, with the application's
+/// [`ServerOptions`] as they were when the client was created: the body limits of the body parser and of the
+/// transport (`413`), the pending multipart body that file interceptors read, the drain of a body nobody read and the
+/// response finishing. Only the transport is left out (sockets, TLS, upgrades, Engine.IO); `remote_addr()` is `None`.
 #[derive(Clone)]
 pub struct TestClient {
     shared: Arc<AppShared>,
+    options: Arc<ServerOptions>,
+    /// Where the drains of unread bodies run (in-memory bodies: they end at once).
+    tasks: ServerTasks,
 }
 
 impl TestClient {
@@ -255,7 +263,7 @@ impl TestClient {
             panic!("app.init() failed; create a new application instead of reusing this one");
         }
         let shared = app.shared().expect("call `app.init().await` before creating a TestClient");
-        TestClient { shared }
+        TestClient { shared, options: Arc::new(app.server_options().clone()), tasks: ServerTasks::default() }
     }
     pub fn get(&self, path: &str) -> TestRequest {
         self.method(Method::GET, path)
@@ -280,7 +288,7 @@ impl TestClient {
     }
     pub fn method(&self, method: Method, path: &str) -> TestRequest {
         TestRequest {
-            shared: self.shared.clone(),
+            client: self.clone(),
             method,
             path: path.to_string(),
             headers: HeaderMap::new(),
@@ -293,7 +301,7 @@ impl TestClient {
 type MultipartPart = (String, Option<(String, String)>, Bytes);
 
 pub struct TestRequest {
-    shared: Arc<AppShared>,
+    client: TestClient,
     method: Method,
     path: String,
     headers: HeaderMap,
@@ -385,15 +393,14 @@ impl TestRequest {
         if !self.body.is_empty() && !self.headers.contains_key(http::header::CONTENT_LENGTH) {
             self.headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from(self.body.len()));
         }
-        let head = self.method == Method::HEAD;
-        let uri: Uri = self.path.parse().unwrap_or_else(|_| Uri::from_static("/"));
-        let info = crate::http::express::RequestInfo::new(&self.method, &self.headers);
-        #[cfg(feature = "compression")]
-        let info = info.with_compression(uri.path(), &self.headers, &self.shared.http_settings);
-        let req = crate::http::Request::with_parser(self.method, uri, self.headers, self.body, &self.shared.http_settings.body_parser);
-        let resp = dispatch(self.shared.clone(), req).await;
-        let hyper_resp = crate::server::finish_response(resp, &info, &self.shared.http_settings, head);
-        let (parts, body) = hyper_resp.into_parts();
+        let mut req = hyper::Request::new(Full::new(self.body));
+        *req.method_mut() = self.method;
+        *req.uri_mut() = self.path.parse().unwrap_or_else(|_| Uri::from_static("/"));
+        *req.headers_mut() = self.headers;
+        let TestClient { shared, options, tasks } = &self.client;
+        let mut client_aborted = false;
+        let resp = crate::server::respond(shared, req, None, options, tasks, &mut client_aborted).await;
+        let (parts, body) = resp.into_parts();
         let body = body.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
         TestResponse { status: parts.status.as_u16(), headers: parts.headers, body }
     }
