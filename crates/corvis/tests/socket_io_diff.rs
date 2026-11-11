@@ -3,7 +3,9 @@
 //! The harness runs the same scenarios against a Node `socket.io` / `engine.io` server and against Corvis, and fails on
 //! any difference. With the `socket-io` feature the Corvis target is the Engine.IO server of the harness application
 //! (`engine_support/harness_app.rs`), with the Socket.IO scenario app (`engine_support/io_app.rs`) beside it, started in-process on 127.0.0.1:0 with the capabilities `engine-io` and `socket-io`; scenarios that
-//! need `redis` run on Node only. The test needs Node 22 or later, so it is opt in: without `CORVIS_NODE_DIFF=1` it
+//! need `redis` run on Node only. The gateway scenarios (capability `gateways`) run against a second in-process application,
+//! the same gateways written with `#[websocket_gateway]` over the Socket.IO adapter (`engine_support/gateway_app.rs`),
+//! and against the reference gateway application of `parity/socket-io/gateway-reference/`, which needs its own `npm ci`. The test needs Node 22 or later, so it is opt in: without `CORVIS_NODE_DIFF=1` it
 //! prints a notice and passes. With it, a missing Node or a missing install fails the test. This test never installs
 //! packages: run `npm ci` in `parity/socket-io/` first (see CONTRIBUTING.md).
 
@@ -95,6 +97,11 @@ async fn socket_io_differential_harness() {
         "the Socket.IO harness is not installed: run `npm ci` in parity/socket-io/ (cargo never installs packages)"
     );
 
+    assert!(
+        dir.join("gateway-reference").join("node_modules").join("rxjs").join("package.json").is_file(),
+        "the gateway reference is not installed: run `npm ci` in parity/socket-io/gateway-reference/ (cargo never installs packages)"
+    );
+
     // Node blocks its caller: run it off the runtime so the in-process Corvis server keeps serving.
     let selftest_dir = dir.clone();
     let selftests = tokio::task::spawn_blocking(move || run_node(&selftest_dir, &["--test", "test/*.test.mjs"])).await.unwrap();
@@ -103,16 +110,21 @@ async fn socket_io_differential_harness() {
 
     // The Corvis target is started in-process on 127.0.0.1:0.
     #[cfg(feature = "socket-io")]
-    let (_app, runner) = {
+    let (_app, _gateway_app, runner) = {
         let (app, addr, _engines) = engine_support::harness_app::start().await;
+        let (gateway_app, gateway_addr) = engine_support::gateway_app::start().await;
         let url = format!("http://{addr}");
+        let gateway_url = format!("http://{gateway_addr}");
         let runner_dir = dir.clone();
         let runner = tokio::task::spawn_blocking(move || {
-            run_node(&runner_dir, &["run.mjs", "--corvis", &url, "--corvis-capabilities", "engine-io,socket-io"])
+            run_node(
+                &runner_dir,
+                &["run.mjs", "--corvis", &url, "--corvis-capabilities", "engine-io,socket-io", "--corvis-gateways", &gateway_url],
+            )
         })
         .await
         .unwrap();
-        (app, runner)
+        (app, gateway_app, runner)
     };
     #[cfg(not(feature = "socket-io"))]
     let runner = {

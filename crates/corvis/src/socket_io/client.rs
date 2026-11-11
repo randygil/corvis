@@ -181,6 +181,11 @@ impl Charge {
     fn add(&mut self, part: Reservation) {
         self.parts.push(part);
     }
+
+    /// The bytes held.
+    pub(crate) fn bytes(&self) -> usize {
+        self.parts.iter().map(Reservation::bytes).fold(0, usize::saturating_add)
+    }
 }
 
 /// A text message that was measured and waits for room in the budget, with the wire message it came from (which
@@ -473,14 +478,27 @@ fn dispatch(
     charge: Charge,
     inflight: &mut FuturesUnordered<BoxFuture<'static, ()>>,
 ) {
-    let Some(handler) = socket.handler(name) else { return };
+    // A handler registered on the socket wins; otherwise the namespace's dispatcher (the gateways') may take the event.
+    let own = socket.handler(name);
+    let dispatcher = if own.is_none() { socket.namespace().dispatcher() } else { None };
+    if own.is_none() && dispatcher.is_none() {
+        return;
+    }
     let ack = id.map(|id| AckSender::new(socket.clone(), id));
     let namespace = socket.namespace().name().to_string();
     let args = Args::new(args);
     let handler_socket = socket.clone();
-    let created = std::panic::catch_unwind(AssertUnwindSafe(|| handler(handler_socket, args, ack)));
+    // A socket's handler keeps the packet's charge until it finishes; the dispatcher takes it with the arguments.
+    let (created, charge) = match (own, dispatcher) {
+        (Some(handler), _) => (std::panic::catch_unwind(AssertUnwindSafe(|| Some(handler(handler_socket, args, ack)))), Some(charge)),
+        (None, Some(dispatcher)) => {
+            (std::panic::catch_unwind(AssertUnwindSafe(move || dispatcher(handler_socket, name, args, ack, charge))), None)
+        }
+        (None, None) => return,
+    };
     let future = match created {
-        Ok(future) => future,
+        Ok(Some(future)) => future,
+        Ok(None) => return,
         Err(_) => {
             shared.warnings.panicked("an event handler", &namespace);
             return;
@@ -494,6 +512,9 @@ fn dispatch(
         }
     }));
 }
+
+/// The `CONNECT_ERROR` message for a client address at its share of pending disconnect hooks.
+pub(crate) const TOO_MANY_PENDING_DISCONNECTS: &str = "Too many pending disconnects";
 
 /// CONNECT: looks the namespace up and starts the connection attempt. `Err` for a namespace that is already joined or
 /// pending.
@@ -510,6 +531,15 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
         }
         if matches!(nsps.get(&name), Some(Slot::Pending | Slot::Joined(_))) {
             return Err(());
+        }
+        // A socket of this namespace leaves a disconnect hook pending when it goes. An address at its share of pending
+        // hooks gets no new socket here, as it gets no new session at the handshake: an open session joining and leaving
+        // in a loop cannot pile hooks up either. Refused before any socket exists, with a fixed message.
+        if namespace.limits_pending_hooks() && shared.engine.pending_hook_share_reached() {
+            drop(nsps);
+            let error = IoValue::object([("message", IoValue::from(TOO_MANY_PENDING_DISCONNECTS))]);
+            let _ = shared.send_packet(&Packet { nsp: name, body: Body::ConnectError(error) });
+            return Ok(());
         }
         nsps.insert(name.clone(), Slot::Pending);
     }

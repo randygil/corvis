@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
+pub mod gateway_app;
 pub mod harness_app;
 pub mod io_app;
 pub mod io_client;

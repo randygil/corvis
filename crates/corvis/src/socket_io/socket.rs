@@ -4,7 +4,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, SystemTime};
 
 use futures::future::BoxFuture;
@@ -15,12 +15,13 @@ use tokio::time::Instant;
 use super::adapter::{AckSink, AdapterError, HandshakeInfo, Room, RoomError, SocketInfo};
 use super::broadcast::{BroadcastOperator, IntoRooms};
 use super::client::{Charge, ClientShared};
-use super::engine::Held;
 use super::engine::options::MAX_DURATION;
 use super::engine::session::{CloseReason, after};
+use super::engine::{EngineSocket, Held};
 use super::namespace::IoNamespace;
 use super::parser::{self, Body, EncodeError, Encoded, Packet, SharedEncoded};
 use super::value::{Args, IntoArgs, IoValue, IoValueError};
+use super::warn::WarnLimiter;
 use crate::http::Request;
 
 pub(crate) type EventHandler = Arc<dyn Fn(IoSocket, Args, Option<AckSender>) -> BoxFuture<'static, ()> + Send + Sync>;
@@ -118,6 +119,9 @@ pub enum EmitError {
     /// The adapter failed.
     #[error("{0}")]
     Adapter(AdapterError),
+    /// An [`IoGatewayServer`](super::IoGatewayServer) was used before its gateway started: it has no namespace yet.
+    #[error("the gateway has not started: its server handle is not bound to a namespace yet")]
+    NotStarted,
 }
 
 impl From<AdapterError> for EmitError {
@@ -156,17 +160,29 @@ pub struct Handshake {
 #[derive(Debug)]
 struct HandshakeData {
     auth: Value,
-    request: Request,
+    request: Arc<Request>,
+    /// `request.ip()`, resolved the first time it is asked for: a gateway reads it for every message, and resolving it
+    /// walks the handshake's `X-Forwarded-For`.
+    ip: std::sync::OnceLock<String>,
     issued_at: SystemTime,
     /// What `auth` occupies, charged to the connection's session and address for as long as the handshake lives (the
     /// socket's life, or that of a `fetch_sockets` result that shares it): `auth` is a `serde_json::Value`, whose
-    /// size is not the one `max_auth_bytes` measures.
-    _charge: Option<Held>,
+    /// size is not the one `max_auth_bytes` measures. Given back early when a gateway's disconnect hook takes the
+    /// socket: the hook queue's own budget charges it from then on (`Handshake::release_charge`).
+    charge: Mutex<Option<Held>>,
 }
 
 impl Handshake {
     pub(crate) fn new(auth: Value, request: Request, charge: Option<Held>) -> Self {
-        Handshake { data: Arc::new(HandshakeData { auth, request, issued_at: SystemTime::now(), _charge: charge }) }
+        Handshake {
+            data: Arc::new(HandshakeData {
+                auth,
+                request: Arc::new(request),
+                ip: std::sync::OnceLock::new(),
+                issued_at: SystemTime::now(),
+                charge: Mutex::new(charge),
+            }),
+        }
     }
 
     /// The `auth` object of the CONNECT packet (`{}` when the client sent none).
@@ -179,18 +195,29 @@ impl Handshake {
         &self.data.request
     }
 
+    /// The same request, shared: a gateway's execution contexts hold it without copying its headers.
+    pub(crate) fn request_arc(&self) -> Arc<Request> {
+        self.data.request.clone()
+    }
+
     pub fn headers(&self) -> &http::HeaderMap {
         self.data.request.headers()
     }
 
     /// The client address (it follows `set_trust_proxy`).
     pub fn ip(&self) -> String {
-        self.data.request.ip()
+        self.data.ip.get_or_init(|| self.data.request.ip()).clone()
     }
 
     /// When the CONNECT packet was handled.
     pub fn issued_at(&self) -> SystemTime {
         self.data.issued_at
+    }
+
+    /// Gives the unread-budget charge of `auth` back: something else charges it from now on (the disconnect hook queue,
+    /// which outlives the connection and has a budget of its own).
+    pub(crate) fn release_charge(&self) {
+        drop(self.data.charge.lock().unwrap_or_else(|e| e.into_inner()).take());
     }
 }
 
@@ -223,7 +250,13 @@ struct SocketState {
 pub(crate) struct SocketInner {
     id: String,
     nsp: IoNamespace,
-    client: Arc<ClientShared>,
+    /// Weak: what the socket needs of its connection it needs only while the connection lives, and the connection holds
+    /// the strong reference. A socket kept after it left (by a disconnect hook that waits, by application code) does not
+    /// keep the Engine.IO session and its buffers alive.
+    client: Weak<ClientShared>,
+    /// The connection's key in the per-address caps and budgets (the session's `address_key`).
+    address: String,
+    warnings: Arc<WarnLimiter>,
     handshake: Handshake,
     state: Mutex<SocketState>,
     handlers: RwLock<HashMap<String, EventHandler>>,
@@ -235,6 +268,17 @@ pub(crate) struct SocketInner {
     ready: AtomicBool,
     ready_notify: Notify,
 }
+
+/// What a socket that left occupies on the heap besides its strings, its `auth`, its `data`, what its request holds and
+/// what the application attached to it: its own allocation, its handshake's, its request's and its request's
+/// extensions, and the allocation of the connection's shared state that its weak reference keeps (the contents are
+/// freed with the connection). Every allocation with its reference counts and the allocator's overhead.
+pub(crate) const LEFT_SOCKET_HEAP: usize = std::mem::size_of::<SocketInner>()
+    + std::mem::size_of::<HandshakeData>()
+    + std::mem::size_of::<Request>()
+    + std::mem::size_of::<ClientShared>()
+    + std::mem::size_of::<RwLock<http::Extensions>>()
+    + 5 * (2 * std::mem::size_of::<usize>() + super::value::ALLOC_OVERHEAD);
 
 /// One client in one namespace (`socket` in Node). Cheap to clone; all clones are the same socket.
 ///
@@ -294,7 +338,9 @@ impl IoSocket {
             inner: Arc::new(SocketInner {
                 id,
                 nsp,
-                client,
+                address: client.engine.address_key().to_string(),
+                warnings: client.warnings.clone(),
+                client: Arc::downgrade(&client),
                 handshake,
                 state: Mutex::new(SocketState { phase: Phase::Pending, acks: HashMap::new() }),
                 handlers: RwLock::new(HashMap::new()),
@@ -345,6 +391,11 @@ impl IoSocket {
 
     pub fn set_data(&self, data: Value) {
         *self.inner.data.lock().unwrap_or_else(|e| e.into_inner()) = data;
+    }
+
+    /// What `data` occupies on the heap (the cost model of `json_cost`).
+    pub(crate) fn data_cost(&self) -> usize {
+        super::value::json_cost(&self.inner.data.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Attaches a typed value to the socket, replacing one of the same type (middleware stores the authenticated
@@ -416,7 +467,22 @@ impl IoSocket {
 
     fn send(&self, packet: &Packet) -> Result<(), EmitError> {
         let encoded = parser::encode(packet, self.inner.nsp.options().max_attachments).map_err(emit_error)?;
-        self.inner.client.send_encoded(&encoded)
+        self.client()?.send_encoded(&encoded)
+    }
+
+    /// The connection, while it lives.
+    fn client(&self) -> Result<Arc<ClientShared>, EmitError> {
+        self.inner.client.upgrade().ok_or(EmitError::NotConnected)
+    }
+
+    /// The Engine.IO session of the connection, while it lives.
+    pub(crate) fn engine(&self) -> Option<EngineSocket> {
+        self.inner.client.upgrade().map(|c| c.engine.clone())
+    }
+
+    /// The client address as the per-address caps and budgets key it (the session's `address_key`).
+    pub(crate) fn address_key(&self) -> &str {
+        &self.inner.address
     }
 
     /// Sends an already encoded packet (one encoding shared by many sockets).
@@ -425,7 +491,7 @@ impl IoSocket {
         if self.state().phase != Phase::Connected {
             return Err(EmitError::NotConnected);
         }
-        self.inner.client.send_encoded(encoded)
+        self.client()?.send_encoded(encoded)
     }
 
     /// Queues an encoding shared by the recipients of a broadcast. The phase is checked first, so a socket that
@@ -434,7 +500,7 @@ impl IoSocket {
         if self.state().phase != Phase::Connected {
             return Err(EmitError::NotConnected);
         }
-        self.inner.client.send_shared(encoded)
+        self.client()?.send_shared(encoded)
     }
 
     pub(crate) fn downgrade(&self) -> std::sync::Weak<SocketInner> {
@@ -446,9 +512,18 @@ impl IoSocket {
         matches!(self.state().phase, Phase::Connected | Phase::Disconnecting)
     }
 
+    /// Charges `bytes` to this connection's unread budget (its session, address and the server-wide gauge, the chain of
+    /// `budget.rs`) if there is room now, until the guard is dropped. Never waits: `None` when the budget has no room.
+    /// `credit` is a charge of the caller that it releases right after (the packet the bytes replace): the limits are
+    /// checked as if it were already released.
+    pub(crate) fn try_charge(&self, bytes: usize, credit: usize) -> Option<Held> {
+        let engine = self.engine()?;
+        engine.hold_within_share(bytes, credit).or_else(|| engine.hold_within_total(bytes, credit))
+    }
+
     /// A rate limited warning of the connection's server.
     pub(crate) fn warn(&self, kind: &'static str, message: &str) {
-        self.inner.client.warnings.warn(kind, self.inner.nsp.name(), message);
+        self.inner.warnings.warn(kind, self.inner.nsp.name(), message);
     }
 
     /// The socket as plain data (what `fetch_sockets` returns).
@@ -464,7 +539,7 @@ impl IoSocket {
     pub(crate) fn join_own_room(&self) -> bool {
         let own: Room = Arc::from(self.inner.id.as_str());
         let mut joined = false;
-        let ran = self.inner.client.warnings.guard("an adapter's add_all", self.inner.nsp.name(), || {
+        let ran = self.inner.warnings.guard("an adapter's add_all", self.inner.nsp.name(), || {
             joined = self.inner.nsp.adapter().add_all(&self.inner.id, &[own]).is_ok();
         });
         ran && joined
@@ -605,7 +680,7 @@ impl IoSocket {
     /// check what a broadcast holds.
     #[doc(hidden)]
     pub fn buffered_amount(&self) -> usize {
-        self.inner.client.engine.buffered_amount()
+        self.engine().map_or(0, |e| e.buffered_amount())
     }
 
     /// The number of acknowledged emits still waiting for the client.
@@ -627,8 +702,7 @@ impl IoSocket {
                 let _ = tx.send(Ok(Args::new(args)));
             }
             Some(PendingAck { target: AckTarget::Broadcast(sink), .. }) => {
-                let address = super::engine::address_key(self.inner.client.engine.ip(), None);
-                sink.respond_charged(Args::new(args), charge, address)
+                sink.respond_charged(Args::new(args), charge, self.inner.address.clone())
             }
             None => drop(charge),
         }
@@ -663,7 +737,9 @@ impl IoSocket {
     /// connection. Does nothing on a socket that is not connected.
     pub fn disconnect(&self, close: bool) {
         if close {
-            self.inner.client.terminate(DisconnectReason::ServerNamespaceDisconnect, true, true);
+            if let Some(client) = self.inner.client.upgrade() {
+                client.terminate(DisconnectReason::ServerNamespaceDisconnect, true, true);
+            }
         } else {
             self.disconnect_with(DisconnectReason::ServerNamespaceDisconnect, true);
         }
@@ -711,7 +787,7 @@ impl IoSocket {
         }
         let handlers: Vec<DisconnectHandler> = std::mem::take(&mut *self.inner.disconnecting.lock().unwrap_or_else(|e| e.into_inner()));
         for h in handlers {
-            self.inner.client.warnings.guard("a disconnecting handler", self.inner.nsp.name(), || h(self, reason));
+            self.inner.warnings.guard("a disconnecting handler", self.inner.nsp.name(), || h(self, reason));
         }
         // Marked disconnected first, then out of every room: a join that ran before the mark is removed here, one that
         // runs after it is refused under the adapter's own lock, so no membership of this socket survives.
@@ -723,9 +799,11 @@ impl IoSocket {
         // A panic in the adapter must not leave the socket in the namespace with its charges: it is contained, logged,
         // and the socket is removed all the same.
         let adapter = self.inner.nsp.adapter();
-        self.inner.client.warnings.guard("an adapter's del_all", self.inner.nsp.name(), || adapter.del_all(&self.inner.id));
+        self.inner.warnings.guard("an adapter's del_all", self.inner.nsp.name(), || adapter.del_all(&self.inner.id));
         self.inner.nsp.remove_socket(&self.inner.id);
-        self.inner.client.forget(self.inner.nsp.name(), self);
+        if let Some(client) = self.inner.client.upgrade() {
+            client.forget(self.inner.nsp.name(), self);
+        }
         for (_, ack) in acks {
             if let AckTarget::One(tx) = ack.target {
                 let _ = tx.send(Err(AckError::Disconnected));
@@ -733,10 +811,11 @@ impl IoSocket {
         }
         let handlers: Vec<DisconnectHandler> = std::mem::take(&mut *self.inner.disconnect.lock().unwrap_or_else(|e| e.into_inner()));
         for h in handlers {
-            self.inner.client.warnings.guard("a disconnect handler", self.inner.nsp.name(), || h(self, reason));
+            self.inner.warnings.guard("a disconnect handler", self.inner.nsp.name(), || h(self, reason));
         }
-        // The handlers may hold clones of the socket: drop them so nothing keeps the socket alive.
-        self.inner.handlers.write().unwrap_or_else(|e| e.into_inner()).clear();
+        // The handlers may hold clones of the socket: drop them so nothing keeps the socket alive (and their table's
+        // memory with them: a socket a disconnect hook keeps holds only what the hook needs).
+        drop(std::mem::take(&mut *self.inner.handlers.write().unwrap_or_else(|e| e.into_inner())));
     }
 }
 

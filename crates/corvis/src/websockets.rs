@@ -64,22 +64,132 @@ pub trait Gateway: Send + Sync + 'static {
     fn __corvis_gateway(this: Arc<Self>) -> GatewayInfo;
 }
 
-/// `afterInit(server)`.
+pub use crate::discovery::GatewayAdapterKind;
+
+/// `afterInit(server)`. The type argument is the server handle of the adapter the gateway runs under: [`WsServer`]
+/// (the default, so `impl OnGatewayInit for Chat` is the `ws` form) or, with the `socket-io` feature,
+/// `corvis::socket_io::IoNamespace`. A gateway that implements both runs under either adapter.
+///
+/// ```
+/// use corvis::prelude::*;
+/// use corvis::{OnGatewayInit, WsServer, websocket_gateway};
+///
+/// #[websocket_gateway("/chat")]
+/// pub struct Chat;
+///
+/// #[async_trait]
+/// impl OnGatewayInit for Chat {
+///     async fn after_init(&self, _server: WsServer) {}
+/// }
+/// ```
 #[async_trait]
-pub trait OnGatewayInit: Send + Sync {
-    async fn after_init(&self, server: WsServer);
+pub trait OnGatewayInit<S: Send + 'static = WsServer>: Send + Sync {
+    async fn after_init(&self, server: S);
 }
 
-/// `handleConnection(client)`.
+/// `handleConnection(client)`. The type argument is the socket handle of the adapter: [`WsClient`] (the default) or,
+/// with the `socket-io` feature, `corvis::socket_io::IoSocket`.
+///
+/// ```
+/// use corvis::prelude::*;
+/// use corvis::{OnGatewayConnection, WsClient, websocket_gateway};
+///
+/// #[websocket_gateway("/chat")]
+/// pub struct Chat;
+///
+/// #[async_trait]
+/// impl OnGatewayConnection for Chat {
+///     async fn handle_connection(&self, client: WsClient) {
+///         let _ = client.id();
+///     }
+/// }
+/// ```
 #[async_trait]
-pub trait OnGatewayConnection: Send + Sync {
-    async fn handle_connection(&self, client: WsClient);
+pub trait OnGatewayConnection<C: Send + 'static = WsClient>: Send + Sync {
+    async fn handle_connection(&self, client: C);
 }
 
-/// `handleDisconnect(client)`.
+/// `handleDisconnect(client)`. The type argument is the socket handle of the adapter, as for
+/// [`OnGatewayConnection`].
 #[async_trait]
-pub trait OnGatewayDisconnect: Send + Sync {
-    async fn handle_disconnect(&self, client: WsClient);
+pub trait OnGatewayDisconnect<C: Send + 'static = WsClient>: Send + Sync {
+    async fn handle_disconnect(&self, client: C);
+}
+
+/// A socket handle a `#[connected_socket]` parameter may have: [`WsClient`], or `IoSocket` with the `socket-io`
+/// feature. Any other type is a compile error.
+pub trait GatewaySocket: Clone + Send + Sync + 'static {
+    /// The adapter this handle belongs to.
+    const KIND: GatewayAdapterKind;
+}
+
+impl GatewaySocket for WsClient {
+    const KIND: GatewayAdapterKind = GatewayAdapterKind::Ws;
+}
+
+/// A server handle a `#[websocket_server]` field may have: [`WsServer`], or `IoGatewayServer` with the `socket-io`
+/// feature. Any other type is a compile error.
+pub trait GatewayServerField: Clone + Send + Sync + 'static {
+    /// The adapter this handle belongs to.
+    const KIND: GatewayAdapterKind;
+    /// The value of the field before the gateway starts.
+    #[doc(hidden)]
+    fn __corvis_unbound() -> Self;
+}
+
+impl GatewayServerField for WsServer {
+    const KIND: GatewayAdapterKind = GatewayAdapterKind::Ws;
+    fn __corvis_unbound() -> Self {
+        WsServer::new()
+    }
+}
+
+/// Converts the type-erased socket received by generated handlers.
+pub fn socket_from_any<T: GatewaySocket>(c: &Arc<dyn Any + Send + Sync>) -> Result<T, HttpException> {
+    c.downcast_ref::<T>().cloned().ok_or_else(|| HttpException::new("invalid socket", 500))
+}
+
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
+/// How an application serves its gateways, chosen once with `CorvisApplication::use_websocket_adapter` before
+/// `init()`: [`WsAdapter`] (the default, `{ event, data }` JSON frames on the gateway's path) or, with the
+/// `socket-io` feature, `corvis::socket_io::IoAdapter`. Sealed: the set of adapters is not open yet.
+pub trait GatewayAdapter: sealed::Sealed + Send + 'static {
+    #[doc(hidden)]
+    fn __corvis_choice(self) -> GatewayAdapterChoice;
+}
+
+/// The default gateway adapter: the `ws`-style protocol.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WsAdapter;
+
+impl sealed::Sealed for WsAdapter {}
+impl GatewayAdapter for WsAdapter {
+    fn __corvis_choice(self) -> GatewayAdapterChoice {
+        GatewayAdapterChoice::Ws
+    }
+}
+
+/// The adapter an application selected. Hidden: the value of `use_websocket_adapter`.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub enum GatewayAdapterChoice {
+    #[default]
+    Ws,
+    #[cfg(feature = "socket-io")]
+    SocketIo(Arc<crate::socket_io::IoAdapter>),
+}
+
+impl GatewayAdapterChoice {
+    pub(crate) fn kind(&self) -> GatewayAdapterKind {
+        match self {
+            GatewayAdapterChoice::Ws => GatewayAdapterKind::Ws,
+            #[cfg(feature = "socket-io")]
+            GatewayAdapterChoice::SocketIo(_) => GatewayAdapterKind::SocketIo,
+        }
+    }
 }
 
 /// `WsException`. The client receives an `exception` frame:
@@ -523,16 +633,16 @@ impl RoomEmitter {
 }
 
 /// A `#[subscribe_message]` handler with its resolved enhancers.
-struct CompiledWsHandler {
+pub(crate) struct CompiledWsHandler {
     call: WsCall,
-    guards: Vec<Arc<dyn CanActivate>>,
+    pub(crate) guards: Vec<Arc<dyn CanActivate>>,
     interceptors: Arc<Vec<Arc<dyn CorvisInterceptor>>>,
     /// Gateway-level then handler-level pipes, applied to every `#[message_body]`.
     pipes: Vec<Arc<dyn PipeTransform>>,
     params: Vec<(ParamDef, Vec<Arc<dyn PipeTransform>>)>,
     /// The handler's exception filters, then the gateway's (global filters never apply).
     filters: Vec<Arc<dyn ExceptionFilter>>,
-    target: Arc<Target>,
+    pub(crate) target: Arc<Target>,
     /// How many of the leading `guards` are global, and how many after them come from the gateway.
     global_guard_count: usize,
     gateway_guard_count: usize,
@@ -540,12 +650,99 @@ struct CompiledWsHandler {
 
 /// Runtime data of a mounted gateway.
 pub(crate) struct GatewayRuntime {
-    name: String,
+    pub(crate) name: String,
     server: WsServer,
-    handlers: HashMap<String, Arc<CompiledWsHandler>>,
-    info: GatewayInfo,
-    class_target: Arc<Target>,
-    module_ref: ModuleRef,
+    pub(crate) handlers: HashMap<String, Arc<CompiledWsHandler>>,
+    pub(crate) info: GatewayInfo,
+    pub(crate) class_target: Arc<Target>,
+    pub(crate) module_ref: ModuleRef,
+    /// The adapter this runtime was compiled for.
+    pub(crate) kind: GatewayAdapterKind,
+    /// The global guards that apply to the gateway (empty when `apply_global_enhancers_to_gateways(false)`), and the
+    /// guards declared on the gateway itself: what `guard_connections` runs for a connecting socket.
+    pub(crate) global_guards: Vec<Arc<dyn CanActivate>>,
+    pub(crate) gateway_guards: Vec<Arc<dyn CanActivate>>,
+}
+
+impl CompiledWsHandler {
+    /// The number of `#[message_body]` parameters: each takes a copy of the body (or of a property of it).
+    #[cfg(feature = "socket-io")]
+    pub(crate) fn param_count(&self) -> usize {
+        self.params.len()
+    }
+}
+
+impl GatewayRuntime {
+    /// The Socket.IO namespace of the gateway: `namespace = ...` or the literal, else `/`, with a leading `/`.
+    pub(crate) fn io_namespace(&self) -> String {
+        let namespace = self.info.io.namespace.as_deref().unwrap_or("/");
+        if namespace.starts_with('/') { namespace.to_string() } else { format!("/{namespace}") }
+    }
+
+    /// The Engine.IO path of the gateway: `path = ...`, else `/socket.io`.
+    pub(crate) fn io_path(&self) -> &str {
+        self.info.io.path.as_deref().unwrap_or("/socket.io")
+    }
+
+    /// What route posture calls the gateway's path: the URL path under the `ws` adapter, the namespace under Socket.IO.
+    pub(crate) fn posture_path(&self) -> String {
+        match self.kind {
+            GatewayAdapterKind::Ws => self.info.path.clone(),
+            GatewayAdapterKind::SocketIo => self.io_namespace(),
+        }
+    }
+}
+
+/// What a gateway declares that does not match the application's adapter, or `None`. The check runs in
+/// `compile_gateways`, before any code of the gateway (a hook, a handler) runs: a hook that silently never ran could be
+/// an authentication check.
+fn adapter_mismatch(
+    name: &str,
+    info: &GatewayInfo,
+    handlers: &[(&str, &crate::discovery::WsEnhancers)],
+    selected: GatewayAdapterKind,
+) -> Option<String> {
+    let selected_name = selected.describe();
+    let (other, other_handle, selected_handle, selected_server) = match selected {
+        GatewayAdapterKind::Ws => (GatewayAdapterKind::SocketIo, "IoSocket", "WsClient", "WsServer"),
+        GatewayAdapterKind::SocketIo => (GatewayAdapterKind::Ws, "WsClient", "IoSocket", "IoGatewayServer"),
+    };
+    for (method, enhancers) in handlers {
+        if enhancers.socket_kinds.contains(&other) {
+            return Some(format!(
+                "{name}::{method} takes #[connected_socket] {other_handle}, but the application uses the {selected_name}; use {selected_handle}"
+            ));
+        }
+    }
+    if let Some(kind) = info.server_kind
+        && kind != selected
+    {
+        let found = if kind == GatewayAdapterKind::Ws { "WsServer" } else { "IoGatewayServer" };
+        return Some(format!(
+            "{name} has a #[websocket_server] field of type {found}, but the application uses the {selected_name}; use {selected_server}"
+        ));
+    }
+    // (trait, hook of the selected adapter, hook of the other one, the trait with the selected adapter's handle).
+    let hooks = match selected {
+        GatewayAdapterKind::Ws => [
+            ("OnGatewayInit", &info.on_init, &info.io_on_init, "OnGatewayInit"),
+            ("OnGatewayConnection", &info.on_connection, &info.io_on_connection, "OnGatewayConnection"),
+            ("OnGatewayDisconnect", &info.on_disconnect, &info.io_on_disconnect, "OnGatewayDisconnect"),
+        ],
+        GatewayAdapterKind::SocketIo => [
+            ("OnGatewayInit", &info.io_on_init, &info.on_init, "OnGatewayInit<IoNamespace>"),
+            ("OnGatewayConnection", &info.io_on_connection, &info.on_connection, "OnGatewayConnection<IoSocket>"),
+            ("OnGatewayDisconnect", &info.io_on_disconnect, &info.on_disconnect, "OnGatewayDisconnect<IoSocket>"),
+        ],
+    };
+    for (trait_name, selected_hook, other_hook, wanted) in hooks {
+        if other_hook.is_some() && selected_hook.is_none() {
+            return Some(format!(
+                "{name} implements {trait_name} only for the handles of the other adapter, but the application uses the {selected_name}, so the hook would never run; implement {wanted}"
+            ));
+        }
+    }
+    None
 }
 
 async fn resolve_all<T: ?Sized + Send + Sync + 'static>(refs: &[EnhancerRef<T>], ctx: &ResolveCtx) -> Result<Vec<Arc<T>>, DiError> {
@@ -559,6 +756,7 @@ async fn resolve_all<T: ?Sized + Send + Sync + 'static>(refs: &[EnhancerRef<T>],
 /// Resolves every gateway's enhancers and handler map. It registers no server and runs no `after_init`, so the
 /// route posture check can look at the final guard lists before any user code of a gateway runs.
 pub(crate) async fn compile_gateways(container: &Arc<Container>, cfg: &RouterConfig) -> Result<Vec<GatewayRuntime>, DiError> {
+    let kind = cfg.gateway_adapter.kind();
     let mut out = Vec::new();
     let logger = Logger::new("WebSocketsController");
     for module in &container.modules {
@@ -566,6 +764,28 @@ pub(crate) async fn compile_gateways(container: &Arc<Container>, cfg: &RouterCon
             let Some(gw) = &p.hooks.gateway else { continue };
             let Some(instance) = container.hook_instance(module.id, &p.token) else { continue };
             let Some(info) = gw(instance.clone()) else { continue };
+            let discovered = match &p.hooks.handlers {
+                Some(explore) => explore(instance),
+                None => Vec::new(),
+            };
+            // The adapter check comes first: no enhancer is resolved and no code of the gateway runs for a gateway
+            // that cannot work under the selected adapter.
+            let message_handlers: Vec<(&str, &crate::discovery::WsEnhancers)> = discovered
+                .iter()
+                .filter_map(|h| match &h.kind {
+                    HandlerKind::WsMessage { enhancers, .. } => Some((h.method_name, enhancers)),
+                    _ => None,
+                })
+                .collect();
+            if let Some(message) = adapter_mismatch(&p.name, &info, &message_handlers, kind) {
+                return Err(DiError::Other(message));
+            }
+            if kind == GatewayAdapterKind::Ws && info.io.cors.is_some() {
+                Logger::new("WebSocketsController").warn(format!(
+                    "{} declares `cors`, which has no effect under the default WebSocket adapter (it applies to the Socket.IO adapter's Engine.IO path)",
+                    p.name
+                ));
+            }
             let ctx = ResolveCtx::for_module(container.clone(), module.id);
             let c = &info.enhancers;
             let (mut c_guards, mut c_interceptors, mut c_pipes) = (Vec::new(), Vec::new(), Vec::new());
@@ -577,12 +797,14 @@ pub(crate) async fn compile_gateways(container: &Arc<Container>, cfg: &RouterCon
             let global_guard_count = c_guards.len();
             c_guards.extend(resolve_all(&c.guards, &ctx).await?);
             let gateway_guard_count = c_guards.len() - global_guard_count;
+            let global_guards = c_guards[..global_guard_count].to_vec();
+            let gateway_guards = c_guards[global_guard_count..].to_vec();
             c_interceptors.extend(resolve_all(&c.interceptors, &ctx).await?);
             c_pipes.extend(resolve_all(&c.pipes, &ctx).await?);
             let c_filters = resolve_all(&c.filters, &ctx).await?;
             let mut handlers: HashMap<String, Arc<CompiledWsHandler>> = HashMap::new();
-            if let Some(explore) = &p.hooks.handlers {
-                for h in explore(instance) {
+            {
+                for h in discovered {
                     if let HandlerKind::WsMessage { event, call, enhancers } = h.kind {
                         if let Some(earlier) = handlers.get(&event) {
                             return Err(DiError::Other(format!(
@@ -624,7 +846,17 @@ pub(crate) async fn compile_gateways(container: &Arc<Container>, cfg: &RouterCon
             let server = info.server.as_ref().and_then(|s| s.downcast_ref::<WsServer>().cloned()).unwrap_or_default();
             let class_target = Arc::new(Target { name: p.name.clone(), metadata: info.enhancers.metadata.iter().cloned().collect() });
             let module_ref = ModuleRef { container: container.clone(), module: module.id };
-            out.push(GatewayRuntime { name: p.name.clone(), server, handlers, info, class_target, module_ref });
+            out.push(GatewayRuntime {
+                name: p.name.clone(),
+                server,
+                handlers,
+                info,
+                class_target,
+                module_ref,
+                kind,
+                global_guards,
+                gateway_guards,
+            });
         }
     }
     Ok(out)
@@ -643,16 +875,26 @@ pub(crate) async fn start_gateways(compiled: Vec<GatewayRuntime>) -> HashMap<Str
     out
 }
 
-/// What the route posture check needs from gateways: each handler with the guards that run for it.
-pub(crate) fn posture_gateways<'a>(gateways: impl IntoIterator<Item = &'a GatewayRuntime>) -> Vec<crate::posture::GatewayPosture> {
+/// What the route posture check needs from gateways: each handler with the guards that run for it. Under Socket.IO with
+/// `guard_connections` the connection is one more handler, with the pseudo-event `connect` and the guards that run when
+/// a socket connects (global and gateway-level ones).
+pub(crate) fn posture_gateways<'a>(
+    gateways: impl IntoIterator<Item = &'a GatewayRuntime>,
+    choice: &GatewayAdapterChoice,
+) -> Vec<crate::posture::GatewayPosture> {
+    #[cfg(feature = "socket-io")]
+    let guard_connections = matches!(choice, GatewayAdapterChoice::SocketIo(a) if a.connection_guards());
+    #[cfg(not(feature = "socket-io"))]
+    let guard_connections = {
+        let _ = choice;
+        false
+    };
     gateways
         .into_iter()
-        .map(|g| crate::posture::GatewayPosture {
-            path: g.info.path.clone(),
-            name: g.name.clone(),
-            class_target: g.class_target.clone(),
-            verify_client: g.server.options().verify_client.is_some(),
-            handlers: g
+        .map(|g| {
+            let io = (g.kind == GatewayAdapterKind::SocketIo)
+                .then(|| crate::posture::IoConnectionPosture { engine_path: g.io_path().to_string(), guard_connections });
+            let mut handlers: Vec<crate::posture::GatewayHandlerPosture> = g
                 .handlers
                 .iter()
                 .map(|(event, h)| crate::posture::GatewayHandlerPosture {
@@ -662,7 +904,26 @@ pub(crate) fn posture_gateways<'a>(gateways: impl IntoIterator<Item = &'a Gatewa
                     global_guard_count: h.global_guard_count,
                     gateway_guard_count: h.gateway_guard_count,
                 })
-                .collect(),
+                .collect();
+            if io.is_some() && guard_connections {
+                let mut guards = g.global_guards.clone();
+                guards.extend(g.gateway_guards.iter().cloned());
+                handlers.push(crate::posture::GatewayHandlerPosture {
+                    event: "connect".to_string(),
+                    target: Arc::new(Target::new("connect")),
+                    guards,
+                    global_guard_count: g.global_guards.len(),
+                    gateway_guard_count: g.gateway_guards.len(),
+                });
+            }
+            crate::posture::GatewayPosture {
+                path: g.posture_path(),
+                name: g.name.clone(),
+                class_target: g.class_target.clone(),
+                verify_client: g.server.options().verify_client.is_some(),
+                io,
+                handlers,
+            }
         })
         .collect()
 }
@@ -783,11 +1044,11 @@ const SHAPE_DATA: u8 = 1;
 const SHAPE_RESPONSE: u8 = 2;
 
 /// Guards -> interceptors -> pipes -> handler for one message.
-async fn run_handler(
+pub(crate) async fn run_handler(
     handler: &Arc<CompiledWsHandler>,
-    client: &WsClient,
+    client: &Arc<dyn Any + Send + Sync>,
     ctx: &ExecutionContext,
-    data: Value,
+    data: Arc<Value>,
 ) -> Result<Option<Value>, HttpException> {
     for g in &handler.guards {
         if !g.can_activate(ctx).await? {
@@ -815,8 +1076,8 @@ fn call_interceptors(
     index: usize,
     ctx: ExecutionContext,
     handler: Arc<CompiledWsHandler>,
-    client: WsClient,
-    data: Value,
+    client: Arc<dyn Any + Send + Sync>,
+    data: Arc<Value>,
     shape: Arc<AtomicU8>,
 ) -> BoxFuture<'static, Result<Response, HttpException>> {
     if let Some(interceptor) = list.get(index).cloned() {
@@ -839,12 +1100,16 @@ fn call_interceptors(
 }
 
 /// Applies the pipes to each `#[message_body]` argument and calls the handler.
-async fn invoke_handler(handler: Arc<CompiledWsHandler>, client: WsClient, data: Value) -> Result<Option<Value>, HttpException> {
+async fn invoke_handler(
+    handler: Arc<CompiledWsHandler>,
+    client: Arc<dyn Any + Send + Sync>,
+    data: Arc<Value>,
+) -> Result<Option<Value>, HttpException> {
     let mut args = Vec::with_capacity(handler.params.len());
     for (param, param_pipes) in &handler.params {
         let mut value = match param.data {
             Some(key) => data.get(key).cloned().unwrap_or(Value::Null),
-            None => data.clone(),
+            None => (*data).clone(),
         };
         let meta = param.argument_metadata();
         for pipe in handler.pipes.iter().chain(param_pipes.iter()) {
@@ -852,19 +1117,33 @@ async fn invoke_handler(handler: Arc<CompiledWsHandler>, client: WsClient, data:
         }
         args.push(value);
     }
-    (handler.call)(Arc::new(client), args).await
+    (handler.call)(client, args).await
 }
 
 /// The `data` of the `exception` frame for an error: the first handler or gateway filter that
 /// catches it answers, otherwise the built-in mapping. `None` means a filter answered by itself
 /// (empty body) and nothing is sent. Internal errors are logged only when the built-in mapping
-/// answers.
-async fn exception_data(gateway: &GatewayRuntime, handler: &CompiledWsHandler, ctx: &ExecutionContext, e: HttpException) -> Option<Value> {
+/// answers. `cause` (`{ pattern, data }`, the message that raised the error) is added to the payloads the built-in
+/// mapping builds, except to the object of a `WsException::object`: the base WebSocket exception filter of the original
+/// framework does so (its `includeCause` default), and the Socket.IO adapter follows it.
+pub(crate) async fn exception_data(
+    gateway: &GatewayRuntime,
+    handler: &CompiledWsHandler,
+    ctx: &ExecutionContext,
+    e: HttpException,
+    cause: Option<Value>,
+    on_internal: &(dyn Fn(&HttpException) + Send + Sync),
+) -> Option<Value> {
     let builtin = |e: &HttpException| {
         if e.is_internal() {
-            Logger::new("WsExceptionsHandler").error(format!("{}: {}", gateway.name, e.message()));
+            on_internal(e);
         }
-        Some(exception_payload(e))
+        let mut payload = exception_payload(e);
+        let object_error = WsException::get_error(e).is_some_and(Value::is_object);
+        if let (Some(cause), Value::Object(map), false) = (&cause, &mut payload, object_error) {
+            map.insert("cause".to_string(), cause.clone());
+        }
+        Some(payload)
     };
     let log = Logger::new("WsExceptionsHandler");
     // A panicking `catches` counts as "does not catch" and is logged.
@@ -899,6 +1178,24 @@ async fn exception_data(gateway: &GatewayRuntime, handler: &CompiledWsHandler, c
     }
 }
 
+/// Runs the pipeline of one message, turning a panic into an internal error: the panic text is never sent to the
+/// client (the built-in mapping answers `Internal server error`) and the connection's other handlers are unaffected.
+pub(crate) async fn contain_panic(
+    run: impl std::future::Future<Output = Result<Option<Value>, HttpException>>,
+) -> Result<Option<Value>, HttpException> {
+    match AssertUnwindSafe(run).catch_unwind().await {
+        Ok(r) => r,
+        Err(panic) => {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "handler panicked".to_string());
+            Err(HttpException::from_anyhow(anyhow::anyhow!("{msg}")))
+        }
+    }
+}
+
 /// Runs one message through its handler and sends the reply (or the `exception` frame).
 /// When the incoming frame carries an `id`, the reply and the `exception` frame echo it, so a
 /// client can match answers to requests (acknowledgements).
@@ -910,25 +1207,17 @@ async fn dispatch(
     data: Value,
     id: Option<Value>,
 ) {
-    let ctx = ExecutionContext::for_ws(
+    let erased: Arc<dyn Any + Send + Sync> = Arc::new(client.clone());
+    let data = Arc::new(data);
+    let ctx = ExecutionContext::for_ws_shared(
         client.inner.handshake.clone(),
         gateway.class_target.clone(),
         handler.target.clone(),
         Some(gateway.module_ref.clone()),
-        Arc::new(client.clone()),
+        erased.clone(),
         data.clone(),
     );
-    let result = match AssertUnwindSafe(run_handler(&handler, &client, &ctx, data)).catch_unwind().await {
-        Ok(r) => r,
-        Err(panic) => {
-            let msg = panic
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "handler panicked".to_string());
-            Err(HttpException::from_anyhow(anyhow::anyhow!("{msg}")))
-        }
-    };
+    let result = contain_panic(run_handler(&handler, &erased, &ctx, data)).await;
     let with_id = |mut frame: Value| {
         if let (Some(id), Value::Object(o)) = (&id, &mut frame) {
             o.insert("id".into(), id.clone());
@@ -946,7 +1235,11 @@ async fn dispatch(
         }
         Ok(None) => {}
         Err(e) => {
-            if let Some(data) = exception_data(&gateway, &handler, &ctx, e).await {
+            if let Some(data) = exception_data(&gateway, &handler, &ctx, e, None, &|e| {
+                Logger::new("WsExceptionsHandler").error(format!("{}: {}", gateway.name, e.message()));
+            })
+            .await
+            {
                 client.send_text(with_id(json!({ "event": "exception", "data": data })).to_string());
             }
         }
@@ -957,10 +1250,20 @@ async fn dispatch(
 /// reported as `false`.
 async fn run_hook(gateway: &GatewayRuntime, name: &str, hook: &crate::discovery::GatewayHook, client: &WsClient) -> bool {
     let arg: Arc<dyn Any + Send + Sync> = Arc::new(client.clone());
+    run_hook_with(&gateway.name, name, hook, arg).await
+}
+
+/// The same for any handle: `arg` is what the hook downcasts.
+pub(crate) async fn run_hook_with(
+    gateway: &str,
+    name: &str,
+    hook: &crate::discovery::GatewayHook,
+    arg: Arc<dyn Any + Send + Sync>,
+) -> bool {
     match AssertUnwindSafe(async { hook(arg).await }).catch_unwind().await {
         Ok(()) => true,
         Err(_) => {
-            Logger::new("WsExceptionsHandler").error(format!("{}: {name} panicked", gateway.name));
+            Logger::new("WsExceptionsHandler").error(format!("{gateway}: {name} panicked"));
             false
         }
     }
@@ -1112,18 +1415,21 @@ pub mod hooks {
             pub trait $has<T> {
                 fn $method(&self, this: Arc<T>) -> Option<GatewayHook>;
             }
-            impl<T: $tr + Send + Sync + 'static> $has<T> for Probe<T> {
+            impl<T: $tr<$arg> + Send + Sync + 'static> $has<T> for Probe<T> {
                 fn $method(&self, this: Arc<T>) -> Option<GatewayHook> {
                     Some(Arc::new(move |arg: Arc<dyn Any + Send + Sync>| {
                         let this = this.clone();
                         Box::pin(async move {
                             if let Some(a) = arg.downcast_ref::<$arg>().cloned() {
-                                this.$call(a).await;
+                                <T as $tr<$arg>>::$call(&*this, a).await;
                             }
                         })
                     }))
                 }
             }
+            detect!(@no $no, $method);
+        };
+        (@no $no:ident, $method:ident) => {
             pub trait $no<T> {
                 fn $method(&self, _this: Arc<T>) -> Option<GatewayHook> {
                     None
@@ -1136,4 +1442,28 @@ pub mod hooks {
     detect!(HasGwInit, NoGwInit, __corvis_gw_init, OnGatewayInit, after_init, WsServer);
     detect!(HasGwConn, NoGwConn, __corvis_gw_connection, OnGatewayConnection, handle_connection, WsClient);
     detect!(HasGwDisc, NoGwDisc, __corvis_gw_disconnect, OnGatewayDisconnect, handle_disconnect, WsClient);
+
+    #[cfg(feature = "socket-io")]
+    mod io {
+        use super::*;
+        use crate::socket_io::{IoNamespace, IoSocket};
+
+        detect!(HasGwIoInit, NoGwIoInit, __corvis_gw_io_init, OnGatewayInit, after_init, IoNamespace);
+        detect!(HasGwIoConn, NoGwIoConn, __corvis_gw_io_connection, OnGatewayConnection, handle_connection, IoSocket);
+        detect!(HasGwIoDisc, NoGwIoDisc, __corvis_gw_io_disconnect, OnGatewayDisconnect, handle_disconnect, IoSocket);
+    }
+    #[cfg(feature = "socket-io")]
+    pub use io::*;
+
+    // Without the feature no gateway has Socket.IO hooks: the probes always answer `None`.
+    #[cfg(not(feature = "socket-io"))]
+    mod no_io {
+        use super::*;
+
+        detect!(@no NoGwIoInit, __corvis_gw_io_init);
+        detect!(@no NoGwIoConn, __corvis_gw_io_connection);
+        detect!(@no NoGwIoDisc, __corvis_gw_io_disconnect);
+    }
+    #[cfg(not(feature = "socket-io"))]
+    pub use no_io::*;
 }

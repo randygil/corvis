@@ -214,5 +214,35 @@
     "path": "$.entries[1].data.got.C[0]",
     "reason": "the same rule: C is reached by Node and not by Corvis",
     "spec": "ws/socket-io-rooms: An empty list of rooms selects nobody (Empty to)"
+  },
+  {
+    "scenario": "gateways/http-exception",
+    "path": "$.entries[0].data.events[0].args[0].message",
+    "reason": "an exception that is not a WebSocket exception: the reference answers `Internal server error`; Corvis forwards the exception's own message so that a client can tell a validation error from a server fault, as it does under the ws adapter (nothing is leaked that the HTTP side would not send)",
+    "spec": "ws/socket-io-gateways: Exceptions are emitted as the exception event (HTTP exception)"
+  },
+  {
+    "scenario": "gateways/http-exception",
+    "path": "$.entries[0].data.events[0].args[0].error",
+    "reason": "the same rule: Corvis also forwards the other fields of the exception's response (`error`)",
+    "spec": "ws/socket-io-gateways: Exceptions are emitted as the exception event (HTTP exception)"
+  },
+  {
+    "scenario": "gateways/http-exception",
+    "path": "$.entries[0].data.events[0].args[0].statusCode",
+    "reason": "the same rule: Corvis also forwards the other fields of the exception's response (`statusCode`)",
+    "spec": "ws/socket-io-gateways: Exceptions are emitted as the exception event (HTTP exception)"
+  },
+  {
+    "scenario": "gateways/binary-body",
+    "path": "$.entries[0].data.isBuffer",
+    "reason": "the gateway pipeline has no binary type: the reference passes the buffer to the handler, Corvis shows a binary value as null (a handler registered with IoSocket::on receives the bytes)",
+    "spec": "ws/socket-io-gateways: The message body is built from the event arguments (Binary argument)"
+  },
+  {
+    "scenario": "gateways/binary-body",
+    "path": "$.entries[0].data.body",
+    "reason": "the same rule: the handler's body is the buffer in the reference and null in Corvis",
+    "spec": "ws/socket-io-gateways: The message body is built from the event arguments (Binary argument)"
   }
 ]

@@ -1900,7 +1900,9 @@ async fn the_handshake_auth_is_charged_for_the_life_of_the_socket_at_the_size_of
     let auth = format!("[{}]", vec![r#"{"":0}"#; 40].join(","));
     conn.join(&format!("0{{\"a\":{auth}}}")).await;
     let held = address_held(&io, "203.0.113.1");
-    let stored = super::value::json_cost(&serde_json::from_str::<serde_json::Value>(&format!("{{\"a\":{auth}}}")).unwrap());
+    // The stored value is built from the decoded packet with exact capacities.
+    let parsed = serde_json::from_str::<serde_json::Value>(&format!("{{\"a\":{auth}}}")).unwrap();
+    let stored = super::value::json_cost(&IoValue::from_serialize(&parsed).unwrap().to_json().unwrap());
     assert!(stored > 40 * 250, "every one-entry object owns a map of its own: {stored}");
     assert_eq!(held, stored, "the socket holds exactly what its auth occupies");
     // The socket ends: the charge goes with it.
@@ -1941,5 +1943,6 @@ async fn the_auth_of_many_sockets_in_many_namespaces_adds_up_on_the_address_and_
     assert_eq!(address_held(&io, "203.0.113.1"), 0);
 }
 
+mod gateways;
 mod review1;
 mod rooms;

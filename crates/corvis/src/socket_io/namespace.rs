@@ -2,19 +2,25 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use futures::future::BoxFuture;
 use serde::Serialize;
 
 use super::adapter::{Adapter, LocalNamespace};
+use super::client::Charge;
 use super::options::IoOptions;
-use super::socket::IoSocket;
-use super::value::IoValue;
+use super::socket::{AckSender, IoSocket};
+use super::value::{Args, IoValue};
 
 pub(crate) type Middleware = Arc<dyn Fn(IoSocket) -> BoxFuture<'static, Result<(), ConnectError>> + Send + Sync>;
 pub(crate) type ConnectionHandler = Arc<dyn Fn(IoSocket) + Send + Sync>;
+/// Consulted for an event the socket has no handler of its own for: the future that handles it, or `None` for an event
+/// nobody handles (it is dropped). It is called in the order the events arrived. It receives what the packet holds in
+/// the unread budget and keeps it for as long as what it stands for lives (a dispatcher that turns the arguments into
+/// something else charges that and releases the packet's charge). The gateway layer installs one per namespace.
+pub(crate) type Dispatcher = Arc<dyn Fn(IoSocket, &str, Args, Option<AckSender>, Charge) -> Option<BoxFuture<'static, ()>> + Send + Sync>;
 
 /// Why connect middleware refused a connection: it becomes the CONNECT_ERROR packet the client receives,
 /// `{"message": <message>}` plus `"data"` when the error carries data (what `err.message` and `err.data` are in the
@@ -84,9 +90,13 @@ pub(crate) struct NamespaceInner {
     initialized: tokio::sync::OnceCell<()>,
     middleware: RwLock<Vec<Middleware>>,
     connection: RwLock<Vec<ConnectionHandler>>,
+    dispatcher: RwLock<Option<Dispatcher>>,
     sockets: RwLock<HashMap<String, IoSocket>>,
     /// The id of the next server-side acknowledgement: a counter per namespace starting at 0, as Node's `_ids`.
     next_ack_id: AtomicU64,
+    /// Set by the gateway layer when the namespace has disconnect hooks: a CONNECT from an address at its share of pending
+    /// hooks is refused (see `IoNamespace::limit_pending_hooks`).
+    limits_pending_hooks: AtomicBool,
 }
 
 impl std::fmt::Debug for IoNamespace {
@@ -106,8 +116,10 @@ impl IoNamespace {
             initialized: tokio::sync::OnceCell::new(),
             middleware: RwLock::new(Vec::new()),
             connection: RwLock::new(Vec::new()),
+            dispatcher: RwLock::new(None),
             sockets: RwLock::new(HashMap::new()),
             next_ack_id: AtomicU64::new(0),
+            limits_pending_hooks: AtomicBool::new(false),
         });
         IoNamespace { inner }
     }
@@ -190,6 +202,25 @@ impl IoNamespace {
     /// The connected socket with this id.
     pub fn socket(&self, id: &str) -> Option<IoSocket> {
         self.inner.sockets.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
+    }
+
+    /// Installs the dispatcher of events without a handler on the socket (the gateway layer's), replacing a previous one.
+    pub(crate) fn set_dispatcher(&self, dispatcher: Dispatcher) {
+        *self.inner.dispatcher.write().unwrap_or_else(|e| e.into_inner()) = Some(dispatcher);
+    }
+
+    /// Every socket that leaves this namespace leaves a hook pending (the gateways' `handle_disconnect`): from now on a
+    /// CONNECT from a client address at its share of pending hooks is answered `CONNECT_ERROR` before any socket exists.
+    pub(crate) fn limit_pending_hooks(&self) {
+        self.inner.limits_pending_hooks.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn limits_pending_hooks(&self) -> bool {
+        self.inner.limits_pending_hooks.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn dispatcher(&self) -> Option<Dispatcher> {
+        self.inner.dispatcher.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub(crate) fn middleware(&self) -> Vec<Middleware> {

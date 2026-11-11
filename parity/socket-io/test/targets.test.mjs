@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { diff } from "../lib/compare.mjs";
 import { normalize } from "../lib/normalize.mjs";
-import { checkInstalledVersions, corvisTarget, plan, runScenario, startNodeTarget } from "../lib/targets.mjs";
+import { checkGatewayReference, checkInstalledVersions, corvisTarget, modeOf, plan, runScenario, startNodeTarget } from "../lib/targets.mjs";
 import handshake from "../scenarios/socket-io/handshake-and-ack.mjs";
 
 test("Corvis target without the capability: runs on Node only and is reported as skipped", () => {
@@ -70,4 +70,35 @@ test("Slow machine: a two second late acknowledgement gives the same transcript"
   } finally {
     await Promise.all([fast.stop(), slow.stop()]);
   }
+});
+
+test("Gateway scenarios need the capability `gateways`: a Corvis target without it is skipped, never passed", () => {
+  const scenario = { name: "g", requires: ["gateways"], run() {} };
+  assert.equal(modeOf(scenario), "gateways");
+  const without = plan(scenario, { env: {}, second: corvisTarget("http://127.0.0.1:1", ["engine-io", "socket-io"]) });
+  assert.deepEqual(without.run, ["node"]);
+  assert.match(without.skipped[0].reason, /gateways/);
+  const withIt = plan(scenario, { env: {}, second: corvisTarget("http://127.0.0.1:1", ["engine-io", "socket-io", "gateways"]) });
+  assert.deepEqual(withIt.run, ["node", "corvis"]);
+});
+
+test("The gateway reference is checked on its own: a missing install names `npm ci` in gateway-reference", () => {
+  const root = mkdtempSync(join(tmpdir(), "gateway-reference-"));
+  try {
+    writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { "@nestjs/core": "12.4.2" } }));
+    const problems = checkGatewayReference(root);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /npm ci` in parity\/socket-io\/gateway-reference\//);
+    mkdirSync(join(root, "node_modules", "@nestjs", "core"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "@nestjs", "core", "package.json"), JSON.stringify({ version: "12.4.1" }));
+    assert.match(checkGatewayReference(root)[0], /12\.4\.1 is installed but gateway-reference\/package.json pins 12\.4\.2/);
+    writeFileSync(join(root, "node_modules", "@nestjs", "core", "package.json"), JSON.stringify({ version: "12.4.2" }));
+    assert.deepEqual(checkGatewayReference(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("The installed gateway reference matches its package.json", () => {
+  assert.deepEqual(checkGatewayReference(), []);
 });

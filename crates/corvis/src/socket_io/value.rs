@@ -101,6 +101,11 @@ pub(crate) fn json_cost(value: &Value) -> usize {
     json_heap(value)
 }
 
+/// The same for an object's map on its own (what a request's parsed query occupies).
+pub(crate) fn json_map_cost(map: &serde_json::Map<String, Value>) -> usize {
+    map.iter().fold(map_cost(map.len()), |total, (k, v)| total.saturating_add(text_cost(k.capacity())).saturating_add(json_heap(v)))
+}
+
 fn json_heap(value: &Value) -> usize {
     match value {
         Value::Null | Value::Bool(_) => 0,
@@ -110,9 +115,7 @@ fn json_heap(value: &Value) -> usize {
             let buffer = if items.capacity() > 0 { ALLOC_OVERHEAD + items.capacity() * JSON_SLOT } else { 0 };
             items.iter().fold(buffer, |total, v| total.saturating_add(json_heap(v)))
         }
-        Value::Object(map) => {
-            map.iter().fold(map_cost(map.len()), |total, (k, v)| total.saturating_add(text_cost(k.capacity())).saturating_add(json_heap(v)))
-        }
+        Value::Object(map) => json_map_cost(map),
     }
 }
 
@@ -435,31 +438,44 @@ impl IoValue {
 
     /// The same value as plain JSON; fails when it holds binary data.
     pub fn to_json(&self) -> Result<Value, IoValueError> {
-        to_json(self, 0)
+        to_json(self, 0, false)
+    }
+
+    /// The same value as plain JSON, with every binary value replaced by `null`: the form a gateway's message pipeline
+    /// sees (it has no binary type).
+    pub(crate) fn to_json_binary_as_null(&self) -> Result<Value, IoValueError> {
+        to_json(self, 0, true)
     }
 }
 
-fn to_json(v: &IoValue, depth: usize) -> Result<Value, IoValueError> {
+fn to_json(v: &IoValue, depth: usize, binary_as_null: bool) -> Result<Value, IoValueError> {
     Ok(match v {
         IoValue::Null => Value::Null,
         IoValue::Bool(b) => Value::Bool(*b),
         IoValue::Number(n) => Value::Number(n.clone()),
         IoValue::String(s) => Value::String(s.clone()),
+        IoValue::Binary(_) if binary_as_null => Value::Null,
         IoValue::Binary(_) => return Err(IoValueError::ContainsBinary),
         IoValue::Array(a) => {
             if depth + 1 > MAX_DEPTH {
                 return Err(IoValueError::TooDeep);
             }
-            Value::Array(a.iter().map(|x| to_json(x, depth + 1)).collect::<Result<_, _>>()?)
+            // Exact capacities: collecting through `Result` would grow the vector by doubling, up to twice what it holds.
+            let mut items = Vec::with_capacity(a.len());
+            for x in a.iter() {
+                items.push(to_json(x, depth + 1, binary_as_null)?);
+            }
+            Value::Array(items)
         }
         IoValue::Object(o) => {
             if depth + 1 > MAX_DEPTH {
                 return Err(IoValueError::TooDeep);
             }
+            // Objects grow as entries are inserted: the growth the cost model of `json_cost` assumes, and charges, for them.
             let mut map = serde_json::Map::new();
             for (k, x) in o.iter() {
                 reject_reserved_key(k)?;
-                map.insert(k.clone(), to_json(x, depth + 1)?);
+                map.insert(k.clone(), to_json(x, depth + 1, binary_as_null)?);
             }
             Value::Object(map)
         }

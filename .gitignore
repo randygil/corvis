@@ -41,5 +41,6 @@ crates/corvis/tests/fixtures/compression/node_modules
 
 # Socket.IO differential harness
 parity/socket-io/node_modules
+parity/socket-io/gateway-reference/node_modules
 parity/socket-io/out
 parity/socket-io/suites

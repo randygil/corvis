@@ -86,8 +86,9 @@ pub(crate) struct ServerInner {
     /// sessions' gauges and the server-wide one, so everything an address holds counts here, in every state, and
     /// outlives its sessions for as long as anything charged through them does.
     addresses: Arc<AddressTable>,
-    /// Handlers of a layer on top that outlive their connection, per client address (`EngineSocket::linger`).
-    lingering: Mutex<HashMap<String, usize>>,
+    /// What a layer on top keeps running or waiting after a connection of the address ended: handlers that outlive it
+    /// (`EngineSocket::linger`) and hooks that run after its sockets left (`EngineSocket::linger_hook`).
+    lingering: Mutex<HashMap<String, Linger>>,
     on_connection: RwLock<Option<ConnectionCallback>>,
     /// Callbacks run at the start of `close()`, before any session is closed.
     on_closing: RwLock<Vec<ClosingCallback>>,
@@ -99,6 +100,23 @@ pub(crate) struct ServerInner {
 }
 
 type AddressTable = Mutex<HashMap<String, Weak<UnreadGauge>>>;
+
+/// What outlives the connections of one client address (see `ServerInner::lingering`). An entry exists while any count is
+/// above zero.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Linger {
+    /// Handlers that outlive their connection.
+    pub(crate) handlers: usize,
+    /// Hooks waiting or running after their socket left, and the bytes they pin.
+    pub(crate) hooks: usize,
+    pub(crate) hook_bytes: usize,
+}
+
+impl Linger {
+    fn is_empty(&self) -> bool {
+        self.handlers == 0 && self.hooks == 0 && self.hook_bytes == 0
+    }
+}
 
 impl ServerInner {
     /// The line to write for a session closed by a send buffer over its limit, or `None` when one was written less
@@ -216,6 +234,8 @@ enum OpenError {
     Closing,
     TooManySessions,
     TooManyFromAddress,
+    /// The address is at its share of the hooks a layer on top runs after its sockets left.
+    PendingHooks,
 }
 
 /// Reads an address as a proxy may have written it: `203.0.113.7`, `203.0.113.7:40000`, `2001:db8::1`,
@@ -386,11 +406,13 @@ impl EngineServer {
         while store.map.contains_key(&id) {
             id = sid::generate();
         }
+        // The session keeps its handshake for its whole life (and the sockets of a layer on top share it): in allocations
+        // of its own, not as slices of the connection's read buffer.
         let session = Session::open(
             Arc::downgrade(&self.inner),
             id.clone(),
             transport,
-            handshake,
+            handshake.detached(),
             self.inner.options.clone(),
             Some(self.inner.parent_gauge(&key)),
         );
@@ -410,10 +432,17 @@ impl EngineServer {
         if held >= self.inner.options.max_sessions_per_ip {
             return Err(OpenError::TooManyFromAddress);
         }
+        let lingering = self.inner.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(key).copied().unwrap_or_default();
         if let Some(cap) = self.inner.options.max_lingering_per_ip
-            && self.inner.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(key).is_some_and(|n| *n >= cap)
+            && lingering.handlers >= cap
         {
             return Err(OpenError::TooManyFromAddress);
+        }
+        // An address whose sockets left hooks waiting at its share opens no session until they drain: it cannot add more.
+        if let Some((hooks, bytes)) = self.inner.options.pending_hook_share
+            && (lingering.hooks >= hooks || lingering.hook_bytes >= bytes)
+        {
+            return Err(OpenError::PendingHooks);
         }
         Ok(())
     }
@@ -428,6 +457,13 @@ impl EngineServer {
             }
             OpenError::TooManyFromAddress => {
                 self.warn_session_cap(format!("max_sessions_per_ip ({})", self.inner.options.max_sessions_per_ip));
+                self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
+            }
+            OpenError::PendingHooks => {
+                let (hooks, bytes) = self.inner.options.pending_hook_share.unwrap_or_default();
+                self.warn_session_cap(format!(
+                    "the share of one client address of the pending disconnect hooks ({hooks} hooks or {bytes} bytes)"
+                ));
                 self.handshake_refused(handshake, upgrade, StatusCode::SERVICE_UNAVAILABLE, 3, "Too many sessions")
             }
         }
@@ -726,19 +762,41 @@ impl Lingering {
             return;
         }
         self.remaining -= count;
-        let mut table = self.server.lingering.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(n) = table.get_mut(&self.key) {
-            *n = n.saturating_sub(count);
-            if *n == 0 {
-                table.remove(&self.key);
-            }
-        }
+        update_linger(&self.server, &self.key, |l| l.handlers = l.handlers.saturating_sub(count));
     }
 }
 
 impl Drop for Lingering {
     fn drop(&mut self) {
         self.give_back(self.remaining);
+    }
+}
+
+/// Changes the entry of `key` in the lingering table, removing it when nothing is left.
+fn update_linger(server: &ServerInner, key: &str, change: impl FnOnce(&mut Linger)) {
+    let mut table = server.lingering.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = table.entry(key.to_string()).or_default();
+    change(entry);
+    if entry.is_empty() {
+        table.remove(key);
+    }
+}
+
+/// A hook that runs after its socket left, counted with its bytes against the socket's client address
+/// (`EngineSocket::linger_hook`) until this is dropped.
+pub(crate) struct HookLinger {
+    server: Arc<ServerInner>,
+    key: String,
+    bytes: usize,
+}
+
+impl Drop for HookLinger {
+    fn drop(&mut self) {
+        let bytes = self.bytes;
+        update_linger(&self.server, &self.key, |l| {
+            l.hooks = l.hooks.saturating_sub(1);
+            l.hook_bytes = l.hook_bytes.saturating_sub(bytes);
+        });
     }
 }
 
@@ -815,8 +873,37 @@ impl EngineSocket {
     pub(crate) fn linger(&self, count: usize) -> Option<Lingering> {
         let server = self.session.server()?;
         let key = self.session.addr_key.clone();
-        *server.lingering.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_insert(0) += count;
+        update_linger(&server, &key, |l| l.handlers += count);
         Some(Lingering { server, key, remaining: count })
+    }
+
+    /// Counts one hook that runs after a socket of this session left, and the `bytes` it pins, against the session's
+    /// client address until the guard is dropped. At the `pending_hook_share` an address gets no new sessions (`503`).
+    /// `None` when the server is gone.
+    pub(crate) fn linger_hook(&self, bytes: usize) -> Option<HookLinger> {
+        let server = self.session.server()?;
+        let key = self.session.addr_key.clone();
+        update_linger(&server, &key, |l| {
+            l.hooks += 1;
+            l.hook_bytes = l.hook_bytes.saturating_add(bytes);
+        });
+        Some(HookLinger { server, key, bytes })
+    }
+
+    /// Whether the session's client address is at its share of pending hooks (`EngineOptions::pending_hook_share`): its
+    /// count or its bytes. A layer on top refuses what would add one more (a CONNECT to a namespace with disconnect
+    /// hooks); new sessions are refused by the handshake itself.
+    pub(crate) fn pending_hook_share_reached(&self) -> bool {
+        let Some(server) = self.session.server() else { return false };
+        let Some((hooks, bytes)) = server.options.pending_hook_share else { return false };
+        let linger = server.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(&self.session.addr_key).copied().unwrap_or_default();
+        linger.hooks >= hooks || linger.hook_bytes >= bytes
+    }
+
+    /// The key the session is counted under in the per-address caps, the unread budget and the lingering table: the
+    /// client address, normalized (see `address_key`).
+    pub(crate) fn address_key(&self) -> &str {
+        &self.session.addr_key
     }
 
     /// Charges `bytes` against this session's unread budget (and the server's) until the returned guard is
@@ -925,8 +1012,13 @@ impl EngineServer {
 
     /// Handlers that outlive their connection and are counted against `address`.
     pub(crate) fn lingering(&self, address: &str) -> usize {
+        self.linger_of(address).handlers
+    }
+
+    /// Everything that outlives the connections of `address`.
+    pub(crate) fn linger_of(&self, address: &str) -> Linger {
         let key = address_key(address, None);
-        self.inner.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(&key).copied().unwrap_or(0)
+        self.inner.lingering.lock().unwrap_or_else(|e| e.into_inner()).get(&key).copied().unwrap_or_default()
     }
 
     /// Whether a handshake from `address` would be answered `503` now.

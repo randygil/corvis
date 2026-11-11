@@ -382,12 +382,43 @@ pub fn extract_arg<T: DeserializeOwned>(args: &mut [Value], i: usize, kind: Para
     })
 }
 
+/// A `#[message_body]` of a gateway message handler declared as `serde_json::Value` takes the piped value as it is:
+/// deserializing a `Value` into a `Value` would build a second copy of it (with arrays grown by doubling) while the
+/// first is still allocated. Chosen by autoref over [`BodyDeserialize`] for that one type.
+pub trait BodyIsValue {
+    fn __corvis_body_arg(&self, args: &mut [Value], i: usize, name: Option<&str>) -> Result<Value, HttpException>;
+}
+impl BodyIsValue for Probe<Value> {
+    fn __corvis_body_arg(&self, args: &mut [Value], i: usize, _name: Option<&str>) -> Result<Value, HttpException> {
+        Ok(std::mem::take(&mut args[i]))
+    }
+}
+
+/// Any other `#[message_body]` type of a gateway message handler: deserialized like a controller's `#[body]`.
+pub trait BodyDeserialize<T> {
+    fn __corvis_body_arg(&self, args: &mut [Value], i: usize, name: Option<&str>) -> Result<T, HttpException>;
+}
+impl<T: DeserializeOwned> BodyDeserialize<T> for &Probe<T> {
+    fn __corvis_body_arg(&self, args: &mut [Value], i: usize, name: Option<&str>) -> Result<T, HttpException> {
+        extract_arg::<T>(args, i, ParamKind::Body, name)
+    }
+}
+
 /// The `#[ip]` parameter of a gateway message handler: the client address of the connection's
 /// handshake (resolved with `trust proxy`), converted like a controller's `#[ip]`.
 #[cfg(feature = "websockets")]
 pub fn ws_ip_arg<T: DeserializeOwned>(client: &Arc<dyn std::any::Any + Send + Sync>) -> Result<T, HttpException> {
-    let client = crate::websockets::client_from_any(client)?;
-    crate::common::lenient::from_value::<T>(Value::String(client.ip().to_owned())).map_err(|e| BadRequestException::new(format!("ip: {e}")))
+    let ip = match client.downcast_ref::<crate::websockets::WsClient>() {
+        Some(client) => client.ip().to_owned(),
+        #[cfg(feature = "socket-io")]
+        None => match client.downcast_ref::<crate::socket_io::IoSocket>() {
+            Some(socket) => socket.ip(),
+            None => return Err(HttpException::new("invalid socket", 500)),
+        },
+        #[cfg(not(feature = "socket-io"))]
+        None => return Err(HttpException::new("invalid socket", 500)),
+    };
+    crate::common::lenient::from_value::<T>(Value::String(ip)).map_err(|e| BadRequestException::new(format!("ip: {e}")))
 }
 
 /// Serializes metadata values for `#[set_metadata]`.

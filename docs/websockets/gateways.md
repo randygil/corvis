@@ -95,6 +95,17 @@ A gateway that isn't in some module's `providers` is not mounted. Since it is a 
 
 The path is normalized: the leading `/` is added if missing and the trailing one is removed. The global prefix (`app.set_global_prefix`) is **not** applied to gateways: in Tertulia the REST API lives at `/api/...` and the chat at `/chat`.
 
+The accepted options are `path`, `namespace` and `cors`; any other one is a compile error, and the namespace is checked when the code compiles. They mean something else when the application serves its gateways over Socket.IO ([Gateways over Socket.IO](/websockets/adapter#gateways-over-socket-io), feature `socket-io`):
+
+| Form | `ws` adapter (the default) | Socket.IO adapter |
+|---|---|---|
+| `#[websocket_gateway]` | path `/` | namespace `/`, Engine.IO path `/socket.io` |
+| `#[websocket_gateway("/chat")]` or `namespace = "/chat"` | path `/chat` | namespace `/chat` |
+| `path = "/realtime"` | path `/realtime` | Engine.IO path `/realtime`, namespace `/` unless given |
+| `cors = true`, `"https://a"` or `["https://a", "https://b"]` | no effect (warning at `init()`) | CORS of the Engine.IO path |
+
+A gateway written as `path = "/chat"` becomes namespace `/` on the Engine.IO path `/chat` when you switch the adapter (the original framework's rule), and the handle types change too (`IoSocket`, `IoGatewayServer`, `OnGatewayConnection<IoSocket>`), so the switch is never silent: a gateway that does not match the adapter fails `init()`.
+
 Below `#[websocket_gateway]` you can put `#[use_guards(...)]`, `#[use_interceptors(...)]`, `#[use_pipes(...)]`, `#[use_filters(...)]`, and `#[set_metadata(key, value)]`; they apply to all the gateway's handlers. As with controllers, they must go **below** the main attribute because Rust processes attributes in order (see [Exception filters](/websockets/exception-filters) for `#[use_filters]`).
 
 ### `#[handlers]` and `#[subscribe_message]`

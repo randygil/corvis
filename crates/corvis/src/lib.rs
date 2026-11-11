@@ -287,12 +287,14 @@ pub use modules::throttler::{
 };
 #[cfg(feature = "websockets")]
 pub use websockets::{
-    GatewayOptions, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsClient, WsException, WsResponse, WsServer,
+    GatewayOptions, OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, WsAdapter, WsClient, WsException, WsResponse, WsServer,
 };
 
 /// Everything you need in a typical application: `use corvis::prelude::*;`.
 pub mod prelude {
     pub use crate::MiddlewareConsumer;
+    #[cfg(feature = "socket-io")]
+    pub use crate::socket_io::{IoAdapter, IoGatewayServer};
     pub use crate::z::{self, ZodSchema, ZodValidationPipe};
     pub use crate::{
         ArgumentMetadata, ArgumentsHost, BadRequestException, BaseExceptionFilter, BeforeApplicationShutdown, Body, CACHE_KEY_METADATA,

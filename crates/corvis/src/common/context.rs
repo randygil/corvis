@@ -51,7 +51,7 @@ struct CtxInner {
     module_ref: Option<ModuleRef>,
     context_type: ContextType,
     ws_client: Option<Arc<dyn Any + Send + Sync>>,
-    ws_data: Option<Value>,
+    ws_data: Option<Arc<Value>>,
 }
 
 /// The execution context passed to guards, interceptors and filters.
@@ -91,6 +91,18 @@ impl ExecutionContext {
         module_ref: Option<ModuleRef>,
         client: Arc<dyn Any + Send + Sync>,
         data: Value,
+    ) -> Self {
+        Self::for_ws_shared(request, class, handler, module_ref, client, Arc::new(data))
+    }
+
+    /// Like [`for_ws`](Self::for_ws) with a payload that is already shared: the context holds the reference, not a copy.
+    pub fn for_ws_shared(
+        request: impl Into<Arc<Request>>,
+        class: Arc<Target>,
+        handler: Arc<Target>,
+        module_ref: Option<ModuleRef>,
+        client: Arc<dyn Any + Send + Sync>,
+        data: Arc<Value>,
     ) -> Self {
         ExecutionContext {
             inner: Arc::new(CtxInner {
@@ -400,7 +412,7 @@ impl<'a> WsArgumentsHost<'a> {
     }
     /// The message payload.
     pub fn get_data(&self) -> Option<&'a Value> {
-        self.ctx.inner.ws_data.as_ref()
+        self.ctx.inner.ws_data.as_deref()
     }
 }
 

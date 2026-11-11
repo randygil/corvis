@@ -4,7 +4,7 @@ status: partial
 
 # Adapters
 
-Corvis gateways use a single built-in adapter, equivalent to the one based on Node.js's `ws` package: RFC 6455 WebSockets on the same HTTP server as the application and JSON `{ event, data }` frames. **There is no API yet to register custom adapters** nor a socket.io-compatible adapter (socket.io namespaces, *long polling*, the socket.io protocol's automatic reconnection).
+Corvis gateways use, by default, a built-in adapter equivalent to the one based on Node.js's `ws` package: RFC 6455 WebSockets on the same HTTP server as the application and JSON `{ event, data }` frames. With the `socket-io` feature an application can serve its gateways over Socket.IO instead, for the official `socket.io-client` ([Gateways over Socket.IO](#gateways-over-socket-io)). **There is no API yet to register custom adapters.**
 
 When the `{ event, data }` protocol doesn't work for you (for example, because you talk to a device or a client that already has its own format), you have a lower-level alternative: **`corvis::ws`**, a plain WebSocket server modeled on the `ws` package in `noServer` mode.
 
@@ -153,7 +153,7 @@ do not, and a connection with nothing to send is never closed by it, so use a he
 The `socket-io` Cargo feature (off by default, it enables `websockets`) adds a Socket.IO v5 server and the Engine.IO v4
 server under it, written for Corvis and checked against Node's `socket.io` 4.8.4 and `engine.io` 6.6.x with a
 differential harness and the official protocol test suite. It is a preview with a low-level API (`IoServer`,
-`IoNamespace`, `IoSocket`): rooms and broadcast, gateways over Socket.IO and a Redis adapter come in later changes. The
+`IoNamespace`, `IoSocket`), rooms and broadcast, and gateways over Socket.IO; a Redis adapter comes in a later change. The
 Engine.IO API under it is hidden from the documentation and may change; `EngineOptions` (embedded in `IoOptions`) is the
 part you can rely on.
 
@@ -391,7 +391,7 @@ write to your standard error. An application that wants silence installs its own
 framework installs none, since a hook is process-wide). Arguments a handler moves out of `Args`
 (`into_vec`) or into a task it spawns stop being charged when the handler returns: they are the application's memory from then on.
 
-Not supported: gateways over Socket.IO, a Redis adapter (later changes); dynamic namespaces, connection
+Not supported: a Redis adapter (a later change); dynamic namespaces, connection
 state recovery, `volatile` and `compress` flags, catch-all listeners, custom parsers, Engine.IO v3 clients and serving the
 client bundle.
 
@@ -550,6 +550,261 @@ everything that spans a cluster (broadcast, broadcast with acknowledgements, soc
 disconnect, server count), the packet reaches it before it is encoded, and broadcast options carry the rooms, the except
 rooms and the flags, as `@socket.io/redis-adapter`'s messages do. It is hidden and unstable until the Redis adapter
 (issue #36) implements it for the first time.
+
+### Gateways over Socket.IO
+
+An application chooses how its gateways are served once, before `init()`. The default is the `ws`-style protocol; with the
+`socket-io` feature, `IoAdapter` serves **every** gateway of the application over Socket.IO:
+
+```rust
+use corvis::prelude::*;
+use corvis::socket_io::IoAdapter;
+
+let mut app = CorvisFactory::create::<AppModule>().await?;
+app.use_websocket_adapter(IoAdapter::new());
+app.listen("127.0.0.1:3000").await?;
+```
+
+Calling it after `init()` logs a warning and has no effect. It changes only the gateways of that application:
+`corvis::ws` servers, `on_upgrade` listeners and other applications in the process are not affected, and a plain
+WebSocket upgrade to a gateway's namespace is not served (and the other way round: under the default adapter there is no
+Socket.IO path). `IoAdapter::options(IoOptions)` sets the options of one Engine.IO path (every limit of the sections above,
+`allow_request`, `allowed_origins`, CORS, the cluster adapter), once per path; a second call for a path, or options that do
+not validate, make `init()` fail naming the path.
+
+#### What `#[websocket_gateway]` means under Socket.IO
+
+| Form | `ws` adapter (unchanged) | Socket.IO adapter |
+|---|---|---|
+| `#[websocket_gateway]` | path `/` | namespace `/` on the Engine.IO path `/socket.io` |
+| `#[websocket_gateway("/chat")]` | path `/chat` | namespace `/chat` |
+| `namespace = "/chat"` | path `/chat` (synonym) | namespace `/chat` |
+| `path = "/realtime"` | path `/realtime` | Engine.IO path `/realtime`, namespace `/` unless given |
+| `cors = true`, `cors = "https://a"`, `cors = ["https://a", "https://b"]` | no effect (a warning at `init()`) | CORS of the Engine.IO path |
+
+`path` is the server path of whichever platform is used, as in the original framework: a gateway written as
+`path = "/chat"` becomes namespace `/` on the Engine.IO path `/chat` when you switch the adapter (the startup log names
+the namespace and the path of each gateway). The namespace is checked when the code compiles (at most 256 bytes, no `,`, no
+control characters), and an option the macro does not know is a compile error naming `path`, `namespace` and `cors`.
+`cors = true` allows any origin without credentials, a string a single origin, an array a list; anything richer is
+`EngineOptions::cors` in `IoAdapter::options`. The other Engine.IO and Socket.IO options (`ping_interval`, buffer sizes) are
+not macro options: they belong to the server of a path, not to a gateway.
+
+Gateways that share an Engine.IO path are namespaces of one Socket.IO server, so one client connection reaches all of
+them. Several gateways may declare the same namespace: their handlers are served together and their hooks run in
+registration order, but the same event in two of them fails `init()` (the original runs both handlers; one
+acknowledgement cannot be answered twice). `init()` also fails, naming the gateways or the path, when gateways of one path
+declare different `cors`, when a gateway declares `cors` and the options for its path already set one, when options are given
+twice for a path, or when two Engine.IO paths overlap. A client can reach only the namespaces gateways declare (`/` too is
+refused when no gateway declares it): there are no dynamic namespaces.
+
+#### Handles
+
+Under Socket.IO the handles are `IoSocket` (`#[connected_socket]`), `IoGatewayServer` (`#[websocket_server]`) and, for
+`after_init`, `IoNamespace`. The lifecycle traits take the handle as a type argument whose default is the `ws` one, so
+existing `impl OnGatewayConnection for Chat` blocks compile unchanged:
+
+```rust
+use corvis::prelude::*;
+use corvis::socket_io::{IoGatewayServer, IoNamespace, IoSocket};
+use corvis::{OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, websocket_gateway};
+
+#[websocket_gateway("/chat")]
+pub struct ChatGateway {
+    #[websocket_server]
+    server: IoGatewayServer,
+}
+
+#[handlers]
+impl ChatGateway {
+    #[subscribe_message("shout")]
+    async fn shout(&self, #[message_body("room")] room: String, #[connected_socket] socket: IoSocket) {
+        let _ = socket.id();
+        let _ = self.server.to(room).emit("news", ("hello",)).await;
+    }
+}
+
+#[async_trait]
+impl OnGatewayInit<IoNamespace> for ChatGateway {
+    async fn after_init(&self, namespace: IoNamespace) {
+        // Connect middleware, connection handlers, ...
+        let _ = namespace;
+    }
+}
+
+#[async_trait]
+impl OnGatewayConnection<IoSocket> for ChatGateway {
+    async fn handle_connection(&self, socket: IoSocket) {
+        let _ = socket.handshake().auth();
+    }
+}
+
+#[async_trait]
+impl OnGatewayDisconnect<IoSocket> for ChatGateway {
+    async fn handle_disconnect(&self, _socket: IoSocket) {}
+}
+```
+
+`IoGatewayServer` offers the broadcast operators of the gateway's namespace (`emit`, `to`, `within`, `except`, `local`,
+`timeout`, `fetch_sockets`, `sockets_join`, `sockets_leave`, `disconnect_sockets`) and `namespace()`. It is empty until the
+application starts its gateways: before that every operation fails with `EmitError::NotStarted`, sends nothing and does not
+panic. A `#[connected_socket]` or `#[websocket_server]` of any other type is a compile error. **A gateway whose handles do
+not match the adapter fails `init()`** with a message that names the gateway and the item, before any of its code runs:
+a hook that silently never ran could be an authentication check. A gateway may implement each hook for both handles and
+then works under either adapter. `#[ip]` is the client address resolved from the handshake with the `trust proxy` setting,
+and guards read the socket with `ctx.switch_to_ws().get_client::<IoSocket>()`; `ctx.request()` is the handshake request
+under both adapters, which is what a guard shared between them should use.
+
+#### Messages, results and errors
+
+A `#[subscribe_message("e")]` handler runs when a socket of the namespace emits `e`, through the same pipeline as under the
+`ws` adapter: global, gateway and handler guards, interceptors, pipes, the handler, and the handler's and gateway's exception
+filters. The body (`#[message_body]`, `get_data()`, the input of pipes) is built from the event's arguments as the original
+does: none gives `null`, one gives that argument, several give the array of them, and the acknowledgement is not an argument.
+An event no handler subscribes to is dropped without a reply and without running guards; a handler registered with
+`IoSocket::on` (in `handle_connection`) takes precedence over the gateway's.
+
+| What the handler returns | The client sent a callback | No callback |
+|---|---|---|
+| nothing, or a value that serializes to `null` | nothing is sent; the callback is not called | nothing |
+| `WsResponse::new(event, data)` | emitted as `event`; the callback is not called | emitted as `event` |
+| an object with a non-empty string `event` | emitted as that event with its `data` | the same |
+| any other value (`false`, `0`, `""` included) | the callback, with the value | dropped |
+| an error, a denial, a panic | the event `exception`; the callback is not called | the event `exception` |
+
+A `WsResponse` for a reserved event name (`disconnect`, `connect_error`, ...) sends nothing and is logged with the
+gateway and the handler; the socket stays connected. The `exception` payload is the one of the gateway's filters or the
+built-in mapping: `{ "status": "error", "message": ..., "cause": { "pattern": <event>, "data": <body> } }` for a
+`WsException` with a string (`data` is left out when the event had no argument) and for the denial `Forbidden resource`; the
+object itself for `WsException::object`; and `Internal server error` for any other error and for a panic, without their text.
+The `cause` is the original framework's default (its `includeCause` option); it carries only what the client sent. An HTTP
+exception (`BadRequestException`, a failing validation pipe) keeps its own message and fields, as under the `ws` adapter,
+where the original answers `Internal server error`.
+
+Binary values in the arguments are `null` in the body: the pipeline has no binary type. Register `socket.on("upload", ...)`
+in `handle_connection` to receive the real `Args` (and a manual acknowledgement).
+
+#### Hooks and the connection gate
+
+`after_init` runs once per gateway with its namespace, before the server is attached and so before any client can connect.
+`handle_connection` runs for each socket after the namespace's connect middleware accepted it, in the registration order
+of the namespace's gateways; `handle_disconnect` runs exactly once per socket after it left its rooms, whichever way it
+left (the client, the server, a timeout, a kick, a shutdown). The original calls `handleConnection` without waiting for it,
+so a message sent right after connecting can be handled before an asynchronous hook finishes. **Corvis holds the events of a
+socket until every `handle_connection` hook of its namespace returned**: an authentication check in the hook decides before
+any handler runs, and an event that arrives meanwhile is neither lost nor handled early. Waiting events count as handlers in
+flight (`max_inflight`, 32 per connection): at the limit the server stops reading from that connection, and they are
+discarded, without running guards or handlers, when a hook disconnects the socket. A hook that panics, or exceeds
+`IoAdapter::hook_timeout` (30 s by default), disconnects the socket and closes its connection; a `handle_disconnect` that
+exceeds it is abandoned; an `after_init` that panics or exceeds it fails `init()`. A zero `hook_timeout` fails `init()`.
+
+Events held behind the hook start in the order they arrived, by construction: each event takes a place in its socket's order
+when the connection reads it, and starts only when every event before it has started, so an event that arrives just as the
+gate opens cannot overtake the ones that waited.
+
+**Disconnect hooks.** A socket that leaves waits for its `handle_disconnect` hooks in one queue for the whole application
+(every namespace and Engine.IO path):
+
+- At most 32 hooks run at once, at most 8 of them for one client address, and a free worker serves the addresses with hooks
+  waiting in turn: a socket's hook starts after at most one hook of each other address that had hooks waiting before it,
+  however many each of them queued.
+- Each address has a 64th of the application's caps: while its pending hooks (waiting or running) reach that count, or pin
+  that many bytes, new sessions from it are answered `503`, and a CONNECT from it to a namespace with disconnect hooks is
+  answered `CONNECT_ERROR` (`Too many pending disconnects`) before any socket exists, until they drain. A pending hook comes
+  only from a socket of such a namespace, and such a socket only from a CONNECT that passed that check, so on one Engine.IO
+  path an address has at most `share - 1 + max_sessions_per_ip x K` hooks pending (`K` the namespaces with disconnect
+  hooks on that path: a session holds at most one socket per namespace), pinning at most
+  `byte share + max_sessions_per_ip x K x (what one socket pins)` bytes. The sockets an address already had connected when it reached its share may still
+  leave, and their hooks are queued (that is the second term); within this bound **no hook is skipped**. Clients behind one
+  address (a NAT, or a reverse proxy without `trust_proxy`) share the 8 workers and the share: while it is full they get
+  `503` on new sessions and `CONNECT_ERROR` on those namespaces.
+- At most `IoAdapter::max_pending_disconnect_hooks` (10,000) hooks are pending in the application, pinning at most
+  `IoAdapter::max_pending_disconnect_hook_bytes` (64 MiB). A socket that leaves while either cap is full is **the one case in
+  which a hook is dropped**; it is logged (rate limited). Since every address is held to its share, filling a cap takes many
+  addresses at once: at least `cap / (share + max_sessions_per_ip x namespaces with disconnect hooks)`.
+- What a pending socket pins: the socket holds its connection weakly, so the Engine.IO session and its buffers are freed
+  with the connection, and the session keeps a copy of its handshake (not a slice of the connection's read buffer). Each
+  pending socket is charged, at most, its own structures (about 3 KiB), its id, its handshake (`auth`, headers, query) and
+  its `data`; what the application attached with `insert` is not counted. When the socket is queued the unread-budget charge
+  of its `auth` is released: the queue's budget charges it from then on. The queue's memory is at most the pending hooks
+  times that, so at most `max_pending_disconnect_hook_bytes` (measured with a counting allocator: 212 sockets charged
+  1,047,524 bytes held 833,724).
+
+`init()` also refuses an Engine.IO path of `/` or an empty one (Engine.IO would take every HTTP request of the application),
+an Engine.IO path under which an HTTP route lives (`path = "/status"` with a route `GET /status/ping`: Engine.IO answers every
+request under its path before routing), naming the gateway and the route, and a `#[subscribe_message]` for a reserved
+Socket.IO event name (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener`: no client can
+emit them, so the handler could never run), naming the gateway. A route whose leading segments are parameters or a wildcard
+(`/:id/ping`, `/*rest`) is not refused: only the requests whose values spell the Engine.IO path go to Engine.IO, which the
+router cannot know of. A duplicated `#[websocket_gateway]` option is a compile error.
+
+**What a message holds.** Once the body is built from the event's arguments, the arguments are dropped, and a gateway handler
+holds the body as one shared JSON value and a copy for each `#[message_body]` parameter (a `Value` parameter takes its copy
+as it is, without rebuilding it); after the handler, an error's `cause` echoes one more copy, when the parameters are gone.
+The charge is `(1 + max(P, 1)) x json_cost(body)` for `P` body parameters, where `json_cost` is the body's real size: one
+`Value` slot (72 bytes with `preserve_order`) per array element or object entry, the bytes of every string and key, and the
+capacity of every container, each allocation with 24 bytes of overhead; the copies are built with exact capacity, so none
+is larger than the body. It goes to the connection's unread budget (session, address and server-wide) by a try-charge that
+never waits, **before** any guard runs, with the packet's own charge counted as room (it is released right after, with the
+arguments). When there is no room the event is answered with `exception` (`Too many messages in flight`), no guard or handler
+sees it, and the callback stays unanswered. Measured with a counting allocator for an array of 2^17 + 1 zeros, the heap of the
+event stays within 1.04 times its charge with one body parameter and 1.00 times with two (the tests allow 1.25). The copies
+take more memory than the packet did, so when the server-wide budget is under pressure a message the Socket.IO layer would
+still read can be refused here: that is the memory its copies really need, and letting it through would put the heap over
+the budget.
+
+#### What authenticates a Socket.IO connection
+
+Nothing does by default. The strategies of the authentication module run on HTTP requests and do not run at the WebSocket
+handshake, `AuthGuard` denies outside HTTP, and guards run per message. Check the connection yourself, from the outermost in:
+`EngineOptions::allow_request` and `allowed_origins` (before a session exists), connect middleware registered in `after_init`
+(the socket is not connected until it passes; a rejection is `CONNECT_ERROR`), `handle_connection` (call
+`socket.disconnect(true)`), and `IoAdapter::guard_connections(true)`.
+
+`guard_connections` is **off by default**, as in the original: a socket that never sends a message is never checked, yet it
+is connected, can be joined to rooms by server code and receives broadcasts. Turn it on and the global guards (while global
+enhancers apply to gateways) and the guards declared on the gateways of a namespace also run when a socket connects, before
+it is connected. A connection reaches every gateway of its namespace, so the global guards run once **for each gateway**,
+each time with that gateway as the class, and all of them must pass: the strictest gateway decides, whatever the order the
+gateways were registered in (with a `#[public]` gateway and a protected one on the same namespace, an anonymous client is
+refused). The route posture report lists a `connect` entry for each gateway with exactly the guards that run for it. The context is a WebSocket context with the pending socket as client, the handshake as request, `null` data,
+the gateway as class and a handler named `connect` that carries the gateway's metadata (so `#[public]` on the gateway is
+honored by guards that honor it; handler-level guards run per message only). A denial answers `CONNECT_ERROR` with
+`Forbidden resource`, a guard that fails answers its message (and the rest of its payload as `data`), and internal errors and
+panics answer `Internal server error`; no hook runs for the socket and it receives no broadcast. Exception filters do not run
+for the connection. The default is revisited with the 1.0 defaults.
+
+#### Limits
+
+This layer adds one queue of its own, the disconnect hooks'; the other limits are those of the Engine.IO, Socket.IO and rooms
+sections, set through `IoAdapter::options`, plus these:
+
+| Limit | Default | When exceeded |
+|---|---|---|
+| Handlers in flight per connection, **including events waiting for `handle_connection`** | 32 (`max_inflight`) | reads pause |
+| Lifecycle hooks | 30 s (`IoAdapter::hook_timeout`) | the socket is disconnected; `init()` fails |
+| `handle_disconnect` hooks running | 32 in the application, 8 per client address | the others wait their turn |
+| Pending `handle_disconnect` hooks, and the bytes their sockets pin | 10,000 and 64 MiB in the application (`IoAdapter::max_pending_disconnect_hooks`, `max_pending_disconnect_hook_bytes`); a 64th of each per client address | at the address's share: new sessions from it `503`, a CONNECT from it to a namespace with disconnect hooks `CONNECT_ERROR`; at the application's cap: the hook is dropped and logged (filling it takes many addresses at once, like the session caps) |
+| Namespaces a client can reach | the ones gateways declare | `CONNECT_ERROR` `Invalid namespace` |
+| Handlers per event per namespace | 1 | `init()` fails |
+| Acknowledgements per event | at most 1, one argument | n/a |
+| CORS | off; `cors = true` is any origin without credentials | no CORS headers |
+| Connection guards | off | n/a |
+| Errors sent to clients | internal errors and panics as `Internal server error`, never their text | n/a |
+| Adapter and gateway mismatch | `init()` fails | n/a |
+
+`init()` logs a warning for two configurations that are legal but risky: CORS with credentials on an Engine.IO path without
+`allowed_origins` (CORS does not apply to the WebSocket transport, so a cookie-authenticated namespace is open to
+cross-site WebSocket hijacking unless the allowlist or a connection check is set), and `cors` declared on a gateway under the
+`ws` adapter (it has no effect).
+
+#### Differences from the original gateway adapter
+
+Checked with the official client against a reference application written with the original framework's Socket.IO platform
+adapter (the differential harness in `parity/socket-io/`). What a client can observe differs in two cases: the payload of an
+HTTP exception (the original answers `Internal server error`; Corvis forwards its message and fields) and a binary value in a
+message body (`null` in Corvis). Not observable by one client: events are held until `handle_connection` returns; one handler
+per event per namespace; startup errors for conflicting options, `cors` and adapter mismatches; connection guards (opt in).
 
 ## Security
 

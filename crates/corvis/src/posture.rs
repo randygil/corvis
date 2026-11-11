@@ -427,6 +427,10 @@ pub enum UncheckedSurface {
     StaticFiles { serve_root: String },
     /// The WebSocket handshake of a gateway: it runs no guard; `verify_client` is the only check.
     WsHandshake { path: String, gateway: String, verify_client: bool },
+    /// The connection of a gateway served over Socket.IO: whether the global and gateway-level guards run when a socket
+    /// connects (`IoAdapter::guard_connections`). Connect middleware registered by application code and the
+    /// `allow_request` hook are not visible to the check and are not claimed as protection.
+    IoConnection { namespace: String, path: String, gateway: String, guard_connections: bool },
     /// Raw `upgrade` listeners registered on the HTTP server (`on_upgrade`).
     UpgradeListeners { count: usize },
     /// The WebSocket handshake of a gateway, reported by report mode: `verify_client` is not known yet because
@@ -444,6 +448,11 @@ impl fmt::Display for UncheckedSurface {
             UncheckedSurface::WsHandshake { path, gateway, verify_client } => {
                 write!(f, "WebSocket handshake of {gateway} at {path} (verify_client {})", if *verify_client { "set" } else { "not set" })
             }
+            UncheckedSurface::IoConnection { namespace, path, gateway, guard_connections } => write!(
+                f,
+                "Socket.IO connection of {gateway} on namespace {namespace} at {path} (connection guards {})",
+                if *guard_connections { "on" } else { "off" }
+            ),
             UncheckedSurface::WsHandshakeUnknown { path, gateway } => {
                 write!(f, "WebSocket handshake of {gateway} at {path} (verify_client unknown: after_init has not run)")
             }
@@ -466,12 +475,41 @@ pub(crate) struct GatewayHandlerPosture {
     pub gateway_guard_count: usize,
 }
 
+/// The Socket.IO side of a gateway's posture.
+pub(crate) struct IoConnectionPosture {
+    pub engine_path: String,
+    pub guard_connections: bool,
+}
+
+impl GatewayPosture {
+    /// The surface that is reported and not enforced: the WebSocket handshake, or the Socket.IO connection. `known` is
+    /// false in report mode, where `after_init` has not run (it matters for `verify_client` only).
+    pub(crate) fn unchecked_surface(&self, known: bool) -> UncheckedSurface {
+        if let Some(io) = &self.io {
+            return UncheckedSurface::IoConnection {
+                namespace: self.path.clone(),
+                path: io.engine_path.clone(),
+                gateway: self.name.clone(),
+                guard_connections: io.guard_connections,
+            };
+        }
+        if known {
+            UncheckedSurface::WsHandshake { path: self.path.clone(), gateway: self.name.clone(), verify_client: self.verify_client }
+        } else {
+            UncheckedSurface::WsHandshakeUnknown { path: self.path.clone(), gateway: self.name.clone() }
+        }
+    }
+}
+
 /// A gateway as the posture check sees it: the handlers with the guards that run for each message.
 pub(crate) struct GatewayPosture {
     pub path: String,
     pub name: String,
     pub class_target: Arc<Target>,
     pub verify_client: bool,
+    /// For a gateway served over Socket.IO: its Engine.IO path and whether connection guards are on. `path` above is
+    /// then the namespace.
+    pub io: Option<IoConnectionPosture>,
     /// `(event, handler target, guards in the order they run)`.
     pub handlers: Vec<GatewayHandlerPosture>,
 }
@@ -873,7 +911,7 @@ pub fn render_report_mode(report: &RoutePostureReport, format: ReportFormat, non
 pub(crate) fn report_mode_unchecked(gateways: &[GatewayPosture], static_roots: Vec<String>) -> Vec<UncheckedSurface> {
     let mut unchecked: Vec<UncheckedSurface> =
         static_roots.into_iter().map(|serve_root| UncheckedSurface::StaticFiles { serve_root }).collect();
-    unchecked.extend(gateways.iter().map(|g| UncheckedSurface::WsHandshakeUnknown { path: g.path.clone(), gateway: g.name.clone() }));
+    unchecked.extend(gateways.iter().map(|g| g.unchecked_surface(false)));
     unchecked.push(UncheckedSurface::UpgradeListenersUnknown);
     unchecked
 }
@@ -1159,6 +1197,7 @@ mod tests {
             name: "ChatGateway".into(),
             class_target: Arc::new(Target::new("ChatGateway")),
             verify_client: false,
+            io: None,
             handlers: Vec::new(),
         }];
         let unchecked = report_mode_unchecked(&gateways, vec!["/files".to_string()]);
@@ -1176,6 +1215,43 @@ mod tests {
                 { "type": "upgrade_listeners_unknown" },
             ])
         );
+    }
+
+    #[test]
+    fn a_socket_io_connection_is_listed_in_both_modes_with_its_namespace_path_and_connection_guards() {
+        let gateways = [
+            GatewayPosture {
+                path: "/chat".into(),
+                name: "ChatGateway".into(),
+                class_target: Arc::new(Target::new("ChatGateway")),
+                verify_client: false,
+                io: Some(IoConnectionPosture { engine_path: "/socket.io".into(), guard_connections: false }),
+                handlers: Vec::new(),
+            },
+            GatewayPosture {
+                path: "/".into(),
+                name: "MainGateway".into(),
+                class_target: Arc::new(Target::new("MainGateway")),
+                verify_client: false,
+                io: Some(IoConnectionPosture { engine_path: "/realtime".into(), guard_connections: true }),
+                handlers: Vec::new(),
+            },
+        ];
+        for known in [true, false] {
+            let report = RoutePostureReport::new(Vec::new(), Vec::new())
+                .with_unchecked(gateways.iter().map(|g| g.unchecked_surface(known)).collect());
+            let (text, _) = render_report_mode(&report, ReportFormat::Text, None);
+            assert!(
+                text.contains("Socket.IO connection of ChatGateway on namespace /chat at /socket.io (connection guards off)"),
+                "{text}"
+            );
+            assert!(text.contains("Socket.IO connection of MainGateway on namespace / at /realtime (connection guards on)"), "{text}");
+            let json = serde_json::to_value(&report).unwrap();
+            assert_eq!(
+                json["unchecked"][0],
+                serde_json::json!({ "type": "io_connection", "namespace": "/chat", "path": "/socket.io", "gateway": "ChatGateway", "guard_connections": false })
+            );
+        }
     }
 
     #[test]
