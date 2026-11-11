@@ -374,6 +374,15 @@ Linux with all features, pass). The baseline was re-measured on Linux with all f
 Per crate after the rebase: `corvis` 2,138, `corvis-orm` 359, `corvis-swagger` 107, `corvis-cli` 60, `corvis-macros`
 29, `corvis-swagger-macros` 10, `corvis-orm-macros` 9.
 
+Final checks on the rebased tree, after the last code change: `lint-ratchet` (Linux, 2,712 findings) and its
+self-test, clippy with `-D warnings` and all features on Linux, `msrv` with 1.89 on Linux (default and all
+features), both `doc` steps, `features`, the shared-dependency rule, fmt, workspace clippy, the per-feature clippy
+loop of `corvis`, `cargo check -p corvis --tests` for the six features, `cargo deny`, `cargo audit`, the naming check
+and `openspec validate --strict` pass. `RUSTFLAGS=-D warnings cargo build --workspace --all-targets` passes;
+`cargo test --workspace --no-fail-fast`: 2,111 passed, 0 failed, 98 ignored (188 test binaries and doctest runs);
+`cargo test -p corvis --features socket-io --no-fail-fast`: 1,665 passed, 0 failed, 57 ignored (the racing test
+fixed on `dev` by 12c1cca passes).
+
 ### Follow-up
 
 - `semver` compares with the merge base of `main`, as designed. While pull requests target `dev`, it reports
