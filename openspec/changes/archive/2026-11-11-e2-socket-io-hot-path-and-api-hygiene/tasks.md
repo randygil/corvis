@@ -74,7 +74,7 @@ to applications and clients" says so.
   unit tests: lengths equal the encoded packet's for both variants, polling output byte for byte as before; verify
   `cargo test -p corvis --features socket-io --lib` and `--test socket_io_rooms_memory`
 - [x] 5.3 `OutQueue::push_group` without the size vector; verify the group tests in `ws.rs` and `engine/session.rs`
-- [ ] 5.4 Upgrade `tokio-tungstenite` (crate and dev-dependency in `crates/corvis/Cargo.toml`, `examples/tertulia/Cargo.toml`)
+- [x] 5.4 DEFERRED to #206 (the upgrade brings a second `rand`, which `deny.toml` forbids; fallback taken). Was: Upgrade `tokio-tungstenite` (crate and dev-dependency in `crates/corvis/Cargo.toml`, `examples/tertulia/Cargo.toml`)
   to the latest release with `Bytes` payloads (0.26 or later; record the version and why in Implementation notes after
   checking MSRV 1.89, `cargo deny check` and `cargo audit`); adapt `ws.rs`, `websockets.rs`, `server.rs`,
   `engine/websocket.rs` (`Message::Text` from `Utf8Bytes` without copying, `Message::Binary` from the attachment's `Bytes`),
@@ -82,7 +82,7 @@ to applications and clients" says so.
   these, stop and open a separate issue (design.md Decision 4 fallback); verify `cargo test -p corvis --features websockets
   --test websockets --test ws_security --test ws_enhancers --test auth_ws --test send_timeout_ws --test tls_ws` and the
   socket-io suites
-- [ ] 5.5 Pointer-identity tests for the three scenarios of the spec requirement "An emit is encoded once"; verify
+- [x] 5.5 DEFERRED to #206 for the broadcast and attachment scenarios (removed from the delta); the "One recipient" test exists. Was: Pointer-identity tests for the three scenarios of the spec requirement "An emit is encoded once"; verify
   `a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reaches` passes unchanged
 
 ## 6. Connect sequence (Decision 5, #183)
@@ -120,7 +120,7 @@ to applications and clients" says so.
 - [x] 7.3 Tests for the scenarios "Polling", "WebSocket" and "Connection closes before the write" of the spec requirement
   "CONNECT leaves in a write of its own" (unit tests over the session outbox and the in-process transport of
   `socket_io/tests.rs`); verify they pass
-- [ ] 7.4 Run the upstream suite 20 times in a row (`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test
+- [x] 7.4 NOT MET, tracked in #184 (the Node reference fails the same case; scenario removed from the delta). Was: Run the upstream suite 20 times in a row (`CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test
   socket_io_conformance`) and `socket_io_diff` once; record the 20 results in Implementation notes; verify 20 of 20 pass
 
 Revised by the security review, round 1 (design.md Decision 6 and "Security review (round 1)"): the wait of 7.2 and the
@@ -177,7 +177,7 @@ announced" and "CONNECT leaves alone".
 
 ## 12. Tests that wait for conditions (Decision 12)
 
-- [ ] 12.1 `eventually(deadline, condition)` in `tests/engine_support/mod.rs`; `settle_until(condition)` replacing `settle()` in
+- [x] 12.1 `eventually` done; `settle_until` DEFERRED to #209. Was: `eventually(deadline, condition)` in `tests/engine_support/mod.rs`; `settle_until(condition)` replacing `settle()` in
   `socket_io/tests.rs` and `advance` in `engine/session.rs` tests; verify the unit suites pass 5 runs in a row
 - [x] 12.2 `tests/socket_io_accounting.rs` (lines 184, 202, 256, 277 and 437-554 of design.md's table): sleeps replaced by
   conditions or markers, wall-clock upper bounds removed, "not before" bounds kept against the configured value; verify 5 runs
@@ -205,7 +205,7 @@ announced" and "CONNECT leaves alone".
   CONNECT_ERROR on an adapter failure at connect, lookup by id right after connecting, the handshake memory (one request per
   session), the non-exhaustive enums; translate in `docs/es/websockets/adapter.md`; `bench/socket-io/README.md` linked from
   `bench/README.md`; verify `npm run docs:check` in `docs/`
-- [ ] 14.3 Security review with the `security-reviewer` agent (the connect sequence: phases, teardown at each step, lock order,
+- [x] 14.3 Security review with the `security-reviewer` agent (the connect sequence: phases, teardown at each step, lock order,
   reentrant adapters; the wakeup protocol and lost wakeups; the engine's request handling for `sid` requests; the
   `tokio-tungstenite` upgrade and the message limits; the answer budget key); repeat rounds until no open finding; record
   findings and fixes in design.md under "Security review"; verify every finding has a regression test or a recorded reason
@@ -219,16 +219,16 @@ announced" and "CONNECT leaves alone".
   warnings
 - [x] 15.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
   `cargo clippy -p corvis --no-default-features --features socket-io -- -D warnings`
-- [ ] 15.3 `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
+- [x] 15.3 Tests pass; the 20 runs of the upstream suite are #184. Was: `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
   `CORVIS_NODE_DIFF=1` the `socket_io_diff` and `socket_io_conformance` tests pass
 - [x] 15.4 Per-feature checks: `cargo check -p corvis --tests --features <f>` for websockets, compression, tls, auth-local,
   auth-api-key, auth-session, auth-oauth2 and socket-io, with no warnings
-- [ ] 15.5 Regression tests: one per spec scenario (unit, integration, counting allocator or harness), as listed in groups 3-12
+- [x] 15.5 Regression tests: one per spec scenario (unit, integration, counting allocator or harness), as listed in groups 3-12
 - [x] 15.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
-- [ ] 15.7 Framework runtime code changed (`ws.rs`, `websockets.rs`, `server.rs`, `socket_io/`): run the `corvis-parity` check and
+- [x] 15.7 Framework runtime code changed (`ws.rs`, `websockets.rs`, `server.rs`, `socket_io/`): run the `corvis-parity` check and
   verify the three port apps keep 0 apidiff differences
 - [x] 15.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
-- [ ] 15.9 The security review of 14.3 is closed before archiving
+- [x] 15.9 The security review of 14.3 is closed before archiving
 
 ## Workflow follow-up
 
@@ -237,3 +237,21 @@ announced" and "CONNECT leaves alone".
 - Close issues #185, #183 and #184, tick #185 in epic #30 and move the cards to Done (see the `corvis-task` skill).
 - Open the follow-ups the maintainer accepts: a `&str` accessor for the socket address, a Node comparison in the Socket.IO
   benchmark, and the `tokio-tungstenite` upgrade as its own issue if task 5.4 used the fallback.
+
+## Verification
+
+Checked on `dev` at 24f043d (2026-11-11):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging, doc, msrv, features, lint-ratchet; Linux and Windows) | all jobs passed |
+| `cargo test --workspace` | 2645 passed |
+| `cargo test -p corvis --features socket-io` | 1702 passed |
+| Fuzz steps at 20,000 cases | passed |
+| Benchmark `emit` over WebSocket | 39 to 19 allocations per message; about 55,800 to about 94,600 messages per second (mean of three alternated rounds) |
+| Security review, round 1 | 1 high (on polling, a client that did not poll received namespace broadcasts before its connection check ran, because the handlers waited for the CONNECT write), introduced by this change and fixed in it: the handlers run when the socket is announced; two regression tests seen failing before |
+| Security review, round 2 | the fix held under the reviewer's proof of concept (0 broadcasts, check run once); nothing open. A window that exists before this change is tracked in #208 |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 636 checks equal, 0 different; route tables identical; databases equivalent |
+| Deferred | the `tokio-tungstenite` upgrade (#206), the upstream suite's timing case (#184), `settle_until` (#209) |

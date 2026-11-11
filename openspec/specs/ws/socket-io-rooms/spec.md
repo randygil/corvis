@@ -308,10 +308,10 @@ MUST NOT stay charged to the unread budget of the connection that sent them beyo
 - **THEN** the call ends with `ResponsesTooLarge` at once and no connection's reads are paused
 
 ### Requirement: A panicking adapter does not leave a connecting socket behind
-A panic or an error of the adapter while a socket connects (the id check, the join of its own room) MUST be contained: a panic in the
-id check MUST refuse the CONNECT with `Internal server error` and free the namespace slot, and a panic joining the own room
-MUST disconnect the socket and close the connection. Adding a socket to the room named like its own id MUST expel any other
-member of that room.
+A panic or an error of the adapter while a socket connects (the id check, the join of its own room) MUST be contained:
+it MUST refuse the CONNECT with `Internal server error`, leave nothing of the socket in the namespace or the adapter,
+release its charges and free the namespace slot, so the client never sees that socket connected. Adding a socket to
+the room named like its own id MUST expel any other member of that room.
 
 #### Scenario: Panic in the id check
 - **WHEN** `room_exists` panics while a client connects
@@ -319,7 +319,12 @@ member of that room.
 
 #### Scenario: Panic joining the own room
 - **WHEN** `add_all` panics while the socket joins the room of its own id
-- **THEN** the socket is removed, its charges released and its connection closed
+- **THEN** the client receives CONNECT_ERROR `Internal server error` and no CONNECT, the namespace and the adapter hold
+  nothing of the socket, its charges are released and the connection stays open
+
+#### Scenario: Error joining the own room
+- **WHEN** `add_all` returns an error while the socket joins the room of its own id
+- **THEN** the outcome is the same as for a panic
 
 #### Scenario: A name joined before the socket was live
 - **WHEN** a client joins the name that a connecting socket was given, during the connect middleware
@@ -366,3 +371,14 @@ MUST have an entry in the harness's `expected-differences.json` with the scenari
 #### Scenario: Divergences are listed
 - **WHEN** the harness runs the room scenarios against both servers
 - **THEN** every difference reported is listed with its reason, and no listed difference is stale
+
+### Requirement: The answer budget keys answers by the session's address
+An answer held by a broadcast with acknowledgements SHALL count against the address share of the answer budget under
+the key the session uses for its cap and its unread budget (the resolved address, normalized, falling back to the
+peer), so a client cannot obtain another share by sending a forwarded address that does not parse.
+
+#### Scenario: Malformed forwarded addresses from one peer
+- **WHEN** two connections from one peer, on a server that trusts every proxy, send different malformed
+  `X-Forwarded-For` values and answer broadcasts with acknowledgements
+- **THEN** their held answers count against one address share, and the answer past that share ends its call with
+  `ResponsesTooLarge`
