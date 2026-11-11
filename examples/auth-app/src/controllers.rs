@@ -11,6 +11,8 @@ use crate::same_origin::SameOriginGuard;
 use crate::users::{Account, ROLES_KEY, Role, UsersService};
 
 #[controller]
+// The `login` throttler counts login attempts per account: it belongs on the login routes only.
+#[apply_decorators(skip_throttle(["login"]))]
 pub struct HomeController {
     users: Arc<UsersService>,
 }
@@ -73,7 +75,7 @@ impl AuthController {
     // password hash.
     #[post("login")]
     #[http_code(HttpStatus::OK)]
-    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account").key_generator("account"))]
     #[use_guards(AuthGuard::new("local"))]
     fn login(&self, user: User<Account>) -> HttpResult<Value> {
         Ok(json!({ "access_token": issue_token(&self.jwt, &user)? }))
@@ -93,13 +95,14 @@ impl SessionController {
     /// its cookie stored), so a request that comes from another site is refused before the credentials are checked.
     #[post("login")]
     #[http_code(HttpStatus::OK)]
-    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
-    #[use_guards(SameOriginGuard::new(), AuthGuard::new("local").log_in())]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account").key_generator("account"))]
+    #[use_guards(SameOriginGuard, AuthGuard::new("local").log_in())]
     fn login(&self, user: User<Account>) -> Value {
         json!({ "username": user.username })
     }
 
     #[get("me")]
+    #[apply_decorators(skip_throttle(["login"]))]
     #[use_guards(AuthGuard::new("session"))]
     fn me(&self, user: User<Account>) -> Account {
         user.0
@@ -108,7 +111,8 @@ impl SessionController {
     /// Ends the session: the record is destroyed and the old cookie stops working.
     #[post("logout")]
     #[http_code(HttpStatus::NO_CONTENT)]
-    #[use_guards(SameOriginGuard::new(), AuthGuard::new("session"))]
+    #[apply_decorators(skip_throttle(["login"]))]
+    #[use_guards(SameOriginGuard, AuthGuard::new("session"))]
     async fn logout(&self, req: Request) -> HttpResult<()> {
         self.authenticator.log_out(&req).await
     }
@@ -118,6 +122,7 @@ impl SessionController {
 /// authenticate the same way, so a login started by one user cannot be completed as another (this matters most when
 /// the flow links an account to a signed-in user).
 #[controller("auth/provider")]
+#[apply_decorators(skip_throttle(["login"]))]
 pub struct ProviderController;
 
 #[routes]

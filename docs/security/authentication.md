@@ -164,7 +164,7 @@ handler runs only when the credentials were right, and it issues the token:
 // examples/auth-app/src/controllers.rs
     #[post("login")]
     #[http_code(HttpStatus::OK)]
-    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account").key_generator("account"))]
     #[use_guards(AuthGuard::new("local"))]
     fn login(&self, user: User<Account>) -> HttpResult<Value> {
         Ok(json!({ "access_token": issue_token(&self.jwt, &user)? }))
@@ -248,13 +248,14 @@ impl SessionSerializer for UserSerializer {
 // examples/auth-app/src/controllers.rs
     #[post("login")]
     #[http_code(HttpStatus::OK)]
-    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
-    #[use_guards(SameOriginGuard::new(), AuthGuard::new("local").log_in())]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account").key_generator("account"))]
+    #[use_guards(SameOriginGuard, AuthGuard::new("local").log_in())]
     fn login(&self, user: User<Account>) -> Value {
         json!({ "username": user.username })
     }
 
     #[get("me")]
+    #[apply_decorators(skip_throttle(["login"]))]
     #[use_guards(AuthGuard::new("session"))]
     fn me(&self, user: User<Account>) -> Account {
         user.0
@@ -262,7 +263,8 @@ impl SessionSerializer for UserSerializer {
 
     #[post("logout")]
     #[http_code(HttpStatus::NO_CONTENT)]
-    #[use_guards(SameOriginGuard::new(), AuthGuard::new("session"))]
+    #[apply_decorators(skip_throttle(["login"]))]
+    #[use_guards(SameOriginGuard, AuthGuard::new("session"))]
     async fn logout(&self, req: Request) -> HttpResult<()> {
         self.authenticator.log_out(&req).await
     }

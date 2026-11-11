@@ -27,7 +27,10 @@ fn throttler() -> DynamicModule {
             // Per account, five minutes.
             ThrottlerOptions { name: "login".into(), ttl: 300_000, limit: 100 },
         ])
-        .with_named_tracker("login-account", login_tracker(LocalStrategyOptions::default())),
+        .with_named_tracker("login-account", login_tracker(LocalStrategyOptions::default()))
+        // The default key of a counter includes the route (`Class:handler`), so two login routes would each allow the full
+        // number of attempts for one account. This key is the tracker alone: every login route shares one counter.
+        .with_named_key_generator("account", |_ctx, tracker, _name| tracker.to_owned()),
     )
 }
 

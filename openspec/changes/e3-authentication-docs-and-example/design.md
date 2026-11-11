@@ -394,3 +394,30 @@ Written while implementing, after everything of the epic was merged into `dev` (
 - **Build the application from runtime configuration**: a `#[module]` cannot take a value, so `auth-app` passes `Settings`
   through a task-local scope during bootstrap. A public way to create an application from a `DynamicModule` root, or to
   override a provider at creation, would remove the workaround.
+
+## Security review
+
+A review of `examples/auth-app` before the merge found five things, all fixed in the example and its pages (no change under
+`crates/`). Each has a test.
+
+1. **Equal secrets (medium).** `Settings::from_lookup` accepted the same value for several secrets; with
+   `SERVICE_API_KEY == JWT_SECRET` the holder of the service key could sign tokens for any user. Fixed: a repeated value among
+   the four secrets is refused, naming both variables and never the value. Test: `two_secrets_with_the_same_value_are_refused_without_printing_it`
+   (`tests/startup.rs`).
+2. **The per-account login limit was per route (medium).** The default throttler key includes `Class:handler`, so
+   `/auth/login` and `/session/login` each allowed the full number of attempts for one account. Fixed: a named key generator
+   (`account`, the tracker alone) selected with `.key_generator("account")` on both routes. Tests:
+   `the_account_limit_is_shared_by_both_login_routes` (`tests/throttle.rs`, alternating the routes). `security/rate-limiting.md`
+   (both languages) now says the default key is per route and how to share a limit.
+3. **Mock provider `/authorize` (low, dev tooling).** It accepted any `redirect_uri` (open redirect) and put the decoded `state`
+   in `Location` (header injection). Fixed: the redirect URI must equal the registered one, control characters are refused, and
+   the state is percent-encoded. Tests: `another_redirect_uri_is_refused`, `control_characters_cannot_inject_headers`,
+   `the_state_is_encoded_in_the_location` (`tests/mock_provider.rs`).
+4. **The `login` throttler counted every route per client address (low).** `/feed` carried `x-ratelimit-limit-login`. Fixed:
+   `skip_throttle(["login"])` on every controller and route that is not a login route. Test:
+   `the_login_limit_applies_to_the_login_routes_only`. The README and `.env.example` now say that behind a proxy
+   `TRUST_PROXY` (read by `main`, `app.set_trust_proxy(..)`) must be set, or every client shares one counter.
+5. **`SameOriginGuard` ignored the scheme (low).** Comparing `Origin` with `Host` accepted `https://host` for an `http` site.
+   Fixed: the policy takes the scheme of the deployment (`https`, `http` only in `--dev`) from the settings, so the guard is now
+   injectable (`#[use_guards(SameOriginGuard, ..)]`), and the guide's samples follow. Tests: `a_scheme_mismatch_is_another_site`
+   (unit), `an_origin_with_another_scheme_is_another_site` (`tests/csrf.rs`) and the `https` case of `tests/production.rs`.

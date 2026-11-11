@@ -97,3 +97,18 @@ fn copying_the_example_environment_file_does_not_start_the_application() {
     }
     assert!(load(&vars).is_err());
 }
+
+#[test]
+fn two_secrets_with_the_same_value_are_refused_without_printing_it() {
+    let names = ["JWT_SECRET", "SESSION_SECRET", "OAUTH_STATE_SECRET", "SERVICE_API_KEY"];
+    for a in names {
+        for b in names.into_iter().filter(|b| *b != a) {
+            let mut vars = valid();
+            let shared = vars[a].clone();
+            vars.insert(b.to_string(), shared.clone());
+            let err = format!("{:#}", load(&vars).unwrap_err());
+            assert!(err.contains(a) && err.contains(b), "{a} {b}: {err}");
+            assert!(!err.contains(&shared), "the error must not hold the value: {err}");
+        }
+    }
+}

@@ -21,6 +21,14 @@ async fn main() -> corvis::Result<()> {
 
     let mut app = auth_app::create_app(settings).await?;
     app.enable_shutdown_hooks();
+    // Behind a reverse proxy every request comes from the proxy's address: without this the rate limits count all clients
+    // together. `TRUST_PROXY` is a number of proxies (`1`) or a list of addresses (`loopback, 10.0.0.0/8`).
+    if let Ok(value) = std::env::var("TRUST_PROXY") {
+        match value.trim().parse::<usize>() {
+            Ok(hops) => app.set_trust_proxy(hops),
+            Err(_) => app.set_trust_proxy(corvis::TrustProxy::parse(&value)?),
+        };
+    }
     // Always bind to the loopback interface.
     app.listen(format!("127.0.0.1:{port}")).await
 }

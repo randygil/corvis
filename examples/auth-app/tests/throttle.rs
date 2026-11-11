@@ -28,6 +28,48 @@ async fn attempts_over_the_account_limit_are_answered_429() {
 }
 
 #[corvis::test]
+async fn the_account_limit_is_shared_by_both_login_routes() {
+    let h = Harness::start().await;
+    let c = h.client();
+    // Five wrong passwords for one account, alternating the two routes: the sixth attempt is refused on either.
+    for i in 0..5 {
+        let route = if i % 2 == 0 { "/auth/login" } else { "/session/login" };
+        let r = c.post(route).json(&json!({ "username": "john", "password": "wrong" })).send().await;
+        assert_eq!(r.status, 401, "attempt {i} on {route}");
+    }
+    for route in ["/auth/login", "/session/login"] {
+        let r = c.post(route).json(&json!({ "username": "john", "password": "john-demo-pass" })).send().await;
+        assert_eq!(r.status, 429, "{route}");
+    }
+}
+
+#[corvis::test]
+async fn the_login_limit_applies_to_the_login_routes_only() {
+    let h = Harness::start().await;
+    let c = h.client();
+    let token = token_of(&c, "john", "john-demo-pass").await;
+    let cookie = session_of(&c, "maria", "maria-demo-pass").await;
+    let calls = [
+        c.get("/").send().await,
+        c.get("/feed").send().await,
+        c.get("/me").bearer(&token).send().await,
+        c.get("/reports").bearer(&token).send().await,
+        c.get("/admin/users").bearer(&token).send().await,
+        c.get("/session/me").header("cookie", &cookie).send().await,
+        c.get("/auth/provider").send().await,
+        c.get("/auth/provider/callback?code=x&state=y").send().await,
+        c.post("/session/logout").header("cookie", &cookie).send().await,
+    ];
+    for (i, r) in calls.iter().enumerate() {
+        assert!(r.headers.get("x-ratelimit-limit-login").is_none(), "route {i} is counted by the login throttler");
+        assert!(r.headers.get("x-ratelimit-limit").is_some(), "route {i} keeps the global limit");
+    }
+    // The login routes are counted by it.
+    let login = c.post("/auth/login").json(&json!({ "username": "x", "password": "y" })).send().await;
+    assert!(login.headers.get("x-ratelimit-limit-login").is_some());
+}
+
+#[corvis::test]
 async fn the_session_login_is_limited_too() {
     let h = Harness::start().await;
     let c = h.client();

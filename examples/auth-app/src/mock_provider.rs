@@ -47,6 +47,8 @@ struct State {
     token_requests: AtomicUsize,
     userinfo_requests: AtomicUsize,
     client_secret: String,
+    /// The only redirect URI the client registered: `/authorize` sends the browser nowhere else.
+    redirect_uri: Mutex<String>,
 }
 
 pub struct MockProvider {
@@ -88,6 +90,7 @@ impl MockProvider {
 
     /// The OAuth2 client of an application whose callback is `redirect_uri`.
     pub fn client(&self, redirect_uri: String) -> OAuthClient {
+        *self.state.redirect_uri.lock().unwrap_or_else(|e| e.into_inner()) = redirect_uri.clone();
         let base = format!("http://{}", self.addr);
         OAuthClient {
             authorize_url: format!("{base}/authorize"),
@@ -193,14 +196,18 @@ fn authorize(state: &State, req: &Req) -> Answer {
     let (Some(redirect), Some(state_value), Some(challenge)) = (q.get("redirect_uri"), q.get("state"), q.get("code_challenge")) else {
         return ("400 Bad Request", Vec::new(), String::new());
     };
-    if !ok {
+    // The redirect URI must be the registered one, exactly (an open redirect otherwise), and no value may carry a control
+    // character (a CR or LF in the Location header would inject headers).
+    let registered = state.redirect_uri.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let clean = |v: &str| !v.chars().any(char::is_control);
+    if !ok || *redirect != registered || !clean(redirect) || !clean(state_value) || !clean(challenge) {
         return ("400 Bad Request", Vec::new(), String::new());
     }
     let mut raw = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut raw);
     let code = URL_SAFE_NO_PAD.encode(raw);
     state.codes.lock().unwrap_or_else(|e| e.into_inner()).insert(code.clone(), (challenge.clone(), redirect.clone()));
-    let location = format!("{redirect}?code={code}&state={state_value}");
+    let location = format!("{redirect}?code={code}&state={}", percent_encode(state_value));
     ("302 Found", vec![("Location", location)], String::new())
 }
 
@@ -246,6 +253,15 @@ fn form(text: &str) -> HashMap<String, String> {
         .map(|pair| {
             let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
             (percent_decode(k), percent_decode(v))
+        })
+        .collect()
+}
+
+/// Everything but the unreserved characters, as `%XX`.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') { (b as char).to_string() } else { format!("%{b:02X}") }
         })
         .collect()
 }

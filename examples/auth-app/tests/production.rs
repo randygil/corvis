@@ -40,6 +40,13 @@ async fn the_cookies_are_host_prefixed_and_secure() {
         "{header}"
     );
 
+    // Outside `--dev` the site is `https`: an `http` origin with the same host is another site, an `https` one is not.
+    let form = [("username", "john"), ("password", "john-demo-pass")];
+    let plain = c.post("/session/login").header("host", "app.example").header("origin", "http://app.example").form(&form).send().await;
+    assert_eq!(plain.status, 403, "{}", plain.text());
+    let secure = c.post("/session/login").header("host", "app.example").header("origin", "https://app.example").form(&form).send().await;
+    assert_eq!(secure.status, 200, "{}", secure.text());
+
     let start = c.get("/auth/provider").send().await;
     assert_eq!(start.status, 302);
     let header = set_cookie(&start);

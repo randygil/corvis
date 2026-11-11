@@ -54,6 +54,19 @@ async fn a_login_from_another_site_is_refused_before_the_credentials_are_checked
 }
 
 #[corvis::test]
+async fn an_origin_with_another_scheme_is_another_site() {
+    // `--dev` serves over plain HTTP, so `https://app.test` is not this site even though the host is the same.
+    let h = Harness::start().await;
+    let c = h.client();
+    let form = [("username", "john"), ("password", "john-demo-pass")];
+    let https = c.post("/session/login").header("host", "app.test").header("origin", "https://app.test").form(&form).send().await;
+    assert_eq!(https.status, 403, "{}", https.text());
+    assert!(https.headers.get("set-cookie").is_none());
+    let http = c.post("/session/login").header("host", "app.test").header("origin", "http://app.test").form(&form).send().await;
+    assert_eq!(http.status, 200, "{}", http.text());
+}
+
+#[corvis::test]
 async fn a_logout_from_another_site_keeps_the_session() {
     let h = Harness::start().await;
     let c = h.client();

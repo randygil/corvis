@@ -125,8 +125,8 @@ curl -s -b jar $B/session/me
 # {"id":1000,"username":"provider:Mock Person","roles":["user"]}
 ```
 
-After five wrong passwords for one account in five minutes, or ten login attempts from one address in a minute, the
-login routes answer `429`. Restart the application and the token and the cookie above are refused: the secrets changed.
+After five attempts for one account in five minutes (counted together on `POST /auth/login` and `POST /session/login`),
+or ten login attempts from one address in a minute on one route, the login routes answer `429`. Restart the application and the token and the cookie above are refused: the secrets changed.
 
 ## Against a real provider
 
@@ -138,7 +138,7 @@ account is linked only through an e-mail address the provider reports as verifie
 ## Run it without `--dev`
 
 There are no default secrets. Copy `.env.example`, give every variable a value (a secret needs at least 32 bytes:
-`openssl rand -hex 32`), load the file into the environment and run:
+`openssl rand -hex 32`; the four secrets must differ from one another), load the file into the environment and run:
 
 ```sh
 set -a; . ./.env; set +a
@@ -147,7 +147,9 @@ cargo run -p auth-app
 
 The application refuses to start, naming the variable, when one is missing or too short. Without `--dev` the cookies
 are `Secure` with the `__Host-` prefix, so a browser sends them only over HTTPS: put a reverse proxy that ends TLS in
-front of it. The session store is in memory (one process only); see the guide for what a deployment needs.
+front of it, and tell the application about the proxy: set `TRUST_PROXY` (read by `src/main.rs`, which calls
+`app.set_trust_proxy(..)`) to the number of proxies in front of it (`1`) or a list of their addresses. Without it every client has the proxy's address and shares one rate-limit
+counter. The origin check also assumes the public site is `https` outside `--dev`. The session store is in memory (one process only); see the guide for what a deployment needs.
 
 ## Tests
 

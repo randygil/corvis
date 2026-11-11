@@ -333,7 +333,9 @@ fn local_options() -> LocalStrategyOptions {
             // Por cuenta, cinco minutos.
             ThrottlerOptions { name: "login".into(), ttl: 300_000, limit: 100 },
         ])
-        .with_named_tracker("login-account", login_tracker(local_options())),
+        .with_named_tracker("login-account", login_tracker(local_options()))
+        // Solo el tracker es la clave, así que todas las rutas de login comparten un contador por cuenta.
+        .with_named_key_generator("account", |_ctx, tracker, _name| tracker.to_owned()),
     )],
     // Un guard global registrado mediante el contenedor se ejecuta antes que cualquier `AuthGuard`.
     providers = [Provider::app_guard::<ThrottlerGuard>(), /* strategies */],
@@ -347,7 +349,7 @@ pub struct AuthController;
 #[routes]
 impl AuthController {
     #[post("login")]
-    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account").key_generator("account"))]
     #[use_guards(AuthGuard::new("local"))]
     fn login(&self, user: User<PublicUser>) -> Value { /* ... */ }
 }
@@ -364,6 +366,14 @@ Lo que conviene saber:
   registra una advertencia con el método y la ruta; es una advertencia porque limitar por cuenta a usuarios con sesión
   iniciada después de autenticarlos es legítimo. Un guard que envuelve a ambos y no muestra ninguno mediante `as_any` o
   `inner_guards` los oculta de la comprobación.
+- **La clave por defecto es por ruta.** Un contador se identifica por el throttler, el controlador, el handler y el valor del
+  tracker, así que dos rutas de login (un login con token y uno con sesión, por ejemplo) permitirían cada una el número
+  completo de intentos para una cuenta. La receta registra `with_named_key_generator("account", ..)`, que devuelve solo el
+  tracker, y lo selecciona con `.key_generator("account")` en cada ruta de login: así comparten un contador. El throttler
+  con nombre cuenta toda ruta que no lo omita, por dirección de cliente cuando no hay usuario, así que déjalo solo en las
+  rutas de login: añade `#[apply_decorators(skip_throttle(["login"]))]` en los demás controladores y rutas, o asígnale un tracker
+  propio a nivel de módulo. Detrás de un proxy, configura `trust proxy` (`app.set_trust_proxy(..)`), o todos los clientes
+  comparten la dirección del proxy y un solo contador.
 - **Una petición limitada no cuesta nada.** Cuando el throttler rechaza, la respuesta es el `429` y no se ejecuta ninguna
   estrategia: ni derivación de claves, ni llamada al validador, ni escritura en el almacén de sesiones, ni petición al
   proveedor.

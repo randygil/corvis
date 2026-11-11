@@ -330,7 +330,9 @@ fn local_options() -> LocalStrategyOptions {
             // Per account, five minutes.
             ThrottlerOptions { name: "login".into(), ttl: 300_000, limit: 100 },
         ])
-        .with_named_tracker("login-account", login_tracker(local_options())),
+        .with_named_tracker("login-account", login_tracker(local_options()))
+        // The tracker alone is the key, so every login route shares one counter per account.
+        .with_named_key_generator("account", |_ctx, tracker, _name| tracker.to_owned()),
     )],
     // A global guard registered through the container runs before every `AuthGuard`.
     providers = [Provider::app_guard::<ThrottlerGuard>(), /* strategies */],
@@ -344,7 +346,7 @@ pub struct AuthController;
 #[routes]
 impl AuthController {
     #[post("login")]
-    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account"))]
+    #[apply_decorators(throttle("default").limit(10), throttle("login").limit(5).tracker("login-account").key_generator("account"))]
     #[use_guards(AuthGuard::new("local"))]
     fn login(&self, user: User<PublicUser>) -> Value { /* ... */ }
 }
@@ -360,6 +362,14 @@ What to know about it:
   `ThrottlerGuard` on a route, startup logs a warning naming the method and the path; it is a warning because limiting
   signed-in users per account after authenticating them is legitimate. A guard that wraps both and shows neither through
   `as_any` or `inner_guards` hides them from the check.
+- **The default key is per route.** A counter is keyed by the throttler, the controller, the handler and the tracker value, so
+  two login routes (a token login and a session login, say) would each allow the full number of attempts for one account.
+  The recipe registers `with_named_key_generator("account", ..)` that returns the tracker alone and selects it with
+  `.key_generator("account")` on every login route: they then share one counter. The named throttler counts every route that
+  does not skip it, by client address when there is no username, so keep it on the login routes only: put
+  `#[apply_decorators(skip_throttle(["login"]))]` on the other controllers and routes, or give the throttler a tracker of its
+  own at the module level. Behind a proxy, set `trust proxy` (`app.set_trust_proxy(..)`), or every client shares the
+  address of the proxy and one counter.
 - **A throttled request costs nothing.** When the throttler rejects, the response is the `429` and no strategy runs: no key
   derivation, no validator call, no session store write, no request to the provider.
 - **What is counted.** Every attempt, successful or not, counts: the counter does not know the outcome. A request without a

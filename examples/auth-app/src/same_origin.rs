@@ -1,5 +1,7 @@
 use corvis::prelude::*;
 
+use crate::settings::Settings;
+
 /// Refuses a state-changing request that a browser made on behalf of another site. It is the check a route needs when
 /// its cookie is an ambient credential: `SameSite=Lax` keeps the cookie out of cross-site subrequests, but a top-level
 /// cross-site form `POST` to a login route is answered 200 and the browser stores the `Set-Cookie` of the response,
@@ -18,21 +20,32 @@ use corvis::prelude::*;
 /// attacker-controlled pages, is another site for this purpose: allow it with `allow_origin` if it is yours), a value
 /// that is not one of the four of the specification, a repeated header, a repeated `Origin`.
 ///
+/// When the policy has a [`scheme`](Self::scheme), the `Origin` of that fallback must also use it: `https://app.example.com` is
+/// not the site `http://app.example.com` (the application cannot see the scheme of the connection behind a proxy, so it is
+/// configured: `https` outside `--dev`).
+///
 /// The host comparison uses the `Host` header of the request as the application received it. Behind a proxy that
 /// rewrites `Host` (to an internal name, say) the browser's `Origin` no longer matches it: list the public origins with
 /// `allow_origin` instead of relying on the comparison.
 ///
 /// ```ignore
-/// #[use_guards(SameOriginGuard::new().allow_origin("https://app.example.com"), AuthGuard::new("local").log_in())]
+/// let policy = OriginPolicy::new().scheme("https").allow_origin("https://app.example.com");
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct SameOriginGuard {
+pub struct OriginPolicy {
     allowed: Vec<String>,
+    scheme: Option<String>,
 }
 
-impl SameOriginGuard {
+impl OriginPolicy {
     pub fn new() -> Self {
-        SameOriginGuard::default()
+        OriginPolicy::default()
+    }
+
+    /// The scheme the site is served with (`https`). An `Origin` with another scheme is not this site.
+    pub fn scheme(mut self, scheme: impl Into<String>) -> Self {
+        self.scheme = Some(scheme.into());
+        self
     }
 
     /// Accepts requests whose `Origin` is exactly `origin` (`https://app.example.com`), besides the host itself.
@@ -64,12 +77,24 @@ impl SameOriginGuard {
                     return false;
                 }
                 // The same-origin host: the authority of the origin is the host the request was sent to.
-                let authority = origin.split_once("://").map(|(_, rest)| rest);
-                !matches!((authority, host), (Some(authority), Some(host)) if authority.eq_ignore_ascii_case(host))
+                let parts = origin.split_once("://");
+                let scheme_ok = match (&self.scheme, parts) {
+                    (Some(expected), Some((scheme, _))) => scheme.eq_ignore_ascii_case(expected),
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                let authority = parts.map(|(_, rest)| rest);
+                !(scheme_ok && matches!((authority, host), (Some(authority), Some(host)) if authority.eq_ignore_ascii_case(host)))
             }
             _ => true,
         }
     }
+}
+
+/// The guard of the routes: the policy above with the scheme of the deployment (`http` only in `--dev`).
+#[injectable]
+pub struct SameOriginGuard {
+    settings: Arc<Settings>,
 }
 
 #[async_trait]
@@ -77,7 +102,8 @@ impl CanActivate for SameOriginGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let req = ctx.request();
         let values = |name: &str| -> Vec<&str> { req.headers().get_all(name).iter().map(|v| v.to_str().unwrap_or("\u{fffd}")).collect() };
-        if self.refuses(req.method().as_str(), &values("sec-fetch-site"), &values("origin"), req.header("host")) {
+        let policy = OriginPolicy::new().scheme(if self.settings.dev { "http" } else { "https" });
+        if policy.refuses(req.method().as_str(), &values("sec-fetch-site"), &values("origin"), req.header("host")) {
             return Err(ForbiddenException::new("Cross-site request refused"));
         }
         Ok(true)
@@ -95,7 +121,7 @@ mod tests {
 
     #[test]
     fn only_same_origin_and_none_pass_by_fetch_metadata() {
-        let guard = SameOriginGuard::new();
+        let guard = OriginPolicy::new();
         for site in ["same-origin", "none"] {
             assert!(!guard.refuses("POST", &[site], &[], Some("app.test")), "{site}");
         }
@@ -112,7 +138,7 @@ mod tests {
 
     #[test]
     fn a_listed_origin_passes_whatever_the_fetch_metadata_says() {
-        let guard = SameOriginGuard::new().allow_origin("https://admin.example.com");
+        let guard = OriginPolicy::new().allow_origin("https://admin.example.com");
         for site in ["same-site", "cross-site", "garbage"] {
             assert!(!guard.refuses("POST", &[site], &["https://admin.example.com"], Some("api.example.com")), "{site}");
             assert!(guard.refuses("POST", &[site], &["https://evil.example.com"], Some("api.example.com")), "{site}");
@@ -122,7 +148,7 @@ mod tests {
 
     #[test]
     fn without_fetch_metadata_the_origin_must_be_the_host_or_allowed() {
-        let guard = SameOriginGuard::new().allow_origin("https://app.example.com");
+        let guard = OriginPolicy::new().allow_origin("https://app.example.com");
         assert!(!guard.refuses("POST", &[], &["http://app.test:3000"], Some("app.test:3000")));
         assert!(!guard.refuses("POST", &[], &["https://app.example.com"], Some("api.test")));
         assert!(guard.refuses("POST", &[], &["https://evil.test"], Some("app.test:3000")));
@@ -134,16 +160,26 @@ mod tests {
     }
 
     #[test]
+    fn a_scheme_mismatch_is_another_site() {
+        let policy = OriginPolicy::new().scheme("https");
+        assert!(!policy.refuses("POST", &[], &["https://app.test"], Some("app.test")));
+        assert!(policy.refuses("POST", &[], &["http://app.test"], Some("app.test")));
+        assert!(policy.refuses("POST", &[], &["ftp://app.test"], Some("app.test")));
+        // Without a configured scheme the comparison is by host only.
+        assert!(!OriginPolicy::new().refuses("POST", &[], &["http://app.test"], Some("app.test")));
+    }
+
+    #[test]
     fn behind_a_proxy_that_rewrites_the_host_the_origin_must_be_listed() {
-        let unlisted = SameOriginGuard::new();
+        let unlisted = OriginPolicy::new();
         assert!(unlisted.refuses("POST", &[], &["https://app.example.com"], Some("app-internal:3000")));
-        let listed = SameOriginGuard::new().allow_origin("https://app.example.com");
+        let listed = OriginPolicy::new().allow_origin("https://app.example.com");
         assert!(!listed.refuses("POST", &[], &["https://app.example.com"], Some("app-internal:3000")));
     }
 
     #[test]
     fn safe_methods_are_never_refused() {
-        let guard = SameOriginGuard::new();
+        let guard = OriginPolicy::new();
         for method in ["GET", "HEAD", "OPTIONS"] {
             assert!(!guard.refuses(method, &["cross-site"], &["https://evil.test"], Some("app.test")));
         }

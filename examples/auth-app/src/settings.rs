@@ -71,11 +71,25 @@ impl Settings {
         let plain = |name: &str| -> corvis::Result<String> {
             get(name).filter(|v| !v.is_empty()).ok_or_else(|| corvis::anyhow::anyhow!("{name} is required"))
         };
+        let secrets = [
+            ("JWT_SECRET", secret("JWT_SECRET")?),
+            ("SESSION_SECRET", secret("SESSION_SECRET")?),
+            ("SERVICE_API_KEY", secret("SERVICE_API_KEY")?),
+            ("OAUTH_STATE_SECRET", secret("OAUTH_STATE_SECRET")?),
+        ];
+        // One secret per purpose: with the same value for the token key and the service key, whoever holds the key can sign
+        // tokens for any user. The error names the variables, never the value.
+        for (i, (name, value)) in secrets.iter().enumerate() {
+            if let Some((other, _)) = secrets[..i].iter().find(|(_, v)| v == value) {
+                corvis::anyhow::bail!("{name} and {other} have the same value: each secret must be different");
+            }
+        }
+        let [(_, jwt_secret), (_, session_secret), (_, service_api_key), (_, oauth_state_secret)] = secrets;
         Ok(Settings {
-            jwt_secret: secret("JWT_SECRET")?,
-            session_secret: secret("SESSION_SECRET")?,
-            service_api_key: secret("SERVICE_API_KEY")?,
-            oauth_state_secret: secret("OAUTH_STATE_SECRET")?,
+            jwt_secret,
+            session_secret,
+            service_api_key,
+            oauth_state_secret,
             oauth: OAuthClient {
                 authorize_url: plain("OAUTH_AUTHORIZE_URL")?,
                 token_url: plain("OAUTH_TOKEN_URL")?,
