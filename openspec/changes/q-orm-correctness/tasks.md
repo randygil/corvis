@@ -107,12 +107,12 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 7. No panic on caller input (Decision 5)
 
-- [ ] 7.1 `decimal.rs`: remove `From<&str>`, `From<String>`, `From<&String>`; add `TryFrom<&str>` and `TryFrom<String>`;
+- [x] 7.1 `decimal.rs`: remove `From<&str>`, `From<String>`, `From<&String>`; add `TryFrom<&str>` and `TryFrom<String>`;
   `decimal!` proc macro in `corvis-orm-macros` (compile-time parse with the same grammar), re-exported from `corvis-orm`
   and its prelude, with a `compile_fail` doctest for an invalid literal; move the in-repository callers (`decimal.rs`
   tests, `tests/decimal_js.rs`, `tests/pg_features.rs`, `tests/pg_oracle.rs`, README) to `decimal!` or `parse`; verify
   `cargo test -p corvis-orm --doc` and `--test decimal_js`
-- [ ] 7.2 `raw.rs`: `RawSql` carries an optional error; `join` of an empty list sets it; `append` and the `sql!`
+- [x] 7.2 `raw.rs`: `RawSql` carries an optional error; `join` of an empty list sets it; `append` and the `sql!`
   interpolation propagate it; `_query_raw`, `_query_raw_as`, `_execute_raw` fail with a validation error before any SQL;
   tests for direct and nested use; verify `cargo test -p corvis-orm --lib raw`
 - [ ] 7.3 Port apps (outside the repository, not git repositories: back up each file first): replace the `Decimal::from`

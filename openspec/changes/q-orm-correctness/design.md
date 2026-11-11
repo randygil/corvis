@@ -490,3 +490,23 @@ rejects expressions deeper than 1000 levels (`SQLITE_MAX_EXPR_DEPTH`), so on SQL
 - Tests: `tests/typed_params.rs` (12: the `NaN` cases and one per helper family, relations and combinators included) and
   three unit tests in `query.rs`. Not changed: `or_undefined` (a JSON builder for `json!` arguments, not a typed helper)
   still turns a value that fails to serialize into `null`; proposed as a follow-up.
+
+### Group 7: no panic on caller input
+
+- `Decimal` loses `From<&str>`, `From<String>`, `From<&String>`; gains `TryFrom<&str>` and `TryFrom<String>` (`Error =
+  DecimalError`), next to `FromStr` and `parse`. `DecimalCtor::of` takes `impl Into<Decimal>` too, so `D.of("..")` stops
+  compiling as well (use `D.parse("..")`); this was not in the design's list and affects facten (see the port apps list).
+- `decimal!("1.50")` (`corvis-orm-macros/src/decimal_literal.rs`) parses the literal at compile time with the grammar of
+  `Decimal::parse` and expands to `Decimal::from_literal_parts(negative, &[limbs], exp)` (a hidden, infallible constructor
+  taking the coefficient as 32-bit limbs), `Decimal::nan()` or `Decimal::infinity(neg)`: nothing is parsed at run time.
+  A unit test checks that `decimal!(x)` and `Decimal::parse(x)` give the same value and sign for 24 literals (zeros with
+  sign, exponents out of range, hex/binary/octal, long coefficients); a `compile_fail` doctest pins the invalid literal.
+  One difference, on purpose: `Decimal::parse` hands `0x`/`0b`/`0o` digits to `num-bigint`, which also accepts `_` and a
+  leading `+` (`"0x+1f"`, `"0x1_f"`); decimal.js rejects both, and so does `decimal!`. Proposed as a follow-up for `parse`.
+- `RawSql` carries `error: Option<String>`: `join` of an empty list sets the original's message, `RawSql::new` with
+  strings and values that do not alternate sets one too (it asserted before: a panic next to the one of the finding),
+  nesting (`append`, so `sql!` interpolation) keeps the first error, and `_query_raw`, `_query_raw_as` and `_execute_raw`
+  fail with a validation error before anything is sent (`to_sql` returns `Result`). New `RawSql::error()`.
+- In-repository callers moved to `decimal!` or `parse` (`decimal.rs` tests and module docs, `tests/decimal_js.rs`,
+  `tests/pg_features.rs`, `tests/pg_oracle.rs`). These two panics had no failing test written before the fix: the
+  `panic!` of `From<&str>` and the `assert!` of `join` were plain in the code, and the first one is now a compile error.
