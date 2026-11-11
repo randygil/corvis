@@ -1219,7 +1219,7 @@ mod tests {
 
     #[test]
     fn a_socket_io_connection_is_listed_in_both_modes_with_its_namespace_path_and_connection_guards() {
-        let gateways = vec![
+        let gateways = [
             GatewayPosture {
                 path: "/chat".into(),
                 name: "ChatGateway".into(),

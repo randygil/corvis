@@ -150,6 +150,14 @@ La ruta del gateway se compara con las mismas reglas literales que las exencione
 
 El handshake no es un mensaje: no corre ningún guard, así que la revisión no puede exigir nada sobre él. `app.route_posture()` lista el handshake de cada gateway en "Not checked", con si `verify_client` está configurado.
 
+Con el [adaptador Socket.IO](/es/websockets/adapter#gateways-sobre-socket-io) rigen las mismas reglas con el **namespace** del gateway en lugar de su ruta: las líneas de error, el informe y `exempt_message("/chat", "ping", "motivo")` usan `/chat`. Dos gateways con el mismo namespace en rutas de Engine.IO distintas se distinguen por el nombre del gateway en el informe, y una exención sirve para ambos. La conexión de cada gateway se lista en "Not checked" con su namespace, su ruta de Engine.IO y si los guards de conexión están activados (también en el modo informe):
+
+```text
+Socket.IO connection of ChatGateway on namespace /chat at /socket.io (connection guards off)
+```
+
+El middleware de conexión que registras tú y el hook `allow_request` no los ve la revisión y no se presentan como protección. Con `IoAdapter::guard_connections(true)` y el modo enforce, la conexión de cada gateway se revisa como un handler con el pseudo-evento `connect` (un nombre de evento reservado de Socket.IO, así que no puede confundirse con un handler de mensajes): se acepta cuando corre para ella un guard de acceso a nivel global o de gateway, cuando el gateway es `#[public]`, o cuando coincide `exempt_message("/chat", "connect", "lobby anónimo")`. Los guards a nivel de handler no cubren la conexión. Sin guards de conexión, la conexión nunca hace fallar `init()`.
+
 ## Autenticar al conectar
 
 Un guard se evalúa en cada mensaje. Para rechazar la conexión completa:
@@ -158,3 +166,13 @@ Un guard se evalúa en cada mensaje. Para rechazar la conexión completa:
 - o rechaza el handshake con `GatewayOptions::verify_client` (`401`) o `allowed_origins` (`403`).
 
 Ver [Gateways](/es/websockets/gateways#opciones-y-limites-gatewayoptions).
+
+Con el adaptador Socket.IO **nada autentica una conexión por defecto**: las estrategias del módulo de autenticación corren sobre peticiones HTTP, `AuthGuard` deniega fuera de HTTP y los guards corren por mensaje, así que un cliente que nunca envía un mensaje nunca se comprueba, y aun así está conectado, el código del servidor puede unirlo a salas y recibe broadcasts. Comprueba la conexión con, de fuera hacia dentro, `EngineOptions::allow_request` y `allowed_origins` (antes de que exista una sesión), middleware de conexión registrado en `after_init` (el socket no está conectado hasta que lo pasa) o `handle_connection` (llama a `socket.disconnect(true)`; los eventos del socket esperan a que terminen todos los hooks). O activa **`IoAdapter::guard_connections(true)`**, desactivado por defecto como en el framework original: los guards globales y los declarados en los gateways de un namespace corren entonces también cuando un socket se conecta, antes de que esté conectado, y una denegación responde `CONNECT_ERROR` (`Forbidden resource`, o el mensaje y los datos del guard) sin ejecutar ningún hook:
+
+```rust
+use corvis::socket_io::IoAdapter;
+
+app.use_websocket_adapter(IoAdapter::new().guard_connections(true));
+```
+
+El guard ve un contexto WebSocket cuyo cliente es el socket pendiente, cuya petición es el handshake, cuyos datos son `null`, cuya clase es el gateway y cuyo handler se llama `connect` y lleva los metadatos del gateway. Un guard escrito para mensajes que lee `get_data()` debe esperar `null` ahí. Ver [Gateways sobre Socket.IO](/es/websockets/adapter#que-autentica-una-conexion-socket-io).

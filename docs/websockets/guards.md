@@ -150,6 +150,14 @@ The gateway path is compared with the same literal rules as route exemptions (`/
 
 The handshake is not a message: it runs no guard, so the check cannot enforce it. `app.route_posture()` lists each gateway handshake under "Not checked" with whether `verify_client` is set.
 
+Under the [Socket.IO adapter](/websockets/adapter#gateways-over-socket-io) the same rules apply with the gateway's **namespace** in the place of its path: error lines, the report and `exempt_message("/chat", "ping", "reason")` use `/chat`. Two gateways with the same namespace on different Engine.IO paths are told apart by the gateway name in the report, and one exemption matches both. The connection of each gateway is listed under "Not checked" with its namespace, its Engine.IO path and whether connection guards are on (also in report mode):
+
+```text
+Socket.IO connection of ChatGateway on namespace /chat at /socket.io (connection guards off)
+```
+
+Connect middleware you register yourself and the `allow_request` hook are not visible to the check and are not claimed as protection. With `IoAdapter::guard_connections(true)` and enforce mode, the connection of each gateway is checked like a handler with the pseudo-event `connect` (a reserved Socket.IO event name, so it cannot be confused with a message handler): it is accepted when an access guard runs for it at the global or gateway level, when the gateway is `#[public]`, or when `exempt_message("/chat", "connect", "anonymous lobby")` matches. Handler-level guards do not cover the connection. Without connection guards the connection never makes `init()` fail.
+
 ## Authenticating on connect
 
 A guard is evaluated on every message. To reject the whole connection:
@@ -158,3 +166,13 @@ A guard is evaluated on every message. To reject the whole connection:
 - or reject the handshake with `GatewayOptions::verify_client` (`401`) or `allowed_origins` (`403`).
 
 See [Gateways](/websockets/gateways#options-and-limits-gatewayoptions).
+
+Under the Socket.IO adapter **nothing authenticates a connection by default**: the strategies of the authentication module run on HTTP requests, `AuthGuard` denies outside HTTP, and guards run per message, so a client that never sends a message is never checked, yet it is connected, can be joined to rooms by server code and receives broadcasts. Check the connection with, from the outermost in, `EngineOptions::allow_request` and `allowed_origins` (before a session exists), connect middleware registered in `after_init` (the socket is not connected until it passes), or `handle_connection` (call `socket.disconnect(true)`; the events of the socket wait until every hook returned). Or turn on **`IoAdapter::guard_connections(true)`**, which is off by default as in the original framework: the global guards and the guards declared on the gateways of a namespace then also run when a socket connects, before it is connected, and a denial answers `CONNECT_ERROR` (`Forbidden resource`, or the guard's message and data) without running any hook:
+
+```rust
+use corvis::socket_io::IoAdapter;
+
+app.use_websocket_adapter(IoAdapter::new().guard_connections(true));
+```
+
+The guard sees a WebSocket context whose client is the pending socket, whose request is the handshake, whose data is `null`, whose class is the gateway and whose handler is named `connect` and carries the gateway's metadata. A guard written for messages that reads `get_data()` must expect `null` there. See [Gateways over Socket.IO](/websockets/adapter#what-authenticates-a-socket-io-connection).

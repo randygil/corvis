@@ -170,3 +170,117 @@ pub struct HandlersIpOnEvent;
 /// }
 /// ```
 pub struct HandlersIpWithArguments;
+
+/// An option `#[websocket_gateway]` does not know is a compile error that names the accepted ones.
+///
+/// ```compile_fail
+/// use corvis::websocket_gateway;
+///
+/// #[websocket_gateway(namspace = "/chat")]
+/// pub struct Chat;
+/// ```
+///
+/// Spelled right it compiles.
+///
+/// ```
+/// use corvis::websocket_gateway;
+///
+/// #[websocket_gateway(namespace = "/chat")]
+/// pub struct Chat;
+/// ```
+pub struct GatewayUnknownOption;
+
+/// A namespace with a comma, which no packet header could address, is a compile error.
+///
+/// ```compile_fail
+/// use corvis::websocket_gateway;
+///
+/// #[websocket_gateway(namespace = "/a,b")]
+/// pub struct Chat;
+/// ```
+///
+/// Without the comma it compiles.
+///
+/// ```
+/// use corvis::websocket_gateway;
+///
+/// #[websocket_gateway(namespace = "/a-b")]
+/// pub struct Chat;
+/// ```
+pub struct GatewayInvalidNamespace;
+
+/// `cors` takes `true`, `false`, an origin or an array of origins.
+///
+/// ```compile_fail
+/// use corvis::websocket_gateway;
+///
+/// #[websocket_gateway(path = "/rt", cors = 3)]
+/// pub struct Chat;
+/// ```
+///
+/// With an accepted form it compiles.
+///
+/// ```
+/// use corvis::websocket_gateway;
+///
+/// #[websocket_gateway(path = "/rt", cors = ["https://a.example", "https://b.example"])]
+/// pub struct Chat;
+/// ```
+pub struct GatewayInvalidCors;
+
+/// A `#[connected_socket]` of a type that is no gateway socket is a compile error, not a runtime 500.
+///
+/// ```compile_fail
+/// use corvis::prelude::*;
+///
+/// #[injectable]
+/// pub struct Gateway;
+///
+/// #[handlers]
+/// impl Gateway {
+///     #[subscribe_message("who")]
+///     fn who(&self, #[connected_socket] client: String) {}
+/// }
+/// ```
+///
+/// With the socket of the `ws` adapter it compiles.
+///
+/// ```
+/// use corvis::WsClient;
+/// use corvis::prelude::*;
+///
+/// #[injectable]
+/// pub struct Gateway;
+///
+/// #[handlers]
+/// impl Gateway {
+///     #[subscribe_message("who")]
+///     fn who(&self, #[connected_socket] client: WsClient) {}
+/// }
+/// ```
+pub struct GatewaySocketOfAnotherType;
+
+/// A `#[websocket_server]` field of a type that is no gateway server is a compile error.
+///
+/// ```compile_fail
+/// use corvis::websocket_gateway;
+///
+/// #[websocket_gateway("/chat")]
+/// pub struct Chat {
+///     #[websocket_server]
+///     server: String,
+/// }
+/// ```
+///
+/// With `WsServer` it compiles.
+///
+/// ```
+/// use corvis::{WsServer, websocket_gateway};
+///
+/// #[websocket_gateway("/chat")]
+/// pub struct Chat {
+///     #[websocket_server]
+///     server: WsServer,
+/// }
+/// ```
+pub struct GatewayServerOfAnotherType;

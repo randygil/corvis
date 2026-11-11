@@ -700,7 +700,7 @@ fn adapter_mismatch(
         GatewayAdapterKind::SocketIo => (GatewayAdapterKind::Ws, "WsClient", "IoSocket", "IoGatewayServer"),
     };
     for (method, enhancers) in handlers {
-        if enhancers.socket_kinds.iter().any(|k| *k == other) {
+        if enhancers.socket_kinds.contains(&other) {
             return Some(format!(
                 "{name}::{method} takes #[connected_socket] {other_handle}, but the application uses the {selected_name}; use {selected_handle}"
             ));

@@ -4,6 +4,7 @@
 //!
 //! ```no_run
 //! use corvis::prelude::*;
+//! use corvis::Module;
 //! use corvis::socket_io::IoAdapter;
 //!
 //! # async fn demo<M: Module>() -> corvis::Result<()> {

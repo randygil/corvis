@@ -4,7 +4,7 @@ status: partial
 
 # Adaptadores
 
-Los gateways de Corvis usan un único adaptador integrado, equivalente al basado en el paquete `ws` de Node.js: WebSockets RFC 6455 sobre el mismo servidor HTTP de la aplicación y frames JSON `{ event, data }`. **No hay todavía una API para registrar adaptadores propios** ni un adaptador compatible con socket.io (namespaces de socket.io, *long polling*, reconexión automática del protocolo de socket.io).
+Los gateways de Corvis usan, por defecto, un adaptador integrado equivalente al basado en el paquete `ws` de Node.js: WebSockets RFC 6455 sobre el mismo servidor HTTP de la aplicación y frames JSON `{ event, data }`. Con la feature `socket-io` una aplicación puede servir sus gateways sobre Socket.IO, para el `socket.io-client` oficial ([Gateways sobre Socket.IO](#gateways-sobre-socket-io)). **No hay todavía una API para registrar adaptadores propios.**
 
 Cuando el protocolo `{ event, data }` no te sirve (por ejemplo, porque hablas con un dispositivo o un cliente que ya tiene su propio formato), tienes una alternativa de más bajo nivel: **`corvis::ws`**, un servidor WebSocket plano modelado sobre el paquete `ws` en modo `noServer`.
 
@@ -153,8 +153,8 @@ límite. Ver [gateways](/es/websockets/gateways#pares-que-dejan-de-leer).
 La feature de Cargo `socket-io` (desactivada por defecto, activa `websockets`) añade un servidor Socket.IO v5 y, debajo,
 el servidor Engine.IO v4, escritos para Corvis y comprobados contra `socket.io` 4.8.4 y `engine.io` 6.6.x de Node con un
 arnés diferencial y la suite oficial de pruebas del protocolo. Es una vista previa con una API de bajo nivel (`IoServer`,
-`IoNamespace`, `IoSocket`): las salas y el broadcast, los gateways sobre Socket.IO y un adaptador de Redis llegan en
-cambios posteriores. La API de Engine.IO que hay debajo está oculta en la documentación y puede cambiar; `EngineOptions`
+`IoNamespace`, `IoSocket`), las salas y el broadcast, y los gateways sobre Socket.IO; un adaptador de Redis llega en un
+cambio posterior. La API de Engine.IO que hay debajo está oculta en la documentación y puede cambiar; `EngineOptions`
 (incluido en `IoOptions`) es la parte en la que puedes confiar.
 
 ```toml
@@ -401,7 +401,7 @@ error. Una aplicación que quiera silencio instala su propio gancho con `std::pa
 ninguno, porque un gancho es global al proceso). Los argumentos que un manejador saca de `Args` (`into_vec`) o mueve a una tarea que lanza dejan de
 cargarse cuando el manejador termina: desde entonces son memoria de la aplicación.
 
-No soportado: gateways sobre Socket.IO, un adaptador de Redis (cambios posteriores); espacios dinámicos,
+No soportado: un adaptador de Redis (un cambio posterior); espacios dinámicos,
 recuperación del estado de la conexión, las banderas `volatile` y `compress`, oyentes globales, parsers personalizados,
 clientes de Engine.IO v3 y servir el bundle del cliente.
 
@@ -567,6 +567,205 @@ y operaciones `async` y falibles para todo lo que abarca un clúster (broadcast,
 salas, fetch, añadir y quitar sockets, desconectar, número de servidores), el paquete le llega antes de codificarse, y las
 opciones de broadcast llevan las salas, las salas excluidas y las banderas, como los mensajes de `@socket.io/redis-adapter`.
 Está oculto e inestable hasta que el adaptador de Redis (issue #36) lo implemente por primera vez.
+
+### Gateways sobre Socket.IO
+
+Una aplicación elige una sola vez, antes de `init()`, cómo se sirven sus gateways. Por defecto es el protocolo al estilo
+`ws`; con la feature `socket-io`, `IoAdapter` sirve **todos** los gateways de la aplicación sobre Socket.IO:
+
+```rust
+use corvis::prelude::*;
+use corvis::socket_io::IoAdapter;
+
+let mut app = CorvisFactory::create::<AppModule>().await?;
+app.use_websocket_adapter(IoAdapter::new());
+app.listen("127.0.0.1:3000").await?;
+```
+
+Llamarla después de `init()` registra una advertencia y no tiene efecto. Solo cambia los gateways de esa aplicación: los
+servidores `corvis::ws`, los listeners `on_upgrade` y otras aplicaciones del proceso no se ven afectados, y un upgrade
+WebSocket plano al namespace de un gateway no se atiende (y al revés: con el adaptador por defecto no existe ruta de
+Socket.IO). `IoAdapter::options(IoOptions)` fija las opciones de una ruta de Engine.IO (todos los límites de las secciones
+anteriores, `allow_request`, `allowed_origins`, CORS, el adaptador de clúster), una vez por ruta; una segunda llamada para una
+ruta, u opciones que no validan, hacen fallar `init()` con un error que nombra la ruta.
+
+#### Qué significa `#[websocket_gateway]` con Socket.IO
+
+| Forma | Adaptador `ws` (sin cambios) | Adaptador Socket.IO |
+|---|---|---|
+| `#[websocket_gateway]` | ruta `/` | namespace `/` en la ruta de Engine.IO `/socket.io` |
+| `#[websocket_gateway("/chat")]` | ruta `/chat` | namespace `/chat` |
+| `namespace = "/chat"` | ruta `/chat` (sinónimo) | namespace `/chat` |
+| `path = "/realtime"` | ruta `/realtime` | ruta de Engine.IO `/realtime`, namespace `/` salvo que se indique |
+| `cors = true`, `cors = "https://a"`, `cors = ["https://a", "https://b"]` | sin efecto (advertencia en `init()`) | CORS de la ruta de Engine.IO |
+
+`path` es la ruta del servidor de la plataforma que se use, como en el framework original: un gateway escrito como
+`path = "/chat"` pasa a ser el namespace `/` en la ruta de Engine.IO `/chat` al cambiar de adaptador (el log de arranque
+nombra el namespace y la ruta de cada gateway). El namespace se comprueba al compilar (como máximo 256 bytes, sin `,`, sin
+caracteres de control), y una opción que la macro no conoce es un error de compilación que nombra `path`, `namespace` y
+`cors`. `cors = true` permite cualquier origen sin credenciales, una cadena un solo origen, un arreglo una lista; algo más
+rico es `EngineOptions::cors` en `IoAdapter::options`. Las demás opciones de Engine.IO y Socket.IO (`ping_interval`, tamaños
+de búfer) no son opciones de la macro: pertenecen al servidor de una ruta, no a un gateway.
+
+Los gateways que comparten ruta de Engine.IO son namespaces de un mismo servidor Socket.IO, así que una conexión de cliente
+llega a todos. Varios gateways pueden declarar el mismo namespace: sus handlers se sirven juntos y sus hooks corren en orden
+de registro, pero el mismo evento en dos de ellos hace fallar `init()` (el original ejecuta ambos handlers; una confirmación
+no puede responderse dos veces). `init()` también falla, nombrando los gateways o la ruta, cuando los gateways de una ruta
+declaran `cors` distintos, cuando un gateway declara `cors` y las opciones de su ruta ya lo fijan, cuando se dan opciones dos
+veces para una ruta, o cuando dos rutas de Engine.IO se solapan. Un cliente solo llega a los namespaces que declaran los
+gateways (`/` también se rechaza si ningún gateway lo declara): no hay namespaces dinámicos.
+
+#### Handles
+
+Con Socket.IO los handles son `IoSocket` (`#[connected_socket]`), `IoGatewayServer` (`#[websocket_server]`) y, para
+`after_init`, `IoNamespace`. Los traits del ciclo de vida reciben el handle como argumento de tipo cuyo valor por defecto es
+el de `ws`, así que los bloques `impl OnGatewayConnection for Chat` existentes compilan sin cambios:
+
+```rust
+use corvis::prelude::*;
+use corvis::socket_io::{IoGatewayServer, IoNamespace, IoSocket};
+use corvis::{OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, websocket_gateway};
+
+#[websocket_gateway("/chat")]
+pub struct ChatGateway {
+    #[websocket_server]
+    server: IoGatewayServer,
+}
+
+#[handlers]
+impl ChatGateway {
+    #[subscribe_message("shout")]
+    async fn shout(&self, #[message_body("room")] room: String, #[connected_socket] socket: IoSocket) {
+        let _ = socket.id();
+        let _ = self.server.to(room).emit("news", ("hello",)).await;
+    }
+}
+
+#[async_trait]
+impl OnGatewayInit<IoNamespace> for ChatGateway {
+    async fn after_init(&self, namespace: IoNamespace) {
+        // Middleware de conexión, manejadores de conexión, ...
+        let _ = namespace;
+    }
+}
+
+#[async_trait]
+impl OnGatewayConnection<IoSocket> for ChatGateway {
+    async fn handle_connection(&self, socket: IoSocket) {
+        let _ = socket.handshake().auth();
+    }
+}
+
+#[async_trait]
+impl OnGatewayDisconnect<IoSocket> for ChatGateway {
+    async fn handle_disconnect(&self, _socket: IoSocket) {}
+}
+```
+
+`IoGatewayServer` ofrece los operadores de broadcast del namespace del gateway (`emit`, `to`, `within`, `except`, `local`,
+`timeout`, `fetch_sockets`, `sockets_join`, `sockets_leave`, `disconnect_sockets`) y `namespace()`. Está vacío hasta que la
+aplicación arranca sus gateways: antes, toda operación falla con `EmitError::NotStarted`, no envía nada y no entra en pánico.
+Un `#[connected_socket]` o un `#[websocket_server]` de cualquier otro tipo es un error de compilación. **Un gateway cuyos
+handles no coinciden con el adaptador hace fallar `init()`** con un mensaje que nombra el gateway y el elemento, antes de que
+corra nada de su código: un hook que nunca se ejecuta en silencio podría ser una verificación de autenticación. Un gateway
+puede implementar cada hook para ambos handles y entonces funciona con cualquiera de los dos adaptadores. `#[ip]` es la
+dirección del cliente resuelta desde el handshake con la configuración `trust proxy`, y los guards leen el socket con
+`ctx.switch_to_ws().get_client::<IoSocket>()`; `ctx.request()` es la petición del handshake con ambos adaptadores, que es lo
+que debe usar un guard compartido entre ellos.
+
+#### Mensajes, resultados y errores
+
+Un handler `#[subscribe_message("e")]` corre cuando un socket del namespace emite `e`, por el mismo pipeline que con el
+adaptador `ws`: guards globales, del gateway y del handler, interceptores, pipes, el handler y los filtros de excepción del
+handler y del gateway. El cuerpo (`#[message_body]`, `get_data()`, la entrada de los pipes) se construye con los argumentos del
+evento como hace el original: ninguno da `null`, uno da ese argumento, varios dan el arreglo con ellos, y la confirmación no
+es un argumento. Un evento al que ningún handler está suscrito se descarta sin respuesta y sin ejecutar guards; un handler
+registrado con `IoSocket::on` (en `handle_connection`) tiene prioridad sobre el del gateway.
+
+| Qué devuelve el handler | El cliente envió un callback | Sin callback |
+|---|---|---|
+| nada, o un valor que se serializa a `null` | no se envía nada; el callback no se llama | nada |
+| `WsResponse::new(evento, datos)` | se emite como `evento`; el callback no se llama | se emite como `evento` |
+| un objeto con un `event` de texto no vacío | se emite como ese evento con su `data` | igual |
+| cualquier otro valor (`false`, `0`, `""` incluidos) | el callback, con el valor | se descarta |
+| un error, una denegación, un pánico | el evento `exception`; el callback no se llama | el evento `exception` |
+
+Un `WsResponse` para un nombre de evento reservado (`disconnect`, `connect_error`, ...) no envía nada y se registra con el
+gateway y el handler; el socket sigue conectado. La carga de `exception` es la de los filtros del gateway o la del mapeo
+integrado: `{ "status": "error", "message": ..., "cause": { "pattern": <evento>, "data": <cuerpo> } }` para un `WsException`
+con texto (`data` se omite cuando el evento no tenía argumentos) y para la denegación `Forbidden resource`; el propio objeto
+para `WsException::object`; e `Internal server error` para cualquier otro error y para un pánico, sin su texto. La `cause`
+es el valor por defecto del framework original (su opción `includeCause`); solo lleva lo que envió el cliente. Una excepción
+HTTP (`BadRequestException`, un pipe de validación que falla) conserva su mensaje y sus campos, como con el adaptador `ws`,
+donde el original responde `Internal server error`.
+
+Los valores binarios de los argumentos son `null` en el cuerpo: el pipeline no tiene tipo binario. Registra
+`socket.on("upload", ...)` en `handle_connection` para recibir los `Args` reales (y una confirmación manual).
+
+#### Hooks y la compuerta de conexión
+
+`after_init` corre una vez por gateway con su namespace, antes de adjuntar el servidor y por tanto antes de que pueda
+conectarse ningún cliente. `handle_connection` corre para cada socket después de que el middleware de conexión del namespace
+lo aceptó, en el orden de registro de los gateways del namespace; `handle_disconnect` corre exactamente una vez por socket
+después de que salió de sus salas, sea cual sea la forma en que se fue (el cliente, el servidor, un tiempo de espera, una
+expulsión, un apagado). El original llama a `handleConnection` sin esperarlo, así que un mensaje enviado justo al conectar
+puede atenderse antes de que termine un hook asíncrono. **Corvis retiene los eventos de un socket hasta que todos los hooks
+`handle_connection` de su namespace han terminado**: una verificación de autenticación en el hook decide antes de que corra
+ningún handler, y un evento que llega mientras tanto ni se pierde ni se atiende antes de tiempo. Los eventos en espera cuentan
+como handlers en curso (`max_inflight`, 32 por conexión): en el límite el servidor deja de leer esa conexión, y se descartan,
+sin ejecutar guards ni handlers, cuando un hook desconecta el socket. Un hook que entra en pánico, o supera
+`IoAdapter::hook_timeout` (30 s por defecto), desconecta el socket y cierra su conexión; un `handle_disconnect` que lo supera
+se abandona; un `after_init` que entra en pánico o lo supera hace fallar `init()`.
+
+#### Qué autentica una conexión Socket.IO
+
+Nada, por defecto. Las estrategias del módulo de autenticación corren sobre peticiones HTTP y no corren en el handshake
+WebSocket, `AuthGuard` deniega fuera de HTTP, y los guards corren por mensaje. Comprueba tú la conexión, de fuera hacia
+dentro: `EngineOptions::allow_request` y `allowed_origins` (antes de que exista una sesión), middleware de conexión registrado
+en `after_init` (el socket no está conectado hasta que lo pasa; un rechazo es `CONNECT_ERROR`), `handle_connection` (llama a
+`socket.disconnect(true)`) e `IoAdapter::guard_connections(true)`.
+
+`guard_connections` está **desactivado por defecto**, como en el original: un socket que nunca envía un mensaje nunca se
+comprueba, y aun así está conectado, el código del servidor puede unirlo a salas y recibe broadcasts. Actívalo y los guards
+globales (mientras los enhancers globales se apliquen a los gateways) y los declarados en los gateways de un namespace también
+corren cuando un socket se conecta, antes de que esté conectado. El contexto es un contexto WebSocket con el socket pendiente
+como cliente, el handshake como petición, datos `null`, el gateway como clase y un handler llamado `connect` que lleva los
+metadatos del gateway (así `#[public]` en el gateway lo respetan los guards que lo respetan; los guards a nivel de handler
+corren solo por mensaje). Una denegación responde `CONNECT_ERROR` con `Forbidden resource`, un guard que falla responde con su
+mensaje (y el resto de su carga como `data`), y los errores internos y los pánicos responden `Internal server error`; no corre
+ningún hook para el socket y no recibe broadcasts. Los filtros de excepción no corren para la conexión. El valor por defecto
+se revisará con los valores por defecto de la 1.0.
+
+#### Límites
+
+Esta capa no añade tablas, colas ni búferes propios; los límites son los de las secciones de Engine.IO, Socket.IO y salas,
+fijados con `IoAdapter::options`, más estos:
+
+| Límite | Por defecto | Al superarse |
+|---|---|---|
+| Handlers en curso por conexión, **incluidos los eventos que esperan a `handle_connection`** | 32 (`max_inflight`) | se pausa la lectura |
+| Hooks del ciclo de vida | 30 s (`IoAdapter::hook_timeout`) | se desconecta el socket; `init()` falla |
+| Namespaces a los que llega un cliente | los que declaran los gateways | `CONNECT_ERROR` `Invalid namespace` |
+| Handlers por evento y namespace | 1 | `init()` falla |
+| Confirmaciones por evento | como máximo 1, con un argumento | n/a |
+| CORS | desactivado; `cors = true` es cualquier origen sin credenciales | sin cabeceras CORS |
+| Guards de conexión | desactivados | n/a |
+| Errores enviados a los clientes | errores internos y pánicos como `Internal server error`, nunca su texto | n/a |
+| Desajuste entre adaptador y gateway | `init()` falla | n/a |
+
+`init()` registra una advertencia para dos configuraciones legales pero arriesgadas: CORS con credenciales en una ruta de
+Engine.IO sin `allowed_origins` (CORS no se aplica al transporte WebSocket, así que un namespace autenticado con cookies queda
+expuesto al secuestro de WebSocket entre sitios salvo que se fije la lista de orígenes o una comprobación de conexión), y
+`cors` declarado en un gateway con el adaptador `ws` (no tiene efecto).
+
+#### Diferencias con el adaptador de gateways original
+
+Comprobado con el cliente oficial contra una aplicación de referencia escrita con el adaptador de Socket.IO del framework
+original (el arnés diferencial de `parity/socket-io/`). Lo que un cliente puede observar difiere en dos casos: la carga de una
+excepción HTTP (el original responde `Internal server error`; Corvis reenvía su mensaje y sus campos) y un valor binario en el
+cuerpo de un mensaje (`null` en Corvis). No observable por un solo cliente: los eventos se retienen hasta que
+`handle_connection` termina; un handler por evento y namespace; errores de arranque por opciones, `cors` y desajustes de
+adaptador en conflicto; guards de conexión (opcionales).
 
 ## Seguridad
 

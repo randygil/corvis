@@ -95,6 +95,17 @@ Un gateway que no está en `providers` de algún módulo no se monta. Como es un
 
 La ruta se normaliza: se añade la `/` inicial si falta y se quita la final. El prefijo global (`app.set_global_prefix`) **no** se aplica a los gateways: en tertulia la API REST vive en `/api/...` y el chat en `/chat`.
 
+Las opciones aceptadas son `path`, `namespace` y `cors`; cualquier otra es un error de compilación, y el namespace se comprueba al compilar. Significan otra cosa cuando la aplicación sirve sus gateways sobre Socket.IO ([Gateways sobre Socket.IO](/es/websockets/adapter#gateways-sobre-socket-io), feature `socket-io`):
+
+| Forma | Adaptador `ws` (por defecto) | Adaptador Socket.IO |
+|---|---|---|
+| `#[websocket_gateway]` | ruta `/` | namespace `/`, ruta de Engine.IO `/socket.io` |
+| `#[websocket_gateway("/chat")]` o `namespace = "/chat"` | ruta `/chat` | namespace `/chat` |
+| `path = "/realtime"` | ruta `/realtime` | ruta de Engine.IO `/realtime`, namespace `/` salvo que se indique |
+| `cors = true`, `"https://a"` o `["https://a", "https://b"]` | sin efecto (advertencia en `init()`) | CORS de la ruta de Engine.IO |
+
+Un gateway escrito como `path = "/chat"` pasa a ser el namespace `/` en la ruta de Engine.IO `/chat` al cambiar de adaptador (la regla del framework original), y los tipos de los handles también cambian (`IoSocket`, `IoGatewayServer`, `OnGatewayConnection<IoSocket>`), así que el cambio nunca pasa inadvertido: un gateway que no coincide con el adaptador hace fallar `init()`.
+
 Debajo de `#[websocket_gateway]` puedes poner `#[use_guards(...)]`, `#[use_interceptors(...)]`, `#[use_pipes(...)]`, `#[use_filters(...)]` y `#[set_metadata(clave, valor)]`; se aplican a todos los handlers del gateway. Como en los controladores, deben ir **debajo** del atributo principal porque Rust procesa los atributos en orden (ver [Filtros de excepción](/es/websockets/exception-filters) para `#[use_filters]`).
 
 ### `#[handlers]` y `#[subscribe_message]`
