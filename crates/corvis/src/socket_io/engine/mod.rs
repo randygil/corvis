@@ -809,12 +809,6 @@ impl EngineSocket {
         self.session.send_all(messages)
     }
 
-    /// Holds the heartbeat's ping back until the guard is dropped, for at most one second (see `session::PingHold`): what
-    /// a layer queues meanwhile is not separated by a ping.
-    pub(crate) fn hold_ping(&self) -> session::PingHold {
-        self.session.hold_ping()
-    }
-
     /// Counts `count` handlers that outlive this session against its client address, until the guard says they are
     /// done or is dropped. At `max_lingering_per_ip` of them an address gets no new sessions (`503`). `None` when the
     /// server is gone.
@@ -973,17 +967,6 @@ impl EngineSocket {
     /// `true` once the session is closing or closed.
     pub(crate) fn is_closing(&self) -> bool {
         self.session.ready() != session::Ready::Open
-    }
-
-    /// The ping packets queued for the client since the last call (they are dropped by `take_sent`, so read them first).
-    #[cfg(test)]
-    pub(crate) fn take_pings(&self) -> usize {
-        self.session
-            .outbox
-            .take_batch(usize::MAX, |p| p.polling_len() + 1)
-            .into_iter()
-            .filter(|p| matches!(p, packet::Packet::Ping(_)))
-            .count()
     }
 
     /// Everything queued for the client since the last call, messages only (no open or ping packets).

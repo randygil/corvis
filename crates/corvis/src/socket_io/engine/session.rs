@@ -314,50 +314,12 @@ pub(crate) struct Session {
     inbox: Mutex<Option<mpsc::UnboundedSender<(EngineMessage, UnreadTicket)>>>,
     inbox_rx: Mutex<Option<mpsc::UnboundedReceiver<(EngineMessage, UnreadTicket)>>>,
     state: Mutex<State>,
-    /// Pings held back while a layer above queues several packets that must stay together (see [`PingHold`]).
-    ping_hold: Mutex<PingHoldState>,
     timer: Notify,
     poll_wake: Notify,
     closed: watch::Sender<Option<CloseReason>>,
 }
 
 static LOG_IDS: AtomicU64 = AtomicU64::new(1);
-
-/// The longest a ping is held back by a [`PingHold`]: a layer that does not release in time cannot postpone the heartbeat
-/// without limit.
-pub(crate) const PING_HOLD_MAX: Duration = Duration::from_secs(1);
-
-#[derive(Default)]
-struct PingHoldState {
-    holds: usize,
-    since: Option<Instant>,
-    deferred: bool,
-}
-
-/// While it lives, the heartbeat's ping is not queued (for at most [`PING_HOLD_MAX`]); the ping due meanwhile is queued
-/// when the last hold is dropped. Socket.IO holds it from the CONNECT packet until the connection handlers returned, so
-/// what they emit follows CONNECT without a ping between, as in Node, where both are written in one tick.
-pub(crate) struct PingHold {
-    session: Arc<Session>,
-}
-
-impl Drop for PingHold {
-    fn drop(&mut self) {
-        let deferred = {
-            let mut hold = self.session.ping_hold.lock().unwrap_or_else(|e| e.into_inner());
-            hold.holds = hold.holds.saturating_sub(1);
-            if hold.holds == 0 {
-                hold.since = None;
-                std::mem::take(&mut hold.deferred)
-            } else {
-                false
-            }
-        };
-        if deferred {
-            let _ = self.session.queue_ping_now();
-        }
-    }
-}
 
 impl Session {
     /// Creates the session, queues its open packet and starts its timer task.
@@ -396,7 +358,6 @@ impl Session {
                 first_request_deadline: None,
                 next_candidate: 1,
             }),
-            ping_hold: Mutex::new(PingHoldState::default()),
             timer: Notify::new(),
             poll_wake: Notify::new(),
             closed: watch::channel(None).0,
@@ -786,13 +747,6 @@ impl Session {
         }
         consider(s.closing_deadline);
         consider(s.first_request_deadline);
-        // A ping held back is queued at the latest when the hold's limit passes.
-        {
-            let hold = self.ping_hold.lock().unwrap_or_else(|e| e.into_inner());
-            if hold.deferred {
-                consider(hold.since.map(|since| since + PING_HOLD_MAX));
-            }
-        }
         next
     }
 
@@ -800,18 +754,10 @@ impl Session {
     fn on_tick(&self, now: Instant) {
         enum Act {
             Ping,
-            HeldPing,
             Timeout,
             Forced,
         }
         let mut acts = Vec::new();
-        {
-            let mut hold = self.ping_hold.lock().unwrap_or_else(|e| e.into_inner());
-            if hold.deferred && hold.since.is_none_or(|since| now >= since + PING_HOLD_MAX) {
-                hold.deferred = false;
-                acts.push(Act::HeldPing);
-            }
-        }
         {
             let mut s = self.lock();
             if s.ready == Ready::Closed {
@@ -856,37 +802,13 @@ impl Session {
                     // A ping goes through the same bounded outbox as everything else.
                     let _ = self.queue_ping();
                 }
-                Act::HeldPing => {
-                    let _ = self.queue_ping_now();
-                }
                 Act::Timeout => self.close(CloseReason::PingTimeout),
                 Act::Forced => self.close(CloseReason::ForcedClose),
             }
         }
     }
 
-    /// Holds the heartbeat's ping back (see [`PingHold`]).
-    pub(crate) fn hold_ping(self: &Arc<Self>) -> PingHold {
-        let mut hold = self.ping_hold.lock().unwrap_or_else(|e| e.into_inner());
-        if hold.holds == 0 {
-            hold.since = Some(Instant::now());
-        }
-        hold.holds += 1;
-        PingHold { session: self.clone() }
-    }
-
     fn queue_ping(&self) -> Result<(), SendError> {
-        {
-            let mut hold = self.ping_hold.lock().unwrap_or_else(|e| e.into_inner());
-            if hold.holds > 0 && hold.since.is_some_and(|since| since.elapsed() < PING_HOLD_MAX) {
-                hold.deferred = true;
-                return Ok(());
-            }
-        }
-        self.queue_ping_now()
-    }
-
-    fn queue_ping_now(&self) -> Result<(), SendError> {
         match self.outbox.push(Packet::Ping(String::new()), None) {
             Ok(()) => Ok(()),
             Err(PushError::Closed) => Err(SendError::Closed),
