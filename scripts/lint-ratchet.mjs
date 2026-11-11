@@ -9,12 +9,16 @@
 //
 // What it counts, per published crate (the workspace members without `publish = false`), per lint and per file:
 // - The RATCHET lints, from `cargo clippy --all-features --message-format=json` on the published crates, with those
-//   lints raised to `warn` on the command line (no `-D warnings`). Library code is what `--lib --bins` compiles; everything that only `--all-targets` adds
-//   (`#[cfg(test)]` modules, integration tests, benches, examples of the crate) is test code. Test code is counted
-//   only for the lints marked `tests: true`; `unwrap_used`, `expect_used` and `panic` are also allowed in tests by
-//   clippy.toml. `print_stdout` and `print_stderr` are counted only in crates with a library (not in `corvis-cli`).
+//   lints raised to `warn` on the command line (no `-D warnings`). Library code is what `--lib --bins` compiles;
+//   everything that only `--all-targets` adds (`#[cfg(test)]` modules, integration tests, benches, examples of the
+//   crate) is test code. Test code is counted only for the lints marked `tests: true`; `unwrap_used`, `expect_used`
+//   and `panic` are also allowed in tests by clippy.toml. `print_stdout` and `print_stderr` are counted only in crates
+//   with a library (not in `corvis-cli`).
 // - Doc examples fenced as ```ignore (or ```rust,ignore) under `src/`. A fence that states why it cannot run is not
 //   counted: ```ignore (needs a database). Prefer `no_run`, which still compiles the example.
+// - `#[allow(...)]` and `#[expect(...)]` attributes under `src/` (also inside `cfg_attr`, and the ones a proc macro
+//   writes into its output) that name a RATCHET lint or a group holding one (`warnings`, `clippy::restriction`,
+//   `clippy::pedantic`): one per lint named. Silencing a finding is not a way under the baseline.
 //
 // The comparison is per crate and lint (the sum over files). A count above the baseline fails and lists the findings
 // of the files whose count went up. A count below the baseline fails too, until the baseline is lowered in the same
@@ -53,6 +57,9 @@ const RATCHET = [
   { lint: 'clippy::print_stderr', libraryOnly: true },
 ]
 const FENCE = 'rustdoc: ```ignore without a reason'
+const SILENCER = '#[allow]/#[expect] of a ratchet lint'
+/** Lint groups that hold a RATCHET lint: allowing one silences it as well. */
+const GROUPS = ['warnings', 'clippy::restriction', 'clippy::pedantic']
 const TEST_SUFFIX = ' (tests)'
 
 // ---------- counting ----------
@@ -120,6 +127,23 @@ function ignoreFences(content) {
     if (attrs.includes('ignore') && reason === -1) lines.push(i + 1)
   })
   return lines
+}
+
+/**
+ * The `allow` and `expect` attributes of one source file that name a RATCHET lint or a group holding one, as
+ * `{ line, lint }` (one entry per lint named).
+ */
+function silencers(content) {
+  const counted = new Set([...RATCHET.map((r) => r.lint), ...GROUPS])
+  const out = []
+  const attr = /#!?\[\s*(?:cfg_attr\s*\([^\]]*?,\s*)?(?:allow|expect)\s*\(([^)]*)\)/g
+  for (const m of content.matchAll(attr)) {
+    const line = content.slice(0, m.index).split('\n').length
+    for (const name of m[1].split(',').map((s) => s.replace(/\s+/g, ''))) {
+      if (counted.has(name)) out.push({ line, lint: name })
+    }
+  }
+  return out
 }
 
 /** `{ crate: { group: { file: count } } }` with sorted keys. */
@@ -226,7 +250,9 @@ function measure() {
     if (!fs.existsSync(src)) continue
     for (const file of sourceFiles(src)) {
       const rel = slash(path.relative(root, file))
-      for (const line of ignoreFences(fs.readFileSync(file, 'utf8'))) findings.push({ crate, group: FENCE, file: rel, line, column: 1 })
+      const content = fs.readFileSync(file, 'utf8')
+      for (const line of ignoreFences(content)) findings.push({ crate, group: FENCE, file: rel, line, column: 1 })
+      for (const { line } of silencers(content)) findings.push({ crate, group: SILENCER, file: rel, line, column: 1 })
     }
   }
   return findings
@@ -287,6 +313,22 @@ function selfTest() {
   expect('no_run and plain fences are not counted', ignoreFences('/// ```no_run\n/// ```\n/// ```\n/// ```text').length === 0)
   expect('the fence line number is reported', ignoreFences('//! a\n//! ```ignore')[0] === 2)
   expect('a fence outside a doc comment is not counted', ignoreFences('let s = "\n```ignore\n";').length === 0)
+
+  const allows = silencers(
+    [
+      '#![allow(missing_docs)]',
+      '#[allow(dead_code, clippy::unwrap_used)]',
+      '#[expect(clippy::panic, reason = "x")]',
+      '#[cfg_attr(test, allow(clippy::expect_used))]',
+      '#[allow(\n    unused,\n    clippy::print_stdout,\n)]',
+      '#[allow(clippy::restriction)]',
+      '#[allow(clippy::all, clippy::too_many_arguments, unused_imports)]',
+    ].join('\n'),
+  )
+  const named = allows.map((a) => `${a.line}:${a.lint}`).join(' ')
+  expect('allow and expect of a ratchet lint are counted, with their line',
+    named === '1:missing_docs 2:clippy::unwrap_used 3:clippy::panic 4:clippy::expect_used 5:clippy::print_stdout 9:clippy::restriction')
+  expect('allow of other lints and of clippy::all is not counted', !named.includes('dead_code') && !named.includes('clippy::all'))
 
   const base = tally(counted)
   const same = compare(base, tally(counted))

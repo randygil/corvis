@@ -171,10 +171,12 @@ The lints that still have findings (`missing_docs`, `unreachable_pub`, `missing_
 `unwrap_used`, `expect_used`, `panic`, `undocumented_unsafe_blocks`, `missing_panics_doc`, `missing_errors_doc`,
 `print_stdout` and `print_stderr`) cannot be added there: the first CI run would fail. `scripts/lint-ratchet.mjs`
 counts them instead, per published crate, lint and file, together with the doc examples fenced as ```` ```ignore ````
-without a reason, and compares the counts with `lint-baseline.json`. The counts only go down:
+without a reason and the `#[allow(...)]` and `#[expect(...)]` attributes under `src/` that name one of those lints (or
+`warnings`, `clippy::restriction`, `clippy::pedantic`), and compares the counts with `lint-baseline.json`. Silencing a
+finding therefore raises a count just as the finding would. The counts only go down:
 
 - A count above the baseline fails the job, which prints the crate, the lint, the old and new counts and the findings
-  in the files whose count went up (`file:line:column`). Fix them; an `#[allow]` that only hides a finding is not a fix.
+  in the files whose count went up (`file:line:column`). Fix them; an `#[allow]` is counted too, so it is not a way around the baseline.
 - A count below the baseline fails too, with `lower the baseline: node scripts/lint-ratchet.mjs --update`. Run it and
   commit `lint-baseline.json` with the fix, so the baseline records the progress. `--update` refuses to raise a count;
   `--update --allow-increase` exists for a toolchain bump that renames or adds findings, with the reason in the pull
