@@ -463,3 +463,15 @@ Second run with the common package 12.0.4 (not committed; class-validator and cl
 differ, none of them `ParseIntPipe`. `ParseArrayPipe({ items: Number })` of `""` answers `[0] item must be a number` and
 `ParseArrayPipe()` of `""` answers `[""]` (12.0.4 no longer refuses an empty string up front); `ParseFloatPipe` refuses
 `" 1.5 "` and `"0x10"`. The fixture stays on 11.2.1 (Review note 4); nothing to raise for houseplan.
+
+### 3. Date parser
+
+Before the fix, `dates_out_of_range_are_invalid` and `a_year_whose_wrapped_time_looks_valid_is_invalid` panicked with
+"attempt to multiply with overflow" (`days_from_civil`) in `cargo test`; in `cargo test --release` the first returned a
+finite time for one of the three inputs and the second a finite time for the year `100000000247000741`. A run of
+consecutive years moves the wrapped value by one year of milliseconds and never reaches the valid range, so the search
+walks the years with a prime stride (1,000,003) instead.
+
+`js_date_parse_is_total` failed on the code of before the fix (the parser of the previous commit restored for one run,
+then put back): minimal input `"1Jan.9223372036854775807-"`, "attempt to multiply with overflow". An offset of an empty
+digit run still reads as `0`, as before; only a numeral that does not fit in `i64` is now an invalid date.

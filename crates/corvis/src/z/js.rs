@@ -274,7 +274,13 @@ pub fn string_to_bigint(s: &str) -> Option<i128> {
 
 const MAX_TIME: f64 = 8.64e15;
 
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+/// No year beyond this one has a valid time value (ECMAScript dates span ±8.64e15 ms around 1970, years -271821 to
+/// 275760).
+const MAX_YEAR: u64 = 275_760;
+
+/// Days from 1970-01-01, in `i128` so it is total for any `i64` arguments.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i128 {
+    let (y, m, d) = (i128::from(y), i128::from(m), i128::from(d));
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
@@ -297,10 +303,19 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// `MakeDate(MakeDay(y, m, d), MakeTime(h, min, s, ms))` in UTC.
+/// `MakeDate(MakeDay(y, m, d), MakeTime(h, min, s, ms))` in UTC; NaN for a year no valid date has.
 fn make_utc(y: i64, mon: i64, d: i64, h: i64, mi: i64, s: i64, ms: i64) -> f64 {
-    let days = days_from_civil(y, mon, d);
-    (days * 86_400_000 + h * 3_600_000 + mi * 60_000 + s * 1000 + ms) as f64
+    if y.unsigned_abs() > MAX_YEAR {
+        return f64::NAN;
+    }
+    let time = i128::from(h) * 3_600_000 + i128::from(mi) * 60_000 + i128::from(s) * 1000 + i128::from(ms);
+    (days_from_civil(y, mon, d) * 86_400_000 + time) as f64
+}
+
+/// A run of ASCII digits as a number; `None` when it does not fit in `i64` (V8 answers Invalid Date for such a
+/// numeral, never `0`).
+fn numeral(digits: &[char]) -> Option<i64> {
+    digits.iter().try_fold(0i64, |acc, c| acc.checked_mul(10)?.checked_add(i64::from(c.to_digit(10)?)))
 }
 
 fn local_offset_ms(utc_guess_ms: f64) -> f64 {
@@ -423,7 +438,7 @@ fn parse_iso_date(s: &str) -> Option<f64> {
     let t = make_utc(year, month, day, h, mi, sec, ms);
     let t = match (has_time, offset) {
         (false, _) => t,
-        (true, Some(off)) => t - (off * 60_000) as f64,
+        (true, Some(off)) => t - off as f64 * 60_000.0,
         (true, None) => local_to_utc(t),
     };
     Some(time_clip(t))
@@ -467,7 +482,7 @@ fn parse_legacy_date(s: &str) -> f64 {
             while i < chars.len() && chars[i].is_ascii_digit() {
                 i += 1;
             }
-            let n: i64 = chars[start..i].iter().collect::<String>().parse().unwrap_or(0);
+            let Some(n) = numeral(&chars[start..i]) else { return f64::NAN };
             if i < chars.len() && chars[i] == ':' && time.is_none() {
                 // time
                 let mut parts = vec![n];
@@ -478,10 +493,10 @@ fn parse_legacy_date(s: &str) -> f64 {
                     while i < chars.len() && chars[i].is_ascii_digit() {
                         i += 1;
                     }
-                    if st == i {
-                        return f64::NAN;
+                    match numeral(&chars[st..i]) {
+                        Some(part) if st < i => parts.push(part),
+                        _ => return f64::NAN,
                     }
-                    parts.push(chars[st..i].iter().collect::<String>().parse().unwrap_or(0));
                 }
                 if i < chars.len() && chars[i] == '.' {
                     i += 1;
@@ -515,8 +530,8 @@ fn parse_legacy_date(s: &str) -> f64 {
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == ':') {
                 i += 1;
             }
-            let raw: String = chars[st..i].iter().filter(|c| **c != ':').collect();
-            let v: i64 = raw.parse().unwrap_or(0);
+            let raw: Vec<char> = chars[st..i].iter().copied().filter(|c| *c != ':').collect();
+            let Some(v) = numeral(&raw) else { return f64::NAN };
             let mins = if raw.len() <= 2 { v * 60 } else { (v / 100) * 60 + v % 100 };
             offset = Some(sign * mins);
             continue;
@@ -601,7 +616,7 @@ fn parse_legacy_date(s: &str) -> f64 {
     }
     let t = make_utc(y, m, d, h, mi, sec, ms);
     let t = match offset {
-        Some(off) => t - (off * 60_000) as f64,
+        Some(off) => t - off as f64 * 60_000.0,
         None => local_to_utc(t),
     };
     time_clip(t)

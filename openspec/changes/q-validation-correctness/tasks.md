@@ -31,12 +31,12 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 3. Date parser (Decision 2)
 
-- [ ] 3.1 Failing tests in `crates/corvis/src/z/js.rs`: the three inputs of Decision 2 and the wrapped-year search;
+- [x] 3.1 Failing tests in `crates/corvis/src/z/js.rs`: the three inputs of Decision 2 and the wrapped-year search;
   verify they fail on the untouched code with `cargo test -p corvis --lib z::js` (panic) and with
   `cargo test --release -p corvis --lib z::js` (finite result)
 - [ ] 3.2 Checked numerals, the year bound before `make_utc`, `i128` in `days_from_civil`/`make_utc`, offsets in `f64`;
   verify the tests of 3.1 pass in debug and release, and the `date.coerce.edges` cases (V4 and V3) pass
-- [ ] 3.3 `js_date_parse_is_total`, and totality properties for `string_to_number` and `string_to_bigint`, in
+- [x] 3.3 `js_date_parse_is_total`, and totality properties for `string_to_number` and `string_to_bigint`, in
   `crates/corvis/src/fuzz_tests.rs`; verify `cargo test -p corvis --lib fuzz_tests` passes and that the date property
   fails on the code of before 3.2 (checked once with a `git stash` of 3.2, result in Implementation notes)
 

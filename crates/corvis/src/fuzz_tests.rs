@@ -1,5 +1,6 @@
 //! Property-based fuzzing of the request parsers: `JSON.parse` (`json_parse`), `qs`, the body
-//! parser, JWT verification, route paths and trust proxy (`proxy_addr`). The multipart parser has
+//! parser, JWT verification, route paths, trust proxy (`proxy_addr`) and the date and number text parsing of the
+//! validation library (`z::js`). The multipart parser has
 //! its own module (`multer::fuzz`), static files are fuzzed end to end in `tests/fuzz_static.rs`.
 //!
 //! The properties are the ones a hostile client attacks: no panic or stack overflow on any input,
@@ -16,6 +17,7 @@ use crate::http::json_parse;
 use crate::http::proxy_addr::{TrustProxy, all_addrs};
 use crate::jwt::{JwtModuleOptions, JwtService, parse_duration_secs};
 use crate::router::{join_paths, to_matchit};
+use crate::z::js;
 
 /// `cases` by default; `PROPTEST_CASES` overrides it for longer fuzzing runs.
 pub(crate) fn config(cases: u32) -> ProptestConfig {
@@ -302,6 +304,36 @@ proptest! {
             prop_assert!(trust.trusts(a, i), "hop {i} ({a}) is not trusted but the chain goes past it: {addrs:?}");
         }
     }
+
+    /// `Date.parse` is total: an invalid date or an integral time value inside the ECMAScript range, never a panic
+    /// (overflow checks are on in this build) and never a wrapped value.
+    #[test]
+    fn js_date_parse_is_total(soup in date_soup()) {
+        let t = js::parse_date(&soup);
+        prop_assert!(t.is_nan() || (t.fract() == 0.0 && t.abs() <= 8.64e15), "{soup:?} -> {t}");
+    }
+
+    /// `Number(text)` and `BigInt(text)` are total on number-like text.
+    #[test]
+    fn js_number_and_bigint_parsing_are_total(soup in date_soup(), text in "\\PC{0,24}") {
+        for s in [&soup, &text] {
+            let _ = js::string_to_number(s);
+            let _ = js::string_to_bigint(s);
+        }
+    }
+}
+
+/// Fragments of date and number text: digits, separators, signs, month and zone names and long digit runs.
+fn date_soup() -> impl Strategy<Value = String> {
+    prop::collection::vec(
+        prop::sample::select(vec![
+            "0", "1", "9", "12", "31", "2024", "275760", "275761", "-271821", "999999999999999999", "99999999999999999999",
+            "9223372036854775807", "-", "/", ":", ".", ",", " ", "+", "T", "Z", "z", "t", "UTC", "GMT", "am", "pm", "Jan", "december",
+            "Mon", "(", ")", "0x", "e", "Infinity",
+        ]),
+        0..12,
+    )
+    .prop_map(|parts| parts.concat())
 }
 
 proptest! {
