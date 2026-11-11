@@ -55,7 +55,7 @@ impl JsRegex {
     }
 
     /// `regex.test(input)`. On the backtracking engine an input that exceeds
-    /// [`BACKTRACK_LIMIT`] does not match (V8 would keep going); that is logged as a warning.
+    /// `BACKTRACK_LIMIT` does not match (V8 would keep going); that is logged as a warning.
     pub fn test(&self, input: &str) -> bool {
         match &self.re {
             Engine::Linear(re) => re.is_match(input),

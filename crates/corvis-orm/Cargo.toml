@@ -12,6 +12,9 @@ categories = ["database", "asynchronous"]
 readme = "README.md"
 keywords = ["orm", "sqlx", "corvis", "database", "postgres"]
 
+[lints]
+workspace = true
+
 [features]
 default = ["corvis", "tls-rustls"]
 # OrmModule / OrmService / OrmExceptionFilter and logging through the corvis logger.

@@ -34,6 +34,17 @@ tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 anyhow = "1"
 
+# The lint floor: lints with no finding in any published crate, inherited by each of them with `[lints] workspace =
+# true` and denied by CI through `-D warnings`. The lints that still have findings are counted by the lint ratchet
+# (scripts/lint-ratchet.mjs, lint-baseline.json) and move here when their count reaches zero. See CONTRIBUTING.md.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
 # Smaller and faster dev and test builds (the test profile inherits dev). Workspace crates keep line tables, so
 # panics and backtraces still show file:line; dependencies carry no debug info. To step into a dependency with a
 # debugger, comment out the package override. See CONTRIBUTING.md.

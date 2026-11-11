@@ -139,7 +139,7 @@ fn is_function(v: &Value) -> Option<&str> {
     o.get("$js")?.as_str()
 }
 
-/// `serializeConfigToJs(configuration)`. The JSON part goes through [`escape_inline_json`] (the
+/// `serializeConfigToJs(configuration)`. The JSON part goes through `escape_inline_json` (the
 /// document is embedded in the page); `{"$js": ...}` values are configuration functions written
 /// by the developer and are emitted as they are.
 pub fn serialize_config_to_js(configuration: &Map<String, Value>) -> String {

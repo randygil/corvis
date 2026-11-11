@@ -12,6 +12,9 @@ readme = "../../README.md"
 keywords = ["web", "framework", "http", "dependency-injection"]
 categories = ["web-programming::http-server", "asynchronous"]
 
+[lints]
+workspace = true
+
 [dependencies]
 corvis-macros = { workspace = true }
 serde = { workspace = true }

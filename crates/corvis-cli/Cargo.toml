@@ -12,6 +12,9 @@ readme = "README.md"
 keywords = ["corvis", "cli", "scaffolding", "generator"]
 categories = ["command-line-utilities", "development-tools"]
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "corvis"
 path = "src/main.rs"

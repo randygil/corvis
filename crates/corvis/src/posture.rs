@@ -295,9 +295,9 @@ pub enum PostureStatus {
 /// A guard that runs for a route.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct GuardInfo {
-    /// The guard's name ([`CanActivate::guard_name`](crate::CanActivate::guard_name), without module paths).
+    /// The guard's name ([`CanActivate::guard_name`], without module paths).
     pub name: String,
-    /// Whether it counts for posture ([`CanActivate::controls_access`](crate::CanActivate::controls_access)).
+    /// Whether it counts for posture ([`CanActivate::controls_access`]).
     pub controls_access: bool,
 }
 
