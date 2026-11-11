@@ -42,32 +42,23 @@ client sends meanwhile MUST wait for the handlers, and the wait MUST end when th
 - **WHEN** the connection handler of a WebSocket client emits an event
 - **THEN** the handler runs after the CONNECT frame was written, and the event is written as a separate frame
 
-#### Scenario: Upstream suite is stable
-- **WHEN** `CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_conformance` runs 20 times in a
-  row
-- **THEN** every run passes
-
 #### Scenario: Connection closes before the write
 - **WHEN** the connection closes after CONNECT was queued and before it was written
 - **THEN** no connection handler runs and the socket is disconnected
 
 ### Requirement: An emit is encoded once
-The server SHALL encode an event into one buffer that holds the Engine.IO message, move it into the send queue without
-copying it, and build the WebSocket frame from that buffer without copying it; a broadcast SHALL do the same with one
-shared buffer for every recipient. The lengths counted against `max_buffered_amount` and the polling batch bound MUST
-stay those of the encoded packet.
+The server SHALL encode an event for one recipient into one buffer that holds the Engine.IO message, move it into the
+send queue without copying it, and build the WebSocket frame from that buffer without copying it. A broadcast SHALL
+queue one shared encoding on every recipient. The lengths counted against `max_buffered_amount` and the polling batch
+bound MUST stay those of the encoded packet.
 
 #### Scenario: One recipient
 - **WHEN** a socket emits a 16 KiB event to a WebSocket client
 - **THEN** the frame handed to the WebSocket library points into the buffer the encoder produced
 
-#### Scenario: Broadcast
-- **WHEN** an event is broadcast to ten WebSocket recipients
-- **THEN** every frame points into the one shared buffer, and the broadcast holds one copy of its encoding
-
-#### Scenario: Binary attachment
-- **WHEN** an event with a binary attachment is emitted to a WebSocket client
-- **THEN** the binary frame is the attachment's buffer, not a copy of it
+#### Scenario: One encoding per broadcast
+- **WHEN** an event is broadcast to several recipients
+- **THEN** every recipient's queue holds the same shared encoding
 
 ### Requirement: Public enums can grow
 `EmitError`, `AckError`, `DisconnectReason`, `RoomError`, `AdapterError`, `BroadcastAckErrorKind` and the Engine.IO

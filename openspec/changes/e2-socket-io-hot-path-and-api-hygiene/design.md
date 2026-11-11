@@ -874,3 +874,22 @@ copies and the per-message registrations went away. The figures are from one mac
   `node scripts/check-crate-files.mjs`, `cargo deny check`, `npm run docs:check` (179 + 179 pages),
   `openspec validate` of this change and of `e2-socket-io-redis-adapter`: pass.
 - Not met: the upstream suite 20 of 20 (task 7.4, above); `socket_io_diff` was not run in the end, for the same reason.
+
+### What this change does not claim (decided after the report)
+
+- **The no-copy-per-recipient scenarios are deferred to the `tokio-tungstenite` upgrade.** With the fallback of Decision
+  4 accepted, the spec delta of `ws/socket-io` keeps "One recipient" (the frame is the encoder's buffer) and states for
+  broadcasts only what the code does: one shared encoding queued on every recipient (`One encoding per broadcast`,
+  pinned by `an_emit_queues_the_encoder_s_buffer_and_a_broadcast_one_shared_buffer` and
+  `a_broadcast_holds_one_copy_of_its_encoding_however_many_sockets_it_reaches`). The scenarios "Broadcast" (every
+  recipient's frame points into the shared buffer) and "Binary attachment" (the binary frame is the attachment's
+  buffer) were removed from this change's delta: with 0.24 the library takes an owned `String` and `Vec<u8>`, so each
+  WebSocket recipient's frame is a copy. They belong to the upgrade issue, which the maintainer files with the patch.
+- **The `POST` scenario is stated as what is bounded.** "Handling the `POST` allocates less than 16 KiB beyond its body"
+  cannot hold: the HTTP server alone peaks at about three times the headers for such a request (group 4). The delta of
+  `ws/engine-io` now says what `a_post_of_an_existing_session_copies_nothing_of_its_request` checks: the engine's
+  allocation for the `POST` stays under 16 KiB beyond what the HTTP server allocates for the same request.
+- **#184 is not fixed by this change and stays open on its own.** The scenario "Upstream suite is stable" was removed from
+  the delta: the suite loses a frame whenever two arrive in one read (its listener is registered after an `await`), and
+  the Node reference fails the same way on this machine. What this change guarantees, and its tests pin, is the order and
+  the separate writes of "CONNECT leaves in a write of its own". Task 7.4 and the suite part of 15.3 stay unticked.
