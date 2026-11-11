@@ -3,11 +3,10 @@
 ## ADDED Requirements
 
 ### Requirement: Shared dependencies are declared once
-A crates.io dependency that two or more published crates of the workspace use, or that one published crate declares
-in two dependency sections (for example as an optional dependency and as a dev-dependency), SHALL be declared once, in
-`[workspace.dependencies]` of the root `Cargo.toml`, and the crates MUST refer to it with `workspace = true`, adding
-features at the use site when they need more. `scripts/check-crate-files.mjs` MUST report a violation with the crates,
-the sections and the dependency it names.
+A crates.io dependency declared more than once, by two published crates or in two dependency sections of one, SHALL be
+declared in `[workspace.dependencies]` of the root `Cargo.toml` and referred to with `workspace = true`, with extra
+features at the use site. `scripts/check-crate-files.mjs` MUST report each violation with the dependency and where it
+is declared.
 
 #### Scenario: The same dependency declared in two crates
 - **WHEN** `crates/corvis/Cargo.toml` and `crates/corvis-swagger/Cargo.toml` both declare `regex = "1"`
