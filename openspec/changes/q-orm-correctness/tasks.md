@@ -9,10 +9,10 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 1. Reconcile and snapshot
 
-- [ ] 1.1 Re-check every file and line of design.md "The findings, confirmed against the code" against `dev`; write moved
+- [x] 1.1 Re-check every file and line of design.md "The findings, confirmed against the code" against `dev`; write moved
   lines and anything that no longer holds in a new "Implementation notes" section of design.md before any other task;
   verify `CORVIS_ORM_PG_REQUIRED=1 cargo test -p corvis-orm` passes on the untouched tree
-- [ ] 1.2 Postgres SQL snapshot (design.md "Postgres stays unchanged"): a unit test in `crates/corvis-orm/src/engine/`
+- [x] 1.2 Postgres SQL snapshot (design.md "Postgres stays unchanged"): a unit test in `crates/corvis-orm/src/engine/`
   that builds, with a lazily connected Postgres client and without sending anything, the SQL text and parameter types of
   `where_to_sql` and of the read, aggregate and update builders for every case of the Postgres oracle, and compares them
   with `tests/fixtures/pg_sql_snapshot.json`; generate that file now, on the untouched tree; verify the test passes and the

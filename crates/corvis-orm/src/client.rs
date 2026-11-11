@@ -365,6 +365,8 @@ impl OrmClient {
     }
 
     fn log(&self, sql: &Sql) {
+        #[cfg(test)]
+        crate::engine::recorder::record(sql);
         if self.inner.options.log_queries {
             let params = if sql.params.is_empty() { String::new() } else { format!(" -- params: {:?}", sql.params) };
             #[cfg(feature = "corvis")]

@@ -6,7 +6,11 @@
 
 mod aggregate;
 mod filter;
+#[cfg(test)]
+mod pg_sql_snapshot;
 mod read;
+#[cfg(test)]
+pub(crate) mod recorder;
 mod write;
 
 use std::fmt::Display;

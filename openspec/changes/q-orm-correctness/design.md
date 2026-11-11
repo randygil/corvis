@@ -374,3 +374,15 @@ original client 6.x is installed in `C:\Users\Usuario\Devel\corvis-tests\tmp\orm
 committed here (`tests/fixtures/oracle/`). The implementer of this change was told not to record anything there, so no
 new recording was made: the tasks that depend on one (3.1, 3.2, 3.3, the oracle parts of 4.1, 5.3, 5.5 and 6.2, the
 choice of 6.1 for non-finite floats, and 9.1) are left open, and each is marked below.
+
+### Task 1.2: how the Postgres SQL snapshot is taken
+
+`src/engine/pg_sql_snapshot.rs` runs the model cases of the Postgres oracle (the `$raw` cases send the caller's own
+SQL and are left out) in order on a fresh database built from the recorded migration, and records every statement the
+client sends for each case (text and parameter types, never values) through a test-only recorder
+(`src/engine/recorder.rs`, called from `OrmClient::log`). Deviation from "a lazily connected client, nothing sent": a
+client that sends nothing gets no rows back, so the statements that follow a read (the `UPDATE` after the lookup of the
+row, read-backs, includes, counts, nested writes, `m2m` unlinks) would never be built, and those are the builders
+Decision 6 edits. Recording the real run covers all of them: 199 cases, 345 statements. Like the other Postgres tests
+it is skipped without a server unless `CORVIS_ORM_PG_REQUIRED=1`; `CORVIS_ORM_UPDATE_PG_SNAPSHOT=1` rewrites the
+fixture. The same recorder counts statements in the unit tests of Decision 6.

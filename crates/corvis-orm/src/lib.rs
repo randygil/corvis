@@ -33,6 +33,10 @@
 
 #![forbid(unsafe_code)]
 
+// Unit tests derive models, whose generated code names the crate by its path.
+#[cfg(test)]
+extern crate self as corvis_orm;
+
 mod client;
 pub mod codegen;
 mod datetime;

@@ -1,0 +1,3383 @@
+[
+  {
+    "label": "create.basic",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"users\" (\"email\", \"name\", \"role\", \"roles\", \"tags\", \"scores\", \"balance\", \"ratio\", \"big\", \"birthday\", \"created_at\", \"updatedAt\", \"data\", \"meta\", \"active\") VALUES ($1, $2, $3::\"role_t\", $4::\"role_t\"[], $5, $6, $7, $8, $9, $10::date, $11::timestamp, $12::timestamp, $13, $14, $15) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Text",
+          "Array<Enum>[Text, Text]",
+          "Array<String>[Text, Text]",
+          "Array<Int>[Int32, Int32, Int32]",
+          "Decimal",
+          "Float",
+          "Int",
+          "Date",
+          "NaiveDateTime",
+          "NaiveDateTime",
+          "Json",
+          "Json",
+          "Bool"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "create.defaults",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"users\" (\"email\", \"role\", \"tags\", \"balance\", \"big\", \"created_at\", \"updatedAt\", \"meta\", \"active\") VALUES ($1, $2::\"role_t\", $3, $4, $5, $6::timestamp, $7::timestamp, $8, $9) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Array<String>[]",
+          "Decimal",
+          "Int",
+          "NaiveDateTime",
+          "NaiveDateTime",
+          "Json",
+          "Bool"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "create.nested",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"users\" (\"email\", \"name\", \"role\", \"tags\", \"balance\", \"big\", \"created_at\", \"updatedAt\", \"meta\", \"active\", \"managerId\") VALUES ($1, $2, $3::\"role_t\", $4, $5, $6, $7::timestamp, $8::timestamp, $9, $10, $11) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Text",
+          "Array<String>[]",
+          "Decimal",
+          "Int",
+          "NaiveDateTime",
+          "NaiveDateTime",
+          "Json",
+          "Bool",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Profile\" (\"bio\", \"userId\") VALUES ($1, $2) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Post\" (\"title\", \"published\", \"views\", \"authorId\", \"createdAt\") VALUES ($1, $2, $3, $4, $5::timestamp) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Bool",
+          "Int32",
+          "Int32",
+          "NaiveDateTime"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Comment\" (\"text\", \"postId\") VALUES ($1, $2) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Comment\" (\"text\", \"postId\") VALUES ($1, $2) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Post\" (\"title\", \"body\", \"published\", \"views\", \"authorId\", \"createdAt\") VALUES ($1, $2, $3, $4, $5, $6::timestamp) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Bool",
+          "Int32",
+          "Int32",
+          "NaiveDateTime"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Wallet\" (\"id\", \"userId\", \"currency\", \"amount\") VALUES ($1::uuid, $2, $3::\"Currency\", $4) RETURNING \"id\"",
+        "params": [
+          "Uuid",
+          "Int32",
+          "Text",
+          "Decimal"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Wallet\" (\"id\", \"userId\", \"currency\", \"amount\", \"label\") VALUES ($1::uuid, $2, $3::\"Currency\", $4, $5) RETURNING \"id\"",
+        "params": [
+          "Uuid",
+          "Int32",
+          "Text",
+          "Decimal",
+          "Text"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Group\" (\"id\", \"name\") VALUES ($1::uuid, $2) RETURNING \"id\"",
+        "params": [
+          "Uuid",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Group\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"_GroupToUser\" (\"B\", \"A\") VALUES ($1, $2::uuid) ON CONFLICT DO NOTHING",
+        "params": [
+          "Int32",
+          "Uuid"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"bio\", t0.\"userId\" FROM \"Profile\" AS t0 WHERE ((t0.\"userId\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE ((t0.\"authorId\" IN ($1))) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"text\", t0.\"postId\" FROM \"Comment\" AS t0 WHERE ((t0.\"postId\" IN ($1, $2)))",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE ((t0.\"userId\" IN ($1))) ORDER BY t0.\"currency\" ASC",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"B\", j.\"A\" FROM \"_GroupToUser\" AS j WHERE j.\"B\" IN ($1)",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Group\" AS t0 WHERE ((t0.\"id\" IN ($1::uuid)))",
+        "params": [
+          "Uuid"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "create.m2m_connect",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"email\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Post\" (\"title\", \"published\", \"views\", \"authorId\", \"createdAt\") VALUES ($1, $2, $3, $4, $5::timestamp) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Bool",
+          "Int32",
+          "Int32",
+          "NaiveDateTime"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Category\" (\"name\") VALUES ($1) RETURNING \"id\"",
+        "params": [
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"_CategoryToPost\" (\"B\", \"A\") VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Category\" (\"name\") VALUES ($1) RETURNING \"id\"",
+        "params": [
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"_CategoryToPost\" (\"B\", \"A\") VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"B\", j.\"A\" FROM \"_CategoryToPost\" AS j WHERE j.\"B\" IN ($1)",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE ((t0.\"id\" IN ($1, $2))) ORDER BY t0.\"name\" ASC",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "create.connectOrCreate",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Post\" (\"title\", \"published\", \"views\", \"createdAt\") VALUES ($1, $2, $3, $4::timestamp) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Bool",
+          "Int32",
+          "NaiveDateTime"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"_CategoryToPost\" (\"B\", \"A\") VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Category\" (\"name\") VALUES ($1) RETURNING \"id\"",
+        "params": [
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"_CategoryToPost\" (\"B\", \"A\") VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"B\", j.\"A\" FROM \"_CategoryToPost\" AS j WHERE j.\"B\" IN ($1)",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE ((t0.\"id\" IN ($1, $2)))",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "create.group2",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Group\" (\"id\", \"name\") VALUES ($1::uuid, $2) RETURNING \"id\"",
+        "params": [
+          "Uuid",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"_GroupToUser\" (\"A\", \"B\") VALUES ($1::uuid, $2) ON CONFLICT DO NOTHING",
+        "params": [
+          "Uuid",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"_GroupToUser\" (\"A\", \"B\") VALUES ($1::uuid, $2) ON CONFLICT DO NOTHING",
+        "params": [
+          "Uuid",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Group\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"A\", j.\"B\" FROM \"_GroupToUser\" AS j WHERE j.\"A\" IN ($1::uuid)",
+        "params": [
+          "Uuid"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" IN ($1, $2)))",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "create.pair",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Pair\" (\"a\", \"b\", \"label\") VALUES ($1, $2, $3) RETURNING \"a\", \"b\"",
+        "params": [
+          "Text",
+          "Int32",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"a\", t0.\"b\", t0.\"label\" FROM \"Pair\" AS t0 WHERE (t0.\"a\" = $1 AND t0.\"b\" = $2) LIMIT $3",
+        "params": [
+          "Text",
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "create.entry_compound_connect",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"a\", t0.\"b\", t0.\"label\" FROM \"Pair\" AS t0 WHERE (t0.\"a\" = $1 AND t0.\"b\" = $2) LIMIT $3",
+        "params": [
+          "Text",
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Entry\" (\"walletId\", \"pairA\", \"pairB\", \"amount\") VALUES ($1::uuid, $2, $3, $4) RETURNING \"id\"",
+        "params": [
+          "Uuid",
+          "Text",
+          "Int32",
+          "Decimal"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"walletId\", t0.\"pairA\", t0.\"pairB\", t0.\"amount\" FROM \"Entry\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"a\", t0.\"b\", t0.\"label\" FROM \"Pair\" AS t0 WHERE (((t0.\"a\" = $1 AND t0.\"b\" = $2)))",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "create.rate",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\", \"at\") VALUES ($1::date, $2, $3, $4::timestamptz) RETURNING \"date\", \"source\"",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal",
+          "DateTime"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\", t0.\"value\", t0.\"at\" FROM \"Rate\" AS t0 WHERE (t0.\"date\" = $1::date AND t0.\"source\" = $2) LIMIT $3",
+        "params": [
+          "Date",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "createMany",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3)",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3)",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "createMany.skipDuplicates",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3) ON CONFLICT DO NOTHING",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3) ON CONFLICT DO NOTHING",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "createManyAndReturn",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" (\"name\") VALUES ($1) RETURNING \"id\"",
+        "params": [
+          "Text"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Category\" (\"name\") VALUES ($1) RETURNING \"id\"",
+        "params": [
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (((t0.\"id\" = $1) OR (t0.\"id\" = $2)))",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "createManyAndReturn.select",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" (\"name\") VALUES ($1) RETURNING \"id\"",
+        "params": [
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (((t0.\"id\" = $1)))",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "findMany.all",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE 1=1 ORDER BY t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "findUnique.email",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"email\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "findUnique.missing",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "findUniqueOrThrow.missing",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "findFirstOrThrow.missing",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "findUnique.compound",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE (t0.\"userId\" = $1 AND t0.\"currency\" = $2::\"Currency\") LIMIT $3",
+        "params": [
+          "Int32",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "findUnique.compound_id",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\", t0.\"value\", t0.\"at\" FROM \"Rate\" AS t0 WHERE (t0.\"date\" = $1::date AND t0.\"source\" = $2) LIMIT $3",
+        "params": [
+          "Date",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "findUnique.compound_pair",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"a\", t0.\"b\", t0.\"label\" FROM \"Pair\" AS t0 WHERE (t0.\"a\" = $1 AND t0.\"b\" = $2) LIMIT $3",
+        "params": [
+          "Text",
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"walletId\", t0.\"pairA\", t0.\"pairB\", t0.\"amount\" FROM \"Entry\" AS t0 WHERE (((t0.\"pairA\" = $1 AND t0.\"pairB\" = $2)))",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "select.nested",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"email\" = $1)",
+        "params": [
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE ((t0.\"authorId\" IN ($1))) ORDER BY t0.\"title\" DESC",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"postId\", COUNT(*) FROM \"Comment\" AS t0 WHERE t0.\"postId\" IN ($1, $2) GROUP BY t0.\"postId\"",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"authorId\", COUNT(*) FROM \"Post\" AS t0 WHERE t0.\"authorId\" IN ($1) GROUP BY t0.\"authorId\"",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"userId\", COUNT(*) FROM \"Wallet\" AS t0 WHERE t0.\"userId\" IN ($1) GROUP BY t0.\"userId\"",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "include.order",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"email\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE ((t0.\"userId\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"bio\", t0.\"userId\" FROM \"Profile\" AS t0 WHERE ((t0.\"userId\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"managerId\", COUNT(*) FROM \"users\" AS t0 WHERE t0.\"managerId\" IN ($1) GROUP BY t0.\"managerId\"",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"authorId\", COUNT(*) FROM \"Post\" AS t0 WHERE t0.\"authorId\" IN ($1) GROUP BY t0.\"authorId\"",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"B\", COUNT(*) FROM \"_GroupToUser\" AS j INNER JOIN \"Group\" AS t0 ON t0.\"id\" = j.\"A\" WHERE j.\"B\" IN ($1) GROUP BY j.\"B\"",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"userId\", COUNT(*) FROM \"Wallet\" AS t0 WHERE t0.\"userId\" IN ($1) GROUP BY t0.\"userId\"",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "include.optional_null",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"title\" = $1)",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "include.nested_where",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE ((((t0.\"authorId\" IN ($1))) AND (t0.\"published\" = $2)))",
+        "params": [
+          "Int32",
+          "Bool"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "include.take_skip",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE 1=1 ORDER BY t0.\"id\" ASC",
+        "params": []
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"text\", t0.\"postId\" FROM \"Comment\" AS t0 WHERE (((t0.\"postId\" = $1))) ORDER BY t0.\"id\" ASC LIMIT $2 OFFSET $3",
+        "params": [
+          "Int32",
+          "Int",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"text\", t0.\"postId\" FROM \"Comment\" AS t0 WHERE (((t0.\"postId\" = $1))) ORDER BY t0.\"id\" ASC LIMIT $2 OFFSET $3",
+        "params": [
+          "Int32",
+          "Int",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"text\", t0.\"postId\" FROM \"Comment\" AS t0 WHERE (((t0.\"postId\" = $1))) ORDER BY t0.\"id\" ASC LIMIT $2 OFFSET $3",
+        "params": [
+          "Int32",
+          "Int",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"text\", t0.\"postId\" FROM \"Comment\" AS t0 WHERE (((t0.\"postId\" = $1))) ORDER BY t0.\"id\" ASC LIMIT $2 OFFSET $3",
+        "params": [
+          "Int32",
+          "Int",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "include.self",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE 1=1 ORDER BY t0.\"id\" ASC",
+        "params": []
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"managerId\" IN ($1, $2, $3)))",
+        "params": [
+          "Int32",
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "include.m2m",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE 1=1 ORDER BY t0.\"name\" ASC",
+        "params": []
+      },
+      {
+        "sql": "SELECT j.\"A\", j.\"B\" FROM \"_CategoryToPost\" AS j WHERE j.\"A\" IN ($1, $2, $3, $4, $5, $6)",
+        "params": [
+          "Int32",
+          "Int32",
+          "Int32",
+          "Int32",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE ((t0.\"id\" IN ($1, $2))) ORDER BY t0.\"title\" ASC",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"A\", COUNT(*) FROM \"_CategoryToPost\" AS j INNER JOIN \"Post\" AS t0 ON t0.\"id\" = j.\"B\" WHERE j.\"A\" IN ($1, $2, $3, $4, $5, $6) GROUP BY j.\"A\"",
+        "params": [
+          "Int32",
+          "Int32",
+          "Int32",
+          "Int32",
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "omit",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "omit.include",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"bio\", t0.\"userId\" FROM \"Profile\" AS t0 WHERE ((t0.\"userId\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "distinct",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE 1=1 ORDER BY t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "cursor",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE 1=1 AND ((t0.\"id\" >= $1)) ORDER BY t0.\"id\" ASC LIMIT $2 OFFSET $3",
+        "params": [
+          "Int32",
+          "Int",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "cursor.desc",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE 1=1 AND ((t0.\"id\" <= $1)) ORDER BY t0.\"id\" DESC LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "take.negative",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE 1=1 ORDER BY t0.\"id\" DESC LIMIT $1",
+        "params": [
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "orderBy.enum",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE 1=1 ORDER BY t0.\"currency\" DESC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "orderBy.relation",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE 1=1 ORDER BY (SELECT t1.\"email\" FROM \"users\" AS t1 WHERE t1.\"id\" = t0.\"authorId\" LIMIT 1) ASC, t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "orderBy.relation_count",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE 1=1 ORDER BY (SELECT COUNT(*) FROM \"Comment\" AS t1 WHERE t1.\"postId\" = t0.\"id\") DESC, t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "orderBy.nulls",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE 1=1 ORDER BY t0.\"name\" ASC NULLS FIRST",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.in",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" IN ($1, $2)))",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.notIn",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" NOT IN ($1))) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.not_null",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"name\" IS NOT NULL)) ORDER BY t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.null",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"name\" IS NULL)",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.not_value",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"name\" <> $1))",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.contains_insensitive",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"name\"::text ILIKE $1))",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.startsWith",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"email\"::text LIKE $1))",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.equals_insensitive",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((LOWER(t0.\"email\") = LOWER($1)))",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.OR_NOT",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (((t0.\"name\" = $1) OR (t0.\"name\" = $2)) AND (NOT (t0.\"id\" = $3)))",
+        "params": [
+          "Text",
+          "Text",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.AND_empty",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((1=1 AND (t0.\"id\" = $1)))",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.OR_empty",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (1=0)",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.NOT_OR",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (NOT (((t0.\"id\" = $1) OR (t0.\"id\" = $2))))",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.decimal_gte",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE ((t0.\"amount\" >= $1))",
+        "params": [
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.date_range",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\", t0.\"value\", t0.\"at\" FROM \"Rate\" AS t0 WHERE ((t0.\"date\" >= $1::date AND t0.\"date\" <= $2::date)) ORDER BY t0.\"source\" ASC",
+        "params": [
+          "Date",
+          "Date"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.enum_in",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE ((t0.\"currency\" IN ($1::\"Currency\", $2::\"Currency\")))",
+        "params": [
+          "Text",
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.list_has",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (($1 = ANY(t0.\"tags\")))",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.list_hasSome",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"roles\" && $1::\"role_t\"[]))",
+        "params": [
+          "Array<Enum>[Text, Text]"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.list_hasEvery",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"scores\" @> $1))",
+        "params": [
+          "Array<Int>[Int32, Int32]"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.list_isEmpty",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((COALESCE(array_length(t0.\"tags\", 1), 0) = 0)) ORDER BY t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.list_equals",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"tags\" = $1))",
+        "params": [
+          "Array<String>[Text, Text]"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.json_equals",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"meta\" = $1::jsonb))",
+        "params": [
+          "Json"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.json_path",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (((t0.\"data\" #> $1::text[]) = $2::jsonb))",
+        "params": [
+          "Array<String>[Text]",
+          "Json"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.json_string_contains",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (((jsonb_typeof((t0.\"data\" #> $1::text[])) = 'string' AND (t0.\"data\" #>> $1::text[]) LIKE $2)))",
+        "params": [
+          "Array<String>[Text]",
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.json_array_contains",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (((jsonb_typeof((t0.\"data\" #> $1::text[])) = 'array' AND (t0.\"data\" #> $1::text[]) @> $2::jsonb)))",
+        "params": [
+          "Array<String>[Text]",
+          "Json"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.json_not",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"meta\" <> $1::jsonb)) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Json"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.json_dbnull",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"data\" IS NULL)) ORDER BY t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.rel_some",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((EXISTS (SELECT 1 FROM \"Post\" AS t1 WHERE t1.\"authorId\" = t0.\"id\" AND (t1.\"published\" = $1))))",
+        "params": [
+          "Bool"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.rel_none",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((NOT EXISTS (SELECT 1 FROM \"Post\" AS t1 WHERE t1.\"authorId\" = t0.\"id\" AND 1=1))) ORDER BY t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.rel_every",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((NOT EXISTS (SELECT 1 FROM \"Post\" AS t1 WHERE t1.\"authorId\" = t0.\"id\" AND NOT ((t1.\"views\" > $1))))) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.rel_is",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE ((EXISTS (SELECT 1 FROM \"users\" AS t1 WHERE t1.\"id\" = t0.\"authorId\" AND (t1.\"name\" = $1))))",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.rel_direct",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (EXISTS (SELECT 1 FROM \"users\" AS t1 WHERE t1.\"id\" = t0.\"authorId\" AND (t1.\"name\" = $1)))",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.rel_isNot_null",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE ((EXISTS (SELECT 1 FROM \"users\" AS t1 WHERE t1.\"id\" = t0.\"authorId\"))) ORDER BY t0.\"id\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.rel_null",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (NOT EXISTS (SELECT 1 FROM \"users\" AS t1 WHERE t1.\"id\" = t0.\"authorId\"))",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "where.m2m_some",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE ((EXISTS (SELECT 1 FROM \"Category\" AS t1 INNER JOIN \"_CategoryToPost\" AS t2 ON t2.\"A\" = t1.\"id\" WHERE t2.\"B\" = t0.\"id\" AND (t1.\"name\" = $1)))) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "where.compound_in_where",
+    "statements": []
+  },
+  {
+    "label": "where.nested_relation",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"text\", t0.\"postId\" FROM \"Comment\" AS t0 WHERE (EXISTS (SELECT 1 FROM \"Post\" AS t1 WHERE t1.\"id\" = t0.\"postId\" AND (EXISTS (SELECT 1 FROM \"users\" AS t2 WHERE t2.\"id\" = t1.\"authorId\" AND ((t2.\"email\"::text LIKE $1)))))) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "count",
+    "statements": [
+      {
+        "sql": "SELECT COUNT(*) FROM \"users\" AS t0 WHERE 1=1",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "count.where",
+    "statements": [
+      {
+        "sql": "SELECT COUNT(*) FROM \"Post\" AS t0 WHERE (t0.\"published\" = $1)",
+        "params": [
+          "Bool"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "count.select",
+    "statements": [
+      {
+        "sql": "SELECT CAST(COUNT(*) AS BIGINT), CAST(COUNT(sub.\"name\") AS BIGINT), CAST(COUNT(sub.\"ratio\") AS BIGINT) FROM (SELECT t0.* FROM \"users\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "aggregate",
+    "statements": [
+      {
+        "sql": "SELECT CAST(SUM(sub.\"views\") AS BIGINT), CAST(AVG(sub.\"views\") AS DOUBLE PRECISION), MIN(sub.\"views\"), MIN(sub.\"title\"), MAX(sub.\"createdAt\"), CAST(COUNT(*) AS BIGINT), CAST(COUNT(sub.\"body\") AS BIGINT) FROM (SELECT t0.* FROM \"Post\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "aggregate.decimal",
+    "statements": [
+      {
+        "sql": "SELECT SUM(sub.\"amount\"), AVG(sub.\"amount\"), MAX(sub.\"amount\") FROM (SELECT t0.* FROM \"Wallet\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "aggregate.empty",
+    "statements": [
+      {
+        "sql": "SELECT SUM(sub.\"amount\"), CAST(COUNT(*) AS BIGINT), AVG(sub.\"amount\") FROM (SELECT t0.* FROM \"Wallet\" AS t0 WHERE (t0.\"currency\" = $1::\"Currency\")) AS sub",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "aggregate.bigint",
+    "statements": [
+      {
+        "sql": "SELECT CAST(SUM(sub.\"big\") AS BIGINT), CAST(AVG(sub.\"big\") AS DOUBLE PRECISION), MIN(sub.\"big\") FROM (SELECT t0.* FROM \"users\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "aggregate.count_true",
+    "statements": [
+      {
+        "sql": "SELECT CAST(COUNT(*) AS BIGINT) FROM (SELECT t0.* FROM \"Post\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "groupBy",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"published\", CAST(COUNT(*) AS BIGINT), CAST(COUNT(t0.\"body\") AS BIGINT), CAST(SUM(t0.\"views\") AS BIGINT) FROM \"Post\" AS t0 WHERE 1=1 GROUP BY t0.\"published\" ORDER BY t0.\"published\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "groupBy.having",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"authorId\", CAST(SUM(t0.\"views\") AS BIGINT) FROM \"Post\" AS t0 WHERE 1=1 GROUP BY t0.\"authorId\" HAVING (((CAST(SUM(t0.\"views\") AS BIGINT) > $1))) ORDER BY t0.\"authorId\" ASC",
+        "params": [
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "groupBy.order_count",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"authorId\", CAST(COUNT(t0.\"authorId\") AS BIGINT) FROM \"Post\" AS t0 WHERE 1=1 GROUP BY t0.\"authorId\" ORDER BY COUNT(t0.\"authorId\") DESC LIMIT $1",
+        "params": [
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "groupBy.multi",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\", MAX(t0.\"value\") FROM \"Rate\" AS t0 WHERE 1=1 GROUP BY t0.\"date\", t0.\"source\" ORDER BY t0.\"date\" ASC, t0.\"source\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "groupBy.enum",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"currency\", SUM(t0.\"amount\"), CAST(COUNT(*) AS BIGINT) FROM \"Wallet\" AS t0 WHERE 1=1 GROUP BY t0.\"currency\" ORDER BY t0.\"currency\" ASC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "aggregate.minmax_types",
+    "statements": [
+      {
+        "sql": "SELECT MIN(sub.\"role\"), MIN(sub.\"birthday\"), MIN(sub.\"active\"), MIN(sub.\"balance\"), MIN(sub.\"email\"), MAX(sub.\"created_at\"), MAX(sub.\"ratio\"), MAX(sub.\"role\") FROM (SELECT t0.* FROM \"users\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "aggregate.minmax_types2",
+    "statements": [
+      {
+        "sql": "SELECT MIN(sub.\"role\"), MIN(sub.\"birthday\"), MIN(sub.\"balance\"), MIN(sub.\"email\"), MIN(sub.\"big\"), MAX(sub.\"created_at\"), MAX(sub.\"ratio\"), MAX(sub.\"role\"), MAX(sub.\"name\") FROM (SELECT t0.* FROM \"users\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "aggregate.sum_float",
+    "statements": [
+      {
+        "sql": "SELECT CAST(SUM(sub.\"ratio\") AS DOUBLE PRECISION), SUM(sub.\"balance\"), CAST(AVG(sub.\"ratio\") AS DOUBLE PRECISION), AVG(sub.\"balance\") FROM (SELECT t0.* FROM \"users\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "aggregate.order_take",
+    "statements": [
+      {
+        "sql": "SELECT CAST(SUM(sub.\"views\") AS BIGINT), CAST(COUNT(*) AS BIGINT) FROM (SELECT t0.* FROM \"Post\" AS t0 WHERE 1=1 ORDER BY t0.\"views\" DESC LIMIT $1) AS sub",
+        "params": [
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "aggregate.cursor",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT CAST(COUNT(*) AS BIGINT), MAX(sub.\"id\") FROM (SELECT t0.* FROM \"Post\" AS t0 WHERE 1=1 AND ((t0.\"id\" >= $1)) ORDER BY t0.\"id\" ASC) AS sub",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "aggregate.empty_groups",
+    "statements": []
+  },
+  {
+    "label": "count.take",
+    "statements": [
+      {
+        "sql": "SELECT CAST(COUNT(*) AS BIGINT) FROM (SELECT t0.* FROM \"Post\" AS t0 WHERE 1=1 LIMIT $1 OFFSET $2) AS sub",
+        "params": [
+          "Int",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "count.cursor",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT CAST(COUNT(*) AS BIGINT) FROM (SELECT t0.* FROM \"Post\" AS t0 WHERE 1=1 AND ((t0.\"id\" >= $1)) ORDER BY t0.\"id\" ASC) AS sub",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "count.select_order",
+    "statements": [
+      {
+        "sql": "SELECT CAST(COUNT(sub.\"ratio\") AS BIGINT), CAST(COUNT(*) AS BIGINT) FROM (SELECT t0.* FROM \"users\" AS t0 WHERE 1=1) AS sub",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "groupBy.having_scalar",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"published\", CAST(COUNT(*) AS BIGINT) FROM \"Post\" AS t0 WHERE 1=1 GROUP BY t0.\"published\" HAVING (((t0.\"published\" = $1)))",
+        "params": [
+          "Bool"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "groupBy.having_count",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"authorId\", CAST(COUNT(*) AS BIGINT) FROM \"Post\" AS t0 WHERE 1=1 GROUP BY t0.\"authorId\" HAVING (((CAST(COUNT(t0.\"id\") AS BIGINT) >= $1))) ORDER BY t0.\"authorId\" ASC",
+        "params": [
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "groupBy.having_or",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"authorId\", CAST(AVG(t0.\"views\") AS DOUBLE PRECISION) FROM \"Post\" AS t0 WHERE 1=1 GROUP BY t0.\"authorId\" HAVING (((((CAST(AVG(t0.\"views\") AS DOUBLE PRECISION) > $1))) OR (((t0.\"authorId\" IS NULL))))) ORDER BY t0.\"authorId\" ASC",
+        "params": [
+          "Float"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "groupBy.having_not_by",
+    "statements": []
+  },
+  {
+    "label": "groupBy.having_decimal",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"currency\", SUM(t0.\"amount\") FROM \"Wallet\" AS t0 WHERE 1=1 GROUP BY t0.\"currency\" HAVING (((SUM(t0.\"amount\") > $1)))",
+        "params": [
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "groupBy.order_sum",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"published\", CAST(SUM(t0.\"views\") AS BIGINT) FROM \"Post\" AS t0 WHERE 1=1 GROUP BY t0.\"published\" ORDER BY SUM(t0.\"views\") DESC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "groupBy.take_skip",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"source\", CAST(COUNT(*) AS BIGINT) FROM \"Rate\" AS t0 WHERE 1=1 GROUP BY t0.\"source\" ORDER BY t0.\"source\" ASC LIMIT $1 OFFSET $2",
+        "params": [
+          "Int",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "groupBy.count_true",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"published\", CAST(COUNT(*) AS BIGINT) FROM \"Post\" AS t0 WHERE 1=1 GROUP BY t0.\"published\" ORDER BY t0.\"published\" DESC",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "groupBy.missing_order_field",
+    "statements": []
+  },
+  {
+    "label": "groupBy.decimal_avg_min_enum",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"userId\", AVG(t0.\"amount\"), MIN(t0.\"currency\") FROM \"Wallet\" AS t0 WHERE 1=1 GROUP BY t0.\"userId\"",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "createMany.avg_rates",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3)",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3)",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3)",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "aggregate.decimal_avg_repeat",
+    "statements": [
+      {
+        "sql": "SELECT AVG(sub.\"value\"), SUM(sub.\"value\") FROM (SELECT t0.* FROM \"Rate\" AS t0 WHERE (t0.\"source\" = $1)) AS sub",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "groupBy.decimal_avg_repeat",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"source\", AVG(t0.\"value\") FROM \"Rate\" AS t0 WHERE (t0.\"source\" = $1) GROUP BY t0.\"source\"",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.increment",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Post\" AS t0 SET \"views\" = \"views\" + $1 WHERE (((t0.\"id\" = $2) AND (t0.\"id\" = $3)))",
+        "params": [
+          "Int32",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.decimal_ops",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Wallet\" AS t0 SET \"amount\" = \"amount\" - $1 WHERE (((t0.\"id\" = $2::uuid) AND (t0.\"id\" = $3::uuid)))",
+        "params": [
+          "Decimal",
+          "Uuid",
+          "Uuid"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.decimal_multiply",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Wallet\" AS t0 SET \"amount\" = \"amount\" * $1 WHERE (((t0.\"id\" = $2::uuid) AND (t0.\"id\" = $3::uuid)))",
+        "params": [
+          "Decimal",
+          "Uuid",
+          "Uuid"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.list_push",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"users\" AS t0 SET \"tags\" = COALESCE(\"tags\", '{}') || $1, \"scores\" = $2, \"updatedAt\" = $3::timestamp WHERE (((t0.\"id\" = $4) AND (t0.\"id\" = $5)))",
+        "params": [
+          "Array<String>[Text]",
+          "Array<Int>[Int32]",
+          "NaiveDateTime",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.list_push_many",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"users\" AS t0 SET \"tags\" = COALESCE(\"tags\", '{}') || $1, \"updatedAt\" = $2::timestamp WHERE (((t0.\"id\" = $3) AND (t0.\"id\" = $4)))",
+        "params": [
+          "Array<String>[Text, Text]",
+          "NaiveDateTime",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.json_dbnull",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"users\" AS t0 SET \"data\" = $1, \"updatedAt\" = $2::timestamp WHERE (((t0.\"id\" = $3) AND (t0.\"id\" = $4)))",
+        "params": [
+          "Null<Json>",
+          "NaiveDateTime",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.json_jsonnull",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"users\" AS t0 SET \"data\" = $1, \"updatedAt\" = $2::timestamp WHERE (((t0.\"id\" = $3) AND (t0.\"id\" = $4)))",
+        "params": [
+          "Json",
+          "NaiveDateTime",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.compound",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Wallet\" AS t0 WHERE (t0.\"userId\" = $1 AND t0.\"currency\" = $2::\"Currency\") LIMIT $3",
+        "params": [
+          "Int32",
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Wallet\" AS t0 SET \"label\" = $1 WHERE (((t0.\"id\" = $2::uuid) AND (t0.\"userId\" = $3 AND t0.\"currency\" = $4::\"Currency\")))",
+        "params": [
+          "Text",
+          "Uuid",
+          "Int32",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.compound_id",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\" FROM \"Rate\" AS t0 WHERE (t0.\"date\" = $1::date AND t0.\"source\" = $2) LIMIT $3",
+        "params": [
+          "Date",
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Rate\" AS t0 SET \"value\" = \"value\" + $1 WHERE (((t0.\"date\" = $2::date AND t0.\"source\" = $3) AND (t0.\"date\" = $4::date AND t0.\"source\" = $5)))",
+        "params": [
+          "Decimal",
+          "Date",
+          "Text",
+          "Date",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\", t0.\"value\", t0.\"at\" FROM \"Rate\" AS t0 WHERE (t0.\"date\" = $1::date AND t0.\"source\" = $2) LIMIT $3",
+        "params": [
+          "Date",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.nested",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"users\" AS t0 SET \"name\" = $1, \"updatedAt\" = $2::timestamp WHERE (((t0.\"id\" = $3) AND (t0.\"id\" = $4)))",
+        "params": [
+          "Text",
+          "NaiveDateTime",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Profile\" AS t0 WHERE (t0.\"userId\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Profile\" AS t0 SET \"bio\" = $1 WHERE (t0.\"id\" = $2)",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Post\" AS t0 SET \"views\" = $1 WHERE (((t0.\"authorId\" = $2) AND (t0.\"published\" = $3)))",
+        "params": [
+          "Int32",
+          "Int32",
+          "Bool"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"bio\", t0.\"userId\" FROM \"Profile\" AS t0 WHERE ((t0.\"userId\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE ((t0.\"authorId\" IN ($1))) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.nested_upsert",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"users\" AS t0 SET \"updatedAt\" = $1::timestamp WHERE (((t0.\"id\" = $2) AND (t0.\"id\" = $3)))",
+        "params": [
+          "NaiveDateTime",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Profile\" AS t0 WHERE (t0.\"userId\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"Profile\" (\"bio\", \"userId\") VALUES ($1, $2) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"bio\", t0.\"userId\" FROM \"Profile\" AS t0 WHERE ((t0.\"userId\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.m2m_set",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "DELETE FROM \"_CategoryToPost\" WHERE \"B\" = $1",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "INSERT INTO \"_CategoryToPost\" (\"B\", \"A\") VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"B\", j.\"A\" FROM \"_CategoryToPost\" AS j WHERE j.\"B\" IN ($1)",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE ((t0.\"id\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.m2m_disconnect",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Group\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1)",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "DELETE FROM \"_GroupToUser\" WHERE \"A\" = $1::uuid AND \"B\" IN ($2)",
+        "params": [
+          "Uuid",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Group\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"A\", j.\"B\" FROM \"_GroupToUser\" AS j WHERE j.\"A\" IN ($1::uuid)",
+        "params": [
+          "Uuid"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.disconnect_optional",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Post\" AS t0 SET \"authorId\" = $1 WHERE (((t0.\"id\" = $2) AND (t0.\"id\" = $3)))",
+        "params": [
+          "Null<Int>",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "update.missing",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "updateMany",
+    "statements": [
+      {
+        "sql": "UPDATE \"Post\" AS t0 SET \"body\" = $1 WHERE (t0.\"published\" = $2)",
+        "params": [
+          "Text",
+          "Bool"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "updateMany.none",
+    "statements": [
+      {
+        "sql": "UPDATE \"Post\" AS t0 SET \"body\" = $1 WHERE (t0.\"id\" = $2)",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "updateManyAndReturn",
+    "statements": [
+      {
+        "sql": "UPDATE \"Category\" AS t0 SET \"name\" = $1 WHERE ((t0.\"name\"::text LIKE $2)) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.create",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Rate\" AS t0 (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3) ON CONFLICT (\"date\", \"source\") DO UPDATE SET \"value\" = $4 WHERE (t0.\"date\" = $5::date AND t0.\"source\" = $6) RETURNING \"date\", \"source\"",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal",
+          "Decimal",
+          "Date",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\", t0.\"value\", t0.\"at\" FROM \"Rate\" AS t0 WHERE (t0.\"date\" = $1::date AND t0.\"source\" = $2) LIMIT $3",
+        "params": [
+          "Date",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.update",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Rate\" AS t0 (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3) ON CONFLICT (\"date\", \"source\") DO UPDATE SET \"value\" = $4 WHERE (t0.\"date\" = $5::date AND t0.\"source\" = $6) RETURNING \"date\", \"source\"",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal",
+          "Decimal",
+          "Date",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\", t0.\"value\", t0.\"at\" FROM \"Rate\" AS t0 WHERE (t0.\"date\" = $1::date AND t0.\"source\" = $2) LIMIT $3",
+        "params": [
+          "Date",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.unique",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Category\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2002",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"users\" (\"email\", \"role\", \"tags\", \"balance\", \"big\", \"created_at\", \"updatedAt\", \"meta\", \"active\") VALUES ($1, $2::\"role_t\", $3, $4, $5, $6::timestamp, $7::timestamp, $8, $9) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Array<String>[]",
+          "Decimal",
+          "Int",
+          "NaiveDateTime",
+          "NaiveDateTime",
+          "Json",
+          "Bool"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2002_compound",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Wallet\" (\"id\", \"userId\", \"currency\", \"amount\") VALUES ($1::uuid, $2, $3::\"Currency\", $4) RETURNING \"id\"",
+        "params": [
+          "Uuid",
+          "Int32",
+          "Text",
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2002_compound_id",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Rate\" (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3) RETURNING \"date\", \"source\"",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2003",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Post\" (\"title\", \"published\", \"views\", \"authorId\", \"createdAt\") VALUES ($1, $2, $3, $4, $5::timestamp) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Bool",
+          "Int32",
+          "Int32",
+          "NaiveDateTime"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2025_delete",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2025_connect",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2025_nested_update",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"users\" AS t0 SET \"updatedAt\" = $1::timestamp WHERE (((t0.\"id\" = $2) AND (t0.\"id\" = $3)))",
+        "params": [
+          "NaiveDateTime",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Profile\" AS t0 WHERE (t0.\"userId\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2014",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Profile\" AS t0 WHERE (t0.\"userId\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.P2023_uuid",
+    "statements": []
+  },
+  {
+    "label": "err.validation_unknown_arg",
+    "statements": []
+  },
+  {
+    "label": "err.validation_missing",
+    "statements": []
+  },
+  {
+    "label": "err.validation_type",
+    "statements": []
+  },
+  {
+    "label": "err.validation_enum",
+    "statements": []
+  },
+  {
+    "label": "err.validation_select_include",
+    "statements": []
+  },
+  {
+    "label": "err.int_overflow",
+    "statements": []
+  },
+  {
+    "label": "err.check",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Comment\" (\"text\", \"postId\") VALUES ($1, $2) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.trigger",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" (\"name\") VALUES ($1) RETURNING \"id\"",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "err.int_overflow_create",
+    "statements": []
+  },
+  {
+    "label": "err.P2023_uuid_len",
+    "statements": []
+  },
+  {
+    "label": "err.P2023_uuid_groups",
+    "statements": []
+  },
+  {
+    "label": "delete",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Comment\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"text\", t0.\"postId\" FROM \"Comment\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "DELETE FROM \"Comment\" AS t0 WHERE (((t0.\"id\" = $1) AND (t0.\"id\" = $2)))",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "delete.cascade",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"title\", t0.\"body\", t0.\"published\", t0.\"views\", t0.\"authorId\", t0.\"createdAt\" FROM \"Post\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"text\", t0.\"postId\" FROM \"Comment\" AS t0 WHERE ((t0.\"postId\" IN ($1)))",
+        "params": [
+          "Int32"
+        ]
+      },
+      {
+        "sql": "DELETE FROM \"Post\" AS t0 WHERE (((t0.\"id\" = $1) AND (t0.\"id\" = $2)))",
+        "params": [
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "deleteMany",
+    "statements": [
+      {
+        "sql": "DELETE FROM \"Rate\" AS t0 WHERE (t0.\"source\" = $1)",
+        "params": [
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "deleteMany.all_entries",
+    "statements": [
+      {
+        "sql": "DELETE FROM \"Entry\" AS t0 WHERE 1=1",
+        "params": []
+      }
+    ]
+  },
+  {
+    "label": "upsert.native_insert",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" AS t0 (\"name\") VALUES ($1) ON CONFLICT (\"name\") DO UPDATE SET \"name\" = $2 WHERE (t0.\"name\" = $3) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.native_conflict",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" AS t0 (\"name\") VALUES ($1) ON CONFLICT (\"name\") DO UPDATE SET \"name\" = $2 WHERE (t0.\"name\" = $3) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.fallback_values_differ",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Category\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Category\" AS t0 SET \"name\" = $1 WHERE (((t0.\"id\" = $2) AND (t0.\"name\" = $3)))",
+        "params": [
+          "Text",
+          "Int32",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.fallback_empty_update",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Category\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.fallback_include",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Category\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Category\" AS t0 SET \"name\" = $1 WHERE (((t0.\"id\" = $2) AND (t0.\"name\" = $3)))",
+        "params": [
+          "Text",
+          "Int32",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"A\", j.\"B\" FROM \"_CategoryToPost\" AS j WHERE j.\"A\" IN ($1)",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.fallback_count",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Category\" AS t0 WHERE (t0.\"name\" = $1) LIMIT $2",
+        "params": [
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Category\" AS t0 SET \"name\" = $1 WHERE (((t0.\"id\" = $2) AND (t0.\"name\" = $3)))",
+        "params": [
+          "Text",
+          "Int32",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "SELECT j.\"A\", COUNT(*) FROM \"_CategoryToPost\" AS j INNER JOIN \"Post\" AS t0 ON t0.\"id\" = j.\"B\" WHERE j.\"A\" IN ($1) GROUP BY j.\"A\"",
+        "params": [
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.native_select",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" AS t0 (\"name\") VALUES ($1) ON CONFLICT (\"name\") DO UPDATE SET \"name\" = $2 WHERE (t0.\"name\" = $3) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.native_by_id",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" AS t0 (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = $3 WHERE (t0.\"id\" = $4) RETURNING \"id\"",
+        "params": [
+          "Int32",
+          "Text",
+          "Text",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.fallback_two_uniques",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1 AND t0.\"name\" = $2) LIMIT $3",
+        "params": [
+          "Int32",
+          "Text",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Category\" AS t0 SET \"name\" = $1 WHERE (((t0.\"id\" = $2) AND (t0.\"id\" = $3 AND t0.\"name\" = $4)))",
+        "params": [
+          "Text",
+          "Int32",
+          "Int32",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "category.after_upserts",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" (\"name\") VALUES ($1) RETURNING \"id\"",
+        "params": [
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"name\" FROM \"Category\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.native_increment",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"users\" AS t0 (\"email\", \"role\", \"tags\", \"balance\", \"big\", \"created_at\", \"updatedAt\", \"meta\", \"active\") VALUES ($1, $2::\"role_t\", $3, $4, $5, $6::timestamp, $7::timestamp, $8, $9) ON CONFLICT (\"email\") DO UPDATE SET \"big\" = t0.\"big\" + $10, \"tags\" = COALESCE(t0.\"tags\", '{}') || $11, \"updatedAt\" = $12::timestamp WHERE (t0.\"email\" = $13) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Array<String>[]",
+          "Decimal",
+          "Int",
+          "NaiveDateTime",
+          "NaiveDateTime",
+          "Json",
+          "Bool",
+          "Int",
+          "Array<String>[Text]",
+          "NaiveDateTime",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.native_compound",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Wallet\" AS t0 (\"id\", \"userId\", \"currency\", \"amount\") VALUES ($1::uuid, $2, $3::\"Currency\", $4) ON CONFLICT (\"userId\", \"currency\") DO UPDATE SET \"label\" = $5 WHERE (t0.\"userId\" = $6 AND t0.\"currency\" = $7::\"Currency\") RETURNING \"id\"",
+        "params": [
+          "Uuid",
+          "Int32",
+          "Text",
+          "Decimal",
+          "Text",
+          "Int32",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.fallback_nested",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Profile\" AS t0 WHERE (t0.\"userId\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Profile\" AS t0 SET \"bio\" = $1 WHERE (((t0.\"id\" = $2) AND (t0.\"userId\" = $3)))",
+        "params": [
+          "Text",
+          "Int32",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"bio\", t0.\"userId\" FROM \"Profile\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.profile_native_insert",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Profile\" AS t0 (\"bio\", \"userId\") VALUES ($1, $2) ON CONFLICT (\"userId\") DO UPDATE SET \"bio\" = $3 WHERE (t0.\"userId\" = $4) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Int32",
+          "Text",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"bio\", t0.\"userId\" FROM \"Profile\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.profile_native_conflict",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Profile\" AS t0 (\"bio\", \"userId\") VALUES ($1, $2) ON CONFLICT (\"userId\") DO UPDATE SET \"bio\" = $3 WHERE (t0.\"userId\" = $4) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Int32",
+          "Text",
+          "Int32"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"bio\", t0.\"userId\" FROM \"Profile\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.native_compound_id",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Rate\" AS t0 (\"date\", \"source\", \"value\") VALUES ($1::date, $2, $3) ON CONFLICT (\"date\", \"source\") DO UPDATE SET \"value\" = t0.\"value\" + $4 WHERE (t0.\"date\" = $5::date AND t0.\"source\" = $6) RETURNING \"date\", \"source\"",
+        "params": [
+          "Date",
+          "Text",
+          "Decimal",
+          "Decimal",
+          "Date",
+          "Text"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"date\", t0.\"source\", t0.\"value\", t0.\"at\" FROM \"Rate\" AS t0 WHERE (t0.\"date\" = $1::date AND t0.\"source\" = $2) LIMIT $3",
+        "params": [
+          "Date",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "upsert.native_unique_violation",
+    "statements": [
+      {
+        "sql": "INSERT INTO \"Category\" AS t0 (\"name\") VALUES ($1) ON CONFLICT (\"name\") DO UPDATE SET \"name\" = $2 WHERE (t0.\"name\" = $3) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text",
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.update_stale_filter",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1 AND t0.\"name\" = $2) LIMIT $3",
+        "params": [
+          "Int32",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.delete_stale_filter",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1 AND t0.\"name\" = $2) LIMIT $3",
+        "params": [
+          "Int32",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.update_filter_hit",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1 AND t0.\"email\" = $2 AND t0.\"active\" = $3) LIMIT $4",
+        "params": [
+          "Int32",
+          "Text",
+          "Bool",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"users\" AS t0 SET \"ratio\" = $1, \"updatedAt\" = $2::timestamp WHERE (((t0.\"id\" = $3) AND (t0.\"id\" = $4 AND t0.\"email\" = $5 AND t0.\"active\" = $6)))",
+        "params": [
+          "Float",
+          "NaiveDateTime",
+          "Int32",
+          "Int32",
+          "Text",
+          "Bool"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2",
+        "params": [
+          "Int32",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.unique_filter_op",
+    "statements": []
+  },
+  {
+    "label": "sec.unique_equals_obj",
+    "statements": []
+  },
+  {
+    "label": "sec.unique_null",
+    "statements": []
+  },
+  {
+    "label": "sec.unique_compound_op",
+    "statements": []
+  },
+  {
+    "label": "sec.unique_update_op",
+    "statements": []
+  },
+  {
+    "label": "sec.unique_nonunique_filter",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1 AND (t0.\"name\" <> $2)) LIMIT $3",
+        "params": [
+          "Int32",
+          "Text",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.limit_negative_delete",
+    "statements": []
+  },
+  {
+    "label": "sec.limit_negative_update",
+    "statements": []
+  },
+  {
+    "label": "sec.limit_zero_delete",
+    "statements": [
+      {
+        "sql": "DELETE FROM \"users\" AS t0 WHERE t0.\"id\" IN (SELECT t0.\"id\" FROM \"users\" AS t0 WHERE (t0.\"id\" = $1) LIMIT $2) AND (t0.\"id\" = $3)",
+        "params": [
+          "Int32",
+          "Int",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.updateMany_limit",
+    "statements": [
+      {
+        "sql": "UPDATE \"Post\" AS t0 SET \"body\" = $1 WHERE t0.\"id\" IN (SELECT t0.\"id\" FROM \"Post\" AS t0 WHERE ((t0.\"views\" >= $2)) LIMIT $3) AND ((t0.\"views\" >= $4))",
+        "params": [
+          "Text",
+          "Int32",
+          "Int",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.updateManyAndReturn_none",
+    "statements": [
+      {
+        "sql": "UPDATE \"Category\" AS t0 SET \"name\" = $1 WHERE (t0.\"name\" = $2) RETURNING \"id\"",
+        "params": [
+          "Text",
+          "Text"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.take_big_negative",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE 1=1 ORDER BY t0.\"id\" DESC LIMIT $1",
+        "params": [
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.decimal_filter_tiny",
+    "statements": []
+  },
+  {
+    "label": "sec.decimal_filter_huge",
+    "statements": []
+  },
+  {
+    "label": "sec.decimal_filter_scale",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE ((t0.\"amount\" > $1))",
+        "params": [
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.decimal_filter_in_range",
+    "statements": [
+      {
+        "sql": "SELECT COUNT(*) FROM \"Wallet\" AS t0 WHERE ((t0.\"amount\" > $1 AND t0.\"amount\" < $2))",
+        "params": [
+          "Decimal",
+          "Decimal"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.decimal_write_tiny",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.decimal_write_overflow",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Wallet\" AS t0 SET \"amount\" = $1 WHERE (((t0.\"id\" = $2::uuid) AND (t0.\"id\" = $3::uuid)))",
+        "params": [
+          "Decimal",
+          "Uuid",
+          "Uuid"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.decimal_write_round",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      },
+      {
+        "sql": "UPDATE \"Wallet\" AS t0 SET \"amount\" = $1 WHERE (((t0.\"id\" = $2::uuid) AND (t0.\"id\" = $3::uuid)))",
+        "params": [
+          "Decimal",
+          "Uuid",
+          "Uuid"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"id\", t0.\"userId\", t0.\"currency\", t0.\"amount\", t0.\"label\" FROM \"Wallet\" AS t0 WHERE (t0.\"id\" = $1::uuid) LIMIT $2",
+        "params": [
+          "Uuid",
+          "Int"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.in_long",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" = ANY($1))) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Array<Int>[Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32]"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.notIn_long",
+    "statements": [
+      {
+        "sql": "SELECT COUNT(*) FROM \"users\" AS t0 WHERE ((t0.\"id\" <> ALL($1)))",
+        "params": [
+          "Array<Int>[Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32]"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.in_long_strings",
+    "statements": [
+      {
+        "sql": "SELECT COUNT(*) FROM \"users\" AS t0 WHERE ((t0.\"email\" = ANY($1)))",
+        "params": [
+          "Array<String>[Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text]"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.in_long_enum",
+    "statements": [
+      {
+        "sql": "SELECT COUNT(*) FROM \"Wallet\" AS t0 WHERE ((t0.\"currency\" = ANY($1::\"Currency\"[])))",
+        "params": [
+          "Array<Enum>[Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text, Text]"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.include_long",
+    "statements": [
+      {
+        "sql": "SELECT t0.\"id\", t0.\"email\", t0.\"name\", t0.\"role\", t0.\"roles\", t0.\"tags\", t0.\"scores\", t0.\"balance\", t0.\"ratio\", t0.\"big\", t0.\"birthday\", t0.\"created_at\", t0.\"updatedAt\", t0.\"data\", t0.\"meta\", t0.\"active\", t0.\"managerId\" FROM \"users\" AS t0 WHERE ((t0.\"id\" = ANY($1))) ORDER BY t0.\"id\" ASC",
+        "params": [
+          "Array<Int>[Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32]"
+        ]
+      },
+      {
+        "sql": "SELECT t0.\"authorId\", COUNT(*) FROM \"Post\" AS t0 WHERE t0.\"authorId\" IN ($1, $2, $3) GROUP BY t0.\"authorId\"",
+        "params": [
+          "Int32",
+          "Int32",
+          "Int32"
+        ]
+      }
+    ]
+  },
+  {
+    "label": "sec.json_string_literal",
+    "statements": [
+      {
+        "sql": "SELECT COUNT(*) FROM \"users\" AS t0 WHERE (((jsonb_typeof((t0.\"data\" #> $1::text[])) = 'string' AND (t0.\"data\" #>> $1::text[]) LIKE $2)))",
+        "params": [
+          "Array<String>[Text]",
+          "Text"
+        ]
+      }
+    ]
+  }
+]
