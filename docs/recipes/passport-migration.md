@@ -219,7 +219,7 @@ have no request to record. They are the same differences the reference lists nex
 
 | The original | Corvis | Why |
 |---|---|---|
-| a guard that names an unknown strategy answers `500` on each request; `AuthGuard()` without a default only logs | `init()` fails with one error that lists every route and the missing name; two strategies with one name, an empty chain and conflicting defaults fail too | a typo must stop the deployment, not surface as a `500` in production |
+| a guard that names an unknown strategy answers `500` on each request; `AuthGuard()` without a default only logs | `init()` fails with one error that lists every route and the missing name; two strategies with one name, an empty chain and conflicting defaults fail too | a typo must stop the deployment, not surface as a `500` in production <!-- divergence: strategies.json: Corvis stops startup with an error namin --> |
 | `AuthGuard` runs in a WebSocket context, where it does not work either | it denies the message with `Forbidden resource` and the application warns once per gateway | no strategy can read a socket message; failing closed |
 | `req.user` is any request property | the typed user lives in its own slot; a later guard that sets its own user makes `User<T>` answer `401` | one guard decides the identity of a request |
 
@@ -227,11 +227,11 @@ have no request to record. They are the same differences the reference lists nex
 
 | The original (`passport-jwt`) | Corvis | Why |
 |---|---|---|
-| a token without `exp` is accepted, and never expires | refused by default; `.allow_missing_exp()` accepts it and logs a startup warning | a token that cannot expire cannot be revoked by waiting |
-| a non-numeric `iat` passes (it is checked only with `maxAge`) | fails | a malformed claim is not trusted |
-| a payload that is a string is handed to `validate` | the payload must be a JSON object | a validator always reads claims |
-| `fromHeader` finds only names written in lowercase | header names are matched ignoring case | HTTP headers are case-insensitive |
-| no limit on the token length | 8192 bytes by default, checked before decoding | bounded work for an unauthenticated request |
+| a token without `exp` is accepted, and never expires | refused by default; `.allow_missing_exp()` accepts it and logs a startup warning | a token that cannot expire cannot be revoked by waiting <!-- divergence: jwt.json: exp is required by default; the original --> |
+| a non-numeric `iat` passes (it is checked only with `maxAge`) | fails | a malformed claim is not trusted <!-- divergence: jwt.json: a non-numeric iat fails; the original ch --> |
+| a payload that is a string is handed to `validate` | the payload must be a JSON object | a validator always reads claims <!-- divergence: jwt.json: a payload that is not an object fails; t --> |
+| `fromHeader` finds only names written in lowercase | header names are matched ignoring case | HTTP headers are case-insensitive <!-- divergence: jwt.json: the header name is matched case-insensit --> |
+| no limit on the token length | 8192 bytes by default, checked before decoding | bounded work for an unauthenticated request <!-- divergence: jwt.json: the original has no token length limit;  --> |
 | the first cookie of a name wins | a cookie sent twice is no token | a cookie planted from a sibling subdomain must not authenticate |
 | the key provider and `validate` wait forever | both have a deadline and answer a `503` that is the same for every token | a slow dependency must not hold every request |
 | any secret length, `ES512` | an HMAC secret under 32 bytes stops startup; `ES512` is not available | RFC 7518 section 3.2; `jsonwebtoken` 9 has no `ES512` |
@@ -241,9 +241,9 @@ have no request to record. They are the same differences the reference lists nex
 
 | The original (`passport-local`) | Corvis | Why |
 |---|---|---|
-| the username and password are also read from the query string | only with `.allow_query_credentials()`, with a startup warning; by default the credential is missing | a password in a URL is written to logs |
-| a number or a boolean credential reaches `validate` | a non-string credential is missing | type confusion in a user lookup |
-| no limit besides the body size | a username or a password over 1024 bytes fails before the validator | bounded work before a hash |
+| the username and password are also read from the query string | only with `.allow_query_credentials()`, with a startup warning; by default the credential is missing | a password in a URL is written to logs <!-- divergence: local.json: the original also reads credentials from --> |
+| a number or a boolean credential reaches `validate` | a non-string credential is missing | type confusion in a user lookup <!-- divergence: local.json: the original passes the number to valida --> |
+| no limit besides the body size | a username or a password over 1024 bytes fails before the validator | bounded work before a hash <!-- divergence: local.json: the original has no limit besides the bo --> |
 | what `validate` does decides the answer: a throw for an unknown user and `false` for a wrong password are two answers | missing credentials, a wrong password and an unknown user give the same `401`, and the validator spends one hash verification either way | no user enumeration, by status or by time |
 
 ### API keys
@@ -251,34 +251,34 @@ have no request to record. They are the same differences the reference lists nex
 | The original (`passport-headerapikey`) | Corvis | Why |
 |---|---|---|
 | the strategy is named `headerapikey` | `"api-key"` (keep the old name with `NAME`) | consistent names |
-| a prefix is turned into an unescaped regular expression: `Key+` removes only `Key` and hands `+<key>` to `verify` | the prefix is removed literally | no surprise from a regular expression |
-| a key of any length, with a NUL byte, reaches `verify` (header or bearer source) | over 512 bytes, or with a control character, fails before the validator | bounded work, and no byte that a proxy and the application read differently |
-| one source, or the first one wins | every configured source is read, and two sources that carry different keys fail | a proxy that authenticates by one place cannot be bypassed through another |
+| a prefix is turned into an unescaped regular expression: `Key+` removes only `Key` and hands `+<key>` to `verify` | the prefix is removed literally | no surprise from a regular expression <!-- divergence: api_key.json: passport-headerapikey removes the prefix --> |
+| a key of any length, with a NUL byte, reaches `verify` (header or bearer source) | over 512 bytes, or with a control character, fails before the validator | bounded work, and no byte that a proxy and the application read differently <!-- divergence: api_key.json: the original has no limit of its own; Co --> <!-- divergence: api_key.json: the original passes a NUL character on t --> |
+| one source, or the first one wins | every configured source is read, and two sources that carry different keys fail | a proxy that authenticates by one place cannot be bypassed through another <!-- divergence: api_key.json: the original has one source (or the firs --> |
 | only a header | the default is the `X-Api-Key` header only; the query string is a source only when configured, with a warning | keys in URLs are logged |
 
 ### Sessions and signed cookies
 
 | The original (`express-session`, `cookie-signature`) | Corvis | Why |
 |---|---|---|
-| `destroy()` sends no `Set-Cookie` | the cookie is cleared (the browser drops it) and the record destroyed | a stale cookie must not linger |
-| an unmodified session sends no `Set-Cookie` after a secret rotation | it is sent signed with the current secret | rotation completes without waiting for a write |
-| `store.destroy` is called for the identifier of a session that was never stored | not called | no store call for nothing |
-| on logout `passport` saves the session without the user and then regenerates | the old record is destroyed and the new one created, with no intermediate save | one less window with a half-logged-out record |
+| `destroy()` sends no `Set-Cookie` | the cookie is cleared (the browser drops it) and the record destroyed | a stale cookie must not linger <!-- divergence: session.json: express-session sends no Set-Cookie afte --> |
+| an unmodified session sends no `Set-Cookie` after a secret rotation | it is sent signed with the current secret | rotation completes without waiting for a write <!-- divergence: session.json: express-session sends no Set-Cookie for  --> |
+| `store.destroy` is called for the identifier of a session that was never stored | not called | no store call for nothing <!-- divergence: session.json: express-session calls store.destroy for  --> |
+| on logout `passport` saves the session without the user and then regenerates | the old record is destroyed and the new one created, with no intermediate save | one less window with a half-logged-out record <!-- divergence: session.json: passport saves the session without the u --> |
 | no `SameSite`, no `Secure`, no timeouts, no size limit | `SameSite=Lax`, `Secure`, idle and absolute timeouts, a size limit per record (see [Divergences](/http/session#divergences-from-the-original)) | safe defaults |
 | a login through the guard stays when a later guard or the handler rejects the request | it is discarded when the request is rejected | no half-completed login |
-| a signed value of any length is verified | an input over 4096 bytes is refused before any HMAC is computed | bounded work |
+| a signed value of any length is verified | an input over 4096 bytes is refused before any HMAC is computed | bounded work <!-- divergence: signed_cookies.json: the original verifies any length; Corvis --> |
 
 ### OAuth2
 
 | The original (`passport-oauth2` and its profiles) | Corvis | Why |
 |---|---|---|
-| `state` and PKCE only with `state: true`, `pkce: true` and a session | always sent: `state`, `code_challenge` and `code_challenge_method=S256`; no way to turn `state` off | login CSRF and code interception |
+| `state` and PKCE only with `state: true`, `pkce: true` and a session | always sent: `state`, `code_challenge` and `code_challenge_method=S256`; no way to turn `state` off | login CSRF and code interception <!-- divergence: oauth2.json: Corvis always sends state and a PKCE cha --> |
 | a relative `callbackURL` is resolved against the `Host` header | the redirect URI is absolute and configured | a forged `Host` must not choose where the provider sends the code |
-| the token request has the headers of the original's HTTP client | it also sends `Accept: application/json` and its own `User-Agent` | the parts that matter (method, path, content type, form fields in order) are the same |
-| Google's access token goes in the URL of the profile request | a bearer header for every provider, never a token in a URL | URLs are logged |
-| GitHub: the primary e-mail as `{ value }`, or all of them with `allRawEmails` | every address as `{ value, primary, verified }`, and a `verified` flag on every e-mail; `verified_email()` | link accounts only by a verified address |
-| a provider `error` other than `access_denied` answers `500` | `401` | the request caused it, not the server |
-| the token endpoint rejecting the code (400 or 401) answers `500` | `401` | a reused or forged code is the request's fault |
+| the token request has the headers of the original's HTTP client | it also sends `Accept: application/json` and its own `User-Agent` | the parts that matter (method, path, content type, form fields in order) are the same <!-- divergence: oauth2.json: Corvis also sends Accept: application/js --> |
+| Google's access token goes in the URL of the profile request | a bearer header for every provider, never a token in a URL | URLs are logged <!-- divergence: oauth2.json: the original sends the Google access tok --> |
+| GitHub: the primary e-mail as `{ value }`, or all of them with `allRawEmails` | every address as `{ value, primary, verified }`, and a `verified` flag on every e-mail; `verified_email()` | link accounts only by a verified address <!-- divergence: oauth2.json: GitHub e-mails: with user:email Corvis k --> |
+| a provider `error` other than `access_denied` answers `500` | `401` | the request caused it, not the server <!-- divergence: oauth2.json: Corvis answers 401 for a provider error  --> |
+| the token endpoint rejecting the code (400 or 401) answers `500` | `401` | a reused or forged code is the request's fault <!-- divergence: oauth2.json: Corvis answers 401 when the token endpoi --> |
 | a callback with a state that is not this browser's answers `403` through plain `passport` | `401` through `AuthGuard` | the uniform failure |
 
 **Keeping this list current.** The rows come from the `divergence` marks of `crates/corvis/tests/fixtures/auth/*.json`. To

@@ -1,12 +1,22 @@
 ---
-status: partial
+status: documented
 ---
 
 # Passport (autenticación)
 
 Corvis tiene el **modelo de estrategias** de Passport y de su integración con el framework original: estrategias registradas por nombre, un `AuthGuard` que las ejecuta, el usuario en la request y el `401` que responde el original cuando todas las estrategias fallan. Su comportamiento se comprueba contra la integración original de passport (12.0.1) sobre `passport` 0.7.0 con respuestas grabadas.
 
-Lo que hay ahora es el núcleo: el trait `Strategy` que implementas para tus propias estrategias, `AuthGuard`, `PassportModule` y el parámetro `User<T>`, la [estrategia JWT](#la-estrategia-jwt), la [estrategia local](#estrategia-local-usuario-y-contrasena) (usuario y contraseña, con la feature `auth-local`) y las [API keys](#api-keys) (con la feature `auth-api-key`), además de la guía para [escribir una estrategia](#escribir-una-estrategia) propia. Las [sesiones](#sesiones) (la feature `auth-session`) inician sesión de un usuario y lo restauran en las peticiones siguientes. El [login OAuth2](#oauth2-google-github-y-otros) (Google, GitHub y cualquier proveedor, con la feature `auth-oauth2`) hace el flujo de código de autorización. Un [guard propio sobre `JwtModule`](#alternativa-jwtmodule-guards) sigue disponible.
+Hay cinco estrategias disponibles, cada una detrás de una feature de cargo, y el trait `Strategy` te permite [escribir la tuya](#escribir-una-estrategia):
+
+| Estrategia | Feature de cargo | Port de | Sección |
+|---|---|---|---|
+| JWT | `jwt` (activa por defecto) | `passport-jwt` 4.0.1 | [La estrategia JWT](#la-estrategia-jwt) |
+| Local (usuario y contraseña) | `auth-local` | `passport-local` 1.0.0 | [Estrategia local](#estrategia-local-usuario-y-contrasena) |
+| API key | `auth-api-key` | `passport-headerapikey` 1.2.2 | [API keys](#api-keys) |
+| Sesión | `auth-session` | `passport.session()` sobre `express-session` | [Sesiones](#sesiones) |
+| OAuth2 (Google, GitHub y cualquier proveedor) | `auth-oauth2` (trae `auth-session`) | `passport-oauth2` 1.8.0 y sus perfiles de Google y GitHub | [OAuth2](#oauth2-google-github-y-otros) |
+
+Esta página es la referencia. Está organizada así: el modelo, escribir una estrategia, `AuthGuard`, luego una sección por estrategia con sus opciones, límites y las diferencias con su original, después el [índice de las diferencias](#diferencias-con-el-original-por-estrategia), cómo se prueba el port, y la [alternativa](#alternativa-jwtmodule-guards) de un guard propio sobre `JwtModule`. Para elegir una estrategia y ver una aplicación funcionando, lee la guía, [Autenticación](/es/security/authentication) (el código está en `examples/auth-app`); para traer una configuración de Passport, [Migrar desde Passport](/es/recipes/passport-migration); para lo que el módulo protege y lo que deja en tus manos, [Asegurar la autenticación](/es/security/authentication-security) y el [modelo de amenazas](/es/security/authentication-threat-model).
 
 ## El modelo
 
@@ -849,9 +859,25 @@ El callback registra `code` y `state` como parámetros de query de credenciales,
 
 `crates/corvis/tests/fixtures/auth/oauth2.mjs` ejecuta los cuatro paquetes contra un proveedor falso y graba las redirecciones de autorización, las peticiones de token y de perfil, los perfiles entregados a `validate()`, 14 resultados de callback y la petición de refresh (`oauth2.json`); `crates/corvis/tests/auth_oauth2_original.rs` los reproduce contra un proveedor simulado en `127.0.0.1` sin Node ni red, y comprueba las divergencias marcadas a partir de la especificación. `examples/cats-app` tiene un login con GitHub cuyos endpoints vienen de la configuración, probado contra un proveedor simulado local.
 
+## Diferencias con el original, por estrategia
+
+Cada estrategia tiene su propia lista de diferencias deliberadas junto a sus opciones. Este es el índice; la
+[página de migración](/es/recipes/passport-migration#que-responde-distinto-a-proposito) tiene las mismas diferencias como tablas
+(qué hace el original, qué hace Corvis y por qué), construidas a partir de los casos que los tests diferenciales marcan como divergencias.
+
+| Área | Dónde está su lista |
+|---|---|
+| Núcleo de estrategias y `AuthGuard` (errores al arrancar, gateways de WebSocket, el usuario tipado, sesiones opcionales) | [Diferencias con el original](#diferencias-con-el-original) |
+| JWT | [Diferencias con `passport-jwt`](#diferencias-con-passport-jwt) |
+| Local | [Diferencias con passport-local](#diferencias-con-passport-local) |
+| API keys | [Diferencias con passport-headerapikey](#diferencias-con-passport-headerapikey) |
+| OAuth2 | [Diferencias con `passport-oauth2`](#diferencias-con-passport-oauth2) |
+| Sesiones | [Diferencias con el original](/es/http/session#diferencias-con-el-original) |
+| Cookies firmadas | [Cookies firmadas](/es/http/cookies#cookies-firmadas) |
+
 ## Pruebas diferenciales
 
-Cada caso de arriba está grabado del original: `crates/corvis/tests/fixtures/auth/strategies.mjs` ejecuta la integración original de passport (12.0.1) sobre `passport` 0.7.0 con estrategias propias de `passport-strategy` 1.0.0 llevadas a cada resultado, y `tests/auth_strategies.rs` reproduce las respuestas grabadas contra las mismas rutas en Corvis, sin necesitar Node al ejecutar los tests. Cada tipo de estrategia que llegue después añade sus propios casos.
+Cada caso de arriba está grabado del original: `crates/corvis/tests/fixtures/auth/strategies.mjs` ejecuta la integración original de passport (12.0.1) sobre `passport` 0.7.0 con estrategias propias de `passport-strategy` 1.0.0 llevadas a cada resultado, y `tests/auth_strategies.rs` reproduce las respuestas grabadas contra las mismas rutas en Corvis, sin necesitar Node al ejecutar los tests. Cada estrategia tiene sus propios casos grabados, descritos en su sección ("Pruebas contra el original").
 
 ## Alternativa: `JwtModule` + guards
 
@@ -883,4 +909,4 @@ impl CanActivate for AuthGuard {
 }
 ```
 
-El flujo completo (login, guard, usuario actual, roles) se explica en [Autenticación](/es/security/authentication) y [Autorización](/es/security/authorization). Para un inicio de sesión con usuario y contraseña, el "paso local" de Passport es un endpoint propio que verifica la contraseña (ver [Cifrado y hashing](/es/security/encryption-and-hashing)) y devuelve el token.
+Prefiere las estrategias de arriba: te dan las comprobaciones al arrancar, el `401` uniforme, los plazos, las cadenas y el log de la petición con datos ocultos. El camino con un guard propio es el correcto cuando necesitas una regla que ninguna estrategia expresa. El flujo completo con estrategias (login, guard, usuario actual, roles) se explica en [Autenticación](/es/security/authentication) y [Autorización](/es/security/authorization).

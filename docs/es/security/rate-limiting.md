@@ -308,7 +308,8 @@ contraseña, una escritura en el almacén de sesiones, una petición a un provee
 tus recursos. Dos cosas la protegen: un límite por **cliente** y un límite por **cuenta**, y ambos deben ejecutarse
 **antes** de la autenticación.
 
-La receta de abajo limita el login de la estrategia local a 10 intentos por minuto por dirección de cliente y a 5
+La [guía de autenticación](/es/security/authentication#usuario-y-contrasena) muestra la ruta de login, y `examples/auth-app` ejecuta
+esta receta en sus logins de token y de sesión y limita las dos rutas de su login OAuth2. La receta de abajo limita el login de la estrategia local a 10 intentos por minuto por dirección de cliente y a 5
 intentos por cuenta cada cinco minutos, desde cualquier cantidad de direcciones. `login_tracker` devuelve el tracker del
 segundo límite: lee de la misma petición el usuario que leerá la estrategia local, con las mismas opciones (el nombre del
 campo, rutas del estilo `user[email]`, primero el body y después el query cuando la estrategia lo lee, el límite de

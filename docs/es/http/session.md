@@ -4,7 +4,7 @@ status: documented
 
 # Sesión
 
-Las sesiones de servidor funcionan como `express-session`: el navegador guarda una cookie firmada con un identificador y
+Las sesiones de servidor funcionan como `express-session` (la [guía de autenticación](/es/security/authentication#sesiones) muestra el login y el logout con ellas, y [Proteger la autenticación](/es/security/authentication-security) qué hacer antes de desplegar): el navegador guarda una cookie firmada con un identificador y
 los datos viven en un almacén en el servidor. La cookie y los registros guardados usan el mismo formato que
 `express-session` 1.19.0, así que una aplicación Node y una de Corvis que comparten secreto y almacén pueden leer las
 sesiones de la otra (ver [Lectura cruzada con una app Node](#lectura-cruzada-con-una-app-node)).

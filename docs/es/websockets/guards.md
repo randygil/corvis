@@ -4,7 +4,7 @@ status: documented
 
 # Guards
 
-Un guard de gateway es el mismo `CanActivate` que usas en HTTP. Recibe un `ExecutionContext` y decide si el mensaje llega al handler. Por eso un único guard puede proteger rutas REST y mensajes WebSocket a la vez.
+Un guard de gateway es el mismo `CanActivate` que usas en HTTP. El `AuthGuard` de `corvis::auth` es la excepción: deniega los mensajes WebSocket, y un gateway autentica en `handle_connection` (ver [Autenticación](/es/security/authentication#websockets)). Recibe un `ExecutionContext` y decide si el mensaje llega al handler. Por eso un único guard puede proteger rutas REST y mensajes WebSocket a la vez.
 
 ## Declararlos
 
