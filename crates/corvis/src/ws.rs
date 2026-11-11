@@ -173,8 +173,8 @@ impl<M: QueueItem> OutQueue<M> {
         if items.is_empty() {
             return Ok(());
         }
-        let sizes: Vec<usize> = items.iter().map(|m| m.size()).collect();
-        let total: usize = sizes.iter().sum();
+        // Sizes are cheap to compute: once for the total, once more as each item is queued.
+        let total: usize = items.iter().map(QueueItem::size).sum();
         let mut s = self.lock();
         if s.closed {
             return Err(PushError::Closed);
@@ -183,7 +183,8 @@ impl<M: QueueItem> OutQueue<M> {
         if pending > 0 && pending + total > self.limit {
             return Err(PushError::Full);
         }
-        for (m, size) in items.into_iter().zip(sizes) {
+        for m in items {
+            let size = m.size();
             s.items.push_back((m, size, None));
         }
         s.queued += total;

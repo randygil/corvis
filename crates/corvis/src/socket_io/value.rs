@@ -351,6 +351,12 @@ impl IoValue {
 
     /// `true` when a [`Binary`] is anywhere in the value.
     pub fn contains_binary(&self) -> bool {
+        match self {
+            IoValue::Binary(_) => return true,
+            IoValue::Array(_) | IoValue::Object(_) => {}
+            _ => return false,
+        }
+        // A stack rather than recursion: a value built by the application may be nested deeper than `MAX_DEPTH`.
         let mut stack = vec![self];
         while let Some(v) = stack.pop() {
             match v {

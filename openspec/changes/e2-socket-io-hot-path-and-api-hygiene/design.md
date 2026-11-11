@@ -666,3 +666,31 @@ the 4 KiB cookie that Decision 3 removes.
 - Unit test `the_query_keeps_only_the_three_parameters_the_engine_reads` (10,000 extra parameters).
 - `cargo doc -p corvis --features socket-io --no-deps`: no warning in `socket_io/` or `ws.rs` (the warnings it prints
   are in `z/regex.rs` and `posture.rs`, untouched here).
+
+### Group 5: fewer copies, and the `tokio-tungstenite` upgrade (fallback taken)
+
+- **Task 5.4 took the fallback of Decision 4.** Every `tungstenite` release with `Bytes` payloads (0.26.2, 0.27, 0.28,
+  0.29, 0.30, the latest) depends on `rand` 0.9 while the workspace uses `rand` 0.8, and `deny.toml` denies a second
+  generation of `rand` (and, for 0.30, of `digest` through `sha1` 0.11): `cargo deny check` fails with every one of them.
+  Allowing it is a decision on the dependency policy of the authentication threat model, outside the files Decision 4
+  lists, so the upgrade goes to its own issue and the other three items landed. The upgrade itself was done to the
+  point of compiling the whole workspace with 0.30 (MSRV 1.85, below the workspace's 1.89): about forty call sites in
+  `ws.rs`, `websockets.rs`, `engine/websocket.rs` and the tests that build `tungstenite` messages; `CloseFrame` lost its
+  lifetime and `WebSocketConfig` became non-exhaustive (built with its setters). One thing the follow-up must keep:
+  from 0.26 the library allocates a 128 KiB read buffer for every connection when it starts (0.24 read through a
+  4 KiB chunk), so every server WebSocket must set `read_buffer_size` back to 4 KiB, or an idle connection costs 32
+  times more. The patch of that work is handed over with the implementation report.
+- With 0.24 what Decision 4 removes: the encoder writes the Engine.IO type, the header and the JSON into one buffer
+  (`count_binary`, bounded by `MAX_DEPTH`, counts the attachments first, allocating nothing; slack over an eighth is
+  shrunk); `Encoded` moves by value into the queue as the hidden `EngineMessage::Framed`, which a WebSocket frame takes
+  without a copy (`Packet::into_ws`, consuming); a send without attachments queues one message (no group vector);
+  `push_group` computes sizes without a vector; `contains_binary` allocates nothing for a value without containers.
+  `EngineMessage::Shared` holds the framed text too, so its length is the same and polling writes it as it is.
+- What stays until the upgrade: a broadcast's text is still copied into a `String` per WebSocket recipient when its
+  frame is written, and a binary attachment into a `Vec<u8>` (0.24 takes owned buffers). The spec scenarios
+  "Broadcast" and "Binary attachment" of "An emit is encoded once" are therefore not met; "One recipient" is
+  (`a_framed_message_is_its_own_websocket_frame_without_a_copy`).
+- Tests: `framed_and_shared_messages_are_the_same_bytes_as_a_text_message` (lengths, polling bytes and frames equal to
+  those of the plain message), `a_framed_message_is_its_own_websocket_frame_without_a_copy` (pointer identity),
+  `an_emit_queues_the_encoder_s_buffer_and_a_broadcast_one_shared_buffer`; the parser fixtures of the npm encoder pass
+  unchanged (they now compare `Encoded::packet`, the text without the type).

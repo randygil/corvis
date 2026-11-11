@@ -41,7 +41,7 @@ type Stream = SplitStream<WebSocketStream<UpgradedIo>>;
 type Writer = JoinHandle<(WriteEnd, Sink)>;
 
 fn encode(packet: Packet) -> Message {
-    match packet.encode_ws() {
+    match packet.into_ws() {
         WsFrame::Text(t) => Message::Text(t),
         WsFrame::Binary(b) => Message::Binary(b.to_vec()),
     }

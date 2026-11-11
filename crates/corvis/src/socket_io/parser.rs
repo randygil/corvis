@@ -156,19 +156,27 @@ impl Limits {
 /// An encoded packet: one text message, then its attachments (each a binary message).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Encoded {
+    /// The Engine.IO message: its type `4`, then the Socket.IO packet. The engine queues it as it is
+    /// (`EngineMessage::Framed`), so neither the queue nor the transport copies it to put the type in front.
     pub(crate) text: String,
     pub(crate) attachments: Vec<Binary>,
 }
 
 impl Encoded {
+    /// The Socket.IO packet, without the Engine.IO type in front.
+    #[cfg(test)]
+    pub(crate) fn packet(&self) -> &str {
+        &self.text[1..]
+    }
+
     /// Moves the text into a buffer that many queues can share: one copy of the packet for a whole broadcast.
     pub(crate) fn share(self) -> SharedEncoded {
-        SharedEncoded { text: Arc::from(self.text), attachments: self.attachments.iter().map(Binary::bytes).collect() }
+        SharedEncoded { text: Arc::from(self.text), attachments: self.attachments.into_iter().map(Binary::into_bytes).collect() }
     }
 }
 
-/// An encoded packet whose text and attachments are reference counted, so every recipient of a broadcast queues the
-/// same bytes.
+/// An encoded packet whose text (the Engine.IO message, as in [`Encoded`]) and attachments are reference counted, so
+/// every recipient of a broadcast queues the same bytes.
 #[derive(Debug, Clone)]
 pub(crate) struct SharedEncoded {
     pub(crate) text: Arc<str>,
@@ -244,14 +252,27 @@ impl Writer {
     }
 }
 
-/// Encodes a packet. A packet whose arguments hold binary data at any depth becomes BINARY_EVENT / BINARY_ACK, with
-/// the placeholders numbered depth first, as `deconstructPacket` does; more than `max_attachments` of them fail.
+/// The binary values of `value` at `depth`, not looking below `MAX_DEPTH`: the writer refuses a value nested deeper
+/// (`TooDeep`) before it gets there. Allocates nothing.
+fn count_binary(value: &IoValue, depth: usize) -> usize {
+    match value {
+        IoValue::Binary(_) => 1,
+        IoValue::Array(items) if depth < MAX_DEPTH => items.iter().map(|item| count_binary(item, depth + 1)).sum(),
+        IoValue::Object(entries) if depth < MAX_DEPTH => entries.values().map(|item| count_binary(item, depth + 1)).sum(),
+        _ => 0,
+    }
+}
+
+/// Encodes a packet into the Engine.IO message that carries it (see [`Encoded::text`]): the header, then the JSON, in
+/// one buffer. A packet whose arguments hold binary data at any depth becomes BINARY_EVENT / BINARY_ACK, with the
+/// placeholders numbered depth first, as `deconstructPacket` does; more than `max_attachments` of them fail.
 pub(crate) fn encode(packet: &Packet, max_attachments: usize) -> Result<Encoded, EncodeError> {
-    let binary = match &packet.body {
-        Body::Event { args, .. } | Body::Ack { args, .. } => args.iter().any(IoValue::contains_binary),
-        _ => false,
+    // The attachments are counted first, so the count can be written in the header before the JSON.
+    let attachments = match &packet.body {
+        Body::Event { args, .. } | Body::Ack { args, .. } => args.iter().map(|arg| count_binary(arg, 1)).sum(),
+        _ => 0,
     };
-    let mut w = Writer { out: Vec::new(), attachments: Vec::new(), max_attachments, binary };
+    let binary = attachments > 0;
     let (kind, id) = match &packet.body {
         Body::Connect(_) => (0u8, None),
         Body::Disconnect => (1, None),
@@ -259,7 +280,20 @@ pub(crate) fn encode(packet: &Packet, max_attachments: usize) -> Result<Encoded,
         Body::Ack { id, .. } => (if binary { 6 } else { 3 }, Some(*id)),
         Body::ConnectError(_) => (4, None),
     };
-    // The JSON first: the attachment count goes in front of it.
+    let mut out = Vec::with_capacity(64 + packet.nsp.len());
+    out.push(b'4');
+    out.push(b'0' + kind);
+    if binary {
+        write!(out, "{attachments}-").expect("writing to a Vec cannot fail");
+    }
+    if packet.nsp != "/" && !packet.nsp.is_empty() {
+        out.extend_from_slice(packet.nsp.as_bytes());
+        out.push(b',');
+    }
+    if let Some(id) = id {
+        write!(out, "{id}").expect("writing to a Vec cannot fail");
+    }
+    let mut w = Writer { out, attachments: Vec::with_capacity(attachments), max_attachments, binary };
     match &packet.body {
         Body::Connect(Some(v)) | Body::ConnectError(v) => w.value(v, 0)?,
         Body::Connect(None) | Body::Disconnect => {}
@@ -283,25 +317,16 @@ pub(crate) fn encode(packet: &Packet, max_attachments: usize) -> Result<Encoded,
             w.out.push(b']');
         }
     }
-    let Writer { out: json, attachments, .. } = w;
-    let mut head = String::with_capacity(32 + packet.nsp.len());
-    head.push((b'0' + kind) as char);
-    if binary {
-        head.push_str(&attachments.len().to_string());
-        head.push('-');
+    let Writer { mut out, attachments: found, .. } = w;
+    debug_assert_eq!(found.len(), attachments, "the count and the writer see the same binary values");
+    // The buffer grew by doubling and stays queued until it is written: slack beyond an eighth of its length is given
+    // back (a shrinking reallocation, in place with the system allocator).
+    if out.capacity() - out.len() > out.len() / 8 {
+        out.shrink_to_fit();
     }
-    if packet.nsp != "/" && !packet.nsp.is_empty() {
-        head.push_str(&packet.nsp);
-        head.push(',');
-    }
-    if let Some(id) = id {
-        head.push_str(&id.to_string());
-    }
-    let mut text = head.into_bytes();
-    text.extend_from_slice(&json);
-    // The JSON is UTF-8 by construction (serde_json writes valid UTF-8 and the rest is ASCII).
-    let text = String::from_utf8(text).expect("an encoded packet is valid UTF-8");
-    Ok(Encoded { text, attachments })
+    // UTF-8 by construction: serde_json writes valid UTF-8, a namespace is a `String`, and the rest is ASCII.
+    let text = String::from_utf8(out).expect("an encoded packet is valid UTF-8");
+    Ok(Encoded { text, attachments: found })
 }
 
 // --------------------------------------------------------------------------------------------------- decoding
@@ -1048,7 +1073,7 @@ mod fixture_tests {
             let packet = packet_from_case(&case["packet"]);
             let encoded = encode(&packet, 10).unwrap_or_else(|e| panic!("{name}: {e:?}"));
             let expected = case["encoded"].as_array().unwrap();
-            assert_eq!(encoded.text, expected[0].as_str().unwrap(), "{name}");
+            assert_eq!(encoded.packet(), expected[0].as_str().unwrap(), "{name}");
             let attachments: Vec<String> = encoded.attachments.iter().map(|a| hex(a.as_bytes())).collect();
             let wanted: Vec<String> = expected[1..].iter().map(|e| e["$binary"].as_str().unwrap().to_string()).collect();
             assert_eq!(attachments, wanted, "{name}");
@@ -1121,26 +1146,27 @@ mod tests {
 
     #[test]
     fn packets_encode_as_the_npm_parser_does() {
-        assert_eq!(enc(&event("/", None, "hi", vec![])).text, r#"2["hi"]"#);
+        assert_eq!(enc(&event("/", None, "hi", vec![])).packet(), r#"2["hi"]"#);
         assert_eq!(
-            enc(&event("/", None, "hi", vec![v(json!(1)), v(json!("two")), v(json!({ "three": [3, null, true] }))])).text,
+            enc(&event("/", None, "hi", vec![v(json!(1)), v(json!("two")), v(json!({ "three": [3, null, true] }))])).packet(),
             r#"2["hi",1,"two",{"three":[3,null,true]}]"#
         );
-        assert_eq!(enc(&event("/admin", Some(12), "x", vec![])).text, r#"2/admin,12["x"]"#);
-        assert_eq!(enc(&Packet { nsp: "/".into(), body: Body::Ack { id: 0, args: vec![v(json!("a"))] } }).text, r#"30["a"]"#);
-        assert_eq!(enc(&Packet { nsp: "/".into(), body: Body::Disconnect }).text, "1");
-        assert_eq!(enc(&Packet { nsp: "/a".into(), body: Body::Disconnect }).text, "1/a,");
-        assert_eq!(enc(&Packet { nsp: "/".into(), body: Body::Connect(Some(v(json!({ "sid": "abc" })))) }).text, r#"0{"sid":"abc"}"#);
-        assert_eq!(enc(&Packet { nsp: "/a".into(), body: Body::Connect(None) }).text, "0/a,");
+        assert_eq!(enc(&event("/admin", Some(12), "x", vec![])).packet(), r#"2/admin,12["x"]"#);
+        assert_eq!(enc(&Packet { nsp: "/".into(), body: Body::Ack { id: 0, args: vec![v(json!("a"))] } }).packet(), r#"30["a"]"#);
+        assert_eq!(enc(&Packet { nsp: "/".into(), body: Body::Disconnect }).packet(), "1");
+        assert_eq!(enc(&Packet { nsp: "/a".into(), body: Body::Disconnect }).packet(), "1/a,");
+        assert_eq!(enc(&Packet { nsp: "/".into(), body: Body::Connect(Some(v(json!({ "sid": "abc" })))) }).packet(), r#"0{"sid":"abc"}"#);
+        assert_eq!(enc(&Packet { nsp: "/a".into(), body: Body::Connect(None) }).packet(), "0/a,");
         assert_eq!(
-            enc(&Packet { nsp: "/a".into(), body: Body::ConnectError(v(json!({ "message": "no", "data": { "x": 1 } }))) }).text,
+            enc(&Packet { nsp: "/a".into(), body: Body::ConnectError(v(json!({ "message": "no", "data": { "x": 1 } }))) }).packet(),
             r#"4/a,{"message":"no","data":{"x":1}}"#
         );
     }
 
     #[test]
     fn strings_escape_like_json_stringify_and_never_hold_the_record_separator() {
-        let text = enc(&event("/", None, "e", vec![v(json!("a\u{1e}b\u{0}\"\\\n\u{7f}\u{2028}é"))])).text;
+        let encoded = enc(&event("/", None, "e", vec![v(json!("a\u{1e}b\u{0}\"\\\n\u{7f}\u{2028}é"))]));
+        let text = encoded.packet();
         assert_eq!(text, "2[\"e\",\"a\\u001eb\\u0000\\\"\\\\\\n\u{7f}\u{2028}é\"]");
         assert!(!text.contains('\u{1e}'));
     }
@@ -1159,12 +1185,12 @@ mod tests {
         ];
         let encoded = enc(&event("/x", Some(4), "up", args));
         assert_eq!(
-            encoded.text,
+            encoded.packet(),
             r#"53-/x,4["up",{"first":{"_placeholder":true,"num":0},"list":[{"_placeholder":true,"num":1},5]},{"_placeholder":true,"num":2}]"#
         );
         assert_eq!(encoded.attachments, vec![a, b, c]);
         let ack = enc(&Packet { nsp: "/".into(), body: Body::Ack { id: 1, args: vec![IoValue::from(Bytes::from_static(b"z"))] } });
-        assert_eq!(ack.text, r#"61-1[{"_placeholder":true,"num":0}]"#);
+        assert_eq!(ack.packet(), r#"61-1[{"_placeholder":true,"num":0}]"#);
     }
 
     #[test]
@@ -1275,7 +1301,7 @@ mod tests {
     fn the_largest_ack_id_is_accepted_and_echoed_exactly() {
         let p = decode(r#"29007199254740991["x"]"#).unwrap().unwrap();
         assert_eq!(p, event("/", Some(9_007_199_254_740_991), "x", vec![]));
-        assert_eq!(enc(&p).text, r#"29007199254740991["x"]"#);
+        assert_eq!(enc(&p).packet(), r#"29007199254740991["x"]"#);
     }
 
     #[test]
@@ -1476,12 +1502,12 @@ mod tests {
         ];
         for p in packets {
             let encoded = enc(&p);
-            assert_eq!(Decoder::new(limits()).add_text(&encoded.text).unwrap().unwrap(), p, "{}", encoded.text);
+            assert_eq!(Decoder::new(limits()).add_text(&encoded.packet()).unwrap().unwrap(), p, "{}", encoded.packet());
         }
         let bin = event("/b", Some(1), "up", vec![IoValue::object([("data", IoValue::from(Bytes::from_static(b"\x00\x01")))])]);
         let encoded = enc(&bin);
         let mut d = Decoder::new(limits());
-        assert_eq!(d.add_text(&encoded.text), Ok(None));
+        assert_eq!(d.add_text(&encoded.packet()), Ok(None));
         assert_eq!(d.add_binary(encoded.attachments[0].bytes()).unwrap().unwrap(), bin);
     }
 }

@@ -22,18 +22,26 @@ const LENIENT: GeneralPurpose =
 pub enum EngineMessage {
     Text(String),
     Binary(Bytes),
-    /// A text message whose bytes are shared with other queues: what a broadcast queues on every recipient, so a
-    /// broadcast holds one copy of its text however many sockets it reaches. Only ever sent, never received.
+    /// A text message already framed as an Engine.IO message: the type `4` in front of the payload. What the Socket.IO
+    /// encoder produces, queued and written as it is, so no transport copies it to put the type in front. Only ever
+    /// sent, never received.
+    #[doc(hidden)]
+    Framed(String),
+    /// A framed text message (as [`Framed`](Self::Framed)) whose bytes are shared with other queues: what a broadcast
+    /// queues on every recipient, so a broadcast holds one copy of its text however many sockets it reaches. Only ever
+    /// sent, never received.
+    #[doc(hidden)]
     Shared(Arc<str>),
 }
 
 impl EngineMessage {
-    /// Bytes of the payload.
+    /// Bytes of the payload (for a framed message, without the type in front).
     pub fn len(&self) -> usize {
         match self {
             EngineMessage::Text(t) => t.len(),
             EngineMessage::Binary(b) => b.len(),
-            EngineMessage::Shared(t) => t.len(),
+            EngineMessage::Framed(t) => t.len().saturating_sub(1),
+            EngineMessage::Shared(t) => t.len().saturating_sub(1),
         }
     }
 
@@ -117,7 +125,9 @@ impl Packet {
         match self {
             Packet::Open(d) | Packet::Ping(d) | Packet::Pong(d) => 1 + d.len(),
             Packet::Message(EngineMessage::Text(t)) => 1 + t.len(),
-            Packet::Message(EngineMessage::Shared(t)) => 1 + t.len(),
+            // The type is already in front.
+            Packet::Message(EngineMessage::Framed(t)) => t.len(),
+            Packet::Message(EngineMessage::Shared(t)) => t.len(),
             Packet::Message(EngineMessage::Binary(b)) => 1 + b.len().div_ceil(3) * 4,
             Packet::Close | Packet::Upgrade | Packet::Noop => 1,
         }
@@ -134,10 +144,8 @@ impl Packet {
                 out.push('4');
                 out.push_str(t);
             }
-            Packet::Message(EngineMessage::Shared(t)) => {
-                out.push('4');
-                out.push_str(t);
-            }
+            Packet::Message(EngineMessage::Framed(t)) => out.push_str(t),
+            Packet::Message(EngineMessage::Shared(t)) => out.push_str(t),
             Packet::Open(d) | Packet::Ping(d) | Packet::Pong(d) => {
                 out.push(self.type_digit());
                 out.push_str(d);
@@ -146,10 +154,13 @@ impl Packet {
         }
     }
 
-    /// The WebSocket frame of the packet.
-    pub fn encode_ws(&self) -> WsFrame {
+    /// The WebSocket frame of the packet. A framed message is its own frame, moved and not copied; a shared one is
+    /// copied for this recipient (the WebSocket library takes a `String` it owns).
+    pub fn into_ws(self) -> WsFrame {
         match self {
-            Packet::Message(EngineMessage::Binary(b)) => WsFrame::Binary(b.clone()),
+            Packet::Message(EngineMessage::Binary(b)) => WsFrame::Binary(b),
+            Packet::Message(EngineMessage::Framed(t)) => WsFrame::Text(t),
+            Packet::Message(EngineMessage::Shared(t)) => WsFrame::Text(t.to_string()),
             other => {
                 let mut s = String::with_capacity(other.polling_len());
                 other.encode_polling(&mut s);
@@ -265,8 +276,40 @@ mod tests {
         p.encode_polling(&mut out);
         assert_eq!(out, "bAQIDBA==");
         assert_eq!(p.polling_len(), out.len());
-        assert_eq!(p.encode_ws(), WsFrame::Binary(Bytes::from_static(&[1, 2, 3, 4])));
-        assert_eq!(text("a").encode_ws(), WsFrame::Text("4a".into()));
+        assert_eq!(p.clone().into_ws(), WsFrame::Binary(Bytes::from_static(&[1, 2, 3, 4])));
+        assert_eq!(text("a").into_ws(), WsFrame::Text("4a".into()));
+    }
+
+    /// A framed message (the type already in front) counts, encodes and frames exactly like the plain text message of
+    /// the same payload: the limits that count lengths see no difference.
+    #[test]
+    fn framed_and_shared_messages_are_the_same_bytes_as_a_text_message() {
+        for payload in ["", "a", r#"2["e",{"k":"vé"}]"#] {
+            let plain = text(payload);
+            let framed = Packet::Message(EngineMessage::Framed(format!("4{payload}")));
+            let shared = Packet::Message(EngineMessage::Shared(Arc::from(format!("4{payload}"))));
+            let mut expected = String::new();
+            plain.encode_polling(&mut expected);
+            for other in [&framed, &shared] {
+                let Packet::Message(m) = other else { unreachable!() };
+                assert_eq!(m.len(), payload.len());
+                assert_eq!(other.polling_len(), plain.polling_len());
+                let mut out = String::new();
+                other.encode_polling(&mut out);
+                assert_eq!(out, expected);
+            }
+            assert_eq!(encode_payload([&plain, &framed, &shared]), [expected.as_str(); 3].join("\x1e"));
+            assert_eq!(framed.clone().into_ws(), plain.clone().into_ws());
+            assert_eq!(shared.into_ws(), plain.into_ws());
+        }
+    }
+
+    #[test]
+    fn a_framed_message_is_its_own_websocket_frame_without_a_copy() {
+        let text = format!("4{}", "x".repeat(16 * 1024));
+        let at = text.as_ptr();
+        let WsFrame::Text(frame) = Packet::Message(EngineMessage::Framed(text)).into_ws() else { panic!("a text frame") };
+        assert_eq!(frame.as_ptr(), at, "the frame is the encoder's buffer");
     }
 
     #[test]

@@ -74,33 +74,36 @@ impl ClientShared {
         self.nsps.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queues an encoded packet: its text message and its attachments together, so nothing is queued between them.
-    pub(crate) fn send_encoded(&self, encoded: &Encoded) -> Result<(), EmitError> {
-        let mut messages = Vec::with_capacity(1 + encoded.attachments.len());
-        messages.push(EngineMessage::Text(encoded.text.clone()));
-        messages.extend(encoded.attachments.iter().map(|a| EngineMessage::Binary(a.bytes())));
-        self.send_messages(messages)
+    /// Queues an encoded packet, moving its text into the queue: its text message and its attachments together, so
+    /// nothing is queued between them.
+    pub(crate) fn send_encoded(&self, encoded: Encoded) -> Result<(), EmitError> {
+        let Encoded { text, attachments } = encoded;
+        let text = EngineMessage::Framed(text);
+        if attachments.is_empty() {
+            return self.engine.send(text).map_err(emit_error);
+        }
+        let mut messages = Vec::with_capacity(1 + attachments.len());
+        messages.push(text);
+        messages.extend(attachments.into_iter().map(|a| EngineMessage::Binary(a.into_bytes())));
+        self.engine.send_all(messages).map_err(emit_error)
     }
 
     /// Queues an encoding shared with other recipients (a broadcast): the text is a reference to the one buffer, and
     /// so are the attachments.
     pub(crate) fn send_shared(&self, encoded: &SharedEncoded) -> Result<(), EmitError> {
+        let text = EngineMessage::Shared(encoded.text.clone());
+        if encoded.attachments.is_empty() {
+            return self.engine.send(text).map_err(emit_error);
+        }
         let mut messages = Vec::with_capacity(1 + encoded.attachments.len());
-        messages.push(EngineMessage::Shared(encoded.text.clone()));
+        messages.push(text);
         messages.extend(encoded.attachments.iter().cloned().map(EngineMessage::Binary));
-        self.send_messages(messages)
-    }
-
-    fn send_messages(&self, messages: Vec<EngineMessage>) -> Result<(), EmitError> {
-        self.engine.send_all(messages).map_err(|e| match e {
-            SendError::Closed => EmitError::NotConnected,
-            SendError::Full => EmitError::BufferFull,
-        })
+        self.engine.send_all(messages).map_err(emit_error)
     }
 
     fn send_packet(&self, packet: &Packet) -> Result<(), EmitError> {
         let encoded = parser::encode(packet, self.options.max_attachments).map_err(|_| EmitError::TooDeep)?;
-        self.send_encoded(&encoded)
+        self.send_encoded(encoded)
     }
 
     fn joined(&self, name: &str) -> Option<IoSocket> {
@@ -145,6 +148,13 @@ impl ClientShared {
         if close_engine {
             self.engine.close();
         }
+    }
+}
+
+fn emit_error(error: SendError) -> EmitError {
+    match error {
+        SendError::Closed => EmitError::NotConnected,
+        SendError::Full => EmitError::BufferFull,
     }
 }
 
@@ -368,8 +378,8 @@ async fn handle_message(
             Err(_) => Flow::Close(DisconnectReason::ForcedClose),
             Ok(prepared) => admit(server, shared, decoder, reassembly, parked, inflight, closed, Parked { prepared, wire: held }).await,
         },
-        // Only the server sends shared text; a received message is never one.
-        EngineMessage::Shared(_) => Flow::Close(DisconnectReason::ForcedClose),
+        // Only the server sends framed and shared text; a received message is never one.
+        EngineMessage::Framed(_) | EngineMessage::Shared(_) => Flow::Close(DisconnectReason::ForcedClose),
         EngineMessage::Binary(data) => match decoder.add_binary(data) {
             Err(_) => Flow::Close(DisconnectReason::ForcedClose),
             Ok(None) => {

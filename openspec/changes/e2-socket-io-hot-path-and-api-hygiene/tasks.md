@@ -65,15 +65,15 @@ to applications and clients" says so.
 
 ## 5. Fewer copies (Decision 4)
 
-- [ ] 5.1 `parser.rs`: non-allocating binary count bounded by `MAX_DEPTH`, header then JSON into one buffer with one leading
+- [x] 5.1 `parser.rs`: non-allocating binary count bounded by `MAX_DEPTH`, header then JSON into one buffer with one leading
   byte reserved for the Engine.IO type; `value.rs`: `contains_binary` without allocation for values with no container;
   verify `cargo test -p corvis --features socket-io --lib socket_io::parser` and `--lib fuzz` (the fixtures of
   `fixtures/parser.json` unchanged)
-- [ ] 5.2 `Encoded` by value through `IoSocket::send` and `ClientShared::send_encoded`; hidden `EngineMessage::Framed`, and
+- [x] 5.2 `Encoded` by value through `IoSocket::send` and `ClientShared::send_encoded`; hidden `EngineMessage::Framed`, and
   `EngineMessage::Shared` holding the framed text as `Bytes`; `len`, `polling_len`, `encode_polling`, `encode_ws` for both;
   unit tests: lengths equal the encoded packet's for both variants, polling output byte for byte as before; verify
   `cargo test -p corvis --features socket-io --lib` and `--test socket_io_rooms_memory`
-- [ ] 5.3 `OutQueue::push_group` without the size vector; verify the group tests in `ws.rs` and `engine/session.rs`
+- [x] 5.3 `OutQueue::push_group` without the size vector; verify the group tests in `ws.rs` and `engine/session.rs`
 - [ ] 5.4 Upgrade `tokio-tungstenite` (crate and dev-dependency in `crates/corvis/Cargo.toml`, `examples/tertulia/Cargo.toml`)
   to the latest release with `Bytes` payloads (0.26 or later; record the version and why in Implementation notes after
   checking MSRV 1.89, `cargo deny check` and `cargo audit`); adapt `ws.rs`, `websockets.rs`, `server.rs`,

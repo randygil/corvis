@@ -61,7 +61,9 @@ impl Conn {
             .map(|m| match m {
                 EngineMessage::Text(s) => Out::T(s),
                 EngineMessage::Binary(b) => Out::B(b.to_vec()),
-                EngineMessage::Shared(s) => Out::T(s.to_string()),
+                // Framed messages carry the Engine.IO type in front.
+                EngineMessage::Framed(s) => Out::T(s[1..].to_string()),
+                EngineMessage::Shared(s) => Out::T(s[1..].to_string()),
             })
             .collect()
     }
@@ -113,6 +115,29 @@ fn record_disconnects(namespace: &IoNamespace, log: &Log) {
 }
 
 // ------------------------------------------------------------------------------------- namespaces and connection
+
+#[tokio::test(start_paused = true)]
+async fn an_emit_queues_the_encoder_s_buffer_and_a_broadcast_one_shared_buffer() {
+    let io = server(options());
+    let conns = [io.conn(), io.conn()];
+    let mut ids = Vec::new();
+    for conn in &conns {
+        ids.push(conn.join("0").await);
+    }
+    let socket = io.main().socket(&ids[0]).expect("connected");
+    socket.emit("one", ("x".repeat(1024),)).unwrap();
+    let sent = conns[0].socket.take_sent();
+    let [EngineMessage::Framed(text)] = &sent[..] else { panic!("one framed message, got {sent:?}") };
+    assert!(text.starts_with(r#"42["one","#), "{text}");
+    io.main().emit("all", ("y".repeat(1024),)).await.unwrap();
+    let mut buffers = Vec::new();
+    for conn in &conns {
+        let sent = conn.socket.take_sent();
+        let [EngineMessage::Shared(text)] = &sent[..] else { panic!("one shared message, got {sent:?}") };
+        buffers.push(text.clone());
+    }
+    assert!(Arc::ptr_eq(&buffers[0], &buffers[1]), "every recipient queues the one encoding");
+}
 
 #[tokio::test(start_paused = true)]
 async fn a_connection_under_its_limits_never_registers_for_a_release() {

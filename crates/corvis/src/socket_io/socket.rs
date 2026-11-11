@@ -19,7 +19,7 @@ use super::engine::options::MAX_DURATION;
 use super::engine::session::{CloseReason, after};
 use super::engine::{EngineSocket, Held};
 use super::namespace::IoNamespace;
-use super::parser::{self, Body, EncodeError, Encoded, Packet, SharedEncoded};
+use super::parser::{self, Body, EncodeError, Packet, SharedEncoded};
 use super::value::{Args, IntoArgs, IoValue, IoValueError};
 use super::warn::WarnLimiter;
 use crate::http::Request;
@@ -465,7 +465,7 @@ impl IoSocket {
 
     fn send(&self, packet: &Packet) -> Result<(), EmitError> {
         let encoded = parser::encode(packet, self.inner.nsp.options().max_attachments).map_err(emit_error)?;
-        self.client()?.send_encoded(&encoded)
+        self.client()?.send_encoded(encoded)
     }
 
     /// The connection, while it lives.
@@ -481,15 +481,6 @@ impl IoSocket {
     /// The client address as the per-address caps and budgets key it (the session's `address_key`).
     pub(crate) fn address_key(&self) -> &str {
         &self.inner.address
-    }
-
-    /// Sends an already encoded packet (one encoding shared by many sockets).
-    #[allow(dead_code)]
-    pub(crate) fn send_encoded(&self, encoded: &Encoded) -> Result<(), EmitError> {
-        if self.state().phase != Phase::Connected {
-            return Err(EmitError::NotConnected);
-        }
-        self.client()?.send_encoded(encoded)
     }
 
     /// Queues an encoding shared by the recipients of a broadcast. The phase is checked first, so a socket that
