@@ -159,8 +159,10 @@ async fn an_event_that_finds_no_room_for_its_copies_is_answered_with_exception_a
     let held = app.get::<Held>().unwrap();
     let mut client = Raw::connect(addr).await;
     client.join("/hold", None).await;
-    let payload = "x".repeat(300 * 1024);
-    // Enough events that the copies of the first ones fill the budget; at least one is refused with `exception`.
+    // Two held events (two copies each: 1.6 MiB) leave room for the packet of a third (0.4 MiB) but not for its copies
+    // (0.8 MiB, its packet's charge counting as room): the third is refused with `exception` by the gateway, not parked
+    // by the Socket.IO layer.
+    let payload = "x".repeat(400 * 1024);
     for _ in 0..6 {
         client.send(&format!(r#"2/hold,["hold","{payload}"]"#)).await;
     }

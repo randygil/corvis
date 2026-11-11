@@ -32,7 +32,7 @@
 //! [`IoAdapter::options`]. Hooks are bounded by [`IoAdapter::hook_timeout`].
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
@@ -42,12 +42,13 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use super::broadcast::{BroadcastAckError, BroadcastOperator, IntoRooms, RemoteSocket};
+use super::client::Charge;
 use super::engine::EngineOptions;
 use super::namespace::{ConnectError, IoNamespace, NamespaceInner};
 use super::options::IoOptions;
 use super::server::IoServer;
 use super::socket::{AckSender, EmitError, IoSocket, Phase};
-use super::value::{Args, IntoArgs, IoValue};
+use super::value::{Args, IntoArgs, json_cost};
 use crate::common::context::{ExecutionContext, Target};
 use crate::di::DiError;
 use crate::discovery::{CorsDecl, GatewayAdapterKind};
@@ -59,6 +60,11 @@ use crate::websockets::{
     CompiledWsHandler, GatewayAdapter, GatewayAdapterChoice, GatewayRuntime, GatewayServerField, GatewaySocket, contain_panic,
     exception_data, exception_payload, run_handler, run_hook_with, sealed,
 };
+
+mod disconnect;
+
+use disconnect::HookQueue;
+pub use disconnect::{DEFAULT_MAX_PENDING_DISCONNECT_HOOK_BYTES, DEFAULT_MAX_PENDING_DISCONNECT_HOOKS};
 
 /// How long a lifecycle hook (`after_init`, `handle_connection`, `handle_disconnect`) may run: 30 seconds.
 pub const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -76,6 +82,8 @@ pub struct IoAdapter {
     duplicate_options: Option<String>,
     guard_connections: bool,
     hook_timeout: Duration,
+    max_pending_hooks: usize,
+    max_pending_hook_bytes: usize,
 }
 
 impl Default for IoAdapter {
@@ -88,7 +96,14 @@ impl IoAdapter {
     /// The defaults: [`IoOptions::default`] for every Engine.IO path, no connection guards, a hook timeout of
     /// [`DEFAULT_HOOK_TIMEOUT`].
     pub fn new() -> Self {
-        IoAdapter { options: Vec::new(), duplicate_options: None, guard_connections: false, hook_timeout: DEFAULT_HOOK_TIMEOUT }
+        IoAdapter {
+            options: Vec::new(),
+            duplicate_options: None,
+            guard_connections: false,
+            hook_timeout: DEFAULT_HOOK_TIMEOUT,
+            max_pending_hooks: DEFAULT_MAX_PENDING_DISCONNECT_HOOKS,
+            max_pending_hook_bytes: DEFAULT_MAX_PENDING_DISCONNECT_HOOK_BYTES,
+        }
     }
 
     /// The options of the Engine.IO path the given options name (`EngineOptions::path`, `/socket.io` by default). Every
@@ -121,6 +136,26 @@ impl IoAdapter {
     /// exceeds it in `after_init` fails `init()`; a `handle_disconnect` is abandoned. Panics are always contained.
     pub fn hook_timeout(mut self, timeout: Duration) -> Self {
         self.hook_timeout = timeout;
+        self
+    }
+
+    /// The most `handle_disconnect` hooks that may be pending (waiting for a worker or running) in the application, all
+    /// namespaces and Engine.IO paths together (default [`DEFAULT_MAX_PENDING_DISCONNECT_HOOKS`], 10,000). Each client
+    /// address has a 64th of it (at least one): an address at its share is answered `503` on new sessions until its
+    /// hooks drain. A socket that leaves while the application is at this cap, or at
+    /// [`max_pending_disconnect_hook_bytes`](Self::max_pending_disconnect_hook_bytes), is the one case in which a hook
+    /// is dropped (and logged). Above zero.
+    pub fn max_pending_disconnect_hooks(mut self, hooks: usize) -> Self {
+        self.max_pending_hooks = hooks;
+        self
+    }
+
+    /// The most the sockets whose `handle_disconnect` hooks are pending may pin, in bytes, in the application (default
+    /// [`DEFAULT_MAX_PENDING_DISCONNECT_HOOK_BYTES`], 64 MiB): each one its handshake (`auth`, headers, query), its
+    /// `data`, its id and its own structures. Each client address has a 64th of it, like
+    /// [`max_pending_disconnect_hooks`](Self::max_pending_disconnect_hooks). Above zero.
+    pub fn max_pending_disconnect_hook_bytes(mut self, bytes: usize) -> Self {
+        self.max_pending_hook_bytes = bytes;
         self
     }
 
@@ -361,6 +396,9 @@ fn plan(gateways: &[&GatewayRuntime], adapter: &IoAdapter) -> Result<Vec<ServerP
     if adapter.hook_timeout.is_zero() {
         return fail("IoAdapter::hook_timeout must be longer than zero".to_string());
     }
+    if adapter.max_pending_hooks == 0 || adapter.max_pending_hook_bytes == 0 {
+        return fail("IoAdapter::max_pending_disconnect_hooks and max_pending_disconnect_hook_bytes must be above zero".to_string());
+    }
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (index, gateway) in gateways.iter().enumerate() {
         let path = EngineOptions::new().path(gateway.io_path()).normalized_path();
@@ -415,6 +453,9 @@ fn plan(gateways: &[&GatewayRuntime], adapter: &IoAdapter) -> Result<Vec<ServerP
         if let Some((decl, _)) = declared {
             options.engine = options.engine.cors(cors_options(decl));
         }
+        // Each address's share of the pending disconnect hooks: at it, its new sessions are refused until they drain.
+        let (hooks, bytes) = disconnect::address_share(adapter.max_pending_hooks, adapter.max_pending_hook_bytes);
+        options.engine = options.engine.pending_hook_share(hooks, bytes);
         if let Err(e) = options.validate() {
             return fail(format!("the Socket.IO options for the Engine.IO path {path} are not valid: {e}"));
         }
@@ -451,74 +492,168 @@ fn plan(gateways: &[&GatewayRuntime], adapter: &IoAdapter) -> Result<Vec<ServerP
 }
 
 /// Checks the configuration of the gateways (Engine.IO paths, `cors`, options, one handler per event per namespace).
-/// Runs before the route posture check and before any user code of a gateway.
-pub(crate) fn validate(gateways: &[GatewayRuntime], adapter: &IoAdapter) -> Result<(), DiError> {
+/// Runs before the route posture check and before any user code of a gateway. `routes` are the HTTP routes of the
+/// application (`(method, path)`, the path with its prefix and version).
+pub(crate) fn validate(gateways: &[GatewayRuntime], adapter: &IoAdapter, routes: &[(String, String)]) -> Result<(), DiError> {
     let refs: Vec<&GatewayRuntime> = gateways.iter().collect();
-    plan(&refs, adapter).map(|_| ())
+    let plans = plan(&refs, adapter)?;
+    for plan in &plans {
+        if let Some((method, route)) = routes.iter().find(|(_, route)| hidden_by(&plan.path, route)) {
+            let by = plan
+                .namespaces
+                .iter()
+                .flat_map(|(_, members)| members.iter())
+                .map(|&i| refs[i].name.as_str())
+                .next()
+                .unwrap_or("a gateway");
+            return fail(format!(
+                "the Engine.IO path {} of {by} would take the requests of the route {method} {route}: Engine.IO answers every request under its path before routing; choose a path no route starts with",
+                plan.path
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether every request of `route` is under the Engine.IO path `engine` (which ends with `/`), and so answered by the
+/// engine: the route's leading segments are the path's, literally. A route whose leading segments are parameters or a
+/// wildcard (`/:id/ping`, `/*rest`) is hidden only for the values that spell the path, which the router cannot know of;
+/// the documentation says so.
+fn hidden_by(engine: &str, route: &str) -> bool {
+    let literal = |segment: &str| !segment.starts_with(':') && !segment.contains('*') && !segment.contains('{');
+    let wanted: Vec<&str> = engine.split('/').filter(|s| !s.is_empty()).collect();
+    let segments: Vec<&str> = route.split('/').filter(|s| !s.is_empty()).collect();
+    // The route needs a segment below the path: `/status` itself is not under `/status/`.
+    segments.len() > wanted.len() && wanted.iter().zip(&segments).all(|(w, s)| literal(s) && w == s)
 }
 
 // ----------------------------------------------------------------------------------------------------- runtime
 
 /// The gateways of one namespace and the handlers of its events.
 struct NamespaceRuntime {
-    gateways: Vec<Arc<GatewayRuntime>>,
+    gateways: Arc<Vec<Arc<GatewayRuntime>>>,
     /// event -> (gateway index, handler)
     events: HashMap<String, (usize, Arc<CompiledWsHandler>)>,
     /// The `connect` target of each gateway: its metadata under the name `connect` (for connection guards).
     connect_targets: Vec<Arc<Target>>,
     hook_timeout: Duration,
-    /// Sockets whose `handle_disconnect` hooks wait for a worker, and how many workers run.
-    disconnects: std::sync::Mutex<std::collections::VecDeque<IoSocket>>,
-    disconnect_workers: std::sync::atomic::AtomicUsize,
+    /// The application's queue of `handle_disconnect` hooks, shared by every namespace.
+    hooks: Arc<HookQueue>,
 }
 
-/// How many tasks run the `handle_disconnect` hooks of one namespace at once, however many sockets leave.
-pub(crate) const DISCONNECT_WORKERS: usize = 16;
-/// How many sockets may wait for their `handle_disconnect` hook in one namespace; over it the hook is skipped and logged.
-pub(crate) const DISCONNECT_QUEUE: usize = 10_000;
-
-/// Holds the events of a socket until its `handle_connection` hooks returned. First in, first out: a fair semaphore with
-/// no permits, so the events wait in the order they first polled it (the order they arrived, because the connection
-/// polls the futures of its events in that order) and are woken in that order when the gate opens.
+/// Holds the events of a socket until its `handle_connection` hooks returned, and starts them in arrival order by
+/// construction. The dispatcher, which the connection calls for each event in the order the events arrived, hands every
+/// event a [`Ticket`] numbered in that order; an event starts only when the gate is open and it is its ticket's turn,
+/// which comes once every earlier ticket started (or was given up without starting). An event that was already on its
+/// way when the gate opened therefore cannot overtake the ones that waited.
 pub(crate) struct Gate {
-    permits: tokio::sync::Semaphore,
-    opened: AtomicBool,
-    discarded: watch::Sender<bool>,
+    state: watch::Sender<GateState>,
+}
+
+struct GateState {
+    opened: bool,
+    discarded: bool,
+    /// The number of the next ticket handed out.
+    issued: u64,
+    /// The ticket whose turn it is to start.
+    turn: u64,
+    /// Tickets given up without starting before their turn came: skipped when it does. At most the socket's events in
+    /// flight (`max_inflight`).
+    abandoned: BTreeSet<u64>,
 }
 
 impl Gate {
     pub(crate) fn new() -> Gate {
-        Gate { permits: tokio::sync::Semaphore::new(0), opened: AtomicBool::new(false), discarded: watch::channel(false).0 }
+        Gate { state: watch::channel(GateState { opened: false, discarded: false, issued: 0, turn: 0, abandoned: BTreeSet::new() }).0 }
     }
 
-    /// Lets every event through (once; it does not undo a discard).
+    /// The next place in the order of the socket's events. Call it where the events are taken in arrival order.
+    pub(crate) fn ticket(self: &Arc<Self>) -> Ticket {
+        let mut number = 0;
+        self.state.send_if_modified(|s| {
+            number = s.issued;
+            s.issued += 1;
+            false
+        });
+        Ticket { gate: self.clone(), number, done: false }
+    }
+
+    /// Lets the events through, in ticket order (once; it does not undo a discard).
     pub(crate) fn open(&self) {
-        if !self.opened.swap(true, Ordering::SeqCst) {
-            self.permits.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
-        }
+        self.state.send_if_modified(|s| !std::mem::replace(&mut s.opened, true));
     }
 
     /// The socket left: the events that wait are released without being admitted, and none is admitted afterwards.
     pub(crate) fn discard(&self) {
-        self.permits.close();
-        self.discarded.send_replace(true);
+        self.state.send_if_modified(|s| !std::mem::replace(&mut s.discarded, true));
     }
 
-    /// `true` when the hooks returned and the socket stays; `false` when it was disconnected meanwhile.
-    pub(crate) async fn admitted(&self) -> bool {
-        self.permits.acquire().await.is_ok()
+    /// Ticket `number` started or was given up: the turn passes to the next ticket that has not been given up.
+    fn finish(&self, number: u64) {
+        self.state.send_if_modified(|s| {
+            if s.turn != number {
+                s.abandoned.insert(number);
+                return false;
+            }
+            s.turn += 1;
+            while s.abandoned.remove(&s.turn) {
+                s.turn += 1;
+            }
+            true
+        });
     }
 
     /// Resolves when the socket was disconnected.
     async fn discarded(&self) {
-        let mut rx = self.discarded.subscribe();
+        let mut rx = self.state.subscribe();
         loop {
-            if *rx.borrow_and_update() {
+            if rx.borrow_and_update().discarded {
                 return;
             }
             if rx.changed().await.is_err() {
                 return futures::future::pending().await;
             }
+        }
+    }
+}
+
+/// An event's place in the order of its socket's events (see [`Gate`]). Dropped without starting, it gives its turn up.
+pub(crate) struct Ticket {
+    gate: Arc<Gate>,
+    number: u64,
+    done: bool,
+}
+
+impl Ticket {
+    /// Waits for the gate to open and for this ticket's turn: `true` when the event may start (the turn then passes to
+    /// the next ticket), `false` when the socket was disconnected meanwhile.
+    pub(crate) async fn admitted(&mut self) -> bool {
+        let mut rx = self.gate.state.subscribe();
+        loop {
+            {
+                let state = rx.borrow_and_update();
+                if state.discarded {
+                    return false;
+                }
+                if state.opened && state.turn == self.number {
+                    break;
+                }
+            }
+            // The sender lives in the gate, which this ticket holds.
+            if rx.changed().await.is_err() {
+                return false;
+            }
+        }
+        self.done = true;
+        self.gate.finish(self.number);
+        true
+    }
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        if !self.done {
+            self.gate.finish(self.number);
         }
     }
 }
@@ -586,7 +721,19 @@ fn classify(reply: Value) -> Delivery {
     }
 }
 
+/// How many copies of the body an event's pipeline holds at once, at most, with `params` `#[message_body]` parameters:
+/// the body shared by the context and one copy per parameter while the handler runs; the body and the copy the `cause`
+/// of an error echoes afterwards (the parameters are gone by then).
+pub(crate) fn body_copies(params: usize) -> usize {
+    1 + params.max(1)
+}
+
 /// Runs one event through the gateway pipeline and answers: the acknowledgement, an emitted event, or `exception`.
+///
+/// `charge` is what the packet holds in the connection's unread budget (#33). Once the body is built from the
+/// arguments, the arguments are dropped and the charge moves to the copies of the body: they are charged at their real
+/// size, the packet's charge counting as room, and the packet's charge is released.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_event(
     gateway: Arc<GatewayRuntime>,
     handler: Arc<CompiledWsHandler>,
@@ -594,22 +741,15 @@ async fn dispatch_event(
     event: String,
     args: Args,
     ack: Option<AckSender>,
+    charge: Charge,
+    mut ticket: Ticket,
 ) {
-    let Some(conn) = socket.get::<GatewayConn>() else { return };
-    // Events wait here for `handle_connection`; a socket that was disconnected meanwhile discards them.
-    if !conn.gate.admitted().await {
+    // Events wait here for `handle_connection` and start in the order they arrived; a socket that was disconnected
+    // meanwhile discards them.
+    if !ticket.admitted().await {
         return;
     }
-    // The copies of the body this event makes are charged to the connection's budget before they exist, by a try-charge
-    // that never waits: the body as a `Value` shared with the context, one copy for each `#[message_body]` parameter
-    // and the one the `cause` of an error echoes. The `Args` stay charged by #33 until the handler ends. When the
-    // budget has no room the handler does not run, and no guard has seen the event.
-    let copies = 2 + handler.param_count();
-    let estimate = args.iter().map(IoValue::cost).fold(0usize, usize::saturating_add).saturating_mul(copies);
-    let Some(_copies) = socket.try_charge(estimate) else {
-        let _ = socket.emit("exception", (json!({ "status": "error", "message": "Too many messages in flight" }),));
-        return;
-    };
+    drop(ticket);
     let body = match body_of(&args) {
         Ok(body) => body,
         Err(()) => {
@@ -617,8 +757,20 @@ async fn dispatch_event(
             return;
         }
     };
+    // The copies of the body are charged before any of them but the body exists and before any guard runs, by a
+    // try-charge that never waits, at the body's real size (`json_cost`: slots, strings, container capacity; the copies
+    // are clones, built with exact capacity, so none is larger). The packet's own charge is the credit: it is released
+    // right after, with the arguments it stood for. When there is no room the handler does not run and no guard has
+    // seen the event. Nothing between building the body and this charge awaits, so at most one uncharged body per
+    // runtime thread exists at any time.
+    let cost = json_cost(&body).saturating_mul(body_copies(handler.param_count()));
+    let Some(_copies) = socket.try_charge(cost, charge.bytes()) else {
+        let _ = socket.emit("exception", (json!({ "status": "error", "message": "Too many messages in flight" }),));
+        return;
+    };
     let no_arguments = args.is_empty();
     drop(args);
+    drop(charge);
     let body = Arc::new(body);
     let client: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
     let ctx = ExecutionContext::for_ws_shared(
@@ -676,10 +828,13 @@ async fn dispatch_event(
 }
 
 fn dispatcher(runtime: Arc<NamespaceRuntime>) -> super::namespace::Dispatcher {
-    Arc::new(move |socket: IoSocket, event: &str, args: Args, ack: Option<AckSender>| {
+    Arc::new(move |socket: IoSocket, event: &str, args: Args, ack: Option<AckSender>, charge: Charge| {
         let (index, handler) = runtime.events.get(event)?;
+        // The connection calls the dispatcher in the order the events arrived: the ticket is taken here, not in the
+        // future, whose first poll may come in another order.
+        let ticket = socket.get::<GatewayConn>()?.gate.ticket();
         let gateway = runtime.gateways[*index].clone();
-        Some(dispatch_event(gateway, handler.clone(), socket, event.to_string(), args, ack).boxed())
+        Some(dispatch_event(gateway, handler.clone(), socket, event.to_string(), args, ack, charge, ticket).boxed())
     })
 }
 
@@ -706,8 +861,9 @@ fn connect_error_of(e: &HttpException) -> ConnectError {
     }
 }
 
-/// The connect middleware of `guard_connections`: the global guards once (with the first gateway of the namespace as
-/// class), then the guards of each gateway (with that gateway as class). Exception filters do not run.
+/// The connect middleware of `guard_connections`: for each gateway of the namespace, in registration order, the global
+/// guards and then the gateway's own guards, all with that gateway as class; every one must pass. Exception filters do
+/// not run.
 async fn run_connection_guards(runtime: &NamespaceRuntime, socket: IoSocket) -> Result<(), ConnectError> {
     let client: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
     for (index, gateway) in runtime.gateways.iter().enumerate() {
@@ -748,73 +904,9 @@ async fn run_connection_guards(runtime: &NamespaceRuntime, socket: IoSocket) -> 
     Ok(())
 }
 
-/// Queues the `handle_disconnect` hooks of a socket for the namespace's workers: at most [`DISCONNECT_WORKERS`] tasks run
-/// them, and at most [`DISCONNECT_QUEUE`] sockets wait; a hook that finds the queue full is skipped and logged.
-fn spawn_disconnect_hooks(runtime: &Arc<NamespaceRuntime>, socket: IoSocket) {
-    if !runtime.gateways.iter().any(|g| g.info.io_on_disconnect.is_some()) {
-        return;
-    }
-    let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
-    {
-        let mut queue = runtime.disconnects.lock().unwrap_or_else(|e| e.into_inner());
-        if queue.len() >= DISCONNECT_QUEUE {
-            socket.warn(
-                "a disconnect hook queue that is full",
-                &format!("{DISCONNECT_QUEUE} handle_disconnect hooks are waiting: this socket's hook was skipped"),
-            );
-            return;
-        }
-        queue.push_back(socket);
-    }
-    start_disconnect_worker(runtime, &handle);
-}
-
-/// Takes one of the [`DISCONNECT_WORKERS`] places; `false` when they are all taken.
-fn claim_worker(workers: &std::sync::atomic::AtomicUsize) -> bool {
-    let mut current = workers.load(Ordering::SeqCst);
-    while current < DISCONNECT_WORKERS {
-        match workers.compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(_) => return true,
-            Err(actual) => current = actual,
-        }
-    }
-    false
-}
-
-fn start_disconnect_worker(runtime: &Arc<NamespaceRuntime>, handle: &tokio::runtime::Handle) {
-    if !claim_worker(&runtime.disconnect_workers) {
-        return;
-    }
-    let runtime = runtime.clone();
-    handle.spawn(async move {
-        loop {
-            let next = runtime.disconnects.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
-            let Some(socket) = next else {
-                runtime.disconnect_workers.fetch_sub(1, Ordering::SeqCst);
-                // A socket queued after the pop, by a call that found every worker busy, must not wait for nobody.
-                let waiting = !runtime.disconnects.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-                let reclaimed = waiting && claim_worker(&runtime.disconnect_workers);
-                if reclaimed {
-                    continue;
-                }
-                return;
-            };
-            for gateway in &runtime.gateways {
-                let Some(hook) = &gateway.info.io_on_disconnect else { continue };
-                let arg: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
-                if tokio::time::timeout(runtime.hook_timeout, run_hook_with(&gateway.name, "handle_disconnect", hook, arg)).await.is_err() {
-                    Logger::new("WsExceptionsHandler").error(format!(
-                        "{}: handle_disconnect took longer than {:?} and was abandoned",
-                        gateway.name, runtime.hook_timeout
-                    ));
-                }
-            }
-        }
-    });
-}
-
 /// A socket joined a gateway namespace (the connect middleware accepted it): its events wait for the connection hooks,
-/// which run in registration order; its disconnect hooks run once, whichever way it leaves.
+/// which run in registration order; its disconnect hooks run once, whichever way it leaves (queued in the application's
+/// [`HookQueue`]).
 fn on_connected(runtime: &Arc<NamespaceRuntime>, socket: IoSocket) {
     let conn = conn_of(&socket);
     let once = Arc::new(AtomicBool::new(false));
@@ -822,8 +914,8 @@ fn on_connected(runtime: &Arc<NamespaceRuntime>, socket: IoSocket) {
         let (runtime, gate, once) = (runtime.clone(), conn.gate.clone(), once.clone());
         Arc::new(move |socket: &IoSocket| {
             gate.discard();
-            if !once.swap(true, Ordering::SeqCst) {
-                spawn_disconnect_hooks(&runtime, socket.clone());
+            if !once.swap(true, Ordering::SeqCst) && runtime.gateways.iter().any(|g| g.info.io_on_disconnect.is_some()) {
+                runtime.hooks.push(runtime.gateways.clone(), socket.clone());
             }
         })
     };
@@ -840,7 +932,7 @@ fn on_connected(runtime: &Arc<NamespaceRuntime>, socket: IoSocket) {
     let runtime = runtime.clone();
     handle.spawn(async move {
         let hooks = async {
-            for gateway in &runtime.gateways {
+            for gateway in runtime.gateways.iter() {
                 let Some(hook) = &gateway.info.io_on_connection else { continue };
                 let arg: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
                 match tokio::time::timeout(runtime.hook_timeout, run_hook_with(&gateway.name, "handle_connection", hook, arg)).await {
@@ -903,6 +995,7 @@ async fn build(
     servers: &mut Vec<IoServer>,
 ) -> Result<(), DiError> {
     let log = Logger::new("SocketIoGateways");
+    let hooks = Arc::new(HookQueue::new(adapter.max_pending_hooks, adapter.max_pending_hook_bytes, adapter.hook_timeout));
     for unused in adapter.options.iter().filter(|o| !plans.iter().any(|p| p.path == o.engine.normalized_path())) {
         log.warn(format!(
             "IoAdapter::options were given for the Engine.IO path {}, which no gateway uses: they have no effect",
@@ -936,12 +1029,11 @@ async fn build(
                 .map(|g| Arc::new(Target { name: "connect".to_string(), metadata: g.class_target.metadata.clone() }))
                 .collect();
             let runtime = Arc::new(NamespaceRuntime {
-                gateways: members.clone(),
+                gateways: Arc::new(members.clone()),
                 events,
                 connect_targets,
                 hook_timeout: adapter.hook_timeout,
-                disconnects: Default::default(),
-                disconnect_workers: Default::default(),
+                hooks: hooks.clone(),
             });
             namespace.set_dispatcher(dispatcher(runtime.clone()));
             if adapter.guard_connections {
@@ -1002,6 +1094,18 @@ mod tests {
     }
 
     #[test]
+    fn a_route_is_hidden_when_its_leading_segments_are_the_engine_path() {
+        assert!(hidden_by("/status/", "/status/ping"));
+        assert!(hidden_by("/socket.io/", "/socket.io/x/y"));
+        assert!(hidden_by("/api/rt/", "/api/rt/:id"));
+        assert!(!hidden_by("/status/", "/status"), "the path itself is not under it");
+        assert!(!hidden_by("/status/", "/statusx/ping"));
+        assert!(!hidden_by("/status/", "/:any/ping"), "a parameter is hidden only for one value");
+        assert!(!hidden_by("/status/", "/*rest"));
+        assert!(!hidden_by("/api/rt/", "/api/other/x"));
+    }
+
+    #[test]
     fn results_map_like_the_reference_adapter() {
         assert_eq!(classify_value(Value::Null), Delivery::Nothing);
         assert_eq!(classify_value(json!(0)), Delivery::Ack(json!(0)));
@@ -1036,19 +1140,42 @@ mod tests {
     #[tokio::test]
     async fn the_gate_admits_after_open_and_refuses_after_discard() {
         let gate = Arc::new(Gate::new());
-        let waiting = tokio::spawn({
-            let gate = gate.clone();
-            async move { gate.admitted().await }
-        });
+        let mut first = gate.ticket();
+        let waiting = tokio::spawn(async move { first.admitted().await });
         tokio::task::yield_now().await;
         gate.open();
         assert!(waiting.await.unwrap());
         gate.discard();
-        assert!(!gate.admitted().await, "a discarded gate never admits");
-        let fresh = Gate::new();
+        assert!(!gate.ticket().admitted().await, "a discarded gate never admits");
+        let fresh = Arc::new(Gate::new());
         fresh.discard();
         fresh.open();
-        assert!(!fresh.admitted().await, "open does not undo a discard");
+        assert!(!fresh.ticket().admitted().await, "open does not undo a discard");
+    }
+
+    #[tokio::test]
+    async fn tickets_start_in_the_order_they_were_taken_whatever_the_order_they_are_polled_in() {
+        let gate = Arc::new(Gate::new());
+        let tickets: Vec<Ticket> = (0..5).map(|_| gate.ticket()).collect();
+        gate.open();
+        // The last ticket is polled first: it waits for the four before it.
+        let mut tickets = tickets.into_iter().rev();
+        let mut last = tickets.next().unwrap();
+        let mut waiting = Box::pin(async move { last.admitted().await });
+        assert!((&mut waiting).now_or_never().is_none(), "the last ticket does not start before the earlier ones");
+        let mut earlier: Vec<Ticket> = tickets.rev().collect();
+        // The second is given up without starting: its turn is skipped.
+        drop(earlier.remove(1));
+        for mut ticket in earlier {
+            assert_eq!(ticket.admitted().now_or_never(), Some(true));
+        }
+        assert_eq!(waiting.await, true, "once every earlier ticket started or was given up, it starts");
+        // A ticket taken after the gate opened still waits for the ones taken before it.
+        let mut before = gate.ticket();
+        let mut after = gate.ticket();
+        assert!(after.admitted().now_or_never().is_none());
+        assert_eq!(before.admitted().now_or_never(), Some(true));
+        assert_eq!(after.admitted().now_or_never(), Some(true));
     }
 
     #[tokio::test]

@@ -12,12 +12,14 @@ fn held(io: &IoServer, gate: &Arc<Gate>) -> (Arc<AtomicUsize>, Arc<AtomicUsize>)
     let started = Arc::new(AtomicUsize::new(0));
     let admitted = Arc::new(AtomicUsize::new(0));
     let (s, a, gate) = (started.clone(), admitted.clone(), gate.clone());
-    io.main().set_dispatcher(Arc::new(move |_socket, _event, _args, _ack| {
-        let (s, a, gate) = (s.clone(), a.clone(), gate.clone());
+    io.main().set_dispatcher(Arc::new(move |_socket, _event, _args, _ack, charge| {
+        let (s, a) = (s.clone(), a.clone());
+        let mut ticket = gate.ticket();
         Some(
             async move {
+                let _charge = charge;
                 s.fetch_add(1, Ordering::SeqCst);
-                if gate.admitted().await {
+                if ticket.admitted().await {
                     a.fetch_add(1, Ordering::SeqCst);
                 }
             }
@@ -72,7 +74,7 @@ async fn an_event_the_dispatcher_does_not_know_is_dropped_and_a_socket_handler_w
     let calls = Arc::new(AtomicUsize::new(0));
     {
         let calls = calls.clone();
-        io.main().set_dispatcher(Arc::new(move |_socket, event, _args, _ack| {
+        io.main().set_dispatcher(Arc::new(move |_socket, event, _args, _ack, _charge| {
             calls.fetch_add(1, Ordering::SeqCst);
             (event == "known").then(|| async {}.boxed())
         }));

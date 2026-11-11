@@ -82,6 +82,24 @@ impl Request {
         Ok(req)
     }
 
+    /// The same request with its header names and values and its URI in allocations of their own. A request parsed from
+    /// the wire holds them as slices of the connection's read buffer (up to the server's `max_header_size`), so a
+    /// request kept for long (an Engine.IO session's handshake, and the sockets and hooks that share it) would keep that
+    /// whole buffer alive. Clones share the `extensions` as usual.
+    #[cfg(feature = "socket-io")]
+    pub(crate) fn detached(&self) -> Request {
+        let mut headers = HeaderMap::with_capacity(self.headers.len());
+        for (name, value) in self.headers.iter() {
+            // `from_bytes` copies; a standard name is a constant and allocates nothing.
+            let name = http::HeaderName::from_bytes(name.as_str().as_bytes()).unwrap_or_else(|_| name.clone());
+            let mut copy = http::HeaderValue::from_bytes(value.as_bytes()).unwrap_or_else(|_| value.clone());
+            copy.set_sensitive(value.is_sensitive());
+            headers.append(name, copy);
+        }
+        let uri = Uri::try_from(self.uri.to_string()).unwrap_or_else(|_| self.uri.clone());
+        Request { headers, uri, ..self.clone() }
+    }
+
     /// Builds a request keeping the body-parser error (if any) inside it: the router raises it
     /// after CORS and through the global filters, like an Express middleware calling `next(err)`.
     pub(crate) fn with_parser(

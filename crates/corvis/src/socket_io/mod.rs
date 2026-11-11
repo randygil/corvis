@@ -66,7 +66,10 @@ mod fuzz_parser;
 pub use adapter::{AdapterError, HandshakeInfo, RoomError, SocketInfo};
 pub use broadcast::{BroadcastAckError, BroadcastAckErrorKind, BroadcastOperator, IntoRooms, RemoteSocket};
 pub use engine::options::{Admission, EngineOptions, EngineOptionsError};
-pub use gateway::{DEFAULT_HOOK_TIMEOUT, IoAdapter, IoGatewayBroadcast, IoGatewayServer};
+pub use gateway::{
+    DEFAULT_HOOK_TIMEOUT, DEFAULT_MAX_PENDING_DISCONNECT_HOOK_BYTES, DEFAULT_MAX_PENDING_DISCONNECT_HOOKS, IoAdapter, IoGatewayBroadcast,
+    IoGatewayServer,
+};
 pub(crate) use gateway::{start as gateway_start, validate as gateway_validate};
 pub use namespace::{ConnectError, IoNamespace};
 pub use options::{IoOptions, IoOptionsError};

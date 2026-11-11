@@ -330,7 +330,11 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                             )
                         });
                         lets.push(quote! {
-                            let #id: #ty = ::corvis::__private::extract_arg::<#ty>(&mut __args, #body_index, ::corvis::ParamKind::Body, #data_tokens)?;
+                            let #id: #ty = {
+                                #[allow(unused_imports)]
+                                use ::corvis::__private::{BodyDeserialize as _, BodyIsValue as _};
+                                (&::corvis::__private::Probe::<#ty>::new()).__corvis_body_arg(&mut __args, #body_index, #data_tokens)?
+                            };
                         });
                         body_index += 1;
                     }

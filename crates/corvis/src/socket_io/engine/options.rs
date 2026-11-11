@@ -115,6 +115,9 @@ pub struct EngineOptions {
     pub(crate) pressure_pause_timeout: Option<Duration>,
     /// The most handlers of a layer on top that may outlive their connection, per client address (see `EngineSocket::linger`).
     pub(crate) max_lingering_per_ip: Option<usize>,
+    /// The share of one client address of the hooks a layer on top runs after its sockets left (`EngineSocket::linger_hook`):
+    /// how many may be pending and the bytes they may pin. New sessions from an address at either are answered `503`.
+    pub(crate) pending_hook_share: Option<(usize, usize)>,
     pub(crate) first_request_timeout: Option<Duration>,
     pub(crate) allow_request: Option<AllowRequestHook>,
     pub(crate) allow_request_timeout: Duration,
@@ -140,6 +143,7 @@ impl Default for EngineOptions {
             max_address_unread_bytes: None,
             pressure_pause_timeout: None,
             max_lingering_per_ip: None,
+            pending_hook_share: None,
             first_request_timeout: None,
             allow_request: None,
             allow_request_timeout: DEFAULT_ALLOW_REQUEST_TIMEOUT,
@@ -262,6 +266,14 @@ impl EngineOptions {
     /// address has this many, new sessions from it are answered `503` like at `max_sessions_per_ip`. Not set by default.
     pub(crate) fn max_lingering_per_ip(mut self, handlers: usize) -> Self {
         self.max_lingering_per_ip = Some(handlers);
+        self
+    }
+
+    /// A layer on top (the gateways' disconnect hooks) reports the hooks that wait or run after their socket left
+    /// (`EngineSocket::linger_hook`): while an address has `hooks` of them, or they pin `bytes`, new sessions from it are
+    /// answered `503` until they drain. Not set by default.
+    pub(crate) fn pending_hook_share(mut self, hooks: usize, bytes: usize) -> Self {
+        self.pending_hook_share = Some((hooks, bytes));
         self
     }
 

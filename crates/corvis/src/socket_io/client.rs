@@ -181,6 +181,11 @@ impl Charge {
     fn add(&mut self, part: Reservation) {
         self.parts.push(part);
     }
+
+    /// The bytes held.
+    pub(crate) fn bytes(&self) -> usize {
+        self.parts.iter().map(Reservation::bytes).fold(0, usize::saturating_add)
+    }
 }
 
 /// A text message that was measured and waits for room in the budget, with the wire message it came from (which
@@ -483,9 +488,12 @@ fn dispatch(
     let namespace = socket.namespace().name().to_string();
     let args = Args::new(args);
     let handler_socket = socket.clone();
-    let created = match (own, dispatcher) {
-        (Some(handler), _) => std::panic::catch_unwind(AssertUnwindSafe(|| Some(handler(handler_socket, args, ack)))),
-        (None, Some(dispatcher)) => std::panic::catch_unwind(AssertUnwindSafe(|| dispatcher(handler_socket, name, args, ack))),
+    // A socket's handler keeps the packet's charge until it finishes; the dispatcher takes it with the arguments.
+    let (created, charge) = match (own, dispatcher) {
+        (Some(handler), _) => (std::panic::catch_unwind(AssertUnwindSafe(|| Some(handler(handler_socket, args, ack)))), Some(charge)),
+        (None, Some(dispatcher)) => {
+            (std::panic::catch_unwind(AssertUnwindSafe(move || dispatcher(handler_socket, name, args, ack, charge))), None)
+        }
         (None, None) => return,
     };
     let future = match created {

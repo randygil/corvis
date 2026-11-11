@@ -590,7 +590,8 @@ impl CorvisApplication {
         // route posture check and before any code of a gateway.
         #[cfg(feature = "socket-io")]
         if let crate::websockets::GatewayAdapterChoice::SocketIo(adapter) = &self.config.router.gateway_adapter {
-            crate::socket_io::gateway_validate(&compiled_gateways, adapter)?;
+            let routes: Vec<(String, String)> = router.routes.iter().map(|r| (r.method.as_str().to_string(), r.path.clone())).collect();
+            crate::socket_io::gateway_validate(&compiled_gateways, adapter, &routes)?;
         }
         // Before module middleware `configure`, gateway `after_init` and the init hooks: a failing check must not have
         // run user code.

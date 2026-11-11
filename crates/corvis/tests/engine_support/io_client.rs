@@ -76,6 +76,14 @@ impl Raw {
         self.ws.send(Message::Text(format!("4{packet}"))).await.unwrap();
     }
 
+    /// Sends several Socket.IO packets in one write: the server receives them together, without waiting for any answer.
+    pub async fn send_batch(&mut self, packets: &[String]) {
+        for packet in packets {
+            self.ws.feed(Message::Text(format!("4{packet}"))).await.unwrap();
+        }
+        self.ws.flush().await.unwrap();
+    }
+
     pub async fn send_binary(&mut self, data: &[u8]) {
         self.ws.send(Message::Binary(data.to_vec())).await.unwrap();
     }

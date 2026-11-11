@@ -31,6 +31,20 @@ pub struct Log {
     peak: Arc<AtomicUsize>,
     #[default]
     finished: Arc<AtomicUsize>,
+    /// Hooks wait here until the test adds permits (one per hook it lets go).
+    #[default]
+    gate: Arc<HookGate>,
+    /// Per client address: hooks running now, and the most at once.
+    #[default]
+    per_address: Arc<Mutex<std::collections::HashMap<String, (usize, usize)>>>,
+}
+
+pub struct HookGate(tokio::sync::Semaphore);
+
+impl Default for HookGate {
+    fn default() -> Self {
+        HookGate(tokio::sync::Semaphore::new(0))
+    }
 }
 
 impl Log {
@@ -167,7 +181,22 @@ impl OnGatewayConnection<IoSocket> for OrderGateway {
     }
 }
 
-#[module(providers = [Log, OrderGateway])]
+/// A namespace without hooks on the same connection: the connection handles packets in arrival order, so when its
+/// handler logs, every packet sent before it was dispatched.
+#[websocket_gateway("/mark")]
+pub struct MarkGateway {
+    log: Arc<Log>,
+}
+
+#[handlers]
+impl MarkGateway {
+    #[subscribe_message("mark")]
+    fn mark(&self, #[message_body] round: usize) {
+        self.log.push(format!("mark:{round}"));
+    }
+}
+
+#[module(providers = [Log, OrderGateway, MarkGateway])]
 pub struct OrderModule;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -176,6 +205,7 @@ async fn events_held_behind_a_slow_connection_hook_start_in_arrival_order() {
     let log = app.get::<Log>().unwrap();
     for round in 0..15 {
         let mut client = Raw::connect(addr).await;
+        client.join("/mark", None).await;
         client.send(r#"0/order,{"token":"slow"}"#).await;
         let _connected = client.recv_text().await;
         let waiting = round + 1;
@@ -183,8 +213,10 @@ async fn events_held_behind_a_slow_connection_hook_start_in_arrival_order() {
         for n in 0..30 {
             client.send(&format!(r#"2/order,["ord",{round},{n}]"#)).await;
         }
-        // Everything is on its way to the server while the hook still waits; then the hook returns.
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Once the marker sent after them is handled, the 30 events wait behind the hook; then the hook returns.
+        client.send(&format!(r#"2/mark,["mark",{round}]"#)).await;
+        let marker = format!("mark:{round}");
+        log.wait_until("the marker", |e| e.contains(&marker)).await;
         log.release.notify_one();
         let prefix = format!("ord:{round},");
         log.wait_until("30 events", |e| e.iter().filter(|x| x.starts_with(&prefix)).count() >= 30).await;
@@ -221,13 +253,22 @@ impl LeavingGateway {}
 
 #[async_trait]
 impl OnGatewayDisconnect<IoSocket> for LeavingGateway {
-    async fn handle_disconnect(&self, _socket: IoSocket) {
+    async fn handle_disconnect(&self, socket: IoSocket) {
+        let address = socket.handshake().ip();
         let now = self.log.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.log.peak.fetch_max(now, Ordering::SeqCst);
-        self.log.release.notified().await;
+        {
+            let mut per = self.log.per_address.lock().unwrap();
+            let (running, peak) = per.entry(address.clone()).or_default();
+            *running += 1;
+            *peak = (*peak).max(*running);
+        }
+        self.log.push(format!("started:{}", socket.id()));
+        self.log.gate.0.acquire().await.unwrap().forget();
+        self.log.per_address.lock().unwrap().get_mut(&address).unwrap().0 -= 1;
         self.log.running.fetch_sub(1, Ordering::SeqCst);
         self.log.finished.fetch_add(1, Ordering::SeqCst);
-        self.log.push("left");
+        self.log.push(format!("left:{}", socket.id()));
     }
 }
 
@@ -238,32 +279,29 @@ pub struct LeavingModule;
 async fn disconnect_hooks_run_in_a_bounded_number_of_tasks_and_every_one_runs_once() {
     let (mut app, addr) = start::<LeavingModule>(IoAdapter::new()).await;
     let log = app.get::<Log>().unwrap();
+    // 120 sockets from five addresses: 32 workers in the application, at most 8 of them for one address.
     const SOCKETS: usize = 120;
-    for _ in 0..SOCKETS {
-        let mut client = Raw::connect(addr).await;
-        client.join("/leaving", None).await;
+    let mut ids = Vec::new();
+    for i in 0..SOCKETS {
+        let local = std::net::IpAddr::from([127, 0, 0, 10 + (i % 5) as u8]);
+        let mut client = Raw::connect_from(addr, local).await;
+        ids.push(client.join("/leaving", None).await);
         client.close().await;
     }
-    // The hooks block: the workers are all busy and the rest wait in the queue.
-    for _ in 0..200 {
-        if log.running.load(Ordering::SeqCst) >= 16 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    // The hooks block: the workers fill up and the rest wait in the queue.
+    log.wait_until("32 hooks to start", |e| e.iter().filter(|x| x.starts_with("started:")).count() >= 32).await;
+    // Let every hook go: each runs exactly once.
+    log.gate.0.add_permits(SOCKETS);
+    log.wait_until("every hook to end", |e| e.iter().filter(|x| x.starts_with("left:")).count() >= SOCKETS).await;
+    let entries = log.entries();
+    for id in &ids {
+        assert_eq!(entries.iter().filter(|x| **x == format!("started:{id}")).count(), 1, "the hook of {id} ran once");
     }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(log.running.load(Ordering::SeqCst), 16, "no more hooks run at once than there are workers");
-    // Release them as they come: every hook runs exactly once.
-    loop {
-        log.release.notify_waiters();
-        if log.finished.load(Ordering::SeqCst) >= SOCKETS {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(log.finished.load(Ordering::SeqCst), SOCKETS, "each socket's hook ran once");
-    assert!(log.peak.load(Ordering::SeqCst) <= 16, "peak concurrency {}", log.peak.load(Ordering::SeqCst));
+    assert_eq!(log.peak.load(Ordering::SeqCst), 32, "no more hooks run at once than there are workers");
+    for (address, (_, peak)) in log.per_address.lock().unwrap().iter() {
+        assert!(*peak <= 8, "{address} ran {peak} hooks at once; the most for one address is 8");
+    }
     app.close().await.unwrap();
 }
 

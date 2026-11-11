@@ -9,6 +9,7 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 
 use super::adapter::{Adapter, LocalNamespace};
+use super::client::Charge;
 use super::options::IoOptions;
 use super::socket::{AckSender, IoSocket};
 use super::value::{Args, IoValue};
@@ -16,8 +17,10 @@ use super::value::{Args, IoValue};
 pub(crate) type Middleware = Arc<dyn Fn(IoSocket) -> BoxFuture<'static, Result<(), ConnectError>> + Send + Sync>;
 pub(crate) type ConnectionHandler = Arc<dyn Fn(IoSocket) + Send + Sync>;
 /// Consulted for an event the socket has no handler of its own for: the future that handles it, or `None` for an event
-/// nobody handles (it is dropped). The gateway layer installs one per namespace.
-pub(crate) type Dispatcher = Arc<dyn Fn(IoSocket, &str, Args, Option<AckSender>) -> Option<BoxFuture<'static, ()>> + Send + Sync>;
+/// nobody handles (it is dropped). It is called in the order the events arrived. It receives what the packet holds in
+/// the unread budget and keeps it for as long as what it stands for lives (a dispatcher that turns the arguments into
+/// something else charges that and releases the packet's charge). The gateway layer installs one per namespace.
+pub(crate) type Dispatcher = Arc<dyn Fn(IoSocket, &str, Args, Option<AckSender>, Charge) -> Option<BoxFuture<'static, ()>> + Send + Sync>;
 
 /// Why connect middleware refused a connection: it becomes the CONNECT_ERROR packet the client receives,
 /// `{"message": <message>}` plus `"data"` when the error carries data (what `err.message` and `err.data` are in the
