@@ -11,6 +11,7 @@ bench/node-app/node_modules
 bench/node-app/dist
 bench/raw
 bench/logs
+bench/socket-io/raw
 
 # Bases SQLite creadas por los ejemplos al ejecutarse
 *.db

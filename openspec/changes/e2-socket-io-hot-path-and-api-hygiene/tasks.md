@@ -9,23 +9,23 @@ to applications and clients" says so.
 
 ## 1. Reconcile and reproduce
 
-- [ ] 1.1 Re-check every file and line of design.md "The findings, confirmed against the code" against `dev` with #35
+- [x] 1.1 Re-check every file and line of design.md "The findings, confirmed against the code" against `dev` with #35
   merged (in particular `socket_io/client.rs`, which #35 edits, and `gateway.rs`, which calls the connect path); write the
   moved lines and any conflict with #35 in a new "Implementation notes" section of design.md before any other task; verify
   `cargo test -p corvis --features socket-io` passes on the untouched tree
-- [ ] 1.2 Reproduce #184: run `CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_conformance`
+- [x] 1.2 Reproduce #184: run `CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_conformance`
   8 times and record the failures (count and the failing test) in Implementation notes; verify the failure is the one the
   issue describes (`expected '2' to deeply equal '42["auth",{}]'`) or record what differs
 
 ## 2. Benchmark
 
-- [ ] 2.1 `bench/socket-io/` workspace member (`Cargo.toml` with `publish = false`, feature `socket-io` of `corvis`, added
+- [x] 2.1 `bench/socket-io/` workspace member (`Cargo.toml` with `publish = false`, feature `socket-io` of `corvis`, added
   to the workspace `members`): binary `corvis-sio-bench` with `server` (an `IoServer` with default options on
   `127.0.0.1:<port>`, a global counting allocator, a `/stats` route that resets and reads allocations and bytes) and `load`
   (raw Engine.IO / Socket.IO clients over WebSocket and polling, scenarios `emit`, `server-emit`, `broadcast`, parameters
   for connections, messages, payload size, a 4 KiB `cookie` header on every client); verify
   `cargo build --release -p corvis-sio-bench` without warnings and a manual run of each scenario with 10 connections
-- [ ] 2.2 `bench/socket-io/run.sh` (matrix of the spec's default run, three runs per measurement, median with min and max,
+- [x] 2.2 `bench/socket-io/run.sh` (matrix of the spec's default run, three runs per measurement, median with min and max,
   `SKIP_BUILD`, the missing-binary message, one server at a time) and `bench/socket-io/README.md` (prerequisites, variables,
   where the binary is built); add `bench/socket-io/raw/` to `.gitignore`; verify the two scenarios of the spec requirement
   "The Socket.IO benchmark drives emit and broadcast" by hand
