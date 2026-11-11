@@ -197,6 +197,20 @@ async fn list_writes_refuse_unserializable_values() {
 }
 
 #[tokio::test]
+async fn or_undefined_fails_the_query_on_a_value_that_cannot_be_serialized() {
+    let db = seeded().await;
+    let map = std::collections::HashMap::from([((1, 2), 3)]);
+    let res = db.reading().find_many(json!({ "where": { "score": corvis_orm::or_undefined(Some(map)) } })).exec().await;
+    assert_validation(res, "or_undefined of an unserializable value");
+    let res = db.reading().delete_many(json!({ "where": { "label": corvis_orm::or_undefined(Some(BAD)) } })).exec().await;
+    assert_validation(res, "or_undefined in delete_many");
+    assert_eq!(scores(&db).await.len(), 3, "rows were deleted");
+    // `NaN ?? undefined` is `NaN`, which the reference client sends as `null` (recorded in the oracles, `fin.*`).
+    let rows = db.reading().find_many(json!({ "where": { "score": corvis_orm::or_undefined(Some(f64::NAN)) } })).exec().await.unwrap();
+    assert_eq!(rows.iter().map(|r| r.score).collect::<Vec<_>>(), [None]);
+}
+
+#[tokio::test]
 async fn combinators_and_relations_carry_the_error() {
     let db = seeded().await;
     let bad = || reading::odd::equals(BAD);

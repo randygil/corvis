@@ -36,6 +36,9 @@ pub(crate) async fn run(client: OrmClient, model: &'static ModelMeta, action: &'
     let mut args = args;
     // Before anything walks the arguments recursively (`strip_undefined`, `where_sql`, ...).
     check_depth(&e, args_depth_limit(&e.client), &mut args)?;
+    if let Some(msg) = find_invalid_argument(&args) {
+        return Err(e.err(msg));
+    }
     strip_undefined(&mut args);
     let args = match args {
         Value::Null => Map::new(),
@@ -121,6 +124,26 @@ fn depth_error(e: &Engine, max: usize) -> OrmError {
 
 /// The value of [`crate::undefined`]: JS `undefined` inside query arguments.
 pub(crate) const UNDEFINED: &str = "\u{0}corvis_orm::undefined\u{0}";
+
+/// The prefix of a value [`invalid_argument`] stands for (NUL characters cannot come from a request: they are
+/// rejected in strings).
+const INVALID: &str = "\u{0}corvis_orm::invalid\u{0}";
+
+/// A JSON value that makes the query it is put in fail with `message` (a validation error) before any SQL runs: how
+/// a JSON builder such as [`crate::or_undefined`] reports a value it could not convert.
+pub(crate) fn invalid_argument(message: String) -> Value {
+    Value::String(format!("{INVALID}{message}"))
+}
+
+/// The message of the first [`invalid_argument`] in `v`, if any.
+fn find_invalid_argument(v: &Value) -> Option<&str> {
+    match v {
+        Value::String(s) => s.strip_prefix(INVALID),
+        Value::Array(a) => a.iter().find_map(find_invalid_argument),
+        Value::Object(m) => m.values().find_map(find_invalid_argument),
+        _ => None,
+    }
+}
 
 fn is_undefined(v: &Value) -> bool {
     matches!(v, Value::String(s) if s == UNDEFINED)

@@ -233,6 +233,59 @@ fn pow10(n: u64) -> BigUint {
     BigUint::from(10u32).pow(n)
 }
 
+/// Removes each `_` that sits between two decimal digits, like decimal.js (`str.replace(/(\d)_(?=\d)/g, '$1')`).
+fn strip_separators(s: &str) -> String {
+    let b = s.as_bytes();
+    s.char_indices()
+        .filter(|&(i, c)| !(c == '_' && i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).is_some_and(u8::is_ascii_digit)))
+        .map(|(_, c)| c)
+        .collect()
+}
+
+/// A lowercase `0x` / `0b` / `0o` number: `digits[.digits]` or `.digits`, then an optional `p[+-]n` (decimal.js
+/// `isHex` / `isBinary` / `isOctal`). `None` when `s` is not one.
+fn parse_radix(neg: bool, s: &str) -> Option<Decimal> {
+    let (radix, bits, rest) = match s.get(..2)? {
+        "0x" => (16, 4, &s[2..]),
+        "0b" => (2, 1, &s[2..]),
+        "0o" => (8, 3, &s[2..]),
+        _ => return None,
+    };
+    let (mantissa, p) = match rest.split_once('p') {
+        Some((m, e)) => {
+            let digits = e.strip_prefix(['+', '-']).unwrap_or(e);
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let p = digits.bytes().fold(0i64, |p, d| p.saturating_mul(10).saturating_add(i64::from(d - b'0')));
+            (m, if e.starts_with('-') { -p } else { p })
+        }
+        None => (rest, 0),
+    };
+    let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if (int.is_empty() && frac.is_empty()) || !int.chars().chain(frac.chars()).all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    let n = BigUint::parse_bytes(format!("{int}{frac}").as_bytes(), radix)?;
+    Some(binary_scaled(neg, n, bits * frac.len() as u64, p))
+}
+
+/// `n / 2^frac_bits * 2^p`, like decimal.js `parseOther`: the fraction is exact, and the binary exponent multiplies by
+/// the JavaScript number `2 ** p` when `|p| < 54` and by `Decimal.pow(2, p)` (rounded to the default precision)
+/// otherwise; the product itself is exact.
+fn binary_scaled(neg: bool, n: BigUint, frac_bits: u64, p: i64) -> Decimal {
+    if n.is_zero() {
+        return Decimal { kind: Kind::Finite, neg, coeff: BigUint::zero(), exp: 0, cfg: &DEFAULT_CONFIG };
+    }
+    let five = BigUint::from(5u32).pow(u32::try_from(frac_bits).unwrap_or(u32::MAX));
+    let x = Decimal::finite(neg, n * five, -i64::try_from(frac_bits).unwrap_or(i64::MAX), &DEFAULT_CONFIG);
+    match p {
+        0 => x,
+        p if p.abs() < 54 => x.times_exact(&Decimal::from_f64(2f64.powi(p as i32))),
+        p => x.times_exact(&Decimal::from(2).pow(p)),
+    }
+}
+
 /// Number of decimal digits of `n` (1 for zero).
 fn ndigits(n: &BigUint) -> i64 {
     if let Some(v) = n.to_u128() {
@@ -399,6 +452,14 @@ impl Decimal {
         Decimal::finite(negative, BigUint::from_slice(limbs), exp, &DEFAULT_CONFIG)
     }
 
+    /// The value of a `0x` / `0b` / `0o` literal of [`decimal!`](crate::decimal!): its digits as little-endian 32-bit
+    /// limbs, the bits of its fraction and its binary exponent (`0x1.8p3`: `0x18`, 4, 3), as [`Decimal::parse`]
+    /// computes it.
+    #[doc(hidden)]
+    pub fn from_radix_literal_parts(negative: bool, limbs: &[u32], frac_bits: u64, p: i64) -> Decimal {
+        binary_scaled(negative, BigUint::from_slice(limbs), frac_bits, p)
+    }
+
     /// `0`
     pub fn zero() -> Decimal {
         Decimal::finite(false, BigUint::zero(), 0, &DEFAULT_CONFIG)
@@ -436,30 +497,31 @@ impl Decimal {
         self
     }
 
-    /// Parses a decimal.js string: `[+-]digits[.digits][e[+-]n]`, `Infinity`, `NaN`,
-    /// and `0x`/`0b`/`0o` integers.
+    /// Parses a decimal.js string: `[+-]digits[.digits][e[+-]n]`, `Infinity`, `NaN`, and `0x` / `0b` / `0o` numbers
+    /// with an optional fraction and binary exponent (`0x1.8p3`); one `_` between two decimal digits is a separator
+    /// (`1_000`). Checked input by input against decimal.js in `tests/fixtures/decimal_parse.json`.
     pub fn parse(s: &str) -> Result<Decimal, DecimalError> {
-        let (neg, body) = match s.as_bytes().first() {
+        let (neg, raw) = match s.as_bytes().first() {
             Some(b'-') => (true, &s[1..]),
             Some(b'+') => (false, &s[1..]),
             _ => (false, s),
         };
-        let invalid = || DecimalError { message: format!("[DecimalError] Invalid argument: {body}") };
-        if body == "Infinity" {
-            return Ok(Decimal::special(Kind::Infinite, neg, &DEFAULT_CONFIG));
-        }
-        if body == "NaN" {
-            return Ok(Decimal::nan());
-        }
-        let lower = body.to_ascii_lowercase();
-        for (prefix, radix) in [("0x", 16u32), ("0b", 2), ("0o", 8)] {
-            if let Some(digits) = lower.strip_prefix(prefix) {
-                if digits.contains('.') || digits.contains('p') {
-                    return Err(invalid());
-                }
-                let c = BigUint::parse_bytes(digits.as_bytes(), radix).ok_or_else(invalid)?;
-                return Ok(Decimal::finite(neg, c, 0, &DEFAULT_CONFIG));
+        let stripped;
+        let body = if raw.contains('_') {
+            stripped = strip_separators(raw);
+            stripped.as_str()
+        } else {
+            if raw == "Infinity" {
+                return Ok(Decimal::special(Kind::Infinite, neg, &DEFAULT_CONFIG));
             }
+            if raw == "NaN" {
+                return Ok(Decimal::nan());
+            }
+            raw
+        };
+        let invalid = || DecimalError { message: format!("[DecimalError] Invalid argument: {body}") };
+        if let Some(d) = parse_radix(neg, &body.to_ascii_lowercase()) {
+            return Ok(d);
         }
         // /^(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?$/i
         let bytes = body.as_bytes();
@@ -1828,6 +1890,19 @@ mod tests {
             )*};
         }
         same!(
+            "0x1.8",
+            "0x1p4",
+            "0x1.8p1",
+            "0x1P-2",
+            "0x.8",
+            "0x1p-53",
+            "0x3p99999",
+            "-0x0",
+            "0b0.0001",
+            "0o1.4",
+            "1_000_000.000_1",
+            "0x1p1_0",
+            "1e1_0",
             "0",
             "-0",
             "+0.000",

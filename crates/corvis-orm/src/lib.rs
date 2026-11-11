@@ -116,9 +116,14 @@ pub fn undefined() -> serde_json::Value {
 }
 
 /// `Some(v)` -> `v`, `None` -> [`undefined()`] (`value ?? undefined`).
+///
+/// A non-finite float becomes `null`, as the reference client sends `NaN` (recorded). A value whose `Serialize`
+/// fails does not: the query it is part of fails with a validation error before any SQL runs, as JavaScript fails
+/// on a value `JSON.stringify` cannot write.
 pub fn or_undefined<T: serde::Serialize>(v: Option<T>) -> serde_json::Value {
-    match v {
-        Some(v) => serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+    match v.map(serde_json::to_value) {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => engine::invalid_argument(format!("Failed to serialize `{}` as a query value: {e}", std::any::type_name::<T>())),
         None => undefined(),
     }
 }

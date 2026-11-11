@@ -137,3 +137,28 @@ fn operators_and_serde() {
     assert!(Decimal::from(1).div(0) == "Infinity");
     assert!(Decimal::from(0).div(0).is_nan());
 }
+
+/// `Decimal::parse` accepts exactly what `new Decimal(text)` of decimal.js accepts, with the same value, sign and
+/// error message (`tests/fixtures/decimal_parse.json`, recorded by `corvis-tests/tmp/orm/decimal_parse/cases.js`).
+#[test]
+fn parse_matches_decimal_js() {
+    let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/decimal_parse.json")).unwrap();
+    let fx: Value = serde_json::from_str(&raw).unwrap();
+    assert!(fx["recorded_with"].as_str().is_some_and(|v| v.starts_with("decimal.js 10.")), "{}", fx["recorded_with"]);
+    let mut failures = Vec::new();
+    for c in fx["cases"].as_array().unwrap() {
+        let input = c["input"].as_str().unwrap();
+        let got = match Decimal::parse(input) {
+            Ok(d) => serde_json::json!({ "value": d.to_string(), "negative": d.is_negative() }),
+            Err(e) => serde_json::json!({ "error": e.to_string() }),
+        };
+        let expected = match c.get("error") {
+            Some(e) => serde_json::json!({ "error": e }),
+            None => serde_json::json!({ "value": c["value"], "negative": c["negative"] }),
+        };
+        if got != expected {
+            failures.push(format!("{input:?}: expected {expected}, got {got}"));
+        }
+    }
+    assert!(failures.is_empty(), "{} inputs differ from decimal.js:\n{}", failures.len(), failures.join("\n"));
+}
