@@ -197,15 +197,16 @@ fn local_address(index: usize) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 1, (index % 200) as u8 + 1)), 0)
 }
 
-/// Connects from the loopback address of client `index`. A run opens thousands of connections from a few addresses and
-/// the previous runs leave their ports in `TIME_WAIT`, so a port the system hands out may still be taken for this
-/// destination: such an attempt is retried with another port.
+/// Connects from the loopback address of client `index`. A run opens thousands of connections, and connections closed
+/// by the client would leave their ports in `TIME_WAIT` until the system ran out of them over a whole matrix: they are
+/// reset on close instead (a zero linger), and an attempt that still gets a port taken for this destination is retried.
 async fn connect_tcp(port: u16, index: usize) -> Result<TcpStream, Failure> {
     let server = SocketAddr::from(([127, 0, 0, 1], port));
     let mut attempts = 0;
     loop {
         let socket = TcpSocket::new_v4()?;
         socket.set_reuseaddr(true)?;
+        socket.set_linger(Some(Duration::ZERO))?;
         socket.bind(local_address(index))?;
         socket.set_nodelay(true)?;
         match socket.connect(server).await {
