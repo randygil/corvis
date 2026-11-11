@@ -465,6 +465,13 @@ impl IoSocket {
         matches!(self.state().phase, Phase::Connected | Phase::Disconnecting)
     }
 
+    /// Charges `bytes` to this connection's unread budget (its session, address and the server-wide gauge, the chain of
+    /// `budget.rs`) if there is room now, until the guard is dropped. Never waits: `None` when the budget has no room.
+    pub(crate) fn try_charge(&self, bytes: usize) -> Option<Held> {
+        let engine = &self.inner.client.engine;
+        engine.hold_within_share(bytes, 0).or_else(|| engine.hold_within_total(bytes, 0))
+    }
+
     /// A rate limited warning of the connection's server.
     pub(crate) fn warn(&self, kind: &'static str, message: &str) {
         self.inner.client.warnings.warn(kind, self.inner.nsp.name(), message);

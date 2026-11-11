@@ -81,7 +81,20 @@ fn parse_cors(value: &Expr) -> syn::Result<Option<Cors>> {
     }
 }
 
+/// An option given twice (the positional literal is the `namespace`) is an error: the second would silently win.
+fn once(seen: &mut Vec<&'static str>, key: &'static str, span: proc_macro2::Span) -> syn::Result<()> {
+    if seen.contains(&key) {
+        return Err(syn::Error::new(
+            span,
+            format!("`{key}` is given more than once in #[websocket_gateway] (the positional literal counts as `namespace`)"),
+        ));
+    }
+    seen.push(key);
+    Ok(())
+}
+
 fn parse_options(exprs: &[Expr]) -> syn::Result<GatewayOptions> {
+    let mut seen: Vec<&'static str> = Vec::new();
     let mut options = GatewayOptions::default();
     let mut ws_path = "/".to_string();
     for e in exprs {
@@ -93,17 +106,22 @@ fn parse_options(exprs: &[Expr]) -> syn::Result<GatewayOptions> {
                 };
                 match key.as_deref() {
                     Some("path") => {
+                        once(&mut seen, "path", a.left.span())?;
                         let value = string_literal(&a.right, "path")?;
                         ws_path = value.clone();
                         options.path = Some(value);
                     }
                     Some("namespace") => {
+                        once(&mut seen, "namespace", a.left.span())?;
                         let value = string_literal(&a.right, "namespace")?;
                         check_namespace(&value, a.right.span())?;
                         ws_path = value.clone();
                         options.namespace = Some(value);
                     }
-                    Some("cors") => options.cors = parse_cors(&a.right)?,
+                    Some("cors") => {
+                        once(&mut seen, "cors", a.left.span())?;
+                        options.cors = parse_cors(&a.right)?;
+                    }
                     Some(other) => {
                         return Err(syn::Error::new(
                             a.left.span(),
@@ -119,6 +137,7 @@ fn parse_options(exprs: &[Expr]) -> syn::Result<GatewayOptions> {
                 }
             }
             Expr::Lit(_) => {
+                once(&mut seen, "namespace", e.span())?;
                 let value = string_literal(e, "the namespace")?;
                 check_namespace(&value, e.span())?;
                 ws_path = value.clone();
@@ -378,6 +397,20 @@ mod tests {
         let cors = proc_macro2::Group::new(proc_macro2::Delimiter::None, quote!(true));
         let o = options(quote!(namespace = #namespace, path = #path, cors = #cors)).unwrap();
         assert_eq!((o.namespace.as_deref(), o.path.as_deref(), o.cors), (Some("/chat"), Some("/realtime"), Some(Cors::Any)));
+    }
+
+    #[test]
+    fn an_option_given_twice_is_an_error() {
+        for tokens in [
+            quote!(namespace = "/a", namespace = "/b"),
+            quote!("/a", namespace = "/b"),
+            quote!("/a", "/b"),
+            quote!(path = "/a", path = "/b"),
+            quote!(cors = true, cors = "https://a"),
+        ] {
+            assert!(error(tokens).contains("more than once"));
+        }
+        assert!(options(quote!("/a", path = "/b", cors = true)).is_ok());
     }
 
     #[test]

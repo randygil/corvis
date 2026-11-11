@@ -47,9 +47,8 @@ use super::namespace::{ConnectError, IoNamespace, NamespaceInner};
 use super::options::IoOptions;
 use super::server::IoServer;
 use super::socket::{AckSender, EmitError, IoSocket, Phase};
-use super::value::{Args, IntoArgs};
+use super::value::{Args, IntoArgs, IoValue};
 use crate::common::context::{ExecutionContext, Target};
-use crate::common::guard::CanActivate;
 use crate::di::DiError;
 use crate::discovery::{CorsDecl, GatewayAdapterKind};
 use crate::http::HttpException;
@@ -365,6 +364,12 @@ fn plan(gateways: &[&GatewayRuntime], adapter: &IoAdapter) -> Result<Vec<ServerP
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (index, gateway) in gateways.iter().enumerate() {
         let path = EngineOptions::new().path(gateway.io_path()).normalized_path();
+        if path == "/" {
+            return fail(format!(
+                "{} declares the Engine.IO path \"/\" (or an empty one), which would make Engine.IO take every HTTP request of the application; use a path such as /socket.io",
+                gateway.name
+            ));
+        }
         match groups.iter_mut().find(|(p, _)| *p == path) {
             Some((_, members)) => members.push(index),
             None => groups.push((path, vec![index])),
@@ -424,7 +429,13 @@ fn plan(gateways: &[&GatewayRuntime], adapter: &IoAdapter) -> Result<Vec<ServerP
         for (namespace, list) in &namespaces {
             let mut seen: HashMap<&str, &str> = HashMap::new();
             for &i in list {
-                for event in gateways[i].handlers.keys() {
+                for (event, handler) in &gateways[i].handlers {
+                    if super::parser::is_reserved(event) {
+                        return fail(format!(
+                            "{}::{} subscribes to \"{event}\", a reserved Socket.IO event name that no client can emit, so the handler would never run",
+                            gateways[i].name, handler.target.name
+                        ));
+                    }
                     if let Some(earlier) = seen.insert(event, &gateways[i].name) {
                         return fail(format!(
                             "{earlier} and {} both have a handler for the \"{event}\" event on the namespace {namespace}; a namespace can have only one handler per event",
@@ -456,59 +467,53 @@ struct NamespaceRuntime {
     /// The `connect` target of each gateway: its metadata under the name `connect` (for connection guards).
     connect_targets: Vec<Arc<Target>>,
     hook_timeout: Duration,
+    /// Sockets whose `handle_disconnect` hooks wait for a worker, and how many workers run.
+    disconnects: std::sync::Mutex<std::collections::VecDeque<IoSocket>>,
+    disconnect_workers: std::sync::atomic::AtomicUsize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GateState {
-    Closed,
-    Open,
-    Discard,
-}
+/// How many tasks run the `handle_disconnect` hooks of one namespace at once, however many sockets leave.
+pub(crate) const DISCONNECT_WORKERS: usize = 16;
+/// How many sockets may wait for their `handle_disconnect` hook in one namespace; over it the hook is skipped and logged.
+pub(crate) const DISCONNECT_QUEUE: usize = 10_000;
 
-/// Holds the events of a socket until its `handle_connection` hooks returned.
+/// Holds the events of a socket until its `handle_connection` hooks returned. First in, first out: a fair semaphore with
+/// no permits, so the events wait in the order they first polled it (the order they arrived, because the connection
+/// polls the futures of its events in that order) and are woken in that order when the gate opens.
 pub(crate) struct Gate {
-    state: watch::Sender<GateState>,
+    permits: tokio::sync::Semaphore,
+    opened: AtomicBool,
+    discarded: watch::Sender<bool>,
 }
 
 impl Gate {
     pub(crate) fn new() -> Gate {
-        Gate { state: watch::channel(GateState::Closed).0 }
+        Gate { permits: tokio::sync::Semaphore::new(0), opened: AtomicBool::new(false), discarded: watch::channel(false).0 }
     }
 
+    /// Lets every event through (once; it does not undo a discard).
     pub(crate) fn open(&self) {
-        self.state.send_if_modified(|s| {
-            let closed = *s == GateState::Closed;
-            if closed {
-                *s = GateState::Open;
-            }
-            closed
-        });
+        if !self.opened.swap(true, Ordering::SeqCst) {
+            self.permits.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+        }
     }
 
+    /// The socket left: the events that wait are released without being admitted, and none is admitted afterwards.
     pub(crate) fn discard(&self) {
-        self.state.send_replace(GateState::Discard);
+        self.permits.close();
+        self.discarded.send_replace(true);
     }
 
     /// `true` when the hooks returned and the socket stays; `false` when it was disconnected meanwhile.
     pub(crate) async fn admitted(&self) -> bool {
-        let mut rx = self.state.subscribe();
-        loop {
-            match *rx.borrow_and_update() {
-                GateState::Open => return true,
-                GateState::Discard => return false,
-                GateState::Closed => {}
-            }
-            if rx.changed().await.is_err() {
-                return false;
-            }
-        }
+        self.permits.acquire().await.is_ok()
     }
 
     /// Resolves when the socket was disconnected.
     async fn discarded(&self) {
-        let mut rx = self.state.subscribe();
+        let mut rx = self.discarded.subscribe();
         loop {
-            if *rx.borrow_and_update() == GateState::Discard {
+            if *rx.borrow_and_update() {
                 return;
             }
             if rx.changed().await.is_err() {
@@ -595,6 +600,16 @@ async fn dispatch_event(
     if !conn.gate.admitted().await {
         return;
     }
+    // The copies of the body this event makes are charged to the connection's budget before they exist, by a try-charge
+    // that never waits: the body as a `Value` shared with the context, one copy for each `#[message_body]` parameter
+    // and the one the `cause` of an error echoes. The `Args` stay charged by #33 until the handler ends. When the
+    // budget has no room the handler does not run, and no guard has seen the event.
+    let copies = 2 + handler.param_count();
+    let estimate = args.iter().map(IoValue::cost).fold(0usize, usize::saturating_add).saturating_mul(copies);
+    let Some(_copies) = socket.try_charge(estimate) else {
+        let _ = socket.emit("exception", (json!({ "status": "error", "message": "Too many messages in flight" }),));
+        return;
+    };
     let body = match body_of(&args) {
         Ok(body) => body,
         Err(()) => {
@@ -604,8 +619,9 @@ async fn dispatch_event(
     };
     let no_arguments = args.is_empty();
     drop(args);
+    let body = Arc::new(body);
     let client: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
-    let ctx = ExecutionContext::for_ws(
+    let ctx = ExecutionContext::for_ws_shared(
         socket.handshake().request_arc(),
         gateway.class_target.clone(),
         handler.target.clone(),
@@ -643,7 +659,16 @@ async fn dispatch_event(
             if !no_arguments {
                 cause.insert("data".to_string(), ctx.switch_to_ws().get_data().cloned().unwrap_or(Value::Null));
             }
-            if let Some(data) = exception_data(&gateway, &handler, &ctx, e, Some(Value::Object(cause))).await {
+            let internal = |_: &HttpException| {
+                socket.warn(
+                    "an internal error in a gateway handler",
+                    &format!(
+                        "{}::{} failed with an internal error (a panic or an unexpected error): the client was told Internal server error",
+                        gateway.name, handler.target.name
+                    ),
+                );
+            };
+            if let Some(data) = exception_data(&gateway, &handler, &ctx, e, Some(Value::Object(cause)), &internal).await {
                 let _ = socket.emit("exception", (data,));
             }
         }
@@ -686,8 +711,9 @@ fn connect_error_of(e: &HttpException) -> ConnectError {
 async fn run_connection_guards(runtime: &NamespaceRuntime, socket: IoSocket) -> Result<(), ConnectError> {
     let client: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
     for (index, gateway) in runtime.gateways.iter().enumerate() {
-        let guards: &[Arc<dyn CanActivate>] = if index == 0 { &gateway.global_guards } else { &[] };
-        for list in [guards, &gateway.gateway_guards[..]] {
+        // A connection reaches every gateway of the namespace, so the global guards run for each of them with its own class
+        // and all must pass: the strictest gateway decides, whatever the order the gateways were registered in.
+        for list in [&gateway.global_guards[..], &gateway.gateway_guards[..]] {
             if list.is_empty() {
                 continue;
             }
@@ -703,7 +729,18 @@ async fn run_connection_guards(runtime: &NamespaceRuntime, socket: IoSocket) -> 
                 match guard.can_activate(&ctx).await {
                     Ok(true) => {}
                     Ok(false) => return Err(ConnectError::new("Forbidden resource")),
-                    Err(e) => return Err(connect_error_of(&e)),
+                    Err(e) => {
+                        if e.is_internal() {
+                            socket.warn(
+                                "an internal error in a connection guard",
+                                &format!(
+                                    "{}: a connection guard failed with an internal error; the client was told Internal server error",
+                                    gateway.name
+                                ),
+                            );
+                        }
+                        return Err(connect_error_of(&e));
+                    }
                 }
             }
         }
@@ -711,19 +748,59 @@ async fn run_connection_guards(runtime: &NamespaceRuntime, socket: IoSocket) -> 
     Ok(())
 }
 
+/// Queues the `handle_disconnect` hooks of a socket for the namespace's workers: at most [`DISCONNECT_WORKERS`] tasks run
+/// them, and at most [`DISCONNECT_QUEUE`] sockets wait; a hook that finds the queue full is skipped and logged.
 fn spawn_disconnect_hooks(runtime: &Arc<NamespaceRuntime>, socket: IoSocket) {
     if !runtime.gateways.iter().any(|g| g.info.io_on_disconnect.is_some()) {
         return;
     }
     let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+    {
+        let mut queue = runtime.disconnects.lock().unwrap_or_else(|e| e.into_inner());
+        if queue.len() >= DISCONNECT_QUEUE {
+            socket.warn(
+                "a disconnect hook queue that is full",
+                &format!("{DISCONNECT_QUEUE} handle_disconnect hooks are waiting: this socket's hook was skipped"),
+            );
+            return;
+        }
+        queue.push_back(socket);
+    }
+    start_disconnect_worker(runtime, &handle);
+}
+
+fn start_disconnect_worker(runtime: &Arc<NamespaceRuntime>, handle: &tokio::runtime::Handle) {
+    let claimed = runtime.disconnect_workers.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < DISCONNECT_WORKERS).then_some(n + 1));
+    if claimed.is_err() {
+        return;
+    }
     let runtime = runtime.clone();
     handle.spawn(async move {
-        for gateway in &runtime.gateways {
-            let Some(hook) = &gateway.info.io_on_disconnect else { continue };
-            let arg: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
-            if tokio::time::timeout(runtime.hook_timeout, run_hook_with(&gateway.name, "handle_disconnect", hook, arg)).await.is_err() {
-                Logger::new("WsExceptionsHandler")
-                    .error(format!("{}: handle_disconnect took longer than {:?} and was abandoned", gateway.name, runtime.hook_timeout));
+        loop {
+            let next = runtime.disconnects.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
+            let Some(socket) = next else {
+                runtime.disconnect_workers.fetch_sub(1, Ordering::SeqCst);
+                // A socket queued after the pop, by a call that found every worker busy, must not wait for nobody.
+                let waiting = !runtime.disconnects.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+                let reclaimed = waiting
+                    && runtime
+                        .disconnect_workers
+                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < DISCONNECT_WORKERS).then_some(n + 1))
+                        .is_ok();
+                if reclaimed {
+                    continue;
+                }
+                return;
+            };
+            for gateway in &runtime.gateways {
+                let Some(hook) = &gateway.info.io_on_disconnect else { continue };
+                let arg: Arc<dyn Any + Send + Sync> = Arc::new(socket.clone());
+                if tokio::time::timeout(runtime.hook_timeout, run_hook_with(&gateway.name, "handle_disconnect", hook, arg)).await.is_err() {
+                    Logger::new("WsExceptionsHandler").error(format!(
+                        "{}: handle_disconnect took longer than {:?} and was abandoned",
+                        gateway.name, runtime.hook_timeout
+                    ));
+                }
             }
         }
     });
@@ -851,8 +928,14 @@ async fn build(
                 .iter()
                 .map(|g| Arc::new(Target { name: "connect".to_string(), metadata: g.class_target.metadata.clone() }))
                 .collect();
-            let runtime =
-                Arc::new(NamespaceRuntime { gateways: members.clone(), events, connect_targets, hook_timeout: adapter.hook_timeout });
+            let runtime = Arc::new(NamespaceRuntime {
+                gateways: members.clone(),
+                events,
+                connect_targets,
+                hook_timeout: adapter.hook_timeout,
+                disconnects: Default::default(),
+                disconnect_workers: Default::default(),
+            });
             namespace.set_dispatcher(dispatcher(runtime.clone()));
             if adapter.guard_connections {
                 let guards = runtime.clone();

@@ -664,6 +664,13 @@ pub(crate) struct GatewayRuntime {
     pub(crate) gateway_guards: Vec<Arc<dyn CanActivate>>,
 }
 
+impl CompiledWsHandler {
+    /// The number of `#[message_body]` parameters: each takes a copy of the body (or of a property of it).
+    pub(crate) fn param_count(&self) -> usize {
+        self.params.len()
+    }
+}
+
 impl GatewayRuntime {
     /// The Socket.IO namespace of the gateway: `namespace = ...` or the literal, else `/`, with a leading `/`.
     pub(crate) fn io_namespace(&self) -> String {
@@ -1040,7 +1047,7 @@ pub(crate) async fn run_handler(
     handler: &Arc<CompiledWsHandler>,
     client: &Arc<dyn Any + Send + Sync>,
     ctx: &ExecutionContext,
-    data: Value,
+    data: Arc<Value>,
 ) -> Result<Option<Value>, HttpException> {
     for g in &handler.guards {
         if !g.can_activate(ctx).await? {
@@ -1069,7 +1076,7 @@ fn call_interceptors(
     ctx: ExecutionContext,
     handler: Arc<CompiledWsHandler>,
     client: Arc<dyn Any + Send + Sync>,
-    data: Value,
+    data: Arc<Value>,
     shape: Arc<AtomicU8>,
 ) -> BoxFuture<'static, Result<Response, HttpException>> {
     if let Some(interceptor) = list.get(index).cloned() {
@@ -1095,13 +1102,13 @@ fn call_interceptors(
 async fn invoke_handler(
     handler: Arc<CompiledWsHandler>,
     client: Arc<dyn Any + Send + Sync>,
-    data: Value,
+    data: Arc<Value>,
 ) -> Result<Option<Value>, HttpException> {
     let mut args = Vec::with_capacity(handler.params.len());
     for (param, param_pipes) in &handler.params {
         let mut value = match param.data {
             Some(key) => data.get(key).cloned().unwrap_or(Value::Null),
-            None => data.clone(),
+            None => (*data).clone(),
         };
         let meta = param.argument_metadata();
         for pipe in handler.pipes.iter().chain(param_pipes.iter()) {
@@ -1124,10 +1131,11 @@ pub(crate) async fn exception_data(
     ctx: &ExecutionContext,
     e: HttpException,
     cause: Option<Value>,
+    on_internal: &(dyn Fn(&HttpException) + Send + Sync),
 ) -> Option<Value> {
     let builtin = |e: &HttpException| {
         if e.is_internal() {
-            Logger::new("WsExceptionsHandler").error(format!("{}: {}", gateway.name, e.message()));
+            on_internal(e);
         }
         let mut payload = exception_payload(e);
         let object_error = WsException::get_error(e).is_some_and(Value::is_object);
@@ -1199,7 +1207,8 @@ async fn dispatch(
     id: Option<Value>,
 ) {
     let erased: Arc<dyn Any + Send + Sync> = Arc::new(client.clone());
-    let ctx = ExecutionContext::for_ws(
+    let data = Arc::new(data);
+    let ctx = ExecutionContext::for_ws_shared(
         client.inner.handshake.clone(),
         gateway.class_target.clone(),
         handler.target.clone(),
@@ -1225,7 +1234,11 @@ async fn dispatch(
         }
         Ok(None) => {}
         Err(e) => {
-            if let Some(data) = exception_data(&gateway, &handler, &ctx, e, None).await {
+            if let Some(data) = exception_data(&gateway, &handler, &ctx, e, None, &|e| {
+                Logger::new("WsExceptionsHandler").error(format!("{}: {}", gateway.name, e.message()));
+            })
+            .await
+            {
                 client.send_text(with_id(json!({ "event": "exception", "data": data })).to_string());
             }
         }
