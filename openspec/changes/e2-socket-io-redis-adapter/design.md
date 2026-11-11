@@ -615,5 +615,10 @@ These settle the open questions and override the design where they differ.
     docs state it.
 12. The Redis client chosen here is the one the Redis session store (follow-up of #44) reuses; the choice and its
     pinned version are recorded in Implementation notes.
-13. Implemented after #35 lands. The security review is mandatory before the merge (every message from Redis is
+13. (From the security review of #34.) The adapter implements `Adapter::room_exists` (its default says `false`, which
+    silently disables the rule that no socket gets an id that is already a room), targets exactly one socket through its own
+    field (never through a room named like its id), and redacts the handshake (the query string and the credential
+    headers, not only cookie and authorization) before serializing it: never `serde` a `SocketInfo` as it is. Its
+    synchronous methods must not block or wait for the network, because `adapter_timeout` cannot bound them.
+14. Implemented after #35 lands. The security review is mandatory before the merge (every message from Redis is
     untrusted input: sizes, MessagePack depth, request floods, ack accumulation, redaction).

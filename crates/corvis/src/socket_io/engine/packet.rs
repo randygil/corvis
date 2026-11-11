@@ -6,6 +6,8 @@
 
 use base64::Engine as _;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig, general_purpose::STANDARD};
+use std::sync::Arc;
+
 use bytes::Bytes;
 
 /// The record separator of a polling payload.
@@ -20,6 +22,9 @@ const LENIENT: GeneralPurpose =
 pub enum EngineMessage {
     Text(String),
     Binary(Bytes),
+    /// A text message whose bytes are shared with other queues: what a broadcast queues on every recipient, so a
+    /// broadcast holds one copy of its text however many sockets it reaches. Only ever sent, never received.
+    Shared(Arc<str>),
 }
 
 impl EngineMessage {
@@ -28,6 +33,7 @@ impl EngineMessage {
         match self {
             EngineMessage::Text(t) => t.len(),
             EngineMessage::Binary(b) => b.len(),
+            EngineMessage::Shared(t) => t.len(),
         }
     }
 
@@ -111,6 +117,7 @@ impl Packet {
         match self {
             Packet::Open(d) | Packet::Ping(d) | Packet::Pong(d) => 1 + d.len(),
             Packet::Message(EngineMessage::Text(t)) => 1 + t.len(),
+            Packet::Message(EngineMessage::Shared(t)) => 1 + t.len(),
             Packet::Message(EngineMessage::Binary(b)) => 1 + b.len().div_ceil(3) * 4,
             Packet::Close | Packet::Upgrade | Packet::Noop => 1,
         }
@@ -124,6 +131,10 @@ impl Packet {
                 STANDARD.encode_string(b, out);
             }
             Packet::Message(EngineMessage::Text(t)) => {
+                out.push('4');
+                out.push_str(t);
+            }
+            Packet::Message(EngineMessage::Shared(t)) => {
                 out.push('4');
                 out.push_str(t);
             }

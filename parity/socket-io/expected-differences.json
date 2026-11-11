@@ -106,5 +106,113 @@
     "path": "$.entries[1].data.closed",
     "reason": "the same bound: the packet is undecodable, Corvis closes the connection (stricter, fail-closed) and Node keeps it open",
     "spec": "ws/socket-io: Lone surrogates are refused (Lone surrogate in an argument)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[0].data.ok",
+    "reason": "Node has no bound on the rooms of a socket and joins all 1,000 of the call (1,001 with its own id); Corvis refuses a join that would pass max_rooms_per_socket (1,000) and joins none of its rooms",
+    "spec": "ws/socket-io-rooms: Rooms per socket are bounded (Room cap)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[0].data.rooms",
+    "reason": "the same bound: Node acknowledges the 1,001 rooms of the socket, Corvis acknowledges the refusal and no room count",
+    "spec": "ws/socket-io-rooms: Rooms per socket are bounded (Room cap)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[1].data.rooms",
+    "reason": "the same bound: the refused join left the socket in its own room only",
+    "spec": "ws/socket-io-rooms: Rooms per socket are bounded (Room cap)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[3].data.ok",
+    "reason": "Node accepts a room name of any length; Corvis refuses one over max_room_name_length (256 bytes)",
+    "spec": "ws/socket-io-rooms: Room names are bounded and never widen a broadcast (Long name in join)"
+  },
+  {
+    "scenario": "socket-io/rooms/limits",
+    "path": "$.entries[4].data.rooms",
+    "reason": "the same bound: the refused 257-byte name left the socket without the room Node would have joined",
+    "spec": "ws/socket-io-rooms: Room names are bounded and never widen a broadcast (Long name in join)"
+  },
+  {
+    "scenario": "socket-io/rooms/broadcast-ack",
+    "path": "$.entries[3].data.ok",
+    "reason": "Node without timeout() sets a timer with an undefined delay, which fires at once: the call fails with operation has timed out before any client answered; Corvis applies the default deadline (ack_timeout, 30 s) and collects the answers",
+    "spec": "ws/socket-io-rooms: Broadcast acknowledgements are bounded (Default deadline)"
+  },
+  {
+    "scenario": "socket-io/rooms/broadcast-ack",
+    "path": "$.entries[3].data.message",
+    "reason": "the same default deadline: Node reports operation has timed out, Corvis succeeds",
+    "spec": "ws/socket-io-rooms: Broadcast acknowledgements are bounded (Default deadline)"
+  },
+  {
+    "scenario": "socket-io/rooms/broadcast-ack",
+    "path": "$.entries[3].data.responses[0]",
+    "reason": "the same default deadline: Node collected no answer before failing, Corvis collected the first",
+    "spec": "ws/socket-io-rooms: Broadcast acknowledgements are bounded (Default deadline)"
+  },
+  {
+    "scenario": "socket-io/rooms/broadcast-ack",
+    "path": "$.entries[3].data.responses[1]",
+    "reason": "the same default deadline: Node collected no answer before failing, Corvis collected the second",
+    "spec": "ws/socket-io-rooms: Broadcast acknowledgements are bounded (Default deadline)"
+  },
+  {
+    "scenario": "socket-io/rooms/id-rooms",
+    "path": "$.entries[0].data.ok",
+    "reason": "Node lets a socket join the room named like another socket's id and acknowledges it; Corvis refuses the join (a client that joined it would receive what is sent to that socket)",
+    "spec": "ws/socket-io-rooms: The room of a socket id is not for clients (Join another socket's id)"
+  },
+  {
+    "scenario": "socket-io/rooms/id-rooms",
+    "path": "$.entries[0].data.rooms",
+    "reason": "the same rule: Node acknowledges the rooms of A including B's id, Corvis acknowledges the refusal and no room list",
+    "spec": "ws/socket-io-rooms: The room of a socket id is not for clients (Join another socket's id)"
+  },
+  {
+    "scenario": "socket-io/rooms/id-rooms",
+    "path": "$.entries[0].data.error",
+    "reason": "the same rule: the refusal carries the reason (Node has none)",
+    "spec": "ws/socket-io-rooms: The room of a socket id is not for clients (Join another socket's id)"
+  },
+  {
+    "scenario": "socket-io/rooms/id-rooms",
+    "path": "$.entries[1].data.got.A[0]",
+    "reason": "the same rule: in Node A, which joined B's id room, receives what is emitted to B; in Corvis only B does",
+    "spec": "ws/socket-io-rooms: The room of a socket id is not for clients (Join another socket's id)"
+  },
+  {
+    "scenario": "socket-io/rooms/id-rooms",
+    "path": "$.entries[2].data.rooms[0]",
+    "reason": "Node lets a socket leave the room named like its own id and it is then in no room; Corvis keeps it in that room, which is how the socket is addressed",
+    "spec": "ws/socket-io-rooms: The room of a socket id is not for clients (Leave its own id)"
+  },
+  {
+    "scenario": "socket-io/rooms/id-rooms",
+    "path": "$.entries[3].data.got.C[0]",
+    "reason": "the same rule: in Node C, which left its own id room, no longer receives what is emitted to its id; in Corvis it does",
+    "spec": "ws/socket-io-rooms: The room of a socket id is not for clients (Leave its own id)"
+  },
+  {
+    "scenario": "socket-io/rooms/empty-to",
+    "path": "$.entries[1].data.got.A[0]",
+    "reason": "Node adds no room for a `to` given an empty list and reaches every socket; Corvis selects no socket, so a list that came from a client never means everyone",
+    "spec": "ws/socket-io-rooms: An empty list of rooms selects nobody (Empty to)"
+  },
+  {
+    "scenario": "socket-io/rooms/empty-to",
+    "path": "$.entries[1].data.got.B[0]",
+    "reason": "the same rule: B is reached by Node and not by Corvis",
+    "spec": "ws/socket-io-rooms: An empty list of rooms selects nobody (Empty to)"
+  },
+  {
+    "scenario": "socket-io/rooms/empty-to",
+    "path": "$.entries[1].data.got.C[0]",
+    "reason": "the same rule: C is reached by Node and not by Corvis",
+    "spec": "ws/socket-io-rooms: An empty list of rooms selects nobody (Empty to)"
   }
 ]

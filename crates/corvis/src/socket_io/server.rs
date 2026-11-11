@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
+use super::adapter::AckBudget;
 use super::client::{self, ClientShared};
 use super::engine::{EngineOptionsError, EngineServer};
 use super::namespace::IoNamespace;
@@ -32,8 +33,12 @@ pub(crate) struct ServerInner {
     pub(crate) engine: EngineServer,
     /// Rate limit of the lines a client can provoke.
     pub(crate) warnings: Arc<WarnLimiter>,
+    /// The room for the answers held by calls with acknowledgements, shared by every namespace.
+    ack_budget: Arc<AckBudget>,
     namespaces: RwLock<HashMap<String, IoNamespace>>,
     closed: AtomicBool,
+    /// `release` ran: the adapters are closed once per namespace however many paths reach it.
+    released: AtomicBool,
 }
 
 impl ServerInner {
@@ -44,7 +49,19 @@ impl ServerInner {
     /// After a close: the engine refuses handshakes, and anything that still reaches the callback is closed. The
     /// callback no longer holds the server.
     pub(crate) fn release(&self) {
+        if self.released.swap(true, Ordering::SeqCst) {
+            return;
+        }
         self.engine.on_connection(|socket| socket.close());
+        // The adapters release what they hold; without a runtime there is nothing to wait for (the in-memory adapter
+        // has already seen every socket leave).
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let namespaces: Vec<IoNamespace> = self.namespaces.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+            for namespace in namespaces {
+                let adapter = namespace.adapter().clone();
+                runtime.spawn(async move { adapter.close().await });
+            }
+        }
     }
 
     /// Reports `reason` to every connected socket (without a DISCONNECT packet) and removes them from their
@@ -110,14 +127,17 @@ impl IoServer {
         options.validate()?;
         let engine = EngineServer::new(options.effective_engine_options())?;
         let options = Arc::new(options);
+        let ack_budget = AckBudget::new(options.ack_budget());
         let mut namespaces = HashMap::new();
-        namespaces.insert("/".to_string(), IoNamespace::new("/".to_string(), options.clone()));
+        namespaces.insert("/".to_string(), IoNamespace::new("/".to_string(), options.clone(), ack_budget.clone()));
         let inner = Arc::new(ServerInner {
             options,
             engine: engine.clone(),
             warnings: Arc::new(WarnLimiter::new(WARN_INTERVAL)),
+            ack_budget,
             namespaces: RwLock::new(namespaces),
             closed: AtomicBool::new(false),
+            released: AtomicBool::new(false),
         });
         let weak: Weak<ServerInner> = Arc::downgrade(&inner);
         // The connection callback keeps the server alive, as `new Server(httpServer)` is kept by its HTTP server: an
@@ -153,7 +173,9 @@ impl IoServer {
             return Ok(existing);
         }
         let mut namespaces = self.inner.namespaces.write().unwrap_or_else(|e| e.into_inner());
-        let namespace = namespaces.entry(name.clone()).or_insert_with(|| IoNamespace::new(name, self.inner.options.clone()));
+        let namespace = namespaces
+            .entry(name.clone())
+            .or_insert_with(|| IoNamespace::new(name, self.inner.options.clone(), self.inner.ack_budget.clone()));
         Ok(namespace.clone())
     }
 

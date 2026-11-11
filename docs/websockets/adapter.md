@@ -391,9 +391,165 @@ write to your standard error. An application that wants silence installs its own
 framework installs none, since a hook is process-wide). Arguments a handler moves out of `Args`
 (`into_vec`) or into a task it spawns stop being charged when the handler returns: they are the application's memory from then on.
 
-Not supported: rooms and broadcast, gateways over Socket.IO, a Redis adapter (later changes); dynamic namespaces, connection
+Not supported: gateways over Socket.IO, a Redis adapter (later changes); dynamic namespaces, connection
 state recovery, `volatile` and `compress` flags, catch-all listeners, custom parsers, Engine.IO v3 clients and serving the
 client bundle.
+
+### Rooms and broadcast
+
+A socket joins rooms with `socket.join(...)` and leaves them with `socket.leave(room)`; `socket.rooms()` lists them. Rooms
+belong to a namespace (`r` in `/` and `r` in `/admin` are two rooms), and every socket is in the room named after its own id
+from the moment it connects, before its connection handlers run, so emitting to an id reaches that socket. A room is deleted
+when its last socket leaves it. A disconnecting socket is still in its rooms while the `on_disconnecting` handlers run (a
+handler can read `socket.rooms()` and say goodbye to the people in them) and in none at `on_disconnect`; joining a socket
+that has already disconnected does nothing. A client cannot make the server put it in another socket's room by naming that
+socket's id: `join` refuses a room named like the id of another socket of the namespace (`RoomError::SocketIdRoom`, and
+`sockets_join` skips such a socket), a socket cannot leave the room named like its own id, and the id assigned when a socket
+connects is never the name of an existing room. Node allows all three; they are listed differences.
+
+Broadcasts start from a server, a namespace or a socket and chain `to`, `within` (Node's `in`, a keyword in Rust), `except`,
+`local` and `timeout`. Each call returns a new operator, so a base operator can be reused. They select the sockets Node's
+in-memory adapter selects: `to` takes one or more rooms and reaches the union, each socket once; `except` takes rooms,
+socket ids included, and removes their members; without `to` a broadcast reaches every socket of the namespace; a room nobody
+is in selects nobody, and so does a `to` or `within` given an empty list (Node reaches everyone, which would let an empty
+list that came from a client mean "everyone"; `except` with an empty list changes nothing, and no `to` at all is everyone).
+A broadcast started from a socket (`socket.broadcast()`, `socket.to(...)`, `socket.within(...)`, `socket.except(...)`)
+excludes that socket.
+
+```rust
+use corvis::socket_io::{IoOptions, IoServer};
+
+let io = IoServer::new(IoOptions::new())?;
+io.main().on_connection(|socket| {
+    // A room name that comes from the client is checked: a name over 256 bytes fails, it is never silently dropped.
+    socket.on("join", |socket, args, _ack| async move {
+        if let Ok(room) = args.get::<String>(0) {
+            let _ = socket.join(room);
+        }
+    });
+    socket.on("say", |socket, args, _ack| async move {
+        let (Ok(room), Ok(text)) = (args.get::<String>(0), args.get::<String>(1)) else { return };
+        // Everyone in the room but this socket.
+        let _ = socket.to(room).emit("said", (text,)).await;
+    });
+});
+
+// From anywhere that holds the server:
+io.emit("tick", (1,)).await?;                                       // every socket of `/`
+io.to(["lobby", "news"]).except("muted").emit("notice", ("hi",)).await?;
+io.of("/admin")?.to("ops").emit("alert", ("disk",)).await?;
+```
+
+The terminal operations (`emit`, `emit_with_ack`, `fetch_sockets`, `sockets_join`, `sockets_leave`,
+`disconnect_sockets`) are `async` and return a `Result`, because the adapter behind them may be a cluster one: the same code
+works when the adapter is replaced. With the default in-memory adapter they complete without waiting on any client. A
+room name over the limit never panics and is never dropped (dropping it from `to` could leave the list empty, which
+means everyone): the operator keeps the error and every terminal operation returns `EmitError::InvalidRoom` without sending
+or changing anything. An operator names at most `max_rooms_per_socket` rooms in all (`to`, `within` and `except` together):
+past that every terminal operation returns `EmitError::InvalidRoom(RoomError::TooManyTargets)`. Chaining is linear: each call
+costs the rooms it adds, however long the chain. A call of the adapter made by an operator, and the adapter's `init`, is
+bounded by `adapter_timeout` (5 s by default): an adapter that never answers fails the call with `AdapterError::Timeout`.
+Reserved event names are refused, as for a direct emit.
+
+#### What a broadcast costs
+
+A broadcast encodes its packet once and queues the same bytes on every recipient (a reference to one shared buffer, binary
+attachments included), so while it is delivered the process holds the encoding `E` once, plus a few dozen bytes per
+recipient (a reference and a queue entry, and the snapshot of recipients: about 24 bytes each), not `N x E`. It never
+waits for a recipient: each recipient's queue is bounded by `max_buffered_amount` (8 MiB by default), and a recipient
+that is over it is closed with `transport error` while the emitter and the other recipients go on (the broadcast returns
+`Ok`; it does not tell which recipients were closed). There is no server-wide outbound budget yet (issue #176), so a
+broadcast to `S` clients that do not read can leave `S x max_buffered_amount` queued, plus one frame in flight per session
+as for any emit; size `max_buffered_amount` and `max_sessions` with that product in mind. A WebSocket session copies the
+shared text into its own frame when its writer starts, so `S` WebSocket recipients that do not read hold `S` frames at once,
+not one: a 1 MiB text to 100 of them held 104.85 MB (measured), where long-polling recipients hold only the shared
+reference. One address can pin up to 256 x (8 MiB + one frame) of outbound memory with the defaults, because no server-wide
+outbound budget bounds the sessions together (issues #175 and #176).
+
+Room membership is not locked while packets are delivered: a broadcast selects its recipients under a read lock, releases it
+and then delivers, so a handler can join, leave and broadcast during a broadcast and a large fan-out does not block joins.
+The selection is the moment of the broadcast: a socket that left a room before it started does not receive it, one that
+disconnected is never sent a packet, and a socket that joins or leaves while a broadcast is being delivered may or may not
+get that one. Packets emitted by one task to one socket, by broadcast or directly, arrive in the order they were emitted:
+two broadcasts of one caller, the second awaited after the first returned, reach every recipient they have in common in that
+order. Broadcasts of concurrent tasks have no order between them (the handlers of one connection run concurrently, so two
+relays of one client are two tasks). A very large fan-out yields to the runtime every 512 recipients.
+
+#### Acknowledgements
+
+`io.timeout(Duration::from_secs(5)).to("room").emit_with_ack("question", ()).await` sends one packet with one id to the
+recipients and resolves with the answer of each, in the order they arrive, once all of them answered. It fails with
+`BroadcastAckError`, whose message is `operation has timed out` and whose `responses()` hold the answers that arrived, at
+the deadline (the `timeout`, else `ack_timeout`, 30 s: Node without `timeout()` fails at once, which is a listed difference),
+and with `ResponsesTooLarge` when the answers would pass `max_broadcast_ack_bytes` (the ones that arrived are kept). A
+recipient that disconnects never answers, and the call ends at the deadline with what arrived; one that already waits for
+`max_pending_acks` answers is sent the event but is not awaited. At the deadline, or when the call is dropped, no recipient
+keeps a pending acknowledgement for it. Each recipient's answer counts once and only
+recipients of the broadcast answer. Node keeps only the first value of each answer; Corvis returns all of them
+(`Args`). While it waits, a broadcast with acknowledgements holds at most `max_broadcast_ack_bytes` (16 MiB) of answers
+plus a pending entry (a reference and an id) per recipient. The answers of all pending calls together are bounded too, by a
+server-wide answer budget of a quarter of the engine's `max_total_unread_bytes` (never less than `max_broadcast_ack_bytes`),
+which belongs to the calls and not to the clients that answered: a connection's unread budget (its session, its address and
+the server) is charged only while its answer is read and handled and is released when the call takes the answer, so a
+handler that starts many calls cannot make the budget of other clients pay for what the calls hold. One client address may
+hold at most a sixteenth of that budget (4 MiB at the defaults), so a single address cannot keep it full; an answer that
+would pass the address's share, or the budget, does not wait: the call ends with `ResponsesTooLarge` and the answers
+collected so far (the other calls are not affected by a share that is full). The answer budget is outside
+`max_total_unread_bytes`: the heap the unread data and the held answers can add up to is `max_total_unread_bytes` plus
+`max(max_total_unread_bytes / 4, max_broadcast_ack_bytes)`. A single answer larger than the address share is always refused.
+
+#### Bulk operations
+
+`sockets_join(rooms)`, `sockets_leave(rooms)` and `disconnect_sockets(close)` act on the sockets an operator selects:
+`io.to("r1").sockets_join("r2").await?` makes every socket in `r1` join `r2`, and `io.to("r").disconnect_sockets(false)`
+makes them leave the namespace (they hear `io server disconnect`) without closing their connections. A socket at its room
+cap is skipped and a warning is logged; the others join. `fetch_sockets()` returns `RemoteSocket`s with `id()`,
+`handshake()`, `rooms()` and `data()`, and `emit`, `join`, `leave` and `disconnect` that work whether or not the socket is
+connected to this process: for a socket of this process they act on that socket directly, for one held by another process
+they go through the adapter addressed to that socket's id and to nothing else; `local()` gives the `IoSocket` when it is local.
+The result is a snapshot, and its cost is proportional to the selection, not to the server: the handshake of a local socket
+is shared, not copied, so a result allocates a few hundred bytes a socket whatever the handshake holds. `Debug` of
+`RemoteSocket`, `SocketInfo` and `HandshakeInfo` never prints `auth` values or a query string, and prints header values only for `host`, `user-agent`, `origin`, `accept`,
+`accept-encoding`, `accept-language`, `connection`, `upgrade` and `sec-websocket-version`: every other header (cookies,
+authorization, `x-api-key` and any custom one) shows its name and `<hidden>`.
+
+An adapter must keep two things in mind: `room_exists` defaults to `false` and a distributed adapter has to implement it,
+or the rule that no socket gets an id that is already a room silently stops working; and the synchronous methods
+(`add_all`, `del`, `del_all`, `room_exists`) cannot be bounded by `adapter_timeout`, so they must not block or wait for the
+network.
+
+#### Rooms bounds
+
+| Bound | Default | Node `socket.io` 4.8.4 | When exceeded |
+|---|---|---|---|
+| `max_rooms_per_socket` (the room of its own id included) | 1,000 | none | `RoomError::TooManyRooms`; the call joins none of its rooms |
+| `max_room_name_length` (in `join`, `to`, `within`, `except`) | 256 bytes, at least 20 | any value | `RoomError::NameTooLong`; in an operator, `EmitError::InvalidRoom` and nothing is sent |
+| Rooms in a namespace | at most sockets x `max_rooms_per_socket`; empty rooms are deleted, and a socket that leaves or disconnects leaves no membership behind | unbounded | derived |
+| Memory of the memberships | about 475 bytes each, outside every budget: 121.6 MB per namespace for one address at the defaults (256 sessions x 1,000 rooms), 4.75 GB per namespace server-wide (10,000 sessions x 1,000 rooms) | unbounded | derived; lower `max_rooms_per_socket`, `max_room_name_length`, `max_sessions_per_ip` or `max_sessions` |
+| Names in one `join` / `sockets_join` | at most `max_rooms_per_socket`, refused before any lock is taken | not capped | `RoomError::TooManyRooms` |
+| Rooms named in one `to` / `within` / `except` chain | `max_rooms_per_socket` in all | not capped | `EmitError::InvalidRoom(RoomError::TooManyTargets)`; nothing is sent |
+| `adapter_timeout` (a call of the adapter made by an operator, and `init`) | 5 s | none | `AdapterError::Timeout` |
+| Answers held by all pending broadcasts with acknowledgements together | a quarter of `max_total_unread_bytes` (at least `max_broadcast_ack_bytes`), a budget of its own that no connection pays for; one client address holds at most a sixteenth of it | none | the call that finds no room (in the budget or in the address's share) ends with `ResponsesTooLarge` at once |
+| Encodings per broadcast | one, shared by every recipient | one | n/a |
+| Send buffer per recipient | `max_buffered_amount`, 8 MiB | none | that session is closed with `transport error`; the emitter and the others are not affected |
+| Emitter waiting on recipients | never | never | n/a |
+| Broadcast acknowledgement deadline | `timeout()`, else `ack_timeout`, 30 s | `timeout()`; without it the call fails at once | `operation has timed out` with the answers so far |
+| `max_broadcast_ack_bytes` (collected answers of one broadcast) | 16 MiB | none | further answers are dropped; `ResponsesTooLarge` |
+
+Differences a client can see, each listed in the harness with the scenario that exercises it: the 1,001st room of a socket
+and a room name of 257 bytes are refused (Node joins them), joining another socket's id is refused and leaving the own id
+room does nothing (Node allows both), a `to` given an empty list reaches nobody (Node reaches everyone), and a broadcast
+acknowledgement without `timeout()` waits for `ack_timeout` (Node fails before any client answers). Other rows equal Node or
+are visible only to server code.
+
+#### The adapter
+
+Rooms and broadcasts go through an adapter, one per namespace: `IoOptions::adapter(factory)` replaces the in-memory default
+(Node's `io.adapter(...)`); closing the server closes each namespace's adapter once. Its trait has synchronous membership of the local sockets and `async`, fallible operations for
+everything that spans a cluster (broadcast, broadcast with acknowledgements, sockets of rooms, fetch, add and remove sockets,
+disconnect, server count), the packet reaches it before it is encoded, and broadcast options carry the rooms, the except
+rooms and the flags, as `@socket.io/redis-adapter`'s messages do. It is hidden and unstable until the Redis adapter
+(issue #36) implements it for the first time.
 
 ## Security
 

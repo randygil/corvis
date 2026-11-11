@@ -1,8 +1,10 @@
 //! Options of the Socket.IO server: Node's `socket.io` defaults where there is a Node default, and a bounded default
 //! for everything a client can make the server hold.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use super::adapter::{Adapter, AdapterFactory, LocalNamespace};
 use super::engine::options::{EngineOptions, EngineOptionsError, MAX_DURATION};
 
 /// `connectTimeout` of Node's `socket.io`.
@@ -29,11 +31,24 @@ pub const DEFAULT_MAX_ARGS: usize = 128;
 pub const DEFAULT_ATTACHMENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the connect middleware of one connection attempt may run.
 pub const DEFAULT_MIDDLEWARE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a call of the adapter made by `emit`, `fetch_sockets` and the bulk operations, and its `init`, may take
+/// (see [`IoOptions::adapter_timeout`]).
+pub const DEFAULT_ADAPTER_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a packet may wait for room in the unread budget (see [`IoOptions::admission_timeout`]).
 pub const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
 /// The default share of the server-wide unread budget one client address may hold: one in this many (see
 /// [`IoOptions::max_address_share`]).
 pub const DEFAULT_ADDRESS_SHARE_DIVISOR: usize = 16;
+
+/// Rooms one socket may be in, its own id's room included (Node has no bound).
+pub const DEFAULT_MAX_ROOMS_PER_SOCKET: usize = 1_000;
+/// Longest room name, in bytes (Node accepts any value).
+pub const DEFAULT_MAX_ROOM_NAME_LENGTH: usize = 256;
+/// What the answers collected by one broadcast with acknowledgements may cost (Node has no bound): 16 MiB.
+pub const DEFAULT_MAX_BROADCAST_ACK_BYTES: usize = 16 * 1024 * 1024;
+/// The shortest `max_room_name_length` accepted: a socket id (20 characters) must fit, because every socket is in the
+/// room named after its id.
+pub const MIN_ROOM_NAME_LENGTH: usize = 20;
 
 /// Why a set of [`IoOptions`] was refused when creating the server.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -70,6 +85,10 @@ pub enum IoOptionsError {
 /// | [`middleware_timeout`](Self::middleware_timeout) | 10 s | none |
 /// | [`max_address_share`](Self::max_address_share) | 1/16 of the engine's `max_total_unread_bytes`, at least one maximum packet | none |
 /// | [`admission_timeout`](Self::admission_timeout) | 30 s | none |
+/// | [`max_rooms_per_socket`](Self::max_rooms_per_socket) | 1,000 (own id's room included) | none |
+/// | [`max_room_name_length`](Self::max_room_name_length) | 256 bytes | none |
+/// | [`max_broadcast_ack_bytes`](Self::max_broadcast_ack_bytes) | 16 MiB per broadcast | none |
+/// | [`adapter_timeout`](Self::adapter_timeout) | 5 s per adapter call | none |
 ///
 /// Other differences, fixed rather than configurable: JSON nested deeper than 127 levels is refused; a client
 /// acknowledgement id has at most 16 digits and is at most 2^53 - 1; a connection holds at most one socket per
@@ -94,6 +113,11 @@ pub struct IoOptions {
     pub(crate) max_address_share: Option<usize>,
     pub(crate) admission_timeout: Duration,
     pub(crate) finish_handlers_after_client_close: bool,
+    pub(crate) max_rooms_per_socket: usize,
+    pub(crate) max_room_name_length: usize,
+    pub(crate) max_broadcast_ack_bytes: usize,
+    pub(crate) adapter_timeout: Duration,
+    pub(crate) adapter: AdapterFactory,
 }
 
 impl Default for IoOptions {
@@ -114,6 +138,11 @@ impl Default for IoOptions {
             max_address_share: None,
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
             finish_handlers_after_client_close: false,
+            max_rooms_per_socket: DEFAULT_MAX_ROOMS_PER_SOCKET,
+            max_room_name_length: DEFAULT_MAX_ROOM_NAME_LENGTH,
+            max_broadcast_ack_bytes: DEFAULT_MAX_BROADCAST_ACK_BYTES,
+            adapter_timeout: DEFAULT_ADAPTER_TIMEOUT,
+            adapter: AdapterFactory::in_memory(),
         }
     }
 }
@@ -250,12 +279,68 @@ impl IoOptions {
         self
     }
 
+    /// The most rooms one socket may be in, the room named after its own id included. A join that would pass it
+    /// fails with `RoomError::TooManyRooms` and joins none of its rooms. Default 1,000, above zero. Node has no limit.
+    pub fn max_rooms_per_socket(mut self, rooms: usize) -> Self {
+        self.max_rooms_per_socket = rooms;
+        self
+    }
+
+    /// The longest room name, in bytes, in `join`, `to`, `within` and `except`. A join with a longer name fails, and
+    /// a broadcast operator given one fails every operation without sending anything (the name is never dropped:
+    /// dropping it could widen the broadcast). Default 256, at least 20 (a socket id must fit). Node accepts any
+    /// value.
+    pub fn max_room_name_length(mut self, bytes: usize) -> Self {
+        self.max_room_name_length = bytes;
+        self
+    }
+
+    /// What the answers collected by one broadcast with acknowledgements may cost, in the decoded-size model of
+    /// [`max_decoded_bytes`](Self::max_decoded_bytes). Once an answer would pass it the answers that arrived are
+    /// kept, the rest are dropped and the call fails with `BroadcastAckErrorKind::ResponsesTooLarge`. Default 16
+    /// MiB, above zero. Node has no limit.
+    pub fn max_broadcast_ack_bytes(mut self, bytes: usize) -> Self {
+        self.max_broadcast_ack_bytes = bytes;
+        self
+    }
+
+    /// How long one call of the adapter may take when an operator makes it (`emit`, `fetch_sockets`, `sockets_join`,
+    /// `sockets_leave`, `disconnect_sockets`) and when the adapter is initialised, before the call fails with
+    /// `EmitError::Adapter(AdapterError::Timeout)`. An adapter that never answers cannot hang its caller. The
+    /// in-memory adapter finishes at once; a cluster adapter needs a value above its own round trip. A broadcast with
+    /// acknowledgements is bounded by its own deadline. Default 5 s, above zero and at most one day. Node has no
+    /// limit.
+    pub fn adapter_timeout(mut self, timeout: Duration) -> Self {
+        self.adapter_timeout = timeout;
+        self
+    }
+
+    /// The adapter of every namespace: `factory` is called once per namespace, when it is registered, with a handle to
+    /// the namespace's local sockets (Node's `io.adapter(Adapter)`). The default is the in-memory adapter.
+    ///
+    /// Unstable and hidden until the Redis adapter (#36) implements the trait once.
+    #[doc(hidden)]
+    pub fn adapter<A, F>(mut self, factory: F) -> Self
+    where
+        A: Adapter,
+        F: Fn(LocalNamespace) -> A + Send + Sync + 'static,
+    {
+        self.adapter = AdapterFactory::new(move |local| Arc::new(factory(local)) as Arc<dyn Adapter>);
+        self
+    }
+
     /// The least a session's address must be allowed to hold: one maximum packet, a decoded packet (`max_decoded_bytes`)
     /// next to the wire bytes of the largest packet (`max_attachments` attachments of `max_http_buffer_size`, or the one
     /// text message), each with its accounting overhead.
     pub fn address_share_floor(&self) -> usize {
         let message = self.engine.max_http_buffer_size.saturating_add(super::engine::session::UNREAD_MESSAGE_OVERHEAD);
         self.max_decoded_bytes.saturating_add(message.saturating_mul(self.max_attachments.max(1))).min(self.engine.max_total_unread_bytes)
+    }
+
+    /// The most the answers held by calls with acknowledgements may total, server-wide: a quarter of the engine's
+    /// `max_total_unread_bytes`, never less than one call may hold (`max_broadcast_ack_bytes`).
+    pub(crate) fn ack_budget(&self) -> usize {
+        (self.engine.max_total_unread_bytes / 4).max(self.max_broadcast_ack_bytes)
     }
 
     /// The share of the server-wide unread budget one address may hold: `max_address_share`, or 1/16 of
@@ -274,6 +359,7 @@ impl IoOptions {
             ("attachment_timeout", self.attachment_timeout),
             ("middleware_timeout", self.middleware_timeout),
             ("admission_timeout", self.admission_timeout),
+            ("adapter_timeout", self.adapter_timeout),
         ];
         for (option, value) in durations {
             if value.is_zero() {
@@ -291,11 +377,20 @@ impl IoOptions {
             ("max_auth_bytes", self.max_auth_bytes),
             ("max_event_name_len", self.max_event_name_len),
             ("max_args", self.max_args),
+            ("max_rooms_per_socket", self.max_rooms_per_socket),
+            ("max_room_name_length", self.max_room_name_length),
+            ("max_broadcast_ack_bytes", self.max_broadcast_ack_bytes),
         ];
         for (option, value) in sizes {
             if value == 0 {
                 return Err(IoOptionsError::Zero { option });
             }
+        }
+        if self.max_room_name_length < MIN_ROOM_NAME_LENGTH {
+            return Err(IoOptionsError::Range {
+                option: "max_room_name_length",
+                reason: format!("must be at least {MIN_ROOM_NAME_LENGTH} (a socket id must fit), got {}", self.max_room_name_length),
+            });
         }
         // One maximal binary packet (a header and `max_attachments` attachments) must fit in the unread budget, or
         // a reassembly could pause the reads it needs to complete.
@@ -395,7 +490,19 @@ mod tests {
         assert_eq!(o.max_args, 128);
         assert_eq!(o.attachment_timeout, Duration::from_secs(30));
         assert_eq!(o.middleware_timeout, Duration::from_secs(10));
+        assert_eq!(o.max_rooms_per_socket, 1_000);
+        assert_eq!(o.max_room_name_length, 256);
+        assert_eq!(o.max_broadcast_ack_bytes, 16 * 1024 * 1024);
+        assert_eq!(o.adapter_timeout, Duration::from_secs(5));
         assert!(o.validate().is_ok());
+    }
+
+    #[test]
+    fn a_room_name_length_shorter_than_a_socket_id_is_refused() {
+        let err = IoOptions::new().max_room_name_length(19).validate().unwrap_err();
+        assert!(matches!(err, IoOptionsError::Range { option: "max_room_name_length", .. }), "{err}");
+        assert!(IoOptions::new().max_room_name_length(20).validate().is_ok());
+        assert!(IoOptions::new().max_rooms_per_socket(1).validate().is_ok());
     }
 
     #[test]
@@ -405,6 +512,7 @@ mod tests {
             ("ack_timeout", IoOptions::new().ack_timeout(Duration::ZERO)),
             ("attachment_timeout", IoOptions::new().attachment_timeout(Duration::ZERO)),
             ("middleware_timeout", IoOptions::new().middleware_timeout(Duration::ZERO)),
+            ("adapter_timeout", IoOptions::new().adapter_timeout(Duration::ZERO)),
             ("max_attachments", IoOptions::new().max_attachments(0)),
             ("max_inflight", IoOptions::new().max_inflight(0)),
             ("max_pending_acks", IoOptions::new().max_pending_acks(0)),
@@ -412,6 +520,9 @@ mod tests {
             ("max_auth_bytes", IoOptions::new().max_auth_bytes(0)),
             ("max_event_name_len", IoOptions::new().max_event_name_len(0)),
             ("max_args", IoOptions::new().max_args(0)),
+            ("max_rooms_per_socket", IoOptions::new().max_rooms_per_socket(0)),
+            ("max_room_name_length", IoOptions::new().max_room_name_length(0)),
+            ("max_broadcast_ack_bytes", IoOptions::new().max_broadcast_ack_bytes(0)),
         ];
         for (name, options) in cases {
             let err = options.validate().unwrap_err();
@@ -427,6 +538,7 @@ mod tests {
             ("ack_timeout", IoOptions::new().ack_timeout(Duration::from_secs(2 * 24 * 3600))),
             ("attachment_timeout", IoOptions::new().attachment_timeout(Duration::MAX)),
             ("middleware_timeout", IoOptions::new().middleware_timeout(Duration::MAX)),
+            ("adapter_timeout", IoOptions::new().adapter_timeout(Duration::MAX)),
         ] {
             let err = options.validate().unwrap_err();
             assert!(matches!(err, IoOptionsError::Range { option, .. } if option == name), "{name}: {err}");

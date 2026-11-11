@@ -28,7 +28,7 @@ use super::engine::session::{CloseReason, after};
 use super::engine::{EngineMessage, EngineSocket, Held, SendError};
 use super::namespace::{ConnectError, IoNamespace};
 use super::options::IoOptions;
-use super::parser::{self, Body, Decoder, Encoded, Limits, Packet, Prepared};
+use super::parser::{self, Body, Decoder, Encoded, Limits, Packet, Prepared, SharedEncoded};
 use super::server::ServerInner;
 use super::socket::{AckSender, DisconnectReason, EmitError, Handshake, IoSocket, Phase};
 use super::value::{Args, IoValue, json_cost};
@@ -79,6 +79,19 @@ impl ClientShared {
         let mut messages = Vec::with_capacity(1 + encoded.attachments.len());
         messages.push(EngineMessage::Text(encoded.text.clone()));
         messages.extend(encoded.attachments.iter().map(|a| EngineMessage::Binary(a.bytes())));
+        self.send_messages(messages)
+    }
+
+    /// Queues an encoding shared with other recipients (a broadcast): the text is a reference to the one buffer, and
+    /// so are the attachments.
+    pub(crate) fn send_shared(&self, encoded: &SharedEncoded) -> Result<(), EmitError> {
+        let mut messages = Vec::with_capacity(1 + encoded.attachments.len());
+        messages.push(EngineMessage::Shared(encoded.text.clone()));
+        messages.extend(encoded.attachments.iter().cloned().map(EngineMessage::Binary));
+        self.send_messages(messages)
+    }
+
+    fn send_messages(&self, messages: Vec<EngineMessage>) -> Result<(), EmitError> {
         self.engine.send_all(messages).map_err(|e| match e {
             SendError::Closed => EmitError::NotConnected,
             SendError::Full => EmitError::BufferFull,
@@ -156,7 +169,7 @@ impl Drop for PendingGuard {
 /// Room held in the budget while a packet is being reassembled or handled; released when the packet's handler ends
 /// (or the connection task is dropped), and not before: a closed connection keeps its handlers' charges on the
 /// server-wide gauge for as long as they run.
-struct Charge {
+pub(crate) struct Charge {
     parts: Vec<Reservation>,
 }
 
@@ -343,6 +356,8 @@ async fn handle_message(
             Err(_) => Flow::Close(DisconnectReason::ForcedClose),
             Ok(prepared) => admit(server, shared, decoder, reassembly, parked, inflight, closed, Parked { prepared, wire: held }).await,
         },
+        // Only the server sends shared text; a received message is never one.
+        EngineMessage::Shared(_) => Flow::Close(DisconnectReason::ForcedClose),
         EngineMessage::Binary(data) => match decoder.add_binary(data) {
             Err(_) => Flow::Close(DisconnectReason::ForcedClose),
             Ok(None) => {
@@ -438,7 +453,7 @@ async fn handle_packet(
             }
             match body {
                 Body::Disconnect => socket.disconnect_with(DisconnectReason::ClientNamespaceDisconnect, false),
-                Body::Ack { id, args } => socket.resolve_ack(id, args),
+                Body::Ack { id, args } => socket.resolve_ack(id, args, charge),
                 Body::Event { id, name, args } => dispatch(shared, &socket, id, &name, args, charge, inflight),
                 Body::Connect(_) | Body::ConnectError(_) => unreachable!("handled above"),
             }
@@ -496,7 +511,7 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
         if matches!(nsps.get(&name), Some(Slot::Pending | Slot::Joined(_))) {
             return Err(());
         }
-        nsps.insert(name, Slot::Pending);
+        nsps.insert(name.clone(), Slot::Pending);
     }
     // `auth` stays a `serde_json::Value` (it is the type of `Handshake::auth`), whose size is not the one the decoder
     // measured against `max_auth_bytes`: the real size of the stored value is charged to the session and its address
@@ -504,7 +519,13 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
     let auth = auth.and_then(|v| v.to_json().ok()).unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let charge = shared.engine.hold(json_cost(&auth));
     let handshake = Handshake::new(auth, shared.engine.handshake().clone(), Some(charge));
-    let socket = IoSocket::new(namespace, shared.clone(), handshake);
+    let Some(socket) = IoSocket::new(namespace, shared.clone(), handshake) else {
+        // The adapter panicked while the id was checked: the attempt is refused, and the slot is free again.
+        shared.nsps().remove(&name);
+        let error = IoValue::object([("message", IoValue::from("Internal server error"))]);
+        let _ = shared.send_packet(&Packet { nsp: name, body: Body::ConnectError(error) });
+        return Ok(());
+    };
     tokio::spawn(connect(shared.clone(), socket));
     Ok(())
 }
@@ -530,7 +551,7 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
         let _ = shared.send_packet(&Packet { nsp: name, body: Body::ConnectError(IoValue::Object(Box::new(payload))) });
         return;
     }
-    {
+    let own_room = {
         let mut nsps = shared.nsps();
         if shared.done.load(Ordering::SeqCst) || !matches!(nsps.get(&name), Some(Slot::Pending)) {
             return;
@@ -544,6 +565,16 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
         guard.armed = false;
         socket.mark_connected();
         namespace.add_socket(&socket);
+        // The room of its own id, before any handler runs (Node's `_onconnect`). It cannot be refused: the options
+        // guarantee room for at least one.
+        socket.join_own_room()
+    };
+    if !own_room {
+        // The adapter panicked: a socket in no room cannot be reached by anything, so it leaves and its connection is
+        // closed, rather than lingering as long as the client answers pings.
+        socket.disconnect_with(DisconnectReason::ServerNamespaceDisconnect, false);
+        shared.engine.close();
+        return;
     }
     shared.joined_once.store(true, Ordering::SeqCst);
     if socket.is_phase(Phase::Connected) {

@@ -31,13 +31,19 @@
 //! # Ok(()) }
 //! ```
 //!
-//! Not supported (yet): rooms and broadcast, gateways over Socket.IO, a Redis adapter, dynamic namespaces,
+//! Rooms and broadcast: `socket.join(room)`, `io.to(room).except(other).emit(...)`, `socket.broadcast().emit(...)`
+//! (see [`BroadcastOperator`](crate::socket_io::BroadcastOperator)); the rooms of a namespace live in an adapter, in memory by default.
+//!
+//! Not supported (yet): gateways over Socket.IO, a Redis adapter, dynamic namespaces,
 //! connection state recovery, `volatile` and `compress` flags, catch-all listeners, custom parsers, Engine.IO v3
 //! clients and serving the client bundle.
 
 #[doc(hidden)]
+pub mod adapter;
+#[doc(hidden)]
 pub mod engine;
 
+mod broadcast;
 mod budget;
 mod client;
 mod namespace;
@@ -49,8 +55,12 @@ mod value;
 mod warn;
 
 #[cfg(test)]
+mod fuzz_adapter;
+#[cfg(test)]
 mod fuzz_parser;
 
+pub use adapter::{AdapterError, HandshakeInfo, RoomError, SocketInfo};
+pub use broadcast::{BroadcastAckError, BroadcastAckErrorKind, BroadcastOperator, IntoRooms, RemoteSocket};
 pub use engine::options::{Admission, EngineOptions, EngineOptionsError};
 pub use namespace::{ConnectError, IoNamespace};
 pub use options::{IoOptions, IoOptionsError};

@@ -8,52 +8,52 @@ clock; no retries.
 
 ## 1. Adapter interface and options
 
-- [ ] 1.1 Reconcile design.md "The layers this builds on" with the code merged by #32 and #33 (grouped send,
+- [x] 1.1 Reconcile design.md "The layers this builds on" with the code merged by #32 and #33 (grouped send,
   per-socket pending acks and the namespace id counter, disconnect order, `IoSocket::data`); note any renamed item at
   the top of design.md; verify `cargo test -p corvis --features socket-io --test socket_io` passes before any edit
-- [ ] 1.2 `crates/corvis/src/socket_io/adapter.rs`: the `Adapter` trait of design.md Decision 2, `Room`, `SocketId`,
+- [x] 1.2 `crates/corvis/src/socket_io/adapter.rs`: the `Adapter` trait of design.md Decision 2, `Room`, `SocketId`,
   `BroadcastOptions`, `BroadcastFlags` (`#[non_exhaustive]`), `AckSink`, `SocketInfo`, `AdapterError`, `RoomError`,
   `LocalNamespace`, and `IoOptions::adapter(factory)`; make `Packet` public as an opaque type; rustdoc stating the
   trait is unstable until #36; verify `cargo build -p corvis --features socket-io` and `cargo build -p corvis`
   (feature off) with no warnings
-- [ ] 1.3 `IoOptions`: `max_rooms_per_socket`, `max_room_name_length`, `max_broadcast_ack_bytes` with the defaults
+- [x] 1.3 `IoOptions`: `max_rooms_per_socket`, `max_room_name_length`, `max_broadcast_ack_bytes` with the defaults
   and validation of design.md Decision 8; unit tests for every default and every rejected value (spec "Zero rooms");
   verify `cargo test -p corvis --features socket-io --lib socket_io::options`
 
 ## 2. In-memory adapter
 
-- [ ] 2.1 `InMemoryAdapter` membership (design.md Decision 3): `add_all` (connected check and limits under the write
+- [x] 2.1 `InMemoryAdapter` membership (design.md Decision 3): `add_all` (connected check and limits under the write
   lock, all-or-nothing), `del`, `del_all`, `socket_rooms`, empty rooms deleted; unit tests including the room cap and
   the name length; verify `cargo test -p corvis --features socket-io --lib socket_io::adapter`
-- [ ] 2.2 Selection and delivery: recipients computed as Node's `apply` under the read lock, delivery after releasing
+- [x] 2.2 Selection and delivery: recipients computed as Node's `apply` under the read lock, delivery after releasing
   it, one shared encoding queued with `send_all`, `sockets`, `fetch_sockets`, `add_sockets`, `del_sockets`,
   `disconnect_sockets`, `server_count`; unit tests from a table of cases derived from Node's `apply` (rooms, unions,
   except rooms, except ids, unknown rooms, ids without a local socket); verify the unit tests
-- [ ] 2.3 `socket_io/fuzz_adapter.rs`: proptest properties (selection equals a naive model for random memberships and
+- [x] 2.3 `socket_io/fuzz_adapter.rs`: proptest properties (selection equals a naive model for random memberships and
   options; after any sequence of join / leave / disconnect the two maps mirror each other and hold no empty room and
   no disconnected socket); verify `cargo test -p corvis --features socket-io --lib fuzz` and with
   `PROPTEST_CASES=20000`
-- [ ] 2.4 Test-only adapter in `crates/corvis/tests/socket_io_rooms.rs` wrapping `InMemoryAdapter`: yields on every
+- [x] 2.4 Test-only adapter in `crates/corvis/tests/socket_io_rooms.rs` wrapping `InMemoryAdapter`: yields on every
   cluster operation, can fail a chosen operation, reports two servers with a simulated second node for
   `broadcast_with_ack`; used by tasks 3.x through a test parameter; verify it compiles against the public API only
   (no `pub(crate)` item needed)
 
 ## 3. Rooms on sockets and operators
 
-- [ ] 3.1 `IoSocket::join` / `leave` / `rooms`, the own-id room on connect, and the disconnect order of design.md
+- [x] 3.1 `IoSocket::join` / `leave` / `rooms`, the own-id room on connect, and the disconnect order of design.md
   Decision 4 (`del_all` between `on_disconnecting` and `on_disconnect`, join after disconnect a no-op); tests in
   `crates/corvis/tests/socket_io_rooms.rs` for spec "Rooms right after connecting", "Emit to a socket id" (after 3.2),
   "Leave", "Rooms during disconnecting", "Farewell from the disconnecting handler"; verify
   `cargo test -p corvis --features socket-io --test socket_io_rooms` and that `--test socket_io` still passes
-- [ ] 3.2 `broadcast.rs`: `BroadcastOperator` (`to`, `within`, `except`, `local`, `timeout`, deferred room errors,
+- [x] 3.2 `broadcast.rs`: `BroadcastOperator` (`to`, `within`, `except`, `local`, `timeout`, deferred room errors,
   `emit`) and the entry points on `IoServer`, `IoNamespace` and `IoSocket` (sender excluded), `IoNamespace::emit`;
   tests with both adapters for "Same room name in two namespaces", "Whole namespace", "Union without duplicates",
   "Broadcast from a socket", "Except a room", "Except a socket id inside a room", "Empty room", "Binary broadcast",
   "Order", "Long name in to", "Adapter failure"; verify the tests
-- [ ] 3.3 Bulk operations and `RemoteSocket` (design.md Decision 7): `fetch_sockets`, `sockets_join`,
+- [x] 3.3 Bulk operations and `RemoteSocket` (design.md Decision 7): `fetch_sockets`, `sockets_join`,
   `sockets_leave`, `disconnect_sockets`, a socket at its room cap skipped and logged; tests for "Make a room join
   another", "Disconnect a room", "Fetch sockets"; verify the tests
-- [ ] 3.4 Broadcast with acknowledgements (design.md Decision 6): shared id, per-recipient pending entries,
+- [x] 3.4 Broadcast with acknowledgements (design.md Decision 6): shared id, per-recipient pending entries,
   completeness with `server_count`, deadline, cleanup at the deadline, `max_broadcast_ack_bytes`; unit tests on the
   paused clock for the deadline ("Default deadline"), tests with both adapters for "Every recipient answers", "One
   recipient silent",
@@ -61,38 +61,38 @@ clock; no retries.
 
 ## 4. Security tests
 
-- [ ] 4.1 `crates/corvis/tests/socket_io_rooms_security.rs`, in the style of `tests/ws_security.rs`: "Room cap",
+- [x] 4.1 `crates/corvis/tests/socket_io_rooms_security.rs`, in the style of `tests/ws_security.rs`: "Room cap",
   "Long name in join", "Many slow clients" (queue sizes and the shared encoding's reference count measured, not RSS;
   every emit returns without waiting), "Join during a broadcast"; verify
   `cargo test -p corvis --features socket-io --test socket_io_rooms_security`
-- [ ] 4.2 "Join racing a disconnect": 1,000 iterations on a multi-thread runtime, asserting the adapter's maps after
+- [x] 4.2 "Join racing a disconnect": 1,000 iterations on a multi-thread runtime, asserting the adapter's maps after
   each; verify it passes 5 runs in a row
 
 ## 5. Harness scenarios
 
-- [ ] 5.1 Add the room and broadcast commands of design.md Decision 9 to
+- [x] 5.1 Add the room and broadcast commands of design.md Decision 9 to
   `parity/socket-io/reference/socket-server.mjs` and to the Corvis app in `crates/corvis/tests/socket_io_diff.rs`
   (`join`, `leave`, `rooms`, `broadcast` with the `done` marker, `broadcast-ack`, `sockets-join`, `sockets-leave`,
   `disconnect-sockets`, `fetch-sockets`, rooms in the `disconnecting` / `disconnect` log entries) and a scenario
   helper that opens several named clients and collects events up to the marker; verify `node run.mjs` (Node against
   Node) and `node --test "test/*.test.mjs"` in `parity/socket-io/`
-- [ ] 5.2 Scenarios `scenarios/socket-io/rooms/scoping.mjs`, `socket-id.mjs`, `union.mjs`, `from-socket.mjs`,
+- [x] 5.2 Scenarios `scenarios/socket-io/rooms/scoping.mjs`, `socket-id.mjs`, `union.mjs`, `from-socket.mjs`,
   `except.mjs`, `leave-and-disconnect.mjs`; verify
   `CORVIS_NODE_DIFF=1 cargo test -p corvis --features socket-io --test socket_io_diff` reports no unlisted and no
   stale difference
-- [ ] 5.3 Scenarios `rooms/bulk.mjs` and `rooms/broadcast-ack.mjs` (all answer; one silent with a 200 ms timeout,
+- [x] 5.3 Scenarios `rooms/bulk.mjs` and `rooms/broadcast-ack.mjs` (all answer; one silent with a 200 ms timeout,
   answers sorted before recording); verify no unlisted and no stale difference
-- [ ] 5.4 Scenario `rooms/limits.mjs` (1,000 rooms in one join; a 257-byte room name) with its two entries in
+- [x] 5.4 Scenario `rooms/limits.mjs` (1,000 rooms in one join; a 257-byte room name) with its two entries in
   `parity/socket-io/expected-differences.json`, each with reason and `ws/socket-io-rooms` requirement; verify the
   listed differences occur and the full harness run is clean three times in a row
 
 ## 6. Docs and review
 
-- [ ] 6.1 Rustdoc for every public item added (operators with a compiling example of `to(...).except(...).emit(...)`
+- [x] 6.1 Rustdoc for every public item added (operators with a compiling example of `to(...).except(...).emit(...)`
   and `socket.broadcast()`, each option with its default, Node's value and the divergence, the `Adapter` trait with
   what #36 will implement); verify `cargo doc -p corvis --features socket-io --no-deps` without warnings and
   `cargo test -p corvis --features socket-io --doc`
-- [ ] 6.2 Docs: add rooms and broadcast to the "Socket.IO (preview)" section of `docs/websockets/adapter.md` (join /
+- [x] 6.2 Docs: add rooms and broadcast to the "Socket.IO (preview)" section of `docs/websockets/adapter.md` (join /
   leave, the own-id room, operators and `within` as Node's `in`, terminal operations are `async`, broadcast
   acknowledgements, the limits table of design.md Decision 8 and the divergences, the adapter option with Redis
   announced for #36) and translate it in `docs/es/websockets/adapter.md`; verify `npm run docs:check` in `docs/`
@@ -104,18 +104,64 @@ clock; no retries.
 
 ## 7. Definition of done
 
-- [ ] 7.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`
+- [x] 7.1 `cargo build --workspace --all-targets` with no warnings, and `cargo build -p corvis --features socket-io`
   with no warnings
-- [ ] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
+- [x] 7.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
   `cargo clippy -p corvis --no-default-features --features socket-io -- -D warnings`
-- [ ] 7.3 `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
+- [x] 7.3 `cargo test --workspace` passes, `cargo test -p corvis --features socket-io` passes, and with
   `CORVIS_NODE_DIFF=1` the `socket_io_diff` and `socket_io_conformance` tests pass
-- [ ] 7.4 Regression tests: one per spec scenario (unit, integration, security or harness scenario), as listed in
+- [x] 7.4 Regression tests: one per spec scenario (unit, integration, security or harness scenario), as listed in
   groups 1-5
-- [ ] 7.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
+- [x] 7.5 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 7.6 Framework runtime code changed (`crates/corvis/src/socket_io/`): run the `corvis-parity` check and verify
   the three port apps keep 0 apidiff differences
 - [ ] 7.7 The security review of 6.3 is closed before archiving
+
+## 8. Security review, round 1 (fixes)
+
+- [x] 8.1 F1: `RemoteSocket::{emit, join, leave, disconnect}` act on the local socket directly, and through the adapter by
+  `BroadcastOptions::socket` (an exact single-socket target, honoured by `Membership::select`) otherwise; `add_all` refuses a
+  room named like another live socket's id (`RoomError::SocketIdRoom`), `del` ignores leaving the own id room, CONNECT never
+  assigns an id that is a room (`Adapter::room_exists`); tests `a_client_cannot_join_the_room_of_another_sockets_id`,
+  `no_socket_is_given_an_id_that_is_already_a_room`, `a_remote_socket_reaches_only_its_own_socket_even_when_another_is_in_its_id_room`;
+  scenario `rooms/id-rooms` and its six expected differences
+- [x] 8.2 F2: the `Charge` of a broadcast acknowledgement travels with its `Args` into the collector and is held until the call
+  ends (`AckSink::respond_charged`, released by `AckShared::finish`); tests with the gauges (during, session closed meanwhile,
+  call dropped, cap) and `answers_held_by_pending_broadcasts_stay_within_the_answer_budget` with the counting
+  allocator
+- [x] 8.3 B1: a join naming more than `max_rooms_per_socket` rooms is refused before the lock, names are deduplicated outside it,
+  `Membership::add` stops at the first name over the cap; tests count names examined
+- [x] 8.4 B3: `HandshakeInfo` shares the local handshake (`Handshake` is an `Arc`), rooms are shared names; counting-allocator test
+  `fetch_sockets_allocates_a_bounded_amount_per_socket_whatever_the_handshake_holds` (bound 3 KiB a socket)
+- [x] 8.5 B4: adapter panics on the disconnect path are contained; `IoOptions::adapter_timeout` (5 s, validated) bounds every adapter
+  call of an operator and `init`; tests with a probe adapter that panics and one that never returns, on the paused clock
+- [x] 8.6 B5: `to` / `within` given an empty collection select nobody; `except` with an empty collection has no effect; scenario
+  `rooms/empty-to` with three expected differences
+- [x] 8.7 Hand-written `Debug` for `RemoteSocket`, `SocketInfo` and `HandshakeInfo` (no cookie, authorization, `auth` values or
+  query); test `debug_output_hides_credentials`
+- [x] 8.8 Notes: `Adapter::close` once per namespace; chaining is linear and an operator names at most `max_rooms_per_socket` rooms
+  (`RoomError::TooManyTargets`); the order guarantee of one caller is tested across the 512-recipient yield and documented; the
+  Engine.IO overflow warning is rate limited
+- [x] 8.9 Docs (English and Spanish): the numbers of #175 / #176 and B2 in the limits page, the corrected sentence on frames, the
+  new rules and options; spec delta and design.md "Security review (round 1)"; `openspec validate e2-socket-io-rooms-and-broadcast --strict`
+
+## 9. Security review, round 2 fixes
+
+- [x] 9.1 M1: held answers charged to a server-wide answer budget (`AckBudget`) that never waits; the answerer's charge is
+  released when the collector takes the answer; tests, spec delta, docs (English and Spanish), design.md "Security review
+  (round 2)"
+- [x] 9.2 L1 / L2: panics of `room_exists` and of the own-room `add_all` during CONNECT are contained (refuse the attempt;
+  disconnect and close); tests
+- [x] 9.3 Leads: the own room expels other members of its name; allow list for the handshake `Debug`; `Adapter` docs;
+  review notes of `e2-socket-io-redis-adapter`
+
+## 10. Security review, round 3 fixes
+
+- [x] 10.1 The answer budget has a per-address share (a sixteenth), keyed by the address of the answering connection; the
+  map holds an address only while it holds bytes; test `one_address_cannot_fill_the_answer_budget_and_make_the_calls_of_others_fail`
+- [x] 10.2 An `Err` from the own-room `add_all` at CONNECT is treated like a panic; test
+  `an_error_from_add_all_of_the_own_room_during_connect_closes_the_connection_like_a_panic`
+- [x] 10.3 Docs (English and Spanish) and design.md "Security review (round 3)"
 
 ## Workflow follow-up
 

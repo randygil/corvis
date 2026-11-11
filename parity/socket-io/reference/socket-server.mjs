@@ -12,7 +12,10 @@
 //                (middleware that takes one second) and `/denied` (middleware that always refuses, without data)
 //   /sio-short/  the same, with `connectTimeout` 1000 ms
 //
-// Handlers of every namespace: echo, sum, emit-update, ask, ask-timeout, bin-emit, leave, kick, emit-reserved.
+// Handlers of every namespace: echo, sum, emit-update, ask, ask-timeout, bin-emit, leave, kick, emit-reserved, and the
+// room and broadcast commands (each takes one JSON argument and acknowledges with one JSON value): join, room-leave,
+// rooms, broadcast, broadcast-ack, sockets-join, sockets-leave, disconnect-sockets, fetch-sockets. A broadcast is
+// followed by the event `done` to every namespace of the server, which the scenarios wait on instead of sleeping.
 // What happened on the server side is kept in a log, served to loopback clients by `GET /harness/log` and cleared by
 // `POST /harness/reset`.
 //
@@ -56,6 +59,23 @@ const httpServer = createServer((req, res) => {
 
 const servers = [];
 
+// The rooms of a socket with its own id replaced by `<id>` (ids are random), sorted.
+function roomsOf(socket) {
+  return [...socket.rooms].map((room) => (room === socket.id ? "<id>" : room)).sort();
+}
+
+function markDone(io) {
+  for (const name of ["/", "/admin"]) io.of(name).emit("done");
+}
+
+// `emptyTo` is a `to` given an empty list: what an application gets when the list came from a client.
+function selection(operator, { to = [], except = [], emptyTo = false }) {
+  if (emptyTo) operator = operator.to([]);
+  if (to.length > 0) operator = operator.to(to);
+  if (except.length > 0) operator = operator.except(except);
+  return operator;
+}
+
 function scenarioNamespace(io, name) {
   const nsp = io.of(name);
   if (name === "/admin") {
@@ -76,7 +96,15 @@ function scenarioNamespace(io, name) {
   }
   nsp.on("connection", (socket) => {
     log.push({ event: "connection", nsp: name, auth: socket.handshake.auth });
-    socket.on("disconnect", (reason) => log.push({ event: "disconnect", nsp: name, reason }));
+    // The rooms the socket was in while it disconnected, and after.
+    let roomsDuring = [];
+    socket.on("disconnecting", () => {
+      roomsDuring = roomsOf(socket);
+      socket.to([...socket.rooms]).emit("left");
+    });
+    socket.on("disconnect", (reason) =>
+      log.push({ event: "disconnect", nsp: name, reason, roomsDuring, roomsAfter: roomsOf(socket) }),
+    );
     socket.on("echo", (...args) => {
       const ack = typeof args[args.length - 1] === "function" ? args.pop() : null;
       if (!ack) return;
@@ -103,6 +131,49 @@ function scenarioNamespace(io, name) {
     socket.on("bin-emit", (...args) => socket.emit("bin", ...args));
     socket.on("leave", () => socket.disconnect());
     socket.on("kick", () => socket.disconnect(true));
+    socket.on("join", (arg, ack) => {
+      socket.join(arg.rooms);
+      ack({ ok: true, rooms: roomsOf(socket) });
+    });
+    socket.on("room-leave", (arg, ack) => {
+      socket.leave(arg.room);
+      ack({ rooms: roomsOf(socket) });
+    });
+    socket.on("rooms", (ack) => ack({ rooms: roomsOf(socket) }));
+    socket.on("broadcast", (arg, ack) => {
+      const { from = "server", event = "event", args = [] } = arg;
+      selection(from === "socket" ? socket.broadcast : io.of(name), arg).emit(event, ...args);
+      markDone(io);
+      ack({ ok: true });
+    });
+    socket.on("broadcast-ack", async (arg, ack) => {
+      // Node keeps the first value of each client's answer.
+      const first = (responses) => responses.map((r) => JSON.stringify(r)).sort();
+      // Without `timeout()` the flag is undefined, which is what Node fails on at once.
+      const operator = io.of(name).timeout(arg.timeout);
+      try {
+        const responses = await selection(operator, arg).emitWithAck("question");
+        ack({ ok: true, responses: first(responses) });
+      } catch (error) {
+        ack({ ok: false, message: error.message, responses: first(error.responses ?? []) });
+      }
+    });
+    socket.on("sockets-join", (arg, ack) => {
+      selection(io.of(name), arg).socketsJoin(arg.rooms);
+      ack({ ok: true });
+    });
+    socket.on("sockets-leave", (arg, ack) => {
+      selection(io.of(name), arg).socketsLeave(arg.rooms);
+      ack({ ok: true });
+    });
+    socket.on("disconnect-sockets", (arg, ack) => {
+      selection(io.of(name), arg).disconnectSockets(arg.close === true);
+      ack({ ok: true });
+    });
+    socket.on("fetch-sockets", async (arg, ack) => {
+      const sockets = await selection(io.of(name), arg).fetchSockets();
+      ack({ sockets: sockets.map((s) => ({ id: s.id, rooms: [...s.rooms] })) });
+    });
     socket.on("emit-reserved", () => {
       try {
         socket.emit("disconnect");
