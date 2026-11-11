@@ -115,7 +115,7 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 - [x] 7.2 `raw.rs`: `RawSql` carries an optional error; `join` of an empty list sets it; `append` and the `sql!`
   interpolation propagate it; `_query_raw`, `_query_raw_as`, `_execute_raw` fail with a validation error before any SQL;
   tests for direct and nested use; verify `cargo test -p corvis-orm --lib raw`
-- [ ] 7.3 Port apps (outside the repository, not git repositories: back up each file first): replace the `Decimal::from`
+- [x] 7.3 Port apps (outside the repository, not git repositories: back up each file first): replace the `Decimal::from`
   calls with text in `consi-backend` (`common/money/money.spec.rs`, `common/money/commission.spec.rs`,
   `exchange-rate/rate-oracle.service.rs`, `fx/fx.service.spec.rs`, `settlement/settlement.service.spec.rs`) and
   `facten-api` (`emissions/emission-document.service.rs`, `fiscal-audit/fiscal-audit.service.rs`,
@@ -146,7 +146,7 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   does not alter, and how to re-create a development database; `Decimal` on SQLite; `decimal!` and the removal of
   `From<&str>` (with the migration of a call site); typed helpers and non-finite floats; `RawSql::join` of an empty list;
   verify `cargo doc -p corvis-orm --no-deps` without warnings and `npm run docs:check`
-- [ ] 10.2 Security review with the `security-reviewer` agent (DDL generation and identifier quoting, `dbgenerated` and
+- [x] 10.2 Security review with the `security-reviewer` agent (DDL generation and identifier quoting, `dbgenerated` and
   `Unsupported` text, the `CAST` insertion, chunked statements and their filters, deferred errors in typed params and
   `RawSql`); repeat rounds until no open finding; record findings and fixes in design.md under "Security review"; verify
   every finding has a regression test or a recorded reason
@@ -163,10 +163,10 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   `cargo check -p corvis-orm --tests --no-default-features --features corvis`, with no warnings
 - [x] 11.5 Regression tests: one per spec scenario, as listed in groups 2-9
 - [x] 11.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
-- [ ] 11.7 Framework code changed (`corvis-orm`, `corvis-orm-macros`): run the `corvis-parity` check and verify the three
+- [x] 11.7 Framework code changed (`corvis-orm`, `corvis-orm-macros`): run the `corvis-parity` check and verify the three
   port apps keep 0 apidiff differences and equivalent databases
 - [x] 11.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
-- [ ] 11.9 The security review of 10.2 is closed before archiving
+- [x] 11.9 The security review of 10.2 is closed before archiving
 
 ## Workflow follow-up
 
@@ -176,3 +176,20 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 - Then start `q-orm-hot-path`, whose task 1.1 re-checks its lines against the code this change leaves.
 - Open the follow-ups the maintainer accepts: exact decimals on SQLite as a Corvis extension; row-value key lists if
   `q-orm-hot-path`'s numbers call for them.
+
+## Verification
+
+Checked on `dev` at 53134b4 (2026-11-11):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging, doc, msrv, features, lint-ratchet; Linux and Windows) | all jobs passed, after the lint baseline got back one count that the merge had raised |
+| `cargo test --workspace` with Postgres required | 2202 passed |
+| Recordings from the original client | Postgres 301 cases, SQLite 290 cases, decimal parsing 113 inputs: equal, except the differences listed as deliberate |
+| Security review, round 1 | 1 high (a client could forge the `undefined` marker and remove a filter condition; it existed before this change), 3 medium, 2 low, 1 informative: all fixed, each with a test seen failing |
+| Security review, round 2 | 1 medium (the secret of the markers leaked through a null marker nested in a Json value), 1 low (arithmetic on `BigInt` and `Float` on SQLite): fixed |
+| Security review, round 3 | the fixes held on SQLite and Postgres. Open and recorded: an application that serialises its own argument value hands the secret of `undefined` to its client; documented, and the typed argument tree that removes it is #210 |
+| Port applications | 126 `Decimal` conversions and one Json null moved to the new API, same responses |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 636 checks equal, 0 different; route tables identical; databases equivalent |
