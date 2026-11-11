@@ -24,30 +24,34 @@ fn options() -> IoOptions {
     IoOptions::new().engine(EngineOptions::new().max_sessions_per_ip(4_096))
 }
 
+/// 1,000 sockets connect, each looked up the moment its client read its CONNECT. They come from 50 connections that
+/// each join, look up and leave 20 times: every CONNECT is a socket of its own with the same race, without opening 1,000
+/// TCP connections (which runs a loaded Windows machine out of ephemeral ports).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_client_finds_its_socket_by_id_as_soon_as_it_reads_its_connect() {
-    const CLIENTS: usize = 1_000;
-    const AT_ONCE: usize = 50;
+    const CONNECTIONS: usize = 50;
+    const JOINS: usize = 20;
     let fx = start(options(), |_| {}).await;
     let misses = Arc::new(AtomicUsize::new(0));
-    for _ in 0..CLIENTS / AT_ONCE {
-        let wave: Vec<_> = (0..AT_ONCE)
-            .map(|_| {
-                let (io, misses, addr) = (fx.io.clone(), misses.clone(), fx.addr);
-                tokio::spawn(async move {
-                    let mut raw = Raw::connect(addr).await;
+    let clients: Vec<_> = (0..CONNECTIONS)
+        .map(|_| {
+            let (io, misses, addr) = (fx.io.clone(), misses.clone(), fx.addr);
+            tokio::spawn(async move {
+                let mut raw = Raw::connect(addr).await;
+                for _ in 0..JOINS {
                     let id = raw.join("/", None).await;
                     // No retry and no wait: the lookup is made the moment the client read its id.
                     if io.main().socket(&id).is_none() {
                         misses.fetch_add(1, Ordering::SeqCst);
                     }
-                    raw.close().await;
-                })
+                    raw.send("1").await;
+                }
+                raw.close().await;
             })
-            .collect();
-        for client in wave {
-            client.await.unwrap();
-        }
+        })
+        .collect();
+    for client in clients {
+        client.await.unwrap();
     }
     assert_eq!(misses.load(Ordering::SeqCst), 0, "a lookup by id missed the socket of a client that knew its id");
     fx.io.close();
