@@ -206,7 +206,7 @@ async fn connect_tcp(port: u16, index: usize) -> Result<TcpStream, Failure> {
     loop {
         let socket = TcpSocket::new_v4()?;
         socket.set_reuseaddr(true)?;
-        socket.set_linger(Some(Duration::ZERO))?;
+        socket.set_zero_linger()?;
         socket.bind(local_address(index))?;
         socket.set_nodelay(true)?;
         match socket.connect(server).await {
