@@ -227,6 +227,23 @@ async fn a_connection_that_ends_once_connect_was_queued_runs_no_handler() {
 
 // ---------------------------------------------------------------------------------- CONNECT in a write of its own
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn over_websocket_the_handlers_event_follows_connect_as_its_own_frame() {
+    let fx = start(options().engine(EngineOptions::new().max_sessions_per_ip(4_096).ping_interval(std::time::Duration::from_secs(60))), |io| {
+        io.on_connection(|socket| {
+            let _ = socket.emit("auth", (serde_json::json!({}),));
+        });
+    })
+    .await;
+    for _ in 0..50 {
+        let mut raw = Raw::connect(fx.addr).await;
+        raw.join("/", None).await;
+        assert_eq!(raw.recv_text().await, r#"2["auth",{}]"#);
+        raw.close().await;
+    }
+    fx.io.close();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn over_polling_connect_is_answered_alone_and_the_handlers_event_in_the_next_poll() {
     let fx = start(options(), |io| {
