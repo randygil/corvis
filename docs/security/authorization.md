@@ -6,17 +6,18 @@ status: documented
 
 Authentication answers *who* is making the request; authorization decides *what* they can do. In
 Corvis the tool for the second is the same as for the first: a [guard](/guards) that reads
-route metadata with `Reflector` and compares it with the user data left by the authentication
-guard.
+route metadata with `Reflector` and compares it with the user that
+[`corvis::auth::AuthGuard`](/security/authentication) left on the request. The samples on this page come from
+`examples/auth-app`.
 
 ## Role-based access control
 
 Define the roles and a metadata key. Since metadata is stored as JSON, any
-`Serialize + Deserialize` type works as a value:
+`Serialize + Deserialize` type works as a value. The user is whatever your validators return; in the example, every
+strategy returns an `Account` that carries its roles:
 
 ```rust
-use serde::{Deserialize, Serialize};
-
+// examples/auth-app/src/users.rs
 pub const ROLES_KEY: &str = "roles";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,9 +27,10 @@ pub enum Role {
     Admin,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JwtPayload {
-    pub sub: u32,
+// ...
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Account {
+    pub id: u32,
     pub username: String,
     pub roles: Vec<Role>,
 }
@@ -48,6 +50,7 @@ fn remove(&self, #[param("id", ParseIntPipe)] id: u32) -> HttpResult<()> {
 And write the guard:
 
 ```rust
+// examples/auth-app/src/auth/roles.rs
 #[injectable]
 pub struct RolesGuard {
     reflector: Arc<Reflector>,
@@ -56,18 +59,35 @@ pub struct RolesGuard {
 #[async_trait]
 impl CanActivate for RolesGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
-        let required: Option<Vec<Role>> =
-            self.reflector.get_all_and_override(ROLES_KEY, &[ctx.get_handler(), ctx.get_class()]);
+        let required: Option<Vec<Role>> = self.reflector.get_all_and_override(ROLES_KEY, &[ctx.get_handler(), ctx.get_class()]);
         let Some(required) = required else { return Ok(true) };
-        let user = ctx.switch_to_http().get_request().user_as::<JwtPayload>();
-        Ok(user.map(|u| required.iter().any(|r| u.roles.contains(r))).unwrap_or(false))
+        let user = ctx.switch_to_http().get_request().user_as::<Account>();
+        Ok(user.is_some_and(|u| required.iter().any(|r| u.roles.contains(r))))
+    }
+
+    // ...
+    fn controls_access(&self) -> bool {
+        false
     }
 }
 ```
 
 `get_all_and_override` looks for the key first on the handler and then on the class, and returns the
 first value it finds; this way a method can override what its controller declares. If the
-route declares no roles, the guard lets the request through.
+route declares no roles, the guard lets the request through, which is why it returns `false` from
+`controls_access`: it is not what keeps anonymous requests out, so [route posture](/security/route-posture) must not
+count it as access control. A guard written for HTTP reads the user with `Request::user_as::<T>()`; a handler reads it
+with the `User<T>` parameter.
+
+::: warning A roles guard needs an `AuthGuard` before it
+`Request::user()` is not always what a guard established. The session middleware restores the user from the cookie on
+**every** route, including routes with no `AuthGuard` and `#[public]` ones, before any guard runs. A roles guard that
+reads the user on a route that has no `AuthGuard` before it is therefore authenticated by the cookie alone, with nothing
+checked about the request itself (a cross-site form `POST` carries the cookie). Always list an `AuthGuard` that names the
+credentials the route accepts before the roles guard, as the examples below do. See
+[the session user](/security/authentication-threat-model#the-session-user-on-routes-without-an-authguard) and
+[CSRF protection](/security/csrf).
+:::
 
 When a guard returns `Ok(false)`, the client receives:
 
@@ -81,32 +101,27 @@ If you want another status or message, return an error instead of `false`, for e
 ## Registration and order
 
 The roles guard needs the user that the authentication guard attaches, so it must run
-after it. Guards registered with `Provider::app_guard` run in the order in which they appear in
-the modules:
+after it. Apply both on the route or on the controller; in a list they run from left to right. The `AuthGuard`
+comes from `corvis::auth` and names the strategies the route accepts:
 
 ```rust
-#[module(
-    imports = [AuthModule, UsersModule, CatsModule],
-    providers = [
-        Provider::app_guard::<ThrottlerGuard>(),
-        Provider::app_guard::<AuthGuard>(),
-        Provider::app_guard::<RolesGuard>(),
-    ],
-)]
-pub struct AppModule;
+// examples/auth-app/src/controllers.rs
+    #[get("admin/users")]
+    #[set_metadata(ROLES_KEY, [Role::Admin])]
+    #[use_guards(AuthGuard::chain(["jwt", "session"]), RolesGuard)]
+    fn admin_users(&self) -> Vec<Account> {
+        self.users.accounts()
+    }
 ```
 
-You can also apply them only where needed, on the controller or on the method. In a list, they
-run from left to right:
+An anonymous request gets `401` from the `AuthGuard`, and a signed-in user without the role gets `403` from the roles guard.
 
-```rust
-#[post(":room/announcements")]
-#[set_metadata(ROLES_KEY, [MODERATOR])]
-#[use_guards(AuthGuard, RolesGuard)]
-async fn announce(&self, #[param("room")] room: String, #[body] dto: AnnouncementDto, user: ChatUser) -> HttpResult<Value> {
-    // ...
-}
-```
+Mind the order when you register guards globally. Guards registered with `Provider::app_guard` run before
+the ones passed to `app.use_global_guards(..)`, whatever the order of the calls, so a roles guard registered as
+`Provider::app_guard::<RolesGuard>()` runs *before* a global `AuthGuard::new("jwt")` given to `use_global_guards` and
+would see no user. Either apply the roles guard on the controllers and routes that need it (as above), or register the
+authentication guard through the container too (a type that wraps the `AuthGuard` and is registered with
+`Provider::app_guard`, listed before the roles guard, as `examples/cats-app` does).
 
 The full order among global, controller and method guards is described in
 [Request lifecycle](/faq/request-lifecycle).
@@ -156,7 +171,9 @@ pub async fn update(&self, id: u32, user: &JwtPayload, dto: UpdatePostDto) -> Ht
 
 Guards also work in a gateway's handlers. `RolesGuard` in `examples/tertulia`
 gets the user from the HTTP request or from the WebSocket client depending on `ctx.get_type()`, so
-the same rule protects a REST endpoint and a message:
+the same rule protects a REST endpoint and a message. (`corvis::auth::AuthGuard` denies WebSocket messages, so a gateway
+authenticates in `handle_connection` and a guard of your own reads the user stored on the client; see
+[Authentication](/security/authentication#websockets).)
 
 ```rust
 #[subscribe_message("clear")]

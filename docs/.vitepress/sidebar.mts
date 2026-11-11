@@ -81,6 +81,7 @@ const tree: Entry[] = [
     ['Authorization', 'Autorización', '/security/authorization'],
     ['Route posture', 'Postura de rutas', '/security/route-posture'],
     ['Authentication threat model', 'Modelo de amenazas de autenticación', '/security/authentication-threat-model'],
+    ['Securing authentication', 'Seguridad de la autenticación', '/security/authentication-security'],
     ['Encryption and hashing', 'Cifrado y hashing', '/security/encryption-and-hashing'],
     ['Security headers', 'Cabeceras de seguridad', '/security/helmet'],
     ['CORS', 'CORS', '/security/cors'],
@@ -213,6 +214,7 @@ const tree: Entry[] = [
     ['Async local storage', 'Async local storage', '/recipes/async-local-storage'],
     ['Socket activation', 'Activación por socket', '/recipes/socket-activation'],
     ['Migrating from Express', 'Migrar desde Express', '/recipes/express-migration'],
+    ['Migrating from Passport', 'Migrar desde Passport', '/recipes/passport-migration'],
   ]),
   group('FAQ', 'Preguntas frecuentes', [
     ['Corvis vs Fastify, Express and Hono', 'Corvis frente a Fastify, Express y Hono', '/faq/corvis-vs-fastify-express-hono'],
