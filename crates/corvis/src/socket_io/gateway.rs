@@ -61,7 +61,7 @@ use crate::websockets::{
     exception_data, exception_payload, run_handler, run_hook_with, sealed,
 };
 
-mod disconnect;
+pub(crate) mod disconnect;
 
 use disconnect::HookQueue;
 pub use disconnect::{DEFAULT_MAX_PENDING_DISCONNECT_HOOK_BYTES, DEFAULT_MAX_PENDING_DISCONNECT_HOOKS};

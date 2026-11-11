@@ -102,3 +102,42 @@ async fn an_event_the_dispatcher_does_not_know_is_dropped_and_a_socket_handler_w
     assert_eq!(calls.load(Ordering::SeqCst), 2, "the dispatcher is consulted for events without a handler of the socket only");
     assert!(!conn.socket.is_closing(), "an unknown event does not close the connection");
 }
+
+/// A socket that waits for its disconnect hooks: its `auth` charge leaves the connection's unread budget when it is
+/// queued (the queue's budget charges it), it counts against its address until its hooks end, and it does not keep its
+/// connection's Engine.IO session alive.
+#[tokio::test(start_paused = true)]
+async fn a_socket_queued_for_its_disconnect_hooks_gives_its_auth_charge_back_and_keeps_no_session() {
+    use crate::socket_io::gateway::disconnect::{HookQueue, pending_cost};
+    const ADDRESS: &str = "203.0.113.70";
+    let io = server(options());
+    let captured: Arc<Mutex<Option<IoSocket>>> = Arc::new(Mutex::new(None));
+    {
+        let captured = captured.clone();
+        io.on_connection(move |socket| *captured.lock().unwrap() = Some(socket));
+    }
+    let conn = io.conn_from(ADDRESS);
+    let pad = "p".repeat(10_000);
+    conn.join(&format!(r#"0{{"pad":"{pad}"}}"#)).await;
+    let socket = captured.lock().unwrap().take().expect("the socket");
+    let auth = crate::socket_io::value::json_cost(socket.handshake().auth());
+    let before = io.engine().total_unread_bytes();
+    assert!(before >= auth, "the auth is charged to the unread budget: {before} < {auth}");
+    // A hook that never ends keeps the socket pending.
+    let queue = Arc::new(HookQueue::new(10, 1 << 20, Duration::from_secs(3600)));
+    socket.disconnect(false);
+    let cost = pending_cost(&socket);
+    queue.push(Arc::new(Vec::new()), socket.clone());
+    assert_eq!(io.engine().total_unread_bytes(), before - auth, "the auth charge left the connection's budget");
+    let linger = io.engine().linger_of(ADDRESS);
+    assert!(linger.hooks <= 1 && linger.hook_bytes <= cost, "{linger:?}");
+    // The connection ends: the socket the queue (or anyone) keeps does not keep its session.
+    conn.socket.kill();
+    drop(conn);
+    settle().await;
+    assert!(socket.engine().is_none(), "the session went with the connection");
+    assert_eq!(socket.id().len(), 20, "the socket still works as the hook's handle");
+    assert_eq!(socket.handshake().auth()["pad"], serde_json::Value::String(pad));
+    // Without gateways the hooks end at once and the address's count goes.
+    assert_eq!(io.engine().linger_of(ADDRESS), Default::default());
+}
