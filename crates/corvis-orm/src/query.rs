@@ -26,6 +26,10 @@ use crate::meta::Model;
 /// A value whose `Serialize` fails, or a non-finite float (`NaN`, `inf`, `-inf`, alone or inside a list, an
 /// `Option` or a struct), is a validation error: `serde_json` would turn a non-finite float into `null`, and a filter
 /// `{ score: null }` means `IS NULL`, which no caller means by `NaN`. Write `is_null()` / `set_null()` for `null`.
+///
+/// # Errors
+///
+/// A validation error for a value that holds a non-finite float or whose `Serialize` fails.
 pub fn to_json<T: Serialize + ?Sized>(v: &T) -> Result<Value> {
     v.serialize(finite::Check).map_err(|_| {
         OrmError::validation("NaN and infinite values cannot be compared or stored; use `is_null()` / `set_null()` for null.")
@@ -249,7 +253,11 @@ macro_rules! param {
             pub fn error(&self) -> Option<&OrmError> {
                 self.error.as_ref()
             }
-            /// `(key, value)`, or the error the parameter carries.
+            /// `(key, value)`.
+            ///
+            /// # Errors
+            ///
+            /// The error the parameter carries (see [`to_json`]).
             pub fn into_pair(self) -> Result<(String, Value)> {
                 match self.error {
                     Some(e) => Err(e),
@@ -307,7 +315,11 @@ impl<M> WhereParam<M> {
     }
 }
 
-/// Builds a where object from typed params (duplicated keys are combined with `AND`), or the first error they carry.
+/// Builds a where object from typed params (duplicated keys are combined with `AND`).
+///
+/// # Errors
+///
+/// The first error the params carry (a value that could not be serialized, see [`to_json`]).
 pub fn where_object<M>(params: Vec<WhereParam<M>>) -> Result<Value> {
     if let Some(e) = first_error(params.iter().map(|p| p.error.as_ref())) {
         return Err(e);
@@ -338,7 +350,11 @@ pub fn where_object<M>(params: Vec<WhereParam<M>>) -> Result<Value> {
     Ok(Value::Object(obj))
 }
 
-/// Builds a data object from typed params (last value wins), or the first error they carry.
+/// Builds a data object from typed params (last value wins).
+///
+/// # Errors
+///
+/// The first error the params carry (a value that could not be serialized, see [`to_json`]).
 pub fn data_object<M>(params: Vec<SetParam<M>>) -> Result<Value> {
     if let Some(e) = first_error(params.iter().map(|p| p.error.as_ref())) {
         return Err(e);
