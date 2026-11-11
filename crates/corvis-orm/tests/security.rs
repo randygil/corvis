@@ -85,11 +85,13 @@ fn runtime() -> tokio::runtime::Runtime {
 async fn decimal_with_a_huge_exponent_is_an_error_not_an_abort() {
     let db = sqlite().await;
     seed(&db).await;
-    // Used to try to allocate 10^14 bytes (`to_fixed_plain`) and abort the process.
-    for args in [json!({ "where": { "balance": { "gt": "1e100000000000000" } } }), json!({ "where": { "balance": "-1e140000" } })] {
-        let e = q(&db, "findMany", args).await.unwrap_err();
-        assert!(e.message().contains("Couldn't convert an integer (possible overflow)."), "{e}");
-    }
+    // Used to try to allocate 10^14 bytes (`to_fixed_plain`) and abort the process. On SQLite a filter value is a
+    // number for the database, as for the reference client (recorded: `sec.decimal_filter_huge` matches every row):
+    // it is bound in exponent form, a few bytes, and the query runs.
+    let r = q(&db, "findMany", json!({ "where": { "balance": { "gt": "1e100000000000000" } } })).await.unwrap();
+    assert_eq!(r, json!([]));
+    let r = q(&db, "findMany", json!({ "where": { "balance": "-1e140000" } })).await.unwrap();
+    assert_eq!(r, json!([]));
     // Written values are also checked against the Decimal(65, 30) column first.
     let e = q(&db, "create", json!({ "data": { "email": "n@x", "status": "x", "balance": "1e100000000000000" } })).await.unwrap_err();
     assert!(e.is_validation(), "{e}");

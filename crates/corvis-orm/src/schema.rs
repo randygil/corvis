@@ -140,15 +140,20 @@ fn native_args(m: &ModelMeta, f: &FieldMeta, native: &str) -> Result<String> {
 fn column_type(d: Dialect, m: &ModelMeta, f: &FieldMeta, serial: bool) -> Result<String> {
     let autoincrement = serial && !f.list && f.default == Some(DefaultValue::Autoincrement);
     if d == Dialect::Sqlite {
+        // The types of the reference client's SQLite migration (`tests/fixtures/oracle_sqlite/migration.sql`).
         return Ok(match (f.kind, f.list) {
-            // Scalar lists are JSON text on SQLite.
+            // Scalar lists are JSON text on SQLite (a Corvis extension: the reference client has no lists there).
             (_, true) => "TEXT",
-            (FieldKind::Int | FieldKind::BigInt, _) => "INTEGER",
+            (FieldKind::Int, _) => "INTEGER",
+            // `INTEGER PRIMARY KEY AUTOINCREMENT` takes no other spelling.
+            (FieldKind::BigInt, _) if autoincrement => "INTEGER",
+            (FieldKind::BigInt, _) => "BIGINT",
             (FieldKind::Float, _) => "REAL",
             (FieldKind::Boolean, _) => "BOOLEAN",
             (FieldKind::DateTime, _) => "DATETIME",
             // Numeric affinity, like the reference migration: values compare and sort as numbers.
             (FieldKind::Decimal, _) => "DECIMAL",
+            (FieldKind::Json, _) => "JSONB",
             _ => "TEXT",
         }
         .to_string());

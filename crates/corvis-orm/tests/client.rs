@@ -56,8 +56,11 @@ async fn filters_combined() {
     assert_eq!(n, 1);
     let n = db.user().count(json!({ "where": { "name": { "not": null } } })).await.unwrap();
     assert_eq!(n, 2);
-    // case sensitivity
+    // Case: on SQLite `contains` folds ASCII letters like the reference client's `LIKE` (recorded in the SQLite
+    // oracle, `sqlite.contains_upper`); `equals` does not.
     let n = db.user().count(json!({ "where": { "name": { "contains": "ana" } } })).await.unwrap();
+    assert_eq!(n, 1);
+    let n = db.user().count(json!({ "where": { "name": "ana" } })).await.unwrap();
     assert_eq!(n, 0);
     let n = db.user().count(json!({ "where": { "name": { "contains": "ana", "mode": "insensitive" } } })).await.unwrap();
     assert_eq!(n, 1);

@@ -460,6 +460,56 @@ async fn catalog_equals_the_reference_migration_postgres() {
     assert!(diffs.is_empty(), "{} differences:\n{}", diffs.len(), diffs.join("\n"));
 }
 
+mod oracle_sqlite {
+    #![allow(dead_code)]
+    include!("generated/oracle_sqlite.rs");
+}
+
+/// Tables, columns (type, nullability, default, key position), indexes (uniqueness, origin, columns) and foreign keys
+/// (columns and actions) of a SQLite database, each list sorted, as JSON. SQLite does not keep the names of primary
+/// keys and foreign keys, so those cannot be compared.
+async fn sqlite_catalog(db: &OrmClient) -> Value {
+    let tables = "WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' ORDER BY 1";
+    let queries = [
+        (
+            "columns",
+            "SELECT m.name || '.' || p.name AS column, p.type, p.\"notnull\" AS not_null, p.dflt_value AS dflt, p.pk \
+             FROM sqlite_master m, pragma_table_xinfo(m.name) p",
+        ),
+        (
+            "indexes",
+            "SELECT m.name || '.' || il.name AS name, il.\"unique\", il.origin, \
+             (SELECT group_concat(ii.name, ',') FROM pragma_index_info(il.name) ii) AS columns \
+             FROM sqlite_master m, pragma_index_list(m.name) il",
+        ),
+        (
+            "foreign_keys",
+            "SELECT m.name || '.' || f.\"from\" || '->' || f.\"table\" || '.' || f.\"to\" AS fk, f.on_update, f.on_delete \
+             FROM sqlite_master m, pragma_foreign_key_list(m.name) f",
+        ),
+    ];
+    let mut out = serde_json::Map::new();
+    for (name, select) in queries {
+        let rows = db.query_raw(&format!("{select} {tables}"), vec![]).await.unwrap();
+        assert!(!rows.is_empty(), "the catalog query for {name} found nothing");
+        out.insert(name.to_string(), Value::Array(rows));
+    }
+    Value::Object(out)
+}
+
+/// `db push` of the models generated from the SQLite oracle's schema builds the catalog of the reference client's own
+/// SQLite migration for that schema (`tests/fixtures/oracle_sqlite/migration.sql`).
+#[tokio::test]
+async fn catalog_equals_the_reference_migration_sqlite() {
+    use oracle_sqlite::*;
+    let reference = OrmClient::new("sqlite::memory:").unwrap();
+    reference.db_execute(include_str!("fixtures/oracle_sqlite/migration.sql")).await.unwrap();
+    let pushed = OrmClient::new("sqlite::memory:").unwrap();
+    pushed.db_push::<(User, Profile, Post, Comment, Category, Group, Wallet, Pair, Entry, Rate)>().await.unwrap();
+    let diffs = catalog_differences(&sqlite_catalog(&reference).await, &sqlite_catalog(&pushed).await, &[]);
+    assert!(diffs.is_empty(), "{} differences:\n{}", diffs.len(), diffs.join("\n"));
+}
+
 mod houseplan {
     #![allow(dead_code)]
     include!("generated/houseplan.rs");
