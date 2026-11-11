@@ -117,6 +117,21 @@ severity, the maintainer decides how the docs treat it before this change starts
   goes to its own issue and change, not here
 - [x] 6.7 `cargo deny check` passes with the example in the workspace (no new crate versions expected)
 
+## Verification
+
+Checked on `dev` at 41727f3 (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test --workspace` | 2047 passed, 1 failed, 97 ignored; the failure is the known load-sensitive `modules::events_and_schedule`, which passes alone and passed in CI |
+| `cargo check -p corvis --tests --features <f>` for compression, auth-local, auth-api-key, auth-session, auth-oauth2, socket-io | no warnings |
+| `node scripts/smoke-examples.mjs auth-app` | 17 of 17 checks |
+| `npm run docs:check` | 179 English pages, 179 Spanish pages |
+| `cargo deny check`, `node scripts/check-naming.mjs` | ok |
+| Security review of the example and the pages | nothing exploitable with the documented configuration; 5 low findings in the example, all fixed with a test each (equal secrets refused, per-account login limit shared by both login routes, mock provider redirect and header injection, login throttler on login routes only plus trust proxy in the README, scheme in the origin check) |
+| Parity | not applicable: nothing under `crates/` changed |
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` after review.
