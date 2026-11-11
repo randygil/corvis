@@ -127,6 +127,12 @@ pub fn buffered_amount(socket: &IoSocket) -> usize {
     socket.engine().map_or(0, |e| e.buffered_amount())
 }
 
+/// The bytes the socket's Engine.IO session holds against its unread budget (received and not yet released): a test
+/// that needs a message to have been read by the server waits for it here.
+pub fn unread_bytes(socket: &IoSocket) -> usize {
+    socket.engine().map_or(0, |e| e.unread_bytes())
+}
+
 /// Whether a polling `GET` of the session is waiting for something to answer.
 pub fn poll_pending(socket: &super::engine::EngineSocket) -> bool {
     socket.poll_pending()

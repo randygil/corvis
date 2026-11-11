@@ -13,9 +13,10 @@ mod socket_io_raw;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use corvis::socket_io::{EngineOptions, IoOptions, IoServer, IoSocket};
+use engine_support::eventually;
 use engine_support::io_client::start;
 use socket_io_raw::{Raw, ip};
 
@@ -97,38 +98,6 @@ fn register(io: &IoServer, counts: &Counts) {
     });
 }
 
-/// Waits until `check` holds, up to `limit`.
-async fn until(limit: Duration, mut check: impl FnMut() -> bool) -> bool {
-    let end = Instant::now() + limit;
-    while Instant::now() < end {
-        if check() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    check()
-}
-
-/// Waits until the live heap stops moving, and returns it.
-async fn settled() -> isize {
-    let mut last = live();
-    let mut calm = 0;
-    for _ in 0..200 {
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        let now = live();
-        if (now - last).abs() < 64 * 1024 {
-            calm += 1;
-            if calm == 3 {
-                return now;
-            }
-        } else {
-            calm = 0;
-        }
-        last = now;
-    }
-    live()
-}
-
 /// One connection that starts `events` blocked handlers and goes away, as a client in a reconnect loop does. Returns
 /// `false` when the server refused the session.
 async fn churn_once(addr: std::net::SocketAddr, source: std::net::Ipv4Addr, counts: &Counts, events: usize) -> bool {
@@ -140,7 +109,7 @@ async fn churn_once(addr: std::net::SocketAddr, source: std::net::Ipv4Addr, coun
     for _ in 0..events {
         let _ = client.msg_str(r#"2["block"]"#).await;
     }
-    until(Duration::from_secs(5), || counts.started.load(Ordering::SeqCst) >= before + events).await;
+    eventually("the handlers of the connection to start", || counts.started.load(Ordering::SeqCst) >= before + events).await;
     drop(client);
     true
 }
@@ -150,8 +119,7 @@ async fn reconnect_churn_leaves_no_handlers_and_no_memory_behind() {
     let _guard = ONE_AT_A_TIME.lock().await;
     let counts = Counts::default();
     let fx = start(IoOptions::new(), |io| register(io, &counts)).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let base = settled().await;
+    let base = live();
     // The shape that reached ~86,000 lingering futures and ~50 MB: eight churners from one address, 32 handlers each.
     let churners: Vec<_> = (0..8)
         .map(|_| {
@@ -174,20 +142,16 @@ async fn reconnect_churn_leaves_no_handlers_and_no_memory_behind() {
     assert!(opened >= 100, "only {opened} sessions were opened");
     let at_end = counts.running.load(Ordering::SeqCst);
     // The handlers are cancelled when their client is gone, not after `close_timeout` (30 s).
-    assert!(
-        until(Duration::from_secs(10), || counts.running.load(Ordering::SeqCst) == 0).await,
-        "{} handlers still running",
-        counts.running.load(Ordering::SeqCst)
-    );
-    assert_eq!(fx.io.engine().session_count(), 0);
-    let after = settled().await;
+    eventually("every handler to be cancelled", || counts.running.load(Ordering::SeqCst) == 0).await;
+    eventually("every session to close", || fx.io.engine().session_count() == 0).await;
+    // Back to the baseline: what stays is the allocator's and the tasks' own slack, far from tens of megabytes. The
+    // frees of the connections that just ended run on their own tasks: the heap is waited for, not sampled once.
+    eventually("the heap to come back near its baseline", || live() - base < 4 * 1024 * 1024).await;
     println!(
         "{opened} sessions, {} handlers started, {at_end} running when the last client left, heap {:+} B against the baseline",
         counts.started.load(Ordering::SeqCst),
-        after - base
+        live() - base
     );
-    // Back to the baseline: what stays is the allocator's and the tasks' own slack, far from tens of megabytes.
-    assert!(after - base < 4 * 1024 * 1024, "the heap is {} bytes above its baseline after the churn", after - base);
     fx.io.close();
 }
 
@@ -201,7 +165,6 @@ async fn with_a_grace_requested_lingering_handlers_stay_under_the_per_address_ca
     let cap = options.max_lingering_per_ip();
     assert_eq!(cap, 32);
     let fx = start(options, |io| register(io, &counts)).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
     let mut refused = 0;
     let mut peak = 0;
     for _ in 0..40 {
@@ -217,7 +180,8 @@ async fn with_a_grace_requested_lingering_handlers_stay_under_the_per_address_ca
     let mut honest = Raw::open(fx.addr, ip(200)).await.unwrap();
     assert!(honest.connect("").await.unwrap().starts_with("40"));
     // The grace is over after `close_timeout` and the address is admitted again.
-    assert!(until(Duration::from_secs(15), || counts.running.load(Ordering::SeqCst) == 0).await, "handlers never stopped lingering");
+    // The grace is real time (the server runs on real sockets): the handlers end when `close_timeout` (4 s) has passed.
+    eventually("the lingering handlers to end", || counts.running.load(Ordering::SeqCst) == 0).await;
     assert!(churn_once(fx.addr, ip(5), &counts, 1).await, "the address is served again");
     fx.io.close();
 }
@@ -254,8 +218,7 @@ async fn packets_that_race_the_servers_leave_of_a_namespace_are_dropped_and_the_
     let mut client = Raw::open(fx.addr, ip(1)).await.unwrap();
     assert!(client.connect("").await.unwrap().starts_with("40"));
     assert!(client.connect("/b").await.unwrap().starts_with("40/b"));
-    let server_side = until(Duration::from_secs(5), || !sockets.lock().unwrap().is_empty()).await;
-    assert!(server_side);
+    eventually("the socket of /b on the server", || !sockets.lock().unwrap().is_empty()).await;
     // The server leaves /b; the client's packets for it were already on their way: an ACK, an event, a binary event.
     sockets.lock().unwrap()[0].disconnect(false);
     let answer = client.recv_text(Duration::from_secs(5)).await.expect("the DISCONNECT packet");
