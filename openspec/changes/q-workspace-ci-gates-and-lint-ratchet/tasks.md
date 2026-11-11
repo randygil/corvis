@@ -71,19 +71,20 @@ are installed with `rustup toolchain install <version> --profile minimal` and re
 
 ## 6. Definition of done
 
-- [ ] 6.1 `cargo build --workspace --all-targets` with no warnings; `cargo clippy --workspace --all-targets -- -D
+- [x] 6.1 `cargo build --workspace --all-targets` with no warnings; `cargo clippy --workspace --all-targets -- -D
   warnings` and the per-feature clippy loop of `corvis` pass
-- [ ] 6.2 `cargo test --workspace` passes; `cargo fmt --all --check` passes; every `uses:` of a non-`actions/*` action
+- [x] 6.2 `cargo test --workspace` passes; `cargo fmt --all --check` passes; every `uses:` of a non-`actions/*` action
   in `ci.yml` names a 40-character SHA
 - [ ] 6.3 The new jobs pass on the pull request: `doc`, `msrv`, `features`, `lint-ratchet` (and `semver` reports)
 - [x] 6.4 Write in Implementation notes the exact job names to add as required status checks of `main` (`doc`, `msrv`,
   `features`, `lint-ratchet`) for the maintainer, and `CONTRIBUTING.md` lists them
-- [ ] 6.5 `cargo deny check`, `cargo audit`, `node scripts/check-naming.mjs` and `node scripts/check-crate-files.mjs`
+- [x] 6.5 `cargo deny check`, `cargo audit`, `node scripts/check-naming.mjs` and `node scripts/check-crate-files.mjs`
   pass; if `Cargo.lock` or `rust-version` changed, run the `corvis-parity` check and verify the three port apps keep
-  0 apidiff differences
-- [ ] 6.6 Docs pages changed (only with task 5.3's raise): English and Spanish, then `npm run docs:check` in `docs/`;
+  0 apidiff differences — neither `Cargo.lock` nor `rust-version` changed, so no parity run is needed
+- [x] 6.6 Docs pages changed (only with task 5.3's raise): English and Spanish, then `npm run docs:check` in `docs/`;
   merge the spec delta's job list with any job added to the required-checks requirement by changes archived meanwhile
-  (for example `socket-io-diff`); verify `openspec validate q-workspace-ci-gates-and-lint-ratchet --strict`
+  (for example `socket-io-diff`); verify `openspec validate q-workspace-ci-gates-and-lint-ratchet --strict` — no
+  docs page changed (no raise) and no job was added to the requirement on `dev` meanwhile; validation passes
 - [x] 6.7 No security review needed (no input parsing, limits, authentication, SQL or file system code changes); state
   it in Implementation notes
 

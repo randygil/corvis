@@ -329,6 +329,18 @@ On a temporary edit of `corvis-swagger` (an `unwrap()` in `serialize_config_to_j
 - The `doc` command exited 101 with `crates\corvis-swagger\src\scalar.rs:144:57: error: unresolved link to
   missing_item`.
 
+### The new jobs' commands, run locally
+
+`doc` (both steps), `features` (`cargo hack` 0.6.46, six feature sets, warnings denied), `lint-ratchet` (Linux,
+2,679 findings as in the baseline), `msrv` (1.89, default and all features, Linux and Windows) and `packaging` (the
+seven crates package and build with the shared dependencies) pass. `semver` (`cargo semver-checks` 0.51.0 against the
+merge base with `main`, `5948300`) works with the 1.99.0 rustdoc and exits 100 with one finding:
+`constructible_struct_adds_private_field` on `BodyParserOptions.redacted_params`
+(`crates/corvis/src/http/body_parser.rs:51`), a change already on `dev`, not one of this change. While pull requests
+target `dev`, the job reports everything `dev` changed since `main`, not only the pull request's own changes; using
+the merge base with the pull request's base branch (`github.base_ref`) would show only the latter. Left as designed
+(merge base with `main`) for the maintainer to decide.
+
 ### Required checks of `main` (for the maintainer)
 
 Add exactly these job names as required status checks: `doc`, `msrv`, `features`, `lint-ratchet`. `semver` stays
