@@ -90,8 +90,14 @@ fn revive(v: &mut Value) {
     match v {
         Value::Object(m) if m.len() == 1 && m.contains_key("$float") => *v = Value::Null,
         Value::Object(m) if m.len() == 1 && m.contains_key("$json") => *v = m["$json"].take(),
-        Value::Object(m) if m.len() == 1 && matches!(m.get("$type").and_then(Value::as_str), Some("DbNull" | "JsonNull" | "AnyNull")) => {
-            *v = super::null_marker(m["$type"].as_str().unwrap_or_default());
+        Value::Object(m) if m.len() == 1 && m.contains_key("$type") => {
+            let kind = match m["$type"].as_str() {
+                Some("DbNull") => super::NullKind::Db,
+                Some("JsonNull") => super::NullKind::Json,
+                Some("AnyNull") => super::NullKind::Any,
+                _ => return m.values_mut().for_each(revive),
+            };
+            *v = super::null_marker(kind);
         }
         Value::Object(m) => m.values_mut().for_each(revive),
         Value::Array(a) => a.iter_mut().for_each(revive),

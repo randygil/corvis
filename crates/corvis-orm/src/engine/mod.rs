@@ -163,10 +163,17 @@ pub(crate) fn undefined_marker() -> Value {
     Value::String(markers().undefined.clone())
 }
 
-/// The sentinel named `name` (one of [`NULL_NAMES`]).
-pub(crate) fn null_marker(name: &str) -> Value {
-    let i = NULL_NAMES.iter().position(|n| *n == name).expect("a null sentinel name");
-    serde_json::json!({ "$type": markers().nulls[i] })
+/// The null sentinels of Json fields, in the order of [`NULL_NAMES`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NullKind {
+    Db = 0,
+    Json = 1,
+    Any = 2,
+}
+
+/// The sentinel of `kind`.
+pub(crate) fn null_marker(kind: NullKind) -> Value {
+    serde_json::json!({ "$type": markers().nulls[kind as usize] })
 }
 
 /// `"DbNull"`, `"JsonNull"` or `"AnyNull"` when `v` is that sentinel of this process.

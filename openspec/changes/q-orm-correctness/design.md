@@ -757,3 +757,14 @@ without reviving it; the Rust runners (`tests/common/oracle.rs`, `engine/pg_sql_
 Port applications: `facten-api/src/emissions/emissions.service.rs:157` writes `json!({ "$type": "DbNull" })`, which is
 now stored as that object instead of `NULL`; it must become `corvis_orm::db_null()`. Nothing else in the three
 applications uses a changed form.
+
+Final checks of this round (after the last code change): `cargo fmt --check`, `cargo clippy --workspace --all-targets
+-D warnings`, `cargo clippy -p corvis-orm --no-default-features --all-targets -D warnings`, `cargo check -p corvis-orm
+--tests` without default features and with `corvis`, `cargo build --workspace --all-targets` (no warning) and `cargo doc
+-p corvis-orm --no-deps`: clean. `CORVIS_ORM_PG_REQUIRED=1 cargo test --workspace --no-fail-fast`: 2193 passed, 0
+failed, 98 ignored; corvis-orm again after the last change: 289 passed, 0 failed. `cargo deny check`, `node
+scripts/check-naming.mjs`, `npm run docs:check` and `openspec validate q-orm-correctness --strict`: pass. `node
+scripts/lint-ratchet.mjs`: no count above the baseline (an `expect_used` the first fix added was removed); the two
+`corvis` counts below it (`expect_used` 51 -> 50, `missing_debug_implementations` 184 -> 183) are platform-specific on
+Windows in a crate this change does not touch, so the baseline keeps the Linux counts. No test database is left on the
+server.
