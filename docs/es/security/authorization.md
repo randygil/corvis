@@ -61,7 +61,7 @@ impl CanActivate for RolesGuard {
     async fn can_activate(&self, ctx: &ExecutionContext) -> Result<bool, HttpException> {
         let required: Option<Vec<Role>> = self.reflector.get_all_and_override(ROLES_KEY, &[ctx.get_handler(), ctx.get_class()]);
         let Some(required) = required else { return Ok(true) };
-        let user = ctx.switch_to_http().get_request().user_as::<Account>();
+        let user = ctx.switch_to_http().get_request().typed_user::<Account>();
         Ok(user.is_some_and(|u| required.iter().any(|r| u.roles.contains(r))))
     }
 
@@ -76,7 +76,7 @@ impl CanActivate for RolesGuard {
 primer valor que encuentra; así un método puede sobrescribir lo que declara su controlador. Si la
 ruta no declara roles, el guard deja pasar, y por eso devuelve `false` en
 `controls_access`: no es lo que mantiene fuera las peticiones anónimas, así que la [postura de rutas](/es/security/route-posture) no
-debe contarlo como control de acceso. Un guard escrito para HTTP lee el usuario con `Request::user_as::<T>()`; un handler lo
+debe contarlo como control de acceso. Un guard escrito para HTTP lee el usuario tipado con `Request::typed_user::<T>()` (sin JSON que deserializar); un handler lo
 lee con el parámetro `User<T>`.
 
 ::: warning Un guard de roles necesita un `AuthGuard` antes
