@@ -469,3 +469,24 @@ variables` (insensitive `in`, nested `set`) and, new, `Expression tree is too la
 read-backs, the compound include and the nested `deleteMany`: SQLite parses `a OR b OR ...` as a left-deep tree and
 rejects expressions deeper than 1000 levels (`SQLITE_MAX_EXPR_DEPTH`), so on SQLite an `OR` of key groups fails near
 1,000 keys, long before the parameter limit. Group 8 sizes SQLite chunks for that too (below).
+
+### Group 6: typed helpers
+
+- `to_json` returns `Result<Value, OrmError>`: a `Serialize` failure is a validation error naming the type; a non-finite
+  float anywhere in the value (alone, in a list, an `Option`, a struct or a map) is found first by a serializer that only
+  checks floats (`query::finite::Check`), because `serde_json` turns it into `null` without an error.
+- Non-finite floats are refused (Review note 4's branch), provisionally: the recording of 3.2 that decides between
+  refusal and the engine strings `"NaN"` / `"Infinity"` was not made (see "Recorders outside the repository"). Refusal is
+  the branch that is right in both outcomes as far as data goes: it never matches or writes rows the caller did not mean;
+  if the original sends the values, the change is to map them to the engine strings in `to_json`'s check instead.
+- `WhereParam`, `SetParam`, `OrderByParam`, `IncludeParam` and `SelectParam` carry `error: Option<OrmError>`; `new` keeps
+  its signature, `try_new` and `WhereParam::try_field` take a `Result`, `error()` reads it, and `into_pair` now returns
+  `Result<(String, Value)>` so that it cannot drop the error (no caller in the repository or in the port applications).
+  `where_object` and `data_object` return `Result<Value>` (first error), for the same reason; `and`, `or`, `not`, the
+  nested relation helpers (`some`, `every`, `none`, `is`, `is_not`, `connect`, `create`, `include_where`), compound unique
+  helpers, `Args`, `WhereArg`, `DataArg` and the builder methods (`filter`, `cursor`, `order_by`, `include`, `select`,
+  `data`, `create`, `update`) pass it on to `Query::with_error`, which fails the query before any SQL. Breaking for direct
+  callers of `to_json`, `where_object`, `data_object` and `into_pair`: none in the repository or the port applications.
+- Tests: `tests/typed_params.rs` (12: the `NaN` cases and one per helper family, relations and combinators included) and
+  three unit tests in `query.rs`. Not changed: `or_undefined` (a JSON builder for `json!` arguments, not a typed helper)
+  still turns a value that fails to serialize into `null`; proposed as a follow-up.

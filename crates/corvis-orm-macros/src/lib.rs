@@ -846,24 +846,24 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 fns.push(quote! {
                     /// `{ some: { ... } }`
                     pub fn some(params: ::std::vec::Vec<::corvis_orm::WhereParam<#target>>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "some", ::corvis_orm::where_object(params))
+                        ::corvis_orm::WhereParam::try_field(#api, "some", ::corvis_orm::where_object(params))
                     }
                     /// `{ every: { ... } }`
                     pub fn every(params: ::std::vec::Vec<::corvis_orm::WhereParam<#target>>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "every", ::corvis_orm::where_object(params))
+                        ::corvis_orm::WhereParam::try_field(#api, "every", ::corvis_orm::where_object(params))
                     }
                     /// `{ none: { ... } }`
                     pub fn none(params: ::std::vec::Vec<::corvis_orm::WhereParam<#target>>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "none", ::corvis_orm::where_object(params))
+                        ::corvis_orm::WhereParam::try_field(#api, "none", ::corvis_orm::where_object(params))
                     }
                     /// `include: { posts: { where: { ... } } }`
                     pub fn include_where(params: ::std::vec::Vec<::corvis_orm::WhereParam<#target>>) -> ::corvis_orm::IncludeParam<#name> {
-                        ::corvis_orm::IncludeParam::new(#api, ::corvis_orm::serde_json::json!({ "where": ::corvis_orm::where_object(params) }))
+                        ::corvis_orm::IncludeParam::try_new(#api, ::corvis_orm::where_object(params).map(|w| ::corvis_orm::serde_json::json!({ "where": w })))
                     }
                     /// Nested write: `posts: { create: [...] }`.
                     pub fn create(items: ::std::vec::Vec<::std::vec::Vec<::corvis_orm::SetParam<#target>>>) -> ::corvis_orm::SetParam<#name> {
-                        let items: ::std::vec::Vec<::corvis_orm::serde_json::Value> = items.into_iter().map(::corvis_orm::data_object).collect();
-                        ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "create": items }))
+                        let items = items.into_iter().map(::corvis_orm::data_object).collect::<::corvis_orm::Result<::std::vec::Vec<_>>>();
+                        ::corvis_orm::SetParam::try_new(#api, items.map(|items| ::corvis_orm::serde_json::json!({ "create": items })))
                     }
                     /// `include: { _count: { select: { posts: true } } }`; several of these merge into one `_count`.
                     pub fn count() -> ::corvis_orm::IncludeParam<#name> {
@@ -871,27 +871,29 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                     }
                     /// Nested write: `posts: { connect: [...] }`.
                     pub fn connect(items: ::std::vec::Vec<::corvis_orm::WhereParam<#target>>) -> ::corvis_orm::SetParam<#name> {
-                        let items: ::std::vec::Vec<::corvis_orm::serde_json::Value> = items.into_iter().map(|w| ::corvis_orm::where_object(::std::vec![w])).collect();
-                        ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "connect": items }))
+                        let items = items.into_iter().map(|w| ::corvis_orm::where_object(::std::vec![w])).collect::<::corvis_orm::Result<::std::vec::Vec<_>>>();
+                        ::corvis_orm::SetParam::try_new(#api, items.map(|items| ::corvis_orm::serde_json::json!({ "connect": items })))
                     }
                 });
             } else {
                 fns.push(quote! {
                     /// `{ is: { ... } }`
                     pub fn is(params: ::std::vec::Vec<::corvis_orm::WhereParam<#target>>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "is", ::corvis_orm::where_object(params))
+                        ::corvis_orm::WhereParam::try_field(#api, "is", ::corvis_orm::where_object(params))
                     }
                     /// `{ isNot: { ... } }`
                     pub fn is_not(params: ::std::vec::Vec<::corvis_orm::WhereParam<#target>>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "isNot", ::corvis_orm::where_object(params))
+                        ::corvis_orm::WhereParam::try_field(#api, "isNot", ::corvis_orm::where_object(params))
                     }
                     /// Nested write: `author: { connect: { ... } }`.
                     pub fn connect(param: ::corvis_orm::WhereParam<#target>) -> ::corvis_orm::SetParam<#name> {
-                        ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "connect": ::corvis_orm::where_object(::std::vec![param]) }))
+                        let w = ::corvis_orm::where_object(::std::vec![param]);
+                        ::corvis_orm::SetParam::try_new(#api, w.map(|w| ::corvis_orm::serde_json::json!({ "connect": w })))
                     }
                     /// Nested write: `author: { create: { ... } }`.
                     pub fn create(data: ::std::vec::Vec<::corvis_orm::SetParam<#target>>) -> ::corvis_orm::SetParam<#name> {
-                        ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "create": ::corvis_orm::data_object(data) }))
+                        let data = ::corvis_orm::data_object(data);
+                        ::corvis_orm::SetParam::try_new(#api, data.map(|d| ::corvis_orm::serde_json::json!({ "create": d })))
                     }
                 });
             }
@@ -915,15 +917,15 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             fns.push(quote! {
                 /// `{ field: { has: value } }`
                 pub fn has(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                    ::corvis_orm::WhereParam::field(#api, "has", ::corvis_orm::to_json(&v.into()))
+                    ::corvis_orm::WhereParam::try_field(#api, "has", ::corvis_orm::to_json(&v.into()))
                 }
                 /// `{ field: { hasSome: [...] } }`
                 pub fn has_some(v: ::std::vec::Vec<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                    ::corvis_orm::WhereParam::field(#api, "hasSome", ::corvis_orm::to_json(&v))
+                    ::corvis_orm::WhereParam::try_field(#api, "hasSome", ::corvis_orm::to_json(&v))
                 }
                 /// `{ field: { hasEvery: [...] } }`
                 pub fn has_every(v: ::std::vec::Vec<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                    ::corvis_orm::WhereParam::field(#api, "hasEvery", ::corvis_orm::to_json(&v))
+                    ::corvis_orm::WhereParam::try_field(#api, "hasEvery", ::corvis_orm::to_json(&v))
                 }
                 /// `{ field: { isEmpty: bool } }`
                 pub fn is_empty(v: bool) -> ::corvis_orm::WhereParam<#name> {
@@ -931,15 +933,15 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 }
                 /// `{ field: { equals: [...] } }`
                 pub fn equals(v: ::std::vec::Vec<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                    ::corvis_orm::WhereParam::field(#api, "equals", ::corvis_orm::to_json(&v))
+                    ::corvis_orm::WhereParam::try_field(#api, "equals", ::corvis_orm::to_json(&v))
                 }
                 /// `data: { field: [...] }`
                 pub fn set(v: ::std::vec::Vec<#inner>) -> ::corvis_orm::SetParam<#name> {
-                    ::corvis_orm::SetParam::new(#api, ::corvis_orm::to_json(&v))
+                    ::corvis_orm::SetParam::try_new(#api, ::corvis_orm::to_json(&v))
                 }
                 /// `data: { field: { push: value | [...] } }`
                 pub fn push(v: impl ::corvis_orm::serde::Serialize) -> ::corvis_orm::SetParam<#name> {
-                    ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "push": ::corvis_orm::to_json(&v) }))
+                    ::corvis_orm::SetParam::try_new(#api, ::corvis_orm::to_json(&v).map(|v| ::corvis_orm::serde_json::json!({ "push": v })))
                 }
                 /// `select: { field: true }`
                 pub fn select() -> ::corvis_orm::SelectParam<#name> {
@@ -953,9 +955,9 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             // The bare value (`{ field: value }`) means `equals` in a filter and is also what a
             // `WhereUniqueInput` accepts for a unique field; Json filters need `{ equals }`.
             let equals = if kind == Kind::Json {
-                quote! { ::corvis_orm::WhereParam::field(#api, "equals", ::corvis_orm::to_json(&v.into())) }
+                quote! { ::corvis_orm::WhereParam::try_field(#api, "equals", ::corvis_orm::to_json(&v.into())) }
             } else {
-                quote! { ::corvis_orm::WhereParam::new(#api, ::corvis_orm::to_json(&v.into())) }
+                quote! { ::corvis_orm::WhereParam::try_new(#api, ::corvis_orm::to_json(&v.into())) }
             };
             fns.push(quote! {
                 /// `{ field: value }` (`{ field: { equals: value } }` for Json fields)
@@ -964,19 +966,19 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 }
                 /// `{ field: { not: value } }`
                 pub fn not(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                    ::corvis_orm::WhereParam::field(#api, "not", ::corvis_orm::to_json(&v.into()))
+                    ::corvis_orm::WhereParam::try_field(#api, "not", ::corvis_orm::to_json(&v.into()))
                 }
                 /// `{ field: { in: [...] } }`
                 pub fn in_vec(v: ::std::vec::Vec<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                    ::corvis_orm::WhereParam::field(#api, "in", ::corvis_orm::to_json(&v))
+                    ::corvis_orm::WhereParam::try_field(#api, "in", ::corvis_orm::to_json(&v))
                 }
                 /// `{ field: { notIn: [...] } }`
                 pub fn not_in_vec(v: ::std::vec::Vec<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                    ::corvis_orm::WhereParam::field(#api, "notIn", ::corvis_orm::to_json(&v))
+                    ::corvis_orm::WhereParam::try_field(#api, "notIn", ::corvis_orm::to_json(&v))
                 }
                 /// `data: { field: value }` (`{ set: value }`).
                 pub fn set(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::SetParam<#name> {
-                    ::corvis_orm::SetParam::new(#api, ::corvis_orm::to_json(&v.into()))
+                    ::corvis_orm::SetParam::try_new(#api, ::corvis_orm::to_json(&v.into()))
                 }
                 /// `orderBy: { field: "asc" | "desc" }`
                 pub fn order(order: ::corvis_orm::SortOrder) -> ::corvis_orm::OrderByParam<#name> {
@@ -1008,16 +1010,16 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             if kind.comparable() {
                 fns.push(quote! {
                     pub fn lt(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "lt", ::corvis_orm::to_json(&v.into()))
+                        ::corvis_orm::WhereParam::try_field(#api, "lt", ::corvis_orm::to_json(&v.into()))
                     }
                     pub fn lte(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "lte", ::corvis_orm::to_json(&v.into()))
+                        ::corvis_orm::WhereParam::try_field(#api, "lte", ::corvis_orm::to_json(&v.into()))
                     }
                     pub fn gt(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "gt", ::corvis_orm::to_json(&v.into()))
+                        ::corvis_orm::WhereParam::try_field(#api, "gt", ::corvis_orm::to_json(&v.into()))
                     }
                     pub fn gte(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::WhereParam<#name> {
-                        ::corvis_orm::WhereParam::field(#api, "gte", ::corvis_orm::to_json(&v.into()))
+                        ::corvis_orm::WhereParam::try_field(#api, "gte", ::corvis_orm::to_json(&v.into()))
                     }
                 });
             }
@@ -1046,16 +1048,16 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 fns.push(quote! {
                     /// `data: { field: { increment: n } }`
                     pub fn increment(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::SetParam<#name> {
-                        ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "increment": ::corvis_orm::to_json(&v.into()) }))
+                        ::corvis_orm::SetParam::try_new(#api, ::corvis_orm::to_json(&v.into()).map(|v| ::corvis_orm::serde_json::json!({ "increment": v })))
                     }
                     pub fn decrement(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::SetParam<#name> {
-                        ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "decrement": ::corvis_orm::to_json(&v.into()) }))
+                        ::corvis_orm::SetParam::try_new(#api, ::corvis_orm::to_json(&v.into()).map(|v| ::corvis_orm::serde_json::json!({ "decrement": v })))
                     }
                     pub fn multiply(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::SetParam<#name> {
-                        ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "multiply": ::corvis_orm::to_json(&v.into()) }))
+                        ::corvis_orm::SetParam::try_new(#api, ::corvis_orm::to_json(&v.into()).map(|v| ::corvis_orm::serde_json::json!({ "multiply": v })))
                     }
                     pub fn divide(v: impl ::core::convert::Into<#inner>) -> ::corvis_orm::SetParam<#name> {
-                        ::corvis_orm::SetParam::new(#api, ::corvis_orm::serde_json::json!({ "divide": ::corvis_orm::to_json(&v.into()) }))
+                        ::corvis_orm::SetParam::try_new(#api, ::corvis_orm::to_json(&v.into()).map(|v| ::corvis_orm::serde_json::json!({ "divide": v })))
                     }
                 });
             }
@@ -1088,15 +1090,15 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             let pi = &fi.ident;
             let ty = &fi.inner;
             params.push(quote!(#pi: impl ::core::convert::Into<#ty>));
-            inserts.push(quote!(m.insert(#n.to_string(), ::corvis_orm::to_json(&#pi.into()));));
+            inserts.push(quote!((#n.to_string(), ::corvis_orm::to_json(&#pi.into()))));
         }
         compound_fns.push(quote! {
             /// Compound unique input `{ #input_name: { ... } }`.
             #[allow(non_snake_case, clippy::too_many_arguments)]
             pub fn #fn_ident(#(#params),*) -> ::corvis_orm::WhereParam<#name> {
-                let mut m = ::corvis_orm::serde_json::Map::new();
-                #(#inserts)*
-                ::corvis_orm::WhereParam::new(#input_name, ::corvis_orm::serde_json::Value::Object(m))
+                let fields = [#(#inserts),*];
+                let m = fields.into_iter().map(|(k, v)| v.map(|v| (k, v))).collect::<::corvis_orm::Result<::corvis_orm::serde_json::Map<_, _>>>();
+                ::corvis_orm::WhereParam::try_new(#input_name, m.map(::corvis_orm::serde_json::Value::Object))
             }
         });
     }

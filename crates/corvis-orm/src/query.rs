@@ -21,44 +21,255 @@ use crate::client::OrmClient;
 use crate::error::{OrmError, Result};
 use crate::meta::Model;
 
-/// Serializes any value to JSON (`Null` on failure). Used by the generated helpers.
-pub fn to_json<T: Serialize + ?Sized>(v: &T) -> Value {
-    serde_json::to_value(v).unwrap_or(Value::Null)
+/// Serializes the value given to a typed helper.
+///
+/// A value whose `Serialize` fails, or a non-finite float (`NaN`, `inf`, `-inf`, alone or inside a list, an
+/// `Option` or a struct), is a validation error: `serde_json` would turn a non-finite float into `null`, and a filter
+/// `{ score: null }` means `IS NULL`, which no caller means by `NaN`. Write `is_null()` / `set_null()` for `null`.
+pub fn to_json<T: Serialize + ?Sized>(v: &T) -> Result<Value> {
+    v.serialize(finite::Check).map_err(|_| {
+        OrmError::validation("NaN and infinite values cannot be compared or stored; use `is_null()` / `set_null()` for null.")
+    })?;
+    serde_json::to_value(v)
+        .map_err(|e| OrmError::validation(format!("Failed to serialize `{}` as a query value: {e}", std::any::type_name::<T>())))
+}
+
+/// A serializer that only checks that a value holds no non-finite float.
+mod finite {
+    use serde::ser::{self, Serialize};
+
+    #[derive(Debug)]
+    pub(super) struct NonFinite;
+
+    impl std::fmt::Display for NonFinite {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("non-finite float")
+        }
+    }
+
+    impl std::error::Error for NonFinite {}
+
+    impl ser::Error for NonFinite {
+        fn custom<T: std::fmt::Display>(_: T) -> Self {
+            NonFinite
+        }
+    }
+
+    pub(super) struct Check;
+
+    type R = Result<(), NonFinite>;
+
+    fn float(v: f64) -> R {
+        if v.is_finite() { Ok(()) } else { Err(NonFinite) }
+    }
+
+    macro_rules! accept {
+        ($($name:ident($t:ty)),*) => {$(
+            fn $name(self, _: $t) -> R {
+                Ok(())
+            }
+        )*};
+    }
+
+    impl ser::Serializer for Check {
+        type Ok = ();
+        type Error = NonFinite;
+        type SerializeSeq = Check;
+        type SerializeTuple = Check;
+        type SerializeTupleStruct = Check;
+        type SerializeTupleVariant = Check;
+        type SerializeMap = Check;
+        type SerializeStruct = Check;
+        type SerializeStructVariant = Check;
+
+        accept!(
+            serialize_bool(bool),
+            serialize_i8(i8),
+            serialize_i16(i16),
+            serialize_i32(i32),
+            serialize_i64(i64),
+            serialize_i128(i128),
+            serialize_u8(u8),
+            serialize_u16(u16),
+            serialize_u32(u32),
+            serialize_u64(u64),
+            serialize_u128(u128),
+            serialize_char(char),
+            serialize_str(&str),
+            serialize_bytes(&[u8])
+        );
+        fn serialize_f32(self, v: f32) -> R {
+            float(v.into())
+        }
+        fn serialize_f64(self, v: f64) -> R {
+            float(v)
+        }
+        fn serialize_none(self) -> R {
+            Ok(())
+        }
+        fn serialize_some<T: Serialize + ?Sized>(self, v: &T) -> R {
+            v.serialize(self)
+        }
+        fn serialize_unit(self) -> R {
+            Ok(())
+        }
+        fn serialize_unit_struct(self, _: &'static str) -> R {
+            Ok(())
+        }
+        fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> R {
+            Ok(())
+        }
+        fn serialize_newtype_struct<T: Serialize + ?Sized>(self, _: &'static str, v: &T) -> R {
+            v.serialize(self)
+        }
+        fn serialize_newtype_variant<T: Serialize + ?Sized>(self, _: &'static str, _: u32, _: &'static str, v: &T) -> R {
+            v.serialize(self)
+        }
+        fn serialize_seq(self, _: Option<usize>) -> Result<Check, NonFinite> {
+            Ok(Check)
+        }
+        fn serialize_tuple(self, _: usize) -> Result<Check, NonFinite> {
+            Ok(Check)
+        }
+        fn serialize_tuple_struct(self, _: &'static str, _: usize) -> Result<Check, NonFinite> {
+            Ok(Check)
+        }
+        fn serialize_tuple_variant(self, _: &'static str, _: u32, _: &'static str, _: usize) -> Result<Check, NonFinite> {
+            Ok(Check)
+        }
+        fn serialize_map(self, _: Option<usize>) -> Result<Check, NonFinite> {
+            Ok(Check)
+        }
+        fn serialize_struct(self, _: &'static str, _: usize) -> Result<Check, NonFinite> {
+            Ok(Check)
+        }
+        fn serialize_struct_variant(self, _: &'static str, _: u32, _: &'static str, _: usize) -> Result<Check, NonFinite> {
+            Ok(Check)
+        }
+    }
+
+    macro_rules! compound {
+        ($($tr:ident :: $method:ident),*) => {$(
+            impl ser::$tr for Check {
+                type Ok = ();
+                type Error = NonFinite;
+                fn $method<T: Serialize + ?Sized>(&mut self, v: &T) -> R {
+                    v.serialize(Check)
+                }
+                fn end(self) -> R {
+                    Ok(())
+                }
+            }
+        )*};
+    }
+    compound!(
+        SerializeSeq::serialize_element,
+        SerializeTuple::serialize_element,
+        SerializeTupleStruct::serialize_field,
+        SerializeTupleVariant::serialize_field
+    );
+
+    impl ser::SerializeMap for Check {
+        type Ok = ();
+        type Error = NonFinite;
+        fn serialize_key<T: Serialize + ?Sized>(&mut self, k: &T) -> R {
+            k.serialize(Check)
+        }
+        fn serialize_value<T: Serialize + ?Sized>(&mut self, v: &T) -> R {
+            v.serialize(Check)
+        }
+        fn end(self) -> R {
+            Ok(())
+        }
+    }
+
+    macro_rules! fields {
+        ($($tr:ident),*) => {$(
+            impl ser::$tr for Check {
+                type Ok = ();
+                type Error = NonFinite;
+                fn serialize_field<T: Serialize + ?Sized>(&mut self, _: &'static str, v: &T) -> R {
+                    v.serialize(Check)
+                }
+                fn end(self) -> R {
+                    Ok(())
+                }
+            }
+        )*};
+    }
+    fields!(SerializeStruct, SerializeStructVariant);
+}
+
+/// The error of the parameter `key` whose value could not be serialized.
+fn param_error(key: &str, e: OrmError) -> OrmError {
+    OrmError::validation(format!("Argument `{key}`: {}", e.message()))
+}
+
+/// The first error of a list of parameters.
+fn first_error<'a>(errors: impl IntoIterator<Item = Option<&'a OrmError>>) -> Option<OrmError> {
+    errors.into_iter().flatten().next().cloned()
 }
 
 macro_rules! param {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
+        ///
+        /// A parameter built from a value that could not be serialized (see [`to_json`]) carries the error, and
+        /// any query it is given to fails with it before running.
         pub struct $name<M> {
             pub(crate) key: String,
             pub(crate) value: Value,
+            pub(crate) error: Option<OrmError>,
             _m: PhantomData<fn() -> M>,
         }
 
         impl<M> $name<M> {
             pub fn new(key: impl Into<String>, value: Value) -> Self {
-                $name { key: key.into(), value, _m: PhantomData }
+                $name { key: key.into(), value, error: None, _m: PhantomData }
+            }
+            /// The parameter for a value that may have failed to serialize: the error is kept, the value is `null`.
+            pub fn try_new(key: impl Into<String>, value: Result<Value>) -> Self {
+                let key = key.into();
+                match value {
+                    Ok(value) => $name { key, value, error: None, _m: PhantomData },
+                    Err(e) => {
+                        let error = Some(param_error(&key, e));
+                        $name { key, value: Value::Null, error, _m: PhantomData }
+                    }
+                }
             }
             pub fn key(&self) -> &str {
                 &self.key
             }
+            /// The JSON value (`null` when the parameter carries an [error](Self::error)).
             pub fn value(&self) -> &Value {
                 &self.value
             }
-            pub fn into_pair(self) -> (String, Value) {
-                (self.key, self.value)
+            /// The error of a value that could not be serialized.
+            pub fn error(&self) -> Option<&OrmError> {
+                self.error.as_ref()
+            }
+            /// `(key, value)`, or the error the parameter carries.
+            pub fn into_pair(self) -> Result<(String, Value)> {
+                match self.error {
+                    Some(e) => Err(e),
+                    None => Ok((self.key, self.value)),
+                }
             }
         }
 
         impl<M> Clone for $name<M> {
             fn clone(&self) -> Self {
-                $name::new(self.key.clone(), self.value.clone())
+                $name { key: self.key.clone(), value: self.value.clone(), error: self.error.clone(), _m: PhantomData }
             }
         }
 
         impl<M> std::fmt::Debug for $name<M> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}({}: {})", stringify!($name), self.key, self.value)
+                match &self.error {
+                    Some(e) => write!(f, "{}({}: error: {})", stringify!($name), self.key, e.message()),
+                    None => write!(f, "{}({}: {})", stringify!($name), self.key, self.value),
+                }
             }
         }
     };
@@ -88,14 +299,19 @@ param!(
 impl<M> WhereParam<M> {
     /// `{ key: { op: value } }`
     pub fn field(key: &str, op: &str, value: Value) -> Self {
-        let mut m = Map::new();
-        m.insert(op.to_string(), value);
-        WhereParam::new(key, Value::Object(m))
+        WhereParam::try_field(key, op, Ok(value))
+    }
+    /// `{ key: { op: value } }` for a value that may have failed to serialize (see [`WhereParam::try_new`]).
+    pub fn try_field(key: &str, op: &str, value: Result<Value>) -> Self {
+        WhereParam::try_new(key, value.map(|v| Value::Object(Map::from_iter([(op.to_string(), v)]))))
     }
 }
 
-/// Builds a where object from typed params (duplicated keys are combined with `AND`).
-pub fn where_object<M>(params: Vec<WhereParam<M>>) -> Value {
+/// Builds a where object from typed params (duplicated keys are combined with `AND`), or the first error they carry.
+pub fn where_object<M>(params: Vec<WhereParam<M>>) -> Result<Value> {
+    if let Some(e) = first_error(params.iter().map(|p| p.error.as_ref())) {
+        return Err(e);
+    }
     let mut obj = Map::new();
     let mut extra = Vec::new();
     for p in params {
@@ -119,27 +335,35 @@ pub fn where_object<M>(params: Vec<WhereParam<M>>) -> Value {
             }
         }
     }
-    Value::Object(obj)
+    Ok(Value::Object(obj))
 }
 
-/// Builds a data object from typed params (last value wins).
-pub fn data_object<M>(params: Vec<SetParam<M>>) -> Value {
-    Value::Object(params.into_iter().map(|p| (p.key, p.value)).collect())
+/// Builds a data object from typed params (last value wins), or the first error they carry.
+pub fn data_object<M>(params: Vec<SetParam<M>>) -> Result<Value> {
+    if let Some(e) = first_error(params.iter().map(|p| p.error.as_ref())) {
+        return Err(e);
+    }
+    Ok(Value::Object(params.into_iter().map(|p| (p.key, p.value)).collect()))
+}
+
+/// One where object per param (the lists of `AND` and `OR`).
+fn where_list<M>(params: Vec<WhereParam<M>>) -> Result<Value> {
+    params.into_iter().map(|p| where_object(vec![p])).collect::<Result<Vec<_>>>().map(Value::Array)
 }
 
 /// `{ AND: [...] }`
 pub fn and<M>(params: Vec<WhereParam<M>>) -> WhereParam<M> {
-    WhereParam::new("AND", Value::Array(params.into_iter().map(|p| where_object(vec![p])).collect()))
+    WhereParam::try_new("AND", where_list(params))
 }
 
 /// `{ OR: [...] }`
 pub fn or<M>(params: Vec<WhereParam<M>>) -> WhereParam<M> {
-    WhereParam::new("OR", Value::Array(params.into_iter().map(|p| where_object(vec![p])).collect()))
+    WhereParam::try_new("OR", where_list(params))
 }
 
 /// `{ NOT: { ... } }`
 pub fn not<M>(params: Vec<WhereParam<M>>) -> WhereParam<M> {
-    WhereParam::new("NOT", where_object(params))
+    WhereParam::try_new("NOT", where_object(params))
 }
 
 /// `"asc" | "desc"`.
@@ -200,6 +424,14 @@ impl<M> Args<M> {
     fn new(value: Value) -> Self {
         Args { value, error: None, _m: PhantomData }
     }
+
+    /// `{ key: value }`, or the error of the params `value` was built from.
+    fn wrap(key: &str, value: Result<Value>) -> Self {
+        match value {
+            Ok(v) => Args::new(Value::Object(Map::from_iter([(key.to_string(), v)]))),
+            Err(e) => Args { value: Value::Null, error: Some(e), _m: PhantomData },
+        }
+    }
 }
 
 /// A serializable value (usually a DTO) used as the data of a write:
@@ -237,22 +469,30 @@ impl<M> From<()> for Args<M> {
 }
 impl<M> From<WhereParam<M>> for Args<M> {
     fn from(p: WhereParam<M>) -> Self {
-        Args::new(serde_json::json!({ "where": where_object(vec![p]) }))
+        Args::wrap("where", where_object(vec![p]))
     }
 }
 impl<M> From<Vec<WhereParam<M>>> for Args<M> {
     fn from(p: Vec<WhereParam<M>>) -> Self {
-        Args::new(serde_json::json!({ "where": where_object(p) }))
+        Args::wrap("where", where_object(p))
     }
 }
 impl<M> From<Vec<SetParam<M>>> for Args<M> {
     fn from(p: Vec<SetParam<M>>) -> Self {
-        Args::new(serde_json::json!({ "data": data_object(p) }))
+        Args::wrap("data", data_object(p))
     }
 }
 impl<M> From<Vec<Vec<SetParam<M>>>> for Args<M> {
     fn from(p: Vec<Vec<SetParam<M>>>) -> Self {
-        Args::new(serde_json::json!({ "data": p.into_iter().map(data_object).collect::<Vec<_>>() }))
+        Args::wrap("data", p.into_iter().map(data_object).collect::<Result<Vec<_>>>().map(Value::Array))
+    }
+}
+
+/// Splits a built argument into the value the query carries and its error (`null` and the error on failure).
+fn split(v: Result<Value>) -> (Value, Option<OrmError>) {
+    match v {
+        Ok(v) => (v, None),
+        Err(e) => (Value::Null, Some(e)),
     }
 }
 
@@ -265,7 +505,8 @@ impl<M> From<Value> for DataArg<M> {
 }
 impl<M> From<Vec<SetParam<M>>> for DataArg<M> {
     fn from(p: Vec<SetParam<M>>) -> Self {
-        DataArg(data_object(p), None, PhantomData)
+        let (value, error) = split(data_object(p));
+        DataArg(value, error, PhantomData)
     }
 }
 impl<M, T: Serialize> From<Data<T>> for DataArg<M> {
@@ -276,20 +517,22 @@ impl<M, T: Serialize> From<Data<T>> for DataArg<M> {
 }
 
 /// `where` given to a builder: JSON, one param or a list of params.
-pub struct WhereArg<M>(Value, PhantomData<fn() -> M>);
+pub struct WhereArg<M>(Value, Option<OrmError>, PhantomData<fn() -> M>);
 impl<M> From<Value> for WhereArg<M> {
     fn from(v: Value) -> Self {
-        WhereArg(v, PhantomData)
+        WhereArg(v, None, PhantomData)
     }
 }
 impl<M> From<WhereParam<M>> for WhereArg<M> {
     fn from(p: WhereParam<M>) -> Self {
-        WhereArg(where_object(vec![p]), PhantomData)
+        let (value, error) = split(where_object(vec![p]));
+        WhereArg(value, error, PhantomData)
     }
 }
 impl<M> From<Vec<WhereParam<M>>> for WhereArg<M> {
     fn from(p: Vec<WhereParam<M>>) -> Self {
-        WhereArg(where_object(p), PhantomData)
+        let (value, error) = split(where_object(p));
+        WhereArg(value, error, PhantomData)
     }
 }
 
@@ -398,7 +641,7 @@ impl<M: Model, A: Action<M>> Query<M, A> {
 
     /// `where` (combined with `AND` if one was already given).
     pub fn filter(mut self, w: impl Into<WhereArg<M>>) -> Self {
-        let w = w.into().0;
+        let WhereArg(w, error, _) = w.into();
         if let Some(m) = self.args_mut() {
             let merged = match m.remove("where") {
                 Some(prev) if !prev.is_null() => serde_json::json!({ "AND": [prev, w] }),
@@ -406,11 +649,12 @@ impl<M: Model, A: Action<M>> Query<M, A> {
             };
             m.insert("where".into(), merged);
         }
-        self
+        self.with_error(error)
     }
 
     /// Appends an `orderBy` entry.
     pub fn order_by(mut self, o: OrderByParam<M>) -> Self {
+        self = self.with_error(o.error);
         if let Some(m) = self.args_mut() {
             let mut entry = Map::new();
             entry.insert(o.key, o.value);
@@ -438,7 +682,7 @@ impl<M: Model, A: Action<M>> Query<M, A> {
 
     /// Cursor-based pagination (`cursor: { id: 10 }`).
     pub fn cursor(self, w: impl Into<WhereArg<M>>) -> Self {
-        let w = w.into().0;
+        let WhereArg(w, error, _) = w.into();
         // Typed params produce `{ id: { equals: v } }`; cursors take plain values.
         let w = match w {
             Value::Object(o) => Value::Object(
@@ -453,7 +697,7 @@ impl<M: Model, A: Action<M>> Query<M, A> {
             ),
             other => other,
         };
-        self.arg("cursor", w)
+        self.arg("cursor", w).with_error(error)
     }
 
     /// `distinct: ["field", ...]`
@@ -468,6 +712,7 @@ impl<M: Model, A: Action<M>> Query<M, A> {
 
     /// Adds an `include` entry (`user::posts::include()`).
     pub fn include(mut self, i: IncludeParam<M>) -> Self {
+        self = self.with_error(i.error);
         if let Some(m) = self.args_mut() {
             let inc = m.entry("include").or_insert_with(|| Value::Object(Map::new()));
             if let Value::Object(o) = inc {
@@ -486,6 +731,7 @@ impl<M: Model, A: Action<M>> Query<M, A> {
     /// Adds a `select` entry. The result usually no longer fits `M`: read it with
     /// `.exec_json()` or `.exec_as::<Partial>()`.
     pub fn select(mut self, s: SelectParam<M>) -> Self {
+        self = self.with_error(s.error);
         if let Some(m) = self.args_mut() {
             let sel = m.entry("select").or_insert_with(|| Value::Object(Map::new()));
             if let Value::Object(o) = sel {
@@ -629,5 +875,61 @@ impl<M: Model> Delegate<M> {
         aggregate => Aggregate;
         /// The `groupBy` action: `{ by, _count, ..., where, orderBy }`.
         group_by => GroupBy;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[derive(Serialize)]
+    struct Reading {
+        label: &'static str,
+        score: Option<f64>,
+    }
+
+    #[test]
+    fn to_json_refuses_non_finite_floats_anywhere_in_the_value() {
+        for (what, res) in [
+            ("NaN", to_json(&f64::NAN)),
+            ("f32 inf", to_json(&f32::INFINITY)),
+            ("in a list", to_json(&vec![1.0, f64::NEG_INFINITY])),
+            ("in an option", to_json(&Some(f64::NAN))),
+            ("in a struct", to_json(&Reading { label: "x", score: Some(f64::NAN) })),
+            ("in a map", to_json(&std::collections::BTreeMap::from([("k", f64::NAN)]))),
+        ] {
+            let e = res.expect_err(what);
+            assert!(e.is_validation() && e.message().contains("NaN and infinite values"), "{what}: {e}");
+        }
+        assert_eq!(to_json(&Reading { label: "x", score: Some(1.5) }).unwrap(), json!({ "label": "x", "score": 1.5 }));
+        assert_eq!(to_json(&None::<f64>).unwrap(), Value::Null);
+        assert_eq!(to_json(&f64::MAX).unwrap(), json!(f64::MAX));
+    }
+
+    #[test]
+    fn to_json_reports_serialization_errors_with_the_type() {
+        let map = std::collections::HashMap::from([((1, 2), 3)]);
+        let e = to_json(&map).unwrap_err();
+        assert!(e.is_validation() && e.message().contains("HashMap"), "{e}");
+    }
+
+    #[test]
+    fn params_carry_the_error_through_combinators() {
+        let bad: WhereParam<()> = WhereParam::try_field("score", "equals", to_json(&f64::NAN));
+        assert!(bad.value().is_null());
+        assert!(bad.error().unwrap().message().starts_with("Argument `score`: NaN"), "{bad:?}");
+        assert!(format!("{bad:?}").contains("error: Argument `score`"));
+        let good: WhereParam<()> = WhereParam::field("id", "gt", json!(1));
+        for p in [and(vec![good.clone(), bad.clone()]), or(vec![bad.clone()]), not(vec![good.clone(), bad.clone()])] {
+            let e = p.error().unwrap_or_else(|| panic!("{p:?} lost the error"));
+            assert!(e.message().contains("Argument `score`"), "{e}");
+        }
+        assert!(where_object(vec![good.clone(), bad.clone()]).is_err());
+        assert_eq!(where_object(vec![good.clone()]).unwrap(), json!({ "id": { "gt": 1 } }));
+        assert!(bad.clone().into_pair().is_err());
+        assert_eq!(good.into_pair().unwrap(), ("id".to_string(), json!({ "gt": 1 })));
+        let set: SetParam<()> = SetParam::try_new("score", to_json(&f64::NAN));
+        assert!(data_object(vec![SetParam::new("a", json!(1)), set]).is_err());
     }
 }

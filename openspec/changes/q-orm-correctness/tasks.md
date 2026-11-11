@@ -95,13 +95,15 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 6. Typed helpers (Decision 4)
 
-- [ ] 6.1 `query.rs`: `to_json` returning `Result`, non-finite floats handled before `serde_json` per the recording of 3.2
+- [x] 6.1 `query.rs`: `to_json` returning `Result`, non-finite floats handled before `serde_json` per the recording of 3.2
   (engine strings or a validation error); a private `error` on the five param types with `try_new`; `where_object`,
   `data_object`, `and`, `or`, `not`, `Args`, `WhereArg`, `DataArg` and `Query::with_error` carrying the first error;
-  verify `cargo test -p corvis-orm --lib`
+  verify `cargo test -p corvis-orm --lib` (non-finite floats are refused for now: provisional until the recording of 3.2
+  decides between refusal and the engine strings)
 - [ ] 6.2 `corvis-orm-macros/src/lib.rs`: every helper through `try_new`; nested relation helpers carry errors; tests in
   `tests/typed_params.rs`, one per helper family of design.md Decision 4, plus the `NaN` cases of both oracles; verify 2.3
-  passes and `--test client --test codegen_schemas` pass
+  passes and `--test client --test codegen_schemas` pass (all done except the `NaN` cases of both oracles, which wait for
+  the recordings of 3.1 and 3.2)
 
 ## 7. No panic on caller input (Decision 5)
 
