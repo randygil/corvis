@@ -414,12 +414,26 @@ pub(crate) fn finish_response(
 // Request bodies
 // ---------------------------------------------------------------------------
 
+/// The body of a request as the server keeps it unread: hyper's body over a socket, an in-memory body in the test
+/// client.
+pub(crate) type RequestBody = UnsyncBoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
+
 /// A request body that has not been read yet (multipart bodies: only a file interceptor, after
 /// the guards, reads them; see [`crate::multer::read_body`]).
 pub(crate) struct PendingBody {
-    pub body: Incoming,
+    pub body: RequestBody,
     /// `requestTimeout` deadline of the request.
     pub deadline: Option<Instant>,
+}
+
+impl PendingBody {
+    pub(crate) fn new<B>(body: B, deadline: Option<Instant>) -> Self
+    where
+        B: hyper::body::Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        PendingBody { body: body.map_err(Into::into).boxed_unsync(), deadline }
+    }
 }
 
 /// Request extension holding the unread body. Shared by all the clones of the request; the
@@ -491,13 +505,17 @@ fn read_limit(headers: &http::HeaderMap, transport: usize, parser: &crate::http:
 ///   only on routes that use it, after the guards).
 /// - Other bodies are read up to the limit of the parser that accepts them (`json` /
 ///   `urlencoded`) or up to the transport limit (`body_limit`), and within `request_timeout`.
-pub(crate) async fn from_hyper(
-    req: hyper::Request<Incoming>,
+pub(crate) async fn from_hyper<B>(
+    req: hyper::Request<B>,
     remote: Option<SocketAddr>,
     limit: usize,
     parser: &crate::http::body_parser::BodyParserOptions,
     request_timeout: Option<Duration>,
-) -> Request {
+) -> Request
+where
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let (parts, body) = req.into_parts();
     let deadline = request_timeout.and_then(|t| Instant::now().checked_add(t));
     if crate::multer::is_multipart_content_type(&parts.headers) {
@@ -505,7 +523,7 @@ pub(crate) async fn from_hyper(
         r.version = parts.version;
         r.remote_addr = remote;
         let mut ext = parts.extensions;
-        ext.insert(PendingBodySlot(Arc::new(Mutex::new(Some(PendingBody { body, deadline })))));
+        ext.insert(PendingBodySlot(Arc::new(Mutex::new(Some(PendingBody::new(body, deadline))))));
         *r.extensions.write().unwrap() = ext;
         return r;
     }
@@ -515,7 +533,7 @@ pub(crate) async fn from_hyper(
     let (bytes, error) = if content_length(&parts.headers).is_some_and(|n| n > limit as u64) {
         // raw-body: a declared length over the limit is rejected without reading the body
         // (at most a bounded part of it is discarded after the response, see `drain`).
-        unread = Some(PendingBody { body, deadline });
+        unread = Some(PendingBody::new(body, deadline));
         (Bytes::new(), Some(entity_too_large_error()))
     } else {
         let read = Limited::new(body, limit).collect();
@@ -604,6 +622,25 @@ async fn handle(
             }
         }
     }
+    Ok(respond(&shared, req, Some(remote), options, tasks, client_aborted).await)
+}
+
+/// The request path shared by the server and the test client: the conversion with the body limits (a pending body
+/// for multipart and for a declared length over the limit), the dispatch, the drain of a body nobody read, and the
+/// response finishing. Sets `client_aborted` when an HTTP/2 client reset the stream while its body was read: such a
+/// request is not dispatched.
+pub(crate) async fn respond<B>(
+    shared: &Arc<AppShared>,
+    req: hyper::Request<B>,
+    remote: Option<SocketAddr>,
+    options: &ServerOptions,
+    tasks: &ServerTasks,
+    client_aborted: &mut bool,
+) -> hyper::Response<ResBody>
+where
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let head = req.method() == http::Method::HEAD;
     let info = crate::http::express::RequestInfo::new(req.method(), req.headers());
     #[cfg(feature = "compression")]
@@ -612,28 +649,26 @@ async fn handle(
         info.conn_slots = req.extensions().get::<crate::http::compression::ConnectionSlots>().cloned();
         info
     };
-    let resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await {
-        // An HTTP/2 body that fails to read means the client reset the stream or the connection broke: nobody waits
-        // for the answer, so it is not dispatched (and not logged as an error) and counts as a cancelled request.
-        r if r.client_aborted && r.version == http::Version::HTTP_2 => {
-            *client_aborted = true;
-            Response::json(request_aborted_error().get_response().clone()).with_status(400)
-        }
-        r => {
-            let pending = r.get::<PendingBodySlot>();
-            let resp = dispatch(shared.clone(), r).await;
-            // A body nobody read (or left half read by a failed upload) is drained now, not
-            // when the last clone of the request goes away.
-            if let Some(slot) = pending {
-                let unread = slot.0.lock().unwrap_or_else(|e| e.into_inner()).take();
-                if let Some(p) = unread {
-                    tasks.spawn(drain(p, shared.body_limit as u64));
-                }
+    let r = from_hyper(req, remote, shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await;
+    // An HTTP/2 body that fails to read means the client reset the stream or the connection broke: nobody waits for
+    // the answer, so it is not dispatched (and not logged as an error) and counts as a cancelled request.
+    let resp = if r.client_aborted && r.version == http::Version::HTTP_2 {
+        *client_aborted = true;
+        Response::json(request_aborted_error().get_response().clone()).with_status(400)
+    } else {
+        let pending = r.get::<PendingBodySlot>();
+        let resp = dispatch(shared.clone(), r).await;
+        // A body nobody read (or left half read by a failed upload) is drained now, not
+        // when the last clone of the request goes away.
+        if let Some(slot) = pending {
+            let unread = slot.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(p) = unread {
+                tasks.spawn(drain(p, shared.body_limit as u64));
             }
-            resp
         }
+        resp
     };
-    Ok(finish_response(resp, &info, &shared.http_settings, head))
+    finish_response(resp, &info, &shared.http_settings, head)
 }
 
 // ---------------------------------------------------------------------------

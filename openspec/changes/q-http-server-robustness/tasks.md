@@ -58,9 +58,9 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 
 ## 6. One request path (Decision 5)
 
-- [ ] 6.1 `PendingBody.body` as a boxed body; `from_hyper` generic over the body type; `multer::BodySource::Stream` with
+- [x] 6.1 `PendingBody.body` as a boxed body; `from_hyper` generic over the body type; `multer::BodySource::Stream` with
   the boxed body; verify `cargo test -p corvis --test transport_security --test multer`
-- [ ] 6.2 `server::respond` extracted from `handle`; `handle` keeps the Engine.IO, gateway and upgrade routing; verify
+- [x] 6.2 `server::respond` extracted from `handle`; `handle` keeps the Engine.IO, gateway and upgrade routing; verify
   `cargo test -p corvis --test http2_limits --test response_memory --test send_timeout --test compression --features
   compression`
 - [ ] 6.3 `TestClient` keeps a copy of the application's `ServerOptions`; `TestRequest::send` builds a
