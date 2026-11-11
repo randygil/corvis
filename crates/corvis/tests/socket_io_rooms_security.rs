@@ -20,6 +20,21 @@ async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(HANG, future).await.expect("no hang")
 }
 
+/// The socket of a client that just read its CONNECT. The server queues CONNECT and registers the socket in the same
+/// step, so on a runtime with several workers the client can read the packet a moment before the lookup finds the
+/// socket: wait for it instead of assuming an order between two threads.
+async fn socket_of(fx: &IoFixture, id: &str) -> corvis::socket_io::IoSocket {
+    within(async {
+        loop {
+            if let Some(socket) = fx.io.main().socket(id) {
+                return socket;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+}
+
 #[tokio::test]
 async fn a_socket_cannot_join_more_rooms_than_the_cap_and_a_refused_join_changes_nothing() {
     let fx = start(IoOptions::new(), |_| {}).await;
@@ -159,7 +174,10 @@ async fn a_join_during_a_broadcast_and_a_broadcast_during_a_join_both_complete()
         ids.push(raw.join("/", None).await);
         raws.push(raw);
     }
-    let sockets: Vec<_> = ids.iter().map(|id| fx.io.main().socket(id).unwrap()).collect();
+    let mut sockets = Vec::new();
+    for id in &ids {
+        sockets.push(socket_of(&fx, id).await);
+    }
     for s in &sockets {
         s.join("all").unwrap();
     }
@@ -210,7 +228,7 @@ async fn a_join_racing_a_disconnect_leaves_no_membership_behind() {
     for round in 0..1_000u32 {
         let mut raw = Raw::connect(fx.addr).await;
         let id = raw.join("/", None).await;
-        let socket = fx.io.main().socket(&id).unwrap();
+        let socket = socket_of(&fx, &id).await;
         let joiners: Vec<_> = (0..4)
             .map(|t| {
                 let socket = socket.clone();
@@ -250,7 +268,7 @@ async fn a_broadcast_racing_a_disconnect_never_panics_and_sends_nothing_after_it
     for _ in 0..100 {
         let mut raw = Raw::connect(fx.addr).await;
         let id = raw.join("/", None).await;
-        let socket = fx.io.main().socket(&id).unwrap();
+        let socket = socket_of(&fx, &id).await;
         socket.join("r").unwrap();
         let io = fx.io.clone();
         let broadcasting = tokio::spawn(async move {
