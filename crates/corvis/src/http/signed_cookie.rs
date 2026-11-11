@@ -41,15 +41,16 @@ pub enum CookieKeysError {
 /// The secrets that sign and verify cookie values: the first one signs, every one verifies, so a secret can be
 /// rotated by putting the new one first and removing the old one once its cookies have expired.
 ///
-/// `Debug` prints the number of secrets only.
+/// Each secret is kept as an HMAC already keyed with it, so a signature costs no key setup. `Debug` prints the number
+/// of secrets only.
 #[derive(Clone)]
 pub struct CookieKeys {
-    secrets: Arc<[Vec<u8>]>,
+    keyed: Arc<[Hmac<Sha256>]>,
 }
 
 impl std::fmt::Debug for CookieKeys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CookieKeys({} secret(s))", self.secrets.len())
+        write!(f, "CookieKeys({} secret(s))", self.keyed.len())
     }
 }
 
@@ -59,13 +60,17 @@ thread_local! {
     static HMAC_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn signature(secret: &[u8], value: &str) -> String {
+/// The HMAC-SHA256 of `value` with a prepared key.
+fn hmac(keyed: &Hmac<Sha256>, value: &str) -> [u8; 32] {
     #[cfg(test)]
     HMAC_RUNS.with(|c| c.set(c.get() + 1));
-    // `new_from_slice` accepts a key of any length for HMAC.
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC takes keys of any length");
+    let mut mac = keyed.clone();
     mac.update(value.as_bytes());
-    STANDARD_NO_PAD.encode(mac.finalize().into_bytes())
+    mac.finalize().into_bytes().into()
+}
+
+fn signature(keyed: &Hmac<Sha256>, value: &str) -> String {
+    STANDARD_NO_PAD.encode(hmac(keyed, value))
 }
 
 impl CookieKeys {
@@ -75,7 +80,7 @@ impl CookieKeys {
         I: IntoIterator<Item = S>,
         S: AsRef<[u8]>,
     {
-        let mut list: Vec<Vec<u8>> = Vec::new();
+        let mut list: Vec<Hmac<Sha256>> = Vec::new();
         for (index, secret) in secrets.into_iter().enumerate() {
             let secret = secret.as_ref();
             if list.len() >= MAX_SECRETS {
@@ -84,18 +89,26 @@ impl CookieKeys {
             if secret.len() < MIN_SECRET_BYTES {
                 return Err(CookieKeysError::TooShort { index, len: secret.len() });
             }
-            list.push(secret.to_vec());
+            // `new_from_slice` accepts a key of any length for HMAC.
+            list.push(Hmac::<Sha256>::new_from_slice(secret).expect("HMAC takes keys of any length"));
         }
         if list.is_empty() {
             return Err(CookieKeysError::NoSecrets);
         }
-        Ok(CookieKeys { secrets: list.into() })
+        Ok(CookieKeys { keyed: list.into() })
     }
 
     /// `s:` + `value` + `.` + the signature of `value` with the first secret: what
     /// `'s:' + require('cookie-signature').sign(value, secret)` returns.
     pub fn sign(&self, value: &str) -> String {
-        format!("s:{value}.{}", signature(&self.secrets[0], value))
+        format!("s:{value}.{}", signature(&self.keyed[0], value))
+    }
+
+    /// The HMAC-SHA256 of `input` with the first secret: the signature [`sign`](Self::sign) writes, as bytes. A keyed
+    /// digest for values derived from the secret (the OAuth2 state's PKCE verifier and bindings).
+    #[cfg(feature = "auth-oauth2")]
+    pub(crate) fn mac(&self, input: &str) -> [u8; 32] {
+        hmac(&self.keyed[0], input)
     }
 
     /// The value of a string produced by [`sign`](Self::sign) with any of the secrets, `None` for anything else
@@ -125,8 +138,8 @@ impl CookieKeys {
         }
         let mut any = subtle::Choice::from(0);
         let mut current = subtle::Choice::from(0);
-        for (i, secret) in self.secrets.iter().enumerate() {
-            let expected = signature(secret, value);
+        for (i, keyed) in self.keyed.iter().enumerate() {
+            let expected = signature(keyed, value);
             let eq = expected.as_bytes().ct_eq(given);
             any |= eq;
             if i == 0 {

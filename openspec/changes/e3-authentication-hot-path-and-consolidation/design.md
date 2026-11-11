@@ -517,13 +517,254 @@ observe or add public API and are listed for the maintainer to confirm.
 Filled by tasks 1.4 and 10.1: `bash bench/auth/run.sh --label before` on `dev` before any framework edit, `--label after`
 on the finished branch, same machine, same `CONNS`, `DURATION` and rate.
 
+Machine: Intel Core i9-14900KF, Windows 11 Pro 10.0.26300, rustc 1.99.0, oha 1.16.0. Parameters: `CONNS=50`,
+`DURATION=10`, `WARMUP=3`, `RATE=1000`, `OHA_THREADS=4` (the defaults of `run.sh`). Before: `d46758a` (the `dev` this
+change starts from, with only `bench/auth/` added), 2026-11-11. After: `0308ff5` (the finished branch), same day, same
+parameters.
+
 | Scenario | req/s before | req/s after | p99 before | p99 after | allocations / request before → after | bytes / request before → after |
 |---|---|---|---|---|---|---|
-| `jwt-hs256` | | | | | | |
-| `jwt-provider-rs256` | | | | | | |
-| `service-verify-rs256` | | | | | | |
-| `service-sign-hs256` | | | | | | |
-| `service-sign-rs256` | | | | | | |
-| `session-none` | | | | | | |
-| `session-read` | | | | | | |
-| `session-write` | | | | | | |
+| `jwt-hs256` | 67345 | 88859 | 1.519 ms | 1.09 ms | 93 → 87 | 24776 → 24465 |
+| `jwt-provider-rs256` | 64499 | 72865 | 2.16 ms | 2.286 ms | 125 → 93 | 31495 → 26700 |
+| `service-verify-rs256` | 72429 | 66808 | 1.719 ms | 2.347 ms | 107 → 78 | 29330 → 25029 |
+| `service-sign-hs256` | 67799 | 81745 | 1.192 ms | 1.082 ms | 81 → 79 | 24515 → 24438 |
+| `service-sign-rs256` | 13538 | 13222 | 6.355 ms | 7.164 ms | 135 → 104 | 41580 → 29844 |
+| `session-none` | 70323 | 56346 | 1.075 ms | 1.526 ms | 54 → 53 | 22035 → 21995 |
+| `session-read` | 26258 | 44960 | 4.477 ms | 3.144 ms | 4665 → 1830 | 573709 → 250893 |
+| `session-write` | 23175 | 23647 | 4.594 ms | 6.382 ms | 4642 → 4625 | 651137 → 585817 |
+
+**Scenarios more than 5% slower** (task 10.1): `service-verify-rs256` (−7.8%) and `session-none` (−20%). Both were
+measured twice more on the same "after" binary right away (`SKIP_BUILD=1`): `session-none` gave 73 677 and 50 203 req/s
+(p99 1.02 and 1.51 ms), `service-verify-rs256` 53 768 and 58 179 req/s (p99 1.68 and 1.75 ms, the "before" p99 was
+1.72 ms). One binary moves by ±20% between consecutive runs on this machine (other agents build in the shared target
+while it runs), so the throughput differences of these two scenarios are inside the noise; what the change does to
+them is deterministic and smaller: `session-none` now draws no identifier and allocates one block less, and
+`service-verify-rs256` parses no PEM and builds no `Validation` per call (29 fewer allocations, 4.3 KB less per
+request). Nothing in either path got more work. `service-sign-rs256` (−2%) is within 5%; what remains there is
+`jsonwebtoken` parsing the RSA private key's DER on every signature, out of reach (Decision 3).
+
+**The numbers of Decision 1, checked:**
+
+- `JwtService` keys: no module key parse per `sign`/`verify` (`module_keys_are_parsed_once`: two parses at `new`, none
+  in 100 sign and verify calls); allocations per request 107 → 78 (`service-verify-rs256`) and 135 → 104
+  (`service-sign-rs256`).
+- `JwtKey`: one parse for 100 requests of a provider returning clones (`a_cached_provider_key_is_parsed_once`);
+  `jwt-provider-rs256` 125 → 93 allocations, 31.5 → 26.7 KB per request.
+- Header and validation: one header check per strategy request (`the_header_is_checked_once_per_token`), no
+  `Validation` built per request (`prepared_validations_follow_the_key_family`); `jwt-hs256` 93 → 87 allocations.
+- Session passes: the middleware's own bytes for an unchanged session, beyond the store's parse, 359 395 → 3 287 for
+  16 KiB, and 3 287 for 64 KiB (`tests/auth_hot_path_heap.rs`, bound 4 KiB); `session-read` 4 665 → 1 830 allocations
+  and 574 → 251 KB per request (the rest is the memory store's parse of the record), 26 258 → 44 960 req/s.
+- `update`: record-sized buffers 4 → 2 per request, none outside the store (`tests/auth_hot_path_heap.rs`).
+- Identifier: none drawn for a request without a cookie that saves nothing (`an_anonymous_request_draws_no_identifier`).
+- Purge: a write removes at most what it needs plus two batches (`one_write_purges_a_bounded_number_of_expired_records`;
+  the store of `dev` removed all 2 000 expired records in that case).
+- HMAC keys: no key setup per signed-cookie verification (the keyed HMAC is cloned); part of `session-read`'s drop.
+- API key: no extension written inside an application (`no_extension_is_written_inside_an_application`).
+
+## Implementation notes
+
+### Findings re-checked (task 1.1)
+
+Every line of "Findings as checked" and of the invariants table was read again on `d46758a` (the `dev` this change
+starts from, two commits after `db5b4f6`; neither touched the authentication module). The facts hold; the lines that
+moved by a few:
+
+- M1, S1: unchanged lines in `jwt.rs`.
+- S6: the local strategy's validator call is `local/strategy.rs:354-378`; `login_tracker`'s panic (N6) is at
+  `local/strategy.rs:214` with its `# Panics` section at 207-210.
+- S11: the application registers the names at `application.rs:558` (not 556); the request keeps them as
+  `Request::app_redaction` (`http/request.rs:111`).
+- N6: the refresh warning is at `oauth2/client.rs:646`.
+- Everything else is at the lines given.
+
+`cargo test -p corvis --features "auth-local auth-api-key auth-session auth-oauth2"` passed before any edit: 1598
+passed, 0 failed.
+
+### The benchmark (tasks 1.2 to 1.4)
+
+- The server counts allocations in 64 shards (one per thread, each on its own cache lines) summed by
+  `/__bench/stats`. A first version with one pair of global counters made `session-read` and `session-write` measure
+  the counters (4.7k req/s, against 26k with the shards: about 4 600 allocations per request on 32 threads contend on
+  one cache line); the "before" numbers above come from the sharded version, run before any framework edit.
+- The latency run uses the same `CONNS` as the closed loop run, at `RATE` requests per second.
+- The seeded session holds 128 small objects (about 16 KiB of JSON) rather than one long string, so its parse, its
+  copies and its comparison cost what a real session's do.
+
+### The `sign` recording (tasks 2.1 to 2.5)
+
+- The fixture package pins `@nestjs/jwt` 11.0.2 and `jsonwebtoken` 9.0.3. The JWT module declares a peer dependency on
+  `@nestjs/common` up to 11 while the package uses 12.4.0 (the version the other recorders need), so `package.json`
+  carries an `overrides` entry that satisfies the peer with the package's own `@nestjs/common`; `npm ci` installs it as
+  it is. `jsonwebtoken` was already 9.0.3 through `passport-jwt`, so the lockfile only adds the JWT module and its types,
+  and `node jwt.mjs` writes a `jwt.json` identical to the committed one.
+- Two runs of `node jwt_sign.mjs` write identical files.
+- Cases added to the 34 of the table, for branches of the original the table does not cover (35 to 40): a string payload
+  with an asymmetric module (the module's `algorithm` counts as a sign option), a number payload with a sign option, a
+  boolean payload, a `null` payload, a negative payload `iat`, and a payload claim set to `null` together with its option.
+- Recording against "Rules expected": one difference. A non-object payload other than a string is not always refused:
+  an array or `null` is (`Expected "payload" to be a plain object.`), but a number or a boolean is signed as its JSON
+  text with a header without `typ`, unless an option that only applies to objects is set (`invalid expiresIn option for
+  number payload`). Everything else holds as written: the checks and their order, `iat` truthy or the clock (an `iat` of
+  0 is replaced in place by the clock), `floor(iat + ms / 1000)`, the conflicts with the original's texts (two forms:
+  `Bad "options.expiresIn" option the payload already has an "exp" property.` for `exp`/`nbf`, `Bad "options.issuer"
+  option. The payload already has an "iss" property.` for the four appended claims), the order `iat`, `nbf`, `exp`,
+  `aud`, `iss`, `sub`, `jti`, and `exp` reported before `iss` when both conflict (case 26).
+- The replay on the signing code of `dev` failed 32 of the 40 cases: every case with a payload `iat`, every conflict,
+  every non-numeric time claim, `aud`/`iss` order, `jti`, `nbf`, every non-object payload and RS256 (whose payload has an
+  `iat`). It passed 1, 2, 7, 12, 17, 31, 32 and 34.
+- After the change every case matches; the only divergence is case 31 (`mutatePayload`), whose token is the same and
+  whose changed caller object Corvis cannot reproduce (it borrows the payload).
+- The string-payload check lists the sign options as the module merges them: the module's (`algorithm` when it is not
+  HS256, `expiresIn`, `issuer`, `audience`), then the call's (`expiresIn` when the module has none, `subject`, `jwtid`,
+  `notBefore`). Corvis cannot tell an explicit `algorithm: HS256` from the default, so only another algorithm counts.
+- `sign_at` builds the claims over the payload's map in the original's order of checks; `JwtSignOptions` gained
+  `not_before` and `jwt_id`, with `Debug` listing both.
+- Every caller of `sign` and `sign_with` in the repository (`examples/`, `crates/corvis/tests/`,
+  `crates/corvis/src/fuzz_tests.rs`, `bench/auth/`) signs a payload without `iat`, `exp`, `nbf`, `iss`, `aud`, `sub` or
+  `jti` claims that meet their option.
+
+### Keys and validations prepared once (group 3)
+
+- `JwtService::new` parses the module encoding key and decoding key and builds the `Validation` of `verify` behind an
+  `Arc`. The per-call keys keep their place in the order of choice (per-call secret, module secret, per-call private
+  key, module private key) and are parsed for their call. A cached parse error is returned as a clone of the
+  `jsonwebtoken::errors::Error`; "secretOrPrivateKey must have a value" and "secret or public key must be provided" come
+  from the call, as before.
+- `verify_claims` became `decode_claims` (no header check); `JwtService::verify` checks the header right after choosing
+  the key, where `verify_claims` did, so the order of its errors is unchanged.
+- The strategy's `Resolved` lost its `algorithms` field: a static key holds its `Validation`, a provider one
+  `Option<Validation>` per key family (`FamilyValidations`). The `Validation` builder moved to `jwt.rs`
+  (`signature_validation`) and serves both.
+- `JwtKey::decoding_key` now returns a reference into the shared `OnceLock`, so neither the strategy nor a provider's
+  clone copies the parsed key; the static key of the strategy clones it once at startup.
+- Counters: `KEY_PARSES` (`jwt.rs` and `auth/jwt/key.rs`), `HEADER_CHECKS` (`jwt.rs`), `VALIDATION_BUILDS`
+  (`auth/jwt/options.rs`), all `#[cfg(test)]` thread-locals. The strategy's unit tests are in `auth/jwt/tests.rs` and
+  drive `JwtStrategy::authenticate` directly with an `ExecutionContext`.
+
+### Sessions (group 4)
+
+- `State::id` is `Option<String>` and private, with `ensure_id` (draws when missing), `current_id` and `forget_id`;
+  `Session::regenerate`, `destroy` and the logins leave it `None`. `data` and `baseline` are private; `data_mut` takes
+  the baseline on the first write. `Session::remove` and `clear` write only when there is something to remove, and
+  `remove_passport_user` only when there is a user, so a read path never copies the data.
+- The draw counter (`ID_DRAWS`) and a switch that makes draws fail (`FAIL_DRAWS`) are `#[cfg(test)]` thread-locals in
+  `session.rs`; the design's "session unit tests of the generator failure" did not exist, so
+  `a_failed_draw_at_commit_writes_nothing` is the first. The manager's unit tests are in `session/manager_tests.rs`.
+- `tests/auth_hot_path_heap.rs` measures, with a thread-local counting allocator, a request to a session route minus
+  the same request to a route outside the cookie path, minus what the store's own `load` and `touch` allocate (measured
+  inside a wrapping store). Before (the session files of `dev`): 359 395 bytes for a 16 KiB session (16 592 bytes of
+  record). After: 3 287 bytes for 16 KiB and for 64 KiB alike. The bound is 4 KiB, as the spec says. The store's
+  `touch` is taken out with its `load`: what it allocates (the small `cookie`/`__corvis` fragment) is the store's work.
+- Record-sized buffers (allocations of at least the record's length) of one `update` request: before 4, of which 2 were
+  the middleware's measuring buffer; after 2, both the store's (its text and the `Arc<str>` copy of it). The test
+  asserts none outside the store. Both assertions fail on the session files of `dev`.
+- `one_write_purges_a_bounded_number_of_expired_records` covers the spec scenario (count bound: 9 936 of 10 000 expired
+  records left) and a byte-bound case that reaches the room loop (a record 150 times the size of the expired ones): on
+  the store of `dev` that write dropped all 2 000 expired records, now at most the ~152 it needs plus two batches. The
+  count-bound scenario of the spec cannot reach the loop: after the first batch the store is always below
+  `max_sessions`, so it passes on the old code too and is kept as written.
+
+### Consolidation (group 5) and fixes (group 6)
+
+- `WarnLimiter::line` builds the message only when it is written. The hasher's own limiter is gone; its keys were
+  `&'static str`, the shared one takes `&str` (its five reasons stay far under the cap of 64).
+- `auth::outcome` holds `service_unavailable` (compiled with any of `jwt`, `auth-local`, `auth-api-key`,
+  `auth-oauth2`) and `with_deadline` / `user_outcome` (with any of the first three, the only users), so no feature
+  combination leaves dead code. The JWT key provider's deadline keeps its own `timeout` (it maps to `Denied`, not to an
+  outcome) and builds its `503` with `service_unavailable`.
+- `every_framework_503_has_the_same_bytes` (`tests/auth_local.rs`) compares the text of the busy hasher's and the slow
+  validator's `503` on one route; the OAuth2 strategy at its limit is compared with the same text in
+  `too_many_requests_in_flight_answer_503_without_contacting_the_provider` (`tests/auth_oauth2.rs`), where the mock
+  provider that holds the slot already lives. The JWT, local and API key deadlines already used this body
+  (`tests/auth_callback_timeouts.rs`, `tests/auth_api_key_options.rs`).
+- `untrusted_json.rs` is compiled with `jwt` or `auth-oauth2`; `parse_object` only with `auth-oauth2`, its only user.
+- `auth::auth_header` parses the scheme and finds where the token starts; the token is read by `Credentials::token`,
+  with or without a length limit, so the API key source still refuses an over-long key while scanning it. One edge of
+  the API key source changes: a value whose leading space and scheme reach exactly the end of the `max + 128` window
+  with `bearer` and continue with a non-space byte (the scheme cut by the window) was read as a key starting there, with
+  no separator; it is now no key, which is what `passport-jwt`'s expression gives (no separator, no second group). The
+  scheme length cap of 17 bytes of the old scanner is gone: the window bounds the scan, and a scheme longer than six
+  bytes was never `bearer`. The `jwt.json` and `api_key.json` replays and the extractor tests pass unchanged.
+- `has_cookie_prefix` is compiled with `jwt` or `auth-session`.
+- `derivations_are_unchanged` holds the outputs of `derive_verifier`, `session_binding` (a session loaded under a fixed
+  identifier) and `user_binding` (keyed and plain) recorded from the code before the change; they match after it.
+- `CookieKeys` keeps one keyed `Hmac<Sha256>` per secret (no copy of the secret otherwise); `mac` is compiled with
+  `auth-oauth2`, its only user. `HMAC_RUNS` still counts one run per secret.
+- `StateCookie::read` decodes at most two values of the name, each up to three times `MAX_SIGNED_BYTES` raw, as the
+  session does; `a_state_cookie_sent_twice_is_no_state` (`tests/auth_oauth2_review.rs`) plants the second cookie
+  before and after the real one and sends the real one twice.
+- The busy-hasher test holds the slot with `hold_slot` (`HeldSlot` frees it on drop) and shares the slow hasher with
+  `every_framework_503_has_the_same_bytes`, so the two take turns through a `tokio::sync::Mutex`; 20 runs in a row
+  passed.
+- `Request::typed_user` reads `AuthUserSlot` only. Its integration tests are in `tests/auth_session_http.rs`, where a
+  session user exists for "Route without an AuthGuard"; "A guard reads the typed user" uses the harness's `header`
+  strategy instead of `jwt` (the slot is the same whatever strategy fills it), and "Foreign extension" a guard that
+  inserts an `Account`, with a unit test of the same rule in `http/request.rs`.
+- The API key strategy's mark moved to `Resolved::mark_query_names`, skipped for a name the application's redaction
+  holds (`Request::app_redacts`, compiled with `auth-api-key`).
+- Poisoned locks: besides `insert`, `get` and `remove`, `RequestRejected::is_marked` reads a poisoned lock too.
+  Otherwise the mark the router writes while a panic unwinds (now possible through the tolerant `insert`) would be
+  invisible to the session middleware, which keeps a guard login unless it sees the mark or an `Err`. With the old
+  `insert`, `a_handler_that_panics_with_a_poisoned_lock_is_a_500` aborts the test process (exit 0xc0000409, a panic
+  while panicking); now it is a 500 with no login.
+
+### Nice to have (group 7)
+
+- `GuardKind`, `NoteLevel` and `Phase` as designed; `OAuth2Token` compares with `ct_eq`.
+- `AuthGuard::names` returns `&[String]` (both kinds of list borrowed) through `Authenticator::default_names`; the
+  public `default_strategies` keeps returning a `Vec`.
+- `OAuth2Client` keeps a `WarnLimiter`; `a_failed_refresh_logs_one_line_a_minute` tests the line it writes.
+
+### Definition of done (group 11)
+
+- After the last code change: `cargo test --workspace --no-fail-fast` 2084 passed, 0 failed, 98 ignored (182 test
+  binaries). Per feature: `compression` 1198, `auth-local` 1223, `auth-api-key` 1218, `auth-oauth2` 1450 passed with no
+  failure; `auth-session` 1306 passed with one failure, `transport_security::incomplete_body_gets_408` (its temporary
+  upload folder already existed, `AlreadyExists` from `create_dir_all`), and `socket-io` 1616 passed with one failure,
+  `socket_io_rooms_security::a_broadcast_racing_a_disconnect_never_panics_and_sends_nothing_after_it`; neither file is
+  touched by this change, and both binaries passed in full when run again on their own (31 and 7 tests). The CI's
+  all-auth-features run (with `auth_hot_path_heap` and `fuzz_auth` added) 64 passed. The auth fuzz steps of `ci.yml`
+  with `PROPTEST_CASES=20000`: 16, 17, 18 and 5 passed.
+- `cargo build --workspace --all-targets` and `cargo clippy --workspace --all-targets -- -D warnings` clean; the CI
+  per-feature clippy loop clean for every feature; `cargo check -p corvis --tests --features <f>` clean for
+  `compression`, `auth-local`, `auth-api-key`, `auth-session`, `auth-oauth2` and `socket-io`.
+- `cargo test -p auth-app` and `node scripts/smoke-examples.mjs auth-app` (17 of 17) pass; `cargo deny check`,
+  `node scripts/check-naming.mjs`, `npm run docs:check` and `openspec validate --strict` pass.
+- The first full run found the authorization page's sample of the example's `RolesGuard` still reading `user_as`
+  (`examples/auth-app/tests/docs_samples.rs`); the sample and its sentence now read `typed_user`, in both languages.
+
+### Example, docs and naming (groups 8 and 9)
+
+- `roles_guard_without_an_auth_guard` (`tests/auth_invariants.rs`) keeps its own `RolesGuard` that reads
+  `user_as`: it pins the invariant for a guard written that way, and passes unchanged. The example's guard reads
+  `typed_user`.
+- `cargo doc -p corvis --all-features --no-deps` prints four warnings, all in files this change does not touch
+  (`z/regex.rs`, `posture.rs`, `z/locales.rs`); none comes from the items added or changed here.
+- The docs were written with the `docs-writer` agent and reviewed: the migration page has the `sign` rules, the new
+  options and a divergence row for `mutatePayload` (with the marker `examples/auth-app/tests/docs_divergences.rs`
+  checks); the passport recipe has the session user as a typed user, `Request::typed_user`, the repeated state cookie,
+  the `__Host-` prefix in any case, `extract_bearer_token`'s own rules and the OAuth2 `503` body; the session page has
+  the `touch` row; the hashing page has the busy hasher's body. The log-line suffix and the tolerant locks (behaviors 7
+  and 8 of the list above) are not documented: log lines are not an API, and a panic that poisons the extensions is not
+  something an application does on purpose.
+
+## Security review
+
+One round (2026-11-11), with proofs of concept against `wip-186` at 28282da. Everything held (the JWT header checked
+once and before any key is chosen, the key provider across families and rotation, sessions with the lazy id, `touch`
+with metadata only, the size and depth limits, the batched purge, the single `Bearer` parser compared with the two it
+replaced over 248,203 header sets, `CookieKeys::mac`, the state cookie sent twice, the single 503, poisoned locks, the
+earlier proofs of concept of the authentication reviews) except one finding, which this change itself introduced:
+
+- **F1 (medium), fixed.** A string payload is signed as its raw bytes, as the original does (recorded case 27). A text
+  that is itself a JSON object therefore became the claims of the token: an application that signs a string a client
+  chose (an e-mail address, a link) with the key that verifies its access tokens, in a module without `expires_in`,
+  `issuer` or `audience`, handed that client a token for any subject. On `dev` the string was serialized with its
+  quotes and verification refused it. Fix: `sign` refuses a string payload whose text parses as a JSON object or
+  array (`jwt.rs`, `sign_at`), a deliberate difference from the original, said in the rustdoc and in the migration
+  page in both languages. Any other text is signed as before and verifies as no claims. Test:
+  `a_string_payload_that_is_json_claims_is_not_signed`.
+
+Seen and kept as parity: a payload `iat` in the future extends `exp` (whoever controls the payload controls `sub`
+already).

@@ -9,10 +9,15 @@ use crate::common::param::FromContext;
 use crate::http::{HttpException, UnauthorizedException};
 
 /// The authenticated user of the request as a handler parameter, the equivalent of a `@User()` parameter decorator
-/// over `req.user`. It reads the typed value an [`AuthGuard`](super::AuthGuard) stored (and nothing else: a request extension of the same
-/// type put there by another guard is not a user, and `Request::set_user` drops it), and answers the
-/// `401 Unauthorized` of a failed authentication when there is none (no guard on the route, or an optional guard
-/// that found no credentials).
+/// over `req.user`. It reads the typed user's own slot, which holds what an [`AuthGuard`](super::AuthGuard) stored, or
+/// what the session middleware restored from the session (or `Authenticator::log_in` stored), and nothing else: a
+/// request extension of the same type put there by another guard is not a user, and `Request::set_user` drops it. It
+/// answers the `401 Unauthorized` of a failed authentication when there is none (an optional guard that found no
+/// credentials, or no user at all).
+///
+/// On a route without an `AuthGuard`, `User<T>` is the session's user when the session restored one, as
+/// `Request::user()` is: nothing about the request itself checked it. Put an `AuthGuard` on every route that needs an
+/// authenticated user. Guards read the same slot with [`Request::typed_user`](crate::http::Request::typed_user).
 ///
 /// ```ignore
 /// #[get("me")]

@@ -295,7 +295,7 @@ Implement `SessionStore`, an async trait:
 | `load(id) -> Result<Option<Value>, _>` | the record, or `None` |
 | `create(id, &record, ttl)` | must fail with `SessionStoreError::Exists`, leaving the record, when the identifier exists |
 | `update(id, &record, ttl) -> Result<bool, _>` | `Ok(false)` and nothing written when the record is missing |
-| `touch(id, &record, ttl) -> Result<bool, _>` | **required, no default.** It must renew the expiry and the `cookie` and `__corvis` keys only, never the data: the copy in `record` was read when the request began and may be stale, so an unmodified request must not overwrite what another request saved. `Ok(false)` and nothing written when the record is missing |
+| `touch(id, &record, ttl) -> Result<bool, _>` | **required, no default.** It must renew the expiry and the `cookie` and `__corvis` keys only, never the data. The `record` it receives holds only `cookie` and `__corvis`, none of the session data, so a store that read the data in `touch` (the contract already forbade it) finds none. The data of the request would be stale anyway, it was read when the request began, so an unmodified request must not overwrite what another request saved. `Ok(false)` and nothing written when the record is missing |
 | `destroy(id) -> Result<bool, _>` | `Ok(true)` when a record was removed, `Ok(false)` when it was already gone (not an error). The middleware uses it to learn that another request ended the session |
 | `in_process() -> bool` | `false` by default; `true` makes startup log the memory warning |
 | `validate() -> Result<(), String>` | checked at startup |

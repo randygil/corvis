@@ -724,12 +724,14 @@ pub fn is_safe_relative_path(value: &str) -> bool {
     bytes.iter().all(|&b| (0x20..0x80).contains(&b) && b != 0x7f && b != b'\\')
 }
 
-/// Whether a cookie name is a token (RFC 6265) of at most 128 bytes.
-pub(crate) fn valid_cookie_name(name: &str) -> bool {
+/// Whether a cookie name is a token (RFC 6265) of at most 128 bytes. Stricter on purpose than
+/// [`crate::http::res::valid_cookie_name`], which is what `res.cookie` accepts (the parity of the `cookie` package): this
+/// one checks a name the application configures for the state cookie, where the RFC's token rule and a length bound
+/// cost nothing.
+pub(crate) fn is_token_cookie_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 128 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
-/// The name of the state cookie for the strategy `strategy`, or the problem with the configured one.
 /// The names the presets give their profiles: the namespaces of the ids of google.com and github.com themselves.
 pub(crate) const PRESET_NAMES: [&str; 2] = ["google", "github"];
 
@@ -745,13 +747,14 @@ pub(crate) fn provider_namespace(preset: Option<&'static str>, strategy: &str, i
     }
 }
 
+/// The name of the state cookie for the strategy `strategy`, or the problem with the configured one.
 pub(crate) fn state_cookie_name(options: &OAuth2Options, strategy: &str) -> Result<String, String> {
     let name = match &options.cookie_name {
         Some(name) => name.clone(),
         None if options.cookie_secure => format!("__Host-oauth2.{strategy}"),
         None => format!("oauth2.{strategy}"),
     };
-    if !valid_cookie_name(&name) {
+    if !is_token_cookie_name(&name) {
         return Err(if options.cookie_name.is_some() {
             "state_cookie_name: is not a valid cookie name (RFC 6265 token, at most 128 bytes)".into()
         } else {
@@ -759,7 +762,7 @@ pub(crate) fn state_cookie_name(options: &OAuth2Options, strategy: &str) -> Resu
         });
     }
     // Browsers match these prefixes without regard to case.
-    let prefixed = |prefix: &str| name.len() >= prefix.len() && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes());
+    let prefixed = |prefix: &str| crate::http::res::has_cookie_prefix(&name, prefix);
     if !options.cookie_secure && (prefixed("__Host-") || prefixed("__Secure-")) {
         return Err("state_cookie_name: a name with the __Host- or __Secure- prefix needs a Secure cookie".into());
     }

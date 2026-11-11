@@ -8,16 +8,19 @@
 //! let claims: Claims = self.jwt.verify(&token)?;
 //! ```
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::future::Future;
+use std::sync::Arc;
 
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Validation};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::di::{DynamicModule, Module, ModuleDefinition, Provider, ResolveCtx, Token};
 use crate::http::{HttpException, UnauthorizedException};
+use crate::untrusted_json::PlainJson;
 
 pub use jsonwebtoken::Algorithm as JwtAlgorithm;
 
@@ -103,14 +106,23 @@ impl std::fmt::Debug for JwtModuleOptions {
     }
 }
 
-/// Per-call sign options (`jwtService.sign(payload, { expiresIn, secret, privateKey })`). `Debug` shows whether a
-/// secret or key is set, never its value.
+/// Per-call sign options (`jwtService.sign(payload, { expiresIn, subject, jwtid, notBefore, secret, privateKey })`).
+/// Build it with `..Default::default()`. `Debug` shows whether a secret or key is set, never its value.
 #[derive(Clone, Default)]
 pub struct JwtSignOptions {
+    /// `expiresIn`: overrides the module's `expires_in`. `exp` is counted from the payload's `iat` when it has one.
     pub expires_in: Option<String>,
+    /// `secret`: an HMAC secret for this call, taken before the module's keys.
     pub secret: Option<String>,
+    /// `subject`: the `sub` claim. A payload that already has `sub` is an error.
     pub subject: Option<String>,
+    /// `privateKey`: a PEM key for this call (`RS*`/`PS*`/`ES*`/`EdDSA`).
     pub private_key: Option<String>,
+    /// `notBefore`: a timespan with the grammar of `expires_in`; `nbf` is counted from the payload's `iat` when it has
+    /// one, from the clock otherwise. A payload that already has `nbf` is an error.
+    pub not_before: Option<String>,
+    /// `jwtid`: the `jti` claim. A payload that already has `jti` is an error.
+    pub jwt_id: Option<String>,
 }
 
 impl std::fmt::Debug for JwtSignOptions {
@@ -121,6 +133,8 @@ impl std::fmt::Debug for JwtSignOptions {
             .field("secret", &set(self.secret.is_some()))
             .field("subject", &self.subject)
             .field("private_key", &set(self.private_key.is_some()))
+            .field("not_before", &self.not_before)
+            .field("jwt_id", &self.jwt_id)
             .finish()
     }
 }
@@ -185,8 +199,26 @@ pub fn parse_duration_secs(s: &str) -> Option<i64> {
 }
 
 const EXPIRES_IN_ERROR: &str = "\"expiresIn\" should be a number of seconds or string representing a timespan eg: \"1d\", \"20h\", 60";
+const NOT_BEFORE_ERROR: &str = "\"notBefore\" should be a number of seconds or string representing a timespan eg: \"1d\", \"20h\", 60";
 
-fn encoding_key(alg: Algorithm, key: &str) -> crate::Result<EncodingKey> {
+/// node-jsonwebtoken's `timespan(value, iat)`: `floor(iat + milliseconds / 1000)`, as an integer claim. `None` when
+/// `value` is not a timespan or the result is beyond `Number.MAX_SAFE_INTEGER`.
+fn timespan(value: &str, timestamp: f64) -> Option<Value> {
+    let at = (timestamp + parse_timespan_ms(value)? / 1000.0).floor();
+    (at.abs() <= MAX_SAFE_INTEGER).then(|| Value::from(at as i64))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many keys `JwtService` parsed on this thread, so a test can show that a call parsed none.
+    static KEY_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many token headers were checked on this thread.
+    pub(crate) static HEADER_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn encoding_key(alg: Algorithm, key: &str) -> Result<EncodingKey, jsonwebtoken::errors::Error> {
+    #[cfg(test)]
+    KEY_PARSES.with(|c| c.set(c.get() + 1));
     let pem = key.as_bytes();
     Ok(match alg {
         Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => EncodingKey::from_secret(pem),
@@ -198,7 +230,9 @@ fn encoding_key(alg: Algorithm, key: &str) -> crate::Result<EncodingKey> {
     })
 }
 
-fn decoding_key(alg: Algorithm, key: &str) -> crate::Result<DecodingKey> {
+fn decoding_key(alg: Algorithm, key: &str) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
+    #[cfg(test)]
+    KEY_PARSES.with(|c| c.set(c.get() + 1));
     let pem = key.as_bytes();
     Ok(match alg {
         Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => DecodingKey::from_secret(pem),
@@ -208,6 +242,25 @@ fn decoding_key(alg: Algorithm, key: &str) -> crate::Result<DecodingKey> {
         Algorithm::ES256 | Algorithm::ES384 => DecodingKey::from_ec_pem(pem)?,
         Algorithm::EdDSA => DecodingKey::from_ed_pem(pem)?,
     })
+}
+
+/// The first non-empty key of `candidates`.
+fn first_key<'a>(candidates: impl IntoIterator<Item = Option<&'a str>>) -> Option<&'a str> {
+    candidates.into_iter().flatten().find(|k| !k.is_empty())
+}
+
+/// `jsonwebtoken`'s `Validation` for `algorithms`: the crate checks only the signature and the algorithm (no required
+/// claims, no leeway); the claims are checked by the caller with node-jsonwebtoken's rules (the crate accepts a token
+/// whose `iss` or `aud` is missing, has another type or, for `iss`, is a list that merely intersects).
+pub(crate) fn signature_validation(algorithms: Vec<Algorithm>) -> Validation {
+    let mut validation = Validation::new(algorithms[0]);
+    validation.algorithms = algorithms;
+    validation.required_spec_claims = HashSet::new();
+    validation.leeway = 0;
+    validation.validate_exp = false;
+    validation.validate_nbf = false;
+    validation.validate_aud = false;
+    validation
 }
 
 /// How the time claims of a verified token are checked (see [`check_time_claims`]).
@@ -221,7 +274,7 @@ pub(crate) struct TimeRules {
     pub require_exp: bool,
 }
 
-/// Why [`verify_claims`] refused a token.
+/// Why [`decode_claims`] refused a token.
 #[derive(Debug)]
 pub(crate) enum VerifyError {
     /// The header, the algorithm, the key or the signature did not pass.
@@ -270,13 +323,9 @@ pub(crate) fn check_time_claims(claims: &Value, rules: &TimeRules, now: i64) -> 
 }
 
 /// Decodes `token` with `validation` (algorithms, and `iss`/`aud` when set on it) and checks its time claims against
-/// the clock. Shared by [`JwtService::verify`] and the JWT strategy.
-pub(crate) fn verify_claims(token: &str, key: &DecodingKey, validation: &Validation, rules: &TimeRules) -> Result<Value, VerifyError> {
-    match check_header(token) {
-        Some(HeaderProblem::Crit) => return Err(VerifyError::Claim("critical header parameters are not supported")),
-        Some(HeaderProblem::Malformed) => return Err(VerifyError::Claim("jwt malformed")),
-        None => {}
-    }
+/// the clock. Shared by [`JwtService::verify`] and the JWT strategy. The caller checks the header first
+/// ([`check_header`]): the decoder skips unknown header members without validating them.
+pub(crate) fn decode_claims(token: &str, key: &DecodingKey, validation: &Validation, rules: &TimeRules) -> Result<Value, VerifyError> {
     let claims = jsonwebtoken::decode::<PlainJson>(token, key, validation).map_err(VerifyError::Decode)?.claims.0;
     check_time_claims(&claims, rules, chrono::Utc::now().timestamp())?;
     Ok(claims)
@@ -315,67 +364,6 @@ pub(crate) enum HeaderProblem {
     Malformed,
     /// The header has a `crit` member (RFC 7515 section 4.1.11); Corvis supports no critical extensions.
     Crit,
-}
-
-/// A JSON value built by the text parser alone. `serde_json::Value`'s own deserializer is not used on bytes an
-/// attacker controls: with the `raw_value` feature (which another crate of the build may enable) it treats the key
-/// `$serde_json::private::RawValue` specially and parses the inner string again with a fresh recursion budget, so
-/// nested keys could exhaust the stack. This visitor has no special keys and no re-entrant parsing: the parser's
-/// recursion limit of 128 is the only depth budget, whatever features are enabled.
-pub(crate) struct PlainJson(pub(crate) Value);
-
-impl<'de> serde::Deserialize<'de> for PlainJson {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::{MapAccess, SeqAccess, Visitor};
-        struct Plain;
-        impl<'de> Visitor<'de> for Plain {
-            type Value = Value;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("any JSON value")
-            }
-            fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
-                Ok(Value::Bool(v))
-            }
-            fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
-                Ok(Value::from(v))
-            }
-            fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
-                Ok(Value::from(v))
-            }
-            fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
-                Ok(Value::from(v))
-            }
-            fn visit_str<E>(self, v: &str) -> Result<Value, E> {
-                Ok(Value::String(v.to_owned()))
-            }
-            fn visit_string<E>(self, v: String) -> Result<Value, E> {
-                Ok(Value::String(v))
-            }
-            fn visit_unit<E>(self) -> Result<Value, E> {
-                Ok(Value::Null)
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
-                let mut items = Vec::new();
-                while let Some(PlainJson(item)) = seq.next_element()? {
-                    items.push(item);
-                }
-                Ok(Value::Array(items))
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
-                let mut out = serde_json::Map::new();
-                while let Some((key, PlainJson(value))) = map.next_entry::<String, PlainJson>()? {
-                    out.insert(key, value);
-                }
-                Ok(Value::Object(out))
-            }
-        }
-        deserializer.deserialize_any(Plain).map(PlainJson)
-    }
-}
-
-/// Parses untrusted JSON bytes with [`PlainJson`].
-pub(crate) fn parse_untrusted(bytes: &[u8]) -> Option<Value> {
-    serde_json::from_slice::<PlainJson>(bytes).ok().map(|p| p.0)
 }
 
 /// What the header check needs to know about a document, found without keeping any of it.
@@ -497,6 +485,8 @@ impl<'de> serde::Deserialize<'de> for HeaderShape {
 /// carry a `crit` member unseen. Only the exact member name `crit` counts. The header is validated while it is read
 /// and nothing of it is kept, so the memory used does not grow with the document.
 pub(crate) fn check_header(token: &str) -> Option<HeaderProblem> {
+    #[cfg(test)]
+    HEADER_CHECKS.with(|c| c.set(c.get() + 1));
     use base64::Engine as _;
     let header = token.split('.').next().unwrap_or("");
     let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(header) else { return Some(HeaderProblem::Malformed) };
@@ -506,62 +496,215 @@ pub(crate) fn check_header(token: &str) -> Option<HeaderProblem> {
     }
 }
 
-/// Signs and verifies JSON Web Tokens.
+/// A key of the module, parsed when the service is created: `None` when the options set none, the parse error
+/// otherwise (returned by each call that needs the key, as the original fails per call).
+type PreparedKey<K> = Option<Result<K, jsonwebtoken::errors::Error>>;
+
+/// What `JwtService::new` prepares once.
+struct Prepared {
+    /// The module secret when it is not empty, else the module private key.
+    encoding: PreparedKey<EncodingKey>,
+    /// The module secret when it is not empty, else the module public key.
+    decoding: PreparedKey<DecodingKey>,
+    /// The `Validation` of `verify`: the configured algorithm, no required claims, no leeway, no `exp`/`nbf`/`aud`.
+    validation: Validation,
+}
+
+/// Signs and verifies JSON Web Tokens. The module keys are parsed when it is created (a key that does not parse makes
+/// each `sign` or `verify` fail, the application still starts); cloning it shares them.
 #[derive(Clone)]
 pub struct JwtService {
     options: JwtModuleOptions,
+    prepared: Arc<Prepared>,
 }
 
 impl JwtService {
     pub fn new(options: JwtModuleOptions) -> Self {
-        JwtService { options }
+        let alg = options.algorithm;
+        let encoding = first_key([Some(options.secret.as_str()), options.private_key.as_deref()]).map(|key| encoding_key(alg, key));
+        let decoding = first_key([Some(options.secret.as_str()), options.public_key.as_deref()]).map(|key| decoding_key(alg, key));
+        let prepared = Prepared { encoding, decoding, validation: signature_validation(vec![alg]) };
+        JwtService { options, prepared: Arc::new(prepared) }
     }
 
-    /// `jwtService.sign(payload)`. Adds `iat` (and `exp` when `expires_in` is configured).
+    /// The key `sign` uses. The first non-empty key wins: per-call secret, module secret, per-call private key, module
+    /// private key. A per-call key is parsed for this call; a module key was parsed by `new`.
+    fn signing_key(&self, opts: &JwtSignOptions) -> crate::Result<Cow<'_, EncodingKey>> {
+        let alg = self.options.algorithm;
+        let module_key = || match &self.prepared.encoding {
+            Some(Ok(key)) => Ok(Cow::Borrowed(key)),
+            Some(Err(e)) => Err(e.clone().into()),
+            None => Err(anyhow::anyhow!("secretOrPrivateKey must have a value")),
+        };
+        if let Some(secret) = first_key([opts.secret.as_deref()]) {
+            return Ok(Cow::Owned(encoding_key(alg, secret)?));
+        }
+        if !self.options.secret.is_empty() {
+            return module_key();
+        }
+        if let Some(private_key) = first_key([opts.private_key.as_deref()]) {
+            return Ok(Cow::Owned(encoding_key(alg, private_key)?));
+        }
+        module_key()
+    }
+
+    /// `jwtService.sign(payload)`: [`sign_with`](Self::sign_with) without per-call options.
     pub fn sign(&self, payload: &impl Serialize) -> crate::Result<String> {
         self.sign_with(payload, JwtSignOptions::default())
     }
 
-    /// Fails like node-jsonwebtoken when the key is empty (`secretOrPrivateKey must have a
-    /// value`) or `expires_in` is not a valid timespan.
+    /// `jwtService.sign(payload, options)`, with the rules of the original (`jsonwebtoken` 9 under the JWT module),
+    /// verified against a recording of it:
+    ///
+    /// - an object payload's `iat`, `exp` and `nbf` must be numbers (`"iat" should be a number of seconds`);
+    /// - `iat` is the payload's when it is a number other than 0, the clock otherwise; `nbf` (`not_before`) and `exp`
+    ///   (`expires_in`, per call or of the module) are counted from it;
+    /// - a payload claim together with its option is an error, never overwritten: `exp` with `expires_in`, `nbf` with
+    ///   `not_before`, `aud` with the module `audience`, `iss` with the module `issuer`, `sub` with `subject`, `jti`
+    ///   with `jwt_id` (`Bad "options.subject" option. The payload already has an "sub" property.`);
+    /// - the claims are added after the payload's own keys in the order `iat`, `nbf`, `exp`, `aud`, `iss`, `sub`, `jti`
+    ///   (a payload `iat` keeps its place);
+    /// - a string payload is signed as it is, with a header without `typ`, and is refused when any sign option is set;
+    ///   a number or a boolean is signed as its JSON text, without `typ`; an array or `null` is refused.
+    ///
+    /// One deliberate difference: a string payload whose text is a JSON object or array is refused. Signed as it is,
+    /// that text would be the claims of the token, so a caller that signs a string a client chose would hand the
+    /// client a token for any subject.
+    ///
+    /// It also fails when no key is set (`secretOrPrivateKey must have a value`), the key does not parse, or
+    /// `expires_in` / `not_before` is not a valid timespan. A bare number is a number of seconds.
     pub fn sign_with(&self, payload: &impl Serialize, opts: JwtSignOptions) -> crate::Result<String> {
+        self.sign_at(payload, opts, chrono::Utc::now().timestamp())
+    }
+
+    /// [`sign_with`](Self::sign_with) at the clock `now` (seconds), so a test can replay recorded tokens.
+    fn sign_at(&self, payload: &impl Serialize, opts: JwtSignOptions, now: i64) -> crate::Result<String> {
         let alg = self.options.algorithm;
-        // The first non-empty key wins: per-call secret, module secret, per-call private key, module private key.
-        let key =
-            [opts.secret.as_deref(), Some(self.options.secret.as_str()), opts.private_key.as_deref(), self.options.private_key.as_deref()]
-                .into_iter()
-                .flatten()
-                .find(|k| !k.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("secretOrPrivateKey must have a value"))?
-                .to_string();
-        let mut claims = serde_json::to_value(payload)?;
-        if let Value::Object(map) = &mut claims {
-            let now = chrono::Utc::now().timestamp();
-            map.entry("iat").or_insert(Value::from(now));
-            if let Some(expires_in) = opts.expires_in.as_deref().or(self.options.expires_in.as_deref()) {
-                let secs = parse_duration_secs(expires_in).ok_or_else(|| anyhow::anyhow!(EXPIRES_IN_ERROR))?;
-                let exp = now.checked_add(secs).filter(|e| (*e as f64).abs() <= MAX_SAFE_INTEGER);
-                let exp = exp.ok_or_else(|| anyhow::anyhow!(EXPIRES_IN_ERROR))?;
-                map.insert("exp".into(), Value::from(exp));
-            }
-            if let Some(iss) = &self.options.issuer {
-                map.entry("iss").or_insert(Value::from(iss.clone()));
-            }
-            if let Some(aud) = &self.options.audience {
-                map.entry("aud").or_insert(Value::from(aud.clone()));
-            }
-            if let Some(sub) = opts.subject {
-                map.insert("sub".into(), Value::from(sub));
+        let claims = serde_json::to_value(payload)?;
+        // A string payload is signed as its raw bytes, so a text that is itself a JSON object or array would become
+        // the claims of the token: whoever chose the text would choose `sub` and `exp`. The original signs it; here
+        // it is refused (a deliberate difference). Any other text verifies as no claims at all.
+        if let Value::String(text) = &claims
+            && matches!(crate::untrusted_json::parse(text.as_bytes()), Some(Value::Object(_) | Value::Array(_)))
+        {
+            anyhow::bail!("a string payload that is a JSON object or array is not signed: pass the object itself");
+        }
+        // The JWT module refuses a string payload with sign options before anything else.
+        if claims.is_string() {
+            let names = self.sign_option_names(&opts);
+            if !names.is_empty() {
+                anyhow::bail!("Payload as string is not allowed with the following sign options: {}", names.join(", "));
             }
         }
-        // node-jsonwebtoken (jws) writes the header as `{"alg":..,"typ":"JWT"}`, in that order;
-        // the `jsonwebtoken` crate serializes `typ` first, so the header is built by hand.
+        // `jsonwebtoken` checks the key before the payload.
+        let encoding = self.signing_key(&opts)?;
+        let (object, body) = match claims {
+            Value::Object(map) => (true, serde_json::to_vec(&Value::Object(self.claims_of(map, &opts, now)?))?),
+            Value::String(text) => (false, text.into_bytes()),
+            Value::Array(_) | Value::Null => anyhow::bail!("Expected \"payload\" to be a plain object."),
+            other => {
+                let set = self.object_option_names(&opts);
+                if !set.is_empty() {
+                    let kind = if other.is_boolean() { "boolean" } else { "number" };
+                    anyhow::bail!("invalid {} option for {kind} payload", set.join(","));
+                }
+                (false, serde_json::to_vec(&other)?)
+            }
+        };
+        // node-jsonwebtoken (jws) writes the header as `{"alg":..,"typ":"JWT"}`, in that order, and without `typ` for a
+        // payload that is not an object; the `jsonwebtoken` crate serializes `typ` first, so the header is built by hand.
         use base64::Engine as _;
         let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-        let header = format!("{{\"alg\":\"{alg:?}\",\"typ\":\"JWT\"}}");
-        let message = format!("{}.{}", b64(header.as_bytes()), b64(&serde_json::to_vec(&claims)?));
-        let signature = jsonwebtoken::crypto::sign(message.as_bytes(), &encoding_key(alg, &key)?, alg)?;
+        let header = if object { format!("{{\"alg\":\"{alg:?}\",\"typ\":\"JWT\"}}") } else { format!("{{\"alg\":\"{alg:?}\"}}") };
+        let message = format!("{}.{}", b64(header.as_bytes()), b64(&body));
+        let signature = jsonwebtoken::crypto::sign(message.as_bytes(), &encoding, alg)?;
         Ok(format!("{message}.{signature}"))
+    }
+
+    /// The claims of an object payload, by the rules of [`sign_with`](Self::sign_with), in the original's order of
+    /// checks.
+    fn claims_of(&self, mut map: Map<String, Value>, opts: &JwtSignOptions, now: i64) -> crate::Result<Map<String, Value>> {
+        for (key, value) in &map {
+            if matches!(key.as_str(), "iat" | "exp" | "nbf") && !value.is_number() {
+                anyhow::bail!("\"{key}\" should be a number of seconds");
+            }
+        }
+        let expires_in = opts.expires_in.as_deref().or(self.options.expires_in.as_deref());
+        if map.contains_key("exp") && expires_in.is_some() {
+            anyhow::bail!("Bad \"options.expiresIn\" option the payload already has an \"exp\" property.");
+        }
+        if map.contains_key("nbf") && opts.not_before.is_some() {
+            anyhow::bail!("Bad \"options.notBefore\" option the payload already has an \"nbf\" property.");
+        }
+        // `payload.iat || now`: an `iat` of 0 is replaced by the clock, in place.
+        let timestamp = match map.get("iat").and_then(Value::as_f64) {
+            Some(iat) if iat != 0.0 => iat,
+            _ => {
+                map.insert("iat".into(), Value::from(now));
+                now as f64
+            }
+        };
+        if let Some(not_before) = &opts.not_before {
+            map.insert("nbf".into(), timespan(not_before, timestamp).ok_or_else(|| anyhow::anyhow!(NOT_BEFORE_ERROR))?);
+        }
+        if let Some(expires_in) = expires_in {
+            map.insert("exp".into(), timespan(expires_in, timestamp).ok_or_else(|| anyhow::anyhow!(EXPIRES_IN_ERROR))?);
+        }
+        let added = [
+            ("audience", "aud", self.options.audience.as_ref()),
+            ("issuer", "iss", self.options.issuer.as_ref()),
+            ("subject", "sub", opts.subject.as_ref()),
+            ("jwtid", "jti", opts.jwt_id.as_ref()),
+        ];
+        for (option, claim, value) in added {
+            let Some(value) = value else { continue };
+            if map.contains_key(claim) {
+                anyhow::bail!("Bad \"options.{option}\" option. The payload already has an \"{claim}\" property.");
+            }
+            map.insert(claim.into(), Value::String(value.clone()));
+        }
+        Ok(map)
+    }
+
+    /// The names of the original's sign options this call has, in the order the JWT module lists them: the module's
+    /// (`algorithm` when it is not the default HS256), then the call's.
+    fn sign_option_names(&self, opts: &JwtSignOptions) -> Vec<&'static str> {
+        let o = &self.options;
+        let mut names = Vec::new();
+        if o.algorithm != Algorithm::HS256 {
+            names.push("algorithm");
+        }
+        if o.expires_in.is_some() || opts.expires_in.is_some() {
+            names.push("expiresIn");
+        }
+        for (name, set) in [("issuer", o.issuer.is_some()), ("audience", o.audience.is_some())] {
+            if set {
+                names.push(name);
+            }
+        }
+        for (name, set) in [("subject", opts.subject.is_some()), ("jwtid", opts.jwt_id.is_some()), ("notBefore", opts.not_before.is_some())]
+        {
+            if set {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// The options `jsonwebtoken` accepts only with an object payload, in its order.
+    fn object_option_names(&self, opts: &JwtSignOptions) -> Vec<&'static str> {
+        let o = &self.options;
+        [
+            ("expiresIn", o.expires_in.is_some() || opts.expires_in.is_some()),
+            ("notBefore", opts.not_before.is_some()),
+            ("audience", o.audience.is_some()),
+            ("issuer", o.issuer.is_some()),
+            ("subject", opts.subject.is_some()),
+            ("jwtid", opts.jwt_id.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, set)| set.then_some(name))
+        .collect()
     }
 
     /// `await jwtService.signAsync(payload)`.
@@ -574,23 +717,19 @@ impl JwtService {
     /// expired` once `now >= exp`), `iss`/`aud` when configured, and that `exp`, `nbf` and
     /// `iat` are numbers when present.
     pub fn verify<T: DeserializeOwned>(&self, token: &str) -> crate::Result<T> {
-        let alg = self.options.algorithm;
-        // The first non-empty key wins: module secret, then module public key.
-        let key = [Some(self.options.secret.as_str()), self.options.public_key.as_deref()]
-            .into_iter()
-            .flatten()
-            .find(|k| !k.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("secret or public key must be provided"))?;
-        let mut validation = Validation::new(alg);
-        validation.required_spec_claims = HashSet::new();
-        validation.leeway = 0;
-        // `exp` and `nbf` are checked below with node-jsonwebtoken's rules.
-        validation.validate_exp = false;
-        validation.validate_nbf = false;
-        // `iss` and `aud` are checked below with the same rules as the JWT strategy: the crate accepts a token
-        // whose claim is missing, has another type or (`iss`) is a list that merely intersects.
-        validation.validate_aud = false;
-        let claims = match verify_claims(token, &decoding_key(alg, key)?, &validation, &TimeRules::default()) {
+        // The module secret, else the module public key, parsed by `new`.
+        let key = match &self.prepared.decoding {
+            Some(Ok(key)) => key,
+            Some(Err(e)) => return Err(e.clone().into()),
+            None => anyhow::bail!("secret or public key must be provided"),
+        };
+        match check_header(token) {
+            Some(HeaderProblem::Crit) => return Err(VerifyError::Claim("critical header parameters are not supported").into()),
+            Some(HeaderProblem::Malformed) => return Err(VerifyError::Claim("jwt malformed").into()),
+            None => {}
+        }
+        // `exp` and `nbf` are checked with node-jsonwebtoken's rules, `iss` and `aud` below with the strategy's.
+        let claims = match decode_claims(token, key, &self.prepared.validation, &TimeRules::default()) {
             Ok(claims) => claims,
             // Callers can still downcast to `jsonwebtoken::errors::Error` for what that crate refused.
             Err(VerifyError::Decode(e)) => return Err(e.into()),
@@ -624,11 +763,17 @@ impl JwtService {
         let payload = token.split('.').nth(1)?;
         use base64::Engine;
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
-        parse_untrusted(&bytes)
+        crate::untrusted_json::parse(&bytes)
     }
 }
 
-/// Extracts the bearer token from the `Authorization` header.
+/// Extracts the bearer token from the `Authorization` header: the value is split at its first space, the scheme
+/// compared with `bearer` ignoring ASCII case, and the rest trimmed (so `Bearer a b` gives `a b`); a value that is not
+/// visible ASCII gives none.
+///
+/// This is not the JWT strategy's parser: [`ExtractJwt::from_auth_header_as_bearer_token`](crate::auth::jwt::ExtractJwt::from_auth_header_as_bearer_token)
+/// follows `passport-jwt` (any JavaScript whitespace between scheme and token, words after the token ignored). Use
+/// that one for the strategy's rules; this helper keeps its own, which applications already rely on.
 pub fn extract_bearer_token(req: &crate::http::Request) -> Option<String> {
     let h = req.header("authorization")?;
     let (kind, token) = h.split_once(' ')?;
@@ -844,4 +989,189 @@ mod tests {
 
     const TEST_RSA_PRIVATE: &str = include_str!("../tests/fixtures/jwt_rsa_private.pem");
     const TEST_RSA_PUBLIC: &str = include_str!("../tests/fixtures/jwt_rsa_public.pem");
+
+    fn rs256_service() -> JwtService {
+        JwtService::new(
+            JwtModuleOptions::new("")
+                .algorithm(Algorithm::RS256)
+                .private_key(TEST_RSA_PRIVATE)
+                .public_key(TEST_RSA_PUBLIC)
+                .expires_in("1h"),
+        )
+    }
+
+    fn key_parses() -> usize {
+        KEY_PARSES.with(|c| c.get())
+    }
+
+    fn header_checks() -> usize {
+        HEADER_CHECKS.with(|c| c.get())
+    }
+
+    /// Spec "Many calls, no parse": the module keys are parsed by `new`, never by `sign` or `verify`.
+    #[test]
+    fn module_keys_are_parsed_once() {
+        let before = key_parses();
+        let jwt = rs256_service();
+        assert_eq!(key_parses() - before, 2, "the encoding and the decoding key, once each");
+        let created = key_parses();
+        for i in 0..100 {
+            let token = jwt.sign(&serde_json::json!({ "sub": i })).unwrap();
+            let claims: Value = jwt.clone().verify(&token).unwrap();
+            assert_eq!(claims["sub"], i);
+        }
+        assert_eq!(key_parses(), created, "no module key is parsed after the service was created");
+        // A key given for one call is parsed for that call.
+        let opts = JwtSignOptions { secret: Some("per-call".into()), ..Default::default() };
+        let _ = JwtService::new(JwtModuleOptions::new("module")).sign_with(&serde_json::json!({ "sub": 1 }), opts).unwrap();
+        assert!(key_parses() > created);
+    }
+
+    /// Spec "A key that does not parse": the service is created, and each call fails with an error of
+    /// `jsonwebtoken`'s type, as before.
+    #[test]
+    fn a_key_that_does_not_parse_fails_each_call_with_its_type() {
+        let bad = JwtService::new(JwtModuleOptions::new("").algorithm(Algorithm::RS256).private_key("not a pem").public_key("nor this"));
+        for _ in 0..2 {
+            let e = bad.sign(&serde_json::json!({ "sub": 1 })).unwrap_err();
+            assert!(e.downcast_ref::<jsonwebtoken::errors::Error>().is_some(), "{e}");
+            let e = bad.verify::<Value>("a.b.c").unwrap_err();
+            assert!(e.downcast_ref::<jsonwebtoken::errors::Error>().is_some(), "{e}");
+        }
+        let none = JwtService::new(JwtModuleOptions::new(""));
+        assert_eq!(none.sign(&serde_json::json!({})).unwrap_err().to_string(), "secretOrPrivateKey must have a value");
+        assert_eq!(none.verify::<Value>("a.b.c").unwrap_err().to_string(), "secret or public key must be provided");
+    }
+
+    #[test]
+    fn verify_errors_keep_their_type_with_cached_keys() {
+        use jsonwebtoken::errors::ErrorKind;
+        let kind = |e: anyhow::Error| e.downcast_ref::<jsonwebtoken::errors::Error>().map(|e| e.kind().clone());
+        let jwt = JwtService::new(JwtModuleOptions::new("k").issuer("https://auth.example").audience("web"));
+        let ok = serde_json::json!({ "sub": 1, "iss": "https://auth.example", "aud": "web" });
+        for _ in 0..2 {
+            assert!(jwt.verify::<Value>(&forge(HS256, &ok, b"k")).is_ok());
+            assert!(matches!(kind(jwt.verify::<Value>(&forge(HS256, &ok, b"other")).unwrap_err()), Some(ErrorKind::InvalidSignature)));
+            let no_iss = serde_json::json!({ "sub": 1, "aud": "web" });
+            assert!(matches!(kind(jwt.verify::<Value>(&forge(HS256, &no_iss, b"k")).unwrap_err()), Some(ErrorKind::InvalidIssuer)));
+            let other_aud = serde_json::json!({ "sub": 1, "iss": "https://auth.example", "aud": "app" });
+            assert!(matches!(kind(jwt.verify::<Value>(&forge(HS256, &other_aud, b"k")).unwrap_err()), Some(ErrorKind::InvalidAudience)));
+        }
+        let rs = rs256_service();
+        assert!(matches!(kind(rs.verify::<Value>(&forge(HS256, &ok, b"k")).unwrap_err()), Some(ErrorKind::InvalidAlgorithm)));
+    }
+
+    /// `verify` checks the header itself, once, now that `decode_claims` does not.
+    #[test]
+    fn verify_still_refuses_crit_after_the_single_header_check() {
+        let jwt = JwtService::new(JwtModuleOptions::new("s"));
+        let claims = serde_json::json!({ "sub": 1 });
+        let before = header_checks();
+        let e = jwt.verify::<Value>(&forge(r#"{"alg":"HS256","crit":["urn:x"],"urn:x":true}"#, &claims, b"s")).unwrap_err();
+        assert_eq!(e.to_string(), "critical header parameters are not supported");
+        assert_eq!(jwt.verify::<Value>(&forge("[1]", &claims, b"s")).unwrap_err().to_string(), "jwt malformed");
+        assert!(jwt.verify::<Value>(&forge(HS256, &claims, b"s")).is_ok());
+        assert_eq!(header_checks() - before, 3, "one header check per call");
+    }
+
+    /// What the original `JwtService.sign` returned or threw, recorded by `tests/fixtures/auth/jwt_sign.mjs`.
+    const SIGN_FIXTURE: &str = include_str!("../tests/fixtures/auth/jwt_sign.json");
+
+    /// An option of the recording as Corvis takes it: a timespan string as it is, a number `n` as `"n"` (a bare number
+    /// is seconds in Corvis, the documented reading).
+    fn option_text(value: &Value) -> Option<String> {
+        match value {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }
+    }
+
+    fn fixture_module(module: &Value) -> JwtModuleOptions {
+        let key = |name: &Value| match name.as_str() {
+            Some("s1") => "corvis-jwt-secret-one-0123456789abcdef",
+            Some("rsa") => TEST_RSA_PRIVATE,
+            other => panic!("unknown key {other:?}"),
+        };
+        let mut options = match (module.get("secret"), module.get("privateKey")) {
+            (Some(secret), None) => JwtModuleOptions::new(key(secret)),
+            (None, Some(private)) => JwtModuleOptions::new("").private_key(key(private)),
+            _ => panic!("a module has a secret or a private key: {module}"),
+        };
+        if let Some(alg) = module.get("algorithm").and_then(Value::as_str) {
+            options = options.algorithm(serde_json::from_value(Value::String(alg.into())).unwrap());
+        }
+        options.expires_in = module.get("expiresIn").and_then(option_text);
+        options.issuer = module.get("issuer").and_then(option_text);
+        options.audience = module.get("audience").and_then(option_text);
+        options
+    }
+
+    fn fixture_call(call: &Value) -> JwtSignOptions {
+        let field = |name: &str| call.get(name).and_then(option_text);
+        JwtSignOptions {
+            expires_in: field("expiresIn"),
+            subject: field("subject"),
+            jwt_id: field("jwtid"),
+            not_before: field("notBefore"),
+            // `mutatePayload` has no counterpart: Corvis borrows the payload (the case carries a divergence).
+            ..Default::default()
+        }
+    }
+
+    /// A string a client chose must not become the claims of a token: the text of a JSON object or array is refused,
+    /// with or without surrounding whitespace, while a plain text is still signed and verifies as no claims.
+    #[test]
+    fn a_string_payload_that_is_json_claims_is_not_signed() {
+        let jwt = JwtService::new(JwtModuleOptions::new("0123456789abcdef0123456789abcdef"));
+        for text in [
+            r#"{"sub":"1","exp":9999999999}"#,
+            " {\"sub\":\"1\"}
+",
+            r#"[{"sub":"1"}]"#,
+            "{}",
+        ] {
+            let error = jwt.sign(&text.to_string()).unwrap_err().to_string();
+            assert!(error.contains("JSON object or array"), "{text:?}: {error}");
+        }
+        let token = jwt.sign(&"victim@example.com".to_string()).unwrap();
+        assert!(jwt.verify::<Value>(&token).is_err(), "a plain text carries no claims");
+        // The same claims as an object are signed as before.
+        let token = jwt.sign(&serde_json::json!({ "sub": "1" })).unwrap();
+        assert_eq!(jwt.verify::<Value>(&token).unwrap()["sub"], "1");
+    }
+
+    /// `JwtService::sign` returns what the original returns, byte for byte, or fails with its error text, for every
+    /// recorded case at the recorded clock; a case with a `divergence` returns what the divergence says.
+    #[test]
+    fn sign_matches_the_recorded_original() {
+        let fixture: Value = serde_json::from_str(SIGN_FIXTURE).unwrap();
+        let clock = fixture["clock"].as_i64().unwrap();
+        let mut failures = Vec::new();
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(cases.len() >= 34, "the recording has the cases of the design");
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let service = JwtService::new(fixture_module(&case["module"]));
+            let options = if case["call"].is_null() { JwtSignOptions::default() } else { fixture_call(&case["call"]) };
+            let expected = match &case["divergence"] {
+                Value::Null => {
+                    assert_eq!(case["payloadAfter"], case["payload"], "{name}: the original copies the payload");
+                    &case["result"]
+                }
+                divergence => {
+                    assert!(divergence["reason"].as_str().is_some_and(|r| !r.is_empty()), "{name}: a divergence has its reason");
+                    &divergence["result"]
+                }
+            };
+            let got = match service.sign_at(&case["payload"], options, clock) {
+                Ok(token) => serde_json::json!({ "token": token }),
+                Err(e) => serde_json::json!({ "error": e.to_string() }),
+            };
+            if &got != expected {
+                failures.push(format!("{name}: expected {expected}, got {got}"));
+            }
+        }
+        assert!(failures.is_empty(), "{} case(s) differ:\n{}", failures.len(), failures.join("\n"));
+    }
 }

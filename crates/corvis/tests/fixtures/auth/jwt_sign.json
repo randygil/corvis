@@ -1,0 +1,772 @@
+{
+  "versions": {
+    "@nestjs/jwt": "11.0.2",
+    "jsonwebtoken": "9.0.3"
+  },
+  "clock": 1767225600,
+  "cases": [
+    {
+      "name": "iat appended at the clock",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": {
+        "sub": "7",
+        "role": "admin"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3Iiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzY3MjI1NjAwfQ.nntLQBdwkaTwfPfL-F-8cs0mGTS_vnm470QAUyeIEHM"
+      },
+      "payloadAfter": {
+        "sub": "7",
+        "role": "admin"
+      },
+      "divergence": null
+    },
+    {
+      "name": "exp counted from the clock iat",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": {
+        "sub": "7",
+        "role": "admin"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3Iiwicm9sZSI6ImFkbWluIiwiaWF0IjoxNzY3MjI1NjAwLCJleHAiOjE3NjcyMjkyMDB9.f3_goOgsqX6t8PIB9hX15eTozbFadXmlUuvS_wR3-Q8"
+      },
+      "payloadAfter": {
+        "sub": "7",
+        "role": "admin"
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload iat kept, exp counted from it",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": {
+        "iat": 1700000000,
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDAsInN1YiI6IjciLCJleHAiOjE3MDAwMDM2MDB9.2f9FJI4zq8az_vegSvIt1-gyI6cEvhPSP11UcELBWC8"
+      },
+      "payloadAfter": {
+        "iat": 1700000000,
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload iat of 0",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": {
+        "iat": 0,
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3NjcyMjU2MDAsInN1YiI6IjciLCJleHAiOjE3NjcyMjkyMDB9.5LUn06HRr1Wx5PwBvE4lS4mPPtWMOH-MBqnzqCPvZqc"
+      },
+      "payloadAfter": {
+        "iat": 0,
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "fractional payload iat",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": {
+        "iat": 1700000000.5,
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDAuNSwic3ViIjoiNyIsImV4cCI6MTcwMDAwMzYwMH0.mD4KgVBDAfyibZuNIcC1YROYceWyGsMQVjo5QEqjxsA"
+      },
+      "payloadAfter": {
+        "iat": 1700000000.5,
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "non-numeric iat",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": {
+        "iat": "yesterday"
+      },
+      "result": {
+        "error": "\"iat\" should be a number of seconds"
+      },
+      "payloadAfter": {
+        "iat": "yesterday"
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload exp without expiresIn",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": {
+        "sub": "7",
+        "exp": 1900000000
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwiZXhwIjoxOTAwMDAwMDAwLCJpYXQiOjE3NjcyMjU2MDB9.8A6IqlFdY7vhHCZCwu8jF6IFVYPEpbT6ATKSVCBt6wE"
+      },
+      "payloadAfter": {
+        "sub": "7",
+        "exp": 1900000000
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload exp with the module expiresIn",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": {
+        "sub": "7",
+        "exp": 1900000000
+      },
+      "result": {
+        "error": "Bad \"options.expiresIn\" option the payload already has an \"exp\" property."
+      },
+      "payloadAfter": {
+        "sub": "7",
+        "exp": 1900000000
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload exp with a per-call expiresIn",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "expiresIn": "10m"
+      },
+      "payload": {
+        "exp": 1900000000
+      },
+      "result": {
+        "error": "Bad \"options.expiresIn\" option the payload already has an \"exp\" property."
+      },
+      "payloadAfter": {
+        "exp": 1900000000
+      },
+      "divergence": null
+    },
+    {
+      "name": "non-numeric exp",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": {
+        "exp": "2030"
+      },
+      "result": {
+        "error": "\"exp\" should be a number of seconds"
+      },
+      "payloadAfter": {
+        "exp": "2030"
+      },
+      "divergence": null
+    },
+    {
+      "name": "null exp with expiresIn",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": {
+        "exp": null
+      },
+      "result": {
+        "error": "\"exp\" should be a number of seconds"
+      },
+      "payloadAfter": {
+        "exp": null
+      },
+      "divergence": null
+    },
+    {
+      "name": "per-call expiresIn overrides the module",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": {
+        "expiresIn": "10m"
+      },
+      "payload": {
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwiaWF0IjoxNzY3MjI1NjAwLCJleHAiOjE3NjcyMjYyMDB9.u37IT0LaTw7zpw_HnSuetFHOSq53axhOEfOe3rOFLBk"
+      },
+      "payloadAfter": {
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "numeric expiresIn",
+      "module": {
+        "secret": "s1",
+        "expiresIn": 3600
+      },
+      "call": null,
+      "payload": {
+        "iat": 1700000000
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMzYwMH0.9zVfjp34M69suDrByfUYAGrJOPIgD8l68DYEoXp96XA"
+      },
+      "payloadAfter": {
+        "iat": 1700000000
+      },
+      "divergence": null
+    },
+    {
+      "name": "aud and iss appended after exp",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h",
+        "issuer": "https://auth.example",
+        "audience": "web"
+      },
+      "call": null,
+      "payload": {
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwiaWF0IjoxNzY3MjI1NjAwLCJleHAiOjE3NjcyMjkyMDAsImF1ZCI6IndlYiIsImlzcyI6Imh0dHBzOi8vYXV0aC5leGFtcGxlIn0.y6sQ5bGJb7-a4Ym5DSPqNiU2hvlr8N7zSe1NSTHMZa8"
+      },
+      "payloadAfter": {
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload iss with the module issuer",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h",
+        "issuer": "https://auth.example",
+        "audience": "web"
+      },
+      "call": null,
+      "payload": {
+        "sub": "7",
+        "iss": "x"
+      },
+      "result": {
+        "error": "Bad \"options.issuer\" option. The payload already has an \"iss\" property."
+      },
+      "payloadAfter": {
+        "sub": "7",
+        "iss": "x"
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload aud with the module audience",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h",
+        "issuer": "https://auth.example",
+        "audience": "web"
+      },
+      "call": null,
+      "payload": {
+        "sub": "7",
+        "aud": "x"
+      },
+      "result": {
+        "error": "Bad \"options.audience\" option. The payload already has an \"aud\" property."
+      },
+      "payloadAfter": {
+        "sub": "7",
+        "aud": "x"
+      },
+      "divergence": null
+    },
+    {
+      "name": "sub appended",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "subject": "9"
+      },
+      "payload": {
+        "role": "admin"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3NjcyMjU2MDAsInN1YiI6IjkifQ.o1GB1f3glNNMPkVswVBDlcCMDmHWCKAJ0qYt3y3-pVU"
+      },
+      "payloadAfter": {
+        "role": "admin"
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload sub with subject",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "subject": "9"
+      },
+      "payload": {
+        "sub": "7"
+      },
+      "result": {
+        "error": "Bad \"options.subject\" option. The payload already has an \"sub\" property."
+      },
+      "payloadAfter": {
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "jti appended",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "jwtid": "j1"
+      },
+      "payload": {
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwiaWF0IjoxNzY3MjI1NjAwLCJqdGkiOiJqMSJ9.dN_WGlt8K-n97dR0mp97Ujr-Dc4lnxo3mD3TF4bPVvg"
+      },
+      "payloadAfter": {
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload jti with jwtid",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "jwtid": "j1"
+      },
+      "payload": {
+        "sub": "7",
+        "jti": "x"
+      },
+      "result": {
+        "error": "Bad \"options.jwtid\" option. The payload already has an \"jti\" property."
+      },
+      "payloadAfter": {
+        "sub": "7",
+        "jti": "x"
+      },
+      "divergence": null
+    },
+    {
+      "name": "nbf counted from the clock iat",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "notBefore": "30s"
+      },
+      "payload": {
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwiaWF0IjoxNzY3MjI1NjAwLCJuYmYiOjE3NjcyMjU2MzB9.JQq1g6NE_2UF4CphN-zxb6dHOlq2kbG97wu7Xru9fUc"
+      },
+      "payloadAfter": {
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "nbf counted from the payload iat",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": {
+        "notBefore": "30s"
+      },
+      "payload": {
+        "iat": 1700000000
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDAsIm5iZiI6MTcwMDAwMDAzMCwiZXhwIjoxNzAwMDAzNjAwfQ.Z4Q9f1sar_9YePRvJ9CXW_tdz3h8DUQprb28QcCqA98"
+      },
+      "payloadAfter": {
+        "iat": 1700000000
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload nbf with notBefore",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "notBefore": "30s"
+      },
+      "payload": {
+        "nbf": 1700000000
+      },
+      "result": {
+        "error": "Bad \"options.notBefore\" option the payload already has an \"nbf\" property."
+      },
+      "payloadAfter": {
+        "nbf": 1700000000
+      },
+      "divergence": null
+    },
+    {
+      "name": "non-numeric nbf",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": {
+        "nbf": "soon"
+      },
+      "result": {
+        "error": "\"nbf\" should be a number of seconds"
+      },
+      "payloadAfter": {
+        "nbf": "soon"
+      },
+      "divergence": null
+    },
+    {
+      "name": "the full claim order",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h",
+        "issuer": "https://auth.example",
+        "audience": "web"
+      },
+      "call": {
+        "subject": "9",
+        "jwtid": "j1",
+        "notBefore": 60
+      },
+      "payload": {
+        "iat": 1700000000,
+        "role": "admin"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDAsInJvbGUiOiJhZG1pbiIsIm5iZiI6MTcwMDAwMDA2MCwiZXhwIjoxNzAwMDAzNjAwLCJhdWQiOiJ3ZWIiLCJpc3MiOiJodHRwczovL2F1dGguZXhhbXBsZSIsInN1YiI6IjkiLCJqdGkiOiJqMSJ9.--eYSe2BMGY9gnhbK3RrAb9gVIkEPttGSfPTbqeRXnA"
+      },
+      "payloadAfter": {
+        "iat": 1700000000,
+        "role": "admin"
+      },
+      "divergence": null
+    },
+    {
+      "name": "two conflicts: the one reported",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h",
+        "issuer": "https://auth.example",
+        "audience": "web"
+      },
+      "call": null,
+      "payload": {
+        "iss": "x",
+        "exp": 1900000000
+      },
+      "result": {
+        "error": "Bad \"options.expiresIn\" option the payload already has an \"exp\" property."
+      },
+      "payloadAfter": {
+        "iss": "x",
+        "exp": 1900000000
+      },
+      "divergence": null
+    },
+    {
+      "name": "string payload",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": "hello",
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiJ9.aGVsbG8.WTcJ7d6o-Jpr2yYXrGAAT7nC4lqL9OYuGqQw85QULdA"
+      },
+      "payloadAfter": "hello",
+      "divergence": null
+    },
+    {
+      "name": "string payload with a sign option",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": "hello",
+      "result": {
+        "error": "Payload as string is not allowed with the following sign options: expiresIn"
+      },
+      "payloadAfter": "hello",
+      "divergence": null
+    },
+    {
+      "name": "array payload",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": [
+        1,
+        2
+      ],
+      "result": {
+        "error": "Expected \"payload\" to be a plain object."
+      },
+      "payloadAfter": [
+        1,
+        2
+      ],
+      "divergence": null
+    },
+    {
+      "name": "number payload",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": 5,
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiJ9.NQ.KfXJjTxyKqjwawKFmraEsb38wMFQL1C_LQ6a2DKlukw"
+      },
+      "payloadAfter": 5,
+      "divergence": null
+    },
+    {
+      "name": "mutatePayload",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "mutatePayload": true
+      },
+      "payload": {
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwiaWF0IjoxNzY3MjI1NjAwfQ.9zirQEBgjoRbtZ7U0_ZtwTFwjx1P18tI5vYCZvg3rHc"
+      },
+      "payloadAfter": {
+        "sub": "7",
+        "iat": 1767225600
+      },
+      "divergence": {
+        "reason": "Corvis borrows the payload and never changes the caller's value: there is no mutate_payload option. The token is the same; payloadAfter is not replayed.",
+        "result": {
+          "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwiaWF0IjoxNzY3MjI1NjAwfQ.9zirQEBgjoRbtZ7U0_ZtwTFwjx1P18tI5vYCZvg3rHc"
+        }
+      }
+    },
+    {
+      "name": "the payload is copied by default",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": {
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3IiwiaWF0IjoxNzY3MjI1NjAwfQ.9zirQEBgjoRbtZ7U0_ZtwTFwjx1P18tI5vYCZvg3rHc"
+      },
+      "payloadAfter": {
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "RS256",
+      "module": {
+        "privateKey": "rsa",
+        "algorithm": "RS256",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": {
+        "iat": 1700000000,
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDAsInN1YiI6IjciLCJleHAiOjE3MDAwMDM2MDB9.sfSkTV_VtKkfEULpfMc_5RANDLCWL1q_mFA8iBsh6qJvanNISnLfkgKp9Rj-fz2DQKsfSGSJhFXXyYeO5xtN54o8UGB4HSD1ZMnay07i6QXaVXrHw7kBlTIInZanBskoIniEn6zTnSDtjRFHvxutSaULiIhcC7ynXLTfAbFBdfwzItLBFXQ5qbSCVhulFY8dVNQUoQMkWt7Ls-FLEwBV9b6SCWrjc7HWqGqre8letVk1IvtwxAd4qdLx-8n6bQP89LFynutmRTEEDr3HJhh5Rd5Y6oo5mgCbsQJWAUuADZX-YK68EEtomdSyxWHcSfnDtDoddnNDZeOV8sw5BP4z6Q"
+      },
+      "payloadAfter": {
+        "iat": 1700000000,
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "the payload text",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": {
+        "iat": 1700000000,
+        "name": "Zoë \"x\"",
+        "n": 0.1,
+        "big": 9007199254740991,
+        "nested": {
+          "a": [
+            1,
+            "é"
+          ]
+        }
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDAsIm5hbWUiOiJab8OrIFwieFwiIiwibiI6MC4xLCJiaWciOjkwMDcxOTkyNTQ3NDA5OTEsIm5lc3RlZCI6eyJhIjpbMSwiw6kiXX19.4iQehjDCvdIH2q8Pu9tlUeiclMb6flU7swtfgZCGqOs"
+      },
+      "payloadAfter": {
+        "iat": 1700000000,
+        "name": "Zoë \"x\"",
+        "n": 0.1,
+        "big": 9007199254740991,
+        "nested": {
+          "a": [
+            1,
+            "é"
+          ]
+        }
+      },
+      "divergence": null
+    },
+    {
+      "name": "string payload with an asymmetric module",
+      "module": {
+        "privateKey": "rsa",
+        "algorithm": "RS256",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": "hello",
+      "result": {
+        "error": "Payload as string is not allowed with the following sign options: algorithm, expiresIn"
+      },
+      "payloadAfter": "hello",
+      "divergence": null
+    },
+    {
+      "name": "number payload with a sign option",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": 5,
+      "result": {
+        "error": "invalid expiresIn option for number payload"
+      },
+      "payloadAfter": 5,
+      "divergence": null
+    },
+    {
+      "name": "boolean payload",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": true,
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiJ9.dHJ1ZQ.UUJbTFTzc2W2hWIlfCteHGyA90i-FVOmHWbEKa7Gyh4"
+      },
+      "payloadAfter": true,
+      "divergence": null
+    },
+    {
+      "name": "null payload",
+      "module": {
+        "secret": "s1"
+      },
+      "call": null,
+      "payload": null,
+      "result": {
+        "error": "Expected \"payload\" to be a plain object."
+      },
+      "payloadAfter": null,
+      "divergence": null
+    },
+    {
+      "name": "negative payload iat",
+      "module": {
+        "secret": "s1",
+        "expiresIn": "1h"
+      },
+      "call": null,
+      "payload": {
+        "iat": -5,
+        "sub": "7"
+      },
+      "result": {
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOi01LCJzdWIiOiI3IiwiZXhwIjozNTk1fQ.UACPvM3hQHZJUsFCVH6pFea1gahbV5Kd1lbi-3PsnkM"
+      },
+      "payloadAfter": {
+        "iat": -5,
+        "sub": "7"
+      },
+      "divergence": null
+    },
+    {
+      "name": "payload claim set to null with its option",
+      "module": {
+        "secret": "s1"
+      },
+      "call": {
+        "subject": "9"
+      },
+      "payload": {
+        "sub": null
+      },
+      "result": {
+        "error": "Bad \"options.subject\" option. The payload already has an \"sub\" property."
+      },
+      "payloadAfter": {
+        "sub": null
+      },
+      "divergence": null
+    }
+  ]
+}

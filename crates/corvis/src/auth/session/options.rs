@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::memory::MemorySessionStore;
 use super::store::SessionStore;
 use crate::http::CookieKeys;
-use crate::http::res::{valid_cookie_domain, valid_cookie_name, valid_cookie_path};
+use crate::http::res::{has_cookie_prefix, valid_cookie_domain, valid_cookie_name, valid_cookie_path};
 
 /// The default idle timeout: 24 hours since the last request of the session.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
@@ -317,8 +317,7 @@ impl SessionOptions {
             ));
         }
         // Browsers match the prefixes without regard to case, and then refuse a cookie that breaks the rules.
-        let has_prefix =
-            |prefix: &str| name.len() >= prefix.len() && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes());
+        let has_prefix = |prefix: &str| has_cookie_prefix(name, prefix);
         if has_prefix("__Host-") && (!c.secure || c.domain.is_some() || c.path != "/") {
             return Err(err(
                 "the session cookie name starts with __Host-, which requires Secure, Path=/ and no Domain: the cookie has secure(false), a domain or another path",

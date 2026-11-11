@@ -205,7 +205,15 @@ impl CookieOptions {
     }
 }
 
-/// cookie 0.7 `cookieNameRegExp`: `[\x21-\x3A\x3C\x3E-\x7E]+` (no `;`, `=`, spaces or controls).
+/// `true` when the cookie name `name` starts with `prefix` (`__Host-`, `__Secure-`), ignoring ASCII case as browsers
+/// do when they apply the rules of the prefix.
+#[cfg(any(feature = "jwt", feature = "auth-session"))]
+pub(crate) fn has_cookie_prefix(name: &str, prefix: &str) -> bool {
+    name.len() >= prefix.len() && name.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
+/// cookie 0.7 `cookieNameRegExp`: `[\x21-\x3A\x3C\x3E-\x7E]+` (no `;`, `=`, spaces or controls): what
+/// [`serialize_cookie`] accepts, the parity of `res.cookie`.
 pub(crate) fn valid_cookie_name(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| matches!(b, 0x21..=0x3a | 0x3c | 0x3e..=0x7e))
 }

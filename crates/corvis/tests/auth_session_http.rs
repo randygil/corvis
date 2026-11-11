@@ -490,6 +490,25 @@ async fn every_store_call_is_bounded_in_time() {
     assert_eq!(r.json_value(), json!({ "statusCode": 500, "message": "Internal server error" }));
 }
 
+/// Spec "Touch receives the timestamps": a request that loads a session with data and changes nothing gives `touch` a
+/// record with `cookie` and `__corvis` only, none of the data.
+#[tokio::test]
+async fn touch_receives_only_the_timestamps() {
+    let store = RecordingStore::new();
+    let app = app(options().store_arc(store.clone())).await;
+    let cookie = cookie_of(&post(&app, "/set?k=secret&v=data", None).await);
+    let r = post(&app, "/set-same?k=secret", Some(&cookie)).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(get(&app, "/sess", Some(&cookie)).await.status, 200);
+    let touched = store.touched.lock().unwrap().clone();
+    assert_eq!(touched.len(), 2, "a value set to what it was, then a read: two touches");
+    for record in &touched {
+        let keys: Vec<&str> = record.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["cookie", "__corvis"], "{record}");
+    }
+    assert_eq!(data_of(&get(&app, "/sess", Some(&cookie)).await), json!({ "secret": "data" }), "the data is still there");
+}
+
 // ---- lifecycle ----
 
 #[tokio::test]
@@ -631,6 +650,29 @@ impl SessionOptionsExt {
 }
 
 // ---- the session user and the guards ----
+
+/// Spec "Route without an AuthGuard": `User<T>` on a route without an `AuthGuard` is the session's user, typed, as
+/// `Request::user()` is; without a session user it is the 401.
+#[tokio::test]
+async fn a_route_without_an_auth_guard_sees_the_session_user_typed() {
+    let app = app(options()).await;
+    let cookie = login(&app, "1").await;
+    let r = get(&app, "/who-typed", Some(&cookie)).await;
+    assert_eq!((r.status, r.json_value()["user"].clone()), (200, json!({ "id": "1", "name": "ana" })), "{}", r.text());
+    assert_eq!(get(&app, "/who-typed", None).await.status, 401);
+}
+
+/// Spec "A guard reads the typed user" and "Foreign extension": a guard after an `AuthGuard` reads the user the
+/// strategy returned with `Request::typed_user`, without deserializing the JSON user; an `Account` another guard
+/// inserted is no user.
+#[tokio::test]
+async fn a_guard_reads_the_typed_user_and_never_a_foreign_extension() {
+    let app = app(options()).await;
+    let r = send(&app, "GET", "/typed-guard", None, &[("x-user", "2")]).await;
+    assert_eq!((r.status, r.json_value()["seen"].clone()), (200, json!({ "id": "2", "name": "bob" })), "{}", r.text());
+    let r = get(&app, "/foreign-extension", None).await;
+    assert_eq!((r.status, r.json_value()["seen"].clone()), (200, Value::Null), "{}", r.text());
+}
 
 #[tokio::test]
 async fn the_session_user_reaches_a_guard_and_the_handler() {

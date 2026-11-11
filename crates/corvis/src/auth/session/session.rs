@@ -37,9 +37,24 @@ pub enum SessionError {
     Serialize(String),
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many identifiers this thread drew, so a test can show that a request drew none.
+    pub(crate) static ID_DRAWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Makes every draw of this thread fail, as a failing generator would.
+    pub(crate) static FAIL_DRAWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// A new identifier from the operating system's random generator, 32 characters of base64url. `None` when the
 /// generator fails: there is no fallback to a weaker one.
 pub(crate) fn new_id() -> Option<String> {
+    #[cfg(test)]
+    {
+        ID_DRAWS.with(|c| c.set(c.get() + 1));
+        if FAIL_DRAWS.with(std::cell::Cell::get) {
+            return None;
+        }
+    }
     let mut bytes = [0u8; ID_BYTES];
     OsRng.try_fill_bytes(&mut bytes).ok()?;
     Some(URL_SAFE_NO_PAD.encode(bytes))
@@ -53,15 +68,18 @@ pub(crate) fn valid_id(id: &str) -> bool {
 /// What the middleware tracks about the session of one request.
 #[derive(Clone)]
 pub(crate) struct State {
-    /// The current identifier.
-    pub(crate) id: String,
+    /// The current identifier: `None` until one is needed for a new session (a fresh, regenerated or destroyed one),
+    /// so a request that saves nothing draws none. A persisted session always has one.
+    id: Option<String>,
     /// A record exists in the store under `id` (as far as this request knows).
     pub(crate) persisted: bool,
     /// The identifier was generated after the request arrived (login, logout, `regenerate`).
     pub(crate) id_changed: bool,
-    pub(crate) data: Map<String, Value>,
-    /// The data as loaded (or as created): the session is modified when `data` differs from it.
-    pub(crate) baseline: Map<String, Value>,
+    /// The data, written only through [`data_mut`](State::data_mut).
+    data: Map<String, Value>,
+    /// The data as it was before the first write of this request, taken by that write: the session is modified when
+    /// `data` differs from it. `None` while nothing was written, so a request that only reads copies nothing.
+    baseline: Option<Map<String, Value>>,
     pub(crate) created_at: i64,
     pub(crate) last_access: i64,
     /// Identifiers to destroy in the store before anything is written.
@@ -87,16 +105,15 @@ pub(crate) struct State {
 }
 
 impl State {
-    /// A session with a new identifier.
+    /// A new session. Its identifier is drawn when it is first needed.
     pub(crate) fn fresh(now: i64) -> State {
-        let id = new_id();
         State {
-            failed: id.is_none(),
-            id: id.unwrap_or_default(),
+            failed: false,
+            id: None,
             persisted: false,
             id_changed: false,
             data: Map::new(),
-            baseline: Map::new(),
+            baseline: None,
             created_at: now,
             last_access: now,
             destroy: Vec::new(),
@@ -110,17 +127,53 @@ impl State {
     }
 
     pub(crate) fn modified(&self) -> bool {
-        self.id_changed || self.data != self.baseline
+        self.id_changed || self.baseline.as_ref().is_some_and(|baseline| *baseline != self.data)
+    }
+
+    /// The data of the session.
+    pub(crate) fn data(&self) -> &Map<String, Value> {
+        &self.data
+    }
+
+    /// The data, for a write: the first call of the request keeps a copy of the data as it was, which `modified`
+    /// compares against. Every write goes through here.
+    pub(crate) fn data_mut(&mut self) -> &mut Map<String, Value> {
+        if self.baseline.is_none() {
+            self.baseline = Some(self.data.clone());
+        }
+        &mut self.data
+    }
+
+    /// The identifier, drawn now when the session has none yet. `None` when the generator fails, which also marks the
+    /// state so that nothing is written for this request.
+    pub(crate) fn ensure_id(&mut self) -> Option<&str> {
+        if self.id.is_none() {
+            match new_id() {
+                Some(id) => self.id = Some(id),
+                None => self.failed = true,
+            }
+        }
+        self.id.as_deref()
+    }
+
+    /// The identifier, if one was drawn or loaded (a persisted session always has one).
+    pub(crate) fn current_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    /// Drops the identifier (after a collision in the store): a new one is drawn when it is needed.
+    pub(crate) fn forget_id(&mut self) {
+        self.id = None;
     }
 
     /// An existing record, loaded from the store under the identifier of the cookie.
     pub(crate) fn loaded(id: String, data: Map<String, Value>, created_at: i64, last_access: i64) -> State {
         State {
             origin: Some(id.clone()),
-            id,
+            id: Some(id),
             persisted: true,
             id_changed: false,
-            baseline: data.clone(),
+            baseline: None,
             data,
             created_at,
             last_access,
@@ -134,19 +187,25 @@ impl State {
         }
     }
 
-    /// Replaces the identifier. The old one is destroyed in the store at commit when it has a record there.
+    /// Replaces the identifier: the new one is drawn when it is needed. The old one is destroyed in the store at commit
+    /// when it has a record there.
     pub(crate) fn regenerate(&mut self, now: i64) {
-        if self.persisted && !self.destroy.contains(&self.id) {
-            self.destroy.push(self.id.clone());
-        }
-        match new_id() {
-            Some(id) => self.id = id,
-            None => self.failed = true,
-        }
+        self.queue_destroy();
+        self.id = None;
         self.persisted = false;
         self.id_changed = true;
         self.created_at = now;
         self.last_access = now;
+    }
+
+    /// Queues the current identifier for destruction at commit when it has a record in the store.
+    fn queue_destroy(&mut self) {
+        if self.persisted
+            && let Some(id) = &self.id
+            && !self.destroy.contains(id)
+        {
+            self.destroy.push(id.clone());
+        }
     }
 
     /// The record the store receives: `cookie` first, as `express-session` writes it, then the data, then the
@@ -157,8 +216,21 @@ impl State {
         for (key, value) in &self.data {
             object.insert(key.clone(), value.clone());
         }
-        object.insert(META_KEY.to_string(), json!({ "createdAt": self.created_at, "lastAccess": now }));
+        object.insert(META_KEY.to_string(), self.meta_json(now));
         Value::Object(object)
+    }
+
+    /// What `touch` receives for a session that did not change: the two keys it may write, `cookie` and `__corvis`,
+    /// and none of the data.
+    pub(crate) fn touch_record(&self, options: &SessionOptions, now: i64) -> Value {
+        let mut object = Map::new();
+        object.insert(COOKIE_KEY.to_string(), self.cookie_json(options, now));
+        object.insert(META_KEY.to_string(), self.meta_json(now));
+        Value::Object(object)
+    }
+
+    fn meta_json(&self, now: i64) -> Value {
+        json!({ "createdAt": self.created_at, "lastAccess": now })
     }
 
     /// When the cookie expires: `max_age` after `now`, never later than the absolute limit of the session.
@@ -304,9 +376,11 @@ impl Session {
         &self.shared.manager
     }
 
-    /// The identifier of the session. It is the credential of the browser: do not log it or send it anywhere.
+    /// The identifier of the session. It is the credential of the browser: do not log it or send it anywhere. A new
+    /// session gets its identifier on the first call (or when it is saved); the empty string means the random generator
+    /// failed, and then nothing of the session is saved.
     pub fn id(&self) -> String {
-        self.state().id.clone()
+        self.state().ensure_id().map(str::to_string).unwrap_or_default()
     }
 
     /// `true` when no record of this session exists in the store yet (a new session, or one whose identifier was
@@ -325,12 +399,12 @@ impl Session {
         if is_reserved(key) {
             return None;
         }
-        self.state().data.get(key).cloned()
+        self.state().data().get(key).cloned()
     }
 
     /// Every value of the session as a JSON object, without the reserved keys.
     pub fn data(&self) -> serde_json::Map<String, Value> {
-        self.state().data.clone()
+        self.state().data().clone()
     }
 
     /// Stores `value` under `key`. Fails for a reserved key or a value that does not serialize; the session is left
@@ -340,19 +414,23 @@ impl Session {
             return Err(SessionError::ReservedKey(key.to_string()));
         }
         let value = serde_json::to_value(value).map_err(|e| SessionError::Serialize(e.to_string()))?;
-        self.state().data.insert(key.to_string(), value);
+        self.state().data_mut().insert(key.to_string(), value);
         Ok(())
     }
 
     pub fn remove(&self, key: &str) {
-        if !is_reserved(key) {
-            self.state().data.shift_remove(key);
+        let mut s = self.state();
+        if !is_reserved(key) && s.data().contains_key(key) {
+            s.data_mut().shift_remove(key);
         }
     }
 
     /// Removes every value (the session itself stays).
     pub fn clear(&self) {
-        self.state().data.clear();
+        let mut s = self.state();
+        if !s.data().is_empty() {
+            s.data_mut().clear();
+        }
     }
 
     /// `req.session.regenerate()`: a new, empty session with a new identifier. The old record is destroyed in the
@@ -360,7 +438,7 @@ impl Session {
     pub fn regenerate(&self) {
         let mut s = self.state();
         s.regenerate(super::store::now_ms());
-        s.data.clear();
+        s.data_mut().clear();
     }
 
     /// Replaces the identifier now and keeps the data. The old record is destroyed in the store when the request ends.
@@ -374,18 +452,15 @@ impl Session {
     /// data is dropped; values set afterwards start a new session with a new identifier.
     pub fn destroy(&self) {
         let mut s = self.state();
-        if s.persisted && !s.destroy.contains(&s.id) {
-            let id = s.id.clone();
-            s.destroy.push(id);
-        }
+        s.queue_destroy();
         let now = super::store::now_ms();
-        let fresh = State::fresh(now);
-        s.id = fresh.id;
-        s.failed |= fresh.failed;
+        // A new session from here on, with an identifier drawn when it is needed. Its data is empty and nothing was
+        // written to it yet, so it is not modified.
+        s.id = None;
         s.persisted = false;
         s.id_changed = false;
         s.data.clear();
-        s.baseline.clear();
+        s.baseline = None;
         s.created_at = now;
         s.last_access = now;
         s.clear_cookie = s.had_cookie;

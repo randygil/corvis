@@ -964,6 +964,8 @@ async fn too_many_requests_in_flight_answer_503_without_contacting_the_provider(
     mock.arrived.notified().await;
     let r = get(&app, &format!("/auth/google/callback?code=c&state={}", second.state()), second.cookie.as_deref()).await;
     assert_eq!(r.status, 503, "{}", r.text());
+    // Spec "OAuth2 at its limit": the body of every 503 of the authentication module, byte for byte.
+    assert_eq!(r.text(), r#"{"statusCode":503,"message":"Service Unavailable"}"#);
     assert_eq!(mock.hits_to("/token").len(), 1, "the extra callback never reached the provider");
     gate.notify_one();
     assert_eq!(held.await.unwrap().status, 200);

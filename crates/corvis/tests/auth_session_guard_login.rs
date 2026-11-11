@@ -15,6 +15,21 @@ use corvis::prelude::*;
 use corvis::testing::{Test, TestResponse, request};
 use session_common::*;
 
+/// A request extension whose drop panics when it is armed (a disarmed one replaces it, so the request can still be
+/// dropped afterwards).
+#[derive(Clone)]
+pub struct PanicsOnDrop {
+    armed: bool,
+}
+
+impl Drop for PanicsOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            panic!("a drop that panics");
+        }
+    }
+}
+
 // ---- the filters and the interceptor of the reviewer's cases ----
 
 /// The pattern of the documentation: a denial becomes a redirect to the second step.
@@ -104,6 +119,18 @@ impl R2Routes {
     #[use_guards(AuthGuard::new("header").log_in())]
     fn panics(&self) -> Value {
         panic!("the handler panics");
+    }
+
+    /// Panics while it holds the request's extensions, which poisons their lock: the router marks the request rejected
+    /// while the panic unwinds, through that lock.
+    #[post("poison")]
+    #[http_code(200)]
+    #[use_guards(AuthGuard::new("header").log_in())]
+    fn poison(&self, req: Request) -> Value {
+        req.insert(PanicsOnDrop { armed: true });
+        // Replacing it drops the armed one inside `insert`, with the lock held.
+        req.insert(PanicsOnDrop { armed: false });
+        json!({ "unreachable": true })
     }
 
     #[post("dto")]
@@ -321,6 +348,16 @@ async fn a_handler_that_is_dropped_before_it_ends_leaves_no_login() {
     let store = RecordingStore::new();
     let app = app_r2(options().store_arc(store.clone()), None).await;
     assert_no_login(&app, &store, "/r2/dropped", 200, "handler dropped by an interceptor").await;
+}
+
+/// A handler that panics while the request's extensions are locked leaves them poisoned; the router still marks the
+/// request rejected through them (it panicked, and so aborted the process, before), the client gets a 500 and the
+/// guard login is discarded.
+#[tokio::test]
+async fn a_handler_that_panics_with_a_poisoned_lock_is_a_500() {
+    let store = RecordingStore::new();
+    let app = app_r2(options().store_arc(store.clone()), None).await;
+    assert_no_login(&app, &store, "/r2/poison", 500, "panic with the extensions locked").await;
 }
 
 #[tokio::test]

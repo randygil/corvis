@@ -16,12 +16,14 @@ use super::profile::OAuth2Profile;
 use super::redeem::{ClientSlots, Redeemed};
 use super::secret::OAuth2Token;
 use super::state::{self, Flow, StateCookie};
+use crate::auth::outcome::service_unavailable;
 use crate::auth::session::{SameSite, SessionManager};
 use crate::auth::warn_limit::WarnLimiter;
 use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::{ExecutionContext, GuardPhase};
 use crate::di::{DiError, Injectable, ResolveCtx};
-use crate::http::{HttpException, Request, ServiceUnavailableException};
+use crate::http::res::has_cookie_prefix;
+use crate::http::{HttpException, Request};
 use crate::logger::Logger;
 
 /// What a successful callback hands to [`OAuth2Validator::validate`]: the original's `validate(accessToken,
@@ -158,7 +160,7 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
                             V::NAME
                         ));
                     }
-                    if !has_host_prefix(&name) {
+                    if !has_cookie_prefix(&name, "__Host-") {
                         log.warn(format!(
                             "strategy \"{}\": the state cookie \"{name}\" has no __Host- prefix, so a page on a sibling subdomain can plant its own state cookie and sign a victim in to the attacker's account (login CSRF): name it __Host-... on a Secure HTTPS host, or keep the application off a domain shared with untrusted subdomains",
                             V::NAME
@@ -175,7 +177,7 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
                             "state_in_session: the session cookie is SameSite=Strict, so the callback would arrive without the session".into(),
                         ));
                     }
-                    if !has_host_prefix(&manager.options.name) {
+                    if !has_cookie_prefix(&manager.options.name, "__Host-") {
                         log.warn(format!(
                             "strategy \"{}\": the session cookie \"{}\" that keeps the login state has no __Host- prefix, so a page on a sibling subdomain can plant its own session cookie and sign a victim in to the attacker's account (login CSRF): name the session cookie __Host-... on a Secure HTTPS host with Path=/ and no Domain",
                             V::NAME,
@@ -208,9 +210,20 @@ impl<V: OAuth2Validator> Injectable for OAuth2Strategy<V> {
     }
 }
 
-/// Whether a cookie name carries the `__Host-` prefix (browsers compare it case-insensitively).
-fn has_host_prefix(name: &str) -> bool {
-    name.len() >= 7 && name.as_bytes()[..7].eq_ignore_ascii_case(b"__Host-")
+/// The level of a line of [`OAuth2Strategy::note`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoteLevel {
+    /// Something the operator should see: a fault, a limit reached, a provider that refused.
+    Warn,
+    /// What a client can cause on purpose: a forged or stale callback.
+    Debug,
+}
+
+/// The part of a login a failure happened in: the start, or the callback (which may go to the failure page).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Start,
+    Callback,
 }
 
 /// The key a client's slots are counted under: the address the request resolved to (so `trust proxy` is honoured),
@@ -283,21 +296,18 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
     }
 
     /// A line for the log, at most once a minute per reason: a client can trigger every failure of the callback.
-    fn note(&self, reason: &str, level_warn: bool, detail: String) {
-        if let Some(suppressed) = self.warnings.allow(reason, Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last line)") } else { String::new() };
-            let line = format!("strategy \"{}\": {reason}{detail}{more}", V::NAME);
+    fn note(&self, reason: &str, level: NoteLevel, detail: String) {
+        if let Some(line) = self.warnings.line(reason, Instant::now(), || format!("strategy \"{}\": {reason}{detail}", V::NAME)) {
             let log = Logger::new("OAuth2Strategy");
-            if level_warn {
-                log.warn(line);
-            } else {
-                log.debug(line);
+            match level {
+                NoteLevel::Warn => log.warn(line),
+                NoteLevel::Debug => log.debug(line),
             }
         }
     }
 
     fn internal(&self, reason: &'static str, detail: String) -> StrategyOutcome {
-        self.note(reason, true, detail);
+        self.note(reason, NoteLevel::Warn, detail);
         StrategyOutcome::Error(HttpException::internal(Fault(reason)).already_logged())
     }
 
@@ -321,9 +331,11 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
     }
 
     /// A failed callback: the 401 with a fixed challenge, or the redirect to the configured failure page.
-    fn fail(&self, reason: &'static str, challenge_error: Option<String>, callback: bool) -> StrategyOutcome {
-        self.note(reason, false, challenge_error.as_deref().map(|c| format!(" ({c})")).unwrap_or_default());
-        if callback && let Some(url) = &self.options.failure_redirect {
+    fn fail(&self, reason: &'static str, challenge_error: Option<String>, phase: Phase) -> StrategyOutcome {
+        self.note(reason, NoteLevel::Debug, challenge_error.as_deref().map(|c| format!(" ({c})")).unwrap_or_default());
+        if phase == Phase::Callback
+            && let Some(url) = &self.options.failure_redirect
+        {
             return StrategyOutcome::Redirect { url: url.clone(), status: Some(302) };
         }
         let mut challenge = Map::new();
@@ -339,7 +351,7 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
     fn refused(&self) -> StrategyOutcome {
         match &self.options.failure_redirect {
             Some(url) => {
-                self.note("the validator refused the login", false, String::new());
+                self.note("the validator refused the login", NoteLevel::Debug, String::new());
                 StrategyOutcome::Redirect { url: url.clone(), status: Some(302) }
             }
             None => StrategyOutcome::Fail { challenge: None, status: None },
@@ -476,21 +488,21 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             Err(outcome) => return outcome,
         };
         let (Ok(code), Ok(state), Ok(error)) = (code, state, error) else {
-            return self.fail("invalid callback", None, true);
+            return self.fail("invalid callback", None, Phase::Callback);
         };
         if code.is_some() && error.is_some() {
-            return self.fail("invalid callback", None, true);
+            return self.fail("invalid callback", None, Phase::Callback);
         }
         if let Some(code) = code
             && (code.len() > self.options.max_code_bytes || code.is_empty())
         {
-            return self.fail("invalid callback", None, true);
+            return self.fail("invalid callback", None, Phase::Callback);
         }
         if state.is_none() {
-            return self.fail("state mismatch", None, true);
+            return self.fail("state mismatch", None, Phase::Callback);
         }
         let Some(flow) = taken else {
-            return self.fail("state mismatch", None, true);
+            return self.fail("state mismatch", None, Phase::Callback);
         };
         // A flow that started under a session (or under none) completes under the same one only: with the state in a
         // cookie, a logout and another user's login on a shared browser would otherwise let the pending callback finish
@@ -498,7 +510,7 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
         if let Storage::Cookie(cookie) = &self.storage {
             let current = state::session_binding(&cookie.keys, V::NAME, &flow.state, req.session().as_ref());
             if !state::binding_matches(&flow, current.as_deref()) {
-                return self.fail("state mismatch", None, true);
+                return self.fail("state mismatch", None, Phase::Callback);
             }
         }
         // And for the user it was started by, when the callback carries one: a token or an API key does not live in
@@ -510,14 +522,18 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
         };
         let current_user = state::user_binding(keys, V::NAME, &flow.state, req.user().as_ref());
         if !state::user_matches(&flow, &current_user) {
-            return self.fail("state mismatch", None, true);
+            return self.fail("state mismatch", None, Phase::Callback);
         }
         if let Some(error) = error {
             let code = super::client::sanitize_error_code(error);
-            return if error == "access_denied" { self.fail("access denied", None, true) } else { self.fail("provider error", code, true) };
+            return if error == "access_denied" {
+                self.fail("access denied", None, Phase::Callback)
+            } else {
+                self.fail("provider error", code, Phase::Callback)
+            };
         }
         let Some(code) = code else {
-            return self.fail("invalid callback", None, true);
+            return self.fail("invalid callback", None, Phase::Callback);
         };
         let verifier = match &self.storage {
             Storage::Cookie(cookie) => self.options.pkce.then(|| state::derive_verifier(&cookie.keys, V::NAME, &flow.state, flow.issued)),
@@ -527,13 +543,13 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
         // the state is claimed, so a refusal here burns nothing of the flow on the server (the answer still clears the
         // state cookie in the browser, like every refusal of the callback).
         let Some(slot) = self.slots.acquire(client_key(req)) else {
-            self.note("one client address holds its share of the requests to the provider", true, String::new());
-            return StrategyOutcome::Error(ServiceUnavailableException::empty());
+            self.note("one client address holds its share of the requests to the provider", NoteLevel::Warn, String::new());
+            return StrategyOutcome::Error(service_unavailable());
         };
         // Only a state that verified reaches this point; it is redeemed once, so a replay (or a concurrent copy of the
         // same callback) costs no token request.
         if !self.redeemed.claim(&flow.state, Self::now()) {
-            return self.fail("state mismatch", None, true);
+            return self.fail("state mismatch", None, Phase::Callback);
         }
         let host = self.provider.token_host();
         let token = match self.provider.token(Grant::AuthorizationCode { code, verifier: verifier.as_deref() }).await {
@@ -541,22 +557,22 @@ impl<V: OAuth2Validator> OAuth2Strategy<V> {
             Err(OAuth2Error::Rejected { code }) => {
                 self.note(
                     "the provider rejected the code",
-                    true,
+                    NoteLevel::Warn,
                     format!(" by {host}{}", code.as_deref().map(|c| format!(" ({c})")).unwrap_or_default()),
                 );
-                return self.fail("code rejected", code, true);
+                return self.fail("code rejected", code, Phase::Callback);
             }
             Err(OAuth2Error::Busy) => {
-                self.note("too many requests to the provider are in flight", true, String::new());
-                return StrategyOutcome::Error(ServiceUnavailableException::empty());
+                self.note("too many requests to the provider are in flight", NoteLevel::Warn, String::new());
+                return StrategyOutcome::Error(service_unavailable());
             }
             Err(error) => return self.internal("the token request failed", format!(" ({host}): {error}")),
         };
         let profile = match self.provider.profile(V::NAME, &token.access_token, scope).await {
             Ok(profile) => profile,
             Err(OAuth2Error::Busy) => {
-                self.note("too many requests to the provider are in flight", true, String::new());
-                return StrategyOutcome::Error(ServiceUnavailableException::empty());
+                self.note("too many requests to the provider are in flight", NoteLevel::Warn, String::new());
+                return StrategyOutcome::Error(service_unavailable());
             }
             Err(error) => return self.internal("the profile request failed", format!(": {error}")),
         };
@@ -600,7 +616,7 @@ impl<V: OAuth2Validator> Strategy for OAuth2Strategy<V> {
     async fn authenticate(&self, ctx: &ExecutionContext, options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
         if req.method() != http::Method::GET {
-            return self.fail("invalid callback", None, false);
+            return self.fail("invalid callback", None, Phase::Start);
         }
         let Ok(scope) = self.scope(options) else {
             return self.internal("the guard's scope option is not a list of valid scope values", String::new());

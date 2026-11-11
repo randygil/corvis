@@ -3,11 +3,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use jsonwebtoken::{Algorithm, DecodingKey};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 
 use super::extract::JwtExtractor;
 use super::key::{JwtKey, JwtKeyProvider, KeyFamily, allowed_for, default_algorithms, family_of};
-use crate::jwt::TimeRules;
+use crate::jwt::{TimeRules, signature_validation};
 
 /// Largest `clock_tolerance` the strategy starts with.
 pub const MAX_CLOCK_TOLERANCE: Duration = Duration::from_secs(300);
@@ -210,18 +210,56 @@ impl JwtStrategyOptions {
     }
 }
 
-/// How the strategy gets its key.
+#[cfg(test)]
+thread_local! {
+    /// How many `Validation`s the strategy built on this thread, so a test can show that a request built none.
+    pub(crate) static VALIDATION_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The `Validation` of the algorithms a token may use, `None` when there are none (the token is refused with
+/// "invalid algorithm").
+fn validation(algorithms: Vec<Algorithm>) -> Option<Validation> {
+    #[cfg(test)]
+    VALIDATION_BUILDS.with(|c| c.set(c.get() + 1));
+    (!algorithms.is_empty()).then(|| signature_validation(algorithms))
+}
+
+/// The `Validation` of each key family a provider's key can belong to, built once from the configured list (or the
+/// defaults of each family), so narrowing the list to the family of the key a request gets costs nothing.
+pub(crate) struct FamilyValidations {
+    hmac: Option<Validation>,
+    rsa: Option<Validation>,
+    ec: Option<Validation>,
+    ed: Option<Validation>,
+}
+
+impl FamilyValidations {
+    fn new(configured: Option<&[Algorithm]>) -> Self {
+        let of = |family| validation(allowed_for(family, configured));
+        FamilyValidations { hmac: of(KeyFamily::Hmac), rsa: of(KeyFamily::Rsa), ec: of(KeyFamily::Ec), ed: of(KeyFamily::Ed) }
+    }
+
+    /// The `Validation` for a key of `family`, `None` when no algorithm of the family is allowed.
+    pub(crate) fn get(&self, family: KeyFamily) -> Option<&Validation> {
+        match family {
+            KeyFamily::Hmac => self.hmac.as_ref(),
+            KeyFamily::Rsa => self.rsa.as_ref(),
+            KeyFamily::Ec => self.ec.as_ref(),
+            KeyFamily::Ed => self.ed.as_ref(),
+        }
+    }
+}
+
+/// How the strategy gets its key, with the `Validation` built once at startup.
 pub(crate) enum KeySource {
-    Static { key: DecodingKey, allowed: Vec<Algorithm> },
-    Provider(Arc<dyn JwtKeyProvider>),
+    Static { key: DecodingKey, validation: Box<Validation> },
+    Provider { provider: Arc<dyn JwtKeyProvider>, validations: Box<FamilyValidations> },
 }
 
 /// The options after the startup checks.
 pub(crate) struct Resolved {
     pub(crate) extractor: JwtExtractor,
     pub(crate) key: KeySource,
-    /// The configured list; per request it is narrowed to the family of the key.
-    pub(crate) algorithms: Option<Vec<Algorithm>>,
     pub(crate) issuer: Option<Vec<String>>,
     pub(crate) audience: Option<Vec<String>>,
     pub(crate) rules: TimeRules,
@@ -283,11 +321,14 @@ impl JwtStrategyOptions {
         let key = match (&self.key, &self.provider) {
             (Some(_), Some(_)) => return Err("both secret_or_key and secret_or_key_provider are set; give one".into()),
             (None, None) => return Err("no key: set secret_or_key or secret_or_key_provider".into()),
-            (None, Some(provider)) => KeySource::Provider(provider.clone()),
+            (None, Some(provider)) => KeySource::Provider {
+                provider: provider.clone(),
+                validations: Box::new(FamilyValidations::new(self.algorithms.as_deref())),
+            },
             (Some(key), None) => {
                 check_secret(key)?;
                 let family = key.family();
-                let decoding = key.decoding_key()?;
+                let decoding = key.decoding_key()?.clone();
                 let allowed = match &self.algorithms {
                     Some(list) => {
                         let families: Vec<KeyFamily> = list.iter().map(|a| family_of(*a)).collect();
@@ -304,7 +345,9 @@ impl JwtStrategyOptions {
                     }
                     None => allowed_for(family, None),
                 };
-                KeySource::Static { key: decoding, allowed }
+                // `allowed` is never empty: an empty list, and a key family without defaults, were refused above.
+                let validation = validation(allowed).ok_or("algorithms is an empty list")?;
+                KeySource::Static { key: decoding, validation: Box::new(validation) }
             }
         };
         let mut warnings = Vec::new();
@@ -319,7 +362,7 @@ impl JwtStrategyOptions {
                 .push("the token is read from the URL query: URLs end up in access logs, browser history and Referer headers".to_string());
         }
         for name in extractor.cookie_names() {
-            if !name.starts_with("__Host-") {
+            if !crate::http::res::has_cookie_prefix(&name, "__Host-") {
                 warnings.push(format!(
                     "the token is read from the cookie \"{name}\", which has no __Host- prefix: a page on a sibling subdomain can plant a cookie of that name (a request that carries it twice is refused, but a planted one can still be the only one); name it __Host-... on a Secure HTTPS host with Path=/ and no Domain"
                 ));
@@ -328,7 +371,6 @@ impl JwtStrategyOptions {
         Ok(Resolved {
             extractor,
             key,
-            algorithms: self.algorithms.clone(),
             issuer,
             audience,
             rules: TimeRules {
@@ -380,10 +422,10 @@ mod tests {
         assert!(r.rules.require_exp && !r.rules.ignore_expiration);
         assert!(r.warnings.is_empty());
         match r.key {
-            KeySource::Static { allowed, .. } => {
-                assert_eq!(allowed, vec![Algorithm::HS256, Algorithm::HS384, Algorithm::HS512]);
+            KeySource::Static { validation, .. } => {
+                assert_eq!(validation.algorithms, vec![Algorithm::HS256, Algorithm::HS384, Algorithm::HS512]);
             }
-            KeySource::Provider(_) => panic!("static key expected"),
+            KeySource::Provider { .. } => panic!("static key expected"),
         }
     }
 

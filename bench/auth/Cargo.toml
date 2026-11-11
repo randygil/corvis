@@ -1,0 +1,13 @@
+[package]
+name = "corvis-auth-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+corvis = { workspace = true, features = ["jwt", "auth-session"] }
+serde = { workspace = true }
+
+[[bin]]
+name = "corvis-auth-bench"
+path = "src/main.rs"

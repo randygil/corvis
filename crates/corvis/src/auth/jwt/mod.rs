@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, errors::ErrorKind};
+use jsonwebtoken::{DecodingKey, Validation, errors::ErrorKind};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -56,14 +56,14 @@ pub use options::{
 
 pub use crate::jwt::JwtAlgorithm;
 
-use self::key::allowed_for;
 use self::options::{KeySource, Resolved, check_secret};
+use super::outcome::{service_unavailable, user_outcome, with_deadline};
 use super::warn_limit::WarnLimiter;
-use super::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
+use super::{AuthenticateOptions, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Hooks, Injectable, ResolveCtx};
 use crate::http::{HttpException, Request};
-use crate::jwt::{HeaderProblem, VerifyError, audience_matches, check_header, has_three_segments, issuer_matches, verify_claims};
+use crate::jwt::{HeaderProblem, VerifyError, audience_matches, check_header, decode_claims, has_three_segments, issuer_matches};
 use crate::logger::Logger;
 
 /// The class a `PassportStrategy(Strategy)` of `passport-jwt` is written as: the options and `validate`.
@@ -148,10 +148,6 @@ impl From<&'static str> for Denied {
     }
 }
 
-fn unavailable() -> StrategyOutcome {
-    StrategyOutcome::Error(HttpException::new((), http::StatusCode::SERVICE_UNAVAILABLE))
-}
-
 fn fail(reason: &str) -> StrategyOutcome {
     StrategyOutcome::Fail { challenge: Some(json!({ "message": reason })), status: None }
 }
@@ -168,26 +164,12 @@ fn decode_reason(kind: &ErrorKind) -> &'static str {
     }
 }
 
-/// `jsonwebtoken`'s `Validation` for `algorithms`: the crate checks only the signature and the algorithm, the claims
-/// are checked by the strategy with node-jsonwebtoken's rules.
-fn validation_for(algorithms: Vec<Algorithm>) -> Validation {
-    let mut validation = Validation::new(algorithms[0]);
-    validation.algorithms = algorithms;
-    validation.required_spec_claims = Default::default();
-    validation.leeway = 0;
-    validation.validate_exp = false;
-    validation.validate_nbf = false;
-    validation.validate_aud = false;
-    validation
-}
-
 impl Resolved {
-    /// Verifies a token and returns its payload, or the reason it was refused.
-    fn verify(&self, token: &str, key: &DecodingKey, allowed: Vec<Algorithm>) -> Result<Value, &'static str> {
-        if allowed.is_empty() {
-            return Err("invalid algorithm");
-        }
-        let claims = verify_claims(token, key, &validation_for(allowed), &self.rules).map_err(|e| match e {
+    /// Verifies a token whose header was checked and returns its payload, or the reason it was refused. `validation` is
+    /// `None` when no algorithm of the key's family is allowed.
+    fn verify(&self, token: &str, key: &DecodingKey, validation: Option<&Validation>) -> Result<Value, &'static str> {
+        let Some(validation) = validation else { return Err("invalid algorithm") };
+        let claims = decode_claims(token, key, validation, &self.rules).map_err(|e| match e {
             VerifyError::Decode(e) => decode_reason(e.kind()),
             VerifyError::Claim(message) => message,
         })?;
@@ -210,8 +192,8 @@ impl Resolved {
     /// The payload of a verified token, with the key chosen by the options.
     async fn payload(&self, req: &Request, token: &str, log: &Logger) -> Result<Value, Denied> {
         match &self.key {
-            KeySource::Static { key, allowed, .. } => Ok(self.verify(token, key, allowed.clone())?),
-            KeySource::Provider(provider) => {
+            KeySource::Static { key, validation } => Ok(self.verify(token, key, Some(validation))?),
+            KeySource::Provider { provider, validations } => {
                 // The provider runs for every well-formed token, forged ones included: it gets a deadline, and the
                 // dropped future is cancelled.
                 let jwt_key = match tokio::time::timeout(self.key_provider_timeout, provider.key(req, token)).await {
@@ -235,7 +217,7 @@ impl Resolved {
                     log.debug(format!("the key provider returned a key that is not accepted: {problem}"));
                     Denied::Fail("key provider error")
                 })?;
-                Ok(self.verify(token, &decoding, allowed_for(jwt_key.family(), self.algorithms.as_deref()))?)
+                Ok(self.verify(token, decoding, validations.get(jwt_key.family()))?)
             }
         }
     }
@@ -244,9 +226,8 @@ impl Resolved {
 impl<V: JwtValidator> JwtStrategy<V> {
     /// A warning a client can trigger: at most one per reason a minute, with no request data.
     fn warn(&self, reason: &'static str, message: &str) {
-        if let Some(suppressed) = self.warnings.allow(reason, Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-            Logger::new("JwtStrategy").warn(format!("strategy \"{}\": {message}{more}", V::NAME));
+        if let Some(line) = self.warnings.line(reason, Instant::now(), || format!("strategy \"{}\": {message}", V::NAME)) {
+            Logger::new("JwtStrategy").warn(line);
         }
     }
 }
@@ -281,26 +262,19 @@ impl<V: JwtValidator> Strategy for JwtStrategy<V> {
             Err(Denied::Fail(reason)) => return fail(reason),
             Err(Denied::Unavailable(reason, message)) => {
                 self.warn(reason, message);
-                return unavailable();
+                return StrategyOutcome::Error(service_unavailable());
             }
         };
-        let validated = match tokio::time::timeout(self.resolved.validator_timeout, self.validator.validate(req, payload)).await {
-            Ok(result) => result,
-            Err(_) => {
-                self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503");
-                return unavailable();
-            }
-        };
+        let validated = with_deadline(self.resolved.validator_timeout, self.validator.validate(req, payload), || {
+            self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503")
+        })
+        .await;
         match validated {
-            Err(e) => StrategyOutcome::Error(e),
-            Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
-            Ok(Some(user)) => {
-                let info = self.validator.info(&user);
-                match AuthenticatedUser::new(user) {
-                    Ok(user) => StrategyOutcome::Success { user, info },
-                    Err(e) => StrategyOutcome::Error(e),
-                }
-            }
+            Ok(result) => user_outcome(result, |user| self.validator.info(user)),
+            Err(unavailable) => unavailable,
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

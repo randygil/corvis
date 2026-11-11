@@ -69,6 +69,8 @@ pub mod websockets;
 pub mod ws;
 
 mod server;
+#[cfg(any(feature = "jwt", feature = "auth-oauth2"))]
+mod untrusted_json;
 pub use server::ServerOptions;
 #[cfg(feature = "tls")]
 pub use server::tls;

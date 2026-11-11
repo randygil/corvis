@@ -8,14 +8,15 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use http::HeaderMap;
-use http::header::AUTHORIZATION;
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::key::{ApiKey, constant_time_eq};
 use super::options::{ApiKeyStrategyOptions, Place, Resolved};
+use crate::auth::auth_header;
+use crate::auth::outcome::{user_outcome, with_deadline};
 use crate::auth::warn_limit::WarnLimiter;
-use crate::auth::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
+use crate::auth::{AuthenticateOptions, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Hooks, Injectable, ResolveCtx};
 use crate::http::body_parser::latin1;
@@ -202,40 +203,16 @@ fn read_header(headers: &HeaderMap, name: &http::HeaderName, prefix: Option<&str
     if key.is_empty() { Read::Absent } else { Read::Key(latin1(key)) }
 }
 
-/// JavaScript's `\s` inside the latin1 range, as bytes.
-fn is_space(b: u8) -> bool {
-    matches!(b, b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ' | 0xa0)
-}
-
 /// `Authorization: Bearer <key>` as `passport-jwt` parses it (`/(\S+)\s+(\S+)/`, the scheme ignoring case), over the
 /// first value of the header only and without scanning more than `max + 128` bytes of leading space, scheme and
-/// separator.
+/// separator, nor more than `max` bytes of key.
 fn read_bearer(headers: &HeaderMap, max: usize) -> Read {
-    let Some(value) = headers.get_all(AUTHORIZATION).iter().next() else { return Read::Absent };
-    let bytes = value.as_bytes();
-    let window = bytes.len().min(max + 128);
-    let mut i = 0;
-    while i < window && is_space(bytes[i]) {
-        i += 1;
-    }
-    let scheme_start = i;
-    while i < window && !is_space(bytes[i]) && i - scheme_start <= 16 {
-        i += 1;
-    }
-    if !bytes[scheme_start..i].eq_ignore_ascii_case(b"bearer") {
+    let Some(value) = auth_header::first_value(headers) else { return Read::Absent };
+    let Some(credentials) = auth_header::parse(value, Some(max + 128)) else { return Read::Absent };
+    if !credentials.scheme.eq_ignore_ascii_case(b"bearer") {
         return Read::Absent;
     }
-    while i < window && is_space(bytes[i]) {
-        i += 1;
-    }
-    let key_start = i;
-    while i < bytes.len() && !is_space(bytes[i]) {
-        i += 1;
-        if i - key_start > max {
-            return Read::Invalid(TOO_LONG);
-        }
-    }
-    let key = &bytes[key_start..i];
+    let Ok(key) = credentials.token(Some(max)) else { return Read::Invalid(TOO_LONG) };
     if key.is_empty() {
         return Read::Absent;
     }
@@ -258,6 +235,17 @@ fn read_query(req: &Request, name: &str, max: usize) -> Read {
 }
 
 impl Resolved {
+    /// Marks the query names the key is read from as sensitive for this request's log line. An application registers
+    /// them for every request at startup, so inside one nothing is written; the mark covers a strategy used outside an
+    /// application (a guard tested on its own).
+    pub(super) fn mark_query_names(&self, req: &Request) {
+        for name in &self.query_names {
+            if !req.app_redacts(name) {
+                req.redact_query_param(name);
+            }
+        }
+    }
+
     /// The one key of a request, or the reason it has none. Every source is read; a value that is present but
     /// unusable fails the attempt, and two sources with different keys fail it too.
     pub(super) fn extract(&self, req: &Request) -> Result<String, &'static str> {
@@ -307,9 +295,8 @@ impl std::error::Error for ValidatorFailed {}
 impl<V: ApiKeyValidator> ApiKeyStrategy<V> {
     /// A warning a client can trigger: at most one per reason a minute, with no request data.
     fn warn(&self, reason: &'static str, message: &str) {
-        if let Some(suppressed) = self.warnings.allow(reason, Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-            Logger::new("ApiKeyStrategy").warn(format!("strategy \"{}\": {message}{more}", V::NAME));
+        if let Some(line) = self.warnings.line(reason, Instant::now(), || format!("strategy \"{}\": {message}", V::NAME)) {
+            Logger::new("ApiKeyStrategy").warn(line);
         }
     }
 
@@ -337,32 +324,15 @@ impl<V: ApiKeyValidator> Strategy for ApiKeyStrategy<V> {
 
     async fn authenticate(&self, ctx: &ExecutionContext, _options: &AuthenticateOptions) -> StrategyOutcome {
         let req = ctx.request();
-        // The names are also registered for the whole application at startup; the mark stays so a request that
-        // reaches here is covered when the strategy is used outside an application (tests of a guard).
-        for name in &self.resolved.query_names {
-            req.redact_query_param(name);
-        }
+        self.resolved.mark_query_names(req);
         let key = match self.resolved.extract(req) {
             Ok(key) => ApiKey::new(key),
             Err(reason) => return fail(reason),
         };
-        let result = match tokio::time::timeout(self.resolved.validator_timeout, self.validator.validate(req, &key)).await {
-            Ok(result) => result,
-            Err(_) => {
-                self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503");
-                return StrategyOutcome::Error(HttpException::new((), http::StatusCode::SERVICE_UNAVAILABLE));
-            }
-        };
-        match result {
-            Err(e) => StrategyOutcome::Error(self.uniform(e)),
-            Ok(None) => StrategyOutcome::Fail { challenge: None, status: None },
-            Ok(Some(user)) => {
-                let info = self.validator.info(&user);
-                match AuthenticatedUser::new(user) {
-                    Ok(user) => StrategyOutcome::Success { user, info },
-                    Err(e) => StrategyOutcome::Error(e),
-                }
-            }
+        let warn = || self.warn("validator-timeout", "the validator did not answer within validator_timeout; answered 503");
+        match with_deadline(self.resolved.validator_timeout, self.validator.validate(req, &key), warn).await {
+            Ok(result) => user_outcome(result.map_err(|e| self.uniform(e)), |user| self.validator.info(user)),
+            Err(unavailable) => unavailable,
         }
     }
 }
@@ -445,6 +415,33 @@ mod tests {
         assert_eq!(bearer(b"abc"), Err(MISSING));
         assert_eq!(bearer(b"Bearerabc"), Err(MISSING));
         assert_eq!(bearer(b"Bearer\x85abc"), Err(MISSING));
+    }
+
+    fn query_strategy() -> Resolved {
+        resolved(ApiKeyStrategyOptions::new().source(ApiKeySource::query("api_key")))
+    }
+
+    /// Inside an application the names are registered for every request: the strategy writes no extension.
+    #[test]
+    fn no_extension_is_written_inside_an_application() {
+        let app = std::sync::Arc::new(crate::http::AppRedaction::new(["api_key".to_string()]));
+        let req = request("/d?api_key=SECRET", &[]).with_app_redaction(Some(app));
+        query_strategy().mark_query_names(&req);
+        assert_eq!(req.marked_query_params(), None);
+        assert!(!req.redacted_url().contains("SECRET"), "the application's names hide it");
+        // An application whose names do not hold the strategy's still gets the mark.
+        let other = std::sync::Arc::new(crate::http::AppRedaction::new(["token".to_string()]));
+        let req = request("/d?api_key=SECRET", &[]).with_app_redaction(Some(other));
+        query_strategy().mark_query_names(&req);
+        assert_eq!(req.marked_query_params(), Some(vec!["api_key".to_string()]));
+    }
+
+    #[test]
+    fn a_strategy_outside_an_application_still_marks_its_names() {
+        let req = request("/d?api_key=SECRET&page=2", &[]);
+        query_strategy().mark_query_names(&req);
+        assert_eq!(req.marked_query_params(), Some(vec!["api_key".to_string()]));
+        assert_eq!(req.redacted_url(), "/d?api_key=REDACTED&page=2");
     }
 
     #[test]

@@ -386,8 +386,10 @@ impl MemorySessionStore {
                 }
             }
             // Room for the new record: expired ones first, then the anonymous ones, then the user with the most sessions.
+            // Expired records go a batch at a time, only until the record fits: the rest go with later writes and on
+            // `load`, so no write pays for the whole store.
             while inner.entries.len() >= self.max_sessions || inner.total_bytes + size > self.max_total_bytes {
-                if inner.purge(now, usize::MAX) > 0 {
+                if inner.purge(now, PURGE_BATCH) > 0 {
                     continue;
                 }
                 if !inner.evict_one() {
@@ -413,10 +415,10 @@ impl MemorySessionStore {
                 inner.remove(id);
             }
         }
-        if let Some(suppressed) = self.warnings.allow("unreadable", Instant::now()) {
-            let more = if suppressed > 0 { format!(" ({suppressed} more since the last warning)") } else { String::new() };
-            crate::logger::Logger::new("MemorySessionStore")
-                .warn(format!("a stored session record could not be read and was destroyed{more}"));
+        if let Some(line) =
+            self.warnings.line("unreadable", Instant::now(), || "a stored session record could not be read and was destroyed".to_string())
+        {
+            crate::logger::Logger::new("MemorySessionStore").warn(line);
         }
     }
 }

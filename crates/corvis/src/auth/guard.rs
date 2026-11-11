@@ -1,7 +1,6 @@
 //! `AuthGuard`: the port of `AuthGuard('name')` of the original passport integration over `passport.authenticate`.
 
 use std::any::Any;
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -142,12 +141,12 @@ impl AuthGuard {
     }
 
     /// The names this guard runs, or why it cannot run: an empty chain, no default configured.
-    fn names<'a>(&'a self, authenticator: &Authenticator) -> Result<Cow<'a, [String]>, String> {
+    fn names<'a>(&'a self, authenticator: &'a Authenticator) -> Result<&'a [String], String> {
         match &self.names {
             Names::Explicit(names) if names.is_empty() => Err("AuthGuard::chain was given no strategy names".to_string()),
-            Names::Explicit(names) => Ok(Cow::Borrowed(names.as_slice())),
-            Names::Default => match authenticator.default_strategies() {
-                Some(names) if !names.is_empty() => Ok(Cow::Owned(names)),
+            Names::Explicit(names) => Ok(names.as_slice()),
+            Names::Default => match authenticator.default_names() {
+                Some(names) if !names.is_empty() => Ok(names),
                 _ => Err("AuthGuard::default() is used but no default strategy is configured: import PassportModule::register(PassportModuleOptions::new().default_strategy(..))".to_string()),
             },
         }
@@ -212,7 +211,7 @@ impl CanActivate for AuthGuard {
             .ok_or_else(|| internal("the Authenticator provider was not found"))?;
         let names = self.names(&authenticator).map_err(internal)?;
         let req = ctx.request();
-        let failures = match authenticator.authenticate(ctx, &names, &self.options).await? {
+        let failures = match authenticator.authenticate(ctx, names, &self.options).await? {
             // The user is stored only when it is a real value; the authenticator already turns an empty one into a
             // failure, and this refuses it again for a result built by other means.
             result @ AuthResult::Success { .. } => {

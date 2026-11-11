@@ -138,6 +138,28 @@ diferir según el usuario.
 | `ignoreExpiration: true` | `.ignore_expiration(true)`, con una advertencia al arrancar |
 | `passReqToCallback` | siempre activa: `validate(req, payload)` |
 | `jwt.sign(payload, { expiresIn })` (`jsonwebtoken`) | `JwtService::sign` con `JwtModuleOptions::expires_in(..)`, o `sign_with(.., JwtSignOptions { expires_in, .. })` |
+| `jwt.sign(payload, { notBefore, jwtid })` | `JwtSignOptions { not_before, jwt_id, .. }` |
+
+`sign` y `sign_with` siguen las reglas del módulo JWT original (11.0.2 sobre `jsonwebtoken` 9.0.3), comprobadas contra una
+grabación de él:
+
+- Los `iat`, `exp` y `nbf` de un payload objeto deben ser números; si no, el error es `"iat" should be a number of seconds`.
+- `iat` es el del payload cuando es un número distinto de `0`, y el reloj en caso contrario. `nbf` (`not_before`) y `exp`
+  (`expires_in`, por llamada o del módulo) se cuentan desde ese `iat`. Un número solo en `expires_in` o `not_before`
+  son segundos.
+- Un claim del payload junto con su opción es un error; nada se sobrescribe. Los pares son `exp` y `expires_in`, `nbf`
+  y `not_before`, `aud` y el `audience` del módulo, `iss` y el `issuer` del módulo, `sub` y `subject`, `jti` y
+  `jwt_id`. Los textos de error son los del original, por ejemplo `Bad "options.subject" option. The payload already has an "sub" property.`
+- Los claims se añaden después de las claves propias del payload, en el orden `iat`, `nbf`, `exp`, `aud`, `iss`, `sub`, `jti`.
+- Un payload que es una cadena se firma tal cual, con una cabecera sin `typ`, y se rechaza si hay alguna opción de firma
+  (`Payload as string is not allowed with the following sign options: expiresIn`). Un número o un booleano se firma como su
+  texto JSON, también sin `typ`. Un arreglo o `null` se rechaza (`Expected "payload" to be a plain object.`).
+- Una diferencia deliberada: un payload que es una cadena cuyo texto es a su vez un objeto o un arreglo JSON se rechaza.
+  El original lo firma, y el texto pasa a ser los claims del token, así que firmar una cadena que eligió un cliente (un
+  correo, un enlace) le entregaría a ese cliente un token para cualquier sujeto. Pasa el objeto mismo.
+
+`not_before` y `jwt_id` son campos públicos de `JwtSignOptions`, así que un literal de struct necesita `..Default::default()`.
+Las versiones anteriores de Corvis sobrescribían `exp` y `sub`, y dejaban que el payload ganara para `iss` y `aud`.
 
 Cada opción, los extractores y las reglas de algoritmos están en [la referencia de JWT](/es/recipes/passport#la-estrategia-jwt).
 
@@ -232,6 +254,7 @@ no tienen una petición que grabar. Son las mismas diferencias que la referencia
 | un payload que es una cadena se pasa a `validate` | el payload debe ser un objeto JSON | un validador siempre lee claims |
 | `fromHeader` solo encuentra nombres escritos en minúsculas | los nombres de cabecera se comparan sin distinguir mayúsculas | las cabeceras HTTP no distinguen mayúsculas |
 | sin límite en la longitud del token | 8192 bytes por defecto, comprobados antes de decodificar | trabajo acotado para una petición sin autenticar |
+| `mutatePayload: true` escribe los claims en el objeto del llamador | no existe esa opción: el payload se toma prestado y el valor del llamador nunca cambia (el token es el mismo) | una función que firma no cambia su argumento |
 | gana la primera cookie de un nombre | una cookie enviada dos veces no es un token | una cookie plantada desde un subdominio hermano no debe autenticar |
 | el provider de claves y `validate` esperan para siempre | ambos tienen un plazo y responden un `503` igual para todo token | una dependencia lenta no debe retener todas las peticiones |
 | cualquier longitud de secreto, `ES512` | un secreto HMAC de menos de 32 bytes detiene el arranque; `ES512` no está disponible | RFC 7518 sección 3.2; `jsonwebtoken` 9 no tiene `ES512` |

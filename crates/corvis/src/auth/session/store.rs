@@ -36,7 +36,7 @@ impl SessionStoreError {
 ///   another request cannot be brought back by a slower request that started before it).
 ///
 /// A record is the JSON object `express-session` stores: the session data, the `cookie` object and the reserved key
-/// `__corvis` with the timestamps the middleware enforces expiry from. The `ttl` of a write is how long the record
+/// `__corvis` with the timestamps the middleware enforces expiry from (`touch` receives only those two keys). The `ttl` of a write is how long the record
 /// is worth keeping; a store should drop it after that, but expiry does not depend on it: the middleware refuses a
 /// record whose timestamps are past the idle or the absolute timeout whatever the store kept.
 ///
@@ -73,8 +73,9 @@ pub trait SessionStore: Send + Sync + 'static {
     async fn update(&self, id: &str, record: &Value, ttl: Duration) -> Result<bool, SessionStoreError>;
 
     /// Renews the record of `id` after a request that did not change the session: the `ttl`, and the timestamps of
-    /// `record` (`cookie`, `__corvis`), and nothing else. It must not write the data of `record`: that copy was read
-    /// when the request began and may be stale. `Ok(false)` when there is no such session: nothing is written.
+    /// `record`, and nothing else. `record` holds only `cookie` and `__corvis`, none of the data: a request that changed
+    /// nothing must not overwrite what another request saved. `Ok(false)` when there is no such session: nothing is
+    /// written.
     async fn touch(&self, id: &str, record: &Value, ttl: Duration) -> Result<bool, SessionStoreError>;
 
     /// Removes the record of `id`: `Ok(true)` when there was one, `Ok(false)` when it was already gone or expired
