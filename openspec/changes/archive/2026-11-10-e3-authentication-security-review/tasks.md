@@ -63,7 +63,7 @@ reviews what they shipped, so nothing below starts before that.
   "OAuth2 login start over the limit", "Callback over the limit", "Same account from many addresses", "Username
   moved to the query string", "Nested field name", "Missing username", "Existing and unknown accounts", "Storage
   keys"; verify every scenario of the spec has a test with its name
-- [ ] 4.4 Run the corvis-parity check after 4.2 (code compiled in every build changed); verify the parity-verifier
+- [x] 4.4 Run the corvis-parity check after 4.2 (code compiled in every build changed); verify the parity-verifier
   reports 0 apidiff differences for consi, facten and houseplan
 
 ## 5. Fuzz targets
@@ -73,7 +73,7 @@ reviews what they shipped, so nothing below starts before that.
   shape makes `gate_matches_model` fail with a minimized case
 - [x] 5.2 `session_state_machine`, `oauth2_callback` and `redirect_targets` in the same file; verify the same two
   runs, and commit any `proptest-regressions` seed a failure produced together with its fix
-- [ ] 5.3 CI: add the invariant, login-throttle and defaults binaries to the test jobs and `fuzz_auth` to the `fuzz`
+- [x] 5.3 CI: add the invariant, login-throttle and defaults binaries to the test jobs and `fuzz_auth` to the `fuzz`
   job of `.github/workflows/ci.yml` (lines 143-177) and of `.github/workflows/nightly.yml` (lines 33-69), each with
   the four auth features; verify in the pull request's CI log that the test names appear (not zero tests run)
 
@@ -141,12 +141,34 @@ reviews what they shipped, so nothing below starts before that.
   `auth/threat-model` ("Renamed test file", "Default changed in code only") and `infra/auth-dependencies`, plus one
   per finding fixed in this change
 - [x] 9.5 Docs pages updated in English (`docs/`) and Spanish (`docs/es/`); `npm run docs:check` in `docs/` passes
-- [ ] 9.6 Framework runtime code changed (`ThrottlerGuard::as_any`, the startup warning, any fix): run the
+- [x] 9.6 Framework runtime code changed (`ThrottlerGuard::as_any`, the startup warning, any fix): run the
   corvis-parity check again at the end; verify the three port apps (consi, facten, houseplan) keep 0 apidiff
   differences
 - [x] 9.7 `cargo deny check` and `cargo audit` pass with the new `deny.toml` entries
 - [x] 9.8 The findings register is complete: every finding is fixed with a named test or has an issue number, and
   the archive notes list them with severities
+
+## Verification
+
+Checked on `dev` at caa6dd3 (2026-11-10):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy with the feature loop, test with the auth-review step, fuzz with `fuzz_auth`, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| `cargo test --workspace` | 1996 passed, 0 failed, 96 ignored |
+| `cargo check -p corvis --tests --features <f>` for compression, auth-local, auth-api-key, auth-session, auth-oauth2, socket-io | no warnings |
+| `cargo deny check` | advisories, bans, licenses, sources ok |
+| Cross-cutting review, round 1 (scope items 1 to 6) | nothing high or critical; 3 low, fixed (JWT cookie sent twice, guard-order warning through composite guards, OAuth2 flow bound to its session) |
+| Cross-cutting review, round 2 (scope items 7 to 12) | nothing high or critical; 1 medium outside the auth modules, filed as #177 (`CacheInterceptor` on authenticated routes) and warned about in the docs; 1 low fixed (deadlines of the application's callbacks); Socket.IO items filed as #178 |
+| Re-review of the fixes (round 3) | the five fixes held; 2 low fixed (OAuth2 flow bound to the user that started it, bounded guard walk) |
+| Parity, consi | 832 checks equal, 0 different; databases equivalent |
+| Parity, facten | 727 checks equal, 0 different; route tables identical; databases equivalent |
+| Parity, houseplan | 636 checks equal, 0 different; route tables identical; databases equivalent |
+
+Notes: no high or critical finding is open, so the documentation change (#47) is not blocked; it must carry the
+warnings about #177 and #178. The two fixes of round 3 were verified by their regression tests and by rerunning the
+reviewer's own proofs of concept, not by a fourth review round. The defaults and source checks read the threat model
+page with normalized line endings, since a checkout that converts them hands it over with CRLF.
 
 ## Workflow follow-up
 
