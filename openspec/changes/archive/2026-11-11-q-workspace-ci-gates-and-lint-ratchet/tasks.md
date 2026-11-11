@@ -75,7 +75,7 @@ are installed with `rustup toolchain install <version> --profile minimal` and re
   warnings` and the per-feature clippy loop of `corvis` pass
 - [x] 6.2 `cargo test --workspace` passes; `cargo fmt --all --check` passes; every `uses:` of a non-`actions/*` action
   in `ci.yml` names a 40-character SHA
-- [ ] 6.3 The new jobs pass on the pull request: `doc`, `msrv`, `features`, `lint-ratchet` (and `semver` reports)
+- [x] 6.3 The new jobs pass on the pull request: `doc`, `msrv`, `features`, `lint-ratchet` (and `semver` reports)
 - [x] 6.4 Write in Implementation notes the exact job names to add as required status checks of `main` (`doc`, `msrv`,
   `features`, `lint-ratchet`) for the maintainer, and `CONTRIBUTING.md` lists them
 - [x] 6.5 `cargo deny check`, `cargo audit`, `node scripts/check-naming.mjs` and `node scripts/check-crate-files.mjs`
@@ -96,3 +96,17 @@ are installed with `rustup toolchain install <version> --profile minimal` and re
 - Ask the maintainer about design.md Open questions 1 (`tokio` `full`) and 2 (`serde_json` `preserve_order`); open an
   issue for each decision taken.
 - After the first crates.io release: make `semver` required with the published version as baseline.
+
+## Verification
+
+Checked on `dev` at ed1e480 (2026-11-11):
+
+| Check | Result |
+|---|---|
+| CI on `dev` (fmt, clippy, test, fuzz, deny, audit, docs, packaging; Linux and Windows) | all jobs passed |
+| New jobs `doc`, `msrv`, `features`, `lint-ratchet` | passed on the push to `dev`; `semver` runs on pull requests only and was skipped |
+| `cargo test --workspace` | 2111 passed |
+| `cargo test -p corvis --features socket-io` | 1665 passed |
+| Lint ratchet baseline | 2,712 findings, measured on Linux with all features after the rebase |
+| `cargo deny check`, `cargo audit`, `node scripts/check-naming.mjs`, `node scripts/check-crate-files.mjs` | ok |
+| Security review, parity | not needed: no runtime code, `Cargo.lock` and `rust-version` unchanged |
