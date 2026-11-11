@@ -597,3 +597,26 @@ removes the cause on Corvis' side (CONNECT and what the connection handler emits
 reference), but separate writes can still reach a slow client in one read, as they do from the reference. For the
 acceptance runs of task 7.4 the two tests are therefore run one at a time (`-- --test-threads=1`), so the control
 measures the suite and not the contention between the two runs; the result of each test is recorded separately.
+
+### 2.3 Benchmark before
+
+`LARGE_SIZE=16384 bash bench/socket-io/run.sh` on `7aab240` (the code of `dev` with the benchmark added), Windows 11,
+the release binary in the shared target directory. Each figure is the median of three runs (minimum to maximum).
+
+| Scenario | Transport | Connections | Messages | Payload | Runs | Messages/s | p50 (ms) | p99 (ms) | Max (ms) | Allocations/msg | Bytes/msg | Peak RSS (MiB) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| broadcast | polling | 200 | 100 | 64 B | 3 | 1175668 (1083183 to 1242491) | 7.23 (5.11 to 9.09) | 13.47 (12.88 to 14.49) | 15.49 (15.08 to 16.31) | 3.3 (3.3 to 3.7) | 864 (846 to 954) | 50.3 (49.2 to 50.8) |
+| broadcast | polling | 200 | 100 | 16384 B | 3 | 41012 (40004 to 41732) | 392.48 (342.09 to 401.11) | 469.00 (427.62 to 469.18) | 483.59 (474.78 to 493.13) | 3.4 (3.4 to 3.8) | 42694 (38126 to 43231) | 77.7 (72.2 to 78.9) |
+| broadcast | websocket | 1000 | 100 | 64 B | 3 | 127411 (117981 to 227488) | 7.86 (7.58 to 9.18) | 33.17 (27.43 to 33.41) | 53.34 (49.66 to 57.05) | 3.0 (3.0 to 3.0) | 181 (181 to 181) | 76.8 (74.8 to 77.5) |
+| broadcast | websocket | 1000 | 100 | 16384 B | 3 | 65566 (45432 to 65579) | 9.90 (9.61 to 18.95) | 118.64 (99.21 to 119.55) | 205.43 (202.69 to 283.91) | 3.0 (3.0 to 3.0) | 16764 (16764 to 16764) | 93.5 (90.4 to 94.8) |
+| emit | polling | 200 | 100 | 64 B | 3 | 26319 (22535 to 28580) | 6.18 (5.47 to 7.40) | 24.01 (18.15 to 24.98) | 38.63 (26.35 to 45.99) | 133.0 (133.0 to 133.0) | 25757 (25757 to 25757) | 48.1 (47.2 to 48.5) |
+| emit | websocket | 1000 | 100 | 64 B | 3 | 55823 (46848 to 76890) | 13.91 (11.75 to 14.65) | 60.65 (31.32 to 89.74) | 109.48 (50.69 to 145.16) | 39.0 (39.0 to 39.0) | 1968 (1968 to 1969) | 78.8 (75.7 to 81.5) |
+| server-emit | polling | 200 | 100 | 64 B | 3 | 599402 (502452 to 618867) | 6.80 (5.20 to 9.57) | 16.91 (15.81 to 17.29) | 21.83 (20.39 to 22.73) | 19.3 (18.7 to 20.1) | 1929 (1842 to 2146) | 51.1 (47.4 to 51.7) |
+| server-emit | polling | 200 | 100 | 16384 B | 3 | 36668 (36048 to 38487) | 4.37 (4.18 to 4.42) | 28.37 (27.78 to 30.91) | 53.47 (49.79 to 56.60) | 44.3 (44.0 to 45.0) | 141330 (140979 to 141487) | 60.2 (59.5 to 60.4) |
+| server-emit | websocket | 1000 | 100 | 64 B | 3 | 230050 (123227 to 232466) | 3.16 (1.91 to 3.18) | 15.74 (12.40 to 19.19) | 48.53 (43.50 to 189.28) | 17.3 (17.3 to 17.3) | 864 (863 to 866) | 78.3 (73.7 to 78.9) |
+| server-emit | websocket | 1000 | 100 | 16384 B | 3 | 36285 (29786 to 53455) | 0.48 (0.26 to 0.92) | 23.08 (7.76 to 23.70) | 152.21 (85.67 to 428.29) | 17.3 (17.3 to 17.3) | 115431 (115430 to 115431) | 114.9 (111.2 to 118.8) |
+
+Two things found while making the run: the benchmark first ran out of ephemeral ports over the matrix (connections the
+client closes stay in `TIME_WAIT`, and a run opens thousands), so its client sockets are reset on close (zero linger);
+and the polling `emit` figure (25,757 bytes per message for a 64-byte payload) is dominated by the per-request copy of
+the 4 KiB cookie that Decision 3 removes.

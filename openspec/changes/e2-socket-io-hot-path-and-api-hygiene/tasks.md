@@ -29,7 +29,7 @@ to applications and clients" says so.
   `SKIP_BUILD`, the missing-binary message, one server at a time) and `bench/socket-io/README.md` (prerequisites, variables,
   where the binary is built); add `bench/socket-io/raw/` to `.gitignore`; verify the two scenarios of the spec requirement
   "The Socket.IO benchmark drives emit and broadcast" by hand
-- [ ] 2.3 Before run: the full matrix plus `server-emit` and `broadcast` with a 16 KiB payload; copy the results table into
+- [x] 2.3 Before run: the full matrix plus `server-emit` and `broadcast` with a 16 KiB payload; copy the results table into
   Implementation notes ("Benchmark before"); verify `git status` shows no `bench/socket-io/raw/` file
 
 ## 3. Release wakeups (design.md Decision 2)
