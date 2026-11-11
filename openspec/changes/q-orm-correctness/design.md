@@ -872,3 +872,9 @@ arithmetic ones above).
 Port applications: no new change needed (none uses a Json null inside a value, a `Float` as text or a `Decimal` text
 near the bound); the round-1 item stands (`facten-api/src/emissions/emissions.service.rs:157`, `json!({ "$type":
 "DbNull" })` becomes `corvis_orm::db_null()`).
+
+Final checks of round 2 (after the last code change, `070064c`): fmt, clippy (workspace, and corvis-orm without
+default features), the feature checks, `cargo build --workspace --all-targets` and `cargo doc -p corvis-orm`: clean.
+`CORVIS_ORM_PG_REQUIRED=1 cargo test --workspace --no-fail-fast`: 2202 passed, 0 failed, 98 ignored. `cargo deny`,
+`check-naming`, `docs:check`, `openspec validate --strict`: pass. Lint ratchet: nothing above the baseline (the same
+two Windows-only `corvis` counts below it). No test database left on the server.
