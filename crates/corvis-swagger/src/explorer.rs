@@ -28,7 +28,8 @@ pub struct SwaggerDocumentOptions {
     /// Modules to scan (`include: [CatsModule]`); empty = every module.
     pub include: Vec<TypeId>,
     /// Extra models added to `components.schemas` (`extraModels`), as type markers
-    /// (see [`crate::model`]).
+    /// (see [`SwaggerType`](crate::types::SwaggerType) and the [`api_extra_models!`](crate::api_extra_models!)
+    /// macro, which builds them).
     pub extra_models: Vec<Value>,
     /// Leave the global prefix out of the paths (`ignoreGlobalPrefix`).
     pub ignore_global_prefix: bool,

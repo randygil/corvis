@@ -12,10 +12,13 @@ readme = "README.md"
 keywords = ["corvis", "macros", "web", "framework"]
 categories = ["development-tools::procedural-macro-helpers"]
 
+[lints]
+workspace = true
+
 [lib]
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["full", "extra-traits", "visit-mut"] }
-quote = "1"
-proc-macro2 = "1"
+syn = { workspace = true, features = ["visit-mut"] }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }

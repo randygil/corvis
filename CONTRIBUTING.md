@@ -121,8 +121,10 @@ secrets and starts its mock OAuth2 provider). The script exits with status 1 whe
 ## Continuous integration
 
 Work lands on `dev`, the integration branch, and reaches `main` through a pull request. `main` is protected: every CI
-job is a required status check (for administrators too), so a change reaches `main` only through a pull request whose
-jobs all passed, and force pushes and deletion are blocked. `dev` only blocks force pushes and deletion.
+job except `semver` is a required status check (for administrators too), so a change reaches `main` only through a
+pull request whose jobs all passed, and force pushes and deletion are blocked. `dev` only blocks force pushes and
+deletion. The required checks are `fmt`, `clippy (ubuntu-latest)`, `clippy (windows-latest)`, `test (ubuntu-latest)`,
+`test (windows-latest)`, `fuzz`, `deny`, `audit`, `docs`, `packaging`, `doc`, `msrv`, `features` and `lint-ratchet`.
 
 The workflow `.github/workflows/ci.yml` runs on every pull request to `main` or `dev`, on every push to `main` or
 `dev`, and can be started by hand from the Actions tab (`workflow_dispatch`). A newer push to the same pull request
@@ -139,12 +141,57 @@ command in the table (on PowerShell, set environment variables first, for exampl
 | `audit` | Linux | `cargo audit` |
 | `docs` | Linux | `node scripts/check-naming.mjs`, then `npm ci` and `npm run docs:check` in `docs/` |
 | `packaging` | Linux | the commands of [Packaging](#packaging) |
+| `doc` | Linux | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude corvis-cli --no-deps --all-features`, then the same with `-p corvis-cli` |
+| `msrv` | Linux | `cargo +<rust-version> check --locked -p <each published crate>`, with default features and with `--all-features` |
+| `features` | Linux | `RUSTFLAGS="-D warnings" cargo hack check --each-feature --no-dev-deps -p corvis-orm -p corvis-swagger` |
+| `lint-ratchet` | Linux | `node scripts/lint-ratchet.mjs` (see [Lint floor and lint ratchet](#lint-floor-and-lint-ratchet)) |
+| `semver` | Linux, pull requests only; not required | `cargo semver-checks --workspace --baseline-rev $(git merge-base HEAD origin/main)` |
 
 CI uses Rust 1.99.0, set once in `RUST_TOOLCHAIN` at the top of `ci.yml` (and repeated in `nightly.yml`), so a new
 stable release cannot turn pull requests red without a code change. Bumping it is its own pull request that fixes any
 new lints. `cargo deny` (0.20.2) reads `deny.toml` and `cargo audit` (0.22.2) reads `.cargo/audit.toml`; the
 workflow passes no ignore flags, so every exception lives in those files with its reason. Install the same versions
-with `cargo install --locked cargo-deny@0.20.2 cargo-audit@0.22.2`.
+with `cargo install --locked cargo-deny@0.20.2 cargo-audit@0.22.2`, and the tools of the new jobs with
+`cargo install --locked cargo-hack@0.6.46 cargo-semver-checks@0.51.0`.
+
+`msrv` installs the toolchain named by `rust-version` in the root `Cargo.toml` (read by the job, so raising
+`rust-version` needs no other change) and checks the library and binary targets of the published crates with the
+committed `Cargo.lock`; the test suites may use the toolchain of `RUST_TOOLCHAIN`. `features` covers the crates the
+clippy loop over the `corvis` features does not. `semver` reports public API changes against the merge base with
+`main` in its job summary; it is informational until the first release to crates.io (before 1.0, public API that must
+change changes now), then it becomes required with the published version as the baseline.
+
+### Lint floor and lint ratchet
+
+The lints that no published crate triggers are the lint floor: `[workspace.lints]` in the root `Cargo.toml`, inherited
+by every published crate with `[lints] workspace = true`. They are warnings, so every job that denies warnings rejects
+a new finding.
+
+The lints that still have findings (`missing_docs`, `unreachable_pub`, `missing_debug_implementations`, and clippy's
+`unwrap_used`, `expect_used`, `panic`, `undocumented_unsafe_blocks`, `missing_panics_doc`, `missing_errors_doc`,
+`print_stdout` and `print_stderr`) cannot be added there: the first CI run would fail. `scripts/lint-ratchet.mjs`
+counts them instead, per published crate, lint and file, together with the doc examples fenced as ```` ```ignore ````
+without a reason and the `#[allow(...)]` and `#[expect(...)]` attributes under `src/` that name one of those lints (or
+`warnings`, `clippy::restriction`, `clippy::pedantic`), and compares the counts with `lint-baseline.json`. Silencing a
+finding therefore raises a count just as the finding would. The counts only go down:
+
+- A count above the baseline fails the job, which prints the crate, the lint, the old and new counts and the findings
+  in the files whose count went up (`file:line:column`). Fix them; an `#[allow]` is counted too, so it is not a way around the baseline.
+- A count below the baseline fails too, with `lower the baseline: node scripts/lint-ratchet.mjs --update`. Run it and
+  commit `lint-baseline.json` with the fix, so the baseline records the progress. `--update` refuses to raise a count;
+  `--update --allow-increase` exists for a toolchain bump that renames or adds findings, with the reason in the pull
+  request.
+- A lint at zero in every crate is reported as ready to move: add it to `[workspace.lints]` and remove it from the
+  `RATCHET` list of the script.
+
+Test code is counted only for `undocumented_unsafe_blocks`; `clippy.toml` allows `unwrap`, `expect` and `panic!` in
+tests. `print_stdout` and `print_stderr` are not counted in `corvis-cli`, which prints by design. A doc example that
+cannot run states why on its fence, ```` ```ignore (needs a database) ````, and is not counted; prefer `no_run`, which
+still compiles it.
+
+The job runs on Linux and the baseline holds the Linux counts (code under `cfg(windows)` is not compiled there). On
+Windows the counts differ; to reproduce the job, run the script in WSL or a Linux container. `node
+scripts/lint-ratchet.mjs --self-test` checks the counting without building.
 
 The workflow `.github/workflows/nightly.yml` runs every day at 07:17 UTC on `dev` and can be started by hand on any
 branch (Actions > Nightly checks > Run workflow). It runs the fuzzing suites with 100,000 cases per property (the
@@ -170,8 +217,9 @@ done
 
 The check needs no build. It fails when a copy differs from the root, when a published crate lacks `description`,
 `license`, `authors`, `repository`, `homepage`, `rust-version`, `readme`, one to five `keywords` or a category, when
-those shared fields are not inherited from `[workspace.package]`, or when a dependency on a workspace crate has no
-version:
+those shared fields are not inherited from `[workspace.package]`, when a dependency on a workspace crate has no
+version, or when a crates.io dependency declared more than once (by two published crates, or in two dependency
+sections of one) is not taken from `[workspace.dependencies]` (`regex = { workspace = true }`; a crate that needs more adds features at its use site):
 
 ```sh
 node scripts/check-crate-files.mjs
@@ -193,8 +241,8 @@ cargo package --list -p corvis-swagger --allow-dirty    # the files of one packa
 
 Delete `target/package/` afterwards: it holds a copy of each crate and its build output. Publishing is a separate,
 explicitly approved step; never run `cargo publish` without `--dry-run`. The order is the one above: each proc-macro
-crate, then the crate that uses it. `rust-version` in `[workspace.package]` is the lowest toolchain on which
-`cargo check --workspace` passes with the committed `Cargo.lock`; it is informative, and CI runs one toolchain only.
+crate, then the crate that uses it. `rust-version` in `[workspace.package]` is the lowest toolchain on which the
+published crates build with the committed `Cargo.lock`; the `msrv` job checks it.
 
 ## Socket.IO differential harness
 

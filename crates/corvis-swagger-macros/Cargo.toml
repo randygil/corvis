@@ -12,10 +12,13 @@ readme = "README.md"
 keywords = ["corvis", "macros", "openapi"]
 categories = ["development-tools::procedural-macro-helpers"]
 
+[lints]
+workspace = true
+
 [lib]
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["full", "extra-traits"] }
-quote = "1"
-proc-macro2 = "1"
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }

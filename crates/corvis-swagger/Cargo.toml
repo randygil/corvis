@@ -12,12 +12,15 @@ readme = "README.md"
 keywords = ["openapi", "swagger", "zod", "corvis"]
 categories = ["web-programming::http-server", "web-programming"]
 
+[lints]
+workspace = true
+
 [dependencies]
 corvis = { workspace = true }
 corvis-swagger-macros = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-regex = "1"
+regex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

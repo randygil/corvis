@@ -3,9 +3,10 @@
 ## ADDED Requirements
 
 ### Requirement: Rustdoc builds without warnings
-CI SHALL build the documentation of every workspace crate with `cargo doc --workspace --no-deps --all-features` and
+CI SHALL build the documentation of every workspace crate with `cargo doc --no-deps --all-features` and
 `RUSTDOCFLAGS=-D warnings` in a job named `doc`, so a broken or private intra-doc link, an invalid HTML tag or a bare
-URL in a doc comment fails the pull request.
+URL in a doc comment fails the pull request. `corvis-cli`, whose binary has the name of the `corvis` library, MAY be
+documented in a step of its own so the two never write the same output folder at once.
 
 #### Scenario: A broken intra-doc link
 - **WHEN** a pull request adds a doc comment that links to an item that does not exist

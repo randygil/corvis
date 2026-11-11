@@ -2,3 +2,8 @@
 # boxing them would change it. Raise the `result_large_err` limit instead of allowing the lint, so an
 # error type that grows well past today's size is still reported.
 large-error-threshold = 256
+# `unwrap_used`, `expect_used` and `panic` are counted by the lint ratchet (scripts/lint-ratchet.mjs) in library code
+# only: a test that unwraps states what it expects to hold.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

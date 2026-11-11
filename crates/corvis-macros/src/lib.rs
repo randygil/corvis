@@ -240,9 +240,9 @@ misplaced! {
     put => "#[put] must be used on a method inside a `#[routes] impl` block",
     patch => "#[patch] must be used on a method inside a `#[routes] impl` block",
     delete => "#[delete] must be used on a method inside a `#[routes] impl` block",
-    public => "#[public] must be placed below #[controller] or #[websocket_gateway], or on a route method inside `#[routes]` or a #[subscribe_message] method inside `#[handlers]`",
+    public => "#[public] must be placed below #[controller] or #[websocket_gateway], or on a route method inside `#[routes]` or a `#[subscribe_message]` method inside `#[handlers]`",
     use_guards => "#[use_guards] must be placed below #[controller] or on a method inside `#[routes]`",
     use_interceptors => "#[use_interceptors] must be placed below #[controller] or on a method inside `#[routes]`",
     use_pipes => "#[use_pipes] must be placed below #[controller] or on a method inside `#[routes]`",
-    use_filters => "#[use_filters] must be placed below #[controller] or #[websocket_gateway], or on a method inside `#[routes]` or on a #[subscribe_message] method inside `#[handlers]`",
+    use_filters => "#[use_filters] must be placed below #[controller] or #[websocket_gateway], or on a method inside `#[routes]` or on a `#[subscribe_message]` method inside `#[handlers]`",
 }

@@ -5,7 +5,7 @@
 //! ```
 //!
 //! `en` is the default. Other languages can be supplied the same way with an
-//! [`ErrorMap`](super::ErrorMap) (`z::error_fn(|iss| ...)`).
+//! [`ErrorMap`] (`z::error_fn(|iss| ...)`).
 
 use std::sync::Arc;
 
