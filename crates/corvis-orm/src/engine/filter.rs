@@ -746,6 +746,14 @@ impl Engine {
             }
         };
         self.check_keys(ops, JSON_OPS)?;
+        // A null sentinel is the whole operand of `equals` / `not` or nothing: inside a value, a list or another
+        // operator it would be compared with (and so sent to the database), nonce included.
+        for (op, val) in ops {
+            let whole = matches!(op.as_str(), "equals" | "not") && null_sentinel(val).is_some();
+            if !whole && super::contains_null_marker(val) {
+                return Err(self.err(super::nested_null_message(op)));
+            }
+        }
         q.reset_shared();
         let path: Option<Vec<JsonSeg>> = match ops.get("path") {
             None | Some(Value::Null) => None,

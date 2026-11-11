@@ -768,3 +768,107 @@ scripts/lint-ratchet.mjs`: no count above the baseline (an `expect_used` the fir
 `corvis` counts below it (`expect_used` 51 -> 50, `missing_debug_implementations` 184 -> 183) are platform-specific on
 Windows in a crate this change does not touch, so the baseline keeps the Linux counts. No test database is left on the
 server.
+
+### Security review (round 2)
+
+Two findings on `1afdead` and five hardening items. The failing tests and the new recordings are in `a11f038`; each
+failed for the reason given before the fix.
+
+**A. The nonce leaked (medium).** One nonce served every marker, and a Json null was interpreted only as the whole value
+of a Json field: nested (`data: { meta: { deletedAt: json_null() } }`) it was stored with its nonce, a client read it
+back and forged `undefined()` with it. Three fixes:
+
+1. *Whole values only.* Recorded first (`json.nested_*`, both databases): the original stores the name of a nested
+   null (`{ "a": "JsonNull" }`, also in `createMany` and inside a list), compares a nested `AnyNull` as
+   `{ "a": "AnyNull" }`, and refuses a `DbNull` inside a list on `update` ("Expected NullableJsonNullValueInput or
+   Json, provided (Enum)"). Corvis refuses a null anywhere but as the whole value of a Json field or the operand of
+   `equals` / `not` in a Json filter: `Engine::scalar_value` (every write: create, update, `createMany`, upsert, nested
+   writes; also any item of a `Json[]`) and `json_filter` (every operator, `path` included) walk the value at any
+   depth (`contains_null_marker`, iterative). As a last guard `OrmClient::check_params` refuses any `Text` or `Json`
+   parameter that holds a marker, so none is ever sent, stored or logged (raw SQL arguments included). The refusals
+   are deliberate differences, listed in both `KNOWN_DIFFERENCES` tables (`pg_oracle.rs` has one now): the four
+   `json.nested_*` cases the original accepts, plus `json.nested_cleanup`, a case appended to remove those rows so
+   that later cases see the same users. Tests: `null_markers_are_whole_values_only_{sqlite,postgres}` (13 shapes:
+   object, list, deep, create, `createMany`, nested create, filters `equals` / `not` / `path` / `array_contains` /
+   `string_contains`, relation filter; then the whole values still work and no stored row holds a marker); before the
+   fix the first shape returned the row with `{"$type":"corvis_orm::JsonNull::<nonce>"}` stored.
+2. *One nonce per kind.* `undefined`, `invalid` and the three nulls each draw their own (two v4 UUIDs each), so a
+   leaked null tag reveals nothing of `undefined()`. Test: `engine::marker_tests::every_marker_kind_has_its_own_nonce`
+   (before: "two marker kinds share a nonce").
+3. *No marker text in errors, `Debug` or logs.* Every `OrmError` constructor (`known`, `validation`, `unknown`,
+   `init`) passes its message, and `known` its `meta`, through `engine::redact`, which replaces the secret part of
+   each marker (`corvis_orm::<kind>::<nonce>`) by its kind (`undefined`, `DbNull`, ...); the `Debug` of the typed
+   parameters does the same; logged parameters cannot hold one (`check_params` runs before `log_queries`). Test:
+   `marker_text_never_reaches_an_error_{sqlite,postgres}`: the 21 echoing inputs of the review (`orderBy`, `take`,
+   `select`, `distinct`, `cursor`, `mode`, `contains`, `path`, a key equal to the tag in `where`, `orderBy` and a field
+   filter, `groupBy by` with the marker and with the tag, `having`, a Decimal, `undefined` as `where` and `take`,
+   `increment`, an unknown argument, ...), checking the message, `Display` and `Debug`, and the `Debug` of a
+   `WhereParam`; before the fix `orderBy: { owner: db_null() }` showed the tag.
+
+*A typed marker instead of a string, reconsidered: not feasible in this change.* What stands in the way, for the
+follow-up:
+- The markers are `serde_json::Value`s by design of the public API: `undefined()`, `or_undefined()`, `db_null()`, ...
+  return a `Value` to be put inside `json!(..)` arguments of `query_json` and of the delegates' JSON methods, which the
+  port applications use throughout (9 files of the three apps use `undefined()` / `or_undefined()`). `Value` is a closed
+  enum: no variant can carry "undefined" or "DbNull", so in that API a marker can only be in-band.
+- The engine reads its input as `serde_json::Value` / `Map<String, Value>` everywhere (about 6,200 lines in
+  `engine/*.rs` and `query.rs`, some 175 lines of `engine/` naming `&Value` or `Map<String, Value>`). A typed marker means an
+  argument tree of its own (`enum Arg { Null, Bool, Number, String, Array, Object, Undefined, DbNull, JsonNull,
+  AnyNull }`), a conversion from `Value` that can never produce the last four, a `json!`-like macro (or `From`
+  impls) to build it, and the engine ported to it.
+- The typed helpers alone (`WhereParam`, `SetParam`, ...) could keep markers out of band (a side table by JSON pointer
+  next to the `Value` they build), but that removes the class only for them: the JSON API, which takes request-shaped
+  input and is where the forgery happened, would still need in-band markers.
+  So the follow-up is "own argument tree for the engine, with `json!` interop" (an API change for the JSON form); the
+  fixes above make the in-band design safe meanwhile (unforgeable, never stored, never shown).
+
+Constant-time comparison of a marker: skipped, as agreed. One `==` against a 64-character nonce is far below what a
+client can measure through a query, and the client never learns which comparison ran.
+
+**B. BigInt and Float arithmetic on SQLite (low).** Recorded (`arith.big_*`, `arith.ratio_*`): Postgres fails with
+`22003` (`bigint out of range`, `value out of range: overflow`); the original on SQLite stores a float in the `BigInt`
+column or `inf` in the `Float` one, and every read of the row then fails with `P2023` ("Could not convert from
+`BigDecimal(9223372036854776000)` to `BigInt`", "Could not convert value inf of the field `ratio` to type `Float`.").
+`checked_arith` now also guards `BigInt` (`typeof(r) = 'integer'`) and `Float` (`ABS(r) <= 1.7976931348623157e308`),
+and `OrmError::from_sqlx` gives Postgres' errors. `KNOWN_DIFFERENCES` (SQLite): `arith.big_increment_2`,
+`arith.big_after`, `arith.ratio_multiply_overflow`, `arith.ratio_after`. On the read side a `BigInt` column holding a
+float and a `Float` column holding an infinity are `P2023` with the original's messages (`decode_sqlite` now returns
+`"inf"` / `"-inf"` for an infinite float instead of the `null` `Value::from` made of it; a raw query sees that text).
+Direct writes: a `Float` given as text (`"Infinity"`) was stored as an infinite float; the original refuses any text
+for a `Float` (recorded: `fin.ratio_text_*`, a validation error on both databases), and so does Corvis now (the
+`"NaN"` / `"Infinity"` branch of `scalar_value` is gone; the JSON form sends a non-finite number as `null`, the typed
+helpers refuse it, as before). Tests: `bigint_and_float_arithmetic_beyond_range_is_rolled_back_sqlite` (before:
+`big: { increment: 1 }` returned `{"count":3}`) and `a_bigint_or_float_column_holding_something_else_is_p2023_sqlite`
+(before: the row was returned); the `fin.ratio_text_*` oracle cases (before: 2 differed on each database).
+
+**Hardening.**
+- *Length of a `Decimal` text.* `decimal::within_numeric_text_bounds`, checked by `Engine::decimal_input` before
+  `Decimal::parse`: at most 147,487 characters (the 131,072 + 16,383 digits a `NUMERIC` holds, plus 32 for sign, point
+  and exponent), and a `0x` / `0b` / `0o` text at most 65,536 bits of fraction (one decimal place per bit; a `NUMERIC`
+  holds 16,383). Beyond, a validation error. A deliberate bound, not recorded: the original parses any length. Test:
+  `engine::sqlite_operand_tests::decimal_text_beyond_numeric_is_refused_before_parsing` measures the longest text
+  `Decimal::parse` read (a test-only counter): 0 for a 1 MB decimal, a 1 MB hex fraction, a hex fraction one digit
+  over the bound, a binary fraction one bit over and a decimal one character over; the texts at the bound still run.
+  Before: the 1 MB text was parsed (the query returned `[]`).
+- *`dscale` above 16383: not changed, by the recording.* Postgres takes at most 16383 and the binary format has 16
+  bits; Corvis sends a scale up to 65535 and Postgres answers `22P03`, which is exactly what the original does
+  (recorded: `sec.decimal_filter_scale`, `1e-16384` fails with `22P03 invalid scale in external "numeric" value`).
+  Refusing it in `check_params` would replace that recorded error with the conversion error and add a known
+  difference, for no gain: no value reaches a table either way. The weight and the number of digits are bounded to 16
+  bits as before (a conversion error otherwise). `decimal::tests::numeric_header_at_its_bounds` pins the boundaries
+  (`1e-16383`, `1e-16384`, `1e-65535`, `1e-65536`, `1e131071`, `1e131072`).
+- *Documentation* (EN and ES, the ORM page's security notes): the JSON form is a query language; a `Value` from a
+  request must never be forwarded as `where` / `data` (`{ token: {} }`, `notIn: []`, `AND: []`, a duplicated key
+  leaving `{}` match every row, as in the original); build filters from validated fields. Json nulls are whole values
+  only (the Json nulls section and the security notes), markers are never stored or shown, and arguments built with
+  markers should not be logged by the application (a `Value`'s own `Debug` cannot be redacted).
+
+Recordings added (appended only; earlier results equal but for `updatedAt`): `json.nested_*` (6 with the cleanup),
+`arith.big_*` (3), `arith.ratio_*` (3), `fin.ratio_text_*` (2): Postgres oracle 301 cases, SQLite oracle 290.
+
+`KNOWN_DIFFERENCES`: Postgres 5 (the `json.nested_*` ones); SQLite 15 (the 6 of round 1, the same 5 and the 4
+arithmetic ones above).
+
+Port applications: no new change needed (none uses a Json null inside a value, a `Float` as text or a `Decimal` text
+near the bound); the round-1 item stands (`facten-api/src/emissions/emissions.service.rs:157`, `json!({ "$type":
+"DbNull" })` becomes `corvis_orm::db_null()`).

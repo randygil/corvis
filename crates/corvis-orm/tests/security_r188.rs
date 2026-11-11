@@ -53,9 +53,7 @@ async fn seed(db: &OrmClient) {
     db.db_push::<(Account, Note)>().await.unwrap();
     for (owner, tok, bal) in [("alice", "tok-alice", "100"), ("bob", "tok-bob", "250.75"), ("carol", "tok-carol", "-5")] {
         let data = json!({ "owner": owner, "reset_token": tok, "balance": bal, "visits": 1, "score": 1.5, "big": 1, "notes": { "create": [{ "text": "n" }] } });
-        q(db, "create", json!({ "data": data }))
-            .await
-            .unwrap();
+        q(db, "create", json!({ "data": data })).await.unwrap();
     }
 }
 
@@ -177,8 +175,7 @@ async fn int_arithmetic_beyond_32_bits_is_rolled_back_sqlite() {
     for data in [json!({ "visits": { "increment": 2_147_483_647i64 } }), json!({ "visits": { "multiply": 3_000_000_000i64 } })] {
         let r = q(&db, "updateMany", json!({ "where": {}, "data": data.clone() })).await;
         assert!(r.is_err(), "{data}: {r:?}");
-        let upsert =
-            json!({ "where": { "id": 1 }, "create": { "owner": "x", "reset_token": "x", "balance": 0, "visits": 0, "score": 0, "big": 0 }, "update": data });
+        let upsert = json!({ "where": { "id": 1 }, "create": { "owner": "x", "reset_token": "x", "balance": 0, "visits": 0, "score": 0, "big": 0 }, "update": data });
         let r = q(&db, "upsert", upsert).await;
         assert!(r.is_err(), "upsert: {r:?}");
     }
@@ -266,7 +263,11 @@ async fn null_markers_are_whole_values_only(db: &OrmClient) {
             "createMany",
             json!({ "data": [{ "owner": "e", "reset_token": "e", "balance": 1, "visits": 1, "score": 1, "big": 1, "meta": [dn.clone()] }] }),
         ),
-        ("nested create", "update", json!({ "where": { "id": 1 }, "data": { "notes": { "create": [{ "text": "x", "extra": { "a": dn.clone() } }] } } })),
+        (
+            "nested create",
+            "update",
+            json!({ "where": { "id": 1 }, "data": { "notes": { "create": [{ "text": "x", "extra": { "a": dn.clone() } }] } } }),
+        ),
         ("filter equals, nested", "findMany", json!({ "where": { "meta": { "equals": { "a": an.clone() } } } })),
         ("filter not, nested", "findMany", json!({ "where": { "meta": { "not": [jn.clone()] } } })),
         ("filter path equals, nested", "findMany", json!({ "where": { "meta": { "path": ["a"], "equals": { "b": an.clone() } } } })),

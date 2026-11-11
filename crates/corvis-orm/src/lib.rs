@@ -117,6 +117,9 @@ pub fn undefined() -> serde_json::Value {
 
 /// The database `NULL` of a Json field (`DbNull`): in `data` it stores `NULL`, in `equals` / `not` it compares with
 /// `NULL`. A plain `{ "$type": "DbNull" }` object is JSON data, like any other object a request may carry.
+///
+/// Like [`json_null`] and [`any_null`], it is only ever the whole value of a Json field or of `equals` / `not`:
+/// inside a Json value, a `Json[]` list or another operator the query fails with a validation error.
 pub fn db_null() -> serde_json::Value {
     engine::null_marker(engine::NullKind::Db)
 }

@@ -50,18 +50,21 @@ pub enum OrmError {
 
 pub type Result<T, E = OrmError> = std::result::Result<T, E>;
 
+// Every constructor passes the message (and `meta`) through `engine::redact`: an error that quotes its input back never
+// shows the secret part of a marker (`undefined()`, `db_null()`, ...), only its kind.
 impl OrmError {
     pub fn known(code: &str, message: impl Into<String>, meta: Value) -> Self {
-        OrmError::KnownRequest(KnownRequestError { code: code.to_string(), message: message.into(), meta, client_version: CLIENT_VERSION })
+        let (message, meta) = (crate::engine::redact(message.into()), crate::engine::redact_value(meta));
+        OrmError::KnownRequest(KnownRequestError { code: code.to_string(), message, meta, client_version: CLIENT_VERSION })
     }
     pub fn validation(message: impl Into<String>) -> Self {
-        OrmError::Validation(QueryValidationError { message: message.into() })
+        OrmError::Validation(QueryValidationError { message: crate::engine::redact(message.into()) })
     }
     pub fn init(message: impl Into<String>) -> Self {
-        OrmError::Initialization(InitializationError { message: message.into(), error_code: None })
+        OrmError::Initialization(InitializationError { message: crate::engine::redact(message.into()), error_code: None })
     }
     pub fn unknown(message: impl Into<String>) -> Self {
-        OrmError::UnknownRequest(UnknownRequestError { message: message.into() })
+        OrmError::UnknownRequest(UnknownRequestError { message: crate::engine::redact(message.into()) })
     }
 
     /// `P2025` – record required but not found.
@@ -322,6 +325,8 @@ pub(crate) fn sqlite_range_path(f: &crate::meta::FieldMeta) -> String {
             let (p, s) = crate::engine::decimal_precision(f);
             format!("{SQLITE_RANGE}decimal:{p}:{s}")
         }
+        crate::meta::FieldKind::BigInt => format!("{SQLITE_RANGE}bigint"),
+        crate::meta::FieldKind::Float => format!("{SQLITE_RANGE}float"),
         _ => format!("{SQLITE_RANGE}int"),
     }
 }
@@ -331,8 +336,12 @@ const SQLITE_RANGE: &str = "corvis_orm:out_of_range:";
 /// The error of an SQLite message raised by [`sqlite_range_path`]: the one Postgres gives for the same update.
 fn sqlite_range_error(msg: &str) -> Option<OrmError> {
     let rest = &msg[msg.find(SQLITE_RANGE)? + SQLITE_RANGE.len()..];
-    if rest.starts_with("int") {
-        return Some(OrmError::out_of_range("integer out of range", None));
+    // The messages of Postgres for the same overflow (recorded: `arith.increment_overflow`, `arith.big_increment_2`,
+    // `arith.ratio_multiply_overflow`).
+    for (kind, message) in [("int", "integer out of range"), ("bigint", "bigint out of range"), ("float", "value out of range: overflow")] {
+        if rest.strip_prefix(kind).is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphanumeric())) {
+            return Some(OrmError::out_of_range(message, None));
+        }
     }
     let mut it = rest.strip_prefix("decimal:")?.split(|c: char| !c.is_ascii_digit()).map(str::parse::<u32>);
     let (p, s) = (it.next()?.ok()?, it.next()?.ok()?);

@@ -359,7 +359,9 @@ impl Engine {
                         q.push(" ").push(op).push(" ").bind(v.clone());
                     };
                     match (self.dialect(), f.kind) {
-                        (Dialect::Sqlite, FieldKind::Int | FieldKind::Decimal) => self.checked_arith(q, f, arith),
+                        (Dialect::Sqlite, FieldKind::Int | FieldKind::BigInt | FieldKind::Float | FieldKind::Decimal) => {
+                            self.checked_arith(q, f, arith);
+                        }
                         _ => arith(q),
                     }
                 }
@@ -377,23 +379,38 @@ impl Engine {
     }
 
     /// An SQLite arithmetic update (`increment`, ..., written by `arith`) whose result must fit the column: an `Int`
-    /// in 32 bits, a `Decimal(p, s)` below `10^(p - s)` in absolute value. Postgres enforces both itself; SQLite would
-    /// store any 64-bit integer or float, which the client could then not read back (`P2023`, or a Decimal beyond the
-    /// column). A result out of range takes the `ELSE` branch, a JSON path error that fails the statement, which
+    /// in 32 bits, a `BigInt` in 64 (an integer, not the float SQLite turns an overflow into), a finite `Float`, a
+    /// `Decimal(p, s)` below `10^(p - s)` in absolute value. Postgres enforces all of them itself; SQLite would store
+    /// what the client then cannot read back (`P2023`), or a Decimal beyond the column. A result out of range takes the `ELSE` branch, a JSON path error that fails the statement, which
     /// SQLite then undoes as a whole (every row, inside or outside a transaction); `OrmError::from_sqlx` maps it to
     /// the error Postgres gives. `NULL` (an operand on a `NULL` value, a division by zero) passes.
     fn checked_arith(&self, q: &mut Sql, f: &FieldMeta, arith: impl Fn(&mut Sql)) {
         q.push("CASE WHEN (");
         arith(q);
         q.push(") IS NULL OR ");
-        if f.kind == FieldKind::Int {
-            q.push("(");
-            arith(q);
-            q.push(") BETWEEN -2147483648 AND 2147483647");
-        } else {
-            q.push("ABS(");
-            arith(q);
-            q.push(") < CAST(").bind(SqlValue::Text(super::decimal_bound(f).to_string())).push(" AS NUMERIC)");
+        match f.kind {
+            FieldKind::Int => {
+                q.push("(");
+                arith(q);
+                q.push(") BETWEEN -2147483648 AND 2147483647");
+            }
+            // An integer past 64 bits becomes a float in SQLite.
+            FieldKind::BigInt => {
+                q.push("typeof(");
+                arith(q);
+                q.push(") = 'integer'");
+            }
+            // An overflow is an infinite float (SQLite has no NaN: `0 * inf` is `NULL`).
+            FieldKind::Float => {
+                q.push("ABS(");
+                arith(q);
+                q.push(") <= 1.7976931348623157e308");
+            }
+            _ => {
+                q.push("ABS(");
+                arith(q);
+                q.push(") < CAST(").bind(SqlValue::Text(super::decimal_bound(f).to_string())).push(" AS NUMERIC)");
+            }
         }
         q.push(" THEN ");
         arith(q);

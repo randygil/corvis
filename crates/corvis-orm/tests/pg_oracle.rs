@@ -31,6 +31,7 @@ const KNOWN_DIFFERENCES: &[(&str, &str)] = &[
     ("json.nested_jsonnull_create_many", "the same, in `createMany`"),
     ("json.nested_anynull_equals", "the same in a filter, where the reference client compares with `{\"a\": \"AnyNull\"}`"),
     ("json.nested_after", "follows from `json.nested_jsonnull_create*`: Corvis created neither row"),
+    ("json.nested_cleanup", "the same: Corvis deletes 0 rows where the reference client deletes 2, and then both have the same rows"),
 ];
 
 fn meta_of(model: &str) -> &'static ModelMeta {

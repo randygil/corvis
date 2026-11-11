@@ -233,6 +233,34 @@ fn pow10(n: u64) -> BigUint {
     BigUint::from(10u32).pow(n)
 }
 
+/// Longest text a query may give as a `Decimal`: the digits a Postgres `NUMERIC` holds (131072 before the point, 16383
+/// after it) plus room for a sign, a point and an exponent.
+pub(crate) const MAX_NUMERIC_TEXT: usize = 131_072 + 16_383 + 32;
+
+/// Most fraction bits of a `0x` / `0b` / `0o` text: each bit is one more decimal place, and a `NUMERIC` holds 16383
+/// (the bound is the next multiple of the 4 bits of a hex digit).
+pub(crate) const MAX_RADIX_FRACTION_BITS: usize = 65_536;
+
+/// Whether a query's `Decimal` text is short enough to parse: within [`MAX_NUMERIC_TEXT`], and for a `0x` / `0b` /
+/// `0o` text within [`MAX_RADIX_FRACTION_BITS`] of fraction (its exact value has one decimal digit per bit, and
+/// computing it costs accordingly: a 1 MB hex fraction took seconds). Longer text cannot be a value a `NUMERIC` holds;
+/// the engine refuses it before parsing.
+pub(crate) fn within_numeric_text_bounds(s: &str) -> bool {
+    if s.len() > MAX_NUMERIC_TEXT {
+        return false;
+    }
+    let body = s.strip_prefix(['+', '-']).unwrap_or(s);
+    let bits = match body.get(..2).map(str::to_ascii_lowercase).as_deref() {
+        Some("0x") => 4,
+        Some("0o") => 3,
+        Some("0b") => 1,
+        _ => return true,
+    };
+    let mantissa = body[2..].split(['p', 'P']).next().unwrap_or_default();
+    let fraction_digits = mantissa.split_once('.').map_or(0, |(_, f)| f.len());
+    fraction_digits.saturating_mul(bits) <= MAX_RADIX_FRACTION_BITS
+}
+
 /// Removes each `_` that sits between two decimal digits, like decimal.js (`str.replace(/(\d)_(?=\d)/g, '$1')`).
 fn strip_separators(s: &str) -> String {
     let b = s.as_bytes();
@@ -2069,6 +2097,20 @@ mod tests {
             assert!(digits <= 100, "{s}: pow built a {digits}-digit coefficient");
         }
         assert!(work::max_digits(|| drop(decimal!("2").pow(1_000_000_i64))) <= 100);
+    }
+
+    /// The scale of the binary NUMERIC is 16 bits on the wire and Postgres takes at most 16383; a larger one is sent
+    /// as the reference client sends it, and Postgres refuses it with `22P03` (recorded: `sec.decimal_filter_scale`).
+    /// The weight and the number of digits must fit 16 bits, or the value is a conversion error before it is sent.
+    #[test]
+    fn numeric_header_at_its_bounds() {
+        let header = |s: &str| pg::numeric_header(&Decimal::parse(s).unwrap());
+        assert_eq!(header("1e-16383").map(|h| h.2), Some(16383));
+        assert_eq!(header("1e-16384").map(|h| h.2), Some(16384));
+        assert_eq!(header("1e-65535").map(|h| h.2), Some(65535));
+        assert_eq!(header("1e-65536"), None);
+        assert!(header("1e131071").is_some());
+        assert_eq!(header("1e131072"), None);
     }
 
     #[test]

@@ -276,7 +276,8 @@ macro_rules! param {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match &self.error {
                     Some(e) => write!(f, "{}({}: error: {})", stringify!($name), self.key, e.message()),
-                    None => write!(f, "{}({}: {})", stringify!($name), self.key, self.value),
+                    // Markers (`undefined()`, `db_null()`, ...) show their kind, never their secret text.
+                    None => write!(f, "{}({}: {})", stringify!($name), self.key, crate::engine::redact(self.value.to_string())),
                 }
             }
         }

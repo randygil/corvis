@@ -378,15 +378,26 @@ impl OrmClient {
 
     /// Fails like the reference query engine when a parameter cannot be converted: an `Int`
     /// out of range, or a `Decimal` that does not fit a `NUMERIC` (it would be truncated).
+    ///
+    /// Also the last guard of the markers (`engine::markers`): a parameter that holds one fails with a validation error
+    /// and is never sent, stored or logged (`log_queries` runs after this check).
     fn check_params(sql: &Sql) -> Result<()> {
         fn bad(p: &SqlValue, i: usize) -> Option<OrmError> {
             match p {
+                SqlValue::Text(s) if crate::engine::holds_marker(s) => Some(marker_param()),
+                SqlValue::Json(v) if crate::engine::contains_null_marker(v) => Some(marker_param()),
                 SqlValue::OutOfRange(v) => Some(OrmError::int_overflow(i, *v)),
                 SqlValue::Decimal(d) if !d.fits_numeric() => Some(OrmError::conversion(i, crate::decimal::NUMERIC_OVERFLOW)),
                 SqlValue::Cast(v, _) => bad(v, i),
                 SqlValue::Array(items, _) => items.iter().find_map(|x| bad(x, i)),
                 _ => None,
             }
+        }
+        fn marker_param() -> OrmError {
+            OrmError::validation(
+                "A query value holds `undefined`, `DbNull`, `JsonNull` or `AnyNull` where only a plain value can go (inside a \
+                 Json value or as raw SQL argument).",
+            )
         }
         match sql.params.iter().enumerate().find_map(|(i, p)| bad(p, i)) {
             Some(e) => Err(e),

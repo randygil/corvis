@@ -74,6 +74,11 @@ const KNOWN_DIFFERENCES: &[(&str, &[Db], &str)] = &[
     ),
     ("json.nested_after", &[Db::Migrated, Db::Pushed], "follows from `json.nested_jsonnull_create*`: Corvis created neither row"),
     (
+        "json.nested_cleanup",
+        &[Db::Migrated, Db::Pushed],
+        "the same: Corvis deletes 0 rows where the reference client deletes 2, and then both have the same rows",
+    ),
+    (
         "arith.big_increment_2",
         &[Db::Migrated, Db::Pushed],
         "a `BigInt` arithmetic update past 64 bits fails like on Postgres (`bigint out of range`) and SQLite undoes it; the \

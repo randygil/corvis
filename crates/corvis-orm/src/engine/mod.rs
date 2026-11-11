@@ -128,34 +128,101 @@ fn depth_error(e: &Engine, max: usize) -> OrmError {
 ///
 /// Query arguments are JSON, and a request can carry any JSON string, NUL characters included, so a fixed marker
 /// text could be forged by a client (sending it removed the filter condition it stood in). Each marker therefore
-/// carries a random nonce drawn once per process from the operating system (two v4 UUIDs, 244 random bits) and never
-/// written anywhere a client can read it; a string that is not the exact marker of this process is an ordinary
-/// string, and a string with a NUL character fails the query.
+/// carries a random nonce drawn once per process from the operating system (two v4 UUIDs, 244 random bits), one nonce
+/// per kind of marker, and never written anywhere a client can read it: a Json null is refused anywhere but as the
+/// whole value of a Json field or of a filter that takes it ([`contains_null_marker`]), no parameter sent to the
+/// database holds a marker (`OrmClient::check_params`), and every error message is passed through [`redact`]. A string
+/// that is not the exact marker of this process is an ordinary string, and a string with a NUL character fails the
+/// query.
 ///
 /// The null sentinels of Json fields ([`crate::db_null`], [`crate::json_null`], [`crate::any_null`]) are
-/// `{ "$type": <tag> }` objects whose tag carries the same nonce: a plain `{ "$type": "DbNull" }` is JSON data, as in
-/// the reference client (recorded: `json.plain_type_*`). Their tags hold no NUL character, since `where` arguments
-/// refuse strings with one.
+/// `{ "$type": <tag> }` objects whose tag carries a nonce: a plain `{ "$type": "DbNull" }` is JSON data, as in the
+/// reference client (recorded: `json.plain_type_*`). Their tags hold no NUL character, since `where` arguments refuse
+/// strings with one.
+///
+/// Comparing a string with a marker is not constant-time: the time of one `==` on a 64-character nonce is far below
+/// what a client can measure through a query, and a client never sees which comparison ran.
 struct Markers {
     undefined: String,
     invalid: String,
     /// The `$type` tags of `DbNull`, `JsonNull` and `AnyNull`, in that order.
     nulls: [String; 3],
+    /// The secret part of each marker (`corvis_orm::<kind>::<nonce>`) and the word [`redact`] puts in its place.
+    secrets: [(String, &'static str); 5],
 }
 
 /// The names of the null sentinels, in the order of [`Markers::nulls`].
 const NULL_NAMES: [&str; 3] = ["DbNull", "JsonNull", "AnyNull"];
 
+/// What every marker text contains (the cheap test of [`redact`] and `check_params`).
+pub(crate) const MARKER_PREFIX: &str = "corvis_orm::";
+
 fn markers() -> &'static Markers {
     static MARKERS: std::sync::OnceLock<Markers> = std::sync::OnceLock::new();
     MARKERS.get_or_init(|| {
-        let nonce = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-        Markers {
-            undefined: format!("\u{0}corvis_orm::undefined::{nonce}\u{0}"),
-            invalid: format!("\u{0}corvis_orm::invalid::{nonce}\u{0}"),
-            nulls: NULL_NAMES.map(|name| format!("corvis_orm::{name}::{nonce}")),
-        }
+        let secret = |kind: &str| format!("{MARKER_PREFIX}{kind}::{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        let (undefined, invalid) = (secret("undefined"), secret("invalid"));
+        let nulls = NULL_NAMES.map(secret);
+        let secrets = [
+            (undefined.clone(), "undefined"),
+            (invalid.clone(), "invalid"),
+            (nulls[0].clone(), NULL_NAMES[0]),
+            (nulls[1].clone(), NULL_NAMES[1]),
+            (nulls[2].clone(), NULL_NAMES[2]),
+        ];
+        Markers { undefined: format!("\u{0}{undefined}\u{0}"), invalid: format!("\u{0}{invalid}\u{0}"), nulls, secrets }
     })
+}
+
+/// `text` with the secret part of every marker replaced by its kind (`undefined`, `DbNull`, ...): what an error
+/// message, a `Debug` output or a log line shows when the input it quotes back holds a marker.
+pub(crate) fn redact(text: String) -> String {
+    if !text.contains(MARKER_PREFIX) {
+        return text;
+    }
+    markers().secrets.iter().fold(text, |t, (secret, word)| if t.contains(secret.as_str()) { t.replace(secret.as_str(), word) } else { t })
+}
+
+/// [`redact`] for every string and key of a JSON value (the `meta` of an error).
+pub(crate) fn redact_value(v: Value) -> Value {
+    match v {
+        Value::String(s) => Value::String(redact(s)),
+        Value::Array(a) => Value::Array(a.into_iter().map(redact_value).collect()),
+        Value::Object(m) => Value::Object(m.into_iter().map(|(k, v)| (redact(k), redact_value(v))).collect()),
+        other => other,
+    }
+}
+
+/// Whether `text` holds the secret part of a marker of this process.
+pub(crate) fn holds_marker(text: &str) -> bool {
+    text.contains(MARKER_PREFIX) && markers().secrets.iter().any(|(secret, _)| text.contains(secret.as_str()))
+}
+
+/// Whether a Json null sentinel (or any marker text) is anywhere inside `v`, `v` itself included.
+pub(crate) fn contains_null_marker(v: &Value) -> bool {
+    let mut stack = vec![v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::String(s) if holds_marker(s) => return true,
+            Value::Array(a) => stack.extend(a),
+            Value::Object(m) => {
+                if m.keys().any(|k| holds_marker(k)) {
+                    return true;
+                }
+                stack.extend(m.values());
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The message of the validation error of a Json null that is not the whole value of argument `arg`.
+pub(crate) fn nested_null_message(arg: &str) -> String {
+    format!(
+        "Argument `{arg}`: Invalid value provided. `DbNull`, `JsonNull` and `AnyNull` can only be the whole value of a Json \
+         field (or of `equals` / `not` in a Json filter), never part of a Json value."
+    )
 }
 
 /// The value of [`crate::undefined`]: JS `undefined` inside query arguments.
@@ -472,7 +539,12 @@ impl Engine {
     }
 
     fn scalar_value(&self, f: &FieldMeta, v: &Value, allow_null: bool) -> Result<SqlValue> {
-        // The `DbNull` / `JsonNull` / `AnyNull` sentinels.
+        // A marker must never be stored: one inside a Json value (or an item of a `Json[]`) would be read back by
+        // whoever reads the row, nonce included.
+        if f.kind == FieldKind::Json && (f.list || null_sentinel(v).is_none()) && contains_null_marker(v) {
+            return Err(self.err(nested_null_message(f.name)));
+        }
+        // The `DbNull` / `JsonNull` / `AnyNull` sentinels, as the whole value of the field.
         if f.kind == FieldKind::Json
             && let Some(t) = null_sentinel(v)
         {
@@ -537,11 +609,10 @@ impl Engine {
                 Value::String(s) => SqlValue::Int(s.parse::<i64>().map_err(|_| bad())?),
                 _ => return Err(bad()),
             },
+            // Never text: `"Infinity"` is a validation error for the reference client too (recorded:
+            // `fin.ratio_text_infinity`), and SQLite would store it as an infinite float no read can convert.
             FieldKind::Float => match v {
                 Value::Number(n) => SqlValue::Float(n.as_f64().ok_or_else(bad)?),
-                Value::String(s) if s == "NaN" || s == "Infinity" || s == "-Infinity" => {
-                    SqlValue::Float(s.replace("Infinity", "inf").parse().unwrap_or(f64::NAN))
-                }
                 _ => return Err(bad()),
             },
             FieldKind::Decimal => {
@@ -633,9 +704,11 @@ impl Engine {
                 })?),
             },
             // `NaN` and `±Infinity` are not decimal text for the reference engine either (recorded: `dec.*`, a
-            // validation error on both databases); SQLite would otherwise compare them as text.
-            Value::String(s) => crate::Decimal::parse(s)
-                .ok()
+            // validation error on both databases); SQLite would otherwise compare them as text. A text no `NUMERIC` can
+            // hold is refused before it is parsed (`decimal::within_numeric_text_bounds`).
+            Value::String(s) => Some(s.as_str())
+                .filter(|s| crate::decimal::within_numeric_text_bounds(s))
+                .and_then(|s| crate::Decimal::parse(s).ok())
                 .filter(crate::Decimal::is_finite)
                 .ok_or_else(|| self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name)))?,
             other => {

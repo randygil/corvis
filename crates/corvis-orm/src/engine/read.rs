@@ -264,16 +264,29 @@ impl Engine {
     /// `P2023` for an `Int` column holding a value outside 32 bits, which SQLite can store (its integers are 64-bit):
     /// the reference client fails like this when it reads such a row. A float (`1.5`, `1e30`, which SQLite also
     /// stores in an `INTEGER` column) fails the same way, never truncated or saturated.
+    ///
+    /// The same for a `BigInt` column holding a float and a `Float` column holding an infinity (SQLite stores both; the
+    /// reference client stores them too and then fails the read with these messages, recorded: `arith.big_after`,
+    /// `arith.ratio_after`).
     fn int_out_of_range(&self, model: &'static ModelMeta, f: &FieldMeta, v: &Value) -> Option<OrmError> {
-        if f.kind != crate::meta::FieldKind::Int || f.list {
+        use crate::meta::FieldKind;
+        if f.list {
             return None;
         }
-        let Value::Number(n) = v else { return None };
-        if n.as_i64().is_some_and(|i| i32::try_from(i).is_ok()) {
-            return None;
-        }
-        let detail =
-            format!("Conversion failed: Value {n} does not fit in an INT column, try migrating the '{}' column type to BIGINT", f.column);
+        let detail = match (f.kind, v) {
+            (FieldKind::Int, Value::Number(n)) if !n.as_i64().is_some_and(|i| i32::try_from(i).is_ok()) => format!(
+                "Conversion failed: Value {n} does not fit in an INT column, try migrating the '{}' column type to BIGINT",
+                f.column
+            ),
+            (FieldKind::BigInt, Value::Number(n)) if n.as_i64().is_none() => {
+                let plain = n.as_f64().map(|x| crate::Decimal::from(x).to_fixed_plain()).unwrap_or_else(|| n.to_string());
+                format!("Could not convert from `BigDecimal({plain})` to `BigInt`")
+            }
+            (FieldKind::Float, Value::String(s)) if matches!(s.as_str(), "inf" | "-inf" | "NaN") => {
+                format!("Could not convert value {s} of the field `{}` to type `Float`.", f.name)
+            }
+            _ => return None,
+        };
         Some(OrmError::known("P2023", format!("Inconsistent column data: {detail}"), json!({ "modelName": model.name, "message": detail })))
     }
 

@@ -364,7 +364,7 @@ let users = db.wallet().find_many(vec![wallet::amount::gte(decimal!("100"))]).aw
 
 A `DecimalCtor` (`Decimal.clone({...})`) reads text with `D.parse("1234.5678")?` instead of `D.of("1234.5678")`. Parsing and `decimal!` accept what decimal.js accepts, checked input by input against it: `0x`, `0b` and `0o` numbers with a fraction and a binary exponent (`0x1.8p3`), and one `_` between two digits (`1_000`).
 
-`"NaN"`, `"Infinity"` and `"-Infinity"` are not `Decimal` input in a query: a filter or a write that gives them to a `Decimal` field fails with a validation error on both databases, as with the original. On SQLite they used to be compared as text.
+`"NaN"`, `"Infinity"` and `"-Infinity"` are not `Decimal` input in a query: a filter or a write that gives them to a `Decimal` field fails with a validation error on both databases, as with the original. On SQLite they used to be compared as text. A `Float` field takes no text at all (`"Infinity"` included), as in the original. A `Decimal` text longer than any `NUMERIC` can hold (more than 147,487 characters, or a `0x` / `0b` / `0o` text with more than 65,536 bits of fraction) is refused before it is parsed.
 
 `corvis_orm::or_undefined(value)` writes a non-finite float as `null`, like the original sends `NaN`, but a value that fails to serialize makes the query fail with a validation error instead of becoming `null`.
 
@@ -376,6 +376,8 @@ A `Json` field has two nulls: the database `NULL` and the JSON value `null`. Wri
 db.query_json(User::meta(), "update", json!({ "where": { "id": 1 }, "data": { "data": corvis_orm::db_null() } })).await?;
 let empty = db.query_json(User::meta(), "findMany", json!({ "where": { "data": { "equals": corvis_orm::any_null() } } })).await?;
 ```
+
+They are whole values only: the value of a Json field in `data`, or the operand of `equals` / `not` in a Json filter. Inside a Json value (`{ "deletedAt": corvis_orm::json_null() }`, `[corvis_orm::db_null()]`), as an item of a `Json[]` field, or given to another operator they make the query fail with a validation error. The original stores the name there (`{ "deletedAt": "JsonNull" }`); write `null` for the JSON `null` inside a value.
 
 ::: warning Changed: `{ "$type": "DbNull" }` is JSON data
 The plain object `{ "$type": "DbNull" }` (and `"JsonNull"`, `"AnyNull"`) used to mean these nulls. A request body can carry that object, so a client could turn its JSON value into a database `NULL` or into an `IS NULL` filter. It is now JSON data like any other object, as in the original client, where only `DbNull`, `JsonNull` and `AnyNull` themselves are the nulls. Replace `json!({ "$type": "DbNull" })` with `corvis_orm::db_null()`, and the same for the other two.
@@ -433,14 +435,14 @@ From code: `db.migrate_deploy(dir).await` and `db.migrate_status(dir).await`. Th
 ## Security
 
 - In production with Postgres, use `sslmode=verify-full` in the URL; `prefer` (the default) does not protect against an attacker on the network. TLS comes from the `tls-rustls` feature (a default one); connection errors show only `host:port`, never the user, the password or the query string.
-- Passing a request's JSON directly to a query gives the client all the operators, `select` and `include`. Build the arguments from the fields the route allows, or validate the body with a strict schema.
+- The JSON form of a query is a query language, not data. A `serde_json::Value` taken from a request must never be forwarded as `where` or `data`: it gives the client every operator, `select` and `include`, and many shapes match every row, as in the original client: `{ "token": {} }`, `{ "token": { "notIn": [] } }`, `{ "AND": [] }`, or an object whose duplicated key leaves `{}`. A lookup by a secret such as `{ "reset_token": body["token"] }` then finds any user. Build the arguments from validated fields of the types the route expects (`body.token: String`), or validate the body with a strict schema first.
 - Arguments nested more than 125 levels deep are rejected before they are processed (`max_query_depth`, adjustable with `OrmClientOptions::max_query_depth(n)`).
 - A `where` with a NUL character (`\u0000`) in a string, a JSON `path` segment or a JSON key is a validation error on every database, before any SQL runs. PostgreSQL cannot store NUL in `text` or `jsonb`, and the original client answers with a raw database error; Corvis answers with a validation error (`400` through `OrmExceptionFilter`) instead.
 - In unique inputs (`findUnique`, `update`, `upsert`, `delete`, ...) the `@id` and `@unique` fields only accept the value (`{ email: "a@b.c" }`), never a filter such as `{ equals }` or `{ not }`, nor `null`.
 - Out-of-range numbers are errors, never truncated values: a `BigInt` beyond 64 bits, a `Bytes` byte outside `0..=255`, a `Decimal` that does not fit a Postgres `NUMERIC`, or a negative `limit` in `update_many`/`delete_many` (`P2019`).
 - `update`, `delete` and the `*_many` operations repeat their `where` in the `UPDATE`/`DELETE`, so optimistic concurrency (`where: { id, version }`) has a single winner.
 - `log_queries` writes the parameter values to the logs.
-- `corvis_orm::undefined()` and the Json nulls are values no request can produce: each carries a random marker drawn when the process starts. A string or an object that arrives in a request body is always data, never "leave this condition out" or "compare with `NULL`".
+- `corvis_orm::undefined()` and the Json nulls are values no request can produce: each carries a random marker drawn when the process starts, one per kind. A string or an object that arrives in a request body is always data, never "leave this condition out" or "compare with `NULL`". The marker is never stored (a Json null is accepted only as a whole value, see [Json nulls](#json-nulls)), never sent to the database, and errors and `Debug` output show only its kind (`undefined`, `DbNull`). The values themselves are `serde_json::Value`s, so do not log query arguments you build with them.
 - The SQLite that `sqlx` 0.8 bundles is older than 3.54.0 and has a known flaw (RUSTSEC-2026-0459): opening a database file together with a crafted `-wal` file can return stale bytes from the process's memory in query results. Only open SQLite files your application created; never a database or `-wal` file that a less trusted party could have written. The upgrade is tracked in [#155](https://github.com/randygil/corvis/issues/155).
 
 ## PostgreSQL and SQLite differences
@@ -465,6 +467,7 @@ last column says otherwise.
 | `divide: 0` | Fails (`22012`, division by zero); `null` stays `null` | The result is `null`: `P2011` on a required column, `null` stored in an optional one |
 | `increment` past the range of an `Int` | Fails (`22003`) | The original stores the value (SQLite integers are 64-bit) and reading the row fails with `P2023` (`Value 2147483648 does not fit in an INT column`). Corvis fails the statement with the error Postgres gives (`22003`, `integer out of range`), and SQLite undoes it |
 | An `Int` column holding a fraction or a number beyond 32 bits (written by another program) | Cannot happen | Reading the row fails with `P2023`, never a truncated or saturated value |
+| `increment` / `multiply` past the range of a `BigInt` or to an infinite `Float` | Fails (`22003`, `bigint out of range` / `value out of range: overflow`) | The original stores a float in the `BigInt` column, or `inf`, and every read of the row then fails with `P2023`. Corvis fails the statement with the error Postgres gives, and SQLite undoes it. A `BigInt` column holding a float or a `Float` column holding an infinity (written by another program) reads as `P2023`, like in the original |
 
 ## What is not supported
 

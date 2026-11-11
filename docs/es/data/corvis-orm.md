@@ -364,7 +364,7 @@ let billeteras = db.wallet().find_many(vec![wallet::amount::gte(decimal!("100"))
 
 Un `DecimalCtor` (`Decimal.clone({...})`) lee texto con `D.parse("1234.5678")?` en lugar de `D.of("1234.5678")`. El parseo y `decimal!` aceptan lo mismo que decimal.js, comprobado entrada por entrada contra él: números `0x`, `0b` y `0o` con fracción y exponente binario (`0x1.8p3`), y un `_` entre dos dígitos (`1_000`).
 
-`"NaN"`, `"Infinity"` y `"-Infinity"` no son una entrada válida de `Decimal` en una consulta: un filtro o una escritura que los da a un campo `Decimal` falla con un error de validación en las dos bases, como con el original. En SQLite antes se comparaban como texto.
+`"NaN"`, `"Infinity"` y `"-Infinity"` no son una entrada válida de `Decimal` en una consulta: un filtro o una escritura que los da a un campo `Decimal` falla con un error de validación en las dos bases, como con el original. En SQLite antes se comparaban como texto. Un campo `Float` no acepta texto (tampoco `"Infinity"`), como en el original. Un texto de `Decimal` más largo de lo que cabe en un `NUMERIC` (más de 147.487 caracteres, o un texto `0x` / `0b` / `0o` con más de 65.536 bits de fracción) se rechaza antes de interpretarlo.
 
 `corvis_orm::or_undefined(valor)` escribe un número no finito como `null`, igual que el original envía `NaN`, pero un valor que no se puede serializar hace fallar la consulta con un error de validación en vez de convertirse en `null`.
 
@@ -376,6 +376,8 @@ Un campo `Json` tiene dos nulos: el `NULL` de la base de datos y el valor JSON `
 db.query_json(User::meta(), "update", json!({ "where": { "id": 1 }, "data": { "data": corvis_orm::db_null() } })).await?;
 let vacios = db.query_json(User::meta(), "findMany", json!({ "where": { "data": { "equals": corvis_orm::any_null() } } })).await?;
 ```
+
+Solo valen como valor completo: el valor de un campo Json en `data`, o el operando de `equals` / `not` en un filtro Json. Dentro de un valor Json (`{ "deletedAt": corvis_orm::json_null() }`, `[corvis_orm::db_null()]`), como elemento de un campo `Json[]` o con otro operador hacen fallar la consulta con un error de validación. El original guarda ahí el nombre (`{ "deletedAt": "JsonNull" }`); para el `null` de JSON dentro de un valor escribe `null`.
 
 ::: warning Cambio: `{ "$type": "DbNull" }` es un dato JSON
 El objeto `{ "$type": "DbNull" }` (y `"JsonNull"`, `"AnyNull"`) antes significaba estos nulos. El cuerpo de una petición puede traer ese objeto, así que un cliente podía convertir su valor JSON en un `NULL` de la base o en un filtro `IS NULL`. Ahora es un dato JSON como cualquier otro objeto, igual que en el cliente original, donde solo `DbNull`, `JsonNull` y `AnyNull` son los nulos. Cambia `json!({ "$type": "DbNull" })` por `corvis_orm::db_null()`, y lo mismo con los otros dos.
@@ -433,14 +435,14 @@ Desde código: `db.migrate_deploy(dir).await` y `db.migrate_status(dir).await`. 
 ## Seguridad
 
 - En producción con Postgres usa `sslmode=verify-full` en la URL; `prefer` (el valor por defecto) no protege contra un atacante en la red. El TLS viene de la feature `tls-rustls` (activa por defecto); los errores de conexión muestran solo `host:puerto`, nunca el usuario, la contraseña ni la query string.
-- Pasar el JSON de una petición directamente a una consulta le da al cliente todos los operadores, `select` e `include`. Construye los argumentos con los campos que la ruta permite o valida el cuerpo con un schema estricto.
+- La forma JSON de una consulta es un lenguaje de consultas, no un dato. Un `serde_json::Value` tomado de una petición nunca debe pasarse como `where` ni como `data`: le da al cliente todos los operadores, `select` e `include`, y muchas formas coinciden con todas las filas, igual que en el cliente original: `{ "token": {} }`, `{ "token": { "notIn": [] } }`, `{ "AND": [] }` o un objeto cuya clave repetida deja `{}`. Así, una búsqueda por un secreto como `{ "reset_token": body["token"] }` encuentra a cualquier usuario. Construye los argumentos con campos validados del tipo que la ruta espera (`body.token: String`), o valida antes el cuerpo con un schema estricto.
 - Los argumentos con más de 125 niveles de anidamiento se rechazan antes de procesarse (`max_query_depth`, se cambia con `OrmClientOptions::max_query_depth(n)`).
 - Un `where` con un carácter NUL (`\u0000`) en un string, en un segmento de `path` JSON o en una clave JSON es un error de validación en todas las bases de datos, antes de ejecutar SQL. PostgreSQL no puede guardar NUL en `text` ni en `jsonb`, y el cliente original responde con un error crudo de la base de datos; Corvis responde con un error de validación (`400` mediante `OrmExceptionFilter`).
 - En los inputs únicos (`findUnique`, `update`, `upsert`, `delete`, ...) los campos `@id` y `@unique` solo aceptan el valor (`{ email: "a@b.c" }`), nunca un filtro como `{ equals }` o `{ not }` ni `null`.
 - Los números fuera de rango son errores, nunca valores truncados: un `BigInt` de más de 64 bits, un byte de `Bytes` fuera de `0..=255`, un `Decimal` que no cabe en un `NUMERIC` de Postgres o un `limit` negativo en `update_many`/`delete_many` (`P2019`).
 - `update`, `delete` y las operaciones `*_many` repiten su `where` en el `UPDATE`/`DELETE`, así que la concurrencia optimista (`where: { id, version }`) tiene un solo ganador.
 - `log_queries` escribe los valores de los parámetros en los logs.
-- `corvis_orm::undefined()` y los nulos de Json son valores que ninguna petición puede producir: cada uno lleva una marca aleatoria que se genera al iniciar el proceso. Un texto o un objeto que llega en el cuerpo de una petición siempre es un dato, nunca "omite esta condición" ni "compara con `NULL`".
+- `corvis_orm::undefined()` y los nulos de Json son valores que ninguna petición puede producir: cada uno lleva una marca aleatoria que se genera al iniciar el proceso, una por tipo. Un texto o un objeto que llega en el cuerpo de una petición siempre es un dato, nunca "omite esta condición" ni "compara con `NULL`". La marca nunca se guarda (un nulo de Json solo se acepta como valor completo, ver [Nulos de Json](#nulos-de-json)), nunca se envía a la base de datos, y los errores y la salida de `Debug` muestran solo su tipo (`undefined`, `DbNull`). Los valores en sí son `serde_json::Value`, así que no escribas en los logs argumentos de consulta construidos con ellos.
 - El SQLite que incluye `sqlx` 0.8 es anterior a la 3.54.0 y tiene un fallo conocido (RUSTSEC-2026-0459): abrir un archivo de base de datos junto con un archivo `-wal` manipulado puede devolver en los resultados bytes viejos de la memoria del proceso. Abre solo archivos SQLite que haya creado tu aplicación, nunca una base de datos o un `-wal` que pueda haber escrito alguien menos confiable. La actualización se sigue en [#155](https://github.com/randygil/corvis/issues/155).
 
 ## Diferencias entre PostgreSQL y SQLite
@@ -465,6 +467,7 @@ donde la última columna dice otra cosa.
 | `divide: 0` | Falla (`22012`, división por cero); `null` sigue siendo `null` | El resultado es `null`: `P2011` en una columna obligatoria, `null` guardado en una opcional |
 | `increment` fuera del rango de un `Int` | Falla (`22003`) | El original guarda el valor (los enteros de SQLite son de 64 bits) y leer la fila falla con `P2023` (`Value 2147483648 does not fit in an INT column`). Corvis hace fallar la sentencia con el error que da Postgres (`22003`, `integer out of range`) y SQLite la deshace |
 | Una columna `Int` que guarda una fracción o un número de más de 32 bits (escrito por otro programa) | No puede ocurrir | Leer la fila falla con `P2023`, nunca da un valor truncado o saturado |
+| `increment` / `multiply` fuera del rango de un `BigInt` o hasta un `Float` infinito | Falla (`22003`, `bigint out of range` / `value out of range: overflow`) | El original guarda un número de coma flotante en la columna `BigInt`, o `inf`, y luego toda lectura de la fila falla con `P2023`. Corvis hace fallar la sentencia con el error que da Postgres y SQLite la deshace. Una columna `BigInt` que guarda un número de coma flotante o una `Float` que guarda un infinito (escritos por otro programa) se leen como `P2023`, igual que en el original |
 
 ## Qué no está soportado
 

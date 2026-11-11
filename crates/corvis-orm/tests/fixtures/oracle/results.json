@@ -62,7 +62,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.138Z",
+   "updatedAt": "2026-11-11T21:02:50.704Z",
    "data": {
     "a": [
      1,
@@ -101,7 +101,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-02T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.170Z",
+   "updatedAt": "2026-11-11T21:02:50.710Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -209,7 +209,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.176Z",
+   "updatedAt": "2026-11-11T21:02:50.719Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -297,7 +297,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T00:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:54:26.138Z",
+    "updatedAt": "2026-11-11T21:02:50.704Z",
     "data": {
      "a": [
       1,
@@ -664,7 +664,7 @@
     "big": 9007199254740991,
     "birthday": "1990-05-06T00:00:00.000Z",
     "createdAt": "2024-01-01T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:54:26.138Z",
+    "updatedAt": "2026-11-11T21:02:50.704Z",
     "data": {
      "a": [
       1,
@@ -692,7 +692,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-02T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:54:26.170Z",
+    "updatedAt": "2026-11-11T21:02:50.710Z",
     "data": null,
     "meta": {},
     "active": true,
@@ -711,7 +711,7 @@
     "big": 0,
     "birthday": null,
     "createdAt": "2024-01-03T00:00:00.000Z",
-    "updatedAt": "2026-11-11T20:54:26.176Z",
+    "updatedAt": "2026-11-11T21:02:50.719Z",
     "data": null,
     "meta": {},
     "active": true,
@@ -751,7 +751,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.138Z",
+   "updatedAt": "2026-11-11T21:02:50.704Z",
    "data": {
     "a": [
      1,
@@ -969,7 +969,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.176Z",
+   "updatedAt": "2026-11-11T21:02:50.719Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -1057,7 +1057,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.176Z",
+   "updatedAt": "2026-11-11T21:02:50.719Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -1310,7 +1310,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.138Z",
+   "updatedAt": "2026-11-11T21:02:50.704Z",
    "active": true,
    "managerId": null
   }
@@ -1346,7 +1346,7 @@
    "ratio": null,
    "big": 0,
    "birthday": null,
-   "updatedAt": "2026-11-11T20:54:26.176Z",
+   "updatedAt": "2026-11-11T21:02:50.719Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -3611,7 +3611,7 @@
    "big": 0,
    "birthday": null,
    "createdAt": "2024-01-03T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.387Z",
+   "updatedAt": "2026-11-11T21:02:50.905Z",
    "data": null,
    "meta": {},
    "active": true,
@@ -3679,7 +3679,7 @@
    "big": 9007199254740991,
    "birthday": "1990-05-06T00:00:00.000Z",
    "createdAt": "2024-01-01T00:00:00.000Z",
-   "updatedAt": "2026-11-11T20:54:26.372Z",
+   "updatedAt": "2026-11-11T21:02:50.889Z",
    "data": null,
    "meta": {
     "k": "v"
@@ -13624,6 +13624,21 @@
    "code": null,
    "meta": null,
    "message": "\nInvalid `prisma.user.findMany()` invocation:\n\n{\n  where: {\n    ratio: {\n      lt: \"NaN\"\n          ~~~~~\n    }\n  },\n  select: {\n    email: true\n  }\n}\n\nArgument `lt`: Invalid value provided. Expected Float or FloatFieldRefInput, provided String."
+  }
+ },
+ {
+  "label": "json.nested_cleanup",
+  "model": "user",
+  "action": "deleteMany",
+  "args": {
+   "where": {
+    "email": {
+     "startsWith": "nested-null"
+    }
+   }
+  },
+  "result": {
+   "count": 2
   }
  }
 ]
