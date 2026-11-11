@@ -90,7 +90,8 @@ pub(super) mod tls_io {
     use tokio_rustls::server::TlsStream;
 
     use super::*;
-    use crate::server::{ConnState, ReadCredit};
+    use crate::server::ConnState;
+    use crate::server::timed_io::ReadCredit;
 
     /// A TLS connection: the rustls stream over the gated socket, and the gate's shared state.
     pub(in crate::server) struct TlsIo {

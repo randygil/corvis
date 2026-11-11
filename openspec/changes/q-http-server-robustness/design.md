@@ -394,6 +394,22 @@ two lines, the second counting the 67 errors after the first.
 - Task 6.4: `cargo test --workspace` passed in full (2,666 passed, 0 failed): no test relied on the test client
   ignoring a body limit.
 
+### Split of `server.rs` (group 7)
+
+- Test counts (`cargo test -p corvis -- --list`, lines ending in `: test`): on the untouched tree 1,226 (default features)
+  and 1,855 (`tls,compression,socket-io`); after groups 2 to 6, just before any move, 1,247 and 1,877; after the moves
+  1,247 and 1,877. The two lists are the same once the module path of each moved test is mapped (the only other
+  difference is the doctest of `ServerOptions`, now under `server/options.rs`).
+- The three move steps (7.2 to 7.4) were done in one pass by a script that cuts the file at item boundaries, then
+  verified together with every suite the three steps name; the moves do not depend on each other. Code is moved as it
+  was; the edits are imports, `pub(super)` (or `pub(in crate::server)` for the test helpers of `guarded_body` that the
+  watchdog tests share), and one line of a watchdog test that read the state through a private field of
+  `GuardedBody` and now uses the state `body_of` returns (the same `Arc`).
+- `IGNORE_INVALID_HEADERS` stays in `server.rs` next to `connection_builder`, its only user. `ServerTasks` stays in
+  `server.rs` with `serve`. `finish_response` is now `pub(super)` (the test client reaches it through `respond`);
+  `request::drain` is re-exported for the Engine.IO polling transport under `socket-io` only.
+- `server.rs` went from 3,114 lines (after groups 2 to 6) to about 600.
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.

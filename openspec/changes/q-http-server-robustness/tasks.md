@@ -73,13 +73,13 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 
 ## 7. Split `server.rs` (Decision 6)
 
-- [ ] 7.1 Record `cargo test -p corvis --features tls,compression,socket-io -- --list | wc -l` and the same for the
+- [x] 7.1 Record `cargo test -p corvis --features tls,compression,socket-io -- --list | wc -l` and the same for the
   default features in Implementation notes, before any move
-- [ ] 7.2 Move to `server/options.rs`, `server/request.rs` and `server/response.rs`; verify `cargo build -p corvis
+- [x] 7.2 Move to `server/options.rs`, `server/request.rs` and `server/response.rs`; verify `cargo build -p corvis
   --all-targets` without warnings and `--test transport_security --test express_parity`
-- [ ] 7.3 Move to `server/budget.rs`, `server/rapid_reset.rs` and `server/guarded_body.rs`; verify `--test
+- [x] 7.3 Move to `server/budget.rs`, `server/rapid_reset.rs` and `server/guarded_body.rs`; verify `--test
   http2_limits --test response_memory` and `cargo test -p corvis --lib server`
-- [ ] 7.4 Move to `server/timed_io.rs` and `server/watchdog.rs`; verify `--test http1_framing --test send_timeout` and
+- [x] 7.4 Move to `server/timed_io.rs` and `server/watchdog.rs`; verify `--test http1_framing --test send_timeout` and
   `--features tls --test tls --test transport_security`
 - [ ] 7.5 `ConnState` grouped into `Activity`, `EndFlags`, `CancelState`, `Clocks` and `ResponseBudget`, orderings and
   lock scopes unchanged; verify the suites of 7.2-7.4 again and that the test counts equal those of 7.1
