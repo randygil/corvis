@@ -9,13 +9,13 @@ description = "Socket.IO benchmark of Corvis: a server with a counting allocator
 corvis = { workspace = true, features = ["socket-io"] }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-futures = "0.3"
+futures = { workspace = true }
 bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 memory-stats = "1"
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { workspace = true }
 
 [[bin]]
 name = "corvis-sio-bench"
