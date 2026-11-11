@@ -1,5 +1,7 @@
 //! Keys, key families and the algorithm allow-list.
 
+use std::sync::{Arc, OnceLock};
+
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey};
 
@@ -62,11 +64,21 @@ enum Material {
     Pem(Vec<u8>),
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many `JwtKey`s were parsed on this thread, so a test can show that a cached key is parsed once.
+    pub(crate) static KEY_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The key a token is verified with: an HMAC secret or a public key. It prints its family and size, never its bytes.
+///
+/// The key is parsed the first time a token is verified with it, and every clone shares the result: a key provider that
+/// hands back clones of a cached `JwtKey` costs no parse per request.
 #[derive(Clone)]
 pub struct JwtKey {
     family: KeyFamily,
     material: Material,
+    parsed: Arc<OnceLock<Result<DecodingKey, String>>>,
 }
 
 impl std::fmt::Debug for JwtKey {
@@ -82,22 +94,26 @@ impl JwtKey {
     /// An HMAC secret (`HS256`, `HS384`, `HS512`). It must be at least 32 bytes long: the strategy does not start with
     /// a shorter one (RFC 7518 section 3.2).
     pub fn secret(secret: impl Into<Vec<u8>>) -> Self {
-        JwtKey { family: KeyFamily::Hmac, material: Material::Secret(secret.into()) }
+        Self::of(KeyFamily::Hmac, Material::Secret(secret.into()))
     }
 
     /// An RSA public key in PEM (`RS*` and `PS*`).
     pub fn rsa_pem(pem: impl Into<Vec<u8>>) -> Self {
-        JwtKey { family: KeyFamily::Rsa, material: Material::Pem(pem.into()) }
+        Self::of(KeyFamily::Rsa, Material::Pem(pem.into()))
     }
 
     /// An EC public key in PEM (`ES256`, `ES384`).
     pub fn ec_pem(pem: impl Into<Vec<u8>>) -> Self {
-        JwtKey { family: KeyFamily::Ec, material: Material::Pem(pem.into()) }
+        Self::of(KeyFamily::Ec, Material::Pem(pem.into()))
     }
 
     /// An Ed25519 public key in PEM. It needs an explicit `algorithms([EdDSA])`.
     pub fn ed_pem(pem: impl Into<Vec<u8>>) -> Self {
-        JwtKey { family: KeyFamily::Ed, material: Material::Pem(pem.into()) }
+        Self::of(KeyFamily::Ed, Material::Pem(pem.into()))
+    }
+
+    fn of(family: KeyFamily, material: Material) -> Self {
+        JwtKey { family, material, parsed: Arc::new(OnceLock::new()) }
     }
 
     pub(crate) fn family(&self) -> KeyFamily {
@@ -112,22 +128,32 @@ impl JwtKey {
         }
     }
 
-    /// The key as the verification code needs it. The error never carries key material.
-    pub(crate) fn decoding_key(&self) -> Result<DecodingKey, String> {
-        let invalid = |what: &str| format!("the {what} key is not valid PEM");
-        match (&self.material, self.family) {
-            (Material::Secret(secret), _) => Ok(DecodingKey::from_secret(secret)),
-            (Material::Pem(pem), KeyFamily::Rsa) => DecodingKey::from_rsa_pem(pem).map_err(|_| invalid("RSA")),
-            (Material::Pem(pem), KeyFamily::Ec) => DecodingKey::from_ec_pem(pem).map_err(|_| invalid("EC")),
-            (Material::Pem(pem), KeyFamily::Ed) => DecodingKey::from_ed_pem(pem).map_err(|_| invalid("Ed25519")),
-            (Material::Pem(_), KeyFamily::Hmac) => Err("an HMAC key must be a secret".into()),
-        }
+    /// The key as the verification code needs it, parsed on the first call and shared by every clone. The error never
+    /// carries key material.
+    pub(crate) fn decoding_key(&self) -> Result<&DecodingKey, &str> {
+        self.parsed
+            .get_or_init(|| {
+                #[cfg(test)]
+                KEY_PARSES.with(|c| c.set(c.get() + 1));
+                let invalid = |what: &str| format!("the {what} key is not valid PEM");
+                match (&self.material, self.family) {
+                    (Material::Secret(secret), _) => Ok(DecodingKey::from_secret(secret)),
+                    (Material::Pem(pem), KeyFamily::Rsa) => DecodingKey::from_rsa_pem(pem).map_err(|_| invalid("RSA")),
+                    (Material::Pem(pem), KeyFamily::Ec) => DecodingKey::from_ec_pem(pem).map_err(|_| invalid("EC")),
+                    (Material::Pem(pem), KeyFamily::Ed) => DecodingKey::from_ed_pem(pem).map_err(|_| invalid("Ed25519")),
+                    (Material::Pem(_), KeyFamily::Hmac) => Err("an HMAC key must be a secret".into()),
+                }
+            })
+            .as_ref()
+            .map_err(String::as_str)
     }
 }
 
 /// Chooses the key for each request (`secretOrKeyProvider`), for rotating keys or one key per issuer. It receives the
 /// request and the raw token, which is not verified yet: use its `iss` or `kid` only to pick a key, never to trust it.
-/// It runs for every request, so cache what it fetches. An error fails the authentication (401).
+/// It runs for every request, so cache what it fetches, and cache the `JwtKey` itself rather than its PEM: clones of
+/// one `JwtKey` share its parsed key, while a `JwtKey` built per request is parsed per request. An error fails the
+/// authentication (401).
 ///
 /// ```ignore
 /// struct ByIssuer { keys: HashMap<String, JwtKey> }

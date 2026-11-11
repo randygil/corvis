@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, errors::ErrorKind};
+use jsonwebtoken::{DecodingKey, Validation, errors::ErrorKind};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -56,14 +56,13 @@ pub use options::{
 
 pub use crate::jwt::JwtAlgorithm;
 
-use self::key::allowed_for;
 use self::options::{KeySource, Resolved, check_secret};
 use super::warn_limit::WarnLimiter;
 use super::{AuthenticateOptions, AuthenticatedUser, Strategy, StrategyOutcome};
 use crate::common::context::ExecutionContext;
 use crate::di::{DiError, Hooks, Injectable, ResolveCtx};
 use crate::http::{HttpException, Request};
-use crate::jwt::{HeaderProblem, VerifyError, audience_matches, check_header, has_three_segments, issuer_matches, verify_claims};
+use crate::jwt::{HeaderProblem, VerifyError, audience_matches, check_header, decode_claims, has_three_segments, issuer_matches};
 use crate::logger::Logger;
 
 /// The class a `PassportStrategy(Strategy)` of `passport-jwt` is written as: the options and `validate`.
@@ -168,26 +167,12 @@ fn decode_reason(kind: &ErrorKind) -> &'static str {
     }
 }
 
-/// `jsonwebtoken`'s `Validation` for `algorithms`: the crate checks only the signature and the algorithm, the claims
-/// are checked by the strategy with node-jsonwebtoken's rules.
-fn validation_for(algorithms: Vec<Algorithm>) -> Validation {
-    let mut validation = Validation::new(algorithms[0]);
-    validation.algorithms = algorithms;
-    validation.required_spec_claims = Default::default();
-    validation.leeway = 0;
-    validation.validate_exp = false;
-    validation.validate_nbf = false;
-    validation.validate_aud = false;
-    validation
-}
-
 impl Resolved {
-    /// Verifies a token and returns its payload, or the reason it was refused.
-    fn verify(&self, token: &str, key: &DecodingKey, allowed: Vec<Algorithm>) -> Result<Value, &'static str> {
-        if allowed.is_empty() {
-            return Err("invalid algorithm");
-        }
-        let claims = verify_claims(token, key, &validation_for(allowed), &self.rules).map_err(|e| match e {
+    /// Verifies a token whose header was checked and returns its payload, or the reason it was refused. `validation` is
+    /// `None` when no algorithm of the key's family is allowed.
+    fn verify(&self, token: &str, key: &DecodingKey, validation: Option<&Validation>) -> Result<Value, &'static str> {
+        let Some(validation) = validation else { return Err("invalid algorithm") };
+        let claims = decode_claims(token, key, validation, &self.rules).map_err(|e| match e {
             VerifyError::Decode(e) => decode_reason(e.kind()),
             VerifyError::Claim(message) => message,
         })?;
@@ -210,8 +195,8 @@ impl Resolved {
     /// The payload of a verified token, with the key chosen by the options.
     async fn payload(&self, req: &Request, token: &str, log: &Logger) -> Result<Value, Denied> {
         match &self.key {
-            KeySource::Static { key, allowed, .. } => Ok(self.verify(token, key, allowed.clone())?),
-            KeySource::Provider(provider) => {
+            KeySource::Static { key, validation } => Ok(self.verify(token, key, Some(validation))?),
+            KeySource::Provider { provider, validations } => {
                 // The provider runs for every well-formed token, forged ones included: it gets a deadline, and the
                 // dropped future is cancelled.
                 let jwt_key = match tokio::time::timeout(self.key_provider_timeout, provider.key(req, token)).await {
@@ -235,7 +220,7 @@ impl Resolved {
                     log.debug(format!("the key provider returned a key that is not accepted: {problem}"));
                     Denied::Fail("key provider error")
                 })?;
-                Ok(self.verify(token, &decoding, allowed_for(jwt_key.family(), self.algorithms.as_deref()))?)
+                Ok(self.verify(token, decoding, validations.get(jwt_key.family()))?)
             }
         }
     }
@@ -304,3 +289,6 @@ impl<V: JwtValidator> Strategy for JwtStrategy<V> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

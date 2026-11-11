@@ -49,18 +49,18 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 3. JWT keys and validations prepared once
 
-- [ ] 3.1 `JwtService::new` prepares the module encoding key, decoding key and `Validation` (design.md Decision 3) behind
+- [x] 3.1 `JwtService::new` prepares the module encoding key, decoding key and `Validation` (design.md Decision 3) behind
   an `Arc`; cached failures returned as clones of `jsonwebtoken::errors::Error`; a `#[cfg(test)]` thread-local parse
   counter like `HMAC_RUNS` in `signed_cookie.rs`; unit tests for spec `auth/jwt` "Many calls, no parse" and "A key that
   does not parse", and `verify_errors_keep_their_type_with_cached_keys`
-- [ ] 3.2 Split `verify_claims` into `check_header` (callers) and `decode_claims`; `JwtService::verify` checks the header
+- [x] 3.2 Split `verify_claims` into `check_header` (callers) and `decode_claims`; `JwtService::verify` checks the header
   first; a `#[cfg(test)]` header-check counter; tests `verify_still_refuses_crit_after_the_single_header_check` and the
   strategy's "Header checked once"; verify `tests/auth_jwt_header.rs` and
   `a_token_with_a_crit_header_or_the_wrong_shape_never_reaches_the_key_provider` pass unchanged
-- [ ] 3.3 `auth/jwt/options.rs` and `auth/jwt/mod.rs`: `Resolved` holds the static key's `Validation` and one
+- [x] 3.3 `auth/jwt/options.rs` and `auth/jwt/mod.rs`: `Resolved` holds the static key's `Validation` and one
   `Option<Validation>` per family for a provider; no `allowed.clone()` or `validation_for` per request; test
   `prepared_validations_follow_the_key_family`; verify `cargo test -p corvis --test auth_jwt` (the recorded fixture)
-- [ ] 3.4 `auth/jwt/key.rs`: `JwtKey` shares its parsed key across clones (`Arc<OnceLock<..>>`), `Debug` unchanged, the
+- [x] 3.4 `auth/jwt/key.rs`: `JwtKey` shares its parsed key across clones (`Arc<OnceLock<..>>`), `Debug` unchanged, the
   `JwtKeyProvider` rustdoc says to cache the `JwtKey`; a parse counter; tests "Cached provider key" and
   `a_cached_short_secret_is_refused_on_every_request` (spec "Short secret from a cache"); extend
   `debug_of_every_public_type` (`tests/auth_invariants.rs`) with a `JwtKey` whose parse is cached

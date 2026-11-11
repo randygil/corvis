@@ -557,6 +557,58 @@ async fn global_auth_guard_and_a_gateway() {
 
 // ---- secrets never appear in output ----
 
+const CACHED_KEY_SECRET: &str = "CANARY-cached-jwt-key-0123456789abcdef0123456789abcdef";
+
+/// One key, handed out in clones by the provider below: its parse is cached and shared by every clone.
+static CACHED_JWT_KEY: std::sync::LazyLock<corvis::auth::jwt::JwtKey> =
+    std::sync::LazyLock::new(|| corvis::auth::jwt::JwtKey::secret(CACHED_KEY_SECRET));
+
+struct CachedKeyProvider;
+
+#[async_trait]
+impl corvis::auth::jwt::JwtKeyProvider for CachedKeyProvider {
+    async fn key(&self, _req: &Request, _raw_token: &str) -> corvis::anyhow::Result<corvis::auth::jwt::JwtKey> {
+        Ok(CACHED_JWT_KEY.clone())
+    }
+}
+
+#[injectable]
+pub struct CachedKeyAuth;
+
+#[async_trait]
+impl corvis::auth::jwt::JwtValidator for CachedKeyAuth {
+    const NAME: &'static str = "jwt-cached-key";
+    type User = Value;
+
+    fn options(&self) -> corvis::auth::jwt::JwtStrategyOptions {
+        corvis::auth::jwt::JwtStrategyOptions::new()
+            .jwt_from_request(corvis::auth::jwt::ExtractJwt::from_auth_header_as_bearer_token())
+            .secret_or_key_provider(CachedKeyProvider)
+    }
+
+    async fn validate(&self, _req: &Request, payload: Value) -> Result<Option<Value>, HttpException> {
+        Ok(Some(payload))
+    }
+}
+
+#[controller("cached-key")]
+pub struct CachedKeyController;
+
+#[routes]
+impl CachedKeyController {
+    #[get]
+    #[use_guards(corvis::auth::AuthGuard::new("jwt-cached-key"))]
+    fn me(&self) -> Value {
+        json!({ "ok": true })
+    }
+}
+
+#[module(
+    controllers = [CachedKeyController],
+    providers = [CachedKeyAuth, Provider::strategy::<corvis::auth::jwt::JwtStrategy<CachedKeyAuth>>()],
+)]
+pub struct CachedKeyModule;
+
 #[tokio::test]
 async fn debug_of_every_public_type() {
     use corvis::auth::api_key::{ApiKey, ApiKeySet, ExpectedApiKey};
@@ -623,6 +675,19 @@ async fn debug_of_every_public_type() {
     }
     let failure = AuthFailure { strategy: "x".into(), challenge: None, status: None };
     shown.push(("AuthFailure", "unused".into(), format!("{failure:?}")));
+    // A key whose parse is cached (a provider handed back clones of it to a request), and cookie keys that signed and
+    // verified with their prepared HMAC keys, print no more than before.
+    let mut app = CorvisFactory::create::<CachedKeyModule>().await.unwrap();
+    app.silence_route_logs();
+    app.init().await.unwrap();
+    let forged = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+    let r = corvis::testing::request(&app).get("/cached-key").bearer(forged).send().await;
+    assert_eq!(r.status, 401, "the token reached the provider and was refused");
+    shown.push(("JwtKey (parsed and cached)", CACHED_KEY_SECRET.into(), format!("{:?}", CACHED_JWT_KEY.clone())));
+    let m = marker("cookie-keys-used");
+    let keys = CookieKeys::new([m.clone()]).unwrap();
+    assert!(keys.unsign(&keys.sign("v")).is_some());
+    shown.push(("CookieKeys (keys prepared and used)", m, format!("{keys:?}")));
 
     for (name, secret, text) in &shown {
         assert!(!text.contains(secret.as_str()), "the Debug output of {name} contains its secret: {text}");
