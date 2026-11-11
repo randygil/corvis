@@ -275,6 +275,27 @@ server.
 3. Should the test client set a remote address (`127.0.0.1:0`)? Recommendation: no; `Request::ip()` already answers
    `127.0.0.1` without one, and `remote_addr()` returning `None` tells a test it is in memory.
 
+## Implementation notes
+
+### Reconcile (task 1.1)
+
+Re-checked on `dev` at `e936d68` (after #185, #186 and #191 landed). Every finding still applies; only line numbers
+moved:
+
+| Finding | `d46758a` | `e936d68` |
+|---|---|---|
+| 1, accept loop | `server.rs:2301-2306` | unchanged |
+| 3, shutdown | `server.rs:2347-2353`, spawns `2323`, `2328`, `607` | unchanged; `application.rs` runs the hooks from `listen_with` (`:687-694`) and `listen_until_in_background` (`:726-727`), `close_with_signal` at `:788` |
+| 10, `@Res()` wait | `res.rs:857-866`, `router/mod.rs:730-737`, extension `:865`, router clone `:719`, `get_response` `context.rs:387-389` | `res.rs:866-874`, `router/mod.rs:739-745`, extension `:874`, router clone `:728`, `get_response` `context.rs:400-402` (e3 added `has_cookie_prefix` and the poison-tolerant extension accessors above them) |
+| 13, `from_hyper` | `server.rs:471-529`, `612` | unchanged |
+| 14, test client | `testing.rs:383-399` | unchanged |
+| 16, `ConnState` | `server.rs:621-667` | unchanged (`server.rs` still 2,897 lines; e2 did not touch it) |
+| `finish` notifies twice | `res.rs:766-767` | `res.rs:774-775` |
+| `take_response` clones | `res.rs:869-875` | `res.rs:877-883` |
+
+No conflict with e3 (`http/res.rs` edits are in other functions) nor with e2 (no edit to `server.rs`).
+`cargo test -p corvis` on the untouched tree: 1,172 passed, 0 failed, 54 ignored.
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.
