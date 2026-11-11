@@ -53,7 +53,7 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 
 ## 5. `from_hyper` (Decision 4)
 
-- [ ] 5.1 `from_hyper` returns `Request`; remove `Err(resp) => resp` and the `allow`; verify
+- [x] 5.1 `from_hyper` returns `Request`; remove `Err(resp) => resp` and the `allow`; verify
   `cargo clippy -p corvis --all-targets -- -D warnings`
 
 ## 6. One request path (Decision 5)

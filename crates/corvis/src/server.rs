@@ -491,14 +491,13 @@ fn read_limit(headers: &http::HeaderMap, transport: usize, parser: &crate::http:
 ///   only on routes that use it, after the guards).
 /// - Other bodies are read up to the limit of the parser that accepts them (`json` /
 ///   `urlencoded`) or up to the transport limit (`body_limit`), and within `request_timeout`.
-#[allow(clippy::result_large_err)] // internal: the error is the ready-made rejection `Response`
 pub(crate) async fn from_hyper(
     req: hyper::Request<Incoming>,
     remote: Option<SocketAddr>,
     limit: usize,
     parser: &crate::http::body_parser::BodyParserOptions,
     request_timeout: Option<Duration>,
-) -> Result<Request, Response> {
+) -> Request {
     let (parts, body) = req.into_parts();
     let deadline = request_timeout.and_then(|t| Instant::now().checked_add(t));
     if crate::multer::is_multipart_content_type(&parts.headers) {
@@ -508,7 +507,7 @@ pub(crate) async fn from_hyper(
         let mut ext = parts.extensions;
         ext.insert(PendingBodySlot(Arc::new(Mutex::new(Some(PendingBody { body, deadline })))));
         *r.extensions.write().unwrap() = ext;
-        return Ok(r);
+        return r;
     }
     let limit = read_limit(&parts.headers, limit, parser);
     let mut unread = None;
@@ -548,7 +547,7 @@ pub(crate) async fn from_hyper(
         ext.insert(PendingBodySlot(Arc::new(Mutex::new(Some(p)))));
     }
     *r.extensions.write().unwrap() = ext;
-    Ok(r)
+    r
 }
 
 /// Discards what is left of a body nobody read, up to `cap` bytes and until its deadline, so a
@@ -616,11 +615,11 @@ async fn handle(
     let resp = match from_hyper(req, Some(remote), shared.body_limit, &shared.http_settings.body_parser, options.request_timeout).await {
         // An HTTP/2 body that fails to read means the client reset the stream or the connection broke: nobody waits
         // for the answer, so it is not dispatched (and not logged as an error) and counts as a cancelled request.
-        Ok(r) if r.client_aborted && r.version == http::Version::HTTP_2 => {
+        r if r.client_aborted && r.version == http::Version::HTTP_2 => {
             *client_aborted = true;
             Response::json(request_aborted_error().get_response().clone()).with_status(400)
         }
-        Ok(r) => {
+        r => {
             let pending = r.get::<PendingBodySlot>();
             let resp = dispatch(shared.clone(), r).await;
             // A body nobody read (or left half read by a failed upload) is drained now, not
@@ -633,7 +632,6 @@ async fn handle(
             }
             resp
         }
-        Err(resp) => resp,
     };
     Ok(finish_response(resp, &info, &shared.http_settings, head))
 }

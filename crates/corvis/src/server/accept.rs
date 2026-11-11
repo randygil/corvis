@@ -153,7 +153,7 @@ mod tests {
             self.attempts.lock().unwrap().push(Instant::now());
             Poll::Ready(match next {
                 None => Ok(((), SocketAddr::from(([127, 0, 0, 1], 1)))),
-                Some(kind) if kind == io::ErrorKind::Other => Err(io::Error::other("Too many open files (os error 24)")),
+                Some(io::ErrorKind::Other) => Err(io::Error::other("Too many open files (os error 24)")),
                 Some(kind) => Err(io::Error::from(kind)),
             })
         }
