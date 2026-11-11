@@ -1,7 +1,7 @@
 ---
 name: rust-implementer
 description: Implements one approved OpenSpec change of Corvis (Rust workspace) in an isolated git worktree. Use after the user approved a change's proposal, design and tasks; give it the change name. Not for designing changes or for work without an approved change.
-model: sonnet
+model: opus
 isolation: worktree
 ---
 
