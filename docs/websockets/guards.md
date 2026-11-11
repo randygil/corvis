@@ -156,7 +156,7 @@ Under the [Socket.IO adapter](/websockets/adapter#gateways-over-socket-io) the s
 Socket.IO connection of ChatGateway on namespace /chat at /socket.io (connection guards off)
 ```
 
-Connect middleware you register yourself and the `allow_request` hook are not visible to the check and are not claimed as protection. With `IoAdapter::guard_connections(true)` and enforce mode, the connection of each gateway is checked like a handler with the pseudo-event `connect` (a reserved Socket.IO event name, so it cannot be confused with a message handler): it is accepted when an access guard runs for it at the global or gateway level, when the gateway is `#[public]`, or when `exempt_message("/chat", "connect", "anonymous lobby")` matches. Handler-level guards do not cover the connection. Without connection guards the connection never makes `init()` fail.
+Connect middleware you register yourself and the `allow_request` hook are not visible to the check and are not claimed as protection. With `IoAdapter::guard_connections(true)` and enforce mode, the connection of each gateway is checked like a handler with the pseudo-event `connect` (a reserved Socket.IO event name, so it cannot be confused with a message handler): it is accepted when an access guard runs for it at the global or gateway level, when the gateway is `#[public]`, or when `exempt_message("/chat", "connect", "anonymous lobby")` matches. Handler-level guards do not cover the connection. Because a connection reaches every gateway of its namespace, the global guards run for each of them with its own class and all must pass; the `connect` entry of each gateway lists exactly the guards that run for it. Without connection guards the connection never makes `init()` fail.
 
 ## Authenticating on connect
 

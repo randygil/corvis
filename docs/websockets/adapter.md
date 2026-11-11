@@ -696,7 +696,27 @@ any handler runs, and an event that arrives meanwhile is neither lost nor handle
 flight (`max_inflight`, 32 per connection): at the limit the server stops reading from that connection, and they are
 discarded, without running guards or handlers, when a hook disconnects the socket. A hook that panics, or exceeds
 `IoAdapter::hook_timeout` (30 s by default), disconnects the socket and closes its connection; a `handle_disconnect` that
-exceeds it is abandoned; an `after_init` that panics or exceeds it fails `init()`.
+exceeds it is abandoned; an `after_init` that panics or exceeds it fails `init()`. A zero `hook_timeout` fails `init()`.
+
+Events held behind the hook start in the order they arrived (the gate is first in, first out). The `handle_disconnect` hooks
+of a namespace run in at most 16 tasks, whatever the number of sockets that leave, and at most 10,000 sockets wait for a
+worker; a hook that finds the queue full is skipped and logged (rate limited). Between the CONNECT packet and the end of the
+connection handlers the heartbeat's ping is held back (at most one second), so what a handler emits follows CONNECT as in the
+original.
+
+`init()` also refuses an Engine.IO path of `/` or an empty one (Engine.IO would take every HTTP request of the application)
+and a `#[subscribe_message]` for a reserved Socket.IO event name (`connect`, `connect_error`, `disconnect`, `disconnecting`,
+`newListener`, `removeListener`: no client can emit them, so the handler could never run), both naming the gateway. A
+duplicated `#[websocket_gateway]` option is a compile error.
+
+**What a message holds.** Besides the packet's arguments (charged by the Socket.IO layer), a gateway handler holds the body
+as one shared JSON value, a copy for each `#[message_body]` parameter and, when it fails, the copy its `cause` echoes: `2 + P`
+copies of the arguments for `P` body parameters. They are charged to the connection's unread budget (session, address and
+server-wide, as the arguments are) by a try-charge that never waits, **before** any guard runs. When there is no room the
+event is answered with `exception` (`Too many messages in flight`), no guard or handler sees it, and the callback stays
+unanswered. So the heap of the handlers in flight stays within the unread budget that binds the address (its quota
+`max_address_share`, or the server-wide `max_total_unread_bytes`) times a small constant, measured with a counting
+allocator (twice the address quota for 30 events of 400 KiB from one address), and not within that budget times the number of copies.
 
 #### What authenticates a Socket.IO connection
 
@@ -709,7 +729,10 @@ handshake, `AuthGuard` denies outside HTTP, and guards run per message. Check th
 `guard_connections` is **off by default**, as in the original: a socket that never sends a message is never checked, yet it
 is connected, can be joined to rooms by server code and receives broadcasts. Turn it on and the global guards (while global
 enhancers apply to gateways) and the guards declared on the gateways of a namespace also run when a socket connects, before
-it is connected. The context is a WebSocket context with the pending socket as client, the handshake as request, `null` data,
+it is connected. A connection reaches every gateway of its namespace, so the global guards run once **for each gateway**,
+each time with that gateway as the class, and all of them must pass: the strictest gateway decides, whatever the order the
+gateways were registered in (with a `#[public]` gateway and a protected one on the same namespace, an anonymous client is
+refused). The route posture report lists a `connect` entry for each gateway with exactly the guards that run for it. The context is a WebSocket context with the pending socket as client, the handshake as request, `null` data,
 the gateway as class and a handler named `connect` that carries the gateway's metadata (so `#[public]` on the gateway is
 honored by guards that honor it; handler-level guards run per message only). A denial answers `CONNECT_ERROR` with
 `Forbidden resource`, a guard that fails answers its message (and the rest of its payload as `data`), and internal errors and

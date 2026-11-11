@@ -48,6 +48,38 @@ impl PlainGateway {
 #[module(providers = [PlainGateway])]
 pub struct PlainModule;
 
+#[websocket_gateway("/leaky")]
+pub struct LeakyGateway;
+
+#[handlers]
+impl LeakyGateway {
+    /// Panics with text the client chose.
+    #[subscribe_message("boom")]
+    fn boom(&self, #[message_body] text: String) {
+        panic!("secret-panic: {text}");
+    }
+}
+
+#[injectable]
+pub struct Failing;
+
+#[async_trait]
+impl CanActivate for Failing {
+    async fn can_activate(&self, _ctx: &ExecutionContext) -> Result<bool, HttpException> {
+        Err(HttpException::from_anyhow(anyhow::anyhow!("secret connection detail")))
+    }
+}
+
+#[websocket_gateway("/guarded-leaky")]
+#[use_guards(Failing)]
+pub struct GuardedLeakyGateway;
+
+#[handlers]
+impl GuardedLeakyGateway {}
+
+#[module(providers = [LeakyGateway, Failing, GuardedLeakyGateway])]
+pub struct LeakyModule;
+
 #[websocket_gateway(path = "/with-cors", cors = true)]
 pub struct CorsGateway;
 
@@ -125,5 +157,35 @@ async fn a_reply_for_a_reserved_event_is_logged_with_the_gateway_and_the_handler
         "{:?}",
         warnings()
     );
+    app.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn panics_and_internal_errors_are_logged_rate_limited_and_never_with_client_text() {
+    let _serial = SERIAL.lock().await;
+    let mut app = app_of::<LeakyModule>().await;
+    app.use_websocket_adapter(IoAdapter::new().guard_connections(true));
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let mut client = Raw::connect(addr).await;
+    client.send(r#"0/guarded-leaky,"#).await;
+    assert_eq!(client.recv_text().await, r#"4/guarded-leaky,{"message":"Internal server error"}"#);
+    app.close().await.unwrap();
+    let mut app = app_of::<LeakyModule>().await;
+    app.use_websocket_adapter(IoAdapter::new());
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let mut client = Raw::connect(addr).await;
+    client.join("/leaky", None).await;
+    for _ in 0..30 {
+        client.send(r#"2/leaky,["boom","CLIENT-CHOSEN-TEXT"]"#).await;
+    }
+    for _ in 0..30 {
+        let reply = client.recv_text().await;
+        assert!(reply.contains("Internal server error") && !reply.contains("secret-panic"), "{reply}");
+    }
+    let lines: Vec<(LogLevel, String)> = LOGS.lock().unwrap().clone();
+    assert!(lines.iter().all(|(_, m)| !m.contains("CLIENT-CHOSEN-TEXT") && !m.contains("secret connection detail")), "{lines:?}");
+    let handler_lines =
+        lines.iter().filter(|(_, m)| m.contains("internal error in a gateway handler") || m.contains("LeakyGateway::boom")).count();
+    assert!((1..=2).contains(&handler_lines), "30 panics are logged by the rate limit, not one line each: {handler_lines} lines");
     app.close().await.unwrap();
 }

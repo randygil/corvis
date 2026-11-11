@@ -715,7 +715,28 @@ ningún handler, y un evento que llega mientras tanto ni se pierde ni se atiende
 como handlers en curso (`max_inflight`, 32 por conexión): en el límite el servidor deja de leer esa conexión, y se descartan,
 sin ejecutar guards ni handlers, cuando un hook desconecta el socket. Un hook que entra en pánico, o supera
 `IoAdapter::hook_timeout` (30 s por defecto), desconecta el socket y cierra su conexión; un `handle_disconnect` que lo supera
-se abandona; un `after_init` que entra en pánico o lo supera hace fallar `init()`.
+se abandona; un `after_init` que entra en pánico o lo supera hace fallar `init()`. Un `hook_timeout` igual a cero hace fallar `init()`.
+
+Los eventos retenidos tras el hook empiezan en el orden en que llegaron (la compuerta es primero en entrar, primero en salir).
+Los hooks `handle_disconnect` de un namespace corren en como máximo 16 tareas, sea cual sea el número de sockets que se van, y
+como máximo 10.000 sockets esperan a un trabajador; un hook que encuentra la cola llena se omite y se registra (con límite de
+frecuencia). Entre el paquete CONNECT y el final de los manejadores de conexión el ping del latido se retiene (como máximo un
+segundo), así que lo que emite un manejador sigue a CONNECT como en el original.
+
+`init()` también rechaza una ruta de Engine.IO `/` o vacía (Engine.IO se quedaría con todas las peticiones HTTP de la
+aplicación) y un `#[subscribe_message]` para un nombre de evento reservado de Socket.IO (`connect`, `connect_error`,
+`disconnect`, `disconnecting`, `newListener`, `removeListener`: ningún cliente puede emitirlos, así que el handler nunca
+correría), ambos nombrando el gateway. Una opción de `#[websocket_gateway]` duplicada es un error de compilación.
+
+**Qué retiene un mensaje.** Además de los argumentos del paquete (que carga la capa Socket.IO), un handler de gateway retiene el
+cuerpo como un valor JSON compartido, una copia por cada parámetro `#[message_body]` y, si falla, la copia que repite su
+`cause`: `2 + P` copias de los argumentos para `P` parámetros de cuerpo. Se cargan al presupuesto de lectura de la conexión
+(sesión, dirección y global, como los argumentos) con una carga inmediata que nunca espera, **antes** de que corra ningún
+guard. Si no hay sitio, el evento se responde con `exception` (`Too many messages in flight`), ningún guard ni handler lo ve y
+el callback queda sin respuesta. Así, el heap de los handlers en curso se mantiene dentro del presupuesto que limita a la
+dirección (su cuota `max_address_share`, o el global `max_total_unread_bytes`) por una constante pequeña, medido con un
+asignador contador (el doble de la cuota de la dirección con 30 eventos de 400 KiB desde una dirección), y no dentro de ese
+presupuesto por el número de copias.
 
 #### Qué autentica una conexión Socket.IO
 
@@ -728,7 +749,11 @@ en `after_init` (el socket no está conectado hasta que lo pasa; un rechazo es `
 `guard_connections` está **desactivado por defecto**, como en el original: un socket que nunca envía un mensaje nunca se
 comprueba, y aun así está conectado, el código del servidor puede unirlo a salas y recibe broadcasts. Actívalo y los guards
 globales (mientras los enhancers globales se apliquen a los gateways) y los declarados en los gateways de un namespace también
-corren cuando un socket se conecta, antes de que esté conectado. El contexto es un contexto WebSocket con el socket pendiente
+corren cuando un socket se conecta, antes de que esté conectado. Una conexión llega a todos los gateways de su namespace, así
+que los guards globales corren una vez **por cada gateway**, cada vez con ese gateway como clase, y todos deben pasar: manda el
+gateway más estricto, sea cual sea el orden en que se registraron (con un gateway `#[public]` y uno protegido en el mismo
+namespace, un cliente anónimo es rechazado). El informe de route posture lista una entrada `connect` por gateway con
+exactamente los guards que corren para él. El contexto es un contexto WebSocket con el socket pendiente
 como cliente, el handshake como petición, datos `null`, el gateway como clase y un handler llamado `connect` que lleva los
 metadatos del gateway (así `#[public]` en el gateway lo respetan los guards que lo respetan; los guards a nivel de handler
 corren solo por mensaje). Una denegación responde `CONNECT_ERROR` con `Forbidden resource`, un guard que falla responde con su
