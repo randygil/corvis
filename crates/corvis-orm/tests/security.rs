@@ -143,7 +143,9 @@ async fn sqlite_decimal_columns_are_bounded_like_decimal_65_30() {
     let r = q(&db, "update", json!({ "where": { "id": 2 }, "data": { "balance": { "set": "99999999999999999999999999999999999.4" } } }))
         .await
         .unwrap();
-    assert_eq!(r["balance"], json!("9.99999999999999999999999999999999994e+34"));
+    // The column is `DECIMAL` (numeric affinity), like the reference SQLite migration: SQLite keeps 15 significant
+    // digits of what fits the bound.
+    assert_eq!(r["balance"], json!("1e+35"));
     let raw = db.query_raw("SELECT max(length(balance)) AS n FROM accounts", vec![]).await.unwrap();
     assert!(raw[0]["n"].as_i64().unwrap() < 80, "{raw:?}");
 }

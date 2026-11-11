@@ -125,7 +125,7 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 8. Key lists within the parameter limit (Decision 6)
 
-- [ ] 8.1 `engine/`: `key_condition` with chunking for compound keys (budget: half the dialect's limit); move
+- [x] 8.1 `engine/`: `key_condition` with chunking for compound keys (budget: half the dialect's limit); move
   `read_back_many`, `ids_filter` and its four callers, `m2m_unlink`, the compound include, `count_related`, the nested
   `delete`/`disconnect` lists and the insensitive `in`/`notIn` to it; a unit test that a chunked update repeats the
   caller's filter in each statement; verify `--test parameter_limits` passes (2.4) and `--test security` passes unchanged

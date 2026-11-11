@@ -426,8 +426,13 @@ fixture. The same recorder counts statements in the unit tests of Decision 6.
 - Not yet checked against the recording (3.1 is open): that the original's SQLite results for these cases are the
   numeric ones. The rounding and bound of `data_value` are kept; its comment now says what SQLite stores.
 - Verified: `--test sqlite_decimal` (4 tests, on a pushed table, a `DECIMAL` column and a `TEXT` column of an earlier
-  push), the Postgres SQL snapshot unchanged, `pg_oracle` and `pg_houseplan` (run with `CORVIS_TESTS_DIR`) pass; the
-  whole `corvis-orm` suite fails only in the not yet fixed tests of group 2.
+  push), the Postgres SQL snapshot unchanged, `pg_oracle` and `pg_houseplan` (run with `CORVIS_TESTS_DIR`) pass. The
+  whole `corvis-orm` suite also failed, besides the not yet fixed tests of group 2, in `security.rs`
+  `sqlite_decimal_columns_are_bounded_like_decimal_65_30` (seen when the suite was re-run in group 8): a value with 36
+  significant digits written to the new `DECIMAL` column is stored by SQLite as a 64-bit float and reads back as
+  `1e+35`, where the `TEXT` column kept `9.99999999999999999999999999999999994e+34`. That is Decision 2 ("Values keep 15
+  significant digits, as with the original's migration", "Behavior visible to applications"); the assertion was updated
+  with that reason. The bound itself (`1e35` and `1e300000` refused, at most 80 characters stored) still holds.
 
 ### Group 5: `db push`
 
