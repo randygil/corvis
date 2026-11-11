@@ -294,6 +294,12 @@ MUST NOT stay charged to the unread budget of the connection that sent them beyo
   the answering connections, their addresses and the server hold none of it, and the server gives it back when the calls
   end
 
+#### Scenario: One address cannot fill the budget
+- **WHEN** one client address answers calls until it holds a sixteenth of the answer budget, and then a call is answered
+  from other addresses
+- **THEN** the further answers of that address end their calls with `ResponsesTooLarge` and the call answered from other
+  addresses completes
+
 #### Scenario: Releasing
 - **WHEN** a call ends, however it ends
 - **THEN** every answer it held is released from the answer budget
@@ -303,7 +309,7 @@ MUST NOT stay charged to the unread budget of the connection that sent them beyo
 - **THEN** the call ends with `ResponsesTooLarge` at once and no connection's reads are paused
 
 ### Requirement: A panicking adapter does not leave a connecting socket behind
-A panic of the adapter while a socket connects (the id check, the join of its own room) MUST be contained: a panic in the
+A panic or an error of the adapter while a socket connects (the id check, the join of its own room) MUST be contained: a panic in the
 id check MUST refuse the CONNECT with `Internal server error` and free the namespace slot, and a panic joining the own room
 MUST disconnect the socket and close the connection. Adding a socket to the room named like its own id MUST expel any other
 member of that room.

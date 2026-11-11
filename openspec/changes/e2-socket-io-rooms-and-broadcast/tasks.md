@@ -155,6 +155,14 @@ clock; no retries.
 - [x] 9.3 Leads: the own room expels other members of its name; allow list for the handshake `Debug`; `Adapter` docs;
   review notes of `e2-socket-io-redis-adapter`
 
+## 10. Security review, round 3 fixes
+
+- [x] 10.1 The answer budget has a per-address share (a sixteenth), keyed by the address of the answering connection; the
+  map holds an address only while it holds bytes; test `one_address_cannot_fill_the_answer_budget_and_make_the_calls_of_others_fail`
+- [x] 10.2 An `Err` from the own-room `add_all` at CONNECT is treated like a panic; test
+  `an_error_from_add_all_of_the_own_room_during_connect_closes_the_connection_like_a_panic`
+- [x] 10.3 Docs (English and Spanish) and design.md "Security review (round 3)"
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` (its `ws/socket-io-rooms` delta is applied).

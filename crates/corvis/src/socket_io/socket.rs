@@ -459,12 +459,15 @@ impl IoSocket {
     // ------------------------------------------------------------------------------------------------- rooms
 
     /// The room named after the socket's id, joined when the socket connects.
-    /// `false` when the adapter panicked (contained and logged): the socket is then in no room and must not be kept.
+    /// `false` when the adapter panicked (contained and logged) or refused (`Err`): the socket is then in no room and
+    /// must not be kept.
     pub(crate) fn join_own_room(&self) -> bool {
         let own: Room = Arc::from(self.inner.id.as_str());
-        self.inner.client.warnings.guard("an adapter's add_all", self.inner.nsp.name(), || {
-            let _ = self.inner.nsp.adapter().add_all(&self.inner.id, &[own]);
-        })
+        let mut joined = false;
+        let ran = self.inner.client.warnings.guard("an adapter's add_all", self.inner.nsp.name(), || {
+            joined = self.inner.nsp.adapter().add_all(&self.inner.id, &[own]).is_ok();
+        });
+        ran && joined
     }
 
     /// `socket.join(room)`: joins one room or several (a `&str`, a `String`, a `Vec` or an array of names). Every
@@ -623,7 +626,10 @@ impl IoSocket {
                 drop(charge);
                 let _ = tx.send(Ok(Args::new(args)));
             }
-            Some(PendingAck { target: AckTarget::Broadcast(sink), .. }) => sink.respond_charged(Args::new(args), charge),
+            Some(PendingAck { target: AckTarget::Broadcast(sink), .. }) => {
+                let address = super::engine::address_key(self.inner.client.engine.ip(), None);
+                sink.respond_charged(Args::new(args), charge, address)
+            }
             None => drop(charge),
         }
     }

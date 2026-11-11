@@ -505,9 +505,13 @@ pendientes juntas también tienen un límite: un presupuesto de respuestas de to
 `max_total_unread_bytes` del motor (nunca menos que `max_broadcast_ack_bytes`), que pertenece a las llamadas y no a los
 clientes que respondieron: el presupuesto de lectura de una conexión (su sesión, su dirección y el servidor) se carga solo
 mientras su respuesta se lee y se procesa, y se libera cuando la llamada toma la respuesta, así que un manejador que inicia
-muchas llamadas no puede hacer que el presupuesto de otros clientes pague lo que retienen las llamadas. Una llamada que no
-encuentra espacio en el presupuesto de respuestas no espera: termina con `ResponsesTooLarge` y las respuestas reunidas hasta
-entonces.
+muchas llamadas no puede hacer que el presupuesto de otros clientes pague lo que retienen las llamadas. Una dirección de
+cliente puede retener como mucho una dieciseisava parte de ese presupuesto (4 MiB con los valores por defecto), así que una
+sola dirección no puede mantenerlo lleno; una respuesta que pasaría de la parte de la dirección, o del presupuesto, no espera:
+la llamada termina con `ResponsesTooLarge` y las respuestas reunidas hasta entonces (las demás llamadas no se ven afectadas
+por una parte llena). El presupuesto de respuestas está fuera de `max_total_unread_bytes`: la memoria que pueden sumar los
+datos sin leer y las respuestas retenidas es `max_total_unread_bytes` más `max(max_total_unread_bytes / 4,
+max_broadcast_ack_bytes)`. Una sola respuesta mayor que la parte de la dirección se rechaza siempre.
 
 #### Operaciones en bloque
 
@@ -541,7 +545,7 @@ ni esperar a la red.
 | Nombres en un `join` / `sockets_join` | como mucho `max_rooms_per_socket`, rechazado antes de tomar ningún bloqueo | sin tope | `RoomError::TooManyRooms` |
 | Salas nombradas en una cadena `to` / `within` / `except` | `max_rooms_per_socket` en total | sin tope | `EmitError::InvalidRoom(RoomError::TooManyTargets)`; no se envía nada |
 | `adapter_timeout` (una llamada al adaptador hecha por un operador, y `init`) | 5 s | ninguno | `AdapterError::Timeout` |
-| Respuestas retenidas por todos los broadcasts con confirmaciones pendientes juntos | un cuarto de `max_total_unread_bytes` (al menos `max_broadcast_ack_bytes`), un presupuesto propio que ninguna conexión paga | ninguno | la llamada que no encuentra espacio termina de inmediato con `ResponsesTooLarge` |
+| Respuestas retenidas por todos los broadcasts con confirmaciones pendientes juntos | un cuarto de `max_total_unread_bytes` (al menos `max_broadcast_ack_bytes`), un presupuesto propio que ninguna conexión paga; una dirección de cliente retiene como mucho una dieciseisava parte | ninguno | la llamada que no encuentra espacio (en el presupuesto o en la parte de la dirección) termina de inmediato con `ResponsesTooLarge` |
 | Codificaciones por broadcast | una, compartida por todos los destinatarios | una | n/a |
 | Búfer de envío por destinatario | `max_buffered_amount`, 8 MiB | ninguno | esa sesión se cierra con `transport error`; el emisor y los demás no se ven afectados |
 | El emisor esperando a los destinatarios | nunca | nunca | n/a |

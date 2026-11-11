@@ -22,6 +22,7 @@ struct Knobs {
     panic_del_all: AtomicBool,
     panic_room_exists: AtomicBool,
     panic_add_all: AtomicBool,
+    fail_add_all: AtomicBool,
     hang_init: AtomicBool,
     hang_broadcast: AtomicBool,
     /// How many of the next `room_exists` calls say yes.
@@ -54,6 +55,9 @@ impl Adapter for Probe {
     fn add_all(&self, id: &str, rooms: &[Room]) -> Result<(), RoomError> {
         if self.knobs.panic_add_all.load(Ordering::SeqCst) {
             panic!("the adapter failed in add_all");
+        }
+        if self.knobs.fail_add_all.load(Ordering::SeqCst) {
+            return Err(RoomError::TooManyRooms { max: 0 });
         }
         self.inner.add_all(id, rooms)
     }
@@ -686,4 +690,107 @@ async fn the_own_room_of_a_connecting_socket_expels_whoever_joined_its_id_during
     io.main().adapter().check_invariants().unwrap();
     io.to(iv.as_str()).emit("private", ()).await.unwrap();
     assert_eq!(received(&[&x, &v], "private").await, [false, true]);
+}
+
+// ------------------------------------------------------------------------------------------------------ round 3
+
+/// The ack id of the first `q` event in what a connection was sent.
+fn question_id(sent: &[Out]) -> u64 {
+    for out in sent {
+        if let Out::T(text) = out {
+            if let Some(rest) = text.strip_prefix('2') {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                if rest[digits.len()..].starts_with("[\"q\"") {
+                    return digits.parse().unwrap();
+                }
+            }
+        }
+    }
+    panic!("no question in {sent:?}")
+}
+
+#[tokio::test(start_paused = true)]
+async fn one_address_cannot_fill_the_answer_budget_and_make_the_calls_of_others_fail() {
+    const MIB: usize = 1 << 20;
+    let io = server(
+        IoOptions::new()
+            .max_decoded_bytes(MIB)
+            .max_broadcast_ack_bytes(MIB)
+            .engine(EngineOptions::new().ping_interval(DAY).ping_timeout(DAY).max_total_unread_bytes(16 * MIB)),
+    );
+    let budget = io.main().ack_budget().clone();
+    // The attacker (one address) has a socket that answers and a silent one in the same room; honest members are on
+    // two other addresses.
+    let attacker = io.conn_from("203.0.113.1");
+    let ia = attacker.join("0").await;
+    let silent = io.conn_from("203.0.113.1");
+    let isilent = silent.join("0").await;
+    let mut honest: Vec<(Conn, String)> = Vec::new();
+    for address in ["203.0.113.2", "203.0.113.3"] {
+        let c = io.conn_from(address);
+        let id = c.join("0").await;
+        honest.push((c, id));
+    }
+    for id in [&ia, &isilent] {
+        io.main().socket(id).unwrap().join("r1").unwrap();
+    }
+    for (_, id) in &honest {
+        io.main().socket(id).unwrap().join("r2").unwrap();
+    }
+    let calls = 40;
+    let mut tasks = Vec::new();
+    for _ in 0..calls {
+        let io = io.clone();
+        tasks.push(tokio::spawn(async move { io.to("r1").timeout(Duration::from_secs(60)).emit_with_ack("q", ()).await }));
+        settle().await;
+    }
+    attacker.sent().await;
+    let big = "x".repeat(100_000);
+    for id in 0..calls as u64 {
+        attacker.text(&answer(id, &big));
+        settle().await;
+    }
+    // 40 answers of 100 kB would be 4 MB, the whole budget (4 MiB here): the address share stops it far before.
+    assert!(budget.used() <= budget.address_share(), "{} held, share {}", budget.used(), budget.address_share());
+    assert_eq!(budget.address_entries(), 1);
+    // An honest call, answered from other addresses, completes.
+    let honest_call = {
+        let io = io.clone();
+        tokio::spawn(async move { io.to("r2").timeout(Duration::from_secs(5)).emit_with_ack("q", ()).await })
+    };
+    settle().await;
+    for (conn, _) in &honest {
+        let id = question_id(&conn.sent().await);
+        conn.text(&answer(id, "ok"));
+    }
+    settle().await;
+    let answers = honest_call.await.unwrap().expect("the honest call completes");
+    assert_eq!(answers.len(), 2);
+    drop(answers);
+    // The calls of the attacker end (some with too much, the others at the deadline) and the map empties.
+    advance(61_000).await;
+    let mut too_large = 0;
+    for task in tasks {
+        if let Err(e) = task.await.unwrap() {
+            if *e.kind() == BroadcastAckErrorKind::ResponsesTooLarge {
+                too_large += 1;
+            }
+        }
+    }
+    assert!(too_large > 0, "the answers over the share ended their calls with ResponsesTooLarge");
+    assert_eq!(budget.used(), 0);
+    assert_eq!(budget.address_entries(), 0, "an address with nothing held is forgotten");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_error_from_add_all_of_the_own_room_during_connect_closes_the_connection_like_a_panic() {
+    let (io, knobs, _) = probe_server(options());
+    knobs.fail_add_all.store(true, Ordering::SeqCst);
+    let conn = io.conn();
+    conn.text(r#"0{"token":"a token that is charged"}"#);
+    settle().await;
+    advance(31_000).await;
+    assert!(conn.socket.close_reason().is_some(), "the connection is closed");
+    assert_eq!(io.main().socket_count(), 0);
+    assert_eq!(io.engine().total_unread_bytes(), 0);
 }

@@ -462,42 +462,80 @@ pub(crate) struct AckShared {
 /// another client's unread budget, its address's or the server's, occupied. When there is no room the call ends with
 /// `ResponsesTooLarge`.
 pub(crate) struct AckBudget {
-    used: std::sync::atomic::AtomicUsize,
+    state: Mutex<AckBudgetState>,
     cap: usize,
+    /// What one client address may hold of `cap` (1/16): one address cannot keep the whole budget full and make every
+    /// other call fail.
+    address_share: usize,
 }
+
+#[derive(Default)]
+struct AckBudgetState {
+    used: usize,
+    /// Per client address, only while it holds something.
+    addresses: HashMap<String, usize>,
+}
+
+/// The divisor of the budget that gives the share of one client address.
+const ACK_ADDRESS_SHARE_DIVISOR: usize = 16;
 
 impl AckBudget {
     pub(crate) fn new(cap: usize) -> Arc<AckBudget> {
-        Arc::new(AckBudget { used: std::sync::atomic::AtomicUsize::new(0), cap })
+        Arc::new(AckBudget { state: Mutex::new(AckBudgetState::default()), cap, address_share: cap / ACK_ADDRESS_SHARE_DIVISOR })
     }
 
-    /// Takes `bytes` when they fit under the cap (compare-and-swap, so concurrent calls cannot overshoot together).
-    fn try_hold(self: &Arc<Self>, bytes: usize) -> Option<AckHold> {
-        use std::sync::atomic::Ordering::{AcqRel, Acquire};
-        let mut used = self.used.load(Acquire);
-        loop {
-            let total = used.checked_add(bytes).filter(|total| *total <= self.cap)?;
-            match self.used.compare_exchange_weak(used, total, AcqRel, Acquire) {
-                Ok(_) => return Some(AckHold { budget: self.clone(), bytes }),
-                Err(now) => used = now,
-            }
+    fn lock(&self) -> std::sync::MutexGuard<'_, AckBudgetState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Takes `bytes` when they fit under the cap and, for an answer that came from a client address, under that
+    /// address's share. A short critical section and never a wait; the map holds an address only while it holds bytes.
+    fn try_hold(self: &Arc<Self>, bytes: usize, address: Option<String>) -> Option<AckHold> {
+        let mut s = self.lock();
+        let total = s.used.checked_add(bytes).filter(|total| *total <= self.cap)?;
+        if let Some(address) = &address {
+            let held = s.addresses.get(address).copied().unwrap_or(0);
+            let held = held.checked_add(bytes).filter(|held| *held <= self.address_share)?;
+            s.addresses.insert(address.clone(), held);
         }
+        s.used = total;
+        Some(AckHold { budget: self.clone(), bytes, address })
     }
 
     #[cfg(test)]
     pub(crate) fn used(&self) -> usize {
-        self.used.load(std::sync::atomic::Ordering::Acquire)
+        self.lock().used
+    }
+
+    #[cfg(test)]
+    pub(crate) fn address_entries(&self) -> usize {
+        self.lock().addresses.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn address_share(&self) -> usize {
+        self.address_share
     }
 }
 
 pub(crate) struct AckHold {
     budget: Arc<AckBudget>,
     bytes: usize,
+    address: Option<String>,
 }
 
 impl Drop for AckHold {
     fn drop(&mut self) {
-        self.budget.used.fetch_sub(self.bytes, std::sync::atomic::Ordering::AcqRel);
+        let mut s = self.budget.lock();
+        s.used = s.used.saturating_sub(self.bytes);
+        if let Some(address) = self.address.take() {
+            if let Some(held) = s.addresses.get_mut(&address) {
+                *held = held.saturating_sub(self.bytes);
+                if *held == 0 {
+                    s.addresses.remove(&address);
+                }
+            }
+        }
     }
 }
 
@@ -606,17 +644,19 @@ impl AckSink {
     /// A client's answer. The answers of one broadcast are bounded by `max_broadcast_ack_bytes`: the one that would
     /// pass it is dropped and ends the call with the answers that were collected.
     pub fn respond(&self, args: Args) {
-        self.collect(args, None);
+        self.collect(args, None, None);
     }
 
     /// The answer of a local socket with the room it occupies in that connection's unread budget. The connection's
     /// room is released as soon as the answer is collected (or refused): what the call keeps is charged to the
     /// server-wide answer budget instead.
-    pub(crate) fn respond_charged(&self, args: Args, charge: Charge) {
-        self.collect(args, Some(charge));
+    /// `address` is the client address key of that connection: the answers one address keeps are bounded by its share
+    /// of the answer budget.
+    pub(crate) fn respond_charged(&self, args: Args, charge: Charge, address: String) {
+        self.collect(args, Some(charge), Some(address));
     }
 
-    fn collect(&self, args: Args, charge: Option<Charge>) {
+    fn collect(&self, args: Args, charge: Option<Charge>, address: Option<String>) {
         let cost = args.iter().map(IoValue::cost).fold(std::mem::size_of::<Args>(), usize::saturating_add);
         {
             let mut s = self.shared.lock();
@@ -625,7 +665,7 @@ impl AckSink {
                 drop(charge);
                 return;
             }
-            let hold = if s.bytes.saturating_add(cost) > self.shared.max_bytes { None } else { self.shared.budget.try_hold(cost) };
+            let hold = if s.bytes.saturating_add(cost) > self.shared.max_bytes { None } else { self.shared.budget.try_hold(cost, address) };
             match hold {
                 Some(hold) => {
                     s.bytes += cost;

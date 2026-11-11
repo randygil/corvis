@@ -644,6 +644,29 @@ the held answers, the bounds on joins and chaining, the shared handshake, adapte
 Recorded, not fixed: a server shutdown leaves calls holding their answers until their deadline (bounded by the deadline;
 Node alike); a hanging synchronous adapter method pins a runtime worker for the whole hang (documented above).
 
+## Security review (round 3)
+
+The third review verified the round 2 fixes and found one low finding.
+
+- **Low: one address fills the whole answer budget.** `AckBudget::try_hold` had no per-address share: one address (a
+  socket answering with padding, plus `ask` events that trigger calls) kept the server-wide answer budget full, and every
+  other call with acknowledgements, in every namespace, ended with `ResponsesTooLarge` while the deadlines lasted. Fix: the
+  budget keeps, under one short lock (never held across an await, never waiting), the total and a count per client address,
+  and an answer from a connection is charged to both: it must fit under the cap and under the address's share, a sixteenth
+  of the cap (4 MiB at the defaults; a constant, `ACK_ADDRESS_SHARE_DIVISOR`, like the divisor of `max_address_share`). The
+  address is the same key the unread budget uses (`address_key` of the connection's resolved address). Answers with no
+  address (`AckSink::respond`, from an adapter) use the common pool only. Every release is the drop of the `AckHold`, which
+  gives back both the total and the address count and removes the address entry when it reaches zero, so the map holds only
+  addresses that hold something. Trade-off: one answer larger than the share is always refused (`ResponsesTooLarge`).
+  Heap bound, stated in the docs: the answer budget is outside `max_total_unread_bytes`, so the unread data and the held
+  answers add up to at most `T + max(T/4, max_broadcast_ack_bytes)`. Test:
+  `one_address_cannot_fill_the_answer_budget_and_make_the_calls_of_others_fail` (the reviewer's `h1c` in process: one
+  address answers 40 calls with 100 kB each against a 4 MiB budget, holds at most its share, and an honest call answered
+  from two other addresses completes with `Ok`; it fails with the divisor set to 1).
+- **Low: an `Err` from the own-room `add_all`** left a socket in no room, like the panic. `join_own_room` returns `false`
+  for an `Err` as well and `connect` disconnects the socket and closes the connection. Test:
+  `an_error_from_add_all_of_the_own_room_during_connect_closes_the_connection_like_a_panic`.
+
 ### Not done by this implementation
 
 Task 6.3 (the security review), 7.6 (the `corvis-parity` check), 7.7 and the archive and GitHub steps belong to the

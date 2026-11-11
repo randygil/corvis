@@ -491,8 +491,12 @@ plus a pending entry (a reference and an id) per recipient. The answers of all p
 server-wide answer budget of a quarter of the engine's `max_total_unread_bytes` (never less than `max_broadcast_ack_bytes`),
 which belongs to the calls and not to the clients that answered: a connection's unread budget (its session, its address and
 the server) is charged only while its answer is read and handled and is released when the call takes the answer, so a
-handler that starts many calls cannot make the budget of other clients pay for what the calls hold. A call that finds no
-room in the answer budget does not wait: it ends with `ResponsesTooLarge` and the answers collected so far.
+handler that starts many calls cannot make the budget of other clients pay for what the calls hold. One client address may
+hold at most a sixteenth of that budget (4 MiB at the defaults), so a single address cannot keep it full; an answer that
+would pass the address's share, or the budget, does not wait: the call ends with `ResponsesTooLarge` and the answers
+collected so far (the other calls are not affected by a share that is full). The answer budget is outside
+`max_total_unread_bytes`: the heap the unread data and the held answers can add up to is `max_total_unread_bytes` plus
+`max(max_total_unread_bytes / 4, max_broadcast_ack_bytes)`. A single answer larger than the address share is always refused.
 
 #### Bulk operations
 
@@ -525,7 +529,7 @@ network.
 | Names in one `join` / `sockets_join` | at most `max_rooms_per_socket`, refused before any lock is taken | not capped | `RoomError::TooManyRooms` |
 | Rooms named in one `to` / `within` / `except` chain | `max_rooms_per_socket` in all | not capped | `EmitError::InvalidRoom(RoomError::TooManyTargets)`; nothing is sent |
 | `adapter_timeout` (a call of the adapter made by an operator, and `init`) | 5 s | none | `AdapterError::Timeout` |
-| Answers held by all pending broadcasts with acknowledgements together | a quarter of `max_total_unread_bytes` (at least `max_broadcast_ack_bytes`), a budget of its own that no connection pays for | none | the call that finds no room ends with `ResponsesTooLarge` at once |
+| Answers held by all pending broadcasts with acknowledgements together | a quarter of `max_total_unread_bytes` (at least `max_broadcast_ack_bytes`), a budget of its own that no connection pays for; one client address holds at most a sixteenth of it | none | the call that finds no room (in the budget or in the address's share) ends with `ResponsesTooLarge` at once |
 | Encodings per broadcast | one, shared by every recipient | one | n/a |
 | Send buffer per recipient | `max_buffered_amount`, 8 MiB | none | that session is closed with `transport error`; the emitter and the others are not affected |
 | Emitter waiting on recipients | never | never | n/a |
