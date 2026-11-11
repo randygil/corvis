@@ -140,7 +140,7 @@ integration test files that need a feature start with its `#![cfg(..)]`. Build i
 
 ## 8. Example
 
-- [ ] 8.1 `examples/auth-app/src/auth/jwt.rs:45` comment; `RolesGuard` with `typed_user::<Account>()`; verify
+- [x] 8.1 `examples/auth-app/src/auth/jwt.rs:45` comment; `RolesGuard` with `typed_user::<Account>()`; verify
   `cargo test -p auth-app`, then `cargo build -p auth-app` and `node scripts/smoke-examples.mjs auth-app`
 
 ## 9. Docs and naming

@@ -42,7 +42,8 @@ impl JwtValidator for JwtAuth {
     }
 }
 
-/// Signs the access token of a user the `local` strategy authenticated. `JWT_EXPIRES_IN` of the module sets `exp`.
+/// Signs the access token of a user the `local` strategy authenticated. The module's `expires_in` (`app_module.rs`,
+/// 15 minutes) sets `exp`.
 pub fn issue_token(jwt: &JwtService, account: &Account) -> HttpResult<String> {
     let claims = Claims { sub: account.id, username: account.username.clone(), roles: account.roles.clone() };
     jwt.sign(&claims).map_err(HttpException::from_anyhow)
