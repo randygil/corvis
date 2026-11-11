@@ -15,13 +15,15 @@ use futures::StreamExt;
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited, StreamBody};
 use hyper::body::{Frame, Incoming, SizeHint};
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::{Instant, Sleep};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::http::{Body, HttpException, Request, Response};
 use crate::router::{AppShared, dispatch};
@@ -67,6 +69,7 @@ pub struct ServerOptions {
     pub(crate) http2_max_cancelled_streams: u32,
     pub(crate) max_pending_response_bytes: Option<usize>,
     pub(crate) max_pending_response_wait: Option<Duration>,
+    pub(crate) shutdown_timeout: Option<Duration>,
 }
 
 /// Default of [`ServerOptions::max_pending_response_bytes`]: 8 MiB per connection.
@@ -89,6 +92,7 @@ impl Default for ServerOptions {
             http2_max_cancelled_streams: 2000,
             max_pending_response_bytes: Some(DEFAULT_MAX_PENDING_RESPONSE_BYTES),
             max_pending_response_wait: Some(Duration::from_secs(5)),
+            shutdown_timeout: Some(Duration::from_secs(10)),
         }
     }
 }
@@ -283,6 +287,24 @@ impl ServerOptions {
     /// response (also while its body is read). See [`h2c`](Self::h2c) for the rule that applies below this ceiling.
     pub fn http2_max_cancelled_streams(mut self, n: u32) -> Self {
         self.http2_max_cancelled_streams = n.max(1);
+        self
+    }
+    /// Longest the server waits, after its shutdown signal, for the requests in flight to finish (default 10 s;
+    /// `None` waits without limit, and so does a value too long to add to an `Instant`).
+    ///
+    /// On the signal the server stops accepting, closes idle connections and lets the requests in flight finish. When
+    /// the time is up, whatever the server started and is still running is cancelled and awaited before the shutdown
+    /// goes on: connections (their handlers are dropped at the `.await` they were waiting on, so a database transaction
+    /// they had open is never committed), TLS handshakes and the reads that discard unread request bodies. One warning
+    /// line says how many connections were cut. Only then do the application's shutdown hooks
+    /// (`on_module_destroy`, `before_application_shutdown`, `on_application_shutdown`) run, so no handler of the server
+    /// uses a provider those hooks already closed.
+    ///
+    /// Not covered: tasks the application spawns itself (`tokio::spawn` inside a handler), upgraded connections
+    /// (WebSockets), and code that blocks a worker thread without awaiting (`spawn_blocking` work runs to its end).
+    /// A process manager usually kills a process some seconds after its stop signal: keep this below that.
+    pub fn shutdown_timeout(mut self, t: impl Into<Option<Duration>>) -> Self {
+        self.shutdown_timeout = t.into();
         self
     }
     /// Accept ambiguous HTTP/1 framing that Corvis rejects by default: bare LF line endings in the
@@ -554,6 +576,7 @@ async fn handle(
     req: hyper::Request<Incoming>,
     remote: SocketAddr,
     options: &ServerOptions,
+    tasks: &ServerTasks,
     client_aborted: &mut bool,
 ) -> Result<hyper::Response<ResBody>, crate::http_adapter::SocketDestroyed> {
     // An attached Engine.IO server takes every request under its path first, upgrades included.
@@ -605,7 +628,7 @@ async fn handle(
             if let Some(slot) = pending {
                 let unread = slot.0.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(p) = unread {
-                    tokio::spawn(drain(p, shared.body_limit as u64));
+                    tasks.spawn(drain(p, shared.body_limit as u64));
                 }
             }
             resp
@@ -2052,8 +2075,9 @@ fn representable(t: Duration) -> bool {
 
 /// The connection builder of every listener: HTTP/1 and HTTP/2 settings from the options. Any listener that
 /// can speak HTTP/2 (h2c, and TLS with ALPN `h2`) must be built with it so the limits apply to all of them.
-pub(crate) fn connection_builder(options: &ServerOptions) -> auto::Builder<TokioExecutor> {
-    let mut builder = auto::Builder::new(TokioExecutor::new());
+pub(crate) fn connection_builder(options: &ServerOptions, tasks: ServerTasks) -> auto::Builder<ServerTasks> {
+    // HTTP/2 streams run in tasks of their own: spawned through the server's tracker, so the shutdown covers them.
+    let mut builder = auto::Builder::new(tasks);
     // The framing check reads header lines the way httparse does by default: `ignore_invalid_headers` would let
     // httparse skip lines the check has read (design.md, decision 4, of `e0-reject-ambiguous-http1-framing`).
     debug_assert!(options.insecure_http_parser || !IGNORE_INVALID_HEADERS);
@@ -2132,7 +2156,8 @@ impl Transport {
 struct ConnCtx {
     shared: Arc<AppShared>,
     opts: Arc<ServerOptions>,
-    builder: auto::Builder<TokioExecutor>,
+    builder: auto::Builder<ServerTasks>,
+    tasks: ServerTasks,
     stream_cap: usize,
     remote: SocketAddr,
     state: Arc<ConnState>,
@@ -2141,7 +2166,7 @@ struct ConnCtx {
 
 /// Serves one connection to its end (see [`finish_connection`]).
 async fn run_connection(ctx: ConnCtx, stream: ServerIo, permit: Option<OwnedSemaphorePermit>, proto: Proto) {
-    let ConnCtx { shared, opts, builder, stream_cap, remote, state, stop } = ctx;
+    let ConnCtx { shared, opts, builder, tasks, stream_cap, remote, state, stop } = ctx;
     let send_timeout = opts.send_timeout;
     let conn_state = state.clone();
     let io = TimedIo::new(stream, permit, state.clone(), &opts, proto);
@@ -2162,6 +2187,7 @@ async fn run_connection(ctx: ConnCtx, stream: ServerIo, permit: Option<OwnedSema
         let handlers = handlers.clone();
         let shared = shared.clone();
         let opts = opts.clone();
+        let tasks = tasks.clone();
         async move {
             // Streams reset and replaced faster than their handlers stop would otherwise run more
             // handlers than the stream cap; the permit lives until this future is dropped.
@@ -2200,7 +2226,7 @@ async fn run_connection(ctx: ConnCtx, stream: ServerIo, permit: Option<OwnedSema
                 return Err(ServiceError::Destroyed);
             }
             let mut aborted = false;
-            let resp = handle(shared, req, remote, &opts, &mut aborted).await;
+            let resp = handle(shared, req, remote, &opts, &tasks, &mut aborted).await;
             watch.outcome = if aborted { Outcome::ClientAborted } else { Outcome::Completed };
             let resp = match resp {
                 Ok(r) => r,
@@ -2277,7 +2303,86 @@ async fn handshake(
     Some((ServerIo::Tls(Box::new(tls)), proto))
 }
 
-/// Accepts connections until `shutdown` resolves, then drains them gracefully.
+/// The tasks a server starts: connections (with their TLS handshake), the reads that discard unread request bodies,
+/// and the HTTP/2 streams hyper spawns through it (it is the connection builder's executor). Tracked so the shutdown
+/// waits for them, and cancelled together at its deadline: a cancelled task is dropped at its next poll.
+#[derive(Clone, Default)]
+pub(crate) struct ServerTasks {
+    tracker: TaskTracker,
+    cancel: CancellationToken,
+    /// Connection tasks running, for the line that says how many the shutdown cut.
+    connections: Arc<AtomicUsize>,
+}
+
+impl ServerTasks {
+    pub(crate) fn spawn<F>(&self, task: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.tracker.spawn(self.cancel.clone().run_until_cancelled_owned(task));
+    }
+
+    fn spawn_connection<F>(&self, task: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let live = LiveConnection::new(&self.connections);
+        self.spawn(async move {
+            let _live = live;
+            task.await;
+        });
+    }
+
+    /// Waits for every task, up to `timeout`; past it cancels them and waits until each one has stopped. Returns how
+    /// many connections were cut.
+    async fn shut_down(&self, timeout: Option<Duration>) -> usize {
+        self.tracker.close();
+        match timeout.and_then(|t| Instant::now().checked_add(t)) {
+            Some(deadline) => {
+                if tokio::time::timeout_at(deadline, self.tracker.wait()).await.is_ok() {
+                    return 0;
+                }
+            }
+            None => {
+                self.tracker.wait().await;
+                return 0;
+            }
+        }
+        let cut = self.connections.load(Ordering::SeqCst);
+        self.cancel.cancel();
+        self.tracker.wait().await;
+        cut
+    }
+}
+
+impl<F> hyper::rt::Executor<F> for ServerTasks
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    fn execute(&self, fut: F) {
+        self.spawn(fut);
+    }
+}
+
+/// Counts a connection task while it runs.
+struct LiveConnection(Arc<AtomicUsize>);
+
+impl LiveConnection {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        LiveConnection(count.clone())
+    }
+}
+
+impl Drop for LiveConnection {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Accepts connections until `shutdown` resolves, then shuts down: idle connections are closed, the requests in flight
+/// get [`ServerOptions::shutdown_timeout`] to finish, and whatever the server started is cancelled past it. When this
+/// returns, no task of the server runs.
 pub(crate) async fn serve(
     listener: TcpListener,
     shared: Arc<AppShared>,
@@ -2287,7 +2392,8 @@ pub(crate) async fn serve(
 ) -> std::io::Result<()> {
     let options = Arc::new(options);
     let (stop_tx, _) = tokio::sync::watch::channel(());
-    let builder = connection_builder(&options);
+    let tasks = ServerTasks::default();
+    let builder = connection_builder(&options, tasks.clone());
     let stream_cap = options.http2_max_concurrent_streams.max(1) as usize;
     let permits = options.max_connections.map(|n| Arc::new(tokio::sync::Semaphore::new(n.max(1))));
     tokio::pin!(shutdown);
@@ -2302,19 +2408,18 @@ pub(crate) async fn serve(
             shared: shared.clone(),
             opts: options.clone(),
             builder: builder.clone(),
+            tasks: tasks.clone(),
             stream_cap,
             remote,
             state,
             stop: stop_tx.subscribe(),
         };
         match &transport {
-            Transport::Plain => {
-                tokio::spawn(run_connection(ctx, ServerIo::Plain(stream), permit, Proto::Auto));
-            }
+            Transport::Plain => tasks.spawn_connection(run_connection(ctx, ServerIo::Plain(stream), permit, Proto::Auto)),
             #[cfg(feature = "tls")]
             Transport::Tls(settings) => {
                 let settings = settings.clone();
-                tokio::spawn(async move {
+                tasks.spawn_connection(async move {
                     let mut ctx = ctx;
                     let Some((io, proto)) = handshake(settings, stream, ctx.state.clone(), &mut ctx.stop).await else { return };
                     ctx.builder = match proto {
@@ -2327,15 +2432,17 @@ pub(crate) async fn serve(
         }
     }
     drop(listener);
-    // Pending long-polls would hold the drain below: answer them now.
+    // Pending long-polls would hold the shutdown: answer them now.
     #[cfg(feature = "socket-io")]
     shared.http_server.close_engines();
-    tokio::select! {
-        _ = async {
-            let _ = stop_tx.send(());
-            stop_tx.closed().await;
-        } => {}
-        _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+    // Idle connections close, the others finish their requests; handshakes are abandoned.
+    let _ = stop_tx.send(());
+    let cut = tasks.shut_down(options.shutdown_timeout).await;
+    if cut > 0 {
+        crate::logger::Logger::new("CorvisServer").warn(format!(
+            "{cut} connection(s) still had requests in flight when ServerOptions::shutdown_timeout ran out: they were \
+             closed and their handlers cancelled"
+        ));
     }
     Ok(())
 }
@@ -2879,5 +2986,96 @@ mod tests {
         assert_eq!(read_limit(&headers(&[]), t, &p), t);
         // A transport limit below the parser's wins.
         assert_eq!(read_limit(&headers(&[("content-type", "application/json")]), 10, &p), 10);
+    }
+
+    /// Sets its flag when dropped.
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn never_ends(flag: &Arc<AtomicBool>) -> impl Future<Output = ()> + Send + 'static {
+        let flag = DropFlag(flag.clone());
+        async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_shutdown_cancels_every_kind_of_server_task_at_the_deadline_and_waits_for_them() {
+        let tasks = ServerTasks::default();
+        let flags: [Arc<AtomicBool>; 3] = Default::default();
+        tasks.spawn_connection(never_ends(&flags[0]));
+        // A body drain, and an HTTP/2 stream that hyper spawns through the connection builder's executor.
+        tasks.spawn(never_ends(&flags[1]));
+        hyper::rt::Executor::execute(&tasks, never_ends(&flags[2]));
+        // A connection that ends before the deadline is not counted as cut.
+        tasks.spawn_connection(tokio::time::sleep(Duration::from_millis(500)));
+        let start = Instant::now();
+        assert_eq!(tasks.shut_down(Some(Duration::from_secs(2))).await, 1);
+        assert_eq!(start.elapsed(), Duration::from_secs(2));
+        assert!(flags.iter().all(|f| f.load(Ordering::SeqCst)), "every task was dropped before the shutdown returned");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_shutdown_returns_when_the_tasks_end_and_without_a_usable_deadline_waits_for_them() {
+        for (timeout, task, returns_after) in [
+            (Some(Duration::from_secs(10)), Duration::from_secs(1), Duration::from_secs(1)),
+            (None, Duration::from_secs(3600), Duration::from_secs(3600)),
+            // Too long to add to an `Instant`: no deadline.
+            (Some(Duration::MAX), Duration::from_secs(100), Duration::from_secs(100)),
+        ] {
+            let tasks = ServerTasks::default();
+            tasks.spawn_connection(tokio::time::sleep(task));
+            let start = Instant::now();
+            assert_eq!(tasks.shut_down(timeout).await, 0);
+            assert_eq!(start.elapsed(), returns_after, "{timeout:?}");
+        }
+    }
+
+    /// A client that opens a TLS connection and never sends its ClientHello holds a connection task (the handshake has
+    /// its own 10 s timeout): the shutdown does not wait for it. Driven through `serve` itself, since the public test
+    /// entry point (`listen_until_in_background`) listens without TLS.
+    #[cfg(feature = "tls")]
+    #[tokio::test(start_paused = true)]
+    async fn a_tls_client_that_sends_nothing_does_not_hold_the_shutdown() {
+        use crate::prelude::*;
+        #[module()]
+        struct M;
+        let mut app = CorvisFactory::create::<M>().await.unwrap();
+        app.init().await.unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap().self_signed(&key).unwrap();
+        let tls = crate::tls::TlsOptions::from_pem(cert.pem().as_bytes(), key.serialize_pem().as_bytes()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let options = ServerOptions::new().headers_timeout(None).keep_alive_timeout(None).shutdown_timeout(Duration::from_secs(1));
+        let server = tokio::spawn(serve(listener, app.shared().unwrap(), options, Transport::Tls(tls.settings()), async move {
+            let _ = stopped.await;
+        }));
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        // Half the handshake timeout: the clock moves once the server waits for the ClientHello.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(!server.is_finished());
+        stop.send(()).unwrap();
+        let stopped_at = Instant::now();
+        server.await.unwrap().unwrap();
+        assert!(Instant::now() - stopped_at <= Duration::from_secs(1));
+        // The socket was closed without a byte.
+        let mut rest = Vec::new();
+        let _ = client.read_to_end(&mut rest).await;
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn shutdown_timeout_defaults_to_ten_seconds_and_can_be_turned_off() {
+        assert_eq!(ServerOptions::new().shutdown_timeout, Some(Duration::from_secs(10)));
+        assert_eq!(ServerOptions::new().shutdown_timeout(None).shutdown_timeout, None);
+        assert_eq!(ServerOptions::new().shutdown_timeout(Duration::from_secs(1)).shutdown_timeout, Some(Duration::from_secs(1)));
     }
 }

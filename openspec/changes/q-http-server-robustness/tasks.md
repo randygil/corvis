@@ -25,16 +25,16 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 
 ## 3. Shutdown (Decision 2)
 
-- [ ] 3.1 Failing test first: `crates/corvis/tests/server_lifecycle.rs`, scenario "Handler still running at the deadline"
+- [x] 3.1 Failing test first: `crates/corvis/tests/server_lifecycle.rs`, scenario "Handler still running at the deadline"
   (order started, dropped, hook) with `listen_until_in_background`; verify it fails on the untouched tree and record the
   observed order in Implementation notes
-- [ ] 3.2 `ServerOptions::shutdown_timeout(Option<Duration>)` (default 10 s, unrepresentable durations are `None`,
+- [x] 3.2 `ServerOptions::shutdown_timeout(Option<Duration>)` (default 10 s, unrepresentable durations are `None`,
   rustdoc of what is and is not cancelled); `crates/corvis/Cargo.toml`: `tokio-util = { version = "0.7", features =
   ["rt"] }` (check `Cargo.lock` keeps 0.7.20 and `cargo deny check` passes)
-- [ ] 3.3 `serve`: `TaskTracker` and `CancellationToken`, `spawn_tracked` for the plain connection task, the TLS
+- [x] 3.3 `serve`: `TaskTracker` and `CancellationToken`, `spawn_tracked` for the plain connection task, the TLS
   handshake-and-connection task and the drains of `handle` (through `ConnCtx`), the sequence of Decision 2 and the
   warning line with the number of connections cut; verify 3.1 passes and `cargo test -p corvis --test tls --features tls`
-- [ ] 3.4 The other scenarios of the spec requirement "The shutdown ends what the server started" in
+- [x] 3.4 The other scenarios of the spec requirement "The shutdown ends what the server started" in
   `tests/server_lifecycle.rs` (graceful finish within the deadline, `None` waits, drain in progress, TLS client that sends
   nothing); verify `cargo test -p corvis --test server_lifecycle` and `--features tls --test tls` 5 runs in a row
 

@@ -322,6 +322,43 @@ model now reads `Connection` lines as hyper does (`asks_to_close`, comma-separat
 `crates/corvis/proptest-regressions/server/h1_framing/tests.txt`. After both, 200,000 and 600,000 cases pass. The test
 jobs of `ci.yml` now upload `proptest-regressions/` on failure, as the fuzz job does, so the next seed is not lost.
 
+### Accept errors (group 2)
+
+`server/accept.rs` as designed. The backoff and the log live in `AcceptErrors`, whose `accept` also acquires the
+`max_connections` permit after any wait, so no permit is held while waiting. The log sink is a closure (the server passes
+`Logger::new("CorvisServer").warn`), which is how the unit tests read the lines without a global logger. The first line
+of a burst reads `accept failed: <error>; new connections wait until it succeeds again`, later ones
+`accept failed: <error>; <n> errors since the last line`. The unit tests also cover the minute: 80 errors in a row give
+two lines, the second counting the 67 errors after the first.
+
+### Shutdown (group 3)
+
+- The failing test of 3.1 was written against the default deadline (the option did not exist yet) and observed
+  `["started", "hook"]`: `serve` returned after 10 s with the handler still pending in its connection task, the hook ran,
+  and the handler was never dropped. It now uses `shutdown_timeout(1 s)` and observes `["started", "dropped", "hook"]`
+  exactly 1 s (paused clock) after the signal.
+- Added to the design: the tracker is also the executor of the connection builder (`ServerTasks` implements
+  `hyper::rt::Executor`). Hyper runs every HTTP/2 stream in a task of its own, outside the connection's task, so
+  cancelling the connection alone would leave HTTP/2 handlers to stop whenever their task is next polled, possibly after
+  `serve` returned. With the tracked executor they are cancelled and awaited like the rest
+  (`an_http2_handler_still_running_at_the_deadline_is_dropped_before_the_hooks_run`; the unit test
+  `the_shutdown_cancels_every_kind_of_server_task_at_the_deadline_and_waits_for_them` pins the mechanism, since on a
+  current-thread runtime the stream task happens to be polled before the hooks either way).
+- The tracker waits for the whole connection task, which includes the closing drain of a socket (`linger_close`, at most
+  2 s and 1 MiB). Before, the shutdown stopped waiting once a connection had finished its HTTP part. So a shutdown can
+  now take up to 2 s longer when a client does not close its side, always within `shutdown_timeout`.
+- The warning line: `<n> connection(s) still had requests in flight when ServerOptions::shutdown_timeout ran out: they
+  were closed and their handlers cancelled` (context `CorvisServer`), counted by a guard in each connection task.
+- The TLS scenario is a unit test in `server.rs` (`a_tls_client_that_sends_nothing_does_not_hold_the_shutdown`), not in
+  `tests/tls.rs`: the only public way to drive the shutdown in a test, `listen_until_in_background`, listens without TLS,
+  and adding a TLS twin to `application.rs` is the business of `q-core-lifecycle-and-cache-correctness`. It drives
+  `serve` itself. The handshake already gave up on the stop signal; the test pins that it stays so.
+- Not tracked: the drain that the Engine.IO polling transport starts for an over-long `POST`
+  (`socket_io/engine/polling.rs`), spawned inside the engine with the rest of its session tasks. Once the connection is
+  cancelled its body fails at the next read, so it ends right after, but it is not awaited. Threading the tracker
+  through the engine belongs with the engine's own shutdown (`q-core-lifecycle-and-cache-correctness` closes the
+  sessions).
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.

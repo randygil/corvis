@@ -28,6 +28,8 @@ bytes = "1"
 http = "1"
 http-body-util = "0.1"
 h2 = "0.4"
+# `TaskTracker` and `CancellationToken`: the server's shutdown waits for (and at its deadline cancels) the tasks it started.
+tokio-util = { version = "0.7", features = ["rt"] }
 hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "server-graceful", "tokio", "http1", "http2"] }
 matchit = "0.8"
