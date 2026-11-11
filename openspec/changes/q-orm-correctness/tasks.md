@@ -137,11 +137,12 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   only; verify the arithmetic cases of both oracles pass
 - [ ] 9.2 `docs/data/corvis-orm.md` and `docs/es/data/corvis-orm.md`: the table "PostgreSQL and SQLite differences"
   (case folding, JSON path segments, `search`, `Decimal` precision, scalar lists as a Corvis extension on SQLite, the
-  arithmetic cases as recorded); verify `npm run docs:check` in `docs/`
+  arithmetic cases as recorded); verify `npm run docs:check` in `docs/` (table written, docs check passes; its two
+  arithmetic rows state Corvis' current behavior and wait for the recordings of 9.1)
 
 ## 10. Docs and review
 
-- [ ] 10.1 Docs (English and Spanish pages, `crates/corvis-orm/README.md`, rustdoc): what `db push` creates, refuses and
+- [x] 10.1 Docs (English and Spanish pages, `crates/corvis-orm/README.md`, rustdoc): what `db push` creates, refuses and
   does not alter, and how to re-create a development database; `Decimal` on SQLite; `decimal!` and the removal of
   `From<&str>` (with the migration of a call site); typed helpers and non-finite floats; `RawSql::join` of an empty list;
   verify `cargo doc -p corvis-orm --no-deps` without warnings and `npm run docs:check`
@@ -152,18 +153,18 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 11. Definition of done
 
-- [ ] 11.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 11.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
+- [x] 11.1 `cargo build --workspace --all-targets` with no warnings
+- [x] 11.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
   `cargo clippy -p corvis-orm --no-default-features -- -D warnings`
 - [ ] 11.3 `CORVIS_ORM_PG_REQUIRED=1 cargo test --workspace` passes, including `pg_oracle` (and its pushed run),
   `sqlite_oracle`, `db_push`, `sqlite_decimal`, `typed_params`, `parameter_limits` and the snapshot test of 1.2
-- [ ] 11.4 Per-feature checks: `cargo check -p corvis-orm --tests --no-default-features` and
+- [x] 11.4 Per-feature checks: `cargo check -p corvis-orm --tests --no-default-features` and
   `cargo check -p corvis-orm --tests --no-default-features --features corvis`, with no warnings
 - [ ] 11.5 Regression tests: one per spec scenario, as listed in groups 2-9
-- [ ] 11.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
+- [x] 11.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 11.7 Framework code changed (`corvis-orm`, `corvis-orm-macros`): run the `corvis-parity` check and verify the three
   port apps keep 0 apidiff differences and equivalent databases
-- [ ] 11.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
+- [x] 11.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
 - [ ] 11.9 The security review of 10.2 is closed before archiving
 
 ## Workflow follow-up

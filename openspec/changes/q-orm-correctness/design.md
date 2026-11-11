@@ -560,3 +560,16 @@ rejects expressions deeper than 1000 levels (`SQLITE_MAX_EXPR_DEPTH`), so on SQL
   statement with one parameter, three child and three count statements for the compound include (1000, 1000, 400
   parameters), three `UPDATE`s for a compound `set` whose `WHERE`s hold their own keys, three `DELETE`s for a nested
   `deleteMany`, one statement with one parameter for an insensitive `in`.
+
+### Task 7.3: what the port applications need (not done here)
+
+The implementer of this change was not allowed to edit `corvis-tests`. Copies of the three applications (outside the
+repository, pointed at this branch) were compile-checked with `cargo check --all-targets`: houseplan-api builds without
+errors or warnings; consi-backend has 34 errors and facten-api 91, all of the same kind (``the trait `From<&str>` is
+not implemented for `Decimal` ``), no other API change of this change breaks them. 64 are literals (`Decimal::from("x")`
+becomes `decimal!("x")`, `D.of("x")` becomes `D.of(decimal!("x"))`, which keeps the constructor's configuration) and 61
+convert text at run time (`Decimal::from(s)` / `D.of(s)` become `s.parse::<Decimal>()` / `D.parse(s)` with an error
+path; `.map(Decimal::from)` on an `Option<&str>`; `acc.plus(x.to_fixed(2).as_str())`, which is `acc.plus(&x.to_dp(2))`
+in decimal terms; `DEFAULT_SPLIT_TOLERANCE_USD`, a `&str` constant used as a `Decimal`). The facten binaries
+(`src/bin/seed.rs:126`, `PRISMA_DECIMAL.of(pct)`) were not reached because the library failed first. The list with
+file, line, before and after was handed to the maintainer with the report.
