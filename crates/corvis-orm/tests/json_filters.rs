@@ -103,7 +103,7 @@ async fn string_and_array_filters_check_the_json_type() {
 #[tokio::test]
 async fn json_null_is_distinct_from_a_missing_path() {
     let db = seeded().await;
-    let json_null = json!({ "$type": "JsonNull" });
+    let json_null = corvis_orm::json_null();
     assert_eq!(ids(&db, path(&["ok"], "equals", json_null.clone())).await, [3]);
     assert_eq!(ids(&db, path(&["ok"], "not", json_null)).await, [1, 2]);
 }

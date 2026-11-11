@@ -354,8 +354,14 @@ impl Engine {
                     q.bind(v.clone());
                 }
                 SetExpr::Arith(op, v) => {
-                    self.operand(q, alias, f);
-                    q.push(" ").push(op).push(" ").bind(v.clone());
+                    let arith = |q: &mut Sql| {
+                        self.operand(q, alias, f);
+                        q.push(" ").push(op).push(" ").bind(v.clone());
+                    };
+                    match (self.dialect(), f.kind) {
+                        (Dialect::Sqlite, FieldKind::Int | FieldKind::Decimal) => self.checked_arith(q, f, arith),
+                        _ => arith(q),
+                    }
                 }
                 SetExpr::Push(v) => match self.dialect() {
                     Dialect::Postgres => {
@@ -368,6 +374,30 @@ impl Engine {
                 },
             }
         }
+    }
+
+    /// An SQLite arithmetic update (`increment`, ..., written by `arith`) whose result must fit the column: an `Int`
+    /// in 32 bits, a `Decimal(p, s)` below `10^(p - s)` in absolute value. Postgres enforces both itself; SQLite would
+    /// store any 64-bit integer or float, which the client could then not read back (`P2023`, or a Decimal beyond the
+    /// column). A result out of range takes the `ELSE` branch, a JSON path error that fails the statement, which
+    /// SQLite then undoes as a whole (every row, inside or outside a transaction); `OrmError::from_sqlx` maps it to
+    /// the error Postgres gives. `NULL` (an operand on a `NULL` value, a division by zero) passes.
+    fn checked_arith(&self, q: &mut Sql, f: &FieldMeta, arith: impl Fn(&mut Sql)) {
+        q.push("CASE WHEN (");
+        arith(q);
+        q.push(") IS NULL OR ");
+        if f.kind == FieldKind::Int {
+            q.push("(");
+            arith(q);
+            q.push(") BETWEEN -2147483648 AND 2147483647");
+        } else {
+            q.push("ABS(");
+            arith(q);
+            q.push(") < CAST(").bind(SqlValue::Text(super::decimal_bound(f).to_string())).push(" AS NUMERIC)");
+        }
+        q.push(" THEN ");
+        arith(q);
+        q.push(" ELSE json_extract('{}', '").push(&crate::error::sqlite_range_path(f)).push("') END");
     }
 
     /// `DELETE FROM t AS t0 WHERE <w>`: the number of deleted rows.
@@ -410,7 +440,7 @@ impl Engine {
             }
             if op == "push" {
                 let tmp = Value::Array(list_or_one(val));
-                return Ok(SetExpr::Push(self.value(f, &tmp, false)?));
+                return Ok(SetExpr::Push(self.data_value(f, &tmp)?));
             }
             if !f.kind.is_numeric() {
                 return Err(self.err(format!(

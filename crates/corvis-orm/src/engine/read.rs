@@ -262,9 +262,16 @@ impl Engine {
     }
 
     /// `P2023` for an `Int` column holding a value outside 32 bits, which SQLite can store (its integers are 64-bit):
-    /// the reference client fails like this when it reads such a row.
+    /// the reference client fails like this when it reads such a row. A float (`1.5`, `1e30`, which SQLite also
+    /// stores in an `INTEGER` column) fails the same way, never truncated or saturated.
     fn int_out_of_range(&self, model: &'static ModelMeta, f: &FieldMeta, v: &Value) -> Option<OrmError> {
-        let n = v.as_i64().filter(|n| f.kind == crate::meta::FieldKind::Int && !f.list && i32::try_from(*n).is_err())?;
+        if f.kind != crate::meta::FieldKind::Int || f.list {
+            return None;
+        }
+        let Value::Number(n) = v else { return None };
+        if n.as_i64().is_some_and(|i| i32::try_from(i).is_ok()) {
+            return None;
+        }
         let detail =
             format!("Conversion failed: Value {n} does not fit in an INT column, try migrating the '{}' column type to BIGINT", f.column);
         Some(OrmError::known("P2023", format!("Inconsistent column data: {detail}"), json!({ "modelName": model.name, "message": detail })))

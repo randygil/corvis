@@ -270,19 +270,67 @@ fn parse_radix(neg: bool, s: &str) -> Option<Decimal> {
     Some(binary_scaled(neg, n, bits * frac.len() as u64, p))
 }
 
-/// `n / 2^frac_bits * 2^p`, like decimal.js `parseOther`: the fraction is exact, and the binary exponent multiplies by
-/// the JavaScript number `2 ** p` when `|p| < 54` and by `Decimal.pow(2, p)` (rounded to the default precision)
-/// otherwise; the product itself is exact.
+/// `n / 2^frac_bits * 2^p`, like decimal.js `parseOther`: the fraction is exact; the binary exponent (a JavaScript
+/// number there, so `p` is rounded to an `f64` first) multiplies by the number `2 ** p` when `|p| < 54`, exactly, and
+/// otherwise by `Decimal.pow(2, p)`, which leaves decimal.js' `external` flag set, so that product is rounded to the
+/// default precision (recorded in `tests/fixtures/decimal_parse.json`: `0xf.fp99999` has 20 digits).
 fn binary_scaled(neg: bool, n: BigUint, frac_bits: u64, p: i64) -> Decimal {
     if n.is_zero() {
         return Decimal { kind: Kind::Finite, neg, coeff: BigUint::zero(), exp: 0, cfg: &DEFAULT_CONFIG };
     }
     let five = BigUint::from(5u32).pow(u32::try_from(frac_bits).unwrap_or(u32::MAX));
     let x = Decimal::finite(neg, n * five, -i64::try_from(frac_bits).unwrap_or(i64::MAX), &DEFAULT_CONFIG);
-    match p {
-        0 => x,
-        p if p.abs() < 54 => x.times_exact(&Decimal::from_f64(2f64.powi(p as i32))),
-        p => x.times_exact(&Decimal::from(2).pow(p)),
+    let p = p as f64;
+    if p == 0.0 {
+        x
+    } else if p.abs() < 54.0 {
+        x.times_exact(&Decimal::from_f64(2f64.powi(p as i32)))
+    } else {
+        // An `f64` beyond 2^53 is an integer; beyond `i64` the power is out of range anyway (`Decimal::pow`).
+        let p = if p.abs() < 9.2e18 { Decimal::from(p as i64) } else { Decimal::from_f64(p) };
+        x.times(Decimal::from(2).pow(p))
+    }
+}
+
+/// decimal.js `intPow(Ctor, x, n, pr)` of the magnitude `coeff * 10^exp` (non-zero): exponentiation by squaring
+/// where every product keeps only its `ceil(pr / 7) + 4` leading words of 7 digits (decimal.js' base 10^7 digits)
+/// and drops the rest, so no product has more than twice that many digits. When the last product was truncated
+/// and its last kept word is zero, that word becomes 1, so that rounding the result later does not take the
+/// truncated value for an exact one. Returns the unrounded result.
+fn int_pow(coeff: &BigUint, exp: i64, mut n: u64, pr: u32) -> (BigUint, i64) {
+    const WORD: u32 = 10_000_000;
+    let words = i64::from(pr.div_ceil(7)) + 4;
+    // Keeps the `words` leading words of `c * 10^e`; also says whether a non-zero part was dropped.
+    let truncate = |c: BigUint, e: i64| -> (BigUint, i64, bool) {
+        #[cfg(test)]
+        work::note_digits(ndigits(&c));
+        let top = e.saturating_add(ndigits(&c) - 1);
+        let keep_from = top.div_euclid(7).saturating_sub(words - 1).saturating_mul(7);
+        if e >= keep_from {
+            return (c, e, false);
+        }
+        let (q, r) = c.div_rem(&pow10(keep_from.abs_diff(e)));
+        (q, keep_from, !r.is_zero())
+    };
+    let (mut r, mut r_exp) = (BigUint::one(), 0i64);
+    let (mut x, mut x_exp) = (coeff.clone(), exp);
+    let mut truncated = false;
+    loop {
+        let mut last_truncated = false;
+        if n % 2 == 1 {
+            let (c, e, t) = truncate(&r * &x, r_exp.saturating_add(x_exp));
+            (r, r_exp, last_truncated) = (c, e, t);
+            truncated |= t;
+        }
+        n /= 2;
+        if n == 0 {
+            if truncated && last_truncated && (&r % WORD).is_zero() {
+                r += 1u32;
+            }
+            return (r, r_exp);
+        }
+        let (c, e, _) = truncate(&x * &x, x_exp.saturating_mul(2));
+        (x, x_exp) = (c, e);
     }
 }
 
@@ -1213,47 +1261,91 @@ impl Decimal {
         self.modulo(y)
     }
 
-    /// `pow` / `toPower`. Integer exponents are computed exactly and rounded to
-    /// `precision`; other exponents go through `f64` (not bit-for-bit decimal.js).
+    /// `pow` / `toPower`, rounded to `precision`. An integer exponent is computed like decimal.js: by squaring, each
+    /// product truncated to `ceil(precision / 7) + 4` words of 7 digits (`intPow`), so the work does not grow with the
+    /// exponent; a result beyond the exponent range is `Infinity` or zero. Other exponents go through `f64` (not
+    /// bit-for-bit decimal.js).
     pub fn pow(&self, y: impl Into<Decimal>) -> Decimal {
         let y = self.arg(y);
         let cfg = self.cfg;
-        if self.is_nan() || y.is_nan() {
-            return self.nan_cfg();
-        }
         if y.is_zero() {
             return Decimal::finite(false, BigUint::one(), 0, cfg);
         }
-        if y.is_integer()
-            && self.is_finite()
-            && let Some(n) = y.to_i64_exact()
-            && n.unsigned_abs() <= 100_000
-        {
-            let k = n.unsigned_abs();
-            if self.is_zero() {
-                return if n < 0 {
-                    Decimal::special(Kind::Infinite, self.neg && k % 2 == 1, cfg)
-                } else {
-                    Decimal::finite(self.neg && k % 2 == 1, BigUint::zero(), 0, cfg)
-                };
-            }
-            let neg = self.neg && k % 2 == 1;
-            // The exponent of the result is outside the range when it does not even fit an i64.
-            let Some(exp) = self.exp.checked_mul(k as i64) else {
-                let big = (self.exp > 0) == (n > 0);
-                return if big { Decimal::special(Kind::Infinite, neg, cfg) } else { Decimal::finite(neg, BigUint::zero(), 0, cfg) };
+        if self.is_nan() || y.is_nan() {
+            return self.nan_cfg();
+        }
+        let n = if y.is_integer() && self.is_finite() { y.to_i64_exact() } else { None };
+        let Some(n) = n else {
+            return self.pow_other(&y);
+        };
+        let k = n.unsigned_abs();
+        let neg = self.neg && k % 2 == 1;
+        if self.is_zero() {
+            return if n < 0 { Decimal::special(Kind::Infinite, neg, cfg) } else { Decimal::finite(neg, BigUint::zero(), 0, cfg) };
+        }
+        if self.coeff.is_one() && self.exp == 0 && !self.neg {
+            return self.clone();
+        }
+        if n == 1 {
+            return self.clone().round_sd(cfg.precision, cfg.rounding).check_range();
+        }
+        // Far beyond the exponent range (decimal.js computes the result and then overflows or underflows it).
+        let e = (self.log10_abs() * k as f64).floor();
+        if e > (MAX_E + 2) as f64 || e < (MIN_E - 2) as f64 {
+            return if (e > 0.0) == (n > 0) {
+                Decimal::special(Kind::Infinite, neg, cfg)
+            } else {
+                Decimal::finite(neg, BigUint::zero(), 0, cfg)
             };
-            let c = self.coeff.pow(k as u32);
-            #[cfg(test)]
-            work::note_digits(ndigits(&c));
-            let r = Decimal::finite(neg, c, exp, cfg);
-            if n < 0 {
-                return Decimal::finite(false, BigUint::one(), 0, cfg).div(r);
+        }
+        let (c, exp) = int_pow(&self.coeff, self.exp, k, cfg.precision);
+        let r = Decimal { kind: Kind::Finite, neg, coeff: c, exp, cfg };
+        if n < 0 {
+            return Decimal::finite(false, BigUint::one(), 0, cfg).div(r.check_range());
+        }
+        r.round_sd(cfg.precision, cfg.rounding).check_range()
+    }
+
+    /// `pow` of a non-integer exponent, of an integer beyond `i64`, or of an infinite base.
+    fn pow_other(&self, y: &Decimal) -> Decimal {
+        let cfg = self.cfg;
+        if self.is_finite() && !self.is_zero() && y.is_finite() {
+            let unit = self.coeff.is_one() && self.exp == 0;
+            if unit && !self.neg {
+                return self.clone();
             }
-            return r.round_sd(cfg.precision, cfg.rounding);
+            if self.neg && !y.is_integer() {
+                return self.nan_cfg();
+            }
+            let neg = self.neg && y.is_odd_integer();
+            if unit {
+                return Decimal::finite(neg, BigUint::one(), 0, cfg);
+            }
+            // decimal.js estimates the exponent of the result first and stops there when it is out of range (an
+            // underflow is a positive zero there).
+            let e = (self.log10_abs() * y.to_number()).floor();
+            if e > (MAX_E + 1) as f64 {
+                return Decimal::special(Kind::Infinite, neg, cfg);
+            }
+            if e < (MIN_E - 1) as f64 {
+                return Decimal::finite(false, BigUint::zero(), 0, cfg);
+            }
         }
         let v = self.to_number().powf(y.to_number());
         Decimal::from_f64(v).with_config(cfg).round_sd(cfg.precision, cfg.rounding)
+    }
+
+    /// `log10(|self|)` as an `f64` (finite, non-zero `self`), from the leading 64 bits of the coefficient.
+    fn log10_abs(&self) -> f64 {
+        let bits = self.coeff.bits();
+        let shift = bits.saturating_sub(64);
+        let top = (&self.coeff >> shift).to_f64().unwrap_or(1.0);
+        top.log10() + shift as f64 * std::f64::consts::LOG10_2 + self.exp as f64
+    }
+
+    /// Whether an integer is odd.
+    fn is_odd_integer(&self) -> bool {
+        self.exp == 0 && self.coeff.is_odd()
     }
     pub fn to_power(&self, y: impl Into<Decimal>) -> Decimal {
         self.pow(y)

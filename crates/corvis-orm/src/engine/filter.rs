@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value};
 
-use super::{Engine, json_type};
+use super::{Engine, json_type, null_sentinel};
 use crate::db::{Dialect, Sql, SqlValue};
 use crate::error::Result;
 use crate::meta::{FieldKind, FieldMeta, ModelMeta, RelationKind, ResolvedRelation};
@@ -113,15 +113,6 @@ fn sqlite_json_path(p: Option<&[JsonSeg]>) -> String {
         }
     }
     path
-}
-
-/// The `DbNull` / `JsonNull` / `AnyNull` sentinels (`{ "$type": ... }`).
-fn null_sentinel(v: &Value) -> Option<&str> {
-    v.as_object()
-        .filter(|o| o.len() == 1)
-        .and_then(|o| o.get("$type"))
-        .and_then(|t| t.as_str())
-        .filter(|t| matches!(*t, "DbNull" | "JsonNull" | "AnyNull"))
 }
 
 /// What an `orderBy` entry sorts on.

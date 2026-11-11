@@ -84,6 +84,21 @@ impl Drop for DropDb {
     }
 }
 
+/// The recorded arguments as the client takes them, like `revive` of `tests/common/oracle.rs`: `{ "$float": .. }` is
+/// `null`, `{ "$json": v }` is `v`, and `{ "$type": "DbNull" | "JsonNull" | "AnyNull" }` is that null sentinel.
+fn revive(v: &mut Value) {
+    match v {
+        Value::Object(m) if m.len() == 1 && m.contains_key("$float") => *v = Value::Null,
+        Value::Object(m) if m.len() == 1 && m.contains_key("$json") => *v = m["$json"].take(),
+        Value::Object(m) if m.len() == 1 && matches!(m.get("$type").and_then(Value::as_str), Some("DbNull" | "JsonNull" | "AnyNull")) => {
+            *v = super::null_marker(m["$type"].as_str().unwrap_or_default());
+        }
+        Value::Object(m) => m.values_mut().for_each(revive),
+        Value::Array(a) => a.iter_mut().for_each(revive),
+        _ => {}
+    }
+}
+
 #[tokio::test]
 async fn postgres_sql_of_the_oracle_cases_is_unchanged() {
     let base = base_url();
@@ -99,7 +114,9 @@ async fn postgres_sql_of_the_oracle_cases_is_unchanged() {
     for c in cases.iter().filter(|c| c["model"] != "$raw") {
         let label = c["label"].as_str().unwrap();
         let model = meta_of(c["model"].as_str().unwrap());
-        let (_, statements) = capture(db.query_json(model, c["action"].as_str().unwrap(), c["args"].clone())).await;
+        let mut args = c["args"].clone();
+        revive(&mut args);
+        let (_, statements) = capture(db.query_json(model, c["action"].as_str().unwrap(), args)).await;
         snapshot.push(json!({ "label": label, "statements": statements }));
     }
     let _ = db.disconnect().await;

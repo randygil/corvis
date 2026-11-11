@@ -94,7 +94,7 @@ pub mod actions {
 pub mod prelude {
     pub use crate::{
         BatchPayload, DateTime, Decimal, DecimalConfig, DecimalCtor, IsolationLevel, Model, OrmClient, OrmEnum, OrmError, RawSql,
-        SortOrder, TransactionOptions, decimal, or_undefined, sql, undefined,
+        SortOrder, TransactionOptions, any_null, db_null, decimal, json_null, or_undefined, sql, undefined,
     };
     #[cfg(feature = "corvis")]
     pub use crate::{OrmExceptionFilter, OrmModule, OrmModuleOptions, OrmResultExt, OrmService};
@@ -113,6 +113,22 @@ pub mod prelude {
 /// ```
 pub fn undefined() -> serde_json::Value {
     engine::undefined_marker()
+}
+
+/// The database `NULL` of a Json field (`DbNull`): in `data` it stores `NULL`, in `equals` / `not` it compares with
+/// `NULL`. A plain `{ "$type": "DbNull" }` object is JSON data, like any other object a request may carry.
+pub fn db_null() -> serde_json::Value {
+    engine::null_marker("DbNull")
+}
+
+/// The JSON `null` value of a Json field (`JsonNull`), as opposed to the database `NULL` ([`db_null`]).
+pub fn json_null() -> serde_json::Value {
+    engine::null_marker("JsonNull")
+}
+
+/// Either null of a Json field (`AnyNull`): in a filter it matches the database `NULL` and the JSON `null`.
+pub fn any_null() -> serde_json::Value {
+    engine::null_marker("AnyNull")
 }
 
 /// `Some(v)` -> `v`, `None` -> [`undefined()`] (`value ?? undefined`).

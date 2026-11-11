@@ -31,11 +31,15 @@ pub fn normalize(v: &mut Value) {
 /// reference client sends it as JSON `null` (`JSON.stringify(NaN)`, recorded in `fin.*`), so a JSON query carries
 /// `null` too; the typed helpers refuse such values instead (`tests/typed_params.rs`).
 ///
-/// `{ "$json": v }` is `v` as plain JSON data, not revived (a request body can carry `{ "$type": "DbNull" }`).
+/// `{ "$type": "DbNull" | "JsonNull" | "AnyNull" }` is the reference client's null sentinel ([`corvis_orm::db_null`],
+/// ...); `{ "$json": v }` is `v` as plain JSON data, not revived (a request body can carry `{ "$type": "DbNull" }`).
 pub fn revive(v: &mut Value) {
     match v {
         Value::Object(m) if m.len() == 1 && m.contains_key("$float") => *v = Value::Null,
         Value::Object(m) if m.len() == 1 && m.contains_key("$json") => *v = m["$json"].take(),
+        Value::Object(m) if m.len() == 1 && m.get("$type").is_some_and(|t| t == "DbNull") => *v = corvis_orm::db_null(),
+        Value::Object(m) if m.len() == 1 && m.get("$type").is_some_and(|t| t == "JsonNull") => *v = corvis_orm::json_null(),
+        Value::Object(m) if m.len() == 1 && m.get("$type").is_some_and(|t| t == "AnyNull") => *v = corvis_orm::any_null(),
         Value::Object(m) => m.values_mut().for_each(revive),
         Value::Array(a) => a.iter_mut().for_each(revive),
         _ => {}

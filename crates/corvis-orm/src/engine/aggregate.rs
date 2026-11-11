@@ -591,13 +591,14 @@ impl Engine {
             if i > 0 {
                 q.push(" AND ");
             }
+            // The reference client refuses `null` in an aggregate filter (recorded: `having.*_null`), where a field
+            // filter takes `equals: null` / `not: null` as `IS NULL` / `IS NOT NULL`.
+            if val.is_null() && matches!(op.as_str(), "equals" | "lt" | "lte" | "gt" | "gte" | "not") {
+                return Err(self.err(format!("Argument `{op}` must not be null.")));
+            }
             match op.as_str() {
                 "equals" | "lt" | "lte" | "gt" | "gte" => {
                     self.agg_expr_sql(q, "t0", group, field);
-                    if val.is_null() {
-                        q.push(" IS NULL");
-                        continue;
-                    }
                     let sym = match op.as_str() {
                         "equals" => " = ",
                         "lt" => " < ",
@@ -613,6 +614,12 @@ impl Engine {
                         Value::Array(a) => a.clone(),
                         other => vec![other.clone()],
                     };
+                    if items.iter().any(Value::is_null) {
+                        return Err(self.err(format!(
+                            "Argument `{op}`: Invalid value provided. Expected List{}FieldRefInput, provided a list with Null.",
+                            f.kind.schema_name()
+                        )));
+                    }
                     if items.is_empty() {
                         q.push(if op == "in" { "1=0" } else { "1=1" });
                         continue;
@@ -628,10 +635,6 @@ impl Engine {
                     q.push(")");
                 }
                 "not" => match val {
-                    Value::Null => {
-                        self.agg_expr_sql(q, "t0", group, field);
-                        q.push(" IS NOT NULL");
-                    }
                     Value::Object(_) => {
                         q.push("NOT ");
                         self.agg_filter_sql(q, group, f, val)?;

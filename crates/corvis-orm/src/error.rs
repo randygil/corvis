@@ -130,6 +130,11 @@ impl OrmError {
         };
         let msg = db.message().to_string();
         let pg = db.try_downcast_ref::<sqlx::postgres::PgDatabaseError>();
+        if pg.is_none()
+            && let Some(e) = sqlite_range_error(&msg)
+        {
+            return e;
+        }
         let code = db.code().map(|c| c.to_string()).unwrap_or_default();
         let model_name = model.map(|m| m.name);
         let columns_to_fields = |cols: Vec<String>| -> Vec<String> {
@@ -251,6 +256,14 @@ impl OrmError {
         Self::known("P2010", format!("Raw query failed. Code: `{code}`. Message: `{message}`"), json!({ "code": code, "message": message }))
     }
 
+    /// The error Postgres gives for a value out of the range of its column (SQLSTATE 22003), worded like the reference
+    /// query engine reports it.
+    fn out_of_range(message: &str, detail: Option<String>) -> Self {
+        Self::unknown(format!(
+            "Error occurred during query execution:\nConnectorError(ConnectorError {{ user_facing_error: None, kind: QueryError(PostgresError {{ code: \"22003\", message: {message:?}, severity: \"ERROR\", detail: {detail:?}, column: None, hint: None }}), transient: false }})"
+        ))
+    }
+
     /// The error raised when a query has an `Int` argument outside the 32-bit range
     /// (parameter `index`, 0-based), worded like the reference query engine.
     pub(crate) fn int_overflow(index: usize, value: i64) -> Self {
@@ -298,6 +311,33 @@ fn pg_severity(s: sqlx::postgres::PgSeverity) -> &'static str {
         Info => "INFO",
         Log => "LOG",
     }
+}
+
+/// The text an SQLite arithmetic update puts in the JSON path error it raises for a result out of the range of `f`'s
+/// column (`Engine::checked_arith`); [`sqlite_range_error`] reads it back from the error message. Made of letters,
+/// digits and punctuation only, so it can be written as an SQL string literal.
+pub(crate) fn sqlite_range_path(f: &crate::meta::FieldMeta) -> String {
+    match f.kind {
+        crate::meta::FieldKind::Decimal => {
+            let (p, s) = crate::engine::decimal_precision(f);
+            format!("{SQLITE_RANGE}decimal:{p}:{s}")
+        }
+        _ => format!("{SQLITE_RANGE}int"),
+    }
+}
+
+const SQLITE_RANGE: &str = "corvis_orm:out_of_range:";
+
+/// The error of an SQLite message raised by [`sqlite_range_path`]: the one Postgres gives for the same update.
+fn sqlite_range_error(msg: &str) -> Option<OrmError> {
+    let rest = &msg[msg.find(SQLITE_RANGE)? + SQLITE_RANGE.len()..];
+    if rest.starts_with("int") {
+        return Some(OrmError::out_of_range("integer out of range", None));
+    }
+    let mut it = rest.strip_prefix("decimal:")?.split(|c: char| !c.is_ascii_digit()).map(str::parse::<u32>);
+    let (p, s) = (it.next()?.ok()?, it.next()?.ok()?);
+    let detail = format!("A field with precision {p}, scale {s} must round to an absolute value less than 10^{}.", p.saturating_sub(s));
+    Some(OrmError::out_of_range("numeric field overflow", Some(detail)))
 }
 
 /// The first `"quoted"` name of a database message (`relation "x" does not exist`).

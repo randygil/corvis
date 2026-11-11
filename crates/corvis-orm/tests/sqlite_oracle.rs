@@ -41,6 +41,25 @@ const KNOWN_DIFFERENCES: &[(&str, &[Db], &str)] = &[
         "the security bound of the hardening review: a `Decimal` written on SQLite must fit `Decimal(65, 30)` (or its \
          `@db.Decimal(p, s)`), so that a short input cannot store a huge value; the reference client stores `1e100`",
     ),
+    (
+        "err.int_overflow_create",
+        &[Db::Migrated, Db::Pushed],
+        "security review of #188: an `Int` beyond 32 bits is never written on SQLite (Corvis fails like Postgres does, \
+         before any SQL runs); the reference client stores it and then fails every read of the row with `P2023`, so \
+         one such value breaks every list of the table",
+    ),
+    (
+        "arith.increment_overflow",
+        &[Db::Migrated, Db::Pushed],
+        "the same for an arithmetic update whose result leaves 32 bits: Corvis fails the statement, which SQLite undoes, \
+         with the error Postgres gives (`integer out of range`); the reference client stores 2147483648",
+    ),
+    (
+        "arith.after_overflow",
+        &[Db::Migrated, Db::Pushed],
+        "follows from `arith.increment_overflow`: the row keeps 2147483647 and reads, where the reference client fails \
+         with `P2023`",
+    ),
 ];
 
 fn meta_of(model: &str) -> &'static ModelMeta {

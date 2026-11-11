@@ -131,10 +131,20 @@ fn depth_error(e: &Engine, max: usize) -> OrmError {
 /// carries a random nonce drawn once per process from the operating system (two v4 UUIDs, 244 random bits) and never
 /// written anywhere a client can read it; a string that is not the exact marker of this process is an ordinary
 /// string, and a string with a NUL character fails the query.
+///
+/// The null sentinels of Json fields ([`crate::db_null`], [`crate::json_null`], [`crate::any_null`]) are
+/// `{ "$type": <tag> }` objects whose tag carries the same nonce: a plain `{ "$type": "DbNull" }` is JSON data, as in
+/// the reference client (recorded: `json.plain_type_*`). Their tags hold no NUL character, since `where` arguments
+/// refuse strings with one.
 struct Markers {
     undefined: String,
     invalid: String,
+    /// The `$type` tags of `DbNull`, `JsonNull` and `AnyNull`, in that order.
+    nulls: [String; 3],
 }
+
+/// The names of the null sentinels, in the order of [`Markers::nulls`].
+const NULL_NAMES: [&str; 3] = ["DbNull", "JsonNull", "AnyNull"];
 
 fn markers() -> &'static Markers {
     static MARKERS: std::sync::OnceLock<Markers> = std::sync::OnceLock::new();
@@ -143,6 +153,7 @@ fn markers() -> &'static Markers {
         Markers {
             undefined: format!("\u{0}corvis_orm::undefined::{nonce}\u{0}"),
             invalid: format!("\u{0}corvis_orm::invalid::{nonce}\u{0}"),
+            nulls: NULL_NAMES.map(|name| format!("corvis_orm::{name}::{nonce}")),
         }
     })
 }
@@ -150,6 +161,18 @@ fn markers() -> &'static Markers {
 /// The value of [`crate::undefined`]: JS `undefined` inside query arguments.
 pub(crate) fn undefined_marker() -> Value {
     Value::String(markers().undefined.clone())
+}
+
+/// The sentinel named `name` (one of [`NULL_NAMES`]).
+pub(crate) fn null_marker(name: &str) -> Value {
+    let i = NULL_NAMES.iter().position(|n| *n == name).expect("a null sentinel name");
+    serde_json::json!({ "$type": markers().nulls[i] })
+}
+
+/// `"DbNull"`, `"JsonNull"` or `"AnyNull"` when `v` is that sentinel of this process.
+pub(crate) fn null_sentinel(v: &Value) -> Option<&'static str> {
+    let tag = v.as_object().filter(|o| o.len() == 1)?.get("$type")?.as_str()?;
+    markers().nulls.iter().position(|m| m == tag).map(|i| NULL_NAMES[i])
 }
 
 /// A JSON value that makes the query it is put in fail with `message` (a validation error) before any SQL runs: how
@@ -424,9 +447,9 @@ impl Engine {
     }
 
     fn scalar_value(&self, f: &FieldMeta, v: &Value, allow_null: bool) -> Result<SqlValue> {
-        // `DbNull` / `JsonNull` / `AnyNull` sentinels (`{ "$type": ... }`).
+        // The `DbNull` / `JsonNull` / `AnyNull` sentinels.
         if f.kind == FieldKind::Json
-            && let Some(t) = v.as_object().and_then(|o| o.get("$type")).and_then(|t| t.as_str())
+            && let Some(t) = null_sentinel(v)
         {
             match t {
                 "DbNull" | "AnyNull" => {
@@ -498,16 +521,16 @@ impl Engine {
             },
             FieldKind::Decimal => {
                 let d = self.decimal_input(f, v)?;
-                // A value that does not fit a NUMERIC stays a `Decimal`: running the query fails
-                // with a conversion error (`check_params`), as in the reference engine, before
-                // anything tries to print it.
-                match (self.dialect(), d.fits_numeric()) {
-                    (Dialect::Postgres, _) => SqlValue::Decimal(d),
-                    (Dialect::Sqlite, true) => SqlValue::Text(d.to_fixed_plain()),
-                    // SQLite reads it as a number (recorded: `lt: "1e140000"` matches every row, `lte: "9999e-262144"`
-                    // none); the exponent form keeps the text short, where the fixed form would have 140,000 digits.
-                    // Writes are bounded before they get here (`Engine::data_value`).
-                    (Dialect::Sqlite, false) => SqlValue::Text(d.to_string()),
+                match self.dialect() {
+                    // A value that does not fit a NUMERIC stays a `Decimal`: running the query fails with a
+                    // conversion error (`check_params`), as in the reference engine, before anything tries to
+                    // print it.
+                    Dialect::Postgres => SqlValue::Decimal(d),
+                    // SQLite reads the text as a number (`CAST(? AS NUMERIC)`, recorded: `lt: "1e140000"` matches
+                    // every row, `lte: "9999e-262144"` none). The shortest form keeps it short: a fixed-point
+                    // expansion of `1e131071` would be a 131,072-digit parameter. Writes are bounded and rounded
+                    // before they get here (`Engine::data_value`).
+                    Dialect::Sqlite => SqlValue::Text(d.to_string()),
                 }
             }
             FieldKind::Boolean => SqlValue::Bool(v.as_bool().ok_or_else(bad)?),
@@ -584,8 +607,12 @@ impl Engine {
                     self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided Float.", f.name))
                 })?),
             },
+            // `NaN` and `±Infinity` are not decimal text for the reference engine either (recorded: `dec.*`, a
+            // validation error on both databases); SQLite would otherwise compare them as text.
             Value::String(s) => crate::Decimal::parse(s)
-                .map_err(|_| self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name)))?,
+                .ok()
+                .filter(crate::Decimal::is_finite)
+                .ok_or_else(|| self.err(format!("Argument `{}`: Invalid value provided. Expected Decimal, provided String.", f.name)))?,
             other => {
                 return Err(self.err(format!(
                     "Argument `{}`: Invalid value provided. Expected Decimal, provided {}.",
@@ -604,17 +631,22 @@ impl Engine {
     /// checked against the column it stands for, `@db.Decimal(p, s)` or the default `Decimal(65, 30)`: it
     /// is rounded to `s` decimal places like Postgres does, and a value whose integer part does not fit is
     /// rejected. This also bounds what a short input such as `"1e100000"` stores.
+    ///
+    /// An `Int` beyond 32 bits is refused on SQLite with the error Postgres gives (`OrmError::int_overflow`), before
+    /// any SQL runs. The reference client writes it (SQLite integers have 64 bits) and then fails every read of the
+    /// row (`P2023`), so one such value breaks every list of the table: a deliberate difference, kept for safety
+    /// (`err.int_overflow_create` in `tests/sqlite_oracle.rs`). Filters keep 64-bit operands, as recorded.
     pub(crate) fn data_value(&self, f: &FieldMeta, v: &Value) -> Result<SqlValue> {
+        if self.dialect() == Dialect::Sqlite && f.kind == FieldKind::Int {
+            return self.value(f, v, false).map(int32_only);
+        }
         if self.dialect() != Dialect::Sqlite || f.kind != FieldKind::Decimal || f.list || !(v.is_string() || v.is_number()) {
             return self.value(f, v, false);
         }
         let d = self.decimal_input(f, v)?;
-        if !d.is_finite() {
-            return self.value(f, v, false);
-        }
         let (p, s) = decimal_precision(f);
         let r = d.to_decimal_places_with(s, crate::Decimal::ROUND_HALF_UP);
-        if !r.is_zero() && r.abs().gte(crate::Decimal::from(10).pow(p as i64 - s as i64)) {
+        if !r.is_zero() && r.abs().gte(decimal_bound(f)) {
             return Err(self.err(format!(
                 "Argument `{}`: Invalid value provided. A Decimal({p}, {s}) value must round to an absolute value less than 10^{}.",
                 f.name,
@@ -747,7 +779,7 @@ fn fits_i64(x: f64) -> bool {
 }
 
 /// `(precision, scale)` of a `Decimal` column: `@db.Decimal(p, s)` or the default `(65, 30)`.
-fn decimal_precision(f: &FieldMeta) -> (u32, u32) {
+pub(crate) fn decimal_precision(f: &FieldMeta) -> (u32, u32) {
     let parsed = f.native_type.filter(|_| f.native_name() == Some("Decimal")).and_then(|t| {
         let args = t.split_once('(')?.1.trim_end_matches(')');
         let mut it = args.split(',').map(|x| x.trim().parse::<u32>());
@@ -756,6 +788,21 @@ fn decimal_precision(f: &FieldMeta) -> (u32, u32) {
         (s <= p).then_some((p, s))
     });
     parsed.unwrap_or((65, 30))
+}
+
+/// `10^(p - s)` of a Decimal column: what its values must stay below in absolute value.
+pub(crate) fn decimal_bound(f: &FieldMeta) -> crate::Decimal {
+    let (p, s) = decimal_precision(f);
+    crate::Decimal::from(10).pow(i64::from(p - s))
+}
+
+/// An SQLite `Int` write beyond 32 bits becomes [`SqlValue::OutOfRange`], which fails the query before it runs.
+fn int32_only(v: SqlValue) -> SqlValue {
+    match v {
+        SqlValue::Int(i) if i32::try_from(i).is_err() => SqlValue::OutOfRange(i),
+        SqlValue::Array(items, k) => SqlValue::Array(items.into_iter().map(int32_only).collect(), k),
+        other => other,
+    }
 }
 
 /// The message of a UUID parse error, worded like the `uuid` crate used by the reference query engine.
