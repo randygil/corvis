@@ -32,7 +32,7 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   `null`; on SQLite with rows `1.0`, `2.0`, `null`, `delete_many(vec![score::not(f64::NAN)])` leaves at least the rows a
   value comparison leaves; a helper value whose `Serialize` fails makes `find_many` fail; verify they fail today and record
   the output
-- [ ] 2.4 `crates/corvis-orm/tests/parameter_limits.rs` (S4): on SQLite, `createManyAndReturn` of 40,000 rows,
+- [x] 2.4 `crates/corvis-orm/tests/parameter_limits.rs` (S4): on SQLite, `createManyAndReturn` of 40,000 rows,
   `updateManyAndReturn` of 40,000 rows, an include over a two-field relation with 20,000 parents, a nested `set` of 40,000
   children, `in` with `mode: insensitive` and 40,000 values; the Postgres versions with 70,000 rows when Postgres is
   available; verify each fails today with the database's parameter-limit error and record it
@@ -70,17 +70,18 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
 
 ## 5. `db push` (Decision 3)
 
-- [ ] 5.1 `schema.rs`, Postgres: `CREATE SCHEMA IF NOT EXISTS` for `@@schema`, enum types (mapped values, schema order,
+- [x] 5.1 `schema.rs`, Postgres: `CREATE SCHEMA IF NOT EXISTS` for `@@schema`, enum types (mapped values, schema order,
   qualified), primary key over `pk()` named by `primary_key_map` or `<table>_pkey`, native types of design.md's list,
   scalar lists as arrays, `TIMESTAMP(3)`, defaults (`CURRENT_TIMESTAMP`, `dbgenerated`, enum `@map` values),
   `Unsupported` columns, every identifier through `quote_ident`; verify the Postgres tests of 2.2 pass
-- [ ] 5.2 `schema.rs`: `@unique`/`@@unique` and `@@index` (names, `map`, `USING <type>`), implicit many-to-many join tables
+- [x] 5.2 `schema.rs`: `@unique`/`@@unique` and `@@index` (names, `map`, `USING <type>`), implicit many-to-many join tables
   (columns, key and `B` index named as the reference, cascading foreign keys), foreign keys as `ALTER TABLE .. ADD
   CONSTRAINT` named by `RelationMeta.map` or `<table>_<cols>_fkey`, statement order of the reference; verify the
   many-to-many test of 2.2 passes on both dialects
 - [ ] 5.3 `schema.rs`, SQLite: the types, keys, indexes, join tables and inline foreign keys of the recorded
-  `oracle_sqlite/migration.sql`; verify the SQLite tests of 2.2 pass
-- [ ] 5.4 Refusals before any statement (unknown native type, index type or option; views skipped) with a validation
+  `oracle_sqlite/migration.sql`; verify the SQLite tests of 2.2 pass (the SQLite tests of 2.2 pass; matching the recorded
+  SQLite migration waits for the recording of 3.1)
+- [x] 5.4 Refusals before any statement (unknown native type, index type or option; views skipped) with a validation
   error naming model, field and construct; `client.rs` `db_push_models` and `db_push_force_reset` in one transaction with
   `ensure_schema` (N6); tests: a push whose third model fails leaves no table; a model and an enum whose names contain `"`
   and `;` are pushed with quoted identifiers; verify `cargo test -p corvis-orm --test db_push`
@@ -89,6 +90,8 @@ Postgres SQL must not change except where Decision 6 replaces a statement that f
   vs the houseplan migrations when `corvis-tests` and the `vector` extension are available (skipped with a message
   otherwise); every remaining difference fixed or listed in the test with its reason; then both oracles on pushed
   databases (the Postgres runner gains a pushed run with the extras block applied after the push); verify all pass
+  (Postgres catalog, houseplan catalog and the pushed Postgres oracle run pass; the SQLite catalog and the pushed SQLite
+  oracle run wait for the recording of 3.1)
 
 ## 6. Typed helpers (Decision 4)
 

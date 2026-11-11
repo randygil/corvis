@@ -428,3 +428,44 @@ fixture. The same recorder counts statements in the unit tests of Decision 6.
 - Verified: `--test sqlite_decimal` (4 tests, on a pushed table, a `DECIMAL` column and a `TEXT` column of an earlier
   push), the Postgres SQL snapshot unchanged, `pg_oracle` and `pg_houseplan` (run with `CORVIS_TESTS_DIR`) pass; the
   whole `corvis-orm` suite fails only in the not yet fixed tests of group 2.
+
+### Group 5: `db push`
+
+- `schema.rs` builds a `PushPlan` (schemas, enum types, tables with their indexes and foreign keys, join tables) and
+  refuses unknown constructs while building it, so nothing runs before a refusal. `PushPlan::statements` leaves out what
+  exists: on Postgres the client looks each schema, enum type and table up first (`pg_namespace`, `to_regtype`,
+  `to_regclass`, inside the push transaction, through the `search_path` like the queries), because `CREATE TYPE` and
+  `ADD CONSTRAINT` have no `IF NOT EXISTS`; a table that exists keeps its indexes and foreign keys too. On SQLite every
+  statement is `IF NOT EXISTS` and foreign keys stay inline.
+- `db_push_models` and `db_push_force_reset` run `ensure_schema` and every statement in one transaction without
+  `maxWait` / `timeout` (`ddl_transaction`). `db_push_force_reset` also drops the join tables between the given models;
+  it does not drop enum types (other tables may use them).
+- Decisions where the design left room: the native types refused on Postgres are those outside the original's Postgres
+  list (all of `Text`, `Char`, `VarChar`, `Bit`, `VarBit`, `Uuid`, `Xml`, `Inet`, `Citext`, `Boolean`, `Integer`,
+  `SmallInt`, `BigInt`, `Oid`, `DoublePrecision`, `Real`, `Decimal`, `Money`, `Timestamp`, `Timestamptz`, `Date`,
+  `Time`, `Timetz`, `Json`, `JsonB`, `ByteA` are built; `Timetz`, `Integer`, `BigInt`, `Boolean` go slightly beyond the
+  design's list because the engine already reads them). On SQLite native types and index types are ignored, as before:
+  the oracle models (Postgres types) are pushed on SQLite by the tests and by apps that test on SQLite. An `@@index` with
+  sort orders or operator classes cannot be refused at push time: `#[derive(Model)]` resolves index fields to field names,
+  so `IndexMeta` never carries those options. A model without `@id` / `@@id` gets no primary key (only its unique
+  indexes), like the reference. Scalar lists are nullable columns on both dialects, like the reference. A join table is
+  created when both of its models are in the pushed set; it lives in the schema of model `A`.
+- SQLite layout without a recording (5.3 open): types as before plus `DECIMAL`; join tables with a unique index
+  `_<name>_AB_unique` and the `B` index; `DEFAULT CURRENT_TIMESTAMP` for `now()`, enum defaults by their mapped value.
+- Behaviour changes, each with a test: `DateTime` is `TIMESTAMP(3)` on Postgres and `@default(now())` is written as
+  `DEFAULT CURRENT_TIMESTAMP` (`tests/client.rs` `postgres_sql_generation` updated); enum types, native types, arrays,
+  compound keys, join tables, indexes and names (`tests/db_push.rs`); refusals and atomicity (same file).
+- Verified: `tests/db_push.rs` 21 tests, among them the catalog comparison with the reference migration (no difference at
+  all), the houseplan models against the houseplan migrations (one accepted difference, listed in the test: the hand-written
+  `embeddings_hnsw` index, which `schema.prisma` does not declare) and `pg_oracle`'s new run on a pushed database (all 225
+  cases equal to the recording).
+
+### Task 2.4 again, after group 5 and before group 8
+
+With `db push` fixed, `tests/parameter_limits.rs` failed for the reason of the finding on both dialects. Postgres:
+`PgConnection::run(): too many arguments for query: 70000` (`createManyAndReturn`, `updateManyAndReturn`, the
+insensitive `in`), `70001` (nested `set`, `m2m` disconnect) and `140000` (compound include). SQLite: `too many SQL
+variables` (insensitive `in`, nested `set`) and, new, `Expression tree is too large (maximum depth 1000)` for the
+read-backs, the compound include and the nested `deleteMany`: SQLite parses `a OR b OR ...` as a left-deep tree and
+rejects expressions deeper than 1000 levels (`SQLITE_MAX_EXPR_DEPTH`), so on SQLite an `OR` of key groups fails near
+1,000 keys, long before the parameter limit. Group 8 sizes SQLite chunks for that too (below).
