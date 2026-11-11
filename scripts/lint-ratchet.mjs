@@ -69,7 +69,8 @@ function diagnostics(jsonLines, crateOf) {
     const m = JSON.parse(line)
     if (m.reason !== 'compiler-message') continue
     const code = m.message.code?.code
-    if (code === 'unknown_lints' || code === 'clippy::unknown_clippy_lints') {
+    // E0602: a lint named on the command line that the toolchain does not know.
+    if (code === 'E0602' || code === 'unknown_lints') {
       unknown.push(m.message.message)
       continue
     }
@@ -277,7 +278,7 @@ function selfTest() {
   expect('print_stdout is counted in a library crate', groups.some((g) => g.includes('lib-crate clippy::print_stdout')))
   expect('other packages and other lints are ignored', counted.length === 4)
 
-  const unknown = diagnostics([JSON.stringify({ reason: 'compiler-message', package_id: 'L', message: { code: { code: 'unknown_lints' }, message: 'unknown lint: `clippy::gone`', spans: [] } })], crateOf)
+  const unknown = diagnostics([JSON.stringify({ reason: 'compiler-message', package_id: 'L', message: { code: { code: 'E0602' }, message: 'unknown lint: `clippy::gone`', spans: [] } })], crateOf)
   expect('an unknown lint is reported', unknown.unknown.length === 1)
 
   expect('a plain ignore fence is counted', ignoreFences('/// ```ignore\n/// x\n/// ```').length === 1)
