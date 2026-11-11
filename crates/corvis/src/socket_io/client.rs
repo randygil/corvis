@@ -511,7 +511,7 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
         if matches!(nsps.get(&name), Some(Slot::Pending | Slot::Joined(_))) {
             return Err(());
         }
-        nsps.insert(name, Slot::Pending);
+        nsps.insert(name.clone(), Slot::Pending);
     }
     // `auth` stays a `serde_json::Value` (it is the type of `Handshake::auth`), whose size is not the one the decoder
     // measured against `max_auth_bytes`: the real size of the stored value is charged to the session and its address
@@ -519,7 +519,13 @@ fn begin_connect(server: &Arc<ServerInner>, shared: &Arc<ClientShared>, name: St
     let auth = auth.and_then(|v| v.to_json().ok()).unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let charge = shared.engine.hold(json_cost(&auth));
     let handshake = Handshake::new(auth, shared.engine.handshake().clone(), Some(charge));
-    let socket = IoSocket::new(namespace, shared.clone(), handshake);
+    let Some(socket) = IoSocket::new(namespace, shared.clone(), handshake) else {
+        // The adapter panicked while the id was checked: the attempt is refused, and the slot is free again.
+        shared.nsps().remove(&name);
+        let error = IoValue::object([("message", IoValue::from("Internal server error"))]);
+        let _ = shared.send_packet(&Packet { nsp: name, body: Body::ConnectError(error) });
+        return Ok(());
+    };
     tokio::spawn(connect(shared.clone(), socket));
     Ok(())
 }
@@ -545,7 +551,7 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
         let _ = shared.send_packet(&Packet { nsp: name, body: Body::ConnectError(IoValue::Object(Box::new(payload))) });
         return;
     }
-    {
+    let own_room = {
         let mut nsps = shared.nsps();
         if shared.done.load(Ordering::SeqCst) || !matches!(nsps.get(&name), Some(Slot::Pending)) {
             return;
@@ -561,7 +567,14 @@ async fn connect(shared: Arc<ClientShared>, socket: IoSocket) {
         namespace.add_socket(&socket);
         // The room of its own id, before any handler runs (Node's `_onconnect`). It cannot be refused: the options
         // guarantee room for at least one.
-        socket.join_own_room();
+        socket.join_own_room()
+    };
+    if !own_room {
+        // The adapter panicked: a socket in no room cannot be reached by anything, so it leaves and its connection is
+        // closed, rather than lingering as long as the client answers pings.
+        socket.disconnect_with(DisconnectReason::ServerNamespaceDisconnect, false);
+        shared.engine.close();
+        return;
     }
     shared.joined_once.store(true, Ordering::SeqCst);
     if socket.is_phase(Phase::Connected) {

@@ -454,7 +454,8 @@ hold at most `S x max_buffered_amount` queued (plus the frame in flight each): t
 
 A broadcast with acknowledgements adds, until it ends, a pending entry of one `AckSink` reference and one `u64` per
 recipient (about 40 bytes with the table's overhead) and at most `max_broadcast_ack_bytes` (16 MiB) of collected answers.
-*Corrected by review round 1.* The first implementation said the answers are charged to their sessions "while their
+*Corrected by review rounds 1 and 2.* (Round 2: the answers are charged to the calls' own budget, see "Security review
+(round 2)"; the next paragraph describes round 1's intermediate design.) The first implementation said the answers are charged to their sessions "while their
 handler runs" and that the collector holds them beyond that, bounded by that figure. That was the defect (F2): the charge of
 an ACK packet was dropped right after the answer was handed to the collector, so answers held until the deadline counted
 nowhere, and the 16 MiB bound is per call while the number of calls is not bounded. Now the charge travels with the
@@ -586,6 +587,62 @@ and is tested with 1,300 recipients while another task broadcasts; broadcasts of
 
 **Review status.** Round 1 findings: F1, F2, B1, B3, B4, B5, Debug and the notes are fixed with a regression test each (the
 ones recorded against issues have none by design). Round 2 is for the maintainer's session.
+
+## Security review (round 2)
+
+The second review (the closing pass over the round 1 fixes) confirmed that rounds 1's fixes hold: id rooms, memory of
+the held answers, the bounds on joins and chaining, the shared handshake, adapter hangs and panics on the async paths and
+`del_all`, the rate limited overflow warning. Findings of this round, with their fixes and tests (all in
+`crates/corvis/src/socket_io/tests/review1.rs`):
+
+- **M1 (medium): the victims pay for the answers.** Round 1 kept the answerer's `Charge` until the call ended, so one
+  address that triggered ack-collecting broadcasts made other clients' budgets pay: 256 calls with one silent member held
+  the whole server-wide unread budget on 17 victim addresses, every session above its fair share stopped being read for
+  the call's duration, and honest clients were disconnected with `AdmissionTimeout` when the deadline passed 30 s. Fix: the
+  answerer's charge is released the moment the collector has taken the answer (or refused it), and what the call keeps is
+  charged to a server-wide **answer budget** (`AckBudget`: one atomic counter and a cap, shared by the namespaces of a
+  server; `AckHold` releases on drop, so `finish`, a dropped call and an abandoned call all give it back). The charge is a
+  try-charge by compare-and-swap that never waits; with no room the call ends with `ResponsesTooLarge` and keeps the
+  answers it had. Cap: a quarter of the engine's `max_total_unread_bytes`, never less than `max_broadcast_ack_bytes` (64
+  MiB with the defaults), so the memory the held answers can add is bounded by an amount that is not part of the unread
+  budget and costs no reader a pause. **Why the server measure and not the caller's chain:** the caller of an operator is
+  application code with no session, address or gauge (a timer, a handler of another connection, a task); making the
+  caller's chain pay would need a measure the API does not have and would put the cost on whichever client happened to
+  trigger the call, which is the defect again. The unread chain (session, address, server) keeps its invariant untouched:
+  it holds only what the client sent and is still being read or handled. The trade-off, stated: a client that makes
+  calls hold the whole answer budget can make *other calls* fail with `ResponsesTooLarge` (a failure the application sees
+  and handles per call) instead of making *other clients* stop being read and be disconnected; each call is still bounded by
+  `max_broadcast_ack_bytes` and its deadline. Tests:
+  `the_answers_a_broadcast_holds_are_charged_to_the_call_and_never_to_the_answering_connection` (the unread gauges stay 0
+  while the call holds the answer, session closed meanwhile, call dropped),
+  `the_answers_of_all_calls_together_are_bounded_by_the_server_answer_budget_without_waiting`,
+  `a_call_that_finds_no_room_in_the_answer_budget_ends_with_responses_too_large`, and the cap test
+  `answers_dropped_by_the_cap_release_their_charge_too`.
+- **L1 (low): panic in `room_exists` at CONNECT** killed the connection task and left an Engine.IO session open as long as
+  the client answered pings. `IoSocket::new` runs the id draw under `warnings.guard` and returns `None` on a panic; the
+  attempt is refused with CONNECT_ERROR `Internal server error` and the namespace slot is freed. Test:
+  `a_panic_in_room_exists_during_connect_refuses_the_attempt_and_leaves_no_session_behind`.
+- **L2 (low): panic in `add_all` of the own room at CONNECT** left a socket in the namespace table, in no room, with its
+  auth charge. `join_own_room` runs under `warnings.guard`; when it fails, after the namespace table is released, the
+  socket is disconnected (`disconnect_with`) and the connection closed. Test:
+  `a_panic_in_add_all_of_the_own_room_during_connect_closes_the_connection_and_removes_the_socket`.
+- **Lead: the id race window during the connect middleware.** The id is drawn before the middleware and the socket goes
+  live after it (up to `middleware_timeout`), so a client that learned the id there could join that name before it was a
+  live id. Adding a socket to the room named like its own id now expels every other member of that room under the same write
+  lock (`Membership::expel_others`, documented on `Adapter::add_all` for other adapters). Test:
+  `the_own_room_of_a_connecting_socket_expels_whoever_joined_its_id_during_the_middleware`.
+- **Lead: `Debug` of the handshake** printed the values of the headers outside a three-name deny list (`x-api-key` and the
+  like). It is now an allow list of nine names without credentials (`host`, `user-agent`, `origin`, `accept`,
+  `accept-encoding`, `accept-language`, `connection`, `upgrade`, `sec-websocket-version`); every other header prints
+  `<hidden>`. Test: `debug_output_hides_credentials`.
+- **Lead: adapter contract.** The `Adapter` docs now say that `room_exists` defaults to `false` (a distributed adapter must
+  implement it, or the id rule is silently off) and that the synchronous methods cannot be bounded by `adapter_timeout`, so
+  they must not block. The review notes of the change of #36 (`e2-socket-io-redis-adapter`) were extended: implement
+  `room_exists`, target exactly one socket through its own field, redact the handshake (query and credential headers) before
+  serializing it.
+
+Recorded, not fixed: a server shutdown leaves calls holding their answers until their deadline (bounded by the deadline;
+Node alike); a hanging synchronous adapter method pins a runtime worker for the whole hang (documented above).
 
 ### Not done by this implementation
 

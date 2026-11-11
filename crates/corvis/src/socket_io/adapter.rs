@@ -183,8 +183,10 @@ pub struct HandshakeInfo {
     repr: HandshakeRepr,
 }
 
-/// The headers whose values `Debug` never prints.
-const SECRET_HEADERS: [&str; 3] = ["cookie", "authorization", "proxy-authorization"];
+/// The only headers whose values `Debug` prints: ones that carry no credential. Every other header, whatever its
+/// name (`x-api-key`, `x-auth-token`, a custom one), prints as `<hidden>`.
+const SHOWN_HEADERS: [&str; 9] =
+    ["host", "user-agent", "origin", "accept", "accept-encoding", "accept-language", "connection", "upgrade", "sec-websocket-version"];
 
 impl HandshakeInfo {
     /// A handshake described by plain data (what a remote adapter builds from what another process sent).
@@ -275,10 +277,10 @@ impl std::fmt::Debug for HandshakeInfo {
             .headers()
             .into_iter()
             .map(|(name, value)| {
-                if SECRET_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
-                    format!("{name}: <hidden>")
-                } else {
+                if SHOWN_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
                     format!("{name}: {value}")
+                } else {
+                    format!("{name}: <hidden>")
                 }
             })
             .collect();
@@ -436,8 +438,8 @@ impl AdapterFactory {
 
 struct AckState {
     responses: Vec<Args>,
-    /// What the answers occupy in the unread budget of the sockets that sent them, held until the call ends.
-    charges: Vec<Charge>,
+    /// What the held answers occupy in the server-wide answer budget, released when the call ends.
+    holds: Vec<AckHold>,
     bytes: usize,
     expected_clients: usize,
     reported: usize,
@@ -451,6 +453,52 @@ pub(crate) struct AckShared {
     state: Mutex<AckState>,
     notify: Notify,
     max_bytes: usize,
+    budget: Arc<AckBudget>,
+}
+
+/// The server-wide room for the answers that calls with acknowledgements hold until they end. It belongs to the
+/// calls, not to the clients that answered: a client's answer is charged to its connection only while it is read and
+/// handled, and is released at once when the collector takes it (`try_hold` never waits), so a call can never keep
+/// another client's unread budget, its address's or the server's, occupied. When there is no room the call ends with
+/// `ResponsesTooLarge`.
+pub(crate) struct AckBudget {
+    used: std::sync::atomic::AtomicUsize,
+    cap: usize,
+}
+
+impl AckBudget {
+    pub(crate) fn new(cap: usize) -> Arc<AckBudget> {
+        Arc::new(AckBudget { used: std::sync::atomic::AtomicUsize::new(0), cap })
+    }
+
+    /// Takes `bytes` when they fit under the cap (compare-and-swap, so concurrent calls cannot overshoot together).
+    fn try_hold(self: &Arc<Self>, bytes: usize) -> Option<AckHold> {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        let mut used = self.used.load(Acquire);
+        loop {
+            let total = used.checked_add(bytes).filter(|total| *total <= self.cap)?;
+            match self.used.compare_exchange_weak(used, total, AcqRel, Acquire) {
+                Ok(_) => return Some(AckHold { budget: self.clone(), bytes }),
+                Err(now) => used = now,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn used(&self) -> usize {
+        self.used.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+pub(crate) struct AckHold {
+    budget: Arc<AckBudget>,
+    bytes: usize,
+}
+
+impl Drop for AckHold {
+    fn drop(&mut self) {
+        self.budget.used.fetch_sub(self.bytes, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 /// How a broadcast with acknowledgements ended, from the collector's side.
@@ -461,11 +509,11 @@ pub(crate) enum AckProgress {
 }
 
 impl AckShared {
-    pub(crate) fn new(max_bytes: usize) -> Arc<AckShared> {
+    pub(crate) fn new(max_bytes: usize, budget: Arc<AckBudget>) -> Arc<AckShared> {
         Arc::new(AckShared {
             state: Mutex::new(AckState {
                 responses: Vec::new(),
-                charges: Vec::new(),
+                holds: Vec::new(),
                 bytes: 0,
                 expected_clients: 0,
                 reported: 0,
@@ -476,6 +524,7 @@ impl AckShared {
             }),
             notify: Notify::new(),
             max_bytes,
+            budget,
         })
     }
 
@@ -508,14 +557,13 @@ impl AckShared {
     /// Takes what was collected and ends the collection: later `expect` and `respond` calls do nothing, and the
     /// cleanups registered by the adapter run (outside the lock). Idempotent.
     pub(crate) fn finish(&self) -> Vec<Args> {
-        let (responses, charges, cleanups) = {
+        let (responses, holds, cleanups) = {
             let mut s = self.lock();
             s.finished = true;
             s.bytes = 0;
-            (std::mem::take(&mut s.responses), std::mem::take(&mut s.charges), std::mem::take(&mut s.cleanups))
+            (std::mem::take(&mut s.responses), std::mem::take(&mut s.holds), std::mem::take(&mut s.cleanups))
         };
-        // Released outside the lock: a release wakes the connections that wait for room.
-        drop(charges);
+        drop(holds);
         for cleanup in cleanups {
             cleanup();
         }
@@ -561,8 +609,9 @@ impl AckSink {
         self.collect(args, None);
     }
 
-    /// The answer of a local socket with the room it occupies in that connection's unread budget: held with the
-    /// answer until the call ends, dropped at once when the answer is not kept.
+    /// The answer of a local socket with the room it occupies in that connection's unread budget. The connection's
+    /// room is released as soon as the answer is collected (or refused): what the call keeps is charged to the
+    /// server-wide answer budget instead.
     pub(crate) fn respond_charged(&self, args: Args, charge: Charge) {
         self.collect(args, Some(charge));
     }
@@ -572,16 +621,22 @@ impl AckSink {
         {
             let mut s = self.shared.lock();
             if s.finished || s.too_large {
+                drop(s);
+                drop(charge);
                 return;
             }
-            if s.bytes.saturating_add(cost) > self.shared.max_bytes {
-                s.too_large = true;
-            } else {
-                s.bytes += cost;
-                s.responses.push(args);
-                s.charges.extend(charge);
+            let hold = if s.bytes.saturating_add(cost) > self.shared.max_bytes { None } else { self.shared.budget.try_hold(cost) };
+            match hold {
+                Some(hold) => {
+                    s.bytes += cost;
+                    s.responses.push(args);
+                    s.holds.push(hold);
+                }
+                None => s.too_large = true,
             }
         }
+        // Released outside the lock: a release wakes the connections that wait for room.
+        drop(charge);
         self.shared.notify.notify_one();
     }
 
@@ -614,7 +669,9 @@ pub trait Adapter: Send + Sync + 'static {
     /// Joins a socket connected to this process to rooms (Node's `addAll`). All or nothing: a name over the limit,
     /// more rooms than the socket may be in (a call naming more than that is refused without examining them), or a
     /// name that is the id of another live socket of the namespace joins none. A socket that is not connected is
-    /// ignored.
+    /// ignored. Adding the socket to the room named like its own id (what the namespace does when the socket
+    /// connects) expels every other member of that room, so a name joined before the socket was live does not
+    /// survive it.
     fn add_all(&self, id: &str, rooms: &[Room]) -> Result<(), RoomError>;
     /// Removes a socket from a room (Node's `del`). A socket cannot leave the room named like its own id: that is
     /// how a direct emit to it and `RemoteSocket` reach exactly it.
@@ -642,7 +699,9 @@ pub trait Adapter: Send + Sync + 'static {
 
     /// Whether a room with this name has members here. The namespace refuses to assign a new socket an id that is
     /// already a room, so a room created in advance cannot capture a future socket. An adapter that keeps rooms
-    /// should implement it; the default says no.
+    /// must implement it (the default says no, which silently disables the rule, so a distributed adapter has to
+    /// answer for the rooms of the whole cluster it can see). It is synchronous and so are `add_all`, `del` and
+    /// `del_all`: none of them can be bounded by `adapter_timeout`, so they must not block or wait for the network.
     fn room_exists(&self, _room: &str) -> bool {
         false
     }
@@ -721,6 +780,15 @@ impl Membership {
                     self.rooms.remove(&room);
                 }
             }
+        }
+    }
+
+    /// Removes every member of the room named `id` other than `id`.
+    pub(crate) fn expel_others(&mut self, id: &str) {
+        let others: Vec<SocketId> =
+            self.rooms.get(id).map(|members| members.iter().filter(|m| &***m != id).cloned().collect()).unwrap_or_default();
+        for other in others {
+            self.remove(&other, id);
         }
     }
 
@@ -952,6 +1020,11 @@ impl Adapter for InMemoryAdapter {
         // socket. Checked under the same lock, so the whole call stays all or nothing.
         if distinct.iter().any(|room| &**room != id && self.local.is_socket_id(room)) {
             return Err(RoomError::SocketIdRoom);
+        }
+        // The room named like the socket is its own: whoever else got into it before the socket was live (the id is
+        // known to the connect middleware) is expelled, under the same lock.
+        if distinct.iter().any(|room| &**room == id) {
+            m.expel_others(id);
         }
         m.add(id, &distinct, max_rooms)
     }

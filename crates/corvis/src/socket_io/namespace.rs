@@ -78,6 +78,8 @@ pub(crate) struct NamespaceInner {
     pub(crate) name: String,
     pub(crate) options: Arc<IoOptions>,
     pub(crate) adapter: Arc<dyn Adapter>,
+    /// The server-wide room for the answers held by calls with acknowledgements.
+    ack_budget: Arc<super::adapter::AckBudget>,
     /// `Adapter::init` ran (it runs before the first cluster operation).
     initialized: tokio::sync::OnceCell<()>,
     middleware: RwLock<Vec<Middleware>>,
@@ -94,12 +96,13 @@ impl std::fmt::Debug for IoNamespace {
 }
 
 impl IoNamespace {
-    pub(crate) fn new(name: String, options: Arc<IoOptions>) -> IoNamespace {
+    pub(crate) fn new(name: String, options: Arc<IoOptions>, ack_budget: Arc<super::adapter::AckBudget>) -> IoNamespace {
         let inner = Arc::new_cyclic(|weak| NamespaceInner {
             name,
             // The factory gets a handle that does not keep the namespace alive, so an adapter cannot make a cycle.
             adapter: options.adapter.build(LocalNamespace::new(weak.clone())),
             options,
+            ack_budget,
             initialized: tokio::sync::OnceCell::new(),
             middleware: RwLock::new(Vec::new()),
             connection: RwLock::new(Vec::new()),
@@ -207,6 +210,10 @@ impl IoNamespace {
 
     pub(crate) fn next_ack_id(&self) -> u64 {
         self.inner.next_ack_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub(crate) fn ack_budget(&self) -> &Arc<super::adapter::AckBudget> {
+        &self.inner.ack_budget
     }
 
     pub(crate) fn options(&self) -> &Arc<IoOptions> {

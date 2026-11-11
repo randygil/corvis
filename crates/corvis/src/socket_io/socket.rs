@@ -277,13 +277,20 @@ fn emit_error(e: EncodeError) -> EmitError {
 }
 
 impl IoSocket {
-    pub(crate) fn new(nsp: IoNamespace, client: Arc<ClientShared>, handshake: Handshake) -> IoSocket {
-        let mut id = super::engine::sid::generate();
-        // Never an id that is already a room: a room created in advance cannot capture a future socket.
-        while nsp.socket(&id).is_some() || nsp.adapter().room_exists(&id) {
-            id = super::engine::sid::generate();
-        }
-        IoSocket {
+    /// `None` when the adapter panicked while the id was checked: the connection attempt is refused.
+    pub(crate) fn new(nsp: IoNamespace, client: Arc<ClientShared>, handshake: Handshake) -> Option<IoSocket> {
+        let mut drawn = None;
+        // Never an id that is already a room: a room created in advance cannot capture a future socket. The adapter
+        // is application code: a panic in it is contained and refuses the attempt.
+        client.warnings.guard("an adapter's room_exists", nsp.name(), || {
+            let mut id = super::engine::sid::generate();
+            while nsp.socket(&id).is_some() || nsp.adapter().room_exists(&id) {
+                id = super::engine::sid::generate();
+            }
+            drawn = Some(id);
+        });
+        let id = drawn?;
+        Some(IoSocket {
             inner: Arc::new(SocketInner {
                 id,
                 nsp,
@@ -298,7 +305,7 @@ impl IoSocket {
                 ready: AtomicBool::new(false),
                 ready_notify: Notify::new(),
             }),
-        }
+        })
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, SocketState> {
@@ -452,9 +459,12 @@ impl IoSocket {
     // ------------------------------------------------------------------------------------------------- rooms
 
     /// The room named after the socket's id, joined when the socket connects.
-    pub(crate) fn join_own_room(&self) {
+    /// `false` when the adapter panicked (contained and logged): the socket is then in no room and must not be kept.
+    pub(crate) fn join_own_room(&self) -> bool {
         let own: Room = Arc::from(self.inner.id.as_str());
-        let _ = self.inner.nsp.adapter().add_all(&self.inner.id, &[own]);
+        self.inner.client.warnings.guard("an adapter's add_all", self.inner.nsp.name(), || {
+            let _ = self.inner.nsp.adapter().add_all(&self.inner.id, &[own]);
+        })
     }
 
     /// `socket.join(room)`: joins one room or several (a `&str`, a `String`, a `Vec` or an array of names). Every
@@ -603,9 +613,9 @@ impl IoSocket {
     /// A client acknowledgement for an id this socket sent; an id that is not pending (never issued, already
     /// answered, expired, issued to another socket) is ignored.
     ///
-    /// `charge` is what the answer occupies in the unread budget of this connection. The collector of a broadcast
-    /// keeps it until the call ends, so the answers it holds count against this socket's session, its address and the
-    /// server; any other answer drops it here, as before.
+    /// `charge` is what the answer occupies in the unread budget of this connection. It is released as soon as the
+    /// collector of a broadcast has taken the answer (what the call keeps is charged to the server-wide answer budget
+    /// instead), and dropped here for any other answer.
     pub(crate) fn resolve_ack(&self, id: u64, args: Vec<IoValue>, charge: Charge) {
         let entry = self.state().acks.remove(&id);
         match entry {

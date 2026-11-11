@@ -284,15 +284,41 @@ call adds, not what the chain already holds.
 - **WHEN** 5,000 `to` calls are chained
 - **THEN** they allocate less than 1 KiB each in all, measured with a counting allocator
 
-### Requirement: Collected answers count against their connection
-Each answer collected by a broadcast with acknowledgements MUST stay charged to the unread budget of the connection
-that sent it (its session, its address and the server) until the call ends, however it ends, and the connection's reads
-pause at its quota like for any held packet. A charge MUST outlive the answering session when the call does.
+### Requirement: Collected answers count against the calls, not against the clients
+The answers held by calls with acknowledgements MUST be charged to a server-wide budget of their own, without waiting, and
+MUST NOT stay charged to the unread budget of the connection that sent them beyond the receipt of the answer.
 
 #### Scenario: Answers held by pending calls
 - **WHEN** a handler starts 32 calls to a room whose members answer 300 kB each and one never answers
-- **THEN** the heap held by the pending calls stays within the answering address's quota plus a bounded slack, and the
-  server gives it back when the calls end
+- **THEN** the heap held by the pending calls stays within the answer budget plus a bounded slack, the unread gauges of
+  the answering connections, their addresses and the server hold none of it, and the server gives it back when the calls
+  end
+
+#### Scenario: Releasing
+- **WHEN** a call ends, however it ends
+- **THEN** every answer it held is released from the answer budget
+
+#### Scenario: No room for another answer
+- **WHEN** other calls hold the whole answer budget and a call receives one more answer
+- **THEN** the call ends with `ResponsesTooLarge` at once and no connection's reads are paused
+
+### Requirement: A panicking adapter does not leave a connecting socket behind
+A panic of the adapter while a socket connects (the id check, the join of its own room) MUST be contained: a panic in the
+id check MUST refuse the CONNECT with `Internal server error` and free the namespace slot, and a panic joining the own room
+MUST disconnect the socket and close the connection. Adding a socket to the room named like its own id MUST expel any other
+member of that room.
+
+#### Scenario: Panic in the id check
+- **WHEN** `room_exists` panics while a client connects
+- **THEN** the client receives CONNECT_ERROR, the namespace holds no socket and the connection holds no session of it
+
+#### Scenario: Panic joining the own room
+- **WHEN** `add_all` panics while the socket joins the room of its own id
+- **THEN** the socket is removed, its charges released and its connection closed
+
+#### Scenario: A name joined before the socket was live
+- **WHEN** a client joins the name that a connecting socket was given, during the connect middleware
+- **THEN** the socket's own room expels that client when the socket goes live
 
 #### Scenario: Answering session closes
 - **WHEN** a session closes while its answer is held, and the call then ends

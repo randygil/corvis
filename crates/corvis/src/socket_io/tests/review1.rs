@@ -20,6 +20,8 @@ use crate::socket_io::adapter::{
 #[derive(Default)]
 struct Knobs {
     panic_del_all: AtomicBool,
+    panic_room_exists: AtomicBool,
+    panic_add_all: AtomicBool,
     hang_init: AtomicBool,
     hang_broadcast: AtomicBool,
     /// How many of the next `room_exists` calls say yes.
@@ -50,6 +52,9 @@ impl Adapter for Probe {
         self.inner.server_count().await
     }
     fn add_all(&self, id: &str, rooms: &[Room]) -> Result<(), RoomError> {
+        if self.knobs.panic_add_all.load(Ordering::SeqCst) {
+            panic!("the adapter failed in add_all");
+        }
         self.inner.add_all(id, rooms)
     }
     fn del(&self, id: &str, room: &str) {
@@ -65,6 +70,9 @@ impl Adapter for Probe {
         self.inner.socket_rooms(id)
     }
     fn room_exists(&self, room: &str) -> bool {
+        if self.knobs.panic_room_exists.load(Ordering::SeqCst) {
+            panic!("the adapter failed in room_exists");
+        }
         self.knobs.room_exists_calls.fetch_add(1, Ordering::SeqCst);
         let left = self.knobs.rooms_exist.load(Ordering::SeqCst);
         if left > 0 {
@@ -209,7 +217,7 @@ fn answer(id: u64, text: &str) -> String {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_answers_a_broadcast_holds_count_on_the_answering_connection_until_the_call_ends() {
+async fn the_answers_a_broadcast_holds_are_charged_to_the_call_and_never_to_the_answering_connection() {
     let io = server(options());
     let mut conns = Vec::new();
     for _ in 0..3 {
@@ -221,36 +229,40 @@ async fn the_answers_a_broadcast_holds_count_on_the_answering_connection_until_t
     };
     let big = "x".repeat(100_000);
     let engine = io.engine().clone();
+    let held = || io.main().ack_budget().used();
     assert_eq!(engine.total_unread_bytes(), 0);
+    assert_eq!(held(), 0);
 
-    // 1. One answers, one is silent: the answer is held, on the server and on the address, until the deadline.
+    // 1. One answers, one is silent: the answer is held by the call, and the connection's budget, its address's and
+    // the server's are free again the moment the call has it.
     let task = call(&io, 5);
     settle().await;
     conns[0].sent().await;
     conns[0].text(&answer(0, &big));
     settle().await;
-    assert!(engine.total_unread_bytes() >= 100_000, "held: {}", engine.total_unread_bytes());
-    assert!(engine.address_unread_bytes("127.0.0.1") >= 100_000);
+    assert!(held() >= 100_000, "held by the call: {}", held());
+    assert_eq!(engine.total_unread_bytes(), 0, "not on the server-wide unread gauge");
+    assert_eq!(engine.address_unread_bytes("127.0.0.1"), 0, "not on the address");
+    assert_eq!(conns[0].socket.unread_bytes(), 0, "not on the session");
     advance(5_000).await;
     let error = task.await.unwrap().unwrap_err();
     assert_eq!(*error.kind(), BroadcastAckErrorKind::Timeout);
     assert_eq!(error.responses().len(), 1);
     drop(error);
-    assert_eq!(engine.total_unread_bytes(), 0);
-    assert_eq!(engine.address_unread_bytes("127.0.0.1"), 0);
+    assert_eq!(held(), 0, "released when the call ended");
 
-    // 2. The answering connection closes while its answer is held: the charge stays on the address and the server
-    // until the call ends, then goes.
+    // 2. The answering connection closes while its answer is held: nothing of it remains on the connection side,
+    // and the call keeps the answer until it ends.
     let task = call(&io, 120);
     settle().await;
     conns[0].text(&answer(1, &big));
     settle().await;
-    assert!(engine.total_unread_bytes() >= 100_000);
+    assert!(held() >= 100_000);
     conns[0].socket.close();
     advance(31_000).await; // the close timeout of the session: no transport drains it here
     assert_eq!(io.main().socket_count(), 2, "the answering socket is gone");
-    assert!(engine.total_unread_bytes() >= 100_000, "still held after the session closed: {}", engine.total_unread_bytes());
-    assert!(engine.address_unread_bytes("127.0.0.1") >= 100_000);
+    assert!(held() >= 100_000, "the call still holds the answer");
+    assert_eq!(engine.total_unread_bytes(), 0);
     conns[1].text(&answer(1, "b"));
     conns[2].text(&answer(1, "c"));
     settle().await;
@@ -258,8 +270,8 @@ async fn the_answers_a_broadcast_holds_count_on_the_answering_connection_until_t
     assert_eq!(answers.len(), 3);
     drop(answers);
     settle().await;
+    assert_eq!(held(), 0);
     assert_eq!(engine.total_unread_bytes(), 0);
-    assert_eq!(engine.address_unread_bytes("127.0.0.1"), 0);
 
     // 3. A call dropped before its end releases what it holds.
     let (_d, _) = connect(&io, "/").await;
@@ -267,11 +279,59 @@ async fn the_answers_a_broadcast_holds_count_on_the_answering_connection_until_t
     settle().await;
     conns[1].text(&answer(2, &big));
     settle().await;
-    assert!(engine.total_unread_bytes() >= 100_000);
+    assert!(held() >= 100_000);
     task.abort();
     let _ = task.await;
     settle().await;
+    assert_eq!(held(), 0);
     assert_eq!(engine.total_unread_bytes(), 0);
+}
+
+#[test]
+fn the_answers_of_all_calls_together_are_bounded_by_the_server_answer_budget_without_waiting() {
+    use crate::socket_io::adapter::{AckBudget, AckShared};
+    let budget = AckBudget::new(1_000);
+    let one = AckShared::new(10_000, budget.clone());
+    let two = AckShared::new(10_000, budget.clone());
+    let (a, b) = (AckSink::new(one.clone()), AckSink::new(two.clone()));
+    let answer = |n: usize| Args::new(vec![IoValue::String("x".repeat(n))]);
+    a.respond(answer(300));
+    assert!(budget.used() >= 300 && budget.used() <= 1_000);
+    // The second call finds no room: nothing waits, it keeps what it had (nothing).
+    b.respond(answer(900));
+    assert_eq!(two.finish().len(), 0);
+    // A call that finished frees its room for the others.
+    assert_eq!(one.finish().len(), 1);
+    assert_eq!(budget.used(), 0);
+    let three = AckShared::new(10_000, budget.clone());
+    AckSink::new(three.clone()).respond(answer(600));
+    assert_eq!(three.finish().len(), 1);
+    assert_eq!(budget.used(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_call_that_finds_no_room_in_the_answer_budget_ends_with_responses_too_large() {
+    let io = server(options());
+    let (a, _) = connect(&io, "/").await;
+    let (_b, _) = connect(&io, "/").await;
+    // Another call holds nearly the whole budget.
+    let budget = io.main().ack_budget().clone();
+    let cap = options().ack_budget();
+    let full = crate::socket_io::adapter::AckShared::new(cap, budget.clone());
+    AckSink::new(full.clone()).respond(Args::new(vec![IoValue::String("x".repeat(cap - 1_000))]));
+    let task = tokio::spawn({
+        let io = io.clone();
+        async move { io.timeout(Duration::from_secs(5)).emit_with_ack("q", ()).await }
+    });
+    settle().await;
+    a.text(&answer(0, &"y".repeat(10_000)));
+    settle().await;
+    let error = task.await.unwrap().unwrap_err();
+    assert_eq!(*error.kind(), BroadcastAckErrorKind::ResponsesTooLarge);
+    assert_eq!(io.engine().total_unread_bytes(), 0, "the answerer's unread budget is not what ran out");
+    drop(error);
+    full.finish();
+    assert_eq!(budget.used(), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -374,6 +434,10 @@ async fn debug_output_hides_credentials() {
             ("cookie".into(), "session=SECRET-COOKIE".into()),
             ("Authorization".into(), "Bearer SECRET-BEARER".into()),
             ("proxy-authorization".into(), "Basic SECRET-PROXY".into()),
+            ("x-api-key".into(), "SECRET-APIKEY".into()),
+            ("X-Auth-Token".into(), "SECRET-TOKEN".into()),
+            ("x-custom-credential".into(), "SECRET-CUSTOM".into()),
+            ("proxy-authorization ".into(), "SECRET-SPACE".into()),
             ("user-agent".into(), "tests".into()),
         ],
         "/socket.io/?EIO=4&token=SECRET-QUERY".into(),
@@ -381,7 +445,17 @@ async fn debug_output_hides_credentials() {
         1,
     );
     let text = format!("{remote:?}");
-    for secret in ["SECRET-AUTH-VALUE", "SECRET-COOKIE", "SECRET-BEARER", "SECRET-PROXY", "SECRET-QUERY"] {
+    for secret in [
+        "SECRET-AUTH-VALUE",
+        "SECRET-COOKIE",
+        "SECRET-BEARER",
+        "SECRET-PROXY",
+        "SECRET-QUERY",
+        "SECRET-APIKEY",
+        "SECRET-TOKEN",
+        "SECRET-CUSTOM",
+        "SECRET-SPACE",
+    ] {
         assert!(!text.contains(secret), "{secret} in {text}");
     }
     for shown in ["cookie", "Authorization", "user-agent: tests", "/socket.io/", "10.0.0.1"] {
@@ -555,4 +629,61 @@ async fn two_broadcasts_of_one_caller_reach_every_recipient_in_order_whatever_ru
             .collect();
         assert_eq!(seen, (0..ROUNDS).collect::<Vec<_>>(), "recipient {i}");
     }
+}
+
+// ------------------------------------------------------------------------------------------------------ round 2
+
+#[tokio::test(start_paused = true)]
+async fn a_panic_in_room_exists_during_connect_refuses_the_attempt_and_leaves_no_session_behind() {
+    let (io, knobs, _) = probe_server(options());
+    knobs.panic_room_exists.store(true, Ordering::SeqCst);
+    let conn = io.conn();
+    conn.text("0");
+    assert_eq!(conn.sent().await, [t(r#"4{"message":"Internal server error"}"#)]);
+    assert_eq!(io.main().socket_count(), 0);
+    assert_eq!(io.engine().total_unread_bytes(), 0, "the handshake charge went with the attempt");
+    // The slot is free: the client may try again, and once the adapter works the attempt succeeds.
+    knobs.panic_room_exists.store(false, Ordering::SeqCst);
+    let id = conn.join("0").await;
+    assert!(io.main().socket(&id).is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_panic_in_add_all_of_the_own_room_during_connect_closes_the_connection_and_removes_the_socket() {
+    let (io, knobs, adapter) = probe_server(options());
+    knobs.panic_add_all.store(true, Ordering::SeqCst);
+    let conn = io.conn();
+    conn.text(r#"0{"token":"a token that is charged"}"#);
+    settle().await;
+    advance(31_000).await; // the close timeout of the session: no transport drains it here
+    assert!(conn.socket.close_reason().is_some(), "the connection is closed, not left to linger");
+    assert_eq!(io.main().socket_count(), 0, "no socket stays in the namespace");
+    assert!(!adapter.has_socket("anyone"));
+    assert_eq!(io.engine().total_unread_bytes(), 0, "its charges were released");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_own_room_of_a_connecting_socket_expels_whoever_joined_its_id_during_the_middleware() {
+    let io = server(options());
+    let (x, ix) = connect(&io, "/").await;
+    let attacker = io.main().socket(&ix).unwrap();
+    // The middleware of the next connection leaks the id the socket was just given (a log line, a "connecting"
+    // message): the attacker joins that name while it is not yet the id of a live socket.
+    let joined = log();
+    {
+        let (attacker, joined) = (attacker.clone(), joined.clone());
+        io.use_middleware(move |socket| {
+            let (attacker, joined) = (attacker.clone(), joined.clone());
+            async move {
+                joined.lock().unwrap().push(format!("{:?}", attacker.join(socket.id())));
+                Ok(())
+            }
+        });
+    }
+    let (v, iv) = connect(&io, "/").await;
+    assert_eq!(entries(&joined), ["Ok(())"], "the join of a name that is not yet an id goes through");
+    assert!(!attacker.rooms().contains(&iv), "but the socket's own room expelled the attacker: {:?}", attacker.rooms());
+    io.main().adapter().check_invariants().unwrap();
+    io.to(iv.as_str()).emit("private", ()).await.unwrap();
+    assert_eq!(received(&[&x, &v], "private").await, [false, true]);
 }

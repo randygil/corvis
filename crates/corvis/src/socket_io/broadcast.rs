@@ -341,17 +341,18 @@ impl BroadcastOperator {
     /// the order they arrive. It ends when every recipient answered, or at the deadline ([`timeout`](Self::timeout),
     /// else `ack_timeout`), failing with `operation has timed out` and the answers so far. A recipient that
     /// disconnects, or that waits for `max_pending_acks` answers already, does not answer. The answers held are
-    /// bounded by `max_broadcast_ack_bytes`; the call fails with `ResponsesTooLarge` once they would pass it. While
-    /// the call runs, each answer also counts against the unread budget of the connection that sent it (its session,
-    /// its address and the server), so a client cannot make the server hold more than its share by answering many
-    /// calls. Node, without `timeout()`, fails at once.
+    /// bounded by `max_broadcast_ack_bytes`; the call fails with `ResponsesTooLarge` once they would pass it. The
+    /// answers of all pending calls together are bounded by a server-wide answer budget (a quarter of the engine's
+    /// `max_total_unread_bytes`, at least `max_broadcast_ack_bytes`) that belongs to the calls: the connection that
+    /// answered is not charged beyond the receipt of its answer, and a call that finds no room does not wait, it ends
+    /// with `ResponsesTooLarge`. Node, without `timeout()`, fails at once.
     pub async fn emit_with_ack(&self, event: &str, args: impl IntoArgs) -> Result<Vec<Args>, BroadcastAckError> {
         let packet = self.packet(event, args)?;
         let Some(mut opts) = self.selection()? else { return Ok(Vec::new()) };
         let options = self.nsp.options().clone();
         let timeout = self.flags.timeout.unwrap_or(options.ack_timeout).min(MAX_DURATION);
         opts.flags.timeout = Some(timeout);
-        let shared = AckShared::new(options.max_broadcast_ack_bytes);
+        let shared = AckShared::new(options.max_broadcast_ack_bytes, self.nsp.ack_budget().clone());
         let collection = Collection(shared.clone());
         let work = async {
             let adapter = self.nsp.ready_adapter().await?;

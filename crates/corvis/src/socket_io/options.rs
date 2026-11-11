@@ -337,6 +337,12 @@ impl IoOptions {
         self.max_decoded_bytes.saturating_add(message.saturating_mul(self.max_attachments.max(1))).min(self.engine.max_total_unread_bytes)
     }
 
+    /// The most the answers held by calls with acknowledgements may total, server-wide: a quarter of the engine's
+    /// `max_total_unread_bytes`, never less than one call may hold (`max_broadcast_ack_bytes`).
+    pub(crate) fn ack_budget(&self) -> usize {
+        (self.engine.max_total_unread_bytes / 4).max(self.max_broadcast_ack_bytes)
+    }
+
     /// The share of the server-wide unread budget one address may hold: `max_address_share`, or 1/16 of
     /// `max_total_unread_bytes` raised to [`address_share_floor`](Self::address_share_floor).
     pub fn address_share(&self) -> usize {

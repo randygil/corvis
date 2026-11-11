@@ -145,6 +145,16 @@ clock; no retries.
 - [x] 8.9 Docs (English and Spanish): the numbers of #175 / #176 and B2 in the limits page, the corrected sentence on frames, the
   new rules and options; spec delta and design.md "Security review (round 1)"; `openspec validate e2-socket-io-rooms-and-broadcast --strict`
 
+## 9. Security review, round 2 fixes
+
+- [x] 9.1 M1: held answers charged to a server-wide answer budget (`AckBudget`) that never waits; the answerer's charge is
+  released when the collector takes the answer; tests, spec delta, docs (English and Spanish), design.md "Security review
+  (round 2)"
+- [x] 9.2 L1 / L2: panics of `room_exists` and of the own-room `add_all` during CONNECT are contained (refuse the attempt;
+  disconnect and close); tests
+- [x] 9.3 Leads: the own room expels other members of its name; allow list for the handshake `Debug`; `Adapter` docs;
+  review notes of `e2-socket-io-redis-adapter`
+
 ## Workflow follow-up
 
 - Archive the change with `/opsx:archive` (its `ws/socket-io-rooms` delta is applied).

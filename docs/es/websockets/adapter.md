@@ -500,11 +500,14 @@ espera `max_pending_acks` respuestas recibe el evento pero no se le espera. En e
 ningún destinatario conserva una confirmación pendiente de ella. La respuesta de cada destinatario cuenta una vez y solo
 responden los destinatarios del broadcast. Node conserva solo el primer valor de cada respuesta; Corvis devuelve todos
 (`Args`). Mientras espera, un broadcast con confirmaciones retiene como mucho `max_broadcast_ack_bytes` (16 MiB) de
-respuestas más una entrada pendiente (una referencia y un id) por destinatario. Además, cada respuesta sigue cargada al
-presupuesto de lectura de la conexión que la envió (su sesión, su dirección y el servidor) hasta que la llamada termina, sea
-como sea, así que un manejador que inicia muchas llamadas no puede lograr que una dirección retenga más que su cuota: las
-lecturas de esa conexión se pausan en su cuota como con cualquier otro paquete retenido, y la carga sobrevive a la sesión de
-la conexión cuando la llamada sigue.
+respuestas más una entrada pendiente (una referencia y un id) por destinatario. Las respuestas de todas las llamadas
+pendientes juntas también tienen un límite: un presupuesto de respuestas de todo el servidor, un cuarto de
+`max_total_unread_bytes` del motor (nunca menos que `max_broadcast_ack_bytes`), que pertenece a las llamadas y no a los
+clientes que respondieron: el presupuesto de lectura de una conexión (su sesión, su dirección y el servidor) se carga solo
+mientras su respuesta se lee y se procesa, y se libera cuando la llamada toma la respuesta, así que un manejador que inicia
+muchas llamadas no puede hacer que el presupuesto de otros clientes pague lo que retienen las llamadas. Una llamada que no
+encuentra espacio en el presupuesto de respuestas no espera: termina con `ResponsesTooLarge` y las respuestas reunidas hasta
+entonces.
 
 #### Operaciones en bloque
 
@@ -517,8 +520,15 @@ no el socket conectado a este proceso: para un socket de este proceso actúan di
 tiene otro proceso pasan por el adaptador dirigidas al id de ese socket y a nada más; `local()` da el `IoSocket` cuando es
 local. El resultado es una instantánea y su coste es proporcional a la selección, no al servidor: el handshake de un socket
 local se comparte, no se copia, así que un resultado reserva unos cientos de bytes por socket sea cual sea el tamaño del
-handshake. `Debug` de `RemoteSocket`, `SocketInfo` y `HandshakeInfo` nunca imprime cookies, cabeceras de autorización, valores
-de `auth` ni una cadena de consulta.
+handshake. `Debug` de `RemoteSocket`, `SocketInfo` y `HandshakeInfo` nunca imprime valores de `auth` ni una cadena de consulta, y
+solo imprime el valor de las cabeceras `host`, `user-agent`, `origin`, `accept`, `accept-encoding`, `accept-language`,
+`connection`, `upgrade` y `sec-websocket-version`: cualquier otra (cookies, autorización, `x-api-key` o una propia) muestra su
+nombre y `<hidden>`.
+
+Un adaptador debe tener presentes dos cosas: `room_exists` devuelve `false` por defecto y un adaptador distribuido tiene que
+implementarlo, o la regla de que ningún socket recibe un id que ya es una sala deja de funcionar sin avisar; y los métodos
+síncronos (`add_all`, `del`, `del_all`, `room_exists`) no se pueden acotar con `adapter_timeout`, así que no deben bloquearse
+ni esperar a la red.
 
 #### Límites de las salas
 
@@ -531,7 +541,7 @@ de `auth` ni una cadena de consulta.
 | Nombres en un `join` / `sockets_join` | como mucho `max_rooms_per_socket`, rechazado antes de tomar ningún bloqueo | sin tope | `RoomError::TooManyRooms` |
 | Salas nombradas en una cadena `to` / `within` / `except` | `max_rooms_per_socket` en total | sin tope | `EmitError::InvalidRoom(RoomError::TooManyTargets)`; no se envía nada |
 | `adapter_timeout` (una llamada al adaptador hecha por un operador, y `init`) | 5 s | ninguno | `AdapterError::Timeout` |
-| Respuestas retenidas por un broadcast con confirmaciones | cargadas al presupuesto de lectura de la conexión que envió cada una, hasta que la llamada termina | ninguno | las lecturas de esa conexión se pausan en su cuota |
+| Respuestas retenidas por todos los broadcasts con confirmaciones pendientes juntos | un cuarto de `max_total_unread_bytes` (al menos `max_broadcast_ack_bytes`), un presupuesto propio que ninguna conexión paga | ninguno | la llamada que no encuentra espacio termina de inmediato con `ResponsesTooLarge` |
 | Codificaciones por broadcast | una, compartida por todos los destinatarios | una | n/a |
 | Búfer de envío por destinatario | `max_buffered_amount`, 8 MiB | ninguno | esa sesión se cierra con `transport error`; el emisor y los demás no se ven afectados |
 | El emisor esperando a los destinatarios | nunca | nunca | n/a |

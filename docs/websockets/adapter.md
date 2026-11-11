@@ -487,10 +487,12 @@ recipient that disconnects never answers, and the call ends at the deadline with
 keeps a pending acknowledgement for it. Each recipient's answer counts once and only
 recipients of the broadcast answer. Node keeps only the first value of each answer; Corvis returns all of them
 (`Args`). While it waits, a broadcast with acknowledgements holds at most `max_broadcast_ack_bytes` (16 MiB) of answers
-plus a pending entry (a reference and an id) per recipient. Each answer also stays charged to the unread budget of the
-connection that sent it (its session, its address and the server) until the call ends, however it ends, so a handler that
-starts many calls cannot make an address hold more than its quota: that connection's reads pause at its quota like for any
-other held packet, and the charge outlives the connection's session when the call does.
+plus a pending entry (a reference and an id) per recipient. The answers of all pending calls together are bounded too, by a
+server-wide answer budget of a quarter of the engine's `max_total_unread_bytes` (never less than `max_broadcast_ack_bytes`),
+which belongs to the calls and not to the clients that answered: a connection's unread budget (its session, its address and
+the server) is charged only while its answer is read and handled and is released when the call takes the answer, so a
+handler that starts many calls cannot make the budget of other clients pay for what the calls hold. A call that finds no
+room in the answer budget does not wait: it ends with `ResponsesTooLarge` and the answers collected so far.
 
 #### Bulk operations
 
@@ -503,7 +505,14 @@ connected to this process: for a socket of this process they act on that socket 
 they go through the adapter addressed to that socket's id and to nothing else; `local()` gives the `IoSocket` when it is local.
 The result is a snapshot, and its cost is proportional to the selection, not to the server: the handshake of a local socket
 is shared, not copied, so a result allocates a few hundred bytes a socket whatever the handshake holds. `Debug` of
-`RemoteSocket`, `SocketInfo` and `HandshakeInfo` never prints cookies, authorization headers, `auth` values or a query string.
+`RemoteSocket`, `SocketInfo` and `HandshakeInfo` never prints `auth` values or a query string, and prints header values only for `host`, `user-agent`, `origin`, `accept`,
+`accept-encoding`, `accept-language`, `connection`, `upgrade` and `sec-websocket-version`: every other header (cookies,
+authorization, `x-api-key` and any custom one) shows its name and `<hidden>`.
+
+An adapter must keep two things in mind: `room_exists` defaults to `false` and a distributed adapter has to implement it,
+or the rule that no socket gets an id that is already a room silently stops working; and the synchronous methods
+(`add_all`, `del`, `del_all`, `room_exists`) cannot be bounded by `adapter_timeout`, so they must not block or wait for the
+network.
 
 #### Rooms bounds
 
@@ -516,7 +525,7 @@ is shared, not copied, so a result allocates a few hundred bytes a socket whatev
 | Names in one `join` / `sockets_join` | at most `max_rooms_per_socket`, refused before any lock is taken | not capped | `RoomError::TooManyRooms` |
 | Rooms named in one `to` / `within` / `except` chain | `max_rooms_per_socket` in all | not capped | `EmitError::InvalidRoom(RoomError::TooManyTargets)`; nothing is sent |
 | `adapter_timeout` (a call of the adapter made by an operator, and `init`) | 5 s | none | `AdapterError::Timeout` |
-| Answers held by a broadcast with acknowledgements | charged to the unread budget of the connection that sent each, until the call ends | none | that connection's reads pause at its quota |
+| Answers held by all pending broadcasts with acknowledgements together | a quarter of `max_total_unread_bytes` (at least `max_broadcast_ack_bytes`), a budget of its own that no connection pays for | none | the call that finds no room ends with `ResponsesTooLarge` at once |
 | Encodings per broadcast | one, shared by every recipient | one | n/a |
 | Send buffer per recipient | `max_buffered_amount`, 8 MiB | none | that session is closed with `transport error`; the emitter and the others are not affected |
 | Emitter waiting on recipients | never | never | n/a |
