@@ -364,7 +364,22 @@ let users = db.wallet().find_many(vec![wallet::amount::gte(decimal!("100"))]).aw
 
 A `DecimalCtor` (`Decimal.clone({...})`) reads text with `D.parse("1234.5678")?` instead of `D.of("1234.5678")`. Parsing and `decimal!` accept what decimal.js accepts, checked input by input against it: `0x`, `0b` and `0o` numbers with a fraction and a binary exponent (`0x1.8p3`), and one `_` between two digits (`1_000`).
 
+`"NaN"`, `"Infinity"` and `"-Infinity"` are not `Decimal` input in a query: a filter or a write that gives them to a `Decimal` field fails with a validation error on both databases, as with the original. On SQLite they used to be compared as text.
+
 `corvis_orm::or_undefined(value)` writes a non-finite float as `null`, like the original sends `NaN`, but a value that fails to serialize makes the query fail with a validation error instead of becoming `null`.
+
+### Json nulls
+
+A `Json` field has two nulls: the database `NULL` and the JSON value `null`. Write them with `corvis_orm::db_null()` (the database `NULL`), `corvis_orm::json_null()` (the JSON `null`) and, in filters, `corvis_orm::any_null()` (either):
+
+```rust
+db.query_json(User::meta(), "update", json!({ "where": { "id": 1 }, "data": { "data": corvis_orm::db_null() } })).await?;
+let empty = db.query_json(User::meta(), "findMany", json!({ "where": { "data": { "equals": corvis_orm::any_null() } } })).await?;
+```
+
+::: warning Changed: `{ "$type": "DbNull" }` is JSON data
+The plain object `{ "$type": "DbNull" }` (and `"JsonNull"`, `"AnyNull"`) used to mean these nulls. A request body can carry that object, so a client could turn its JSON value into a database `NULL` or into an `IS NULL` filter. It is now JSON data like any other object, as in the original client, where only `DbNull`, `JsonNull` and `AnyNull` themselves are the nulls. Replace `json!({ "$type": "DbNull" })` with `corvis_orm::db_null()`, and the same for the other two.
+:::
 
 ### Typed helpers and non-finite floats
 
@@ -425,6 +440,7 @@ From code: `db.migrate_deploy(dir).await` and `db.migrate_status(dir).await`. Th
 - Out-of-range numbers are errors, never truncated values: a `BigInt` beyond 64 bits, a `Bytes` byte outside `0..=255`, a `Decimal` that does not fit a Postgres `NUMERIC`, or a negative `limit` in `update_many`/`delete_many` (`P2019`).
 - `update`, `delete` and the `*_many` operations repeat their `where` in the `UPDATE`/`DELETE`, so optimistic concurrency (`where: { id, version }`) has a single winner.
 - `log_queries` writes the parameter values to the logs.
+- `corvis_orm::undefined()` and the Json nulls are values no request can produce: each carries a random marker drawn when the process starts. A string or an object that arrives in a request body is always data, never "leave this condition out" or "compare with `NULL`".
 - The SQLite that `sqlx` 0.8 bundles is older than 3.54.0 and has a known flaw (RUSTSEC-2026-0459): opening a database file together with a crafted `-wal` file can return stale bytes from the process's memory in query results. Only open SQLite files your application created; never a database or `-wal` file that a less trusted party could have written. The upgrade is tracked in [#155](https://github.com/randygil/corvis/issues/155).
 
 ## PostgreSQL and SQLite differences
@@ -441,12 +457,14 @@ last column says otherwise.
 | `search` | Full-text search (`to_tsquery`; the original needs the `fullTextSearchPostgres` preview feature) | Not in the original. Corvis extension: every term must appear in the text (`INSTR`), case-insensitive |
 | `createMany` with `skipDuplicates` | `ON CONFLICT DO NOTHING` | Not in the original. Corvis extension: `INSERT OR IGNORE` |
 | `Decimal` | Exact, with the precision and scale of the column | A number with 15 significant digits (numeric affinity), like the original's SQLite migration; `_avg` keeps 16 significant digits. Comparisons, ordering and aggregates read the column with `CAST(.. AS NUMERIC)`, so they are numeric on `TEXT` columns of earlier pushes too; the cast keeps a plain index on the column from serving a range |
-| Writing a `Decimal` beyond the column's precision | Fails (`numeric field overflow`) | The original stores it (`1e100`). Corvis refuses a value beyond `Decimal(65, 30)` (or the field's `@db.Decimal(p, s)`), the bound of its security review |
+| Writing a `Decimal` beyond the column's precision | Fails (`numeric field overflow`) | The original stores it (`1e100`). Corvis refuses a value beyond `Decimal(65, 30)` (or the field's `@db.Decimal(p, s)`), the bound of its security review, and an arithmetic update (`increment`, `multiply`, ...) whose result leaves it: the statement fails with the error Postgres gives and SQLite undoes it, every row of it |
+| Writing an `Int` beyond 32 bits | Fails (conversion error) | The original stores it, and then every read of the row fails with `P2023`, so one value breaks every list of the table. Corvis refuses it with the error Postgres gives, before any SQL runs (security over parity) |
 | Filtering on an `Int` beyond 32 bits, or a `Decimal` beyond `NUMERIC` | Fails (conversion error) | Runs, comparing numbers |
 | Scalar lists (`String[]`) | Arrays | JSON text (a Corvis extension; the original does not support lists on SQLite) |
 | `NaN` and infinite floats | Sent as `null` by the original (`ratio: NaN` is `ratio IS NULL`) | The same. Corvis sends `null` too in JSON arguments; its typed helpers refuse such values instead (see above) |
 | `divide: 0` | Fails (`22012`, division by zero); `null` stays `null` | The result is `null`: `P2011` on a required column, `null` stored in an optional one |
-| `increment` past the range of an `Int` | Fails (`22003`) | The value is stored (SQLite integers are 64-bit); reading the row fails with `P2023` (`Value 2147483648 does not fit in an INT column`) |
+| `increment` past the range of an `Int` | Fails (`22003`) | The original stores the value (SQLite integers are 64-bit) and reading the row fails with `P2023` (`Value 2147483648 does not fit in an INT column`). Corvis fails the statement with the error Postgres gives (`22003`, `integer out of range`), and SQLite undoes it |
+| An `Int` column holding a fraction or a number beyond 32 bits (written by another program) | Cannot happen | Reading the row fails with `P2023`, never a truncated or saturated value |
 
 ## What is not supported
 

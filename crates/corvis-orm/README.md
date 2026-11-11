@@ -258,7 +258,7 @@ Si vienes del ecosistema de Node.js, esta tabla relaciona la API del cliente Jav
 | `` $queryRaw`...${x}` `` / `$executeRaw` | `db._query_raw(sql!("...{x}"))` / `_execute_raw(..)` / `_query_raw_as::<T>(..)` |
 | `sql` / `join` / `raw` / `empty` | `sql!(..)` / `RawSql::join(..)` / `RawSql::raw(..)` / `RawSql::empty()` |
 | `$queryRawUnsafe` / `$executeRawUnsafe` | `query_raw(sql, params)` / `execute_raw(sql, params)` |
-| `DbNull` / `JsonNull` / `AnyNull` | `json!({ "$type": "DbNull" })` / `"JsonNull"` / `"AnyNull"` |
+| `DbNull` / `JsonNull` / `AnyNull` | `corvis_orm::db_null()` / `json_null()` / `any_null()` (un objeto `{ "$type": "DbNull" }` es un dato JSON, como en el original) |
 | `undefined` | `corvis_orm::undefined()` / `or_undefined(opcion)` |
 | `Decimal` | `corvis_orm::Decimal` |
 | error de petición conocido (`code`, `meta`) | `OrmError::KnownRequest` (`.code()`, `.meta()`) |

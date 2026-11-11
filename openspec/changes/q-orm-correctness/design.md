@@ -661,3 +661,99 @@ Rebased onto `dev` at `51ca1c1` (#186, #191). `node scripts/lint-ratchet.mjs`: n
 sections); the corvis-orm counts that went down (`missing_panics_doc`, `panic`, `unwrap_used`, `missing_docs`) were
 lowered in `lint-baseline.json`. The script runs on Windows here; its one other difference (`corvis` `expect_used`
 51 -> 50, platform-specific code of a crate this change does not touch) was left at the Linux count.
+
+### Security review (round 1)
+
+Seven findings and one parity gap. Each fix has a regression test that was run against the code before the fix and
+failed for the reason given (failing tests committed in `9d3a363` and `f58a4dc`; fixes in `23380a1` and `3ad89fe`).
+
+1. **The `undefined` marker could be forged (high).** `corvis_orm::undefined()` was the fixed string
+   `"\u0000corvis_orm::undefined\u0000"`, removed from the arguments before validation, so a client that sent that text
+   in JSON removed the condition it stood in: `findFirst({ reset_token: <it> })` returned another user's row and
+   `deleteMany({ owner: <it> })` deleted every row. The in-band design stays (a typed `undefined` would mean rewriting
+   the JSON engine), but every marker now carries a nonce of two v4 UUIDs (244 random bits from the OS, through `uuid`,
+   a dependency the crate already had), drawn once per process in a `OnceLock` and never written where a client can
+   read it: `undefined()`, the invalid-argument marker of `or_undefined`, and the Json null sentinels (below). A forged
+   text is an ordinary string, and a string with NUL fails with the NUL validation error. Tests:
+   `tests/security_r188.rs::a_forged_undefined_marker_is_refused_{sqlite,postgres}` (find, typed find, `updateMany`,
+   `deleteMany` with one and with two conditions, a relation filter, a nested `deleteMany`); before the fix `findFirst`
+   returned alice's row on both databases. `undefined_still_drops_the_key` checks that the real marker still works.
+
+   Search for other in-band markers (`corvis-orm`, its macros, `corvis` z / validation, `corvis-swagger`): in
+   `corvis-orm`, the Json null sentinels `{ "$type": "DbNull" | "JsonNull" | "AnyNull" }` were plain objects a request
+   could carry, so a client could turn its Json value into a database `NULL`, or a filter into `IS NULL`. The original
+   wraps a plain object with a `$type` key as data (`Raw`); recorded in `json.plain_type_*` on both databases (it stores
+   `{ "$type": "DbNull" }` and compares with it; before the fix 4 of these cases differed on each database). Fixed: the
+   sentinels are the new `corvis_orm::db_null()`,
+   `json_null()` and `any_null()`, whose `$type` tag carries the nonce (no NUL, since `where` refuses NUL strings). This
+   changes a public form: `json!({ "$type": "DbNull" })` is now data (documented as a change, EN and ES; README table
+   updated). `{ "$type": "Bytes", "value": .. }` for a `Bytes` field stays: it is another encoding of the same bytes,
+   not a marker that changes the meaning of a query. Outside `corvis-orm` nothing was changed: `corvis-swagger`'s
+   `{"$ctor"}` / `{"$model"}` / `{"$js"}` markers come from decorators in code, never from a request (and `$js` inside a
+   served document stays data, as documented there); the socket.io `BINARY_MARKER` of `corvis` is a serde newtype name,
+   not reachable from JSON text; the route posture report markers already carry a per-run nonce; z / validation has
+   none.
+2. **`binary_scaled` did work proportional to the exponent (medium).** `0x1p99999` computed the 30,103 digits of 2^99999
+   (`pow` was exact up to |n| = 100000) and above that went through `f64`, which gave `0` for `0x1p100001` and ignored
+   infinite results. `Decimal::pow` now ports decimal.js for integer exponents: `intPow` (squaring, each product
+   truncated to `ceil(pr / 7) + 4` words of 7 digits, the last word incremented when truncated and zero), `finalise`,
+   and `1 / r` for a negative exponent; a result far beyond the exponent range is `Infinity` or zero before any work.
+   `binary_scaled` follows `parseOther`: the exponent is a JavaScript number (rounded to `f64`), `|p| < 54` multiplies
+   exactly by `2 ** p`, otherwise by `Decimal.pow(2, p)`, after which decimal.js' `external` flag is set again, so that
+   product is rounded to 20 digits (recorded: `0xf.fp99999` is `7.9607979287083765476e+30103`). Tests:
+   `decimal::tests::binary_exponents_do_bounded_work` measures the digits of every product `pow` builds (at most 100;
+   before the fix "0x1p99999: pow built a 30103-digit coefficient") and `tests/decimal_js.rs::parse_matches_decimal_js`
+   with 21 new recorded inputs (113 in all; before the fix 12 differed, `0x1p100001` gave `0`). Not bit-for-bit: an
+   integer exponent beyond 2^53 that is still in range (2^53 < p < about 3e16 for base 2) goes through decimal.js'
+   `exp(y ln x)` path there and through `intPow` here; both are correctly rounded except at rounding boundaries.
+3. **SQLite `Decimal` operands as fixed-point text (medium).** A filter value that fits `NUMERIC` was sent with
+   `to_fixed_plain()`, so `in: ["1e131071"]` bound a 131,072-digit parameter. Every `Decimal` operand on SQLite is now
+   sent in its shortest form (`to_string()`), which `CAST(? AS NUMERIC)` reads as the same number (the SQLite oracle
+   passes unchanged). Test: `engine::sqlite_operand_tests::decimal_operands_are_short_on_sqlite` (every text parameter
+   under 40 bytes; before: "a 131073-byte parameter").
+4. **An `Int` beyond 32 bits written on SQLite broke every list (medium).** Security over parity: `Engine::data_value`
+   turns an SQLite `Int` write (a value, `set`, a list `push`) beyond 32 bits into `SqlValue::OutOfRange`, which fails
+   before any SQL with the error Postgres gives (`Unable to fit integer value ... into an INT4`); filters keep 64-bit
+   operands, as recorded. Test: `an_int_beyond_32_bits_is_not_written_sqlite` (before: `create` returned the row).
+   `KNOWN_DIFFERENCES`: `err.int_overflow_create` (the original stores it, then fails every read of the row with
+   `P2023`).
+5. **Arithmetic escaped the column on SQLite (low).** `increment: "1e200"` on a `Decimal` stored `1e+200`; `increment`
+   past `Int` stored 2147483648. On SQLite an arithmetic update of an `Int` or `Decimal` field is now
+   `CASE WHEN r IS NULL OR <r in range> THEN r ELSE json_extract('{}', '<marker>') END`: a result out of range (32 bits;
+   `ABS(r) < 10^(p - s)` for `Decimal(p, s)`, `Decimal(65, 30)` by default) raises a JSON path error that fails the
+   statement, and SQLite undoes the whole statement, every row of it, also inside a transaction (checked with the
+   `sqlite3` shell: a failing `UPDATE` after another statement of the same transaction leaves that statement's change
+   and none of its own). `OrmError::from_sqlx` recognizes the marker and returns the error Postgres gives (`22003`
+   `integer out of range`; `22003` `numeric field overflow` with the precision detail). This covers `update`,
+   `updateMany`, `updateManyAndReturn`, nested updates and the native upsert (all go through `set_list_sql`); `NULL`
+   results (a `NULL` value, SQLite's division by zero) pass. Only the integer part is checked: SQLite does not round an
+   arithmetic result to the column's scale. Tests: `decimal_arithmetic_beyond_the_column_is_rolled_back_sqlite` (before:
+   `1e+200` stored) and `int_arithmetic_beyond_32_bits_is_rolled_back_sqlite` (`updateMany` and `upsert`; before: `Ok`,
+   count 3). `KNOWN_DIFFERENCES`: `arith.increment_overflow` and `arith.after_overflow`.
+6. **Non-finite `Decimal`s compared as text on SQLite (low).** Recorded first (`dec.*`, both databases): the original
+   refuses `"NaN"`, `"Infinity"` and `"-Infinity"` as `Decimal` input everywhere ("invalid digit found in string.
+   Expected decimal String."), so `Engine::decimal_input` refuses them on both databases (Postgres used to take them as
+   `numeric` `NaN` / `Infinity`), not only on SQLite. Tests: `non_finite_decimals_are_refused_sqlite` (before:
+   `lt: "-Infinity"` returned every row) and the `dec.*` oracle cases (before: 4 differed on Postgres, 5 on SQLite,
+where `"Infinity"` was stored).
+7. **An `Int` column holding something else was truncated or saturated (info).** `int_out_of_range` checked integers
+   only; a REAL (`1.5`, `1e30`) was converted with `as i64`. Any number that is not an integer within 32 bits is now
+   `P2023` with the original's message. Test: `an_int_column_holding_a_bigger_or_fractional_number_is_p2023_sqlite`
+   (before: the row was returned).
+
+`having` with `null`: recorded (`having.*_null`, both databases): `lt` / `equals` / `not: null` in an aggregate filter
+is "Argument `lt` must not be null." in the original, where Corvis wrote `IS NULL`. Now a validation error, and so is
+a `null` item in `in` / `notIn`. Before the fix 3 cases differed on each database.
+
+Recordings added (appended cases only; the earlier results are equal but for the clock values of `updatedAt`): Postgres
+oracle `having.*` (4), `json.plain_type_*` (5) and `dec.*` (5), 287 cases; the SQLite oracle takes them through the
+shared list, 276 cases; `decimal_parse.json`, 21 binary-exponent inputs (113). `{ $json: v }` in `cases.js` passes `v`
+without reviving it; the Rust runners (`tests/common/oracle.rs`, `engine/pg_sql_snapshot.rs`) revive
+`{ "$type": "DbNull" }` to `corvis_orm::db_null()` (and the other two) and pass `{ "$json": v }` as `v`.
+
+`KNOWN_DIFFERENCES` has six entries: the three of the previous round plus `err.int_overflow_create`,
+`arith.increment_overflow` and `arith.after_overflow`, on both SQLite databases, all deliberate (findings 4 and 5).
+
+Port applications: `facten-api/src/emissions/emissions.service.rs:157` writes `json!({ "$type": "DbNull" })`, which is
+now stored as that object instead of `NULL`; it must become `corvis_orm::db_null()`. Nothing else in the three
+applications uses a changed form.

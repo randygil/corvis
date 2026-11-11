@@ -364,7 +364,22 @@ let billeteras = db.wallet().find_many(vec![wallet::amount::gte(decimal!("100"))
 
 Un `DecimalCtor` (`Decimal.clone({...})`) lee texto con `D.parse("1234.5678")?` en lugar de `D.of("1234.5678")`. El parseo y `decimal!` aceptan lo mismo que decimal.js, comprobado entrada por entrada contra él: números `0x`, `0b` y `0o` con fracción y exponente binario (`0x1.8p3`), y un `_` entre dos dígitos (`1_000`).
 
+`"NaN"`, `"Infinity"` y `"-Infinity"` no son una entrada válida de `Decimal` en una consulta: un filtro o una escritura que los da a un campo `Decimal` falla con un error de validación en las dos bases, como con el original. En SQLite antes se comparaban como texto.
+
 `corvis_orm::or_undefined(valor)` escribe un número no finito como `null`, igual que el original envía `NaN`, pero un valor que no se puede serializar hace fallar la consulta con un error de validación en vez de convertirse en `null`.
+
+### Nulos de Json
+
+Un campo `Json` tiene dos nulos: el `NULL` de la base de datos y el valor JSON `null`. Se escriben con `corvis_orm::db_null()` (el `NULL` de la base), `corvis_orm::json_null()` (el `null` de JSON) y, en filtros, `corvis_orm::any_null()` (cualquiera de los dos):
+
+```rust
+db.query_json(User::meta(), "update", json!({ "where": { "id": 1 }, "data": { "data": corvis_orm::db_null() } })).await?;
+let vacios = db.query_json(User::meta(), "findMany", json!({ "where": { "data": { "equals": corvis_orm::any_null() } } })).await?;
+```
+
+::: warning Cambio: `{ "$type": "DbNull" }` es un dato JSON
+El objeto `{ "$type": "DbNull" }` (y `"JsonNull"`, `"AnyNull"`) antes significaba estos nulos. El cuerpo de una petición puede traer ese objeto, así que un cliente podía convertir su valor JSON en un `NULL` de la base o en un filtro `IS NULL`. Ahora es un dato JSON como cualquier otro objeto, igual que en el cliente original, donde solo `DbNull`, `JsonNull` y `AnyNull` son los nulos. Cambia `json!({ "$type": "DbNull" })` por `corvis_orm::db_null()`, y lo mismo con los otros dos.
+:::
 
 ### Helpers tipados y números no finitos
 
@@ -425,6 +440,7 @@ Desde código: `db.migrate_deploy(dir).await` y `db.migrate_status(dir).await`. 
 - Los números fuera de rango son errores, nunca valores truncados: un `BigInt` de más de 64 bits, un byte de `Bytes` fuera de `0..=255`, un `Decimal` que no cabe en un `NUMERIC` de Postgres o un `limit` negativo en `update_many`/`delete_many` (`P2019`).
 - `update`, `delete` y las operaciones `*_many` repiten su `where` en el `UPDATE`/`DELETE`, así que la concurrencia optimista (`where: { id, version }`) tiene un solo ganador.
 - `log_queries` escribe los valores de los parámetros en los logs.
+- `corvis_orm::undefined()` y los nulos de Json son valores que ninguna petición puede producir: cada uno lleva una marca aleatoria que se genera al iniciar el proceso. Un texto o un objeto que llega en el cuerpo de una petición siempre es un dato, nunca "omite esta condición" ni "compara con `NULL`".
 - El SQLite que incluye `sqlx` 0.8 es anterior a la 3.54.0 y tiene un fallo conocido (RUSTSEC-2026-0459): abrir un archivo de base de datos junto con un archivo `-wal` manipulado puede devolver en los resultados bytes viejos de la memoria del proceso. Abre solo archivos SQLite que haya creado tu aplicación, nunca una base de datos o un `-wal` que pueda haber escrito alguien menos confiable. La actualización se sigue en [#155](https://github.com/randygil/corvis/issues/155).
 
 ## Diferencias entre PostgreSQL y SQLite
@@ -441,12 +457,14 @@ donde la última columna dice otra cosa.
 | `search` | Búsqueda de texto completo (`to_tsquery`; el original necesita la función en vista previa `fullTextSearchPostgres`) | No existe en el original. Extensión de Corvis: cada término debe aparecer en el texto (`INSTR`), sin distinguir mayúsculas |
 | `createMany` con `skipDuplicates` | `ON CONFLICT DO NOTHING` | No existe en el original. Extensión de Corvis: `INSERT OR IGNORE` |
 | `Decimal` | Exacto, con la precisión y la escala de la columna | Un número con 15 dígitos significativos (afinidad numérica), como con la migración SQLite del original; `_avg` conserva 16 dígitos significativos. Las comparaciones, el orden y las agregaciones leen la columna con `CAST(.. AS NUMERIC)`, así que también son numéricas en columnas `TEXT` creadas por versiones anteriores de `push`; el `CAST` impide que un índice simple sobre la columna sirva para un rango |
-| Escribir un `Decimal` que excede la precisión de la columna | Falla (`numeric field overflow`) | El original lo guarda (`1e100`). Corvis rechaza un valor que excede `Decimal(65, 30)` (o el `@db.Decimal(p, s)` del campo), el límite de su revisión de seguridad |
+| Escribir un `Decimal` que excede la precisión de la columna | Falla (`numeric field overflow`) | El original lo guarda (`1e100`). Corvis rechaza un valor que excede `Decimal(65, 30)` (o el `@db.Decimal(p, s)` del campo), el límite de su revisión de seguridad, y una actualización aritmética (`increment`, `multiply`, ...) cuyo resultado lo excede: la sentencia falla con el error que da Postgres y SQLite la deshace, con todas sus filas |
+| Escribir un `Int` de más de 32 bits | Falla (error de conversión) | El original lo guarda y luego toda lectura de la fila falla con `P2023`, así que un solo valor rompe todos los listados de la tabla. Corvis lo rechaza con el error que da Postgres, antes de ejecutar SQL (la seguridad antes que la paridad) |
 | Filtrar por un `Int` de más de 32 bits, o un `Decimal` que no cabe en `NUMERIC` | Falla (error de conversión) | Se ejecuta, comparando números |
 | Listas escalares (`String[]`) | Arreglos | Texto JSON (una extensión de Corvis; el original no admite listas en SQLite) |
 | `NaN` e infinitos | El original los envía como `null` (`ratio: NaN` es `ratio IS NULL`) | Igual. Corvis también envía `null` en argumentos JSON; sus helpers tipados, en cambio, rechazan esos valores (ver arriba) |
 | `divide: 0` | Falla (`22012`, división por cero); `null` sigue siendo `null` | El resultado es `null`: `P2011` en una columna obligatoria, `null` guardado en una opcional |
-| `increment` fuera del rango de un `Int` | Falla (`22003`) | El valor se guarda (los enteros de SQLite son de 64 bits); leer la fila falla con `P2023` (`Value 2147483648 does not fit in an INT column`) |
+| `increment` fuera del rango de un `Int` | Falla (`22003`) | El original guarda el valor (los enteros de SQLite son de 64 bits) y leer la fila falla con `P2023` (`Value 2147483648 does not fit in an INT column`). Corvis hace fallar la sentencia con el error que da Postgres (`22003`, `integer out of range`) y SQLite la deshace |
+| Una columna `Int` que guarda una fracción o un número de más de 32 bits (escrito por otro programa) | No puede ocurrir | Leer la fila falla con `P2023`, nunca da un valor truncado o saturado |
 
 ## Qué no está soportado
 
