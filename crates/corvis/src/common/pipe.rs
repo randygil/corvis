@@ -110,12 +110,10 @@ macro_rules! pipe_options {
 const NUMERIC_EXPECTED: &str = "Validation failed (numeric string is expected)";
 const ARRAY_EXPECTED: &str = "Validation failed (parsable array expected)";
 
-/// 2^63: the first magnitude an `i64` cannot hold.
-const I64_LIMIT: f64 = 9_223_372_036_854_775_808.0;
-
-/// Parses a numeric string into an integer: the text must be `-?\d+` (no sign `+`, no white space, no exponent), and it
-/// is read as JavaScript's `parseInt` reads it, so a numeral beyond 2^53 is rounded to the nearest `f64`. An integer
-/// beyond `i64` is refused with the same 400 (the original would return it; Corvis cannot represent it).
+/// Parses a numeric string into an integer: the text must be `-?\d+` (no sign `+`, no white space, no exponent), as
+/// the original requires. The numeral is read exactly, where the original's `parseInt` rounds one beyond 2^53 to the
+/// nearest double (`"9007199254740993"` is `9007199254740993` here, `9007199254740992` there). An integer outside
+/// `i64` is refused with the same 400 (the original would return it; Corvis cannot represent it).
 #[derive(Debug, Clone)]
 pub struct ParseIntPipe {
     status: StatusCode,
@@ -130,19 +128,23 @@ impl PipeTransform for ParseIntPipe {
             return Ok(value);
         }
         let n = match &value {
-            Value::String(_) | Value::Number(_) => {
-                let text = js::to_js_string(&value);
-                let digits = text.strip_prefix('-').unwrap_or(&text);
-                let numeric = !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()) && js::string_to_number(&text).is_finite();
-                if numeric { js::parse_int(&text) } else { f64::NAN }
-            }
-            _ => f64::NAN,
+            // A JSON integer as it is; any other number by its JavaScript text (`5.0` is `"5"`, `1.5` is refused).
+            Value::Number(n) if n.is_i64() || n.is_u64() => n.as_i64(),
+            Value::Number(_) => decimal_integer(&js::to_js_string(&value)),
+            Value::String(s) => decimal_integer(s),
+            _ => None,
         };
-        if n.is_nan() || n.abs() >= I64_LIMIT {
-            return Err(fail(self.status, NUMERIC_EXPECTED));
-        }
-        Ok(Value::from(n as i64))
+        n.map(Value::from).ok_or_else(|| fail(self.status, NUMERIC_EXPECTED))
     }
+}
+
+/// `-?\d+` read exactly; `None` for any other text or an integer outside `i64`.
+fn decimal_integer(text: &str) -> Option<i64> {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// Parses a numeric string into a float, as JavaScript's `parseFloat`, when the whole value is a finite number for
