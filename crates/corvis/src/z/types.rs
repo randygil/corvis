@@ -3295,6 +3295,56 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "Cannot create literal schema with no valid values")]
+    fn an_empty_literal_panics_when_built() {
+        let _ = literal(json!([]));
+    }
+
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Untagged {
+        A(String),
+        B(i64),
+    }
+
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type")]
+    enum InternallyTagged {
+        A,
+        B,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Role {
+        Admin,
+        User,
+    }
+
+    #[test]
+    #[should_panic(expected = "Untagged")]
+    fn native_enum_of_an_untagged_enum_panics_when_built() {
+        let _ = native_enum::<Untagged>();
+    }
+
+    #[test]
+    #[should_panic(expected = "InternallyTagged")]
+    fn native_enum_of_an_internally_tagged_enum_panics_when_built() {
+        let _ = native_enum::<InternallyTagged>();
+    }
+
+    #[test]
+    fn native_enum_of_a_plain_enum_reads_its_variants() {
+        use crate::z::ZodSchema;
+        let _ = (Role::Admin, Role::User);
+        let role = native_enum::<Role>();
+        assert!(role.is_valid(&json!("admin")) && role.is_valid(&json!("user")));
+        assert!(!role.is_valid(&json!("root")));
+    }
+
+    #[test]
     fn zod3_remainder_scales_by_the_fraction_digits() {
         assert_eq!(float_safe_remainder_v3(0.3, 0.1), 0.0);
         assert_ne!(float_safe_remainder_v3(0.30000000000000004, 0.1), 0.0);

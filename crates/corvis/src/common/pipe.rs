@@ -391,3 +391,40 @@ impl PipeTransform for DefaultValuePipe {
 }
 
 crate::default_injectable!(ParseIntPipe, ParseFloatPipe, ParseBoolPipe, ParseUUIDPipe, ParseArrayPipe);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Untagged {
+        A(String),
+        B(i64),
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Role {
+        Admin,
+        Member,
+    }
+
+    #[test]
+    #[should_panic(expected = "Untagged")]
+    fn parse_enum_pipe_of_an_untagged_enum_panics_when_built() {
+        let _ = ParseEnumPipe::of::<Untagged>();
+    }
+
+    #[tokio::test]
+    async fn parse_enum_pipe_of_a_plain_enum_accepts_its_variants() {
+        let _ = (Role::Admin, Role::Member);
+        let pipe = ParseEnumPipe::of::<Role>();
+        let meta = ArgumentMetadata { kind: ParamKind::Query, data: None, metatype: Metatype { name: "Role", validator: None, zod: None } };
+        assert_eq!(pipe.transform(Value::from("admin"), &meta).await.unwrap(), "admin");
+        let e = pipe.transform(Value::from("root"), &meta).await.unwrap_err();
+        assert_eq!(e.get_status(), 400);
+        assert_eq!(e.get_response()["message"], "Validation failed (enum string is expected)");
+    }
+}
