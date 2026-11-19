@@ -380,7 +380,7 @@ fn translate_for(src: &str, flags: &str, native_boundaries: bool) -> Result<Stri
                     }
                     _ => translate_escape(&chars, i + 1, false, unicode)?,
                 };
-                // An escaped literal (`\x6B`, `ſ`) translates to the character itself.
+                // An escaped literal (`\x6B` for `k`, `\u212A` for Kelvin) translates to the character itself.
                 let mut lone = t.chars();
                 let folded = match (lone.next(), lone.next()) {
                     (Some(c), None) if ascii_fold => ascii_fold_literal(c),
@@ -563,9 +563,9 @@ mod tests {
             ("^\u{17F}$", "i", "S", false),
             ("^\u{212A}$", "i", kelvin, true),
             ("^\u{212A}$", "i", "k", false),
-            (r"^[Ā-ſ]$", "i", long_s, true),
-            (r"^[Ā-ſ]$", "i", "s", false),
-            (r"^[Ā-ſ]$", "i", "\u{101}", true),
+            (r"^[\u0100-\u017F]$", "i", long_s, true),
+            (r"^[\u0100-\u017F]$", "i", "s", false),
+            (r"^[\u0100-\u017F]$", "i", "\u{101}", true),
             (r"^\w$", "i", long_s, false),
             (r"^\w$", "i", kelvin, false),
             (r"^\w$", "i", "_", true),

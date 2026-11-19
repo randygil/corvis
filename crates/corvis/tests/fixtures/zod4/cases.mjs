@@ -300,7 +300,7 @@ const edges = (z) => {
   add("string.email.edges", () => z.string().email(), [".a@b.co", "a..b@b.co", "A@B.CO", "a@b.c", "a_b@c-d.ef"]);
   // U+212A (Kelvin) and U+017F (long s): zod 3's email pattern has the `i` flag, under which V8 does not map them to
   // `k` and `s`.
-  add("string.email.caseFold", () => z.string().email(), ["Kevin@example.com", "ſam@example.com", "a@example.Kom", "kevin@example.com"]);
+  add("string.email.caseFold", () => z.string().email(), ["\u212Aevin@example.com", "\u017Fam@example.com", "a@example.\u212Aom", "kevin@example.com"]);
   add("string.cuid.edges", () => z.string().cuid(), ["CJLD2CJXH0000QZRMN831I7RN", "cjld2cjxh0000qzrmn831i7rn", "c-abcdefgh", "cabc"]);
   add("string.url.edges", () => z.string().url(), ["mailto:a@b.co", "http://", "https://corvis.dev", "foo:bar", "//x.com", "javascript:alert(1)"]);
   add("coerce.number.edges", () => z.coerce.number(), ["inf", "Infinity", "-Infinity", "0x10", " 12 ", "1e3", " 5", "1_0", ".5", "5.", "+5"]);
