@@ -64,7 +64,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 - [x] 6.1 `ZDate`: bounds only in `checks`, parsed once with `js::parse_date`; zod 3 mode input through `js::parse_date`
   / `js::to_date` with the same accepted shapes; the zone-less bound test of Decision 6; verify
   `cargo test -p corvis --lib z::` and both fixture lists
-- [ ] 6.2 `js::to_bigint` returns `None` outside `i128`; unit test with `1e39` and `-1e39`; rustdoc of
+- [x] 6.2 `js::to_bigint` returns `None` outside `i128`; unit test with `1e39` and `-1e39`; rustdoc of
   `z::coerce::bigint()`; verify `cargo test -p corvis --lib z::js`
 - [ ] 6.3 `common/pipe.rs`: `ParseArrayPipe`, `ParseIntPipe`, `ParseFloatPipe`, `ParseBoolPipe`, `DefaultValuePipe` as
   the `pipes` records show, number text read with one JavaScript-semantics helper (`z::js::string_to_number`, plus a

@@ -3243,7 +3243,9 @@ pub mod coerce {
     pub fn boolean() -> ZBoolean {
         ZBoolean::new().coerce()
     }
-    /// `z.coerce.bigint()`.
+    /// `z.coerce.bigint()`: `BigInt(input)`. Values are `i128`: a number or numeral whose integer value is outside the
+    /// `i128` range gets the `invalid_type` issue (JavaScript's BigInt has no bound; Corvis refuses what it cannot
+    /// represent rather than saturating).
     pub fn bigint() -> ZBigInt {
         ZBigInt::new().coerce()
     }

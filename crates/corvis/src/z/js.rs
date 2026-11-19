@@ -291,7 +291,8 @@ pub fn truthy(v: Option<&Value>) -> bool {
     }
 }
 
-/// `BigInt(value)`; `None` when JavaScript would throw.
+/// `BigInt(value)`; `None` when JavaScript would throw, and for a number whose integer value does not fit in `i128`
+/// (JavaScript's BigInt has no bound; Corvis refuses what it cannot represent instead of saturating).
 pub fn to_bigint(v: Option<&Value>) -> Option<i128> {
     match v? {
         Value::Bool(b) => Some(i128::from(*b)),
@@ -303,7 +304,9 @@ pub fn to_bigint(v: Option<&Value>) -> Option<i128> {
                 return Some(i128::from(u));
             }
             let f = json_f64(n);
-            if f.is_finite() && f.fract() == 0.0 { Some(f as i128) } else { None }
+            // -2^127 is i128::MIN; 2^127 is one past i128::MAX. Both are exact in f64.
+            const LIMIT: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
+            (f.fract() == 0.0 && (-LIMIT..LIMIT).contains(&f)).then_some(f as i128)
         }
         Value::String(s) => string_to_bigint(s),
         Value::Array(_) => string_to_bigint(&to_js_string(v?)),
@@ -779,7 +782,8 @@ mod tests {
         assert_eq!(to_bigint(Some(&json!(-1e39))), None);
         assert_eq!(to_bigint(Some(&json!(2f64.powi(127)))), None);
         assert_eq!(to_bigint(Some(&json!(-(2f64.powi(127))))), Some(i128::MIN));
-        assert_eq!(to_bigint(Some(&json!(1e38))), Some(100_000_000_000_000_000_000_000_000_000_000_000_000));
+        // `BigInt(1e38)` in JavaScript: the f64 nearest to 1e38.
+        assert_eq!(to_bigint(Some(&json!(1e38))), Some(99_999_999_999_999_997_748_809_823_456_034_029_568));
     }
 
     /// Expected values printed by Node 24 (`x.toFixed(d)`, `parseFloat(s)`, `parseInt(s, 10)`).
