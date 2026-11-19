@@ -371,3 +371,335 @@ These settle the open questions and override the design where they differ.
    with a different value (a silent wrong value is what D1, S4d and S4e are about).
 6. The security review is mandatory before archiving: the date parser, unwinding through depth guards, the error
    mapping and logs of the pipe and serializer, the engines of the zod 3 patterns, and the number parsing of the pipes.
+
+## Implementation notes
+
+### 1.1 Re-check against `dev` (53134b4)
+
+Between `d46758a` and `53134b4` the module changed only in two doc comments (`z/locales.rs:8`, `z/regex.rs:58`, one line
+each, no line shift), and `auth/warn_limit.rs` gained `WarnLimiter::line` (used by Decision 8). Every file and line of
+"Findings as checked" is where the table says. `cargo test -p corvis --test zod4_fixtures --test zod_pipe --test
+zod_security --test zod` (12 tests) and `cargo test -p corvis --lib z::` (21 tests) passed on the untouched tree.
+
+### 2.1 Recorder
+
+`tests/fixtures/zod4/package.json` and `package-lock.json` pin zod 4.4.3. Re-recording with `TZ=UTC node cases.mjs`
+reproduced `parse.json` byte for byte, before and after the two new encodings (`construct` records and `$number`); no
+existing case changed. The replay also reports a panic during a parse as a mismatch instead of aborting the test.
+
+zod 4 raises "Invalid discriminated union option at index ..." lazily, at the first parse, so `du.optional`,
+`du.nullable`, `du.default` and `du.catch` record a `throws` for their input rather than a `construct` record. Corvis
+raises it when the schema is built (Decision 8: construction errors stay panics at build time); the replay accepts a
+build panic when every recorded input throws that same message.
+
+### 2.2 Fixture before
+
+zod 4 mode (`zod4_parse_fixtures`), 9 mismatches, all of this change:
+
+- `date.coerce.edges`: `"999999999999999999-01-01"`, `"Jan 1 999999999999999999"` and
+  `"1/1/2000 10:00 +9999999999999999"` panic with "attempt to multiply with overflow"; `"1/1/99999999999999999999 UTC"`
+  is accepted as `2000-01-01T00:00:00.000Z` (the over-long numeral read as `0`), recorded invalid.
+- `du.check`, `du.overwrite`: build panic "Invalid discriminated union option at index "0"", recorded accepted.
+- `templateLiteral.check`, `templateLiteral.overwrite`: build panic "Invalid template literal part, no pattern found",
+  recorded accepted.
+- `literal.empty`: builds without panic; recorded `construct` "Cannot create literal schema with no valid values".
+
+zod 3 mode (`zod3_parse_fixtures`), 28 mismatches, all of this change:
+
+- `string.min.astral`, `string.max.astral`, `string.length.astral`: `"😀"` and `"a😀"` counted in code points (D4a).
+- `number.multipleOf.big` (`12345.00001`, `1000000000000.5`) and `number.multipleOf.tenth` (`0.30000000000000004`)
+  accepted, recorded refused (D4b). zod 3 refuses `0.30000000000000004` where zod 4 accepts it, so zod 3's own
+  `floatSafeRemainder` is ported as `float_safe_remainder_v3`.
+- `string.email.edges` `".a@b.co"`, `"a..b@b.co"` accepted (D4c, the lookaheads); `string.cuid.edges`
+  `"CJLD2CJXH0000QZRMN831I7RN"` refused (D4c, flag `i`); `string.url.edges` `"mailto:a@b.co"`, `"foo:bar"`,
+  `"javascript:alert(1)"` refused (D4c: zod 3 checks with `new URL()`); `string.ip.edges` `"fe80::1%eth0"` refused (D4h).
+- `coerce.number.edges`: `"inf"` a successful `null`, `"0x10"` refused, `"Infinity"` / `"-Infinity"` a successful
+  `null` where zod 3 returns the infinite number (D4d).
+- `coerce.string.edges`: `[1,2]` gives `"[1,2]"`, `{}` gives `"{}"` (D4g).
+- `string.trim.edges`: U+FEFF kept and U+0085 trimmed (D4e).
+- `number.min.big`, `number.max.small`: messages with `1000000000000000000000` and `0.0000001` (D4f).
+- `discriminatedUnion.refinedKey`: no options for the refined literal (S3b: zod 3 reads the discriminator through a
+  refinement).
+- `date.coerce.edges`: `"+275760-09-13T00:00:00.000Z"` and `"-271821-04-20T00:00:00.000Z"` refused (chrono's range;
+  Decision 6 moves zod 3 mode to `js::parse_date`).
+
+Dropped, fixture agrees (the cases stay as regression pins):
+
+- S3b, `.required()` over a refined optional: zod 3 keeps the refined optional, as Corvis does (`object.required.refine`).
+- D4c url `"http://"`, `"//x.com"`; email `"a@b.c"`; cuid `"c-abcdefgh"`, `"cabc"`; D4h ip `"::ffff:1.2.3.4"`,
+  `"01.2.3.4"`, `"::1"`: Corvis already answers as zod 3.
+- D4d `" 12 "`, `"1e3"`, `" 5"`, `"1_0"`, `".5"`, `"5."`, `"+5"`; D4e `" a　"`; D4g `1e21`, `1.5`, `true`,
+  `0.30000000000000004`; D4b `0.3`, `1.1`, `2.55`, `19.99`, `0.07`, `1.005`, `3`, `1e21`: already as zod 3.
+- D1 in zod 3 mode: zod 3 mode parses dates with chrono today and does not overflow; with Decision 6 it uses
+  `js::parse_date`, covered by the D1 unit tests and the `date.coerce.edges` cases.
+
+zod 3 returns `Infinity` for `z.coerce.number()` of `"Infinity"`; zod 3 mode works on JSON values and cannot hold it.
+Following Review note 5 it is refused with zod 3's own issue for an infinite number (`not_finite`, "Number must be
+finite") and listed as a divergence in the replay.
+
+### 2.3 Built-in pipes fixture
+
+Recorded with the common package 11.2.1, class-validator 0.14.4 and class-transformer 0.5.1 (the recorder writes the
+versions into `builtin_pipes.json`). Mismatches before any fix, 15 pipe records and 12 rule records:
+
+- `ParseArrayPipe({ items: Number })`: `"1,NaN"` and `"inf"` give `null` items, recorded `[i] item must be a number`;
+  `"1e20"` gives `i64::MAX`, recorded `1e20`; `"Infinity"` gives `null` (the original returns `Infinity`: a divergence,
+  refused with the `[0] item must be a number` error the original gives for `NaN`); `""` gives `[]`, recorded the 400;
+  `"1,,2"` gives the generic 400, recorded `[1] item must be a number`; `"0x10"` refused, recorded `16`.
+- `ParseArrayPipe()`: `"a, b"` trims the items (recorded `["a", " b"]`); `""` gives `[]` (recorded the 400).
+- `ParseIntPipe`: `"+5"`, `" 5"`, `"5 "` accepted, recorded refused; `"9007199254740993"` gives the exact integer where
+  the original's `parseInt` gives `9007199254740992`. `"99999999999999999999"` is a divergence (an integer beyond i64,
+  refused with the pipe's 400).
+- `ParseFloatPipe`: `"0x10"` refused, recorded `0` (`parseFloat`).
+- `DefaultValuePipe(7)`: `""` takes the default, recorded `""`.
+- `isNumberString`: `" 1"`, `"1 "`, `"NaN"`, `"inf"`, `"Infinity"`, `"1e5"`, `"5."` accepted, recorded refused.
+- `isIP`: `"fe80::1%eth0"` refused, recorded accepted.
+- `minLength(2)` / `maxLength(1)`: `"❤️"` and `"a️"` (with a presentation selector) counted as two, recorded as one.
+
+Agreed already: every `ParseBoolPipe` record; `ParseIntPipe` `"5"`, `"-0"`, `"007"`, `"1e3"`, `""`, `"0x10"`;
+`ParseFloatPipe` except `"0x10"`; `isIP` except the zone; the lengths of `"😀"`, `"é"`, `"ab"`.
+
+Second run with the common package 12.0.4 (not committed; class-validator and class-transformer unchanged): four records
+differ, none of them `ParseIntPipe`. `ParseArrayPipe({ items: Number })` of `""` answers `[0] item must be a number` and
+`ParseArrayPipe()` of `""` answers `[""]` (12.0.4 no longer refuses an empty string up front); `ParseFloatPipe` refuses
+`" 1.5 "` and `"0x10"`. The fixture stays on 11.2.1 (Review note 4); nothing to raise for houseplan.
+
+### 3. Date parser
+
+Before the fix, `dates_out_of_range_are_invalid` and `a_year_whose_wrapped_time_looks_valid_is_invalid` panicked with
+"attempt to multiply with overflow" (`days_from_civil`) in `cargo test`; in `cargo test --release` the first returned a
+finite time for one of the three inputs and the second a finite time for the year `100000000247000741`. A run of
+consecutive years moves the wrapped value by one year of milliseconds and never reaches the valid range, so the search
+walks the years with a prime stride (1,000,003) instead.
+
+`js_date_parse_is_total` failed on the code of before the fix (the parser of the previous commit restored for one run,
+then put back): minimal input `"1Jan.9223372036854775807-"`, "attempt to multiply with overflow". An offset of an empty
+digit run still reads as `0`, as before; only a numeral that does not fit in `i64` is now an invalid date.
+
+Task 3.2's zod 3 half (`date.coerce.edges` in `casesV3`) passes with Decision 6 (task 6.1), which moves zod 3 mode off
+chrono; the zod 4 half passed with 3.2.
+
+### 4. zod 3 mode
+
+- `float_safe_remainder_v3` ports zod 3's `floatSafeRemainder` (`toString()` fraction digits, `toFixed`, `parseInt`),
+  with `js::to_fixed` and `js::parse_int` added for it. `js::to_fixed` rounds a tie to the larger magnitude as
+  ECMAScript does (Rust's own formatting rounds it to even); its unit test holds values printed by Node 24. The
+  existing guard `multipleOf(0)` → no issue is kept (zod 3 would give `NaN !== 0`, an issue; no fixture records it).
+- `z.coerce.number()` in zod 3 mode reads every JSON value with `js::to_number` (`Number(x)`), so `[5]` is now `5` as in
+  JavaScript (before: `NaN`). A missing value keeps today's `Required` issue (not recorded).
+- An infinite coerced number is the recorded divergence of 2.2: answered with the issues recorded for
+  `coerce.number.finite` (a zod 3 case added for this, `z3.coerce.number().finite()`), which the replay reads in its
+  `divergence` table.
+- Patterns: `V3_EMAIL`, `V3_CUID` and `V3_IPV6` are `JsRegex` statics with zod 3's sources and flags; zod 3's
+  `ipv4Regex` has the source of `regexes::IPV4` and reuses it; `url` is `url::Url::parse` (`new URL`). The `regex`
+  statics `EMAIL`, `CUID`, `URL` and `fmt_num` / `num_value` are removed.
+- Found while porting: `JsRegex` translates the `i` flag to the `regex` crate's Unicode case folding, under which
+  `[A-Z]` also matches U+017F and U+212A; V8 without the `u` flag does not. It affects every `i` pattern of both modes
+  (zod 3's email and cuid included). Fixed after the security review (its finding 3).
+
+### 5. Check-like wrappers
+
+- `check_wrapper_structure!` forwards the ten zod 4 methods of Decision 5. What changes for zod 4 mode: `ZSuperRefine`
+  gains `pattern`, `ZCheckFn` `prop_values` and `pattern`, `ZOverwrite` `values`, `prop_values` and `pattern`, and all
+  four `string_patterns` (the `patternProperties` of a record whose key is a refined string, as zod 4's shared bag).
+- zod 3 methods: `refine` and `superRefine` (one zod 3 type, `ZodEffects`) forward `accepts_undefined` and
+  `literal_values` and do not unwrap for `.required()`, as the fixture shows. `check` and `overwrite` have no zod 3
+  counterpart and no fixture case; they forward `accepts_undefined` only (`ZOverwrite` did already; `ZCheckFn` gains it,
+  the S3a gap) and keep no `literal_values`.
+
+### 6. Coercion
+
+- 6.1: `ZDate` keeps only `checks` (the chrono `min`/`max` fields and the chrono parser are gone). `min`/`max` still panic
+  on a bound the JavaScript parser refuses (before: on one chrono refused), so a bound chrono refused and V8 accepts
+  (`"Jan 1 2024"`) now builds. zod 3 mode: with `coerce`, a string or a number goes through `js::to_date` (zod 3's
+  `new Date(x)`; this is what makes the recorded `"+275760-09-13T00:00:00.000Z"` succeed); without it, an ISO-looking
+  string (`js::looks_like_iso_datetime`, the gate zod 4 mode's `date_strings` uses) through `js::parse_date`; any other
+  input as before. Its bounds are checked in the order they were added, each with its own message, and the message text
+  is unchanged (the bound in RFC 3339). Consequence of the one parser: with `coerce`, a day past the end of the month
+  rolls over as in JavaScript (`"2023-02-30"` is 2023-03-02; zod 3's own `z.coerce.date()` answers the same). Without
+  `coerce`, zod 3 mode's `z::date()` first accepted it too and returned the raw text; after the security review (its
+  finding 5) it reads the text with the strict ISO parser alone (`js::parse_iso_date`) and refuses `"2023-02-30"`
+  again, as chrono did, and the unit assertion on `"2023-02-30"` is back beside `"2023-13-01"`. A coerced fractional
+  millisecond number is truncated as `new Date(1.5)` does (before: refused).
+- 6.3: every `pipes` record matches (the two divergences, `"Infinity"` as an array item and `"99999999999999999999"`
+  for `ParseIntPipe`, answer the recorded 400). The pipes read number text with `z::js` only: `ParseIntPipe` checks
+  `-?\d+` on `String(value)` and reads the numeral exactly as an `i64` (a JSON integer as it is), refusing one outside
+  `i64`; it first read it with `js::parse_int`, which rounds beyond 2^53, and the security review (its finding 2) made
+  that a third divergence, `"9007199254740993"`;
+  `ParseFloatPipe` is `js::parse_float` guarded by `js::to_number(..).is_finite()`; `ParseArrayPipe` refuses a falsy
+  value (`null`, `""`, `false`, `0`) unless optional, trims the whole string with `js::js_trim` and reads each item with
+  `js::to_number` (`""` and `null` as NaN). `DefaultValuePipe` replaces only `null`. Not ported, no record: the original's
+  array pipe runs `JSON.parse` on each item before `+item`, so `"true"` would be `1` there and is refused here, and it
+  falls back to `,` for an empty separator. Both are left for the follow-up fixture of the implicit conversions.
+- 6.4: every `rules` record matches. `is_number_string` and `is_ip` use the sources of validator.js 13.15.35 (the
+  version class-validator 0.14.4 resolves to in the fixture's lockfile), copied from its `isNumeric` and `isIP` as the
+  composed strings V8 compiles; they are ASCII and lookaround-free, so they run on the `regex` crate like the other rule
+  patterns. `min_length`/`max_length` count as validator.js `isLength` does: UTF-16 length minus surrogate pairs minus
+  variation selectors that follow a non-selector, which is the `char` count minus those selectors.
+
+### 7. Thrown errors
+
+- 7.1: `core::throw` unwinds with the private `Thrown` payload through `resume_unwind` (no panic hook);
+  `throw_encode_error` and the unmergeable intersection call it. The catch is one `catch_unwind` in `parse_val`, around
+  both versions: `run_v3` is private and only `parse_val` calls it, and zod 3 mode reaches a throwing zod 4 node only
+  through `v3_via_v4` inside that parse, so one catch covers what the design lists as two. Any other payload is resumed
+  with `resume_unwind`, so a user panic keeps unwinding and its hook line is not printed twice. Naming: Decision 8 calls
+  both the constructor and the getter `thrown`; Rust cannot have an associated `ZodError::thrown(message)` beside the
+  method `thrown(&self)`, so the public getter is `thrown()` and the constructor is the crate-private
+  `ZodError::from_thrown`. Between 7.1 and 7.2 the pipe answered a thrown error with `"errors": []`, which
+  `zod_pipe`'s `pipeThrown` caught (the failing test of 7.2).
+- 7.2: `catch_thrown` now only meets user panics. It logs through a process-wide `WarnLimiter` (60 s) keyed by site, an
+  `error` line in the context of the site (`ZodValidationPipe`, `ZodGuard`, `validate`, `ZodSerializerInterceptor`)
+  that names what was parsed (the parameter kind, the guard's source, `value`, `response`) and never reads the payload.
+  `auth::warn_limit` became `pub(crate)` for it. A thrown error answers the same bodies as before: the pipe's 400
+  without `errors` (now with the `ZodError` as its cause) and the serializer's 500 (`ZodSerializationException` with
+  the thrown error as its cause; the body is unchanged). A user panic still hands a custom `createValidationException`
+  an empty `ZodError`, since the panic's text is not exposed. `zod_thrown.rs` has the four tests (intersection,
+  encode, the depth after thrown errors in a lazy schema, the user panic in the pipe) and checks that a custom
+  exception receives the thrown error. Found while writing them, not changed (follow-up): encoding
+  `z.string().transform(..)` checks the inner string first, so `encode(3)` gives an `invalid_type` issue where zod
+  4.4.3 throws the encode error before any check (verified with node); the test uses `"a"`, where both throw.
+
+### 8. Construction errors
+
+- 8.1: `ZLiteral::new` builds an array through `from_vals`, whose assertion carries the recorded message. `z::native_enum`
+  and `ParseEnumPipe::of` share `rules::readable_enum_variants` (crate-private), which panics with
+  `"<builder>::<type name>(): the variant names of this type cannot be read; ..."`; `enum_variants` keeps its signature
+  for the derives. Both fixture lists pass in full from here on.
+
+### 9. Tests without timing bounds
+
+- 9.1: `tests/zod_linear_traversal.rs` counts cumulative bytes allocated (a reallocation counts its new size) for the
+  parse alone, at depths 1500 and 3000, for the lazy object schema and `z.json()`. With a deliberate
+  `let _quadratic = p.value.clone();` in `ZLazy::run_v4` (one run, then reverted with `git checkout`) it failed:
+  "z.lazy object: depth 3000 allocated 4115056024 bytes, depth 1500 1031530024 (ratio 3.99)". The three tests passed
+  5 runs in a row. `word_boundary_patterns_are_linear_and_exact` now asserts `is_linear()` for `\w+\bX` instead of the
+  elapsed time; `array_unique_is_linear` reads a `cfg(test)` thread-local count of element comparisons (below `2 * n`
+  for 100,000 distinct numbers). `grep -rn "elapsed()"` over the paths of the task finds nothing.
+
+### 11. Definition of done (11.1 to 11.5, 11.8)
+
+- 11.1: `cargo build --workspace --all-targets`, 0 warnings (the first run found one of this change, a `thread_local!`
+  placed between `array_unique`'s doc comment and the function; fixed).
+- 11.2: `cargo clippy --workspace --all-targets -- -D warnings` and `cargo clippy -p corvis --no-default-features -- -D
+  warnings` pass (fixed on the way: an exact `f64` tie literal in the `to_fixed` test, a closure type alias and two
+  conversions to the same type in the new test binaries).
+- 11.3: `cargo test --workspace --no-fail-fast`: 2762 passed, 0 failed, 101 ignored; `zod4_fixtures` 3,
+  `zod_pipe` 2, `zod_security` 5, `zod_thrown` 5, `zod_linear_traversal` 1, `builtin_pipes_fixtures` 2, and the
+  `fuzz_tests` module pass. `cargo test --release -p corvis --lib z::js`: 6 passed.
+- 11.4: `cargo check -p corvis --tests --features <f>` passes with 0 warnings for the ten features of the CI loop.
+  `--no-default-features --tests` does not compile, for a reason older than this change: `fuzz_tests.rs` imports
+  `crate::jwt` and `jsonwebtoken` unconditionally (so on `dev` too); this change only added the `z::js` properties
+  there. The CI loop's own check without default features is the library clippy of 11.2, which passes. Left unticked
+  for the coordinator: gating the JWT properties of `fuzz_tests.rs` is outside this change.
+- 11.5: one regression test per spec scenario and invariant row. `validation/zod`: huge year and wrapped year
+  (`dates_out_of_range_are_invalid`, `a_year_whose_wrapped_time_looks_valid_is_invalid`, debug and release),
+  edges of the range (`date.coerce.edges`, both lists), astral, multipleOf and number coercion in zod 3
+  (`string.*.astral`, `number.multipleOf.big`, `coerce.number.edges` in `casesV3`), unmergeable intersection
+  (`intersection.conflict`, `an_unmergeable_intersection_is_returned_without_the_panic_hook`), through the pipe
+  (`pipeThrown` in `zod_pipe`), user callback panics
+  (`a_panicking_transform_in_the_pipe_is_a_thrown_error_logged_once_a_minute_without_its_message`), overwrite and
+  check as structure (`du.overwrite`; `templateLiteral.check` is a construction divergence since the security
+  review), zone-less bound
+  (`a_zone_less_date_bound_is_the_same_local_instant_in_both_versions`), BigInt beyond i128
+  (`coerce_bigint_of_a_number_beyond_i128_is_an_invalid_type_issue`, `bigint_of_a_number_outside_i128_is_refused`),
+  empty literal and untagged enum (`literal.empty`, `an_empty_literal_panics_when_built`,
+  `native_enum_of_an_untagged_enum_panics_when_built`). `core/builtin-pipes`: NaN item, large item and replay
+  (`builtin_pipes_follow_the_original`), untagged and plain enum (`parse_enum_pipe_of_*`). `core/validation-pipe`:
+  `number_address_and_length_rules_follow_the_original`. Invariants: the depth tests of `zod_security` plus
+  `a_thrown_error_deep_in_a_lazy_schema_leaves_the_full_nesting_limit`; `zod_linear_traversal`; the `regex.rs` tests
+  and `which_zod3_patterns_are_linear`; `array_unique_is_linear`; `pipeThrown` and
+  `the_serializer_answers_a_thrown_error_with_its_500`; the rate-limited log line test; `js_date_parse_is_total`.
+- 11.8: `node scripts/check-naming.mjs` passes (1055 files); `openspec validate q-validation-correctness --strict` is
+  valid. No crate is added (no commit of this change touches a manifest or the lockfile). `cargo deny check` passes
+  bans, licenses and sources but fails advisories on new "unmaintained" advisories for `chrono`, `chrono-tz` and
+  `chrono-tz-build` (RUSTSEC-2026-0543, -0555, -0559), crates `dev`'s lockfile has at the same versions. Left unticked
+  for the coordinator.
+
+## Security review
+
+One round, on the branch rebased onto `dev`, with proof-of-concept tests run against the branch. Five findings, all
+fixed; each fix landed after a commit with its regression test failing. Security wins over parity with the original
+where they disagree (findings 2 and 4 add divergences, recorded in the fixture replays).
+
+1. **(Medium) `toFixed` formats the full exact expansion.** `js::to_fixed` formatted `|x|` with all its exact fraction
+   digits, up to 1074 for a subnormal, and zod 3 mode's `multipleOf` calls it (through `float_safe_remainder_v3`) for
+   every number: 14,000 × `5e-324` (a 98 KB body) cost about a second of CPU. Fix: the precision is
+   `js::fixed_precision`, the exact expansion when it is short and otherwise `digits + max(60, digits)`; its comment
+   proves that a number with a longer expansion is never close enough to a tie for the shorter one to round the other
+   way, so every result is unchanged. Tests: `to_fixed(5e-324, 2) == "0.00"`, `to_fixed(-1e-300, 2) == "-0.00"` and
+   neighbors of a tie in `to_fixed_parse_float_and_parse_int` (values printed by Node 24); the property
+   `js_to_fixed_is_bounded_and_exact` (any finite double, digits 0 to 100: the precision is at most `digits + 60` up
+   to 60 digits, and the result equals the full expansion's) failed before the fix with 852 digits for
+   `toFixed(-1.16e-242, 0)`; `js_to_fixed_rounds_near_ties_as_the_exact_expansion` (a few units in the last place
+   around ties, up to 22 digits). The cost is pinned by counting digits, not by timing.
+2. **(Low) `ParseIntPipe` rounds integers beyond 2^53.** Going through `parseInt`'s double, `"9007199254740993"` became
+   `9007199254740992` and `"1234567890123456789"` became `1234567890123456768`: a handler would act on another id than
+   the client sent (`dev` parsed exactly). Fix: after the `-?\d+` check the text is parsed exactly as an `i64`, and a
+   JSON integer is taken as it is; the same result as the original below 2^53, a 400 outside `i64`. Tests:
+   `parse_int_pipe_reads_integers_beyond_2_pow_53_exactly` (both strings and their negatives, the `i64` bounds as
+   strings and as JSON numbers, refusals just outside) and the replay `builtin_pipes_follow_the_original`, both
+   failing before the fix. Divergence: the recorder (`generate.mjs`) marks the record `"9007199254740993"` with
+   `divergence.reason` "an integer beyond 2^53, read exactly" and the exact integer as its result, written as a bare
+   JSON number; re-recording changed only that record.
+3. **(Low) Case-insensitive matching without `u` folds U+017F and U+212A to ASCII.** `JsRegex` translated the `i` flag
+   to the `regex` crate's Unicode case folding, so zod 3 mode's `.email()` (`V3_EMAIL`, flag `i`) accepted
+   `"\u{212A}evin@example.com"`, `"\u{17F}am@example.com"` and `"a@example.\u{212A}om"`, which zod 3 refuses (and `dev`
+   refused), and zod 4's `BOOLEAN` pattern matched `"fal\u{17F}e"`. The root fix was contained in `z/regex.rs`: under
+   `i` without `u`/`v`, the literals `s`, `k`, U+017F and U+212A, every bracket class, `\w`/`\W` and the lookarounds of
+   `\b`/`\B` are written so the folding cannot cross into ASCII. Inside ASCII plus those two characters (a set closed
+   under the folding) a class lists its members case-sensitively, a character matching when it or, for an ASCII
+   letter, its other case is in the class; outside it the class keeps the `regex` crate's folding, which agrees with
+   V8 there. Both engines are covered. With `u` the folding is JavaScript's, unchanged. Tests:
+   `ignore_case_without_unicode_keeps_long_s_and_kelvin_apart_from_ascii` (37 patterns and inputs printed by Node 24,
+   `BOOLEAN` included) and the new fixture case `string.email.caseFold` in both lists (recorded with the installed zod
+   4.4.3; re-recording only added it), both failing before the fix. Left as is: V8 and Unicode folding still differ
+   for some non-ASCII pairs (`ß` and `ẞ` match under the `regex` crate, not in V8); no ASCII character is involved.
+4. **(Low) A template literal skips the checks of its parts.** `check_wrapper_structure!` forwards `pattern`, so
+   `template_literal(["user-", string().super_refine(<refuse "admin">)])` built and accepted `"user-admin"`:
+   `ZTemplateLiteral` tests only the combined pattern. On `dev` such a part with superRefine, check or overwrite did not
+   build, and `.refine()` parts were already ignored. zod 4.4.3 ignores them too, but a declared check that is not
+   applied is the unsafe outcome. Fix: a hidden trait method `checks_beyond_pattern` is `true` for the four check-like
+   wrappers and forwarded by every wrapper that forwards `pattern` (optional, exact optional, nullable, lazy, meta,
+   union); `ZTemplateLiteral::new` panics with "a template literal cannot run the checks of its parts" when a part
+   answers `true`. None of the three port apps builds a template literal (`grep` over their sources). Tests: one
+   `#[should_panic]` per wrapper kind
+   (`a_template_literal_part_with_{refine,super_refine,check,overwrite}_panics_when_built`) and one through
+   `.optional()`, failing before the fix; `a_template_literal_of_plain_parts_builds`; the wrapper
+   table test asserts the new method. Divergence: the replay's `construct_divergence` expects that build panic for
+   `templateLiteral.check`, `templateLiteral.overwrite` and the new cases `templateLiteral.refine` and
+   `templateLiteral.superRefine` (zod 4 records them accepted, with refinements that refuse every value), which
+   supersedes the "Behavior visible to applications" row for template literal parts.
+5. **(Hardening, taken) zod 3 mode `z::date()` returned text the lenient parser rolled over.** Without coercion it
+   returns the input string, and since Decision 6 it validated that string with `js::parse_date`, V8's fallbacks
+   included: `z::date().min("2023-03-01")` accepted and returned `"2023-02-30"`, and `"2023-02-31 Tuesday"` passed
+   (`dev`'s chrono parser refused both). Fix: on the non-coercing path only the strict ISO parser
+   (`js::parse_iso_date`) is used, so the validated text is a real calendar date; `z::coerce::date()` keeps following
+   `new Date()` and returns the normalized date. Tests: `coercion` in `z/tests.rs` (the restored `"2023-02-30"`
+   assertion, `"2023-02-31 Tuesday"`, and `.min("2023-03-01")` against `"2023-02-30"`), failing before the fix.
+
+Found while fixing 5, not changed here (outside the findings; the zod fixture records in UTC, so it cannot see them):
+the legacy date parser accepts `"2023-02-31 Tuesday"`, which V8 answers Invalid Date, and reads an ISO-shaped date with
+an out-of-range day (`"2023-02-30"`) as local time where V8 reads it as UTC (`z::coerce::date()` gives
+`2023-03-02T04:00:00.000Z` on a UTC-4 machine; V8 gives `2023-03-02T00:00:00.000Z` in any zone).
+
+## Verification
+
+Windows, `CARGO_TARGET_DIR` shared, on the branch rebased onto `dev` (after the HTTP server robustness change) with the
+fixes of the security review.
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `cargo build --workspace --all-targets` | no warnings |
+| `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p corvis --no-default-features -- -D warnings` | clean |
+| `cargo test --workspace` | 2,793 passed, 0 failed, 101 ignored |
+| `cargo check -p corvis --tests --features <f>` for the ten features of the CI loop (before the review fixes) | no warnings |
+| `cargo check -p corvis --no-default-features --tests` | does not compile, on `dev` either: `fuzz_tests.rs` imports `crate::jwt` and `jsonwebtoken` unconditionally. Not part of CI; left for its own issue |
+| `cargo deny check` | bans, licenses and sources ok; advisories fails on `dev` too (RUSTSEC-2026-0543, -0555, -0559: `chrono`, `chrono-tz`, `chrono-tz-build` unmaintained). No crate added by this change |
+| `node scripts/check-naming.mjs`; `openspec validate q-validation-correctness --strict` | passed; valid |
+| `npm run docs:check` | 179 English and 179 Spanish pages |
+| Security review (one round) | four findings and one hardening note, all fixed with a regression test seen failing first; see "Security review" |
+| Parity, consi: 93 unit tests, apidiff, dbdiff | 832 / 832 equal, databases equivalent |
+| Parity, facten: 254 unit tests (2 ignored), apidiff, routes, dbdiff | 727 / 727 equal, 74 routes on both sides, databases equivalent |
+| Parity, houseplan: 70 + 10 unit tests, apidiff, routes, dbdiff | 636 / 636 equal, 31 routes on both sides; databases equivalent on the second run. The first run differed in `wallet_snapshots` by the two rows of one tick of the 5-minute snapshot job, which the scenario does not control |

@@ -33,6 +33,8 @@ crates/corvis/tests/fixtures/throttler/node_modules
 crates/corvis/tests/fixtures/auth/node_modules
 crates/corvis/tests/fixtures/empty_results/node_modules
 crates/corvis/tests/fixtures/http_filter_order/node_modules
+crates/corvis/tests/fixtures/zod4/node_modules
+crates/corvis/tests/fixtures/builtin_pipes/node_modules
 
 # Port-versus-original benchmark: raw oha output, logs and quick runs
 bench/port-vs-original/raw

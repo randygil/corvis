@@ -54,8 +54,32 @@ ParseUUIDPipe::new().version(4)           // UUID v4 only (accepts 3, 4, 5, or 7
 ParseArrayPipe::new().separator(";").numbers().optional()
 ParseEnumPipe::new(["persian", "siamese"]) // explicit values
 ParseEnumPipe::of::<Breed>()               // variants of a serde enum
-DefaultValuePipe::new(1)                   // replaces null, "" and NaN
+DefaultValuePipe::new(1)                   // replaces null (missing); "" is kept
 ```
+
+### What the built-in pipes accept
+
+These pipes were checked against the output of the original pipes (common package 11.2.1), so the edge cases below are the original's:
+
+| Pipe | Accepts | Refuses |
+|---|---|---|
+| `ParseIntPipe` | `"5"`, `"-0"`, `"007"`; a numeral beyond 2^53 is read exactly (`"9007199254740993"` gives `9007199254740993`) | `"+5"`, `" 5"`, `"5 "`, `""`, `"0x10"`, `"1e3"` |
+| `ParseFloatPipe` | `"1.5"`, `" 1.5 "`, `".5"`, `"5."`, `"1e3"`; the text is read as `parseFloat` does, so `"0x10"` gives `0` | `"Infinity"`, `"NaN"`, `""`, `"1,5"`, `"1.5abc"` |
+| `ParseBoolPipe` | `"true"`, `"false"` and booleans | `"TRUE"`, `"1"`, `""` |
+| `ParseArrayPipe` | The string is trimmed and split on the separator; with `.numbers()` each item is read as `Number()` (`" 2"` is `2`, `"0x10"` is `16`) | An empty or missing value (unless `.optional()`); with `.numbers()`, an empty item, `NaN` or an infinity, with `[index] item must be a number` |
+| `DefaultValuePipe` | Replaces only `null` (a missing value) | Nothing: `""` and `0` are kept |
+
+The items of `ParseArrayPipe` are not trimmed one by one: `"a, b"` gives `["a", " b"]`.
+
+Three divergences from the original, because Corvis works on JSON values and never accepts a different value silently:
+
+- `ParseIntPipe` reads a numeral beyond 2^53 exactly, where the original's `parseInt` rounds it to the nearest double (`"9007199254740993"` gives `9007199254740992` there), so a handler gets the id the client sent.
+- `ParseIntPipe` refuses an integer outside `i64` (2^63 or more, such as `"99999999999999999999"`) with its 400, where the original returns a `Number`.
+- `ParseArrayPipe` with `.numbers()` refuses `"Infinity"` as an item (JSON has no infinity), with the same `[0] item must be a number` error.
+
+Two more behaviors of the original's array pipe are not ported: it runs `JSON.parse` on each item before converting it, so `"true"` becomes `1` there and is refused here, and it falls back to `,` when the separator is empty (here an empty separator splits into characters).
+
+`ParseEnumPipe::of::<T>()` panics when it is built if the variant names of `T` cannot be read (an untagged, internally or adjacently tagged enum, or a type that is not an enum), instead of building a pipe that refuses every value. For those types use `ParseEnumPipe::new([..])` with explicit values.
 
 ## Using a pipe on a parameter
 

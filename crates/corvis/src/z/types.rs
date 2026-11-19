@@ -3,7 +3,6 @@
 //!
 //! Each node implements zod 3 semantics in `check` (kept as they were) and zod 4 in `run_v4`.
 
-use std::net::IpAddr;
 use std::sync::{Arc, LazyLock};
 
 use base64::Engine;
@@ -15,26 +14,23 @@ use super::core::{CheckOpts, CheckRunner, ErrorMap, ErrorParam, Payload, RawIssu
 use super::regex::JsRegex;
 use super::{JsonSchemaGen, ParseCtx, Schema, TypeErrors, ZodIssueCode, ZodType, invalid_type, js, regexes, v3_via_v4};
 
-static EMAIL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_'+\-.]*[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$").unwrap());
+// The patterns of zod 3 (`zod/v3`) where they are not those of `regexes` (its `ipv4Regex` is `regexes::IPV4`).
+static V3_EMAIL: LazyLock<JsRegex> =
+    LazyLock::new(|| JsRegex::new(r"^(?!\.)(?!.*\.\.)([A-Z0-9_'+\-\.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\-]*\.)+[A-Z]{2,}$", "i"));
+static V3_CUID: LazyLock<JsRegex> = LazyLock::new(|| JsRegex::new(r"^c[^\s-]{8,}$", "i"));
+static V3_IPV6: LazyLock<JsRegex> = LazyLock::new(|| {
+    JsRegex::new(
+        r"^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$",
+        "",
+    )
+});
 static UUID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap());
-static CUID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^c[^\s-]{8,}$").unwrap());
-static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^\s/?#]+[^\s]*$").unwrap());
 static DATETIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z$").unwrap());
 static DATETIME_OFFSET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)$").unwrap());
 static DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap());
 static TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{2}:\d{2}(:\d{2}(\.\d+)?)?$").unwrap());
-
-/// Formats a number like JavaScript does (`5` instead of `5.0`).
-pub(crate) fn fmt_num(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") }
-}
-
-pub(crate) fn num_value(n: f64) -> Value {
-    if n.fract() == 0.0 && n.abs() < 9.007_199_254_740_992e15 { json!(n as i64) } else { json!(n) }
-}
 
 pub(crate) fn issue_params(pairs: &[(&str, Value)]) -> Map<String, Value> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
@@ -1141,12 +1137,7 @@ impl ZodType for ZString {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
         let mut s = match input {
             Some(Value::String(s)) => s.clone(),
-            Some(other) if self.coerce => match other {
-                Value::Null => "null".to_string(),
-                Value::Bool(b) => b.to_string(),
-                Value::Number(n) => n.to_string(),
-                v => v.to_string(),
-            },
+            Some(other) if self.coerce => js::to_js_string(other),
             None if self.coerce => "undefined".to_string(),
             other => {
                 invalid_type(ctx, "string", other, &self.errors);
@@ -1154,8 +1145,9 @@ impl ZodType for ZString {
             }
         };
         let mut ok = true;
+        // `str.length`; zod 3 runs its transforms (`trim`, ...) in order with the checks.
+        let mut len = js::js_len(&s);
         for c in &self.checks {
-            let len = s.chars().count();
             let fail = |ctx: &mut ParseCtx, code: ZodIssueCode, default: String, p: Map<String, Value>| {
                 ctx.add(code, c.message.clone().unwrap_or(default), p);
             };
@@ -1207,10 +1199,11 @@ impl ZodType for ZString {
                 }
                 StrKind::Format(f) => {
                     let bad = match f.legacy {
-                        Legacy::Email => (!EMAIL.is_match(&s)).then_some(("email", "Invalid email")),
-                        Legacy::Url => (!URL.is_match(&s)).then_some(("url", "Invalid url")),
+                        Legacy::Email => (!V3_EMAIL.test(&s)).then_some(("email", "Invalid email")),
+                        // `new URL(input)`.
+                        Legacy::Url => url::Url::parse(&s).is_err().then_some(("url", "Invalid url")),
                         Legacy::Uuid => (!UUID.is_match(&s)).then_some(("uuid", "Invalid uuid")),
-                        Legacy::Cuid => (!CUID.is_match(&s)).then_some(("cuid", "Invalid cuid")),
+                        Legacy::Cuid => (!V3_CUID.test(&s)).then_some(("cuid", "Invalid cuid")),
                         Legacy::Datetime(offset) => {
                             let re = if offset { &DATETIME_OFFSET } else { &DATETIME };
                             (!re.is_match(&s) || chrono::DateTime::parse_from_rfc3339(&normalize_seconds(&s)).is_err())
@@ -1219,7 +1212,7 @@ impl ZodType for ZString {
                         Legacy::Date => (!DATE.is_match(&s) || chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").is_err())
                             .then_some(("date", "Invalid date")),
                         Legacy::Time => (!TIME.is_match(&s)).then_some(("time", "Invalid time")),
-                        Legacy::Ip => s.parse::<IpAddr>().is_err().then_some(("ip", "Invalid ip")),
+                        Legacy::Ip => (!regexes::IPV4.test(&s) && !V3_IPV6.test(&s)).then_some(("ip", "Invalid ip")),
                         Legacy::None => None,
                     };
                     if f.legacy != Legacy::None {
@@ -1256,12 +1249,12 @@ impl ZodType for ZString {
                         invalid(ctx, json!({ "includes": p }), &format!("Invalid input: must include \"{p}\""));
                     }
                 }
-                StrKind::Trim => s = s.trim().to_string(),
-                StrKind::ToLower => s = s.to_lowercase(),
-                StrKind::ToUpper => s = s.to_uppercase(),
-                StrKind::Normalize(form) => s = js_normalize(&s, form),
-                StrKind::Slugify => s = slugify(&s),
-                _ => {}
+                kind => {
+                    if let Some(next) = v3_transform(kind, &s) {
+                        s = next;
+                        len = js::js_len(&s);
+                    }
+                }
             }
         }
         if ok { Ok(Some(Value::String(s))) } else { Err(()) }
@@ -1312,6 +1305,18 @@ impl ZodType for ZString {
         string_json_schema(&self.bag(), jsg, json);
         Ok(())
     }
+}
+
+/// The string a zod 3 transform (`trim`, `toLowerCase`, ...) makes of `s`; `None` for a check.
+fn v3_transform(kind: &StrKind, s: &str) -> Option<String> {
+    Some(match kind {
+        StrKind::Trim => js::js_trim(s).to_string(),
+        StrKind::ToLower => s.to_lowercase(),
+        StrKind::ToUpper => s.to_uppercase(),
+        StrKind::Normalize(form) => js_normalize(s, form),
+        StrKind::Slugify => slugify(s),
+        _ => return None,
+    })
 }
 
 /// `2024-01-01T10:00Z` → `2024-01-01T10:00:00Z` so chrono can parse it.
@@ -1396,6 +1401,18 @@ pub(crate) fn float_safe_remainder(val: f64, step: f64) -> f64 {
     let rounded = ratio.round();
     let tolerance = f64::EPSILON * ratio.abs().max(1.0);
     if (ratio - rounded).abs() < tolerance { 0.0 } else { ratio - rounded }
+}
+
+/// zod 3's `floatSafeRemainder`: both numbers scaled to integers by the larger count of fraction digits in their
+/// `toString()`. zod 3 refuses `0.30000000000000004` as a multiple of `0.1`, which zod 4's algorithm
+/// (`float_safe_remainder`) accepts (`number.multipleOf.tenth` in the zod fixture).
+pub(crate) fn float_safe_remainder_v3(val: f64, step: f64) -> f64 {
+    let decimals = |x: f64| js::num_to_string(x).split_once('.').map_or(0, |(_, fraction)| fraction.len());
+    let digits = decimals(val).max(decimals(step));
+    let scaled = |x: f64| js::parse_int(&js::to_fixed(x, digits).replacen('.', "", 1));
+    // `toString()` has at most 17 significant digits plus an exponent suffix, so `digits` is at most 22 and the power
+    // of ten is exact.
+    (scaled(val) % scaled(step)) / 10f64.powi(i32::try_from(digits).unwrap_or(i32::MAX))
 }
 
 impl ZNumber {
@@ -1697,14 +1714,8 @@ pub(crate) fn number_json_schema(b: &NumBag, jsg: &JsonSchemaGen, json: &mut Map
 impl ZodType for ZNumber {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
         let n: f64 = match input {
-            Some(Value::Number(n)) => n.as_f64().unwrap_or(f64::NAN),
-            Some(other) if self.coerce => match other {
-                Value::String(s) if s.trim().is_empty() => 0.0,
-                Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
-                Value::Bool(b) => f64::from(u8::from(*b)),
-                Value::Null => 0.0,
-                _ => f64::NAN,
-            },
+            Some(Value::Number(n)) => js::json_f64(n),
+            Some(other) if self.coerce => js::to_number(Some(other)),
             other => {
                 invalid_type(ctx, "number", other, &self.errors);
                 return Err(());
@@ -1751,15 +1762,15 @@ impl ZodType for ZNumber {
                 NumKind::Min(v, inclusive) if (inclusive && n < v) || (!inclusive && n <= v) => {
                     ok = false;
                     let d = if inclusive {
-                        format!("Number must be greater than or equal to {}", fmt_num(v))
+                        format!("Number must be greater than or equal to {}", js::num_to_string(v))
                     } else {
-                        format!("Number must be greater than {}", fmt_num(v))
+                        format!("Number must be greater than {}", js::num_to_string(v))
                     };
                     ctx.add(
                         ZodIssueCode::TooSmall,
                         msg(d),
                         issue_params(&[
-                            ("minimum", num_value(v)),
+                            ("minimum", js::num_json(v)),
                             ("type", json!("number")),
                             ("inclusive", json!(inclusive)),
                             ("exact", json!(false)),
@@ -1769,27 +1780,27 @@ impl ZodType for ZNumber {
                 NumKind::Max(v, inclusive) if (inclusive && n > v) || (!inclusive && n >= v) => {
                     ok = false;
                     let d = if inclusive {
-                        format!("Number must be less than or equal to {}", fmt_num(v))
+                        format!("Number must be less than or equal to {}", js::num_to_string(v))
                     } else {
-                        format!("Number must be less than {}", fmt_num(v))
+                        format!("Number must be less than {}", js::num_to_string(v))
                     };
                     ctx.add(
                         ZodIssueCode::TooBig,
                         msg(d),
                         issue_params(&[
-                            ("maximum", num_value(v)),
+                            ("maximum", js::num_json(v)),
                             ("type", json!("number")),
                             ("inclusive", json!(inclusive)),
                             ("exact", json!(false)),
                         ]),
                     );
                 }
-                NumKind::MultipleOf(m) if m != 0.0 && ((n / m).round() * m - n).abs() > 1e-9 * n.abs().max(1.0) => {
+                NumKind::MultipleOf(m) if m != 0.0 && float_safe_remainder_v3(n, m) != 0.0 => {
                     ok = false;
                     ctx.add(
                         ZodIssueCode::NotMultipleOf,
-                        msg(format!("Number must be a multiple of {}", fmt_num(m))),
-                        issue_params(&[("multipleOf", num_value(m))]),
+                        msg(format!("Number must be a multiple of {}", js::num_to_string(m))),
+                        issue_params(&[("multipleOf", js::num_json(m))]),
                     );
                 }
                 NumKind::Finite if !n.is_finite() => {
@@ -1805,7 +1816,13 @@ impl ZodType for ZNumber {
         // Keep the original JSON number when it was not coerced (preserves u64/i64 exactly).
         match input {
             Some(v @ Value::Number(_)) => Ok(Some(v.clone())),
-            _ => Ok(Some(num_value(n))),
+            // zod 3 returns the infinite number a coercion gives (`"Infinity"`); a JSON value cannot hold it, so it is
+            // refused with zod 3's issue for an infinite number (a recorded divergence).
+            _ if n.is_infinite() => {
+                ctx.add(ZodIssueCode::NotFinite, "Number must be finite", Map::new());
+                Err(())
+            }
+            _ => Ok(Some(js::num_json(n))),
         }
     }
 
@@ -2090,27 +2107,22 @@ impl ZodType for ZBoolean {
     }
 }
 
-/// `z.date()`. zod 3: an ISO 8601 date / date-time string (with `coerce`, millisecond timestamps
-/// are accepted and normalized). zod 4: a `Date` value; JSON has no dates, so they come from
-/// `z.coerce.date()`, transforms, or ISO strings when [`ZodConfig::date_strings`](super::ZodConfig) is on.
+/// `z.date()`. zod 3: a string in the ECMAScript date time format that is a real calendar date, returned as given
+/// (with `coerce`, any string or millisecond number, as `new Date(input)`, returned normalized). zod 4: a `Date` value;
+/// JSON has no dates, so they come from `z.coerce.date()`, transforms, or ISO strings when
+/// [`ZodConfig::date_strings`](super::ZodConfig) is on. Bounds and coerced text are read with JavaScript's date parser.
 #[derive(Clone, Default)]
 pub struct ZDate {
     coerce: bool,
-    min: Option<(chrono::DateTime<chrono::Utc>, Option<String>)>,
-    max: Option<(chrono::DateTime<chrono::Utc>, Option<String>)>,
+    /// `(is_min, bound)`: the bounds of both versions, each parsed once with the JavaScript date parser.
     checks: Vec<Chk<(bool, f64)>>,
     errors: TypeErrors,
     error: Option<ErrorMap>,
 }
 
-fn parse_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    if let Ok(d) = chrono::DateTime::parse_from_rfc3339(&normalize_seconds(s)) {
-        return Some(d.with_timezone(&chrono::Utc));
-    }
-    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return d.and_hms_opt(0, 0, 0).map(|n| n.and_utc());
-    }
-    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").ok().map(|n| n.and_utc())
+/// A date bound as zod 3 mode's messages write it (RFC 3339).
+fn v3_bound_text(t: f64) -> String {
+    chrono::DateTime::from_timestamp_millis(t as i64).map_or_else(|| js::date_to_iso(t).unwrap_or_default(), |d| d.to_rfc3339())
 }
 
 impl ZDate {
@@ -2122,27 +2134,36 @@ impl ZDate {
         self
     }
     check_builders!();
-    /// `.min(date)`; the date is an ISO string. Panics if it does not parse.
-    pub fn min(mut self, date: &str) -> Self {
-        self.min = Some((parse_date(date).expect("z::date().min(): invalid date"), None));
-        self.checks.push(Chk::new((true, js::parse_date(date))));
+    fn bound(mut self, is_min: bool, date: &str, method: &str) -> Self {
+        let t = js::parse_date(date);
+        assert!(!t.is_nan(), "z::date().{method}(): invalid date");
+        self.checks.push(Chk::new((is_min, t)));
         self
     }
-    /// `.max(date)`.
-    pub fn max(mut self, date: &str) -> Self {
-        self.max = Some((parse_date(date).expect("z::date().max(): invalid date"), None));
-        self.checks.push(Chk::new((false, js::parse_date(date))));
-        self
+    /// `.min(new Date(date))`. The bound is parsed once, with JavaScript's date parser, and both versions use that
+    /// instant: a date-time without a time zone (`"2024-01-01T10:00:00"`) is local time, a date alone is UTC.
+    ///
+    /// # Panics
+    ///
+    /// When `date` is not a date JavaScript reads (an invalid bound).
+    pub fn min(self, date: &str) -> Self {
+        self.bound(true, date, "min")
+    }
+    /// `.max(new Date(date))`, parsed as [`min`](Self::min) parses its bound.
+    ///
+    /// # Panics
+    ///
+    /// When `date` is not a date JavaScript reads.
+    pub fn max(self, date: &str) -> Self {
+        self.bound(false, date, "max")
     }
     /// `.min(new Date(ms))`.
     pub fn min_ms(mut self, ms: f64) -> Self {
-        self.min = chrono::DateTime::from_timestamp_millis(ms as i64).map(|d| (d, None));
         self.checks.push(Chk::new((true, ms)));
         self
     }
     /// `.max(new Date(ms))`.
     pub fn max_ms(mut self, ms: f64) -> Self {
-        self.max = chrono::DateTime::from_timestamp_millis(ms as i64).map(|d| (d, None));
         self.checks.push(Chk::new((false, ms)));
         self
     }
@@ -2153,57 +2174,45 @@ impl ZDate {
 
 impl ZodType for ZDate {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
-        let (date, original) = match input {
-            Some(Value::String(s)) => (parse_date(s), Some(s.clone())),
-            Some(Value::Number(n)) if self.coerce => (n.as_i64().and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis), None),
+        // `z.coerce.date()` is `new Date(input)`, and its output is the normalized date. Without coercion, Corvis takes
+        // an ISO date string (JSON has no dates) and returns that text, so only the strict ISO format is read: the
+        // lenient fallbacks would validate `"2023-02-30"` (March 2) or `"2023-02-31 Tuesday"` and return the text.
+        let t = match input {
+            Some(Value::String(_) | Value::Number(_)) if self.coerce => js::to_date(input),
+            Some(Value::String(s)) if js::looks_like_iso_datetime(s) => js::parse_iso_date(s).unwrap_or(f64::NAN),
+            Some(Value::String(_)) => f64::NAN,
             other => {
                 invalid_type(ctx, "date", other, &self.errors);
                 return Err(());
             }
         };
-        let Some(date) = date else {
+        if t.is_nan() {
             ctx.add(ZodIssueCode::InvalidDate, "Invalid date", Map::new());
             return Err(());
-        };
-        let mut ok = true;
-        let min_msg = self.checks.iter().find(|c| c.kind.0).and_then(|c| c.message.clone());
-        let max_msg = self.checks.iter().find(|c| !c.kind.0).and_then(|c| c.message.clone());
-        if let Some((min, msg)) = &self.min
-            && date < *min
-        {
-            ok = false;
-            ctx.add(
-                ZodIssueCode::TooSmall,
-                msg.clone().or(min_msg).unwrap_or_else(|| format!("Date must be greater than or equal to {}", min.to_rfc3339())),
-                issue_params(&[
-                    ("minimum", json!(min.timestamp_millis())),
-                    ("type", json!("date")),
-                    ("inclusive", json!(true)),
-                    ("exact", json!(false)),
-                ]),
-            );
         }
-        if let Some((max, msg)) = &self.max
-            && date > *max
-        {
+        let mut ok = true;
+        for c in &self.checks {
+            let (is_min, bound) = c.kind;
+            let (code, key, text) = if is_min && t < bound {
+                (ZodIssueCode::TooSmall, "minimum", "greater than or equal to")
+            } else if !is_min && t > bound {
+                (ZodIssueCode::TooBig, "maximum", "smaller than or equal to")
+            } else {
+                continue;
+            };
             ok = false;
             ctx.add(
-                ZodIssueCode::TooBig,
-                msg.clone().or(max_msg).unwrap_or_else(|| format!("Date must be smaller than or equal to {}", max.to_rfc3339())),
-                issue_params(&[
-                    ("maximum", json!(max.timestamp_millis())),
-                    ("type", json!("date")),
-                    ("inclusive", json!(true)),
-                    ("exact", json!(false)),
-                ]),
+                code,
+                c.message.clone().unwrap_or_else(|| format!("Date must be {text} {}", v3_bound_text(bound))),
+                issue_params(&[(key, js::num_json(bound)), ("type", json!("date")), ("inclusive", json!(true)), ("exact", json!(false))]),
             );
         }
         if !ok {
             return Err(());
         }
-        Ok(Some(Value::String(match (original, self.coerce) {
-            (Some(s), false) => s,
-            _ => date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        Ok(Some(Value::String(match input {
+            Some(Value::String(s)) if !self.coerce => s.clone(),
+            _ => js::date_to_iso(t).unwrap_or_default(),
         })))
     }
     fn type_name(&self) -> String {
@@ -2287,12 +2296,15 @@ pub struct ZLiteral {
 
 impl ZLiteral {
     /// `z.literal(value)`; a JSON array means several values (like `z.literal([...])`).
+    ///
+    /// # Panics
+    ///
+    /// For an empty array, with the original's message "Cannot create literal schema with no valid values".
     pub fn new(value: Value) -> Self {
-        let values = match value {
-            Value::Array(a) => a.into_iter().map(Val::Json).collect(),
-            v => vec![Val::Json(v)],
-        };
-        ZLiteral { values, error: None }
+        match value {
+            Value::Array(a) => Self::from_vals(a.into_iter().map(Val::Json).collect()),
+            v => ZLiteral { values: vec![Val::Json(v)], error: None },
+        }
     }
     /// From any JS values (`undefined`, `BigInt`, ...).
     pub fn from_vals(values: Vec<Val>) -> Self {
@@ -2840,6 +2852,13 @@ impl ZTemplateLiteral {
             match p {
                 TemplatePart::Schema(s) => {
                     let pat = s.node().pattern().unwrap_or_else(|| panic!("Invalid template literal part, no pattern found"));
+                    // zod 4 builds such a part and never runs its check; a declared check that is skipped would accept
+                    // what it refuses.
+                    assert!(
+                        !s.node().checks_beyond_pattern(),
+                        "Invalid template literal part: a template literal cannot run the checks of its parts (refine, \
+                         superRefine, check, overwrite); refine the whole template literal instead"
+                    );
                     let pat = pat.strip_prefix('^').unwrap_or(&pat);
                     let pat = pat.strip_suffix('$').unwrap_or(pat);
                     src.push_str(pat);
@@ -3162,6 +3181,10 @@ pub fn date() -> ZDate {
     ZDate::new()
 }
 /// `z.literal(value)` (a JSON array is a list of values: `z.literal([...])`).
+///
+/// # Panics
+///
+/// For an empty array (`z::literal(json!([]))`), when the schema is built, as the original throws when it is created.
 pub fn literal(value: impl Into<Value>) -> ZLiteral {
     ZLiteral::new(value.into())
 }
@@ -3185,9 +3208,14 @@ where
 {
     ZEnum::from_entries(entries.into_iter().map(|(k, v)| (k.into(), v)).collect())
 }
-/// `z.nativeEnum(...)` for a Rust enum deriving `Deserialize` (unit variants).
+/// `z.nativeEnum(...)` for a Rust enum deriving `Deserialize` (unit variants, `rename_all` respected).
+///
+/// # Panics
+///
+/// When the variant names of `T` cannot be read: an untagged, internally or adjacently tagged enum, or a type that is
+/// not an enum (the message names `T`). The schema is built by application code, so this fails at startup.
 pub fn native_enum<T: DeserializeOwned>() -> ZEnum {
-    ZEnum::new(crate::validation::rules::enum_variants::<T>().iter().map(|s| s.to_string()).collect())
+    ZEnum::new(crate::validation::rules::readable_enum_variants::<T>("z::native_enum").iter().map(|s| s.to_string()).collect())
 }
 /// `z.any()`.
 pub fn any() -> ZAny {
@@ -3246,12 +3274,176 @@ pub mod coerce {
     pub fn boolean() -> ZBoolean {
         ZBoolean::new().coerce()
     }
-    /// `z.coerce.bigint()`.
+    /// `z.coerce.bigint()`: `BigInt(input)`. Values are `i128`: a number or numeral whose integer value is outside the
+    /// `i128` range gets the `invalid_type` issue (JavaScript's BigInt has no bound; Corvis refuses what it cannot
+    /// represent rather than saturating).
     pub fn bigint() -> ZBigInt {
         ZBigInt::new().coerce()
     }
-    /// `z.coerce.date()`.
+    /// `z.coerce.date()`: `new Date(input)`, with JavaScript's date parser. A date outside the ECMAScript range
+    /// (±8.64e15 ms from 1970, years -271821 to 275760), a year, offset or numeral too large to compute, or text the
+    /// parser does not read is an invalid date (`invalid_type`, `received: "Invalid Date"`), in every build.
     pub fn date() -> ZDate {
         ZDate::new().coerce()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::z::ZodSchema as _;
+
+    /// A template literal tests only the combined pattern of its parts; a check of a part would never run.
+    fn user_template(part: Schema) -> ZTemplateLiteral {
+        template_literal([TemplatePart::from("user-"), part.into()])
+    }
+
+    fn no_admin(v: &Value) -> bool {
+        !v.as_str().is_some_and(|s| s.contains("admin"))
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_refine_panics_when_built() {
+        user_template(string().refine(no_admin, ()));
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_super_refine_panics_when_built() {
+        user_template(string().super_refine(|v, ctx| {
+            if !no_admin(v) {
+                ctx.add_issue("no admin");
+            }
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_check_panics_when_built() {
+        user_template(string().check_fn(|_| {}));
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_overwrite_panics_when_built() {
+        user_template(string().overwrite(|v| v));
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_a_refine_under_optional_panics_when_built() {
+        user_template(string().refine(no_admin, ()).optional());
+    }
+
+    #[test]
+    fn a_template_literal_of_plain_parts_builds() {
+        let t = user_template(Schema::new(string()));
+        assert!(t.is_valid(&json!("user-admin")));
+        assert!(!t.is_valid(&json!("admin")));
+    }
+
+    /// zod 3 mode checks with zod 3's own patterns, on the JavaScript engine: the email pattern keeps its lookaheads
+    /// (which the `regex` crate cannot express) and its `i` flag.
+    #[test]
+    fn zod3_patterns_are_zod3_sources() {
+        assert_eq!(V3_EMAIL.to_string(), r"/^(?!\.)(?!.*\.\.)([A-Z0-9_'+\-\.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\-]*\.)+[A-Z]{2,}$/i");
+        assert_eq!(V3_CUID.to_string(), r"/^c[^\s-]{8,}$/i");
+        assert!(V3_IPV6.source().contains("fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}"));
+    }
+
+    /// The email pattern needs the bounded backtracking engine (lookaheads); the others run in linear time.
+    #[test]
+    fn which_zod3_patterns_are_linear() {
+        assert!(!V3_EMAIL.is_linear());
+        assert!(V3_CUID.is_linear());
+        assert!(V3_IPV6.is_linear());
+        assert!(regexes::IPV4.is_linear());
+    }
+
+    /// A bound without a time zone is one local instant, the same in both versions (the inputs are that instant and
+    /// the millisecond before it, written in UTC, so a version that read the bound as UTC would disagree off UTC).
+    #[test]
+    fn a_zone_less_date_bound_is_the_same_local_instant_in_both_versions() {
+        use crate::z::{ParseOptions, ZodSchema, ZodVersion};
+        let schema = date().min("2024-01-01T10:00:00");
+        let bound = js::parse_date("2024-01-01T10:00:00");
+        let at = json!(js::date_to_iso(bound).unwrap());
+        let before = json!(js::date_to_iso(bound - 1.0).unwrap());
+        for version in [ZodVersion::V3, ZodVersion::V4] {
+            let opts = ParseOptions::new().version(version).date_strings(true);
+            let e = schema.parse_with(&before, &opts).expect_err("one millisecond before the bound");
+            assert_eq!(e.issues[0].code, ZodIssueCode::TooSmall, "{version:?}");
+            assert!(schema.parse_with(&at, &opts).is_ok(), "{version:?}: the bound itself");
+        }
+    }
+
+    #[test]
+    fn coerce_bigint_of_a_number_beyond_i128_is_an_invalid_type_issue() {
+        use crate::z::ZodSchema;
+        for n in [json!(1e39), json!(-1e39)] {
+            let e = coerce::bigint().parse(&n).unwrap_err();
+            assert_eq!(e.issues.len(), 1, "{n}");
+            assert_eq!(e.issues[0].code, ZodIssueCode::InvalidType, "{n}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot create literal schema with no valid values")]
+    fn an_empty_literal_panics_when_built() {
+        let _ = literal(json!([]));
+    }
+
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Untagged {
+        A(String),
+        B(i64),
+    }
+
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type")]
+    enum InternallyTagged {
+        A,
+        B,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Role {
+        Admin,
+        User,
+    }
+
+    #[test]
+    #[should_panic(expected = "Untagged")]
+    fn native_enum_of_an_untagged_enum_panics_when_built() {
+        let _ = native_enum::<Untagged>();
+    }
+
+    #[test]
+    #[should_panic(expected = "InternallyTagged")]
+    fn native_enum_of_an_internally_tagged_enum_panics_when_built() {
+        let _ = native_enum::<InternallyTagged>();
+    }
+
+    #[test]
+    fn native_enum_of_a_plain_enum_reads_its_variants() {
+        use crate::z::ZodSchema;
+        let _ = (Role::Admin, Role::User);
+        let role = native_enum::<Role>();
+        assert!(role.is_valid(&json!("admin")) && role.is_valid(&json!("user")));
+        assert!(!role.is_valid(&json!("root")));
+    }
+
+    #[test]
+    fn zod3_remainder_scales_by_the_fraction_digits() {
+        assert_eq!(float_safe_remainder_v3(0.3, 0.1), 0.0);
+        assert_ne!(float_safe_remainder_v3(0.30000000000000004, 0.1), 0.0);
+        assert_ne!(float_safe_remainder_v3(12345.00001, 1.0), 0.0);
+        assert_eq!(float_safe_remainder_v3(1e21, 1.0), 0.0);
+        assert_eq!(float_safe_remainder(0.30000000000000004, 0.1), 0.0, "zod 4 accepts it");
     }
 }

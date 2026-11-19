@@ -8118,6 +8118,1111 @@
      ]
     }
    ]
+  },
+  {
+   "name": "string.min.astral",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "😀",
+     "success": true,
+     "data": "😀"
+    },
+    {
+     "input": "a",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "too_small",
+       "minimum": 2,
+       "inclusive": true,
+       "path": [],
+       "message": "Too small: expected string to have >=2 characters"
+      }
+     ]
+    },
+    {
+     "input": "é",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "too_small",
+       "minimum": 2,
+       "inclusive": true,
+       "path": [],
+       "message": "Too small: expected string to have >=2 characters"
+      }
+     ]
+    },
+    {
+     "input": "a😀",
+     "success": true,
+     "data": "a😀"
+    },
+    {
+     "input": "ab",
+     "success": true,
+     "data": "ab"
+    }
+   ]
+  },
+  {
+   "name": "string.max.astral",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "😀",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "too_big",
+       "maximum": 1,
+       "inclusive": true,
+       "path": [],
+       "message": "Too big: expected string to have <=1 characters"
+      }
+     ]
+    },
+    {
+     "input": "a",
+     "success": true,
+     "data": "a"
+    },
+    {
+     "input": "é",
+     "success": true,
+     "data": "é"
+    },
+    {
+     "input": "a😀",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "too_big",
+       "maximum": 1,
+       "inclusive": true,
+       "path": [],
+       "message": "Too big: expected string to have <=1 characters"
+      }
+     ]
+    },
+    {
+     "input": "ab",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "too_big",
+       "maximum": 1,
+       "inclusive": true,
+       "path": [],
+       "message": "Too big: expected string to have <=1 characters"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "string.length.astral",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "😀",
+     "success": true,
+     "data": "😀"
+    },
+    {
+     "input": "a",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "too_small",
+       "minimum": 2,
+       "inclusive": true,
+       "exact": true,
+       "path": [],
+       "message": "Too small: expected string to have >=2 characters"
+      }
+     ]
+    },
+    {
+     "input": "é",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "too_small",
+       "minimum": 2,
+       "inclusive": true,
+       "exact": true,
+       "path": [],
+       "message": "Too small: expected string to have >=2 characters"
+      }
+     ]
+    },
+    {
+     "input": "a😀",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "too_big",
+       "maximum": 2,
+       "inclusive": true,
+       "exact": true,
+       "path": [],
+       "message": "Too big: expected string to have <=2 characters"
+      }
+     ]
+    },
+    {
+     "input": "ab",
+     "success": true,
+     "data": "ab"
+    }
+   ]
+  },
+  {
+   "name": "number.multipleOf.big",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 12345.00001,
+     "success": false,
+     "issues": [
+      {
+       "origin": "number",
+       "code": "not_multiple_of",
+       "divisor": 1,
+       "path": [],
+       "message": "Invalid number: must be a multiple of 1"
+      }
+     ]
+    },
+    {
+     "input": 1000000000000.5,
+     "success": false,
+     "issues": [
+      {
+       "origin": "number",
+       "code": "not_multiple_of",
+       "divisor": 1,
+       "path": [],
+       "message": "Invalid number: must be a multiple of 1"
+      }
+     ]
+    },
+    {
+     "input": 3,
+     "success": true,
+     "data": 3
+    },
+    {
+     "input": 1e+21,
+     "success": true,
+     "data": 1e+21
+    }
+   ]
+  },
+  {
+   "name": "number.multipleOf.tenth",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 0.3,
+     "success": true,
+     "data": 0.3
+    },
+    {
+     "input": 0.30000000000000004,
+     "success": true,
+     "data": 0.30000000000000004
+    },
+    {
+     "input": 1.1,
+     "success": true,
+     "data": 1.1
+    },
+    {
+     "input": 2.55,
+     "success": false,
+     "issues": [
+      {
+       "origin": "number",
+       "code": "not_multiple_of",
+       "divisor": 0.1,
+       "path": [],
+       "message": "Invalid number: must be a multiple of 0.1"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "number.multipleOf.hundredth",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 19.99,
+     "success": true,
+     "data": 19.99
+    },
+    {
+     "input": 0.07,
+     "success": true,
+     "data": 0.07
+    },
+    {
+     "input": 1.005,
+     "success": false,
+     "issues": [
+      {
+       "origin": "number",
+       "code": "not_multiple_of",
+       "divisor": 0.01,
+       "path": [],
+       "message": "Invalid number: must be a multiple of 0.01"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "string.email.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": ".a@b.co",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "a..b@b.co",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "A@B.CO",
+     "success": true,
+     "data": "A@B.CO"
+    },
+    {
+     "input": "a@b.c",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "a_b@c-d.ef",
+     "success": true,
+     "data": "a_b@c-d.ef"
+    }
+   ]
+  },
+  {
+   "name": "string.email.caseFold",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "Kevin@example.com",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "ſam@example.com",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "a@example.Kom",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "kevin@example.com",
+     "success": true,
+     "data": "kevin@example.com"
+    }
+   ]
+  },
+  {
+   "name": "string.cuid.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "CJLD2CJXH0000QZRMN831I7RN",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "cuid",
+       "pattern": "/^[cC][0-9a-z]{6,}$/",
+       "path": [],
+       "message": "Invalid cuid"
+      }
+     ]
+    },
+    {
+     "input": "cjld2cjxh0000qzrmn831i7rn",
+     "success": true,
+     "data": "cjld2cjxh0000qzrmn831i7rn"
+    },
+    {
+     "input": "c-abcdefgh",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "cuid",
+       "pattern": "/^[cC][0-9a-z]{6,}$/",
+       "path": [],
+       "message": "Invalid cuid"
+      }
+     ]
+    },
+    {
+     "input": "cabc",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "cuid",
+       "pattern": "/^[cC][0-9a-z]{6,}$/",
+       "path": [],
+       "message": "Invalid cuid"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "string.url.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "mailto:a@b.co",
+     "success": true,
+     "data": "mailto:a@b.co"
+    },
+    {
+     "input": "http://",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_format",
+       "format": "url",
+       "path": [],
+       "message": "Invalid URL"
+      }
+     ]
+    },
+    {
+     "input": "https://corvis.dev",
+     "success": true,
+     "data": "https://corvis.dev"
+    },
+    {
+     "input": "foo:bar",
+     "success": true,
+     "data": "foo:bar"
+    },
+    {
+     "input": "//x.com",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_format",
+       "format": "url",
+       "path": [],
+       "message": "Invalid URL"
+      }
+     ]
+    },
+    {
+     "input": "javascript:alert(1)",
+     "success": true,
+     "data": "javascript:alert(1)"
+    }
+   ]
+  },
+  {
+   "name": "coerce.number.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "inf",
+     "success": false,
+     "issues": [
+      {
+       "expected": "number",
+       "code": "invalid_type",
+       "received": "NaN",
+       "path": [],
+       "message": "Invalid input: expected number, received NaN"
+      }
+     ]
+    },
+    {
+     "input": "Infinity",
+     "success": false,
+     "issues": [
+      {
+       "expected": "number",
+       "code": "invalid_type",
+       "received": "Infinity",
+       "path": [],
+       "message": "Invalid input: expected number, received number"
+      }
+     ]
+    },
+    {
+     "input": "-Infinity",
+     "success": false,
+     "issues": [
+      {
+       "expected": "number",
+       "code": "invalid_type",
+       "received": "Infinity",
+       "path": [],
+       "message": "Invalid input: expected number, received number"
+      }
+     ]
+    },
+    {
+     "input": "0x10",
+     "success": true,
+     "data": 16
+    },
+    {
+     "input": " 12 ",
+     "success": true,
+     "data": 12
+    },
+    {
+     "input": "1e3",
+     "success": true,
+     "data": 1000
+    },
+    {
+     "input": " 5",
+     "success": true,
+     "data": 5
+    },
+    {
+     "input": "1_0",
+     "success": false,
+     "issues": [
+      {
+       "expected": "number",
+       "code": "invalid_type",
+       "received": "NaN",
+       "path": [],
+       "message": "Invalid input: expected number, received NaN"
+      }
+     ]
+    },
+    {
+     "input": ".5",
+     "success": true,
+     "data": 0.5
+    },
+    {
+     "input": "5.",
+     "success": true,
+     "data": 5
+    },
+    {
+     "input": "+5",
+     "success": true,
+     "data": 5
+    }
+   ]
+  },
+  {
+   "name": "coerce.string.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 1e+21,
+     "success": true,
+     "data": "1e+21"
+    },
+    {
+     "input": 1.5,
+     "success": true,
+     "data": "1.5"
+    },
+    {
+     "input": [
+      1,
+      2
+     ],
+     "success": true,
+     "data": "1,2"
+    },
+    {
+     "input": {},
+     "success": true,
+     "data": "[object Object]"
+    },
+    {
+     "input": true,
+     "success": true,
+     "data": "true"
+    },
+    {
+     "input": 0.30000000000000004,
+     "success": true,
+     "data": "0.30000000000000004"
+    }
+   ]
+  },
+  {
+   "name": "string.trim.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "﻿a﻿",
+     "success": true,
+     "data": "a"
+    },
+    {
+     "input": "a",
+     "success": true,
+     "data": "a"
+    },
+    {
+     "input": " a　",
+     "success": true,
+     "data": "a"
+    }
+   ]
+  },
+  {
+   "name": "number.min.big",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 0,
+     "success": false,
+     "issues": [
+      {
+       "origin": "number",
+       "code": "too_small",
+       "minimum": 1e+21,
+       "inclusive": true,
+       "path": [],
+       "message": "Too small: expected number to be >=1e+21"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "number.max.small",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 1,
+     "success": false,
+     "issues": [
+      {
+       "origin": "number",
+       "code": "too_big",
+       "maximum": 1e-7,
+       "inclusive": true,
+       "path": [],
+       "message": "Too big: expected number to be <=1e-7"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "date.coerce.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "999999999999999999-01-01",
+     "success": false,
+     "issues": [
+      {
+       "expected": "date",
+       "code": "invalid_type",
+       "received": "Invalid Date",
+       "path": [],
+       "message": "Invalid input: expected date, received Date"
+      }
+     ]
+    },
+    {
+     "input": "Jan 1 999999999999999999",
+     "success": false,
+     "issues": [
+      {
+       "expected": "date",
+       "code": "invalid_type",
+       "received": "Invalid Date",
+       "path": [],
+       "message": "Invalid input: expected date, received Date"
+      }
+     ]
+    },
+    {
+     "input": "1/1/99999999999999999999 UTC",
+     "success": false,
+     "issues": [
+      {
+       "expected": "date",
+       "code": "invalid_type",
+       "received": "Invalid Date",
+       "path": [],
+       "message": "Invalid input: expected date, received Date"
+      }
+     ]
+    },
+    {
+     "input": "1/1/2000 10:00 +9999999999999999",
+     "success": false,
+     "issues": [
+      {
+       "expected": "date",
+       "code": "invalid_type",
+       "received": "Invalid Date",
+       "path": [],
+       "message": "Invalid input: expected date, received Date"
+      }
+     ]
+    },
+    {
+     "input": "275761-01-01",
+     "success": false,
+     "issues": [
+      {
+       "expected": "date",
+       "code": "invalid_type",
+       "received": "Invalid Date",
+       "path": [],
+       "message": "Invalid input: expected date, received Date"
+      }
+     ]
+    },
+    {
+     "input": "+275760-09-13T00:00:00.000Z",
+     "success": true,
+     "data": "+275760-09-13T00:00:00.000Z"
+    },
+    {
+     "input": "+275760-09-13T00:00:00.001Z",
+     "success": false,
+     "issues": [
+      {
+       "expected": "date",
+       "code": "invalid_type",
+       "received": "Invalid Date",
+       "path": [],
+       "message": "Invalid input: expected date, received Date"
+      }
+     ]
+    },
+    {
+     "input": "-271821-04-20T00:00:00.000Z",
+     "success": true,
+     "data": "-271821-04-20T00:00:00.000Z"
+    }
+   ]
+  },
+  {
+   "name": "du.overwrite",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "kind": "a"
+     },
+     "success": true,
+     "data": {
+      "kind": "a"
+     }
+    },
+    {
+     "input": {
+      "kind": "b"
+     },
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_union",
+       "errors": [],
+       "note": "No matching discriminator",
+       "discriminator": "kind",
+       "options": [
+        "a"
+       ],
+       "path": [
+        "kind"
+       ],
+       "message": "Invalid discriminator value. Expected 'a'"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "du.check",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "kind": "a"
+     },
+     "success": true,
+     "data": {
+      "kind": "a"
+     }
+    },
+    {
+     "input": {
+      "kind": "b"
+     },
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_union",
+       "errors": [],
+       "note": "No matching discriminator",
+       "discriminator": "kind",
+       "options": [
+        "a"
+       ],
+       "path": [
+        "kind"
+       ],
+       "message": "Invalid discriminator value. Expected 'a'"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "du.refine",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "kind": "a"
+     },
+     "success": true,
+     "data": {
+      "kind": "a"
+     }
+    },
+    {
+     "input": {
+      "kind": "b"
+     },
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_union",
+       "errors": [],
+       "note": "No matching discriminator",
+       "discriminator": "kind",
+       "options": [
+        "a"
+       ],
+       "path": [
+        "kind"
+       ],
+       "message": "Invalid discriminator value. Expected 'a'"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "du.optional",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "kind": "a"
+     },
+     "throws": "Invalid discriminated union option at index \"0\""
+    }
+   ]
+  },
+  {
+   "name": "du.nullable",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "kind": "a"
+     },
+     "throws": "Invalid discriminated union option at index \"0\""
+    }
+   ]
+  },
+  {
+   "name": "du.default",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "kind": "a"
+     },
+     "throws": "Invalid discriminated union option at index \"0\""
+    }
+   ]
+  },
+  {
+   "name": "du.catch",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "kind": "a"
+     },
+     "throws": "Invalid discriminated union option at index \"0\""
+    }
+   ]
+  },
+  {
+   "name": "du.readonly",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "kind": "a"
+     },
+     "success": true,
+     "data": {
+      "kind": "a"
+     }
+    }
+   ]
+  },
+  {
+   "name": "templateLiteral.overwrite",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "id-5",
+     "success": true,
+     "data": "id-5"
+    },
+    {
+     "input": "id-x",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_format",
+       "format": "template_literal",
+       "pattern": "^id--?\\d+(?:\\.\\d+)?$",
+       "path": [],
+       "message": "Invalid input"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "templateLiteral.check",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "id-5",
+     "success": true,
+     "data": "id-5"
+    },
+    {
+     "input": "id-x",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_format",
+       "format": "template_literal",
+       "pattern": "^id--?\\d+(?:\\.\\d+)?$",
+       "path": [],
+       "message": "Invalid input"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "templateLiteral.refine",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "id-5",
+     "success": true,
+     "data": "id-5"
+    }
+   ]
+  },
+  {
+   "name": "templateLiteral.superRefine",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "id-5",
+     "success": true,
+     "data": "id-5"
+    }
+   ]
+  },
+  {
+   "name": "literal.empty",
+   "construct": {
+    "throws": "Cannot create literal schema with no valid values"
+   }
   }
  ],
  "casesV3": [
@@ -10204,6 +11309,913 @@
       }
      },
      "message": "[\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"undefined\",\n    \"path\": [\n      \"a\"\n    ],\n    \"message\": \"Required\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"number\",\n    \"received\": \"string\",\n    \"path\": [\n      \"b\",\n      \"c\"\n    ],\n    \"message\": \"Expected number, received string\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"number\",\n    \"path\": [\n      \"d\",\n      0\n    ],\n    \"message\": \"Expected string, received number\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"string\",\n    \"received\": \"number\",\n    \"path\": [\n      \"d\",\n      2\n    ],\n    \"message\": \"Expected string, received number\"\n  }\n]"
+    }
+   ]
+  },
+  {
+   "name": "string.min.astral",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "😀",
+     "success": true,
+     "data": "😀"
+    },
+    {
+     "input": "a",
+     "success": false,
+     "issues": [
+      {
+       "code": "too_small",
+       "minimum": 2,
+       "type": "string",
+       "inclusive": true,
+       "exact": false,
+       "message": "String must contain at least 2 character(s)",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "é",
+     "success": false,
+     "issues": [
+      {
+       "code": "too_small",
+       "minimum": 2,
+       "type": "string",
+       "inclusive": true,
+       "exact": false,
+       "message": "String must contain at least 2 character(s)",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "a😀",
+     "success": true,
+     "data": "a😀"
+    },
+    {
+     "input": "ab",
+     "success": true,
+     "data": "ab"
+    }
+   ]
+  },
+  {
+   "name": "string.max.astral",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "😀",
+     "success": false,
+     "issues": [
+      {
+       "code": "too_big",
+       "maximum": 1,
+       "type": "string",
+       "inclusive": true,
+       "exact": false,
+       "message": "String must contain at most 1 character(s)",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "a",
+     "success": true,
+     "data": "a"
+    },
+    {
+     "input": "é",
+     "success": true,
+     "data": "é"
+    },
+    {
+     "input": "a😀",
+     "success": false,
+     "issues": [
+      {
+       "code": "too_big",
+       "maximum": 1,
+       "type": "string",
+       "inclusive": true,
+       "exact": false,
+       "message": "String must contain at most 1 character(s)",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "ab",
+     "success": false,
+     "issues": [
+      {
+       "code": "too_big",
+       "maximum": 1,
+       "type": "string",
+       "inclusive": true,
+       "exact": false,
+       "message": "String must contain at most 1 character(s)",
+       "path": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "string.length.astral",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "😀",
+     "success": true,
+     "data": "😀"
+    },
+    {
+     "input": "a",
+     "success": false,
+     "issues": [
+      {
+       "code": "too_small",
+       "minimum": 2,
+       "type": "string",
+       "inclusive": true,
+       "exact": true,
+       "message": "String must contain exactly 2 character(s)",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "é",
+     "success": false,
+     "issues": [
+      {
+       "code": "too_small",
+       "minimum": 2,
+       "type": "string",
+       "inclusive": true,
+       "exact": true,
+       "message": "String must contain exactly 2 character(s)",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "a😀",
+     "success": false,
+     "issues": [
+      {
+       "code": "too_big",
+       "maximum": 2,
+       "type": "string",
+       "inclusive": true,
+       "exact": true,
+       "message": "String must contain exactly 2 character(s)",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "ab",
+     "success": true,
+     "data": "ab"
+    }
+   ]
+  },
+  {
+   "name": "number.multipleOf.big",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 12345.00001,
+     "success": false,
+     "issues": [
+      {
+       "code": "not_multiple_of",
+       "multipleOf": 1,
+       "message": "Number must be a multiple of 1",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": 1000000000000.5,
+     "success": false,
+     "issues": [
+      {
+       "code": "not_multiple_of",
+       "multipleOf": 1,
+       "message": "Number must be a multiple of 1",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": 3,
+     "success": true,
+     "data": 3
+    },
+    {
+     "input": 1e+21,
+     "success": true,
+     "data": 1e+21
+    }
+   ]
+  },
+  {
+   "name": "number.multipleOf.tenth",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 0.3,
+     "success": true,
+     "data": 0.3
+    },
+    {
+     "input": 0.30000000000000004,
+     "success": false,
+     "issues": [
+      {
+       "code": "not_multiple_of",
+       "multipleOf": 0.1,
+       "message": "Number must be a multiple of 0.1",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": 1.1,
+     "success": true,
+     "data": 1.1
+    },
+    {
+     "input": 2.55,
+     "success": false,
+     "issues": [
+      {
+       "code": "not_multiple_of",
+       "multipleOf": 0.1,
+       "message": "Number must be a multiple of 0.1",
+       "path": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "number.multipleOf.hundredth",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 19.99,
+     "success": true,
+     "data": 19.99
+    },
+    {
+     "input": 0.07,
+     "success": true,
+     "data": 0.07
+    },
+    {
+     "input": 1.005,
+     "success": false,
+     "issues": [
+      {
+       "code": "not_multiple_of",
+       "multipleOf": 0.01,
+       "message": "Number must be a multiple of 0.01",
+       "path": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "string.email.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": ".a@b.co",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "a..b@b.co",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "A@B.CO",
+     "success": true,
+     "data": "A@B.CO"
+    },
+    {
+     "input": "a@b.c",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "a_b@c-d.ef",
+     "success": true,
+     "data": "a_b@c-d.ef"
+    }
+   ]
+  },
+  {
+   "name": "string.email.caseFold",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "Kevin@example.com",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "ſam@example.com",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "a@example.Kom",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "kevin@example.com",
+     "success": true,
+     "data": "kevin@example.com"
+    }
+   ]
+  },
+  {
+   "name": "string.cuid.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "CJLD2CJXH0000QZRMN831I7RN",
+     "success": true,
+     "data": "CJLD2CJXH0000QZRMN831I7RN"
+    },
+    {
+     "input": "cjld2cjxh0000qzrmn831i7rn",
+     "success": true,
+     "data": "cjld2cjxh0000qzrmn831i7rn"
+    },
+    {
+     "input": "c-abcdefgh",
+     "success": false,
+     "issues": [
+      {
+       "validation": "cuid",
+       "code": "invalid_string",
+       "message": "Invalid cuid",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "cabc",
+     "success": false,
+     "issues": [
+      {
+       "validation": "cuid",
+       "code": "invalid_string",
+       "message": "Invalid cuid",
+       "path": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "string.url.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "mailto:a@b.co",
+     "success": true,
+     "data": "mailto:a@b.co"
+    },
+    {
+     "input": "http://",
+     "success": false,
+     "issues": [
+      {
+       "validation": "url",
+       "code": "invalid_string",
+       "message": "Invalid url",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "https://corvis.dev",
+     "success": true,
+     "data": "https://corvis.dev"
+    },
+    {
+     "input": "foo:bar",
+     "success": true,
+     "data": "foo:bar"
+    },
+    {
+     "input": "//x.com",
+     "success": false,
+     "issues": [
+      {
+       "validation": "url",
+       "code": "invalid_string",
+       "message": "Invalid url",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "javascript:alert(1)",
+     "success": true,
+     "data": "javascript:alert(1)"
+    }
+   ]
+  },
+  {
+   "name": "coerce.number.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "inf",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_type",
+       "expected": "number",
+       "received": "nan",
+       "path": [],
+       "message": "Expected number, received nan"
+      }
+     ]
+    },
+    {
+     "input": "Infinity",
+     "success": true,
+     "data": {
+      "$number": "Infinity"
+     }
+    },
+    {
+     "input": "-Infinity",
+     "success": true,
+     "data": {
+      "$number": "-Infinity"
+     }
+    },
+    {
+     "input": "0x10",
+     "success": true,
+     "data": 16
+    },
+    {
+     "input": " 12 ",
+     "success": true,
+     "data": 12
+    },
+    {
+     "input": "1e3",
+     "success": true,
+     "data": 1000
+    },
+    {
+     "input": " 5",
+     "success": true,
+     "data": 5
+    },
+    {
+     "input": "1_0",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_type",
+       "expected": "number",
+       "received": "nan",
+       "path": [],
+       "message": "Expected number, received nan"
+      }
+     ]
+    },
+    {
+     "input": ".5",
+     "success": true,
+     "data": 0.5
+    },
+    {
+     "input": "5.",
+     "success": true,
+     "data": 5
+    },
+    {
+     "input": "+5",
+     "success": true,
+     "data": 5
+    }
+   ]
+  },
+  {
+   "name": "coerce.string.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 1e+21,
+     "success": true,
+     "data": "1e+21"
+    },
+    {
+     "input": 1.5,
+     "success": true,
+     "data": "1.5"
+    },
+    {
+     "input": [
+      1,
+      2
+     ],
+     "success": true,
+     "data": "1,2"
+    },
+    {
+     "input": {},
+     "success": true,
+     "data": "[object Object]"
+    },
+    {
+     "input": true,
+     "success": true,
+     "data": "true"
+    },
+    {
+     "input": 0.30000000000000004,
+     "success": true,
+     "data": "0.30000000000000004"
+    }
+   ]
+  },
+  {
+   "name": "string.trim.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "﻿a﻿",
+     "success": true,
+     "data": "a"
+    },
+    {
+     "input": "a",
+     "success": true,
+     "data": "a"
+    },
+    {
+     "input": " a　",
+     "success": true,
+     "data": "a"
+    }
+   ]
+  },
+  {
+   "name": "number.min.big",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 0,
+     "success": false,
+     "issues": [
+      {
+       "code": "too_small",
+       "minimum": 1e+21,
+       "type": "number",
+       "inclusive": true,
+       "exact": false,
+       "message": "Number must be greater than or equal to 1e+21",
+       "path": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "number.max.small",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": 1,
+     "success": false,
+     "issues": [
+      {
+       "code": "too_big",
+       "maximum": 1e-7,
+       "type": "number",
+       "inclusive": true,
+       "exact": false,
+       "message": "Number must be less than or equal to 1e-7",
+       "path": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "date.coerce.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "999999999999999999-01-01",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_date",
+       "path": [],
+       "message": "Invalid date"
+      }
+     ]
+    },
+    {
+     "input": "Jan 1 999999999999999999",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_date",
+       "path": [],
+       "message": "Invalid date"
+      }
+     ]
+    },
+    {
+     "input": "1/1/99999999999999999999 UTC",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_date",
+       "path": [],
+       "message": "Invalid date"
+      }
+     ]
+    },
+    {
+     "input": "1/1/2000 10:00 +9999999999999999",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_date",
+       "path": [],
+       "message": "Invalid date"
+      }
+     ]
+    },
+    {
+     "input": "275761-01-01",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_date",
+       "path": [],
+       "message": "Invalid date"
+      }
+     ]
+    },
+    {
+     "input": "+275760-09-13T00:00:00.000Z",
+     "success": true,
+     "data": "+275760-09-13T00:00:00.000Z"
+    },
+    {
+     "input": "+275760-09-13T00:00:00.001Z",
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_date",
+       "path": [],
+       "message": "Invalid date"
+      }
+     ]
+    },
+    {
+     "input": "-271821-04-20T00:00:00.000Z",
+     "success": true,
+     "data": "-271821-04-20T00:00:00.000Z"
+    }
+   ]
+  },
+  {
+   "name": "string.ip.edges",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "::ffff:1.2.3.4",
+     "success": true,
+     "data": "::ffff:1.2.3.4"
+    },
+    {
+     "input": "fe80::1%eth0",
+     "success": true,
+     "data": "fe80::1%eth0"
+    },
+    {
+     "input": "01.2.3.4",
+     "success": false,
+     "issues": [
+      {
+       "validation": "ip",
+       "code": "invalid_string",
+       "message": "Invalid ip",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "1.2.3.4",
+     "success": true,
+     "data": "1.2.3.4"
+    },
+    {
+     "input": "::1",
+     "success": true,
+     "data": "::1"
+    }
+   ]
+  },
+  {
+   "name": "object.required.refine",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {},
+     "success": true,
+     "data": {}
+    }
+   ]
+  },
+  {
+   "name": "discriminatedUnion.refinedKey",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": {
+      "type": "a",
+      "a": "x"
+     },
+     "success": true,
+     "data": {
+      "type": "a",
+      "a": "x"
+     }
+    },
+    {
+     "input": {
+      "type": "b"
+     },
+     "success": false,
+     "issues": [
+      {
+       "code": "invalid_union_discriminator",
+       "options": [
+        "a"
+       ],
+       "path": [
+        "type"
+       ],
+       "message": "Invalid discriminator value. Expected 'a'"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "coerce.number.finite",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "Infinity",
+     "success": false,
+     "issues": [
+      {
+       "code": "not_finite",
+       "message": "Number must be finite",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "-Infinity",
+     "success": false,
+     "issues": [
+      {
+       "code": "not_finite",
+       "message": "Number must be finite",
+       "path": []
+      }
+     ]
     }
    ]
   }

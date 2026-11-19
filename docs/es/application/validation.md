@@ -71,6 +71,7 @@ Detalles útiles:
 - **Regla libre**: `#[validate_with(f)]` recibe el valor del campo (`Option<&Value>`) y devuelve `bool`; el mensaje por defecto es `<campo> is invalid`.
 - **Enums**: `#[is_enum]` comprueba que el valor sea una de las variantes de un enum que implementa `Deserialize` (el del propio campo o el indicado: `#[is_enum(Role)]`).
 - Los nombres de los campos en los mensajes respetan `#[serde(rename = "...")]` y `#[serde(rename_all = "...")]`.
+- **Reglas de números, direcciones y longitud**: siguen a class-validator 0.14.4 (verificadas contra su salida). `is_number_string` acepta `"1"`, `"1.5"`, `".5"` y `"+1"` y rechaza espacios, `"NaN"`, `"Infinity"`, `"1e5"` y `"5."`. `is_ip` acepta IPv4 sin ceros a la izquierda e IPv6, incluida una zona (`fe80::1%eth0`). `min_length` y `max_length` cuentan puntos de código, pero no un selector de variación que sigue a un carácter, así que `"❤️"` tiene longitud 1.
 
 ### Opciones del pipe
 
@@ -220,7 +221,7 @@ z::configure(|c| c.locale_error = Some(z::locales::es()));
 
 - Los valores son `serde_json::Value`. `undefined` es la ausencia de valor (`parse_opt(None, ..)` o una clave que falta) y una salida `undefined` se omite en los objetos, igual que `JSON.stringify`. Los números siguen la semántica de JavaScript (`f64`, `Number(x)`, `String(x)`) y las claves de los objetos se ordenan como en V8 (los índices numéricos primero).
 - `.refine()`, `.super_refine()`, `.overwrite()` y `.check_fn()` devuelven un `Schema`, así que los checks del tipo (`.min()`, ...) van antes que ellos. zod también acepta `z.string().refine(..).min(3)`; ese orden no se puede escribir en Rust.
-- Lo que zod *lanza* como `Error` (una intersección que no se puede combinar, un `transform` al hacer `encode`) es un `panic!` en Rust. `ZodValidationPipe` y el serializer lo convierten en la misma respuesta que la integración original.
+- Lo que zod *lanza* como `Error` (una intersección que no se puede combinar, un `transform` al hacer `encode`) se devuelve como un `Err(ZodError)` con `thrown()` definido. Ver [Errores que lanza zod](#errores-que-lanza-zod).
 - Schemas recursivos: una función que devuelve el schema y `z::lazy(f)` donde se repite (`fn categoria() -> Schema { z::object! { hijos: z::array(z::lazy(categoria)) }.into() }`). Para que `to_json_schema` produzca `"$ref": "#"` como zod, usa `z::lazy(categoria)` como raíz.
 - `z.map`, `z.set`, `z.symbol`, `z.file`, `z.promise`, `z.function` y `z.instanceof` no existen porque describen valores que no viajan en JSON. De los locales solo están `en` (por defecto) y `es`; otros idiomas se agregan con `locale_error` y `z::error_fn`.
 - Profundidad de los schemas recursivos (`z.lazy`, `z.json()`): como mucho 128 niveles por parse. Ver [Límites de seguridad](#limites-de-seguridad).
@@ -234,7 +235,56 @@ Vienen de zod y de su integración con Node.js, y conviene tenerlos presentes:
 - `.strict()` no reporta la clave `__proto__`: la descarta en silencio, igual que zod. Con claves duplicadas en el JSON gana la última.
 - `z::coerce::number()` convierte `""` y `null` en `0`; `z::coerce::boolean()` es `Boolean(x)`, así que `"false"` da `true` (para textos usa `z::stringbool()`).
 - `z::jwt()` solo comprueba la forma del token; no verifica la firma.
-- Única divergencia conocida: un número que no cabe en un `f64` (`1e309`) llega como `null` (JSON no tiene `Infinity`), así que `z::number().nullable()` lo acepta; en Node sería `Infinity` y zod lo rechazaría.
+- Una divergencia en los números: un número que no cabe en un `f64` (`1e309`) llega como `null` (JSON no tiene `Infinity`), así que `z::number().nullable()` lo acepta; en Node sería `Infinity` y zod lo rechazaría. Otra es `z::coerce::bigint()`, ver [Fechas y BigInt](#fechas-y-bigint).
+
+### Errores que lanza zod
+
+Dos situaciones no son issues de validación en zod sino un `Error` lanzado: una intersección cuyos dos resultados no se pueden combinar (por ejemplo, dos transforms que discrepan para algunas entradas) y un `transform` de un solo sentido que aparece al codificar con `encode`. En Corvis se devuelven como un error, no como un panic:
+
+```rust
+match schema.parse(&input) {
+    Ok(output) => { /* ... */ }
+    Err(e) => match e.thrown() {
+        Some(message) => eprintln!("lanzado al hacer parse: {message}"), // e.issues está vacío
+        None => eprintln!("{} issues", e.issues.len()),
+    },
+}
+```
+
+- `ZodError::thrown()` devuelve `Some(mensaje)` para esos errores y `None` para los issues normales. Las funciones de parse (`parse`, `parse_with`, `safe_parse*`, `encode`, `decode`) los informan así, y `safe_parse` devuelve `success: false`. El mensaje es también lo que escribe `Display`. Por un campo privado, un `ZodError` no se puede construir con un struct literal fuera del crate: usa `ZodError::new(issues)`.
+- `ZodValidationPipe` y el serializer responden los mismos cuerpos de antes: `400` con `{ "statusCode": 400, "message": "Validation failed" }` (sin `errors`) desde el pipe, y el `500` de `ZodSerializationException` desde el serializer. El `ZodError` lanzado ahora es la causa de la excepción, y un `create_validation_exception` propio lo recibe (antes recibía uno vacío).
+- Un panic en tu propio código (un `transform` que hace `unwrap`) lo sigue capturando el pipe y el serializer y se responde igual. Se escribe una línea de log `error` como máximo una vez por minuto; nombra el sitio y el tipo de parámetro, pero nunca el mensaje del panic, que puede llevar datos de la petición. Una llamada directa a `parse` no lo captura: sigue propagándose a quien llama.
+- Esto depende del unwinding, el comportamiento por defecto de Rust. Con `panic = "abort"` en el perfil, un error lanzado aborta el proceso.
+
+Los errores que se producen **al construir el schema** siguen siendo panics, porque el original lanza al declarar el schema y el código de la aplicación construye sus schemas al arrancar: `z::literal(json!([]))` (una lista de valores vacía), `z::native_enum::<T>()` y `ParseEnumPipe::of::<T>()` cuando no se pueden leer los nombres de las variantes de `T` (un enum `untagged`, con etiqueta interna o adyacente: solo funcionan los enums de variantes unitarias con la representación por defecto), `z::date().min(..)` o `.max(..)` con un límite que no es una fecha, y `z::template_literal(..)` con una parte que tiene una comprobación (ver [Modo zod 3](#modo-zod-3)).
+
+### Fechas y BigInt
+
+Ambas versiones leen las fechas con un único parser que sigue el `Date.parse` de JavaScript, incluidos sus formatos heredados:
+
+- El rango aceptado es el de ECMAScript: años -271821 a 275760 (`+275760-09-13T00:00:00.000Z` es el último instante). Lo que quede fuera, un numeral demasiado largo para caber en un entero o un desfase de zona enorme es una fecha inválida (`invalid_type`, `received: "Invalid Date"`), nunca un valor desbordado.
+- Una fecha-hora sin zona (`"2024-01-01T10:00:00"`) es hora local y una fecha sola (`"2024-01-01"`) es UTC, tanto en modo zod 4 como en modo zod 3.
+- Un día posterior al fin del mes se desborda como en JavaScript: `z::coerce::date()` lee `"2023-02-30"` como el 2 de marzo. En modo zod 3, `z::date()` sin coerción devuelve el texto que validó, así que solo acepta el formato ISO estricto de una fecha real del calendario y rechaza `"2023-02-30"`, `"2023-13-01"` y `"2023-02-31 Tuesday"`.
+- Un número coaccionado con fracción se trunca, como hace `new Date(1.5)`.
+- `z::date().min("...")` y `.max("...")` interpretan el límite una sola vez con ese parser y hacen panic si no es una fecha.
+
+`z::coerce::bigint()` guarda un `i128`. Un número o numeral fuera de ese rango (`1e39`) produce el issue `invalid_type` en lugar de un valor saturado. El `BigInt` de JavaScript no tiene límite, así que es una divergencia.
+
+### Modo zod 3
+
+El modo zod 3 (`ZodVersion::V3`) ahora usa las mismas primitivas de JavaScript que el modo zod 4, y se verificó contra el build `zod/v3` grabado. Las diferencias que notarás si lo usas:
+
+| Área | Ahora |
+|---|---|
+| `min`, `max`, `length` de un string | Cuentan unidades UTF-16 como JavaScript (`"😀"` es 2), no puntos de código |
+| `trim()` | Recorta lo que recorta JavaScript (U+FEFF se recorta, U+0085 no) |
+| `multipleOf` | El algoritmo propio de zod 3: la tolerancia no crece con el valor |
+| `email`, `cuid`, `ip`, `url` | Los patrones de zod 3: un email no admite punto inicial ni `..`, se acepta `cuid` en mayúsculas, `url` acepta `mailto:` y otros esquemas sin `://`, `ip` rechaza una zona (`fe80::1%eth0`) |
+| `z::coerce::number()` | `Number(x)`: `"0x10"` es 16 y `"inf"` no es un número; `"Infinity"` se rechaza con `not_finite` (JSON no puede contenerlo) |
+| `z::coerce::string()` | `String(x)`: `[1,2]` da `"1,2"` |
+| Números en los mensajes | Texto de JavaScript (`1e+21`, `1e-7`) |
+
+El modo zod 4, el predeterminado, no cambia por esto. En cualquier modo, `.refine()`, `.super_refine()`, `.check_fn()` y `.overwrite()` ahora conservan la estructura del schema que envuelven, así que un schema con `.overwrite(..)` o `.check_fn(..)` puede ser una opción de una unión discriminada (antes, construirlo hacía panic). Un template literal solo prueba el patrón de sus partes y no puede ejecutar sus comprobaciones, así que construir uno cuya parte tenga cualquiera de esos cuatro (también bajo `.optional()`, `.nullable()` o en una unión) hace panic con un mensaje que lo dice. zod 4 construye ese template literal e ignora la comprobación; Corvis lo rechaza en lugar de aceptar lo que la comprobación rechaza. Refina el template literal completo.
 
 ### Equivalencias con la integración de Node.js
 
@@ -254,7 +304,7 @@ Vienen de zod y de su integración con Node.js, y conviene tenerlos presentes:
 
 ### Cómo se verifica la fidelidad
 
-La fidelidad se verifica contra los paquetes reales: `tests/fixtures/zod4/cases.mjs` ejecuta zod 4.4.3 (y su build `zod/v3`) sobre casi 300 schemas con unas 600 entradas y casi 100 casos de `toJSONSchema`, y `tests/fixtures/zod4/pipe.mjs` ejecuta la integración original 5.5.0. `tests/zod4_fixtures.rs` y `tests/zod_pipe.rs` exigen el mismo resultado, incluido el orden de las claves.
+La fidelidad se verifica contra los paquetes reales: `tests/fixtures/zod4/cases.mjs` ejecuta zod 4.4.3 (y su build `zod/v3`) sobre casi 300 schemas con unas 600 entradas y casi 100 casos de `toJSONSchema`, y `tests/fixtures/zod4/pipe.mjs` ejecuta la integración original 5.5.0. `tests/zod4_fixtures.rs` y `tests/zod_pipe.rs` exigen el mismo resultado, incluido el orden de las claves. Los pipes incluidos y las reglas `is_number_string`, `is_ip`, `min_length` y `max_length` se verifican igual con `tests/fixtures/builtin_pipes/` (el paquete común original 11.2.1 y class-validator 0.14.4), que reproduce `tests/builtin_pipes_fixtures.rs`.
 
 ## Qué ven los guards y los interceptors
 
@@ -264,6 +314,6 @@ Los pipes validan el argumento del handler; no reemplazan `req.body()`. Un guard
 
 - **Profundidad de los schemas recursivos.** `z::lazy` y `z::json()` admiten como mucho 128 niveles de anidamiento por parse. Pasado ese límite, el parse no sigue recursando: devuelve un issue `custom` con el mensaje `Too deeply nested: the input exceeds the maximum depth of 128` en la ruta del primer valor que lo supera (sin `input`, para no copiar el subárbol). zod no tiene este límite: en Node.js el parse lanza `RangeError: Maximum call stack size exceeded`; en Rust un desbordamiento de pila aborta el proceso entero, así que el límite es obligatorio. Las uniones no lo envuelven en `invalid_union`, así que llega tal cual al `400` de `ZodValidationPipe`. Se cambia con `z::configure(|c| c.max_depth = n)` (global, `z::DEFAULT_MAX_DEPTH` = 128) o por parse con `ParseOptions::new().max_depth(n)`. Con 128 niveles hay margen: un árbol recursivo típico necesita unos 670 niveles para agotar los 2 MiB de pila de un worker de tokio en release (unos 220 en debug).
 - **Costo lineal.** Objetos, records, arrays y tuplas mueven cada valor a su hijo en lugar de copiar el subárbol en cada nivel (antes, 3000 niveles tardaban minutos; ahora, milisegundos), y `z::json()` valida una entrada JSON en una sola pasada con el mismo resultado que la unión de `z.lazy` de zod. Solo se copia un valor cuando un issue lo necesita.
-- **Expresiones regulares.** Los patrones sin lookarounds ni backreferences (incluidos los que usan `\b`) se ejecutan con el crate `regex`, en tiempo lineal. Los que los necesitan siguen en el motor con backtracking de `fancy-regex`, igual que en V8, con un tope de 1 000 000 de pasos por `test`: al alcanzarlo el texto se considera no válido y se registra un `WARN` de `[JsRegex]`. Evita backreferences y lookarounds en los `.regex()` que se aplican a texto del cliente.
+- **Expresiones regulares.** Los patrones sin lookarounds ni backreferences (incluidos los que usan `\b`) se ejecutan con el crate `regex`, en tiempo lineal. Los que los necesitan siguen en el motor con backtracking de `fancy-regex`, igual que en V8, con un tope de 1 000 000 de pasos por `test`: al alcanzarlo el texto se considera no válido y se registra un `WARN` de `[JsRegex]`. Evita backreferences y lookarounds en los `.regex()` que se aplican a texto del cliente. Con el flag `i` y sin `u`, las letras coinciden sin distinguir mayúsculas como en V8: la s larga `ſ` y el signo Kelvin `K` solo coinciden consigo mismos, nunca con `s` ni con `k`.
 - **`#[array_unique]`** compara con una tabla hash (lineal) en lugar de por pares.
-- `z::url()` acepta cualquier esquema (`javascript:` incluido); para enlaces que se van a mostrar usa `z::http_url()`.
+- `z::url()` acepta cualquier esquema (`javascript:` incluido); para enlaces que se van a mostrar usa `z::http_url()`. Lo mismo vale para `.url()` en ambos modos: no hace que un valor sea seguro como enlace, ya que `"javascript:alert(1)"` pasa.

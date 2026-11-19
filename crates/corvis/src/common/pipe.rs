@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::http::HttpException;
 use crate::validation::{ValidationError, ValidatorOptions};
+use crate::z::js;
 
 /// Where a handler argument comes from (`'body' | 'query' | 'param' | 'custom'`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +107,13 @@ macro_rules! pipe_options {
     };
 }
 
-/// Parses a numeric string into an integer.
+const NUMERIC_EXPECTED: &str = "Validation failed (numeric string is expected)";
+const ARRAY_EXPECTED: &str = "Validation failed (parsable array expected)";
+
+/// Parses a numeric string into an integer: the text must be `-?\d+` (no sign `+`, no white space, no exponent), as
+/// the original requires. The numeral is read exactly, where the original's `parseInt` rounds one beyond 2^53 to the
+/// nearest double (`"9007199254740993"` is `9007199254740993` here, `9007199254740992` there). An integer outside
+/// `i64` is refused with the same 400 (the original would return it; Corvis cannot represent it).
 #[derive(Debug, Clone)]
 pub struct ParseIntPipe {
     status: StatusCode,
@@ -120,22 +127,28 @@ impl PipeTransform for ParseIntPipe {
         if self.optional && value.is_null() {
             return Ok(value);
         }
-        match &value {
-            Value::Number(n) if n.is_i64() || n.is_u64() => Ok(value),
-            Value::String(s) => {
-                let t = s.trim();
-                let valid = !t.is_empty() && t.trim_start_matches(['-', '+']).chars().all(|c| c.is_ascii_digit());
-                match (valid, t.parse::<i64>()) {
-                    (true, Ok(n)) => Ok(Value::from(n)),
-                    _ => Err(fail(self.status, "Validation failed (numeric string is expected)")),
-                }
-            }
-            _ => Err(fail(self.status, "Validation failed (numeric string is expected)")),
-        }
+        let n = match &value {
+            // A JSON integer as it is; any other number by its JavaScript text (`5.0` is `"5"`, `1.5` is refused).
+            Value::Number(n) if n.is_i64() || n.is_u64() => n.as_i64(),
+            Value::Number(_) => decimal_integer(&js::to_js_string(&value)),
+            Value::String(s) => decimal_integer(s),
+            _ => None,
+        };
+        n.map(Value::from).ok_or_else(|| fail(self.status, NUMERIC_EXPECTED))
     }
 }
 
-/// Parses a numeric string into a float.
+/// `-?\d+` read exactly; `None` for any other text or an integer outside `i64`.
+fn decimal_integer(text: &str) -> Option<i64> {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Parses a numeric string into a float, as JavaScript's `parseFloat`, when the whole value is a finite number for
+/// `Number()` (`" 1.5 "` is `1.5`, `"0x10"` is `0`; `"1.5abc"`, `"Infinity"` and `""` are refused).
 #[derive(Debug, Clone)]
 pub struct ParseFloatPipe {
     status: StatusCode,
@@ -149,14 +162,11 @@ impl PipeTransform for ParseFloatPipe {
         if self.optional && value.is_null() {
             return Ok(value);
         }
-        match &value {
-            Value::Number(_) => Ok(value),
-            Value::String(s) => match s.trim().parse::<f64>() {
-                Ok(n) if n.is_finite() => Ok(serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)),
-                _ => Err(fail(self.status, "Validation failed (numeric string is expected)")),
-            },
-            _ => Err(fail(self.status, "Validation failed (numeric string is expected)")),
+        let n = js::parse_float(&js::to_js_string(&value));
+        if n.is_nan() || !js::to_number(Some(&value)).is_finite() {
+            return Err(fail(self.status, NUMERIC_EXPECTED));
         }
+        Ok(js::num_json(n))
     }
 }
 
@@ -251,7 +261,10 @@ impl PipeTransform for ParseUUIDPipe {
     }
 }
 
-/// Splits a string (`"1,2,3"`) into an array. Items can optionally be parsed as numbers.
+/// Splits a string (`"1,2,3"`) into an array: the string is trimmed and split, the items are not trimmed. A missing
+/// or empty value is refused. With [`numbers`](Self::numbers) every item is read as JavaScript's `Number()` reads it
+/// (`" 2"` is `2`, `"0x10"` is `16`); an empty item, a non-number and an infinite number (which Corvis cannot
+/// represent) are refused with `[index] item must be a number`.
 #[derive(Debug, Clone)]
 pub struct ParseArrayPipe {
     separator: String,
@@ -288,39 +301,39 @@ impl ParseArrayPipe {
 #[async_trait]
 impl PipeTransform for ParseArrayPipe {
     async fn transform(&self, value: Value, _m: &ArgumentMetadata) -> Result<Value, HttpException> {
-        if value.is_null() {
-            return if self.optional { Ok(value) } else { Err(fail(self.status, "Validation failed (parsable array expected)")) };
+        let falsy = match &value {
+            Value::Null => true,
+            Value::Bool(b) => !b,
+            Value::Number(n) => js::json_f64(n) == 0.0,
+            Value::String(s) => s.is_empty(),
+            Value::Array(_) | Value::Object(_) => false,
+        };
+        if falsy && !self.optional {
+            return Err(fail(self.status, ARRAY_EXPECTED));
         }
         let items: Vec<Value> = match value {
+            Value::Null => return Ok(value),
             Value::Array(a) => a,
-            Value::String(s) => {
-                if s.is_empty() {
-                    vec![]
-                } else {
-                    s.split(self.separator.as_str()).map(|p| Value::String(p.trim().to_string())).collect()
-                }
-            }
-            _ => return Err(fail(self.status, "Validation failed (parsable array expected)")),
+            Value::String(s) => js::js_trim(&s).split(self.separator.as_str()).map(|p| Value::String(p.to_string())).collect(),
+            _ => return Err(fail(self.status, ARRAY_EXPECTED)),
         };
         if !self.numbers {
             return Ok(Value::Array(items));
         }
-        let mut out = Vec::with_capacity(items.len());
-        for i in items {
-            match i {
-                Value::Number(_) => out.push(i),
-                Value::String(s) => match s.parse::<f64>() {
-                    Ok(n) => out.push(if n.fract() == 0.0 {
-                        Value::from(n as i64)
-                    } else {
-                        serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)
-                    }),
-                    Err(_) => return Err(fail(self.status, "Validation failed (parsable array expected)")),
-                },
-                _ => return Err(fail(self.status, "Validation failed (parsable array expected)")),
-            }
-        }
-        Ok(Value::Array(out))
+        items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                // `+item`, with `''` and `null` as NaN.
+                let n = match item {
+                    Value::Null => f64::NAN,
+                    Value::String(s) if s.is_empty() => f64::NAN,
+                    other => js::to_number(Some(other)),
+                };
+                if n.is_finite() { Ok(js::num_json(n)) } else { Err(fail(self.status, &format!("[{i}] item must be a number"))) }
+            })
+            .collect::<Result<_, _>>()
+            .map(Value::Array)
     }
 }
 
@@ -336,9 +349,14 @@ impl ParseEnumPipe {
     pub fn new<I: IntoIterator<Item = S>, S: Into<String>>(values: I) -> Self {
         ParseEnumPipe { values: values.into_iter().map(Into::into).collect(), optional: false, status: StatusCode::BAD_REQUEST }
     }
-    /// Uses the variants of a serde enum.
+    /// Uses the variants of a serde enum (unit variants, `rename_all` respected).
+    ///
+    /// # Panics
+    ///
+    /// When the variant names of `T` cannot be read: an untagged, internally or adjacently tagged enum, or a type that
+    /// is not an enum (the message names `T`), instead of building a pipe that refuses every value.
     pub fn of<T: serde::de::DeserializeOwned>() -> Self {
-        Self::new(crate::validation::rules::enum_variants::<T>().iter().copied())
+        Self::new(crate::validation::rules::readable_enum_variants::<T>("ParseEnumPipe::of").iter().copied())
     }
     pub fn optional(mut self) -> Self {
         self.optional = true;
@@ -359,7 +377,7 @@ impl PipeTransform for ParseEnumPipe {
     }
 }
 
-/// Supplies a default when the value is missing (`new DefaultValuePipe(1)`).
+/// Supplies a default when the value is missing or `null` (`new DefaultValuePipe(1)`); an empty string is kept.
 #[derive(Debug, Clone)]
 pub struct DefaultValuePipe {
     default: Value,
@@ -374,13 +392,65 @@ impl DefaultValuePipe {
 #[async_trait]
 impl PipeTransform for DefaultValuePipe {
     async fn transform(&self, value: Value, _m: &ArgumentMetadata) -> Result<Value, HttpException> {
-        match &value {
-            Value::Null => Ok(self.default.clone()),
-            Value::String(s) if s.is_empty() => Ok(self.default.clone()),
-            Value::Number(n) if n.as_f64().map(|f| f.is_nan()).unwrap_or(false) => Ok(self.default.clone()),
-            _ => Ok(value),
-        }
+        // JSON has no NaN, so the original's `isNil(value) || isNaN(value)` is `null` here.
+        Ok(if value.is_null() { self.default.clone() } else { value })
     }
 }
 
 crate::default_injectable!(ParseIntPipe, ParseFloatPipe, ParseBoolPipe, ParseUUIDPipe, ParseArrayPipe);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Untagged {
+        A(String),
+        B(i64),
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Role {
+        Admin,
+        Member,
+    }
+
+    fn query_meta() -> ArgumentMetadata {
+        ArgumentMetadata { kind: ParamKind::Query, data: None, metatype: Metatype { name: "String", validator: None, zod: None } }
+    }
+
+    /// An id beyond 2^53 is the id the client sent, not the nearest double (`parseInt` rounds it).
+    #[tokio::test]
+    async fn parse_int_pipe_reads_integers_beyond_2_pow_53_exactly() {
+        let pipe = ParseIntPipe::new();
+        for text in ["9007199254740993", "1234567890123456789", "-9007199254740993", "9223372036854775807", "-9223372036854775808"] {
+            let want: i64 = text.parse().unwrap();
+            assert_eq!(pipe.transform(Value::from(text), &query_meta()).await.unwrap(), Value::from(want), "{text}");
+            assert_eq!(pipe.transform(Value::from(want), &query_meta()).await.unwrap(), Value::from(want), "{want} as a JSON number");
+        }
+        for refused in [Value::from("9223372036854775808"), Value::from("-9223372036854775809"), Value::from(u64::MAX)] {
+            let e = pipe.transform(refused.clone(), &query_meta()).await.unwrap_err();
+            assert_eq!(e.get_response()["message"], NUMERIC_EXPECTED, "{refused}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Untagged")]
+    fn parse_enum_pipe_of_an_untagged_enum_panics_when_built() {
+        let _ = ParseEnumPipe::of::<Untagged>();
+    }
+
+    #[tokio::test]
+    async fn parse_enum_pipe_of_a_plain_enum_accepts_its_variants() {
+        let _ = (Role::Admin, Role::Member);
+        let pipe = ParseEnumPipe::of::<Role>();
+        let meta = query_meta();
+        assert_eq!(pipe.transform(Value::from("admin"), &meta).await.unwrap(), "admin");
+        let e = pipe.transform(Value::from("root"), &meta).await.unwrap_err();
+        assert_eq!(e.get_status(), 400);
+        assert_eq!(e.get_response()["message"], "Validation failed (enum string is expected)");
+    }
+}

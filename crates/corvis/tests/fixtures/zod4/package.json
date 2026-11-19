@@ -1,0 +1,9 @@
+{
+  "name": "corvis-zod4-fixture",
+  "private": true,
+  "type": "module",
+  "description": "Records the results of zod 4.4.3 and its zod/v3 build into parse.json for the differential test.",
+  "dependencies": {
+    "zod": "4.4.3"
+  }
+}

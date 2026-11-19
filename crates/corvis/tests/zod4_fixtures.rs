@@ -46,6 +46,11 @@ fn datetime_number_codec() -> z::ZCodec {
     )
 }
 
+/// `z.discriminatedUnion("kind", [option])`.
+fn du_of(option: z::Schema) -> z::Schema {
+    z::discriminated_union("kind", [option])
+}
+
 fn schema(name: &str) -> z::Schema {
     match name {
         // ----- primitives
@@ -374,6 +379,46 @@ fn schema(name: &str) -> z::Schema {
             d: z::array(z::string()),
         }
         .refine(|_| false, "raiz"),
+
+        // ----- edges of the JavaScript primitives
+        "string.min.astral" => s(z::string().min(2)),
+        "string.max.astral" => s(z::string().max(1)),
+        "string.length.astral" => s(z::string().length(2)),
+        "number.multipleOf.big" => s(z::number().multiple_of(1.0)),
+        "number.multipleOf.tenth" => s(z::number().multiple_of(0.1)),
+        "number.multipleOf.hundredth" => s(z::number().multiple_of(0.01)),
+        "string.email.edges" | "string.email.caseFold" => s(z::string().email()),
+        "string.cuid.edges" => s(z::string().cuid()),
+        "string.url.edges" => s(z::string().url()),
+        "string.ip.edges" => s(z::string().ip()),
+        "coerce.number.edges" => s(z::coerce::number()),
+        "coerce.number.finite" => s(z::coerce::number().finite()),
+        "coerce.string.edges" => s(z::coerce::string()),
+        "string.trim.edges" => s(z::string().trim()),
+        "number.min.big" => s(z::number().min(1e21)),
+        "number.max.small" => s(z::number().max(1e-7)),
+        "date.coerce.edges" => s(z::coerce::date()),
+
+        // ----- check-like wrappers keep the structure of what they wrap
+        "du.overwrite" => du_of(z::object! { kind: z::literal("a") }.overwrite(|v| v)),
+        "du.check" => du_of(z::object! { kind: z::literal("a") }.check_fn(|_| {})),
+        "du.refine" => du_of(z::object! { kind: z::literal("a") }.refine(|_| true, ())),
+        "du.optional" => du_of(z::object! { kind: z::literal("a") }.optional()),
+        "du.nullable" => du_of(z::object! { kind: z::literal("a") }.nullable()),
+        "du.default" => du_of(z::object! { kind: z::literal("a") }.default(json!({ "kind": "a" }))),
+        "du.catch" => du_of(z::object! { kind: z::literal("a") }.catch(json!({ "kind": "a" }))),
+        "du.readonly" => du_of(z::object! { kind: z::literal("a") }.readonly()),
+        "templateLiteral.overwrite" => s(z::template_literal([z::TemplatePart::from("id-"), z::number().overwrite(|v| v).into()])),
+        "templateLiteral.check" => s(z::template_literal([z::TemplatePart::from("id-"), z::number().check_fn(|_| {}).into()])),
+        "templateLiteral.refine" => s(z::template_literal([z::TemplatePart::from("id-"), z::number().refine(|_| false, ()).into()])),
+        "templateLiteral.superRefine" => {
+            s(z::template_literal([z::TemplatePart::from("id-"), z::number().super_refine(|_, ctx| ctx.add_issue("no")).into()]))
+        }
+        "literal.empty" => s(z::literal(json!([]))),
+        "object.required.refine" => s(z::object! { a: z::string().optional().refine(|_| true, ()) }.required()),
+        "discriminatedUnion.refinedKey" => {
+            z::discriminated_union("type", [s(z::object! { "type": z::literal("a").refine(|_| true, ()), a: z::string() })])
+        }
         other => panic!("no Rust schema for fixture case `{other}`"),
     }
 }
@@ -517,6 +562,41 @@ fn decode_input(v: &Value) -> Option<Value> {
     if v.get("$undefined").is_some() { None } else { Some(v.clone()) }
 }
 
+/// The text of a panic payload (`panic!` with a literal or with a format).
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| payload.downcast_ref::<String>().cloned()).unwrap_or_default()
+}
+
+/// A recorded non-finite number (`{ "$number": "Infinity" }`), which JSON cannot hold.
+fn recorded_non_finite(v: &Value) -> Option<&str> {
+    v.get("$number").and_then(Value::as_str)
+}
+
+/// The recorded divergences: a result Corvis cannot reproduce, and the recorded case and input whose issues it
+/// answers instead. zod 3 returns the infinite number `z.coerce.number()` makes of `"Infinity"`; zod 3 mode works on
+/// JSON values and refuses it with zod 3's issue for an infinite number.
+fn divergence<'a>(fx: &'a Value, list: &str, name: &str, input: &Value) -> Option<&'a Value> {
+    let instead = match (list, name) {
+        ("casesV3", "coerce.number.edges") => "coerce.number.finite",
+        _ => return None,
+    };
+    let case = fx[list].as_array()?.iter().find(|c| c["name"] == instead)?;
+    let result = case["results"].as_array()?.iter().find(|r| r["input"] == *input)?;
+    Some(&result["issues"])
+}
+
+/// The recorded schemas Corvis refuses to build. zod 4 builds a template literal whose part has a refine,
+/// superRefine, check or overwrite and tests only the part's pattern, so the check is never run; Corvis panics when
+/// it is built rather than accept what the declared check refuses.
+fn construct_divergence(list: &str, name: &str) -> Option<&'static str> {
+    match (list, name) {
+        ("cases", "templateLiteral.refine" | "templateLiteral.superRefine" | "templateLiteral.check" | "templateLiteral.overwrite") => {
+            Some("a template literal cannot run the checks of its parts")
+        }
+        _ => None,
+    }
+}
+
 #[test]
 fn zod4_parse_fixtures() {
     run_parse_fixtures("cases", z::ZodVersion::V4);
@@ -535,7 +615,36 @@ fn run_parse_fixtures(list: &str, version: z::ZodVersion) {
     z::with_version(version, || {
         for case in fx[list].as_array().unwrap() {
             let name = case["name"].as_str().unwrap();
-            let schema = schema(name);
+            let built = std::panic::catch_unwind(|| schema(name)).map_err(|p| panic_text(&*p));
+            if let Some(want) = construct_divergence(list, name) {
+                let problem = match built {
+                    Err(got) if got.contains(want) => continue,
+                    Err(got) => format!("divergence: build panicked with {got:?}, want {want:?}"),
+                    Ok(_) => format!("divergence: expected a panic when built: {want:?}"),
+                };
+                failures.entry(name.to_string()).or_default().push(problem);
+                continue;
+            }
+            // The original throws while the schema is created: Corvis panics while it is built.
+            if let Some(want) = case.get("construct").map(|c| &c["throws"]) {
+                match built {
+                    Err(got) if json!(got) == *want => {}
+                    Err(got) => failures.entry(name.to_string()).or_default().push(format!("build panicked with {got:?}, want {want}")),
+                    Ok(_) => failures.entry(name.to_string()).or_default().push(format!("expected a panic when built: {want}")),
+                }
+                continue;
+            }
+            let schema = match built {
+                Ok(schema) => schema,
+                // An error the original throws at the first parse (a discriminated union option without a
+                // discriminator) is raised when Corvis builds the schema: every input must record that throw.
+                Err(got) => {
+                    if !case["results"].as_array().unwrap().iter().all(|r| r.get("throws") == Some(&json!(got))) {
+                        failures.entry(name.to_string()).or_default().push(format!("build panicked with {got:?}"));
+                    }
+                    continue;
+                }
+            };
             let mode = case["mode"].as_str().unwrap();
             let mut opts = z::ParseOptions::new().report_input(case["reportInput"].as_bool().unwrap());
             if case["globalError"].as_bool().unwrap() {
@@ -552,15 +661,43 @@ fn run_parse_fixtures(list: &str, version: z::ZodVersion) {
             for expected in case["results"].as_array().unwrap() {
                 let input = decode_input(&expected["input"]);
                 let label = format!("{} <- {}", name, expected["input"]);
+                // What the original throws while parsing is an error with no issues and the thrown message.
                 if let Some(msg) = expected.get("throws") {
-                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| schema.parse_opt(input.as_ref(), &opts)));
-                    if r.is_ok() {
-                        failures.entry(label).or_default().push(format!("expected a panic: {msg}"));
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| schema.parse_opt(input.as_ref(), &opts))) {
+                        Ok(Err(e))
+                            if e.issues.is_empty()
+                                && e.thrown().map(|t| json!(t)).as_ref() == Some(msg)
+                                && json!(e.to_string()) == *msg => {}
+                        Ok(got) => failures.entry(label).or_default().push(format!("expected the thrown error {msg}, got {got:?}")),
+                        Err(p) => failures
+                            .entry(label)
+                            .or_default()
+                            .push(format!("expected the thrown error {msg}, panicked: {}", panic_text(&*p))),
                     }
                     continue;
                 }
-                let got = schema.parse_opt(input.as_ref(), &opts);
+                if let Some(want) = recorded_non_finite(&expected["data"]) {
+                    if let Some(instead) = divergence(&fx, list, name, &expected["input"]) {
+                        match schema.parse_opt(input.as_ref(), &opts) {
+                            Err(e) if same(&e.to_json(), instead) => {}
+                            got => failures.entry(label).or_default().push(format!("divergence: got {got:?}, want {instead}")),
+                        }
+                        continue;
+                    }
+                    match z::parse_val(&schema, input.as_ref(), &opts) {
+                        Ok(z::Val::Num(n)) if z::js::num_to_string(n) == want => {}
+                        got => failures.entry(label).or_default().push(format!("data: got {got:?}, want {want}")),
+                    }
+                    continue;
+                }
                 let mut diffs = Vec::new();
+                let got = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| schema.parse_opt(input.as_ref(), &opts))) {
+                    Ok(got) => got,
+                    Err(p) => {
+                        failures.entry(label).or_default().push(format!("panicked: {}", panic_text(&*p)));
+                        continue;
+                    }
+                };
                 match (expected["success"].as_bool().unwrap(), got) {
                     (true, Ok(v)) => {
                         let want = if expected.get("undefined").is_some() { Value::Null } else { expected["data"].clone() };

@@ -25,6 +25,16 @@ static HEX_COLOR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$").unwrap());
 static JWT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.?[A-Za-z0-9_-]*$").unwrap());
 static MONGO_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-fA-F]{24}$").unwrap());
+// The sources of validator.js 13.15 (class-validator 0.14.4): `isNumeric` without options and the two patterns of
+// `isIP`. Their classes are ASCII and they have no lookaround, so the `regex` crate answers as V8 does.
+static NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[+-]?([0-9]*[.])?[0-9]+$").unwrap());
+static IPV4: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^((?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])[.]){3}(?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$")
+        .unwrap()
+});
+static IPV6: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^((?:(?:[0-9a-fA-F]{1,4}):){7}(?:(?:[0-9a-fA-F]{1,4})|:)|(?:(?:[0-9a-fA-F]{1,4}):){6}(?:((?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])[.]){3}(?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])|:(?:[0-9a-fA-F]{1,4})|:)|(?:(?:[0-9a-fA-F]{1,4}):){5}(?::((?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])[.]){3}(?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])|(:(?:[0-9a-fA-F]{1,4})){1,2}|:)|(?:(?:[0-9a-fA-F]{1,4}):){4}(?:(:(?:[0-9a-fA-F]{1,4})){0,1}:((?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])[.]){3}(?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])|(:(?:[0-9a-fA-F]{1,4})){1,3}|:)|(?:(?:[0-9a-fA-F]{1,4}):){3}(?:(:(?:[0-9a-fA-F]{1,4})){0,2}:((?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])[.]){3}(?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])|(:(?:[0-9a-fA-F]{1,4})){1,4}|:)|(?:(?:[0-9a-fA-F]{1,4}):){2}(?:(:(?:[0-9a-fA-F]{1,4})){0,3}:((?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])[.]){3}(?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])|(:(?:[0-9a-fA-F]{1,4})){1,5}|:)|(?:(?:[0-9a-fA-F]{1,4}):){1}(?:(:(?:[0-9a-fA-F]{1,4})){0,4}:((?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])[.]){3}(?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])|(:(?:[0-9a-fA-F]{1,4})){1,6}|:)|(?::((?::(?:[0-9a-fA-F]{1,4})){0,5}:((?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])[.]){3}(?:[0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])|(?::(?:[0-9a-fA-F]{1,4})){1,7}|:)))(%[0-9a-zA-Z.]{1,})?$").unwrap()
+});
 
 fn as_str(v: V<'_>) -> Option<&str> {
     v.and_then(|v| v.as_str())
@@ -89,8 +99,10 @@ pub fn is_alpha(v: V<'_>) -> bool {
 pub fn is_alphanumeric(v: V<'_>) -> bool {
     as_str(v).map(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric())).unwrap_or(false)
 }
+/// A decimal numeral: an optional sign, digits, an optional fraction (`"1.5"`, `".5"`, `"+1"`); no white space, no
+/// exponent, no `NaN` or `Infinity`.
 pub fn is_number_string(v: V<'_>) -> bool {
-    as_str(v).map(|s| !s.trim().is_empty() && s.trim().parse::<f64>().is_ok()).unwrap_or(false)
+    as_str(v).is_some_and(|s| NUMERIC.is_match(s))
 }
 pub fn is_date_string(v: V<'_>) -> bool {
     as_str(v).map(|s| ISO8601.is_match(s)).unwrap_or(false)
@@ -104,8 +116,9 @@ pub fn is_jwt(v: V<'_>) -> bool {
 pub fn is_mongo_id(v: V<'_>) -> bool {
     as_str(v).map(|s| MONGO_ID.is_match(s)).unwrap_or(false)
 }
+/// An IPv4 address (no leading zeros) or an IPv6 address, which may carry a zone (`fe80::1%eth0`).
 pub fn is_ip(v: V<'_>) -> bool {
-    as_str(v).map(|s| s.parse::<std::net::IpAddr>().is_ok()).unwrap_or(false)
+    as_str(v).is_some_and(|s| IPV4.is_match(s) || IPV6.is_match(s))
 }
 pub fn is_lowercase(v: V<'_>) -> bool {
     as_str(v).map(|s| s == s.to_lowercase()).unwrap_or(false)
@@ -113,11 +126,25 @@ pub fn is_lowercase(v: V<'_>) -> bool {
 pub fn is_uppercase(v: V<'_>) -> bool {
     as_str(v).map(|s| s == s.to_uppercase()).unwrap_or(false)
 }
+/// The length class-validator's `minLength`/`maxLength` measure: code points, not counting a variation selector
+/// (U+FE0E, U+FE0F) that follows another character, so `"❤️"` is one.
+fn validator_len(s: &str) -> usize {
+    let is_selector = |c: char| matches!(c, '\u{FE0E}' | '\u{FE0F}');
+    let mut prev = None;
+    let mut len = 0;
+    for c in s.chars() {
+        if !(is_selector(c) && prev.is_some_and(|p| !is_selector(p))) {
+            len += 1;
+        }
+        prev = Some(c);
+    }
+    len
+}
 pub fn min_length(v: V<'_>, n: usize) -> bool {
-    as_str(v).map(|s| s.chars().count() >= n).unwrap_or(false)
+    as_str(v).is_some_and(|s| validator_len(s) >= n)
 }
 pub fn max_length(v: V<'_>, n: usize) -> bool {
-    as_str(v).map(|s| s.chars().count() <= n).unwrap_or(false)
+    as_str(v).is_some_and(|s| validator_len(s) <= n)
 }
 pub fn min(v: V<'_>, n: f64) -> bool {
     v.and_then(|v| v.as_f64()).map(|x| x >= n).unwrap_or(false)
@@ -161,6 +188,12 @@ pub fn array_max_size(v: V<'_>, n: usize) -> bool {
 pub fn array_not_empty(v: V<'_>) -> bool {
     v.and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false)
 }
+#[cfg(test)]
+thread_local! {
+    /// Element comparisons made by `array_unique` on this thread.
+    static COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// `arrayUnique`: no two elements are equal (`serde_json::Value` equality). Linear: elements are
 /// bucketed by a hash consistent with that equality and only compared within a bucket (the
 /// previous pairwise scan was O(n²), ~350 ms for a 100 KB body).
@@ -172,6 +205,8 @@ pub fn array_unique(v: V<'_>) -> bool {
     let mut buckets: std::collections::HashMap<u64, Vec<&Value>> = std::collections::HashMap::with_capacity(a.len());
     for x in a {
         let bucket = buckets.entry(value_hash(x)).or_default();
+        #[cfg(test)]
+        COMPARISONS.with(|c| c.set(c.get() + bucket.len()));
         if bucket.contains(&x) {
             return false;
         }
@@ -225,6 +260,22 @@ pub fn enum_variants<T: DeserializeOwned>() -> &'static [&'static str] {
         Err(crate::common::lenient::CaptureError(Some(v))) => v,
         _ => &[],
     }
+}
+
+/// [`enum_variants`] for a builder that needs them (`builder` names it in the message).
+///
+/// # Panics
+///
+/// When `T` has no readable variant names: an untagged, internally or adjacently tagged enum, or a type that is not an
+/// enum.
+pub(crate) fn readable_enum_variants<T: DeserializeOwned>(builder: &str) -> &'static [&'static str] {
+    let variants = enum_variants::<T>();
+    assert!(
+        !variants.is_empty(),
+        "{builder}::<{}>(): the variant names of this type cannot be read; only enums of unit variants with serde's default (externally tagged) representation are supported",
+        std::any::type_name::<T>()
+    );
+    variants
 }
 
 /// Builds the final message: the custom one (with `$property` / `$value` tokens) or the default.
@@ -379,12 +430,14 @@ mod tests {
     /// release and minutes in a debug build for this size).
     #[test]
     fn array_unique_is_linear() {
-        let mut items: Vec<Value> = (0..100_000).map(|i| json!(i)).collect();
-        let t = std::time::Instant::now();
+        let n = 100_000;
+        let mut items: Vec<Value> = (0..n).map(|i| json!(i)).collect();
+        COMPARISONS.with(|c| c.set(0));
         assert!(array_unique(Some(&Value::Array(items.clone()))));
+        let comparisons = COMPARISONS.with(std::cell::Cell::get);
+        assert!(comparisons < 2 * n, "{comparisons} comparisons for {n} distinct numbers");
         items.push(json!(0));
         assert!(!array_unique(Some(&Value::Array(items))));
-        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }
 
     #[test]

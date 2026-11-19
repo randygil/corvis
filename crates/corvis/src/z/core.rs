@@ -16,7 +16,16 @@ use super::js;
 /// Which zod semantics `parse` follows (messages, issue shapes, check ordering, coercion).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ZodVersion {
-    /// zod 3.x (`"String must contain at least 3 character(s)"`).
+    /// zod 3.x (`"String must contain at least 3 character(s)"`), checked against the `zod/v3` build of zod 4.4.3.
+    ///
+    /// It uses the JavaScript primitives of zod 4 mode: string lengths in UTF-16 units, `String.prototype.trim`,
+    /// `Number(x)` for `z.coerce.number()` (`"0x10"` is 16, `"inf"` is not a number), `String(x)` for
+    /// `z.coerce.string()`, JavaScript number text in messages (`1e+21`), zod 3's own `multipleOf` remainder, and zod 3's
+    /// email, cuid and ip patterns on the JavaScript regex engine (`url` is a WHATWG URL parse). Dates are read with the
+    /// JavaScript date parser: a date-time without a time zone is local time, as in zod 4 mode, and `z.coerce.date()`
+    /// rolls a day past the end of its month over (`"2023-02-30"` is March 2). `z.date()` without coercion returns the
+    /// input text, so it takes only the strict ISO format of a real calendar date. `z.coerce.number()` refuses an
+    /// infinite result with zod 3's `not_finite` issue, since a JSON value cannot hold it (zod 3 returns `Infinity`).
     V3,
     /// zod 4.x (`"Too small: expected string to have >=3 characters"`). The default.
     #[default]
@@ -436,10 +445,19 @@ impl RawIssue {
     }
 }
 
-/// `throw new $ZodEncodeError(name)`: zod throws (it is not a validation issue), so this panics.
-/// [`ZodValidationPipe`](super::ZodValidationPipe) and the serializer turn it into their exceptions.
+/// The unwind payload of an error zod throws while parsing (not a validation issue).
+pub(crate) struct Thrown(pub(crate) String);
+
+/// `throw new Error(message)` inside a parse: unwinds to the parse entry point
+/// ([`parse_val`](super::parse_val)), which returns it as a [`ZodError`](super::ZodError) with
+/// [`thrown()`](super::ZodError::thrown) set. `resume_unwind` does not call the panic hook, so nothing is printed.
+pub(crate) fn throw(message: String) -> ! {
+    std::panic::resume_unwind(Box::new(Thrown(message)))
+}
+
+/// `throw new $ZodEncodeError(name)`.
 pub(crate) fn throw_encode_error(name: &str) -> ! {
-    panic!("Encountered unidirectional transform during encode: {name}")
+    throw(format!("Encountered unidirectional transform during encode: {name}"))
 }
 
 pub(crate) fn prefix_all(issues: Vec<RawIssue>, seg: impl Into<Value>) -> Vec<RawIssue> {

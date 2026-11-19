@@ -1,0 +1,796 @@
+{
+ "versions": {
+  "common": "11.2.1",
+  "classValidator": "0.14.4",
+  "classTransformer": "0.5.1"
+ },
+ "pipes": [
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "1,2,3",
+   "result": {
+    "ok": [
+     1,
+     2,
+     3
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "1,NaN",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "[1] item must be a number",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "1e20",
+   "result": {
+    "ok": [
+     100000000000000000000
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "inf",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "[0] item must be a number",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "Infinity",
+   "result": {
+    "ok": [
+     {
+      "$number": "Infinity"
+     }
+    ]
+   },
+   "divergence": {
+    "reason": "a non-finite item",
+    "result": {
+     "status": 400,
+     "body": {
+      "message": "[0] item must be a number",
+      "error": "Bad Request",
+      "statusCode": 400
+     }
+    }
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": " 1 , 2 ",
+   "result": {
+    "ok": [
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (parsable array expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "1,,2",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "[1] item must be a number",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "0x10",
+   "result": {
+    "ok": [
+     16
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "1.5",
+   "result": {
+    "ok": [
+     1.5
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "-0",
+   "result": {
+    "ok": [
+     0
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number"
+   },
+   "input": "9007199254740993",
+   "result": {
+    "ok": [
+     9007199254740992
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {
+    "items": "Number",
+    "separator": ";"
+   },
+   "input": "1;2",
+   "result": {
+    "ok": [
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {},
+   "input": "a, b",
+   "result": {
+    "ok": [
+     "a",
+     " b"
+    ]
+   }
+  },
+  {
+   "pipe": "ParseArrayPipe",
+   "options": {},
+   "input": "",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (parsable array expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "5",
+   "result": {
+    "ok": 5
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "+5",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": " 5",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "5 ",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "-0",
+   "result": {
+    "ok": 0
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "007",
+   "result": {
+    "ok": 7
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "1e3",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "9007199254740993",
+   "result": {
+    "ok": 9007199254740992
+   },
+   "divergence": {
+    "reason": "an integer beyond 2^53, read exactly",
+    "result": {
+     "ok": 9007199254740993
+    }
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "99999999999999999999",
+   "result": {
+    "ok": 100000000000000000000
+   },
+   "divergence": {
+    "reason": "an integer beyond i64",
+    "result": {
+     "status": 400,
+     "body": {
+      "message": "Validation failed (numeric string is expected)",
+      "error": "Bad Request",
+      "statusCode": 400
+     }
+    }
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseIntPipe",
+   "options": {},
+   "input": "0x10",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "1.5",
+   "result": {
+    "ok": 1.5
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": " 1.5 ",
+   "result": {
+    "ok": 1.5
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "0x10",
+   "result": {
+    "ok": 0
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "1e3",
+   "result": {
+    "ok": 1000
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "Infinity",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "NaN",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": ".5",
+   "result": {
+    "ok": 0.5
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "5.",
+   "result": {
+    "ok": 5
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "1,5",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseFloatPipe",
+   "options": {},
+   "input": "1.5abc",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (numeric string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseBoolPipe",
+   "options": {},
+   "input": "true",
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "pipe": "ParseBoolPipe",
+   "options": {},
+   "input": "false",
+   "result": {
+    "ok": false
+   }
+  },
+  {
+   "pipe": "ParseBoolPipe",
+   "options": {},
+   "input": "TRUE",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (boolean string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseBoolPipe",
+   "options": {},
+   "input": "1",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (boolean string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseBoolPipe",
+   "options": {},
+   "input": "",
+   "result": {
+    "status": 400,
+    "body": {
+     "message": "Validation failed (boolean string is expected)",
+     "error": "Bad Request",
+     "statusCode": 400
+    }
+   }
+  },
+  {
+   "pipe": "ParseBoolPipe",
+   "options": {},
+   "input": true,
+   "result": {
+    "ok": true
+   }
+  },
+  {
+   "pipe": "DefaultValuePipe",
+   "options": {
+    "default": 7
+   },
+   "input": {
+    "$undefined": true
+   },
+   "result": {
+    "ok": 7
+   }
+  },
+  {
+   "pipe": "DefaultValuePipe",
+   "options": {
+    "default": 7
+   },
+   "input": null,
+   "result": {
+    "ok": 7
+   }
+  },
+  {
+   "pipe": "DefaultValuePipe",
+   "options": {
+    "default": 7
+   },
+   "input": "",
+   "result": {
+    "ok": ""
+   }
+  },
+  {
+   "pipe": "DefaultValuePipe",
+   "options": {
+    "default": 7
+   },
+   "input": "x",
+   "result": {
+    "ok": "x"
+   }
+  },
+  {
+   "pipe": "DefaultValuePipe",
+   "options": {
+    "default": 7
+   },
+   "input": 0,
+   "result": {
+    "ok": 0
+   }
+  }
+ ],
+ "rules": [
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "1",
+   "result": true
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "1.5",
+   "result": true
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "-1",
+   "result": true
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "+1",
+   "result": true
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": " 1",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "1 ",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "NaN",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "inf",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "Infinity",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "1e5",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": ".5",
+   "result": true
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "5.",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "0x10",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "١٢٣",
+   "result": false
+  },
+  {
+   "rule": "isNumberString",
+   "args": [],
+   "input": "1,5",
+   "result": false
+  },
+  {
+   "rule": "isIP",
+   "args": [],
+   "input": "::ffff:1.2.3.4",
+   "result": true
+  },
+  {
+   "rule": "isIP",
+   "args": [],
+   "input": "fe80::1%eth0",
+   "result": true
+  },
+  {
+   "rule": "isIP",
+   "args": [],
+   "input": "01.2.3.4",
+   "result": false
+  },
+  {
+   "rule": "isIP",
+   "args": [],
+   "input": "1.2.3.4",
+   "result": true
+  },
+  {
+   "rule": "isIP",
+   "args": [],
+   "input": "::1",
+   "result": true
+  },
+  {
+   "rule": "isIP",
+   "args": [],
+   "input": "1.2.3.4 ",
+   "result": false
+  },
+  {
+   "rule": "minLength",
+   "args": [
+    2
+   ],
+   "input": "❤️",
+   "result": false
+  },
+  {
+   "rule": "minLength",
+   "args": [
+    2
+   ],
+   "input": "😀",
+   "result": false
+  },
+  {
+   "rule": "minLength",
+   "args": [
+    2
+   ],
+   "input": "é",
+   "result": false
+  },
+  {
+   "rule": "minLength",
+   "args": [
+    2
+   ],
+   "input": "a️",
+   "result": false
+  },
+  {
+   "rule": "minLength",
+   "args": [
+    2
+   ],
+   "input": "ab",
+   "result": true
+  },
+  {
+   "rule": "maxLength",
+   "args": [
+    1
+   ],
+   "input": "❤️",
+   "result": true
+  },
+  {
+   "rule": "maxLength",
+   "args": [
+    1
+   ],
+   "input": "😀",
+   "result": true
+  },
+  {
+   "rule": "maxLength",
+   "args": [
+    1
+   ],
+   "input": "é",
+   "result": true
+  },
+  {
+   "rule": "maxLength",
+   "args": [
+    1
+   ],
+   "input": "a️",
+   "result": true
+  },
+  {
+   "rule": "maxLength",
+   "args": [
+    1
+   ],
+   "input": "ab",
+   "result": false
+  }
+ ]
+}

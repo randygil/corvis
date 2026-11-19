@@ -1,8 +1,7 @@
 //! Security regressions of `corvis::z`: nesting limit of recursive schemas (`z.json()`,
-//! `z.lazy`) and linear traversal of nested inputs.
+//! `z.lazy`). The linear traversal of nested inputs is in `zod_linear_traversal.rs`.
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use corvis::z::{self, ParseOptions, ZodSchema, ZodVersion};
 use serde_json::{Value, json};
@@ -118,38 +117,4 @@ fn too_deep_issue_is_not_wrapped_in_invalid_union() {
     }
     let err = node().parse_with(&nested_arrays(10), &ParseOptions::new().max_depth(3)).unwrap_err();
     assert_eq!(err.to_json(), json!([{ "code": "custom", "message": too_deep(3), "path": [0, 0, 0, 0] }]));
-}
-
-/// Before: every level of a recursive schema copied its whole subtree, so 3000 levels took
-/// several seconds (quadratic). The traversal is now linear.
-#[test]
-fn recursive_traversal_is_linear() {
-    let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
-    let elapsed = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
-        .spawn(|| {
-            fn node() -> z::Schema {
-                z::Schema::from(z::object! { c: z::lazy(node).nullable(), pad: z::array(z::string()) })
-            }
-            let pad = json!(["x".repeat(64), "y".repeat(64), "z".repeat(64), "w".repeat(64)]);
-            let n = 3000;
-            let mut v = obj(vec![("c", Value::Null), ("pad", pad.clone())]);
-            for _ in 0..n {
-                v = obj(vec![("c", v), ("pad", pad.clone())]);
-            }
-            let opts = ParseOptions::new().max_depth(n + 10);
-            let t = Instant::now();
-            let out = node().parse_with(&v, &opts).unwrap();
-            let json_out = z::json().parse_with(&v, &opts).unwrap();
-            let elapsed = t.elapsed();
-            assert_eq!(out, v);
-            assert_eq!(json_out, v);
-            std::mem::forget((v, out, json_out)); // a 3000-level value cannot be dropped recursively on every stack
-            elapsed
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-    // ~30 ms in a debug build; the quadratic version took over 10 s.
-    assert!(elapsed < Duration::from_secs(2), "3000 levels took {elapsed:?}");
 }

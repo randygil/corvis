@@ -1,5 +1,6 @@
 //! Property-based fuzzing of the request parsers: `JSON.parse` (`json_parse`), `qs`, the body
-//! parser, JWT verification, route paths and trust proxy (`proxy_addr`). The multipart parser has
+//! parser, JWT verification, route paths, trust proxy (`proxy_addr`) and the date and number text parsing of the
+//! validation library (`z::js`). The multipart parser has
 //! its own module (`multer::fuzz`), static files are fuzzed end to end in `tests/fuzz_static.rs`.
 //!
 //! The properties are the ones a hostile client attacks: no panic or stack overflow on any input,
@@ -16,6 +17,7 @@ use crate::http::json_parse;
 use crate::http::proxy_addr::{TrustProxy, all_addrs};
 use crate::jwt::{JwtModuleOptions, JwtService, parse_duration_secs};
 use crate::router::{join_paths, to_matchit};
+use crate::z::js;
 
 /// `cases` by default; `PROPTEST_CASES` overrides it for longer fuzzing runs.
 pub(crate) fn config(cases: u32) -> ProptestConfig {
@@ -302,6 +304,99 @@ proptest! {
             prop_assert!(trust.trusts(a, i), "hop {i} ({a}) is not trusted but the chain goes past it: {addrs:?}");
         }
     }
+
+    /// `Date.parse` is total: an invalid date or an integral time value inside the ECMAScript range, never a panic
+    /// (overflow checks are on in this build) and never a wrapped value.
+    #[test]
+    fn js_date_parse_is_total(soup in date_soup()) {
+        let t = js::parse_date(&soup);
+        prop_assert!(t.is_nan() || (t.fract() == 0.0 && t.abs() <= 8.64e15), "{soup:?} -> {t}");
+    }
+
+    /// `toFixed` formats a bounded number of digits whatever the number (a subnormal has 1074 exact fraction digits;
+    /// zod 3's `multipleOf` calls it for every input), and gives what the full exact expansion gives.
+    #[test]
+    fn js_to_fixed_is_bounded_and_exact(x in finite_f64(), digits in 0usize..=100) {
+        let precision = js::fixed_precision(x, digits);
+        prop_assert!(precision <= digits + 60.max(digits), "toFixed({x:e}, {digits}) formats {precision} digits");
+        if x.abs() < 1e21 {
+            let exact = js::fixed_text(x, digits, js::exact_fraction_digits(x).max(digits));
+            prop_assert_eq!(js::to_fixed(x, digits), exact, "({:e}).toFixed({})", x, digits);
+        }
+    }
+
+    /// Numbers a few units in the last place around a tie of `toFixed`, where a short expansion could round the wrong
+    /// way.
+    #[test]
+    fn js_to_fixed_rounds_near_ties_as_the_exact_expansion(k in 0u64..1_000_000, digits in 0i32..=22, ulps in -4i32..=4) {
+        let digits_usize = usize::try_from(digits).unwrap();
+        let mut x = (2 * k + 1) as f64 / (2.0 * 10f64.powi(digits));
+        for _ in 0..ulps.unsigned_abs() {
+            x = if ulps > 0 { x.next_up() } else { x.next_down() };
+        }
+        let exact = js::fixed_text(x, digits_usize, js::exact_fraction_digits(x).max(digits_usize));
+        prop_assert_eq!(js::to_fixed(x, digits_usize), exact, "({:e}).toFixed({})", x, digits);
+    }
+
+    /// `Number(text)` and `BigInt(text)` are total on number-like text.
+    #[test]
+    fn js_number_and_bigint_parsing_are_total(soup in date_soup(), text in "\\PC{0,24}") {
+        for s in [&soup, &text] {
+            let _ = js::string_to_number(s);
+            let _ = js::string_to_bigint(s);
+        }
+    }
+}
+
+/// Finite doubles of every class: normal and subnormal, both signs, zero.
+fn finite_f64() -> impl Strategy<Value = f64> {
+    use prop::num::f64::{NEGATIVE, NORMAL, POSITIVE, SUBNORMAL, ZERO};
+    POSITIVE | NEGATIVE | NORMAL | SUBNORMAL | ZERO
+}
+
+/// Fragments of date and number text: digits, separators, signs, month and zone names and long digit runs.
+fn date_soup() -> impl Strategy<Value = String> {
+    prop::collection::vec(
+        prop::sample::select(vec![
+            "0",
+            "1",
+            "9",
+            "12",
+            "31",
+            "2024",
+            "275760",
+            "275761",
+            "-271821",
+            "999999999999999999",
+            "99999999999999999999",
+            "9223372036854775807",
+            "-",
+            "/",
+            ":",
+            ".",
+            ",",
+            " ",
+            "+",
+            "T",
+            "Z",
+            "z",
+            "t",
+            "UTC",
+            "GMT",
+            "am",
+            "pm",
+            "Jan",
+            "december",
+            "Mon",
+            "(",
+            ")",
+            "0x",
+            "e",
+            "Infinity",
+        ]),
+        0..12,
+    )
+    .prop_map(|parts| parts.concat())
 }
 
 proptest! {

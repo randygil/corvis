@@ -139,6 +139,14 @@ pub trait ZodType: Send + Sync + 'static {
         None
     }
 
+    /// `true` when this node runs a check that its [`pattern`](Self::pattern) does not express: a refine,
+    /// superRefine, check or overwrite on it, or on a schema whose pattern it forwards. A template literal tests only
+    /// the patterns of its parts, so it refuses such a part rather than skip the check.
+    #[doc(hidden)]
+    fn checks_beyond_pattern(&self) -> bool {
+        false
+    }
+
     /// `_zod.def.type` (`"string"`, `"object"`, `"pipe"`, ...).
     fn def_type(&self) -> &'static str {
         "custom"
@@ -605,14 +613,25 @@ fn run_v3(schema: &Schema, value: Option<&Value>, opts: &ParseOptions) -> Result
 }
 
 /// Parses `value` (`None` = undefined) and returns the output as a [`Val`].
+///
+/// An error the original throws while parsing (an intersection whose results cannot be merged, a unidirectional
+/// transform met while encoding) is returned as a [`ZodError`] with no issues and [`ZodError::thrown`] set. A panic
+/// of user code (a transform or refinement that panics) keeps unwinding to the caller.
 pub fn parse_val(schema: &Schema, value: Option<&Value>, opts: &ParseOptions) -> Result<Val, ZodError> {
-    match opts.version.unwrap_or_else(version) {
+    let parse = || match opts.version.unwrap_or_else(version) {
         ZodVersion::V3 => run_v3(schema, value, opts).map(Val::Json),
         ZodVersion::V4 => {
             let ctx = RunCtx::new(opts);
             let p = schema.run(Payload::new(Val::from_opt(value)), &ctx);
             if p.issues.is_empty() { Ok(p.value) } else { Err(ZodError::new(ctx.finalize_all(&p.issues))) }
         }
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(parse)) {
+        Ok(result) => result,
+        Err(payload) => match payload.downcast::<self::core::Thrown>() {
+            Ok(thrown) => Err(ZodError::from_thrown(thrown.0)),
+            Err(other) => std::panic::resume_unwind(other),
+        },
     }
 }
 

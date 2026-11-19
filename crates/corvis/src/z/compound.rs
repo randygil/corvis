@@ -1237,6 +1237,9 @@ impl ZodType for ZUnion {
     fn pattern(&self) -> Option<String> {
         union_pattern(&self.0)
     }
+    fn checks_beyond_pattern(&self) -> bool {
+        self.0.iter().any(|o| o.node().checks_beyond_pattern())
+    }
     fn def_type(&self) -> &'static str {
         "union"
     }
@@ -1593,7 +1596,7 @@ impl ZodType for ZIntersection {
         match merge_vals(&left.value, &right.value) {
             Ok(v) => p.value = v,
             // zod throws a plain `Error` (not a validation issue).
-            Err(path) => panic!("Unmergable intersection. Error path: {}", Value::Array(path)),
+            Err(path) => super::core::throw(format!("Unmergable intersection. Error path: {}", Value::Array(path))),
         }
         p
     }

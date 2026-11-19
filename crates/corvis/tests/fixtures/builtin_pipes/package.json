@@ -1,0 +1,13 @@
+{
+  "name": "corvis-builtin-pipes-fixture",
+  "private": true,
+  "type": "module",
+  "description": "Records the built-in pipes of the original framework and class-validator rules into builtin_pipes.json.",
+  "dependencies": {
+    "@nestjs/common": "11.2.1",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.14.4",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  }
+}

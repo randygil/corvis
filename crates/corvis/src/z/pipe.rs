@@ -4,11 +4,13 @@
 //! `ZodSerializerInterceptor` / `createZodSerializerInterceptor`, `ZodGuard` and `validate`.
 
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::{Direction, ParseOptions, Schema, ZodError, ZodSchema};
+use crate::auth::warn_limit::WarnLimiter;
 use crate::common::context::ExecutionContext;
 use crate::common::interceptor::{CallHandler, CorvisInterceptor};
 use crate::common::pipe::{ArgumentMetadata, ParamKind, PipeTransform};
@@ -108,31 +110,67 @@ impl ZodValidationPipeOptions {
     }
 }
 
-/// Runs `f`, turning a panic (zod *throws* a plain `Error`: unmergable intersections, a transform
-/// during `encode`, a panicking transform, ...) into `Err(None)`.
-fn catch_thrown(f: impl FnOnce() -> Result<Value, ZodError>) -> Result<Value, Option<ZodError>> {
+/// Where a parse runs, for the line logged when user code panics in it: who parses, and what.
+#[derive(Clone, Copy)]
+struct Site {
+    who: &'static str,
+    what: &'static str,
+}
+
+/// Runs a parse. An error zod throws comes back as a [`ZodError`] with [`thrown`](ZodError::thrown) set. A panic of
+/// user code (a transform or refinement that panics) is caught here and answered as an error thrown while parsing
+/// (`Err(None)`: there is no message to give, since the panic's can carry request data); it is logged at most once a
+/// minute per site, without the panic's message.
+fn catch_thrown(site: Site, f: impl FnOnce() -> Result<Value, ZodError>) -> Result<Value, Option<ZodError>> {
+    static PANICS: OnceLock<WarnLimiter> = OnceLock::new();
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(r) => r.map_err(Some),
-        Err(_) => Err(None),
+        Err(_) => {
+            let Site { who, what } = site;
+            let limiter = PANICS.get_or_init(|| WarnLimiter::new(Duration::from_secs(60)));
+            let line = limiter.line(&format!("{who} {what}"), Instant::now(), || {
+                format!("a transform or refinement panicked while parsing the {what}; it was answered as an error thrown while parsing")
+            });
+            if let Some(line) = line {
+                crate::logger::Logger::new(who).error(line);
+            }
+            Err(None)
+        }
     }
 }
 
 /// `validate(value, schemaOrDto, createValidationException?)`: `schema.parse(value)`, turning
 /// the error into a [`ZodValidationException`] (or the custom exception).
 ///
-/// An error thrown while parsing (a panic here) also becomes a validation
-/// exception: its body has no `errors`, and a custom `createValidationException` receives an
-/// empty [`ZodError`].
+/// An error thrown while parsing ([`ZodError::thrown`]) also becomes a validation exception: its body has no
+/// `errors`, and a custom `createValidationException` receives that [`ZodError`]. A panic of a transform or
+/// refinement is answered the same way (the custom exception receives an empty [`ZodError`]) and logged, rate
+/// limited, without its message.
 pub fn validate(value: &Value, schema: &Schema, create: Option<&CreateValidationException>) -> Result<Value, HttpException> {
     validate_opt(Some(value), schema, create)
 }
 
 /// [`validate`] where `None` is JavaScript `undefined`.
 pub fn validate_opt(value: Option<&Value>, schema: &Schema, create: Option<&CreateValidationException>) -> Result<Value, HttpException> {
-    catch_thrown(|| schema.parse_opt(value, &ParseOptions::new())).map_err(|e| match (create, e) {
-        (Some(f), e) => f(e.unwrap_or_else(|| ZodError::new(Vec::new()))),
-        (None, Some(e)) => ZodValidationException::new(e),
-        (None, None) => HttpException::new(json!({ "statusCode": 400, "message": "Validation failed" }), HttpStatus::BAD_REQUEST),
+    validate_at(Site { who: "validate", what: "value" }, value, schema, create)
+}
+
+fn validate_at(
+    site: Site,
+    value: Option<&Value>,
+    schema: &Schema,
+    create: Option<&CreateValidationException>,
+) -> Result<Value, HttpException> {
+    catch_thrown(site, || schema.parse_opt(value, &ParseOptions::new())).map_err(|e| match (create, e) {
+        (Some(f), e) => f(e.unwrap_or_default()),
+        (None, Some(e)) if e.thrown().is_none() => ZodValidationException::new(e),
+        (None, e) => {
+            let ex = HttpException::new(json!({ "statusCode": 400, "message": "Validation failed" }), HttpStatus::BAD_REQUEST);
+            match e {
+                Some(e) => ex.with_cause(e),
+                None => ex,
+            }
+        }
     })
 }
 
@@ -190,11 +228,12 @@ impl PipeTransform for ZodValidationPipe {
         // Express gives `undefined` for a missing body, query value, route param or header
         // (and for a missing key of `@Body('key')`); the raw value is then `null` here.
         let input = (!value.is_null()).then_some(&value);
+        let site = Site { who: "ZodValidationPipe", what: metadata.kind.as_str() };
         if let Some(s) = &self.schema {
-            return validate_opt(input, s, create);
+            return validate_at(site, input, s, create);
         }
         match metadata.metatype.zod {
-            Some(f) => validate_opt(input, f(), create),
+            Some(f) => validate_at(site, input, f(), create),
             None if self.options.strict_schema_declaration => Err(ZodSchemaDeclarationException::new()),
             None => Ok(value),
         }
@@ -254,7 +293,12 @@ impl crate::common::guard::CanActivate for ZodGuard {
             ZodGuardSource::Params => Value::Object(req.params().iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect()),
         };
         let input = (!data.is_null()).then_some(&data);
-        validate_opt(input, &self.schema, self.create_validation_exception.as_ref())?;
+        let what = match self.source {
+            ZodGuardSource::Body => "body",
+            ZodGuardSource::Query => "query",
+            ZodGuardSource::Params => "params",
+        };
+        validate_at(Site { who: "ZodGuard", what }, input, &self.schema, self.create_validation_exception.as_ref())?;
         Ok(true)
     }
 
@@ -333,7 +377,8 @@ impl ZodSerializerDto {
         if entry.dto_codec == Some(true) {
             opts = opts.direction(Direction::Backward);
         }
-        catch_thrown(|| schema.parse_with(value, &opts)).map_err(|e| match e {
+        // A thrown error keeps the 500 body; the exception then carries it as its cause.
+        catch_thrown(Site { who: "ZodSerializerInterceptor", what: "response" }, || schema.parse_with(value, &opts)).map_err(|e| match e {
             Some(e) => ZodSerializationException::new(e),
             None => internal_server_error(),
         })

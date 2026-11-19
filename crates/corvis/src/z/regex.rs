@@ -195,6 +195,41 @@ const NOT_WORD: &str = r"\x00-\x2F\x3A-\x40\x5B-\x5E\x60\x7B-\x{10FFFF}";
 const WORD_BOUNDARY: &str = "(?:(?<=[A-Za-z0-9_])(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]))";
 const NOT_WORD_BOUNDARY: &str = "(?:(?<=[A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<![A-Za-z0-9_])(?![A-Za-z0-9_]))";
 
+/// ASCII and the two non-ASCII characters whose Unicode case folding is ASCII: U+017F (ſ, folds to `s`) and U+212A
+/// (Kelvin, folds to `k`). Under `i` without `u`/`v`, V8 compares upper cases and never maps a non-ASCII character to
+/// an ASCII one, so those two match only themselves. Outside this set the `regex` crate's folding (`(?i)`) answers as
+/// V8, and the set is closed under that folding.
+const ASCII_FOLD_SET: &str = r"\x00-\x7F\x{17F}\x{212A}";
+
+/// A literal under `i` without `u`, when the `regex` crate's folding would match it otherwise than V8: `s` and `k` must
+/// not match U+017F and U+212A, and those two match only themselves.
+fn ascii_fold_literal(c: char) -> Option<&'static str> {
+    Some(match c {
+        's' | 'S' => "(?-i:[sS])",
+        'k' | 'K' => "(?-i:[kK])",
+        '\u{17F}' => "(?-i:\u{17F})",
+        '\u{212A}' => "(?-i:\u{212A})",
+        _ => return None,
+    })
+}
+
+/// A class under `i` without `u`, as V8 matches it. `body` is the class in `regex` syntax, `negated` for `[^...]`.
+/// Inside [`ASCII_FOLD_SET`] the members are listed case-sensitively: a character matches when it or, for an ASCII
+/// letter, its other case is in `body`. Outside it the `regex` crate folds case, which agrees with V8 there.
+fn ascii_fold_class(body: &str, negated: bool) -> Result<String, String> {
+    let members = regex::Regex::new(&format!("^[{body}]$")).map_err(|e| e.to_string())?;
+    let has = |c: char| members.is_match(c.encode_utf8(&mut [0; 4]));
+    let mut exact = String::new();
+    for c in (0u8..=0x7F).map(char::from).chain(['\u{17F}', '\u{212A}']) {
+        let other_case = if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() };
+        if (has(c) || (c.is_ascii_alphabetic() && has(other_case))) != negated {
+            push_literal(&mut exact, c, true);
+        }
+    }
+    let folded = format!("[[{}{body}]&&[^{ASCII_FOLD_SET}]]", if negated { "^" } else { "" });
+    Ok(if exact.is_empty() { folded } else { format!("(?:(?-i:[{exact}])|{folded})") })
+}
+
 fn push_literal(out: &mut String, c: char, in_class: bool) {
     let special = if in_class {
         matches!(c, '[' | ']' | '\\' | '^' | '-' | '&' | '~')
@@ -313,6 +348,9 @@ fn translate_for(src: &str, flags: &str, native_boundaries: bool) -> Result<Stri
         }
     }
     let unicode = flags.contains('u') || flags.contains('v');
+    // `i` without `u`: literals, classes and word boundaries that touch `ASCII_FOLD_SET` are written so that the
+    // `(?i)` folding cannot map U+017F and U+212A to ASCII letters.
+    let ascii_fold = flags.contains('i') && !unicode;
     let dotall = flags.contains('s');
     let mut out = String::new();
     let mut prefix = String::new();
@@ -334,9 +372,21 @@ fn translate_for(src: &str, flags: &str, native_boundaries: bool) -> Result<Stri
                 let (t, n) = match chars.get(i + 1) {
                     Some('b') if native_boundaries => (r"(?-u:\b)".to_string(), 1),
                     Some('B') if native_boundaries => (r"(?-u:\B)".to_string(), 1),
+                    Some(w @ ('w' | 'W')) if ascii_fold => (ascii_fold_class(WORD, *w == 'W')?, 1),
+                    // The lookarounds of `\b`/`\B` test `[A-Za-z0-9_]`, which must not fold either.
+                    Some('b' | 'B') if ascii_fold => {
+                        let (t, n) = translate_escape(&chars, i + 1, false, unicode)?;
+                        (format!("(?-i:{t})"), n)
+                    }
                     _ => translate_escape(&chars, i + 1, false, unicode)?,
                 };
-                out.push_str(&t);
+                // An escaped literal (`\x6B` for `k`, `\u212A` for Kelvin) translates to the character itself.
+                let mut lone = t.chars();
+                let folded = match (lone.next(), lone.next()) {
+                    (Some(c), None) if ascii_fold => ascii_fold_literal(c),
+                    _ => None,
+                };
+                out.push_str(folded.unwrap_or(&t));
                 i += 1 + n;
             }
             '[' => {
@@ -380,6 +430,8 @@ fn translate_for(src: &str, flags: &str, native_boundaries: bool) -> Result<Stri
                 }
                 if body.is_empty() {
                     out.push_str(if negated { r"[\x00-\x{10FFFF}]" } else { r"[^\x00-\x{10FFFF}]" });
+                } else if ascii_fold {
+                    out.push_str(&ascii_fold_class(&body, negated)?);
                 } else {
                     out.push('[');
                     if negated {
@@ -450,7 +502,10 @@ fn translate_for(src: &str, flags: &str, native_boundaries: bool) -> Result<Stri
                 i += 1;
             }
             _ => {
-                out.push(c);
+                match ascii_fold.then(|| ascii_fold_literal(c)).flatten() {
+                    Some(folded) => out.push_str(folded),
+                    None => out.push(c),
+                }
                 i += 1;
             }
         }
@@ -486,6 +541,59 @@ mod tests {
         assert!(re.test("XX"));
     }
 
+    /// Without `u`/`v`, V8's case-insensitive match compares upper cases and never maps a non-ASCII character to an
+    /// ASCII one, so U+017F (ſ) and U+212A (Kelvin) match only themselves; the `regex` crate's case folding maps them
+    /// to `s` and `k`. Expected values printed by Node 24.
+    #[test]
+    fn ignore_case_without_unicode_keeps_long_s_and_kelvin_apart_from_ascii() {
+        let (long_s, kelvin) = ("\u{17F}", "\u{212A}");
+        for (src, flags, input, want) in [
+            (r"^k$", "i", "K", true),
+            (r"^k$", "i", kelvin, false),
+            (r"^s$", "i", "S", true),
+            (r"^s$", "i", long_s, false),
+            (r"^[a-z]+$", "i", "Z", true),
+            (r"^[a-z]+$", "i", long_s, false),
+            (r"^[a-z]+$", "i", kelvin, false),
+            (r"^[^a-z]$", "i", long_s, true),
+            (r"^[^a-z]$", "i", kelvin, true),
+            (r"^[^a-z]$", "i", "k", false),
+            ("^\u{17F}$", "i", long_s, true),
+            ("^\u{17F}$", "i", "s", false),
+            ("^\u{17F}$", "i", "S", false),
+            ("^\u{212A}$", "i", kelvin, true),
+            ("^\u{212A}$", "i", "k", false),
+            (r"^[\u0100-\u017F]$", "i", long_s, true),
+            (r"^[\u0100-\u017F]$", "i", "s", false),
+            (r"^[\u0100-\u017F]$", "i", "\u{101}", true),
+            (r"^\w$", "i", long_s, false),
+            (r"^\w$", "i", kelvin, false),
+            (r"^\w$", "i", "_", true),
+            (r"^\W$", "i", long_s, true),
+            (r"^\W$", "i", kelvin, true),
+            (r"^\W$", "i", "a", false),
+            (r"^[\W]$", "i", kelvin, true),
+            (r"^[\W]$", "i", "k", false),
+            (r"^[^\w]$", "i", long_s, true),
+            (r"^[^\w]$", "i", "k", false),
+            (r"\bk", "i", "\u{17F}k", true),
+            (r"^a\b", "i", "a\u{17F}", true),
+            ("^\u{e9}$", "i", "\u{c9}", true),
+            ("^\u{3a3}$", "i", "\u{3c2}", true),
+            // With `u`, JavaScript folds case as Unicode does, as the `regex` crate does.
+            (r"^k$", "iu", kelvin, true),
+            (r"^s$", "iu", long_s, true),
+            // A lookahead puts the pattern on the backtracking engine.
+            (r"^(?=.)[a-z]+$", "i", kelvin, false),
+            (r"^(?=.)[^a-z]+$", "i", kelvin, true),
+            (r"^(?=.)k$", "i", "K", true),
+        ] {
+            assert_eq!(JsRegex::new(src, flags).test(input), want, "/{src}/{flags}.test({input:?})");
+        }
+        assert!(!crate::z::regexes::BOOLEAN.test("fal\u{17F}e"));
+        assert!(crate::z::regexes::BOOLEAN.test("FALSE"));
+    }
+
     #[test]
     fn engine_selection() {
         // `\b` is the ASCII word boundary of JS on both engines.
@@ -507,9 +615,8 @@ mod tests {
         assert!(re.is_linear());
         assert!(re.test(&format!("{}c", "ab ".repeat(30))));
         let re = JsRegex::new(r"\w+\bX", "");
-        let t = std::time::Instant::now();
+        assert!(re.is_linear());
         assert!(!re.test(&"a".repeat(90_000)));
-        assert!(t.elapsed() < std::time::Duration::from_secs(1));
         // With a lookahead the pattern stays on the backtracking engine: the limit still applies
         // (logged as a warning) and the result is `false`, as documented.
         let re = JsRegex::new(r"(?=\w)\b(\w+\s?)+\b!|c$", "");

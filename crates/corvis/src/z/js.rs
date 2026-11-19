@@ -150,46 +150,135 @@ pub fn string_to_number(s: &str) -> f64 {
             return acc;
         }
     }
-    if is_decimal_literal(t) { t.parse::<f64>().unwrap_or(f64::NAN) } else { f64::NAN }
+    if decimal_prefix(t) == Some(t.len()) { t.parse::<f64>().unwrap_or(f64::NAN) } else { f64::NAN }
 }
 
-fn is_decimal_literal(t: &str) -> bool {
+/// The length of the longest prefix of `t` that is a `StrDecimalLiteral` without `Infinity` (`-1.5e3`, `.5`, `5.`);
+/// `None` when no prefix is.
+fn decimal_prefix(t: &str) -> Option<usize> {
     let b = t.as_bytes();
-    let mut i = 0;
-    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
-        i += 1;
-    }
-    let int_start = i;
-    while i < b.len() && b[i].is_ascii_digit() {
-        i += 1;
-    }
-    let int_digits = i - int_start;
-    let mut frac_digits = 0;
-    if i < b.len() && b[i] == b'.' {
-        i += 1;
-        let fs = i;
+    let digits_from = |mut i: usize| {
         while i < b.len() && b[i].is_ascii_digit() {
             i += 1;
         }
-        frac_digits = i - fs;
+        i
+    };
+    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let int_end = digits_from(i);
+    let mut mantissa_digits = int_end - i;
+    i = int_end;
+    if b.get(i) == Some(&b'.') {
+        let frac_end = digits_from(i + 1);
+        mantissa_digits += frac_end - (i + 1);
+        i = frac_end;
     }
-    if int_digits == 0 && frac_digits == 0 {
-        return false;
+    if mantissa_digits == 0 {
+        return None;
     }
-    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
-        i += 1;
-        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
-            i += 1;
-        }
-        let es = i;
-        while i < b.len() && b[i].is_ascii_digit() {
-            i += 1;
-        }
-        if i == es {
-            return false;
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(b.get(i + 1), Some(b'+' | b'-')));
+        let exp_end = digits_from(i + 1 + sign);
+        if exp_end > i + 1 + sign {
+            i = exp_end;
         }
     }
-    i == b.len()
+    Some(i)
+}
+
+/// `parseFloat(string)`: the longest decimal prefix after leading white space, `NaN` when there is none.
+pub fn parse_float(s: &str) -> f64 {
+    let t = s.trim_start_matches(is_js_whitespace);
+    for (text, value) in [("Infinity", f64::INFINITY), ("+Infinity", f64::INFINITY), ("-Infinity", f64::NEG_INFINITY)] {
+        if t.starts_with(text) {
+            return value;
+        }
+    }
+    decimal_prefix(t).map_or(f64::NAN, |n| t[..n].parse::<f64>().unwrap_or(f64::NAN))
+}
+
+/// `parseInt(string, 10)`: the leading decimal digits after white space and an optional sign, `NaN` when there are
+/// none.
+pub fn parse_int(s: &str) -> f64 {
+    let t = s.trim_start_matches(is_js_whitespace);
+    let (neg, rest) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let digits = &rest[..rest.bytes().position(|c| !c.is_ascii_digit()).unwrap_or(rest.len())];
+    // The digits are a valid decimal literal, so the parse succeeds and rounds like JavaScript.
+    let n = if digits.is_empty() { f64::NAN } else { digits.parse::<f64>().unwrap_or(f64::NAN) };
+    if neg { -n } else { n }
+}
+
+/// `Number.prototype.toFixed(digits)`: rounded to the nearest, a tie to the larger magnitude; `String(x)` for a
+/// non-finite `x` or `|x| >= 1e21`.
+pub fn to_fixed(x: f64, digits: usize) -> String {
+    if !x.is_finite() || x.abs() >= 1e21 {
+        return num_to_string(x);
+    }
+    fixed_text(x, digits, fixed_precision(x, digits))
+}
+
+/// How many fraction digits `to_fixed` formats `|x|` with before it rounds to `digits` by hand: the exact expansion
+/// when it is short, otherwise `digits + max(60, digits)`, so the work is bounded (a subnormal has 1074 exact digits).
+///
+/// The shorter expansion rounds as the exact one. Formatting at precision `p` moves `|x|` by at most `10^-p / 2`, so
+/// only an `|x|` that close to a tie `(2k + 1) / (2 * 10^digits)` could round the other way. A tie has `digits + 1`
+/// fraction digits, so `|x|` is not one when its expansion is longer than `p`; then `|x|` and the tie differ by at
+/// least `2^e / 5^digits`, where `2^e` is the lowest bit of `|x|`, and `2^e > 10^-digits / 2^54` near a tie. That is
+/// more than `10^-p / 2` once `p - digits >= 16 + 0.7 * digits`, which both `60` (for `digits <= 63`) and `digits`
+/// (for `digits >= 54`) satisfy.
+pub(crate) fn fixed_precision(x: f64, digits: usize) -> usize {
+    exact_fraction_digits(x).min(digits.saturating_add(digits.max(60))).max(digits)
+}
+
+/// `|x|` formatted with `precision` fraction digits, then rounded half up to `digits` by hand (Rust's own rounding of a
+/// tie is to even), with the sign of `x`.
+pub(crate) fn fixed_text(x: f64, digits: usize, precision: usize) -> String {
+    let exact = format!("{:.*}", precision, x.abs());
+    let (int, frac) = exact.split_once('.').unwrap_or((exact.as_str(), ""));
+    let mut kept: Vec<u8> = int.bytes().chain(frac.bytes().take(digits)).collect();
+    if frac.as_bytes().get(digits).is_some_and(|d| *d >= b'5') {
+        let mut i = kept.len();
+        loop {
+            if i == 0 {
+                kept.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if kept[i] == b'9' {
+                kept[i] = b'0';
+            } else {
+                kept[i] += 1;
+                break;
+            }
+        }
+    }
+    let point = kept.len() - digits;
+    let mut out = String::with_capacity(kept.len() + 2);
+    if x < 0.0 {
+        out.push('-');
+    }
+    out.extend(kept[..point].iter().map(|b| char::from(*b)));
+    if digits > 0 {
+        out.push('.');
+        out.extend(kept[point..].iter().map(|b| char::from(*b)));
+    }
+    out
+}
+
+/// How many fraction digits the exact decimal expansion of a finite `x` has.
+pub(crate) fn exact_fraction_digits(x: f64) -> usize {
+    if x == 0.0 {
+        return 0;
+    }
+    let bits = x.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i64;
+    let mantissa = bits & ((1 << 52) - 1);
+    let (mantissa, exponent) = if biased == 0 { (mantissa, -1074) } else { (mantissa | (1 << 52), biased - 1075) };
+    let exponent = exponent + i64::from(mantissa.trailing_zeros());
+    usize::try_from(-exponent).unwrap_or(0)
 }
 
 /// `Number(value)` for JSON values (`None` = `undefined`).
@@ -219,7 +308,8 @@ pub fn truthy(v: Option<&Value>) -> bool {
     }
 }
 
-/// `BigInt(value)`; `None` when JavaScript would throw.
+/// `BigInt(value)`; `None` when JavaScript would throw, and for a number whose integer value does not fit in `i128`
+/// (JavaScript's BigInt has no bound; Corvis refuses what it cannot represent instead of saturating).
 pub fn to_bigint(v: Option<&Value>) -> Option<i128> {
     match v? {
         Value::Bool(b) => Some(i128::from(*b)),
@@ -231,7 +321,9 @@ pub fn to_bigint(v: Option<&Value>) -> Option<i128> {
                 return Some(i128::from(u));
             }
             let f = json_f64(n);
-            if f.is_finite() && f.fract() == 0.0 { Some(f as i128) } else { None }
+            // -2^127 is i128::MIN; 2^127 is one past i128::MAX. Both are exact in f64.
+            const LIMIT: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
+            (f.fract() == 0.0 && (-LIMIT..LIMIT).contains(&f)).then_some(f as i128)
         }
         Value::String(s) => string_to_bigint(s),
         Value::Array(_) => string_to_bigint(&to_js_string(v?)),
@@ -274,7 +366,13 @@ pub fn string_to_bigint(s: &str) -> Option<i128> {
 
 const MAX_TIME: f64 = 8.64e15;
 
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+/// No year beyond this one has a valid time value (ECMAScript dates span ±8.64e15 ms around 1970, years -271821 to
+/// 275760).
+const MAX_YEAR: u64 = 275_760;
+
+/// Days from 1970-01-01, in `i128` so it is total for any `i64` arguments.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i128 {
+    let (y, m, d) = (i128::from(y), i128::from(m), i128::from(d));
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
@@ -297,10 +395,19 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// `MakeDate(MakeDay(y, m, d), MakeTime(h, min, s, ms))` in UTC.
+/// `MakeDate(MakeDay(y, m, d), MakeTime(h, min, s, ms))` in UTC; NaN for a year no valid date has.
 fn make_utc(y: i64, mon: i64, d: i64, h: i64, mi: i64, s: i64, ms: i64) -> f64 {
-    let days = days_from_civil(y, mon, d);
-    (days * 86_400_000 + h * 3_600_000 + mi * 60_000 + s * 1000 + ms) as f64
+    if y.unsigned_abs() > MAX_YEAR {
+        return f64::NAN;
+    }
+    let time = i128::from(h) * 3_600_000 + i128::from(mi) * 60_000 + i128::from(s) * 1000 + i128::from(ms);
+    (days_from_civil(y, mon, d) * 86_400_000 + time) as f64
+}
+
+/// A run of ASCII digits as a number; `None` when it does not fit in `i64` (V8 answers Invalid Date for such a
+/// numeral, never `0`).
+fn numeral(digits: &[char]) -> Option<i64> {
+    digits.iter().try_fold(0i64, |acc, c| acc.checked_mul(10)?.checked_add(i64::from(c.to_digit(10)?)))
 }
 
 fn local_offset_ms(utc_guess_ms: f64) -> f64 {
@@ -332,7 +439,9 @@ pub fn parse_date(s: &str) -> f64 {
     parse_legacy_date(s)
 }
 
-fn parse_iso_date(s: &str) -> Option<f64> {
+/// The ECMAScript date time string format alone (`Date.parse` without V8's fallbacks): `None` for any other text,
+/// including a day past the end of its month; NaN for a date outside the ECMAScript range.
+pub(crate) fn parse_iso_date(s: &str) -> Option<f64> {
     let b = s.as_bytes();
     let mut i = 0;
     let num = |i: &mut usize, n: usize| -> Option<i64> {
@@ -423,7 +532,7 @@ fn parse_iso_date(s: &str) -> Option<f64> {
     let t = make_utc(year, month, day, h, mi, sec, ms);
     let t = match (has_time, offset) {
         (false, _) => t,
-        (true, Some(off)) => t - (off * 60_000) as f64,
+        (true, Some(off)) => t - off as f64 * 60_000.0,
         (true, None) => local_to_utc(t),
     };
     Some(time_clip(t))
@@ -467,7 +576,7 @@ fn parse_legacy_date(s: &str) -> f64 {
             while i < chars.len() && chars[i].is_ascii_digit() {
                 i += 1;
             }
-            let n: i64 = chars[start..i].iter().collect::<String>().parse().unwrap_or(0);
+            let Some(n) = numeral(&chars[start..i]) else { return f64::NAN };
             if i < chars.len() && chars[i] == ':' && time.is_none() {
                 // time
                 let mut parts = vec![n];
@@ -478,10 +587,10 @@ fn parse_legacy_date(s: &str) -> f64 {
                     while i < chars.len() && chars[i].is_ascii_digit() {
                         i += 1;
                     }
-                    if st == i {
-                        return f64::NAN;
+                    match numeral(&chars[st..i]) {
+                        Some(part) if st < i => parts.push(part),
+                        _ => return f64::NAN,
                     }
-                    parts.push(chars[st..i].iter().collect::<String>().parse().unwrap_or(0));
                 }
                 if i < chars.len() && chars[i] == '.' {
                     i += 1;
@@ -515,8 +624,8 @@ fn parse_legacy_date(s: &str) -> f64 {
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == ':') {
                 i += 1;
             }
-            let raw: String = chars[st..i].iter().filter(|c| **c != ':').collect();
-            let v: i64 = raw.parse().unwrap_or(0);
+            let raw: Vec<char> = chars[st..i].iter().copied().filter(|c| *c != ':').collect();
+            let Some(v) = numeral(&raw) else { return f64::NAN };
             let mins = if raw.len() <= 2 { v * 60 } else { (v / 100) * 60 + v % 100 };
             offset = Some(sign * mins);
             continue;
@@ -601,7 +710,7 @@ fn parse_legacy_date(s: &str) -> f64 {
     }
     let t = make_utc(y, m, d, h, mi, sec, ms);
     let t = match offset {
-        Some(off) => t - (off * 60_000) as f64,
+        Some(off) => t - off as f64 * 60_000.0,
         None => local_to_utc(t),
     };
     time_clip(t)
@@ -682,5 +791,91 @@ mod tests {
         assert_eq!(date_to_iso(to_date(Some(&json!(null)))).unwrap(), "1970-01-01T00:00:00.000Z");
         assert!(parse_date("x").is_nan());
         assert_eq!(date_to_iso(parse_date("2024-02-29T10:20:30.5+02:00")).unwrap(), "2024-02-29T08:20:30.500Z");
+    }
+
+    /// JavaScript's BigInt has no bound; a number whose integer value does not fit in `i128` is refused, never
+    /// saturated.
+    #[test]
+    fn bigint_of_a_number_outside_i128_is_refused() {
+        assert_eq!(to_bigint(Some(&json!(1e39))), None);
+        assert_eq!(to_bigint(Some(&json!(-1e39))), None);
+        assert_eq!(to_bigint(Some(&json!(2f64.powi(127)))), None);
+        assert_eq!(to_bigint(Some(&json!(-(2f64.powi(127))))), Some(i128::MIN));
+        // `BigInt(1e38)` in JavaScript: the f64 nearest to 1e38.
+        assert_eq!(to_bigint(Some(&json!(1e38))), Some(99_999_999_999_999_997_748_809_823_456_034_029_568));
+    }
+
+    /// Expected values printed by Node 24 (`x.toFixed(d)`, `parseFloat(s)`, `parseInt(s, 10)`).
+    #[test]
+    fn to_fixed_parse_float_and_parse_int() {
+        for (x, d, want) in [
+            (0.5, 0, "1"),
+            (2.5, 0, "3"),
+            (1.005, 2, "1.00"),
+            (1.45, 1, "1.4"),
+            (-1.5, 0, "-2"),
+            (-0.0000001, 2, "-0.00"),
+            (0.0, 2, "0.00"),
+            (1e21, 2, "1e+21"),
+            (123.456, 10, "123.4560000000"),
+            // An exact tie (1e14 + 0.125 is representable): rounded to the larger magnitude.
+            (1e14 + 0.125, 2, "100000000000000.13"),
+            (0.30000000000000004, 17, "0.30000000000000004"),
+            // Below a unit of the last digit: the zero text, with the sign of a negative number.
+            (5e-324, 2, "0.00"),
+            (-1e-300, 2, "-0.00"),
+            (-0.0, 2, "0.00"),
+            (0.004999999999999999, 2, "0.00"),
+            (0.005, 2, "0.01"),
+        ] {
+            assert_eq!(to_fixed(x, d), want, "({x}).toFixed({d})");
+        }
+        for (s, want) in
+            [(" 1.5abc", 1.5), ("0x10", 0.0), (".5", 0.5), ("5.", 5.0), ("-.5e1x", -5.0), ("1e", 1.0), ("Infinityx", f64::INFINITY)]
+        {
+            assert_eq!(parse_float(s), want, "parseFloat({s:?})");
+        }
+        assert_eq!(parse_float("-Infinity"), f64::NEG_INFINITY);
+        assert_eq!(parse_float("  \u{a0} 7"), 7.0);
+        assert!(parse_float("+.").is_nan() && parse_float("").is_nan());
+        for (s, want) in [("030", 30.0), ("-12x", -12.0), ("+5", 5.0), (" 9007199254740993", 9007199254740992.0), ("1e3", 1.0)] {
+            assert_eq!(parse_int(s), want, "parseInt({s:?}, 10)");
+        }
+        assert!(parse_int("x").is_nan());
+        assert!(parse_int("-0") == 0.0 && parse_int("-0").is_sign_negative());
+    }
+
+    /// A year, an offset or a numeral too large to compute is an invalid date (V8 answers Invalid Date for each;
+    /// `date.coerce.edges` in the zod fixture), never a panic.
+    #[test]
+    fn dates_out_of_range_are_invalid() {
+        for input in ["999999999999999999-01-01", "Jan 1 999999999999999999", "1/1/2000 10:00 +9999999999999999"] {
+            assert!(parse_date(input).is_nan(), "{input}");
+        }
+        assert!(parse_date("1/1/99999999999999999999 UTC").is_nan(), "an over-long numeral is not 0");
+    }
+
+    /// `make_utc` of `{y}-01-01` computed the way the parser computed it before it was made total, in wrapping `i64`
+    /// arithmetic (what a release build without `overflow-checks` does).
+    fn wrapped_time(y: i64) -> i64 {
+        let y = y - 1;
+        let era = y / 400;
+        let yoe = y.wrapping_sub(era.wrapping_mul(400));
+        let doe = (yoe * 365 + yoe / 4 - yoe / 100) + (153 * 10 + 2) / 5;
+        era.wrapping_mul(146_097).wrapping_add(doe).wrapping_sub(719_468).wrapping_mul(86_400_000)
+    }
+
+    /// A year whose wrapped time value lands inside the valid range would have been a valid date in a release build.
+    #[test]
+    fn a_year_whose_wrapped_time_looks_valid_is_invalid() {
+        // A margin of one day for the local time zone offset.
+        let looks_valid = |t: i64| t.unsigned_abs() < 8_640_000_000_000_000 - 86_400_000;
+        // Consecutive years move the wrapped value by one year of milliseconds; a prime stride spreads it over the
+        // whole `i64` range, where about one candidate in a thousand lands inside the valid range.
+        let year = (0..100_000)
+            .map(|k| 100_000_000_000_000_000 + k * 1_000_003)
+            .find(|y| looks_valid(wrapped_time(*y)))
+            .expect("a candidate inside the valid range");
+        assert!(parse_date(&format!("{year}-01-01")).is_nan(), "{year}");
     }
 }
