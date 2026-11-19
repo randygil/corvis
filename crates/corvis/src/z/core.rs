@@ -22,9 +22,10 @@ pub enum ZodVersion {
     /// `Number(x)` for `z.coerce.number()` (`"0x10"` is 16, `"inf"` is not a number), `String(x)` for
     /// `z.coerce.string()`, JavaScript number text in messages (`1e+21`), zod 3's own `multipleOf` remainder, and zod 3's
     /// email, cuid and ip patterns on the JavaScript regex engine (`url` is a WHATWG URL parse). Dates are read with the
-    /// JavaScript date parser: a date-time without a time zone is local time, as in zod 4 mode, and a day past the end
-    /// of its month rolls over (`"2023-02-30"` is March 2). `z.coerce.number()` refuses an infinite result with zod 3's
-    /// `not_finite` issue, since a JSON value cannot hold it (zod 3 returns `Infinity`).
+    /// JavaScript date parser: a date-time without a time zone is local time, as in zod 4 mode, and `z.coerce.date()`
+    /// rolls a day past the end of its month over (`"2023-02-30"` is March 2). `z.date()` without coercion returns the
+    /// input text, so it takes only the strict ISO format of a real calendar date. `z.coerce.number()` refuses an
+    /// infinite result with zod 3's `not_finite` issue, since a JSON value cannot hold it (zod 3 returns `Infinity`).
     V3,
     /// zod 4.x (`"Too small: expected string to have >=3 characters"`). The default.
     #[default]

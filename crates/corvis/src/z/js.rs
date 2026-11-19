@@ -439,7 +439,9 @@ pub fn parse_date(s: &str) -> f64 {
     parse_legacy_date(s)
 }
 
-fn parse_iso_date(s: &str) -> Option<f64> {
+/// The ECMAScript date time string format alone (`Date.parse` without V8's fallbacks): `None` for any other text,
+/// including a day past the end of its month; NaN for a date outside the ECMAScript range.
+pub(crate) fn parse_iso_date(s: &str) -> Option<f64> {
     let b = s.as_bytes();
     let mut i = 0;
     let num = |i: &mut usize, n: usize| -> Option<i64> {

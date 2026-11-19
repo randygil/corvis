@@ -2107,9 +2107,10 @@ impl ZodType for ZBoolean {
     }
 }
 
-/// `z.date()`. zod 3: an ISO 8601 date / date-time string (with `coerce`, any string or millisecond number, as
-/// `new Date(input)`). zod 4: a `Date` value; JSON has no dates, so they come from `z.coerce.date()`, transforms, or
-/// ISO strings when [`ZodConfig::date_strings`](super::ZodConfig) is on. Both read text with JavaScript's date parser.
+/// `z.date()`. zod 3: a string in the ECMAScript date time format that is a real calendar date, returned as given
+/// (with `coerce`, any string or millisecond number, as `new Date(input)`, returned normalized). zod 4: a `Date` value;
+/// JSON has no dates, so they come from `z.coerce.date()`, transforms, or ISO strings when
+/// [`ZodConfig::date_strings`](super::ZodConfig) is on. Bounds and coerced text are read with JavaScript's date parser.
 #[derive(Clone, Default)]
 pub struct ZDate {
     coerce: bool,
@@ -2173,10 +2174,12 @@ impl ZDate {
 
 impl ZodType for ZDate {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
-        // `z.coerce.date()` is `new Date(input)`; without coercion, Corvis takes an ISO date string (JSON has no dates).
+        // `z.coerce.date()` is `new Date(input)`, and its output is the normalized date. Without coercion, Corvis takes
+        // an ISO date string (JSON has no dates) and returns that text, so only the strict ISO format is read: the
+        // lenient fallbacks would validate `"2023-02-30"` (March 2) or `"2023-02-31 Tuesday"` and return the text.
         let t = match input {
             Some(Value::String(_) | Value::Number(_)) if self.coerce => js::to_date(input),
-            Some(Value::String(s)) if js::looks_like_iso_datetime(s) => js::parse_date(s),
+            Some(Value::String(s)) if js::looks_like_iso_datetime(s) => js::parse_iso_date(s).unwrap_or(f64::NAN),
             Some(Value::String(_)) => f64::NAN,
             other => {
                 invalid_type(ctx, "date", other, &self.errors);
