@@ -371,7 +371,9 @@ impl ServerTasks {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.tracker.spawn(self.cancel.clone().run_until_cancelled_owned(task));
+        // A child token: each task waits on its own node, so the tasks of the server share no lock per poll, and
+        // cancelling the parent still reaches every one of them.
+        self.tracker.spawn(self.cancel.child_token().run_until_cancelled_owned(task));
     }
 
     fn spawn_connection<F>(&self, task: F)

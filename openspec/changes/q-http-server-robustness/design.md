@@ -430,6 +430,46 @@ applications need no change: no public API they use changed signature (`ServerOp
 its derived `Clone` for a manual one with the same behavior), and their two handled `#[res]` handlers end the response
 on every path.
 
+## Security review
+
+One round, on the branch rebased onto `dev`, by reading the source: no candidate reached the point where only a run
+could settle it. No confirmed finding and none left to validate.
+
+Checked and found sound:
+
+- **Accept loop.** Connection errors (`ECONNABORTED`, `ConnectionReset`) are retried at once; the errors that back off
+  come from process or system resources (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`), which a client reaches only by
+  exhausting descriptors, as before, bounded by `max_connections`. No permit is held during the wait, and the shutdown
+  is honored during the wait, the permit wait and the accept. Log lines carry the OS error text only.
+- **Shutdown.** Plain and TLS connections, HTTP/2 streams and the drains of `respond` all run under `ServerTasks`; a
+  spawn after the cancellation ends on its first poll, and nothing tracked can spawn after `wait()` returned. A TLS
+  client that sends nothing does not hold the shutdown. The `max_connections` permit, the response budget and the
+  compression slots are released on drop, so a cancelled connection leaks none.
+- **Orphaned `#[res]`.** The handle count is lowered before `notify_waiters`, the `Notified` exists before both checks,
+  and a handle can only come from cloning one that exists, so no `500` is sent while the application still holds a
+  `Res`. The body is the generic one and the log line is a fixed string.
+- **Request path.** `respond` is the old body of `handle`; the test client only gains limits it never applied. Only
+  pending bodies are boxed, and their consumers map any error to `400` or stop without reading its type; `413` by
+  declared length and while streaming, the drain bounds and `client_aborted` over HTTP/2 are unchanged.
+- **#205.** `ends_in_chunked` reads a `Transfer-Encoding` value as hyper 1.12 does for every byte value (the same
+  visible-ASCII set, the last token, the last line). `Content-Length` with `Transfer-Encoding` is rejected by the check
+  in either order. The disagreements left in the comparison (obs-fold, `identity` followed by `chunked`) all end with
+  hyper answering `400` and dispatching nothing.
+- **Split.** With `--color-moved=zebra`, the lines not moved are imports, visibility, field paths of the grouped
+  `ConnState`, reformatted signatures, test helpers and the intended new code; atomic orderings and lock scopes match.
+
+Hardening notes taken:
+
+1. `ServerTasks::spawn` gave every task a clone of one cancellation token, so every poll of every task of the server
+   went through the same waiters lock. Each task now waits on a child token: its own node, still reached by the
+   parent's `cancel()`. Not measured; `q-http-request-hot-path` owns the benchmark.
+2. The rustdoc of `shutdown_timeout` and `lifecycle-events.md` (English and Spanish) now say that a handler that never
+   reaches an `.await` makes the shutdown wait beyond the deadline, and that with `None` a client holding a response
+   open decides how long the shutdown takes.
+
+Recorded, not changed here: the Engine.IO polling drain and WebSocket sessions are still outside `ServerTasks`
+(`q-core-lifecycle-and-cache-correctness`); the polling drain ends at its next read once its connection is cancelled.
+
 ## Verification
 
 Windows, `CARGO_TARGET_DIR` shared, after the last code change (commit "Group ConnState into one struct per concern").

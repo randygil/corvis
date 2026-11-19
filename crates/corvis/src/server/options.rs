@@ -264,6 +264,8 @@ impl ServerOptions {
     ///
     /// Not covered: tasks the application spawns itself (`tokio::spawn` inside a handler), upgraded connections
     /// (WebSockets), and code that blocks a worker thread without awaiting (`spawn_blocking` work runs to its end).
+    /// A handler that never reaches an `.await` cannot be cancelled: the shutdown waits for it beyond this deadline.
+    /// With `None`, a client that keeps a response open (a stream, a slow read) decides how long the shutdown takes.
     /// A process manager usually kills a process some seconds after its stop signal: keep this below that.
     pub fn shutdown_timeout(mut self, t: impl Into<Option<Duration>>) -> Self {
         self.shutdown_timeout = t.into();
