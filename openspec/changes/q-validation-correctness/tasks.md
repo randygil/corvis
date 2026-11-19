@@ -102,7 +102,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 10. Docs and review
 
-- [ ] 10.1 Rustdoc: `ZodError::thrown`, `z::coerce::date()` (the range), `ZDate::min/max` (one parser, local time),
+- [x] 10.1 Rustdoc: `ZodError::thrown`, `z::coerce::date()` (the range), `ZDate::min/max` (one parser, local time),
   `z::coerce::bigint()`, `z::literal`, `z::native_enum`, `ParseEnumPipe::of` (`# Panics`), the built-in pipes whose
   behavior changed, the zod 3 notes on `ZodVersion::V3`; verify `cargo doc -p corvis --no-deps` without warnings
 - [ ] 10.2 Docs with the `docs-writer` agent, English then Spanish: `docs/application/validation.md` (thrown errors and

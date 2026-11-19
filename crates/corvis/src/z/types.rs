@@ -2107,9 +2107,9 @@ impl ZodType for ZBoolean {
     }
 }
 
-/// `z.date()`. zod 3: an ISO 8601 date / date-time string (with `coerce`, millisecond timestamps
-/// are accepted and normalized). zod 4: a `Date` value; JSON has no dates, so they come from
-/// `z.coerce.date()`, transforms, or ISO strings when [`ZodConfig::date_strings`](super::ZodConfig) is on.
+/// `z.date()`. zod 3: an ISO 8601 date / date-time string (with `coerce`, any string or millisecond number, as
+/// `new Date(input)`). zod 4: a `Date` value; JSON has no dates, so they come from `z.coerce.date()`, transforms, or
+/// ISO strings when [`ZodConfig::date_strings`](super::ZodConfig) is on. Both read text with JavaScript's date parser.
 #[derive(Clone, Default)]
 pub struct ZDate {
     coerce: bool,
@@ -2139,11 +2139,20 @@ impl ZDate {
         self.checks.push(Chk::new((is_min, t)));
         self
     }
-    /// `.min(date)`; the date is an ISO string. Panics if it does not parse.
+    /// `.min(new Date(date))`. The bound is parsed once, with JavaScript's date parser, and both versions use that
+    /// instant: a date-time without a time zone (`"2024-01-01T10:00:00"`) is local time, a date alone is UTC.
+    ///
+    /// # Panics
+    ///
+    /// When `date` is not a date JavaScript reads (an invalid bound).
     pub fn min(self, date: &str) -> Self {
         self.bound(true, date, "min")
     }
-    /// `.max(date)`.
+    /// `.max(new Date(date))`, parsed as [`min`](Self::min) parses its bound.
+    ///
+    /// # Panics
+    ///
+    /// When `date` is not a date JavaScript reads.
     pub fn max(self, date: &str) -> Self {
         self.bound(false, date, "max")
     }
@@ -3261,7 +3270,9 @@ pub mod coerce {
     pub fn bigint() -> ZBigInt {
         ZBigInt::new().coerce()
     }
-    /// `z.coerce.date()`.
+    /// `z.coerce.date()`: `new Date(input)`, with JavaScript's date parser. A date outside the ECMAScript range
+    /// (±8.64e15 ms from 1970, years -271821 to 275760), a year, offset or numeral too large to compute, or text the
+    /// parser does not read is an invalid date (`invalid_type`, `received: "Invalid Date"`), in every build.
     pub fn date() -> ZDate {
         ZDate::new().coerce()
     }
