@@ -9191,6 +9191,34 @@
    ]
   },
   {
+   "name": "templateLiteral.refine",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "id-5",
+     "success": true,
+     "data": "id-5"
+    }
+   ]
+  },
+  {
+   "name": "templateLiteral.superRefine",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "id-5",
+     "success": true,
+     "data": "id-5"
+    }
+   ]
+  },
+  {
    "name": "literal.empty",
    "construct": {
     "throws": "Cannot create literal schema with no valid values"

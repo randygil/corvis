@@ -3281,6 +3281,57 @@ pub mod coerce {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::z::ZodSchema as _;
+
+    /// A template literal tests only the combined pattern of its parts; a check of a part would never run.
+    fn user_template(part: Schema) -> ZTemplateLiteral {
+        template_literal([TemplatePart::from("user-"), part.into()])
+    }
+
+    fn no_admin(v: &Value) -> bool {
+        !v.as_str().is_some_and(|s| s.contains("admin"))
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_refine_panics_when_built() {
+        user_template(string().refine(no_admin, ()));
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_super_refine_panics_when_built() {
+        user_template(string().super_refine(|v, ctx| {
+            if !no_admin(v) {
+                ctx.add_issue("no admin");
+            }
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_check_panics_when_built() {
+        user_template(string().check_fn(|_| {}));
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_overwrite_panics_when_built() {
+        user_template(string().overwrite(|v| v));
+    }
+
+    #[test]
+    #[should_panic(expected = "a template literal cannot run the checks of its parts")]
+    fn a_template_literal_part_with_a_refine_under_optional_panics_when_built() {
+        user_template(string().refine(no_admin, ()).optional());
+    }
+
+    #[test]
+    fn a_template_literal_of_plain_parts_builds() {
+        let t = user_template(Schema::new(string()));
+        assert!(t.is_valid(&json!("user-admin")));
+        assert!(!t.is_valid(&json!("admin")));
+    }
 
     /// zod 3 mode checks with zod 3's own patterns, on the JavaScript engine: the email pattern keeps its lookaheads
     /// (which the `regex` crate cannot express) and its `i` flag.

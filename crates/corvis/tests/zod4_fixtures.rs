@@ -410,6 +410,10 @@ fn schema(name: &str) -> z::Schema {
         "du.readonly" => du_of(z::object! { kind: z::literal("a") }.readonly()),
         "templateLiteral.overwrite" => s(z::template_literal([z::TemplatePart::from("id-"), z::number().overwrite(|v| v).into()])),
         "templateLiteral.check" => s(z::template_literal([z::TemplatePart::from("id-"), z::number().check_fn(|_| {}).into()])),
+        "templateLiteral.refine" => s(z::template_literal([z::TemplatePart::from("id-"), z::number().refine(|_| false, ()).into()])),
+        "templateLiteral.superRefine" => {
+            s(z::template_literal([z::TemplatePart::from("id-"), z::number().super_refine(|_, ctx| { ctx.add_issue("no"); }).into()]))
+        }
         "literal.empty" => s(z::literal(json!([]))),
         "object.required.refine" => s(z::object! { a: z::string().optional().refine(|_| true, ()) }.required()),
         "discriminatedUnion.refinedKey" => z::discriminated_union(
@@ -582,6 +586,18 @@ fn divergence<'a>(fx: &'a Value, list: &str, name: &str, input: &Value) -> Optio
     Some(&result["issues"])
 }
 
+/// The recorded schemas Corvis refuses to build. zod 4 builds a template literal whose part has a refine,
+/// superRefine, check or overwrite and tests only the part's pattern, so the check is never run; Corvis panics when
+/// it is built rather than accept what the declared check refuses.
+fn construct_divergence(list: &str, name: &str) -> Option<&'static str> {
+    match (list, name) {
+        ("cases", "templateLiteral.refine" | "templateLiteral.superRefine" | "templateLiteral.check" | "templateLiteral.overwrite") => {
+            Some("a template literal cannot run the checks of its parts")
+        }
+        _ => None,
+    }
+}
+
 #[test]
 fn zod4_parse_fixtures() {
     run_parse_fixtures("cases", z::ZodVersion::V4);
@@ -601,6 +617,14 @@ fn run_parse_fixtures(list: &str, version: z::ZodVersion) {
         for case in fx[list].as_array().unwrap() {
             let name = case["name"].as_str().unwrap();
             let built = std::panic::catch_unwind(|| schema(name)).map_err(|p| panic_text(&*p));
+            if let Some(want) = construct_divergence(list, name) {
+                match built {
+                    Err(got) if got.contains(want) => {}
+                    Err(got) => failures.entry(name.to_string()).or_default().push(format!("divergence: build panicked with {got:?}, want {want:?}")),
+                    Ok(_) => failures.entry(name.to_string()).or_default().push(format!("divergence: expected a panic when built: {want:?}")),
+                }
+                continue;
+            }
             // The original throws while the schema is created: Corvis panics while it is built.
             if let Some(want) = case.get("construct").map(|c| &c["throws"]) {
                 match built {

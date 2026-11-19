@@ -335,6 +335,9 @@ c("du.catch", duOf(() => kindA().catch({ kind: "a" })), [{ kind: "a" }]);
 c("du.readonly", duOf(() => kindA().readonly()), [{ kind: "a" }]);
 c("templateLiteral.overwrite", () => z.templateLiteral(["id-", z.number().overwrite((v) => v)]), ["id-5", "id-x"]);
 c("templateLiteral.check", () => z.templateLiteral(["id-", z.number().check(() => {})]), ["id-5", "id-x"]);
+// zod 4 tests only the parts' patterns: a refinement that refuses every value is not run.
+c("templateLiteral.refine", () => z.templateLiteral(["id-", z.number().refine(() => false)]), ["id-5"]);
+c("templateLiteral.superRefine", () => z.templateLiteral(["id-", z.number().superRefine((_v, ctx) => ctx.addIssue({ code: "custom", message: "no" }))]), ["id-5"]);
 c("literal.empty", () => z.literal([]), ["a"]);
 
 // ----- zod 3 (`zod/v3`, selected with `z::set_version(ZodVersion::V3)`) -----------
