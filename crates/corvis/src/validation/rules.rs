@@ -187,15 +187,15 @@ pub fn array_max_size(v: V<'_>, n: usize) -> bool {
 pub fn array_not_empty(v: V<'_>) -> bool {
     v.and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false)
 }
-/// `arrayUnique`: no two elements are equal (`serde_json::Value` equality). Linear: elements are
-/// bucketed by a hash consistent with that equality and only compared within a bucket (the
-/// previous pairwise scan was O(n²), ~350 ms for a 100 KB body).
 #[cfg(test)]
 thread_local! {
     /// Element comparisons made by `array_unique` on this thread.
     static COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// `arrayUnique`: no two elements are equal (`serde_json::Value` equality). Linear: elements are
+/// bucketed by a hash consistent with that equality and only compared within a bucket (the
+/// previous pairwise scan was O(n²), ~350 ms for a 100 KB body).
 pub fn array_unique(v: V<'_>) -> bool {
     let Some(a) = v.and_then(|v| v.as_array()) else { return false };
     if a.len() < 2 {

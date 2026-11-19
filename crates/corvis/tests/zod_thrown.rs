@@ -58,6 +58,18 @@ fn an_unmergeable_intersection_is_returned_without_the_panic_hook() {
     assert_eq!(hook_calls(), before, "the panic hook was called");
 }
 
+/// The serializer answers a thrown error with the recorded 500 (`serializationException` in `pipe.json`) and keeps
+/// the thrown error as the cause.
+#[test]
+fn the_serializer_answers_a_thrown_error_with_its_500() {
+    let meta = z::ZodSerializerDto::schema(conflict());
+    let ex = z::ZodSerializerDto::serialize(&meta, &json!("x"), None).unwrap_err();
+    assert_eq!(ex.get_status(), 500);
+    assert_eq!(*ex.get_response(), json!({ "message": "Internal Server Error", "statusCode": 500 }));
+    let cause = z::ZodSerializationException::get_zod_error(&ex).expect("the thrown error is the cause");
+    assert_eq!(cause.thrown(), Some("Unmergable intersection. Error path: []"));
+}
+
 #[test]
 fn an_encode_through_a_transform_is_returned_without_the_panic_hook() {
     count_hook_calls();

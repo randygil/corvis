@@ -3318,6 +3318,16 @@ mod tests {
     }
 
     #[test]
+    fn coerce_bigint_of_a_number_beyond_i128_is_an_invalid_type_issue() {
+        use crate::z::ZodSchema;
+        for n in [json!(1e39), json!(-1e39)] {
+            let e = coerce::bigint().parse(&n).unwrap_err();
+            assert_eq!(e.issues.len(), 1, "{n}");
+            assert_eq!(e.issues[0].code, ZodIssueCode::InvalidType, "{n}");
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "Cannot create literal schema with no valid values")]
     fn an_empty_literal_panics_when_built() {
         let _ = literal(json!([]));
