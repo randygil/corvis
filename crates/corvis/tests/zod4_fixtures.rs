@@ -637,10 +637,12 @@ fn run_parse_fixtures(list: &str, version: z::ZodVersion) {
             for expected in case["results"].as_array().unwrap() {
                 let input = decode_input(&expected["input"]);
                 let label = format!("{} <- {}", name, expected["input"]);
+                // What the original throws while parsing is an error with no issues and the thrown message.
                 if let Some(msg) = expected.get("throws") {
-                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| schema.parse_opt(input.as_ref(), &opts)));
-                    if r.is_ok() {
-                        failures.entry(label).or_default().push(format!("expected a panic: {msg}"));
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| schema.parse_opt(input.as_ref(), &opts))) {
+                        Ok(Err(e)) if e.issues.is_empty() && json!(e.to_string()) == *msg => {}
+                        Ok(got) => failures.entry(label).or_default().push(format!("expected the thrown error {msg}, got {got:?}")),
+                        Err(p) => failures.entry(label).or_default().push(format!("expected the thrown error {msg}, panicked: {}", panic_text(&*p))),
                     }
                     continue;
                 }
