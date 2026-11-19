@@ -507,9 +507,8 @@ mod tests {
         assert!(re.is_linear());
         assert!(re.test(&format!("{}c", "ab ".repeat(30))));
         let re = JsRegex::new(r"\w+\bX", "");
-        let t = std::time::Instant::now();
+        assert!(re.is_linear());
         assert!(!re.test(&"a".repeat(90_000)));
-        assert!(t.elapsed() < std::time::Duration::from_secs(1));
         // With a lookahead the pattern stays on the backtracking engine: the limit still applies
         // (logged as a warning) and the result is `false`, as documented.
         let re = JsRegex::new(r"(?=\w)\b(\w+\s?)+\b!|c$", "");

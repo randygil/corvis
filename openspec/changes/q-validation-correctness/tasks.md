@@ -93,7 +93,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 9. Tests without timing bounds (Decision 10)
 
-- [ ] 9.1 `crates/corvis/tests/zod_linear_traversal.rs` (counting allocator, depth n and 2n, lazy object and `z.json()`)
+- [x] 9.1 `crates/corvis/tests/zod_linear_traversal.rs` (counting allocator, depth n and 2n, lazy object and `z.json()`)
   replacing `recursive_traversal_is_linear` in `zod_security.rs`; remove the elapsed-time assertion of
   `word_boundary_patterns_are_linear_and_exact`; comparison counter for `array_unique_is_linear`; verify the three pass
   5 runs in a row, the allocation test fails against a deliberately quadratic variant (a local `p.value.clone()` per

@@ -562,3 +562,13 @@ chrono; the zod 4 half passed with 3.2.
   and `ParseEnumPipe::of` share `rules::readable_enum_variants` (crate-private), which panics with
   `"<builder>::<type name>(): the variant names of this type cannot be read; ..."`; `enum_variants` keeps its signature
   for the derives. Both fixture lists pass in full from here on.
+
+### 9. Tests without timing bounds
+
+- 9.1: `tests/zod_linear_traversal.rs` counts cumulative bytes allocated (a reallocation counts its new size) for the
+  parse alone, at depths 1500 and 3000, for the lazy object schema and `z.json()`. With a deliberate
+  `let _quadratic = p.value.clone();` in `ZLazy::run_v4` (one run, then reverted with `git checkout`) it failed:
+  "z.lazy object: depth 3000 allocated 4115056024 bytes, depth 1500 1031530024 (ratio 3.99)". The three tests passed
+  5 runs in a row. `word_boundary_patterns_are_linear_and_exact` now asserts `is_linear()` for `\w+\bX` instead of the
+  elapsed time; `array_unique_is_linear` reads a `cfg(test)` thread-local count of element comparisons (below `2 * n`
+  for 100,000 distinct numbers). `grep -rn "elapsed()"` over the paths of the task finds nothing.

@@ -190,6 +190,12 @@ pub fn array_not_empty(v: V<'_>) -> bool {
 /// `arrayUnique`: no two elements are equal (`serde_json::Value` equality). Linear: elements are
 /// bucketed by a hash consistent with that equality and only compared within a bucket (the
 /// previous pairwise scan was O(n²), ~350 ms for a 100 KB body).
+#[cfg(test)]
+thread_local! {
+    /// Element comparisons made by `array_unique` on this thread.
+    static COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub fn array_unique(v: V<'_>) -> bool {
     let Some(a) = v.and_then(|v| v.as_array()) else { return false };
     if a.len() < 2 {
@@ -198,6 +204,8 @@ pub fn array_unique(v: V<'_>) -> bool {
     let mut buckets: std::collections::HashMap<u64, Vec<&Value>> = std::collections::HashMap::with_capacity(a.len());
     for x in a {
         let bucket = buckets.entry(value_hash(x)).or_default();
+        #[cfg(test)]
+        COMPARISONS.with(|c| c.set(c.get() + bucket.len()));
         if bucket.contains(&x) {
             return false;
         }
@@ -421,12 +429,14 @@ mod tests {
     /// release and minutes in a debug build for this size).
     #[test]
     fn array_unique_is_linear() {
-        let mut items: Vec<Value> = (0..100_000).map(|i| json!(i)).collect();
-        let t = std::time::Instant::now();
+        let n = 100_000;
+        let mut items: Vec<Value> = (0..n).map(|i| json!(i)).collect();
+        COMPARISONS.with(|c| c.set(0));
         assert!(array_unique(Some(&Value::Array(items.clone()))));
+        let comparisons = COMPARISONS.with(std::cell::Cell::get);
+        assert!(comparisons < 2 * n, "{comparisons} comparisons for {n} distinct numbers");
         items.push(json!(0));
         assert!(!array_unique(Some(&Value::Array(items))));
-        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }
 
     #[test]
