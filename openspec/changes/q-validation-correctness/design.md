@@ -519,3 +519,11 @@ chrono; the zod 4 half passed with 3.2.
   JavaScript (`"2023-02-30"` is 2023-03-02; zod 3's own `z.coerce.date()` answers the same), so zod 3 mode's
   `z::date()` now accepts it where chrono refused it; the old unit assertion moved to `"2023-13-01"`, which V8 refuses
   too. A coerced fractional millisecond number is truncated as `new Date(1.5)` does (before: refused).
+- 6.3: every `pipes` record matches (the two divergences, `"Infinity"` as an array item and `"99999999999999999999"`
+  for `ParseIntPipe`, answer the recorded 400). The pipes read number text with `z::js` only: `ParseIntPipe` checks
+  `-?\d+` on `String(value)` and `Number()` finiteness, then `js::parse_int`, refusing a magnitude of 2^63 or more;
+  `ParseFloatPipe` is `js::parse_float` guarded by `js::to_number(..).is_finite()`; `ParseArrayPipe` refuses a falsy
+  value (`null`, `""`, `false`, `0`) unless optional, trims the whole string with `js::js_trim` and reads each item with
+  `js::to_number` (`""` and `null` as NaN). `DefaultValuePipe` replaces only `null`. Not ported, no record: the original's
+  array pipe runs `JSON.parse` on each item before `+item`, so `"true"` would be `1` there and is refused here, and it
+  falls back to `,` for an empty separator. Both are left for the follow-up fixture of the implicit conversions.

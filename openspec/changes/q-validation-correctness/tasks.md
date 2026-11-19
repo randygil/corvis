@@ -66,7 +66,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
   `cargo test -p corvis --lib z::` and both fixture lists
 - [x] 6.2 `js::to_bigint` returns `None` outside `i128`; unit test with `1e39` and `-1e39`; rustdoc of
   `z::coerce::bigint()`; verify `cargo test -p corvis --lib z::js`
-- [ ] 6.3 `common/pipe.rs`: `ParseArrayPipe`, `ParseIntPipe`, `ParseFloatPipe`, `ParseBoolPipe`, `DefaultValuePipe` as
+- [x] 6.3 `common/pipe.rs`: `ParseArrayPipe`, `ParseIntPipe`, `ParseFloatPipe`, `ParseBoolPipe`, `DefaultValuePipe` as
   the `pipes` records show, number text read with one JavaScript-semantics helper (`z::js::string_to_number`, plus a
   `parseFloat` helper in `z::js` if the records need it); unrepresentable values refused with the pipe's 400 and marked
   as divergences in `generate.mjs` (a `divergence` field the replay accepts); verify `cargo test -p corvis --test

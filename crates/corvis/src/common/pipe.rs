@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::http::HttpException;
 use crate::validation::{ValidationError, ValidatorOptions};
+use crate::z::js;
 
 /// Where a handler argument comes from (`'body' | 'query' | 'param' | 'custom'`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +107,15 @@ macro_rules! pipe_options {
     };
 }
 
-/// Parses a numeric string into an integer.
+const NUMERIC_EXPECTED: &str = "Validation failed (numeric string is expected)";
+const ARRAY_EXPECTED: &str = "Validation failed (parsable array expected)";
+
+/// 2^63: the first magnitude an `i64` cannot hold.
+const I64_LIMIT: f64 = 9_223_372_036_854_775_808.0;
+
+/// Parses a numeric string into an integer: the text must be `-?\d+` (no sign `+`, no white space, no exponent), and it
+/// is read as JavaScript's `parseInt` reads it, so a numeral beyond 2^53 is rounded to the nearest `f64`. An integer
+/// beyond `i64` is refused with the same 400 (the original would return it; Corvis cannot represent it).
 #[derive(Debug, Clone)]
 pub struct ParseIntPipe {
     status: StatusCode,
@@ -120,22 +129,24 @@ impl PipeTransform for ParseIntPipe {
         if self.optional && value.is_null() {
             return Ok(value);
         }
-        match &value {
-            Value::Number(n) if n.is_i64() || n.is_u64() => Ok(value),
-            Value::String(s) => {
-                let t = s.trim();
-                let valid = !t.is_empty() && t.trim_start_matches(['-', '+']).chars().all(|c| c.is_ascii_digit());
-                match (valid, t.parse::<i64>()) {
-                    (true, Ok(n)) => Ok(Value::from(n)),
-                    _ => Err(fail(self.status, "Validation failed (numeric string is expected)")),
-                }
+        let n = match &value {
+            Value::String(_) | Value::Number(_) => {
+                let text = js::to_js_string(&value);
+                let digits = text.strip_prefix('-').unwrap_or(&text);
+                let numeric = !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()) && js::string_to_number(&text).is_finite();
+                if numeric { js::parse_int(&text) } else { f64::NAN }
             }
-            _ => Err(fail(self.status, "Validation failed (numeric string is expected)")),
+            _ => f64::NAN,
+        };
+        if n.is_nan() || n.abs() >= I64_LIMIT {
+            return Err(fail(self.status, NUMERIC_EXPECTED));
         }
+        Ok(Value::from(n as i64))
     }
 }
 
-/// Parses a numeric string into a float.
+/// Parses a numeric string into a float, as JavaScript's `parseFloat`, when the whole value is a finite number for
+/// `Number()` (`" 1.5 "` is `1.5`, `"0x10"` is `0`; `"1.5abc"`, `"Infinity"` and `""` are refused).
 #[derive(Debug, Clone)]
 pub struct ParseFloatPipe {
     status: StatusCode,
@@ -149,14 +160,11 @@ impl PipeTransform for ParseFloatPipe {
         if self.optional && value.is_null() {
             return Ok(value);
         }
-        match &value {
-            Value::Number(_) => Ok(value),
-            Value::String(s) => match s.trim().parse::<f64>() {
-                Ok(n) if n.is_finite() => Ok(serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)),
-                _ => Err(fail(self.status, "Validation failed (numeric string is expected)")),
-            },
-            _ => Err(fail(self.status, "Validation failed (numeric string is expected)")),
+        let n = js::parse_float(&js::to_js_string(&value));
+        if n.is_nan() || !js::to_number(Some(&value)).is_finite() {
+            return Err(fail(self.status, NUMERIC_EXPECTED));
         }
+        Ok(js::num_json(n))
     }
 }
 
@@ -251,7 +259,10 @@ impl PipeTransform for ParseUUIDPipe {
     }
 }
 
-/// Splits a string (`"1,2,3"`) into an array. Items can optionally be parsed as numbers.
+/// Splits a string (`"1,2,3"`) into an array: the string is trimmed and split, the items are not trimmed. A missing
+/// or empty value is refused. With [`numbers`](Self::numbers) every item is read as JavaScript's `Number()` reads it
+/// (`" 2"` is `2`, `"0x10"` is `16`); an empty item, a non-number and an infinite number (which Corvis cannot
+/// represent) are refused with `[index] item must be a number`.
 #[derive(Debug, Clone)]
 pub struct ParseArrayPipe {
     separator: String,
@@ -288,39 +299,39 @@ impl ParseArrayPipe {
 #[async_trait]
 impl PipeTransform for ParseArrayPipe {
     async fn transform(&self, value: Value, _m: &ArgumentMetadata) -> Result<Value, HttpException> {
-        if value.is_null() {
-            return if self.optional { Ok(value) } else { Err(fail(self.status, "Validation failed (parsable array expected)")) };
+        let falsy = match &value {
+            Value::Null => true,
+            Value::Bool(b) => !b,
+            Value::Number(n) => js::json_f64(n) == 0.0,
+            Value::String(s) => s.is_empty(),
+            Value::Array(_) | Value::Object(_) => false,
+        };
+        if falsy && !self.optional {
+            return Err(fail(self.status, ARRAY_EXPECTED));
         }
         let items: Vec<Value> = match value {
+            Value::Null => return Ok(value),
             Value::Array(a) => a,
-            Value::String(s) => {
-                if s.is_empty() {
-                    vec![]
-                } else {
-                    s.split(self.separator.as_str()).map(|p| Value::String(p.trim().to_string())).collect()
-                }
-            }
-            _ => return Err(fail(self.status, "Validation failed (parsable array expected)")),
+            Value::String(s) => js::js_trim(&s).split(self.separator.as_str()).map(|p| Value::String(p.to_string())).collect(),
+            _ => return Err(fail(self.status, ARRAY_EXPECTED)),
         };
         if !self.numbers {
             return Ok(Value::Array(items));
         }
-        let mut out = Vec::with_capacity(items.len());
-        for i in items {
-            match i {
-                Value::Number(_) => out.push(i),
-                Value::String(s) => match s.parse::<f64>() {
-                    Ok(n) => out.push(if n.fract() == 0.0 {
-                        Value::from(n as i64)
-                    } else {
-                        serde_json::Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)
-                    }),
-                    Err(_) => return Err(fail(self.status, "Validation failed (parsable array expected)")),
-                },
-                _ => return Err(fail(self.status, "Validation failed (parsable array expected)")),
-            }
-        }
-        Ok(Value::Array(out))
+        items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                // `+item`, with `''` and `null` as NaN.
+                let n = match item {
+                    Value::Null => f64::NAN,
+                    Value::String(s) if s.is_empty() => f64::NAN,
+                    other => js::to_number(Some(other)),
+                };
+                if n.is_finite() { Ok(js::num_json(n)) } else { Err(fail(self.status, &format!("[{i}] item must be a number"))) }
+            })
+            .collect::<Result<_, _>>()
+            .map(Value::Array)
     }
 }
 
@@ -359,7 +370,7 @@ impl PipeTransform for ParseEnumPipe {
     }
 }
 
-/// Supplies a default when the value is missing (`new DefaultValuePipe(1)`).
+/// Supplies a default when the value is missing or `null` (`new DefaultValuePipe(1)`); an empty string is kept.
 #[derive(Debug, Clone)]
 pub struct DefaultValuePipe {
     default: Value,
@@ -374,12 +385,8 @@ impl DefaultValuePipe {
 #[async_trait]
 impl PipeTransform for DefaultValuePipe {
     async fn transform(&self, value: Value, _m: &ArgumentMetadata) -> Result<Value, HttpException> {
-        match &value {
-            Value::Null => Ok(self.default.clone()),
-            Value::String(s) if s.is_empty() => Ok(self.default.clone()),
-            Value::Number(n) if n.as_f64().map(|f| f.is_nan()).unwrap_or(false) => Ok(self.default.clone()),
-            _ => Ok(value),
-        }
+        // JSON has no NaN, so the original's `isNil(value) || isNaN(value)` is `null` here.
+        Ok(if value.is_null() { self.default.clone() } else { value })
     }
 }
 
