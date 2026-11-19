@@ -496,3 +496,13 @@ chrono; the zod 4 half passed with 3.2.
 - Follow-up found while porting: `JsRegex` translates the `i` flag to the `regex` crate's Unicode case folding, under
   which `[A-Z]` also matches U+017F and U+212A; V8 without the `u` flag does not. It affects every `i` pattern of both
   modes (zod 3's email and cuid included), not only this change.
+
+### 5. Check-like wrappers
+
+- `check_wrapper_structure!` forwards the ten zod 4 methods of Decision 5. What changes for zod 4 mode: `ZSuperRefine`
+  gains `pattern`, `ZCheckFn` `prop_values` and `pattern`, `ZOverwrite` `values`, `prop_values` and `pattern`, and all
+  four `string_patterns` (the `patternProperties` of a record whose key is a refined string, as zod 4's shared bag).
+- zod 3 methods: `refine` and `superRefine` (one zod 3 type, `ZodEffects`) forward `accepts_undefined` and
+  `literal_values` and do not unwrap for `.required()`, as the fixture shows. `check` and `overwrite` have no zod 3
+  counterpart and no fixture case; they forward `accepts_undefined` only (`ZOverwrite` did already; `ZCheckFn` gains it,
+  the S3a gap) and keep no `literal_values`.

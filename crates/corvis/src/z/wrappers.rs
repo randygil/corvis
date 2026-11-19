@@ -682,6 +682,47 @@ fn check_should_run(p: &Payload, when: Option<&WhenFn>) -> bool {
     CheckRunner::new(p).should_run(p, when, None)
 }
 
+/// The zod 4 structure of a check-like wrapper (`refine`, `superRefine`, `check`, `overwrite`), written inside its
+/// `impl ZodType`. In zod 4 these return the same schema with one more check, so its values, pattern, optionality,
+/// type and shape are those of `self.inner`, which is also its parent.
+///
+/// The zod 3 methods (`accepts_undefined`, `unwrap_optional`, `literal_values`) are not here: in zod 3 a refinement
+/// is a schema of its own, so each wrapper writes them as the zod 3 fixture shows.
+macro_rules! check_wrapper_structure {
+    () => {
+        fn optin(&self) -> bool {
+            self.inner.optin()
+        }
+        fn optout(&self) -> bool {
+            self.inner.optout()
+        }
+        fn values(&self) -> Option<Vec<Val>> {
+            self.inner.values()
+        }
+        fn prop_values(&self) -> Option<Vec<(String, Vec<Val>)>> {
+            self.inner.node().prop_values()
+        }
+        fn pattern(&self) -> Option<String> {
+            self.inner.node().pattern()
+        }
+        fn def_type(&self) -> &'static str {
+            self.inner.def_type()
+        }
+        fn object_shape(&self) -> Option<&ZObject> {
+            self.inner.as_object()
+        }
+        fn string_patterns(&self) -> Vec<String> {
+            self.inner.node().string_patterns()
+        }
+        fn inner_schema(&self) -> Option<Schema> {
+            Some(self.inner.clone())
+        }
+        fn parent(&self) -> Option<Schema> {
+            Some(self.inner.clone())
+        }
+    };
+}
+
 /// `.refine(fn, params)`.
 #[derive(Clone)]
 pub struct ZRefine {
@@ -721,11 +762,13 @@ impl ZodType for ZRefine {
     fn type_name(&self) -> String {
         self.inner.type_name()
     }
+    /// zod 3 reads through a refinement for undefined and literal values (a refined literal is a discriminator,
+    /// `discriminatedUnion.refinedKey`) but `.required()` does not unwrap it (`object.required.refine`).
     fn accepts_undefined(&self) -> bool {
         self.inner.accepts_undefined()
     }
-    fn object_shape(&self) -> Option<&ZObject> {
-        self.inner.as_object()
+    fn literal_values(&self) -> Option<Vec<Value>> {
+        self.inner.literal_values()
     }
     fn run_v4(&self, p: Payload, ctx: &RunCtx) -> Payload {
         let mut p = self.inner.run(p, ctx);
@@ -740,33 +783,10 @@ impl ZodType for ZRefine {
         }
         p
     }
-    fn optin(&self) -> bool {
-        self.inner.optin()
-    }
-    fn optout(&self) -> bool {
-        self.inner.optout()
-    }
-    fn values(&self) -> Option<Vec<Val>> {
-        self.inner.values()
-    }
-    fn prop_values(&self) -> Option<Vec<(String, Vec<Val>)>> {
-        self.inner.node().prop_values()
-    }
-    fn pattern(&self) -> Option<String> {
-        self.inner.node().pattern()
-    }
-    fn def_type(&self) -> &'static str {
-        self.inner.def_type()
-    }
-    fn inner_schema(&self) -> Option<Schema> {
-        Some(self.inner.clone())
-    }
     fn json_schema(&self, jsg: &mut JsonSchemaGen, json: &mut Map<String, Value>, path: &[Value]) -> Result<(), String> {
         jsg.inherit_parent(&self.inner, json, path)
     }
-    fn parent(&self) -> Option<Schema> {
-        Some(self.inner.clone())
-    }
+    check_wrapper_structure!();
 }
 
 /// `.superRefine((val, ctx) => ...)`.
@@ -798,11 +818,12 @@ impl ZodType for ZSuperRefine {
     fn type_name(&self) -> String {
         self.inner.type_name()
     }
+    /// The same zod 3 schema type as `.refine()` (`ZodEffects`), read through the same way.
     fn accepts_undefined(&self) -> bool {
         self.inner.accepts_undefined()
     }
-    fn object_shape(&self) -> Option<&ZObject> {
-        self.inner.as_object()
+    fn literal_values(&self) -> Option<Vec<Value>> {
+        self.inner.literal_values()
     }
     fn run_v4(&self, p: Payload, ctx: &RunCtx) -> Payload {
         let mut p = self.inner.run(p, ctx);
@@ -816,30 +837,10 @@ impl ZodType for ZSuperRefine {
         (self.f)(null_or(&v, &null), &mut rc);
         p
     }
-    fn optin(&self) -> bool {
-        self.inner.optin()
-    }
-    fn optout(&self) -> bool {
-        self.inner.optout()
-    }
-    fn values(&self) -> Option<Vec<Val>> {
-        self.inner.values()
-    }
-    fn prop_values(&self) -> Option<Vec<(String, Vec<Val>)>> {
-        self.inner.node().prop_values()
-    }
-    fn def_type(&self) -> &'static str {
-        self.inner.def_type()
-    }
-    fn inner_schema(&self) -> Option<Schema> {
-        Some(self.inner.clone())
-    }
     fn json_schema(&self, jsg: &mut JsonSchemaGen, json: &mut Map<String, Value>, path: &[Value]) -> Result<(), String> {
         jsg.inherit_parent(&self.inner, json, path)
     }
-    fn parent(&self) -> Option<Schema> {
-        Some(self.inner.clone())
-    }
+    check_wrapper_structure!();
 }
 
 type CheckFn = Arc<dyn Fn(&mut Payload) + Send + Sync>;
@@ -857,8 +858,9 @@ impl ZodType for ZCheckFn {
     fn type_name(&self) -> String {
         self.inner.type_name()
     }
-    fn object_shape(&self) -> Option<&ZObject> {
-        self.inner.as_object()
+    /// zod 3 has no `.check()`; an optional schema stays optional with one, as with `.refine()`.
+    fn accepts_undefined(&self) -> bool {
+        self.inner.accepts_undefined()
     }
     fn run_v4(&self, p: Payload, ctx: &RunCtx) -> Payload {
         let mut p = self.inner.run(p, ctx);
@@ -868,27 +870,10 @@ impl ZodType for ZCheckFn {
         (self.f)(&mut p);
         p
     }
-    fn optin(&self) -> bool {
-        self.inner.optin()
-    }
-    fn optout(&self) -> bool {
-        self.inner.optout()
-    }
-    fn values(&self) -> Option<Vec<Val>> {
-        self.inner.values()
-    }
-    fn def_type(&self) -> &'static str {
-        self.inner.def_type()
-    }
-    fn inner_schema(&self) -> Option<Schema> {
-        Some(self.inner.clone())
-    }
     fn json_schema(&self, jsg: &mut JsonSchemaGen, json: &mut Map<String, Value>, path: &[Value]) -> Result<(), String> {
         jsg.inherit_parent(&self.inner, json, path)
     }
-    fn parent(&self) -> Option<Schema> {
-        Some(self.inner.clone())
-    }
+    check_wrapper_structure!();
 }
 
 type OverwriteFn = Arc<dyn Fn(Value) -> Value + Send + Sync>;
@@ -906,11 +891,9 @@ impl ZodType for ZOverwrite {
     fn type_name(&self) -> String {
         self.inner.type_name()
     }
+    /// zod 3 has no `.overwrite()`; an optional schema stays optional with one, as with `.refine()`.
     fn accepts_undefined(&self) -> bool {
         self.inner.accepts_undefined()
-    }
-    fn object_shape(&self) -> Option<&ZObject> {
-        self.inner.as_object()
     }
     fn run_v4(&self, p: Payload, ctx: &RunCtx) -> Payload {
         let mut p = self.inner.run(p, ctx);
@@ -920,24 +903,10 @@ impl ZodType for ZOverwrite {
         p.value = Val::Json((self.f)(p.value.to_json_or_null()));
         p
     }
-    fn optin(&self) -> bool {
-        self.inner.optin()
-    }
-    fn optout(&self) -> bool {
-        self.inner.optout()
-    }
-    fn def_type(&self) -> &'static str {
-        self.inner.def_type()
-    }
-    fn inner_schema(&self) -> Option<Schema> {
-        Some(self.inner.clone())
-    }
     fn json_schema(&self, jsg: &mut JsonSchemaGen, json: &mut Map<String, Value>, path: &[Value]) -> Result<(), String> {
         jsg.inherit_parent(&self.inner, json, path)
     }
-    fn parent(&self) -> Option<Schema> {
-        Some(self.inner.clone())
-    }
+    check_wrapper_structure!();
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,5 +1454,62 @@ impl ZodType for ZMeta {
     }
     fn parent(&self) -> Option<Schema> {
         Some(self.inner.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::z::{self, Schema, ZodSchema, ZodType};
+
+    /// Every zod 4 structural method of a check-like wrapper answers what the wrapped schema answers. A method added
+    /// to `check_wrapper_structure!` is added to `same_structure` too.
+    #[test]
+    fn check_like_wrappers_forward_the_wrapped_structure() {
+        let inners: [(&str, Schema); 4] = [
+            ("object", z::object! { kind: z::literal("a"), n: z::number().optional() }.to_schema()),
+            ("literal", z::literal("a").to_schema()),
+            ("number", z::number().min(1.0).to_schema()),
+            ("string", z::string().regex("^a+$").to_schema()),
+        ];
+        for (inner_name, inner) in inners {
+            let wrapped: [(&str, Schema); 4] = [
+                ("refine", inner.refine(|_| true, ())),
+                ("superRefine", inner.super_refine(|_, _| {})),
+                ("check", inner.check_fn(|_| {})),
+                ("overwrite", inner.overwrite(|v| v)),
+            ];
+            for (wrapper, outer) in wrapped {
+                same_structure(&format!("{wrapper} of {inner_name}"), &inner, &outer);
+            }
+        }
+    }
+
+    fn same_structure(what: &str, inner: &Schema, outer: &Schema) {
+        let (i, o): (&dyn ZodType, &dyn ZodType) = (inner.node(), outer.node());
+        assert_eq!(o.optin(), i.optin(), "{what}: optin");
+        assert_eq!(o.optout(), i.optout(), "{what}: optout");
+        assert_eq!(o.values(), i.values(), "{what}: values");
+        assert_eq!(o.prop_values(), i.prop_values(), "{what}: prop_values");
+        assert_eq!(o.pattern(), i.pattern(), "{what}: pattern");
+        assert_eq!(o.def_type(), i.def_type(), "{what}: def_type");
+        assert_eq!(o.object_shape().map(std::ptr::from_ref), i.object_shape().map(std::ptr::from_ref), "{what}: object_shape");
+        assert_eq!(o.string_patterns(), i.string_patterns(), "{what}: string_patterns");
+        assert_eq!(o.inner_schema().map(|s| s.id()), Some(inner.id()), "{what}: inner_schema");
+        assert_eq!(o.parent().map(|s| s.id()), Some(inner.id()), "{what}: parent");
+    }
+
+    /// zod 3: a refinement reads through to a refined literal (a discriminator) and to an optional schema, and
+    /// `.required()` does not unwrap it (`discriminatedUnion.refinedKey`, `object.required.refine`).
+    #[test]
+    fn refinements_read_through_in_zod_3() {
+        let lit = z::literal("a").to_schema();
+        let opt = z::string().optional().to_schema();
+        for outer in [lit.refine(|_| true, ()), lit.super_refine(|_, _| {})] {
+            assert_eq!(outer.literal_values(), lit.literal_values());
+        }
+        for outer in [opt.refine(|_| true, ()), opt.super_refine(|_, _| {}), opt.check_fn(|_| {}), opt.overwrite(|v| v)] {
+            assert!(outer.accepts_undefined());
+            assert!(outer.unwrap_optional().is_none());
+        }
     }
 }

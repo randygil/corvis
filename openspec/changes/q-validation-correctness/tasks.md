@@ -55,7 +55,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 5. Check-like wrappers (Decision 5)
 
-- [ ] 5.1 `check_wrapper_structure!` in `wrappers.rs` for `ZRefine`, `ZSuperRefine`, `ZCheckFn`, `ZOverwrite`; zod 3
+- [x] 5.1 `check_wrapper_structure!` in `wrappers.rs` for `ZRefine`, `ZSuperRefine`, `ZCheckFn`, `ZOverwrite`; zod 3
   methods per wrapper as `object.required.refine` and `discriminatedUnion.refinedKey` show; the table-driven unit test;
   verify the `du.*`, `templateLiteral.*` and S3b cases pass in both lists
 
