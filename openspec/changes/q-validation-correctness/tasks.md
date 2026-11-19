@@ -80,7 +80,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
   at `parse_val` and `run_v3`; `ZodError::thrown()`, the private field, `Display`; the `throws` branch of
   `tests/zod4_fixtures.rs` expects `Err` with the recorded message; verify both fixture lists and
   `cargo test -p corvis --lib z::`
-- [ ] 7.2 `z/pipe.rs`: `validate_opt` and the serializer map a thrown `ZodError` to today's bodies; `catch_thrown` logs
+- [x] 7.2 `z/pipe.rs`: `validate_opt` and the serializer map a thrown `ZodError` to today's bodies; `catch_thrown` logs
   user panics through a `WarnLimiter` (one line a minute, pipe name and parameter kind, no panic text);
   `crates/corvis/tests/zod_thrown.rs` with the four tests of Decision 8; verify `cargo test -p corvis --test zod_thrown
   --test zod_pipe`

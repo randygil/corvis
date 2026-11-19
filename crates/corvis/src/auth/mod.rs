@@ -43,7 +43,7 @@ mod outcome;
 pub mod session;
 mod strategy;
 mod user;
-mod warn_limit;
+pub(crate) mod warn_limit;
 
 #[cfg(feature = "jwt")]
 pub mod jwt;

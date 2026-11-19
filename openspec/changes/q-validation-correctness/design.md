@@ -544,3 +544,14 @@ chrono; the zod 4 half passed with 3.2.
   method `thrown(&self)`, so the public getter is `thrown()` and the constructor is the crate-private
   `ZodError::from_thrown`. Between 7.1 and 7.2 the pipe answered a thrown error with `"errors": []`, which
   `zod_pipe`'s `pipeThrown` caught (the failing test of 7.2).
+- 7.2: `catch_thrown` now only meets user panics. It logs through a process-wide `WarnLimiter` (60 s) keyed by site, an
+  `error` line in the context of the site (`ZodValidationPipe`, `ZodGuard`, `validate`, `ZodSerializerInterceptor`)
+  that names what was parsed (the parameter kind, the guard's source, `value`, `response`) and never reads the payload.
+  `auth::warn_limit` became `pub(crate)` for it. A thrown error answers the same bodies as before: the pipe's 400
+  without `errors` (now with the `ZodError` as its cause) and the serializer's 500 (`ZodSerializationException` with
+  the thrown error as its cause; the body is unchanged). A user panic still hands a custom `createValidationException`
+  an empty `ZodError`, since the panic's text is not exposed. `zod_thrown.rs` has the four tests (intersection,
+  encode, the depth after thrown errors in a lazy schema, the user panic in the pipe) and checks that a custom
+  exception receives the thrown error. Found while writing them, not changed (follow-up): encoding
+  `z.string().transform(..)` checks the inner string first, so `encode(3)` gives an `invalid_type` issue where zod
+  4.4.3 throws the encode error before any check (verified with node); the test uses `"a"`, where both throw.
