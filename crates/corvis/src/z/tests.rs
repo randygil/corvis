@@ -70,7 +70,7 @@ fn coercion_v3() {
     }
     assert_eq!(z::coerce::date().parse(&json!(0)).unwrap(), json!("1970-01-01T00:00:00.000Z"));
     assert!(z::date().is_valid(&json!("2024-02-29")));
-    assert_eq!(z::date().parse(&json!("2023-02-30")).unwrap_err().messages(), vec!["Invalid date"]);
+    assert_eq!(z::date().parse(&json!("2023-13-01")).unwrap_err().messages(), vec!["Invalid date"]);
 }
 
 #[test]

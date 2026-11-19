@@ -2113,21 +2113,15 @@ impl ZodType for ZBoolean {
 #[derive(Clone, Default)]
 pub struct ZDate {
     coerce: bool,
-    min: Option<(chrono::DateTime<chrono::Utc>, Option<String>)>,
-    max: Option<(chrono::DateTime<chrono::Utc>, Option<String>)>,
+    /// `(is_min, bound)`: the bounds of both versions, each parsed once with the JavaScript date parser.
     checks: Vec<Chk<(bool, f64)>>,
     errors: TypeErrors,
     error: Option<ErrorMap>,
 }
 
-fn parse_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    if let Ok(d) = chrono::DateTime::parse_from_rfc3339(&normalize_seconds(s)) {
-        return Some(d.with_timezone(&chrono::Utc));
-    }
-    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return d.and_hms_opt(0, 0, 0).map(|n| n.and_utc());
-    }
-    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").ok().map(|n| n.and_utc())
+/// A date bound as zod 3 mode's messages write it (RFC 3339).
+fn v3_bound_text(t: f64) -> String {
+    chrono::DateTime::from_timestamp_millis(t as i64).map_or_else(|| js::date_to_iso(t).unwrap_or_default(), |d| d.to_rfc3339())
 }
 
 impl ZDate {
@@ -2139,27 +2133,27 @@ impl ZDate {
         self
     }
     check_builders!();
-    /// `.min(date)`; the date is an ISO string. Panics if it does not parse.
-    pub fn min(mut self, date: &str) -> Self {
-        self.min = Some((parse_date(date).expect("z::date().min(): invalid date"), None));
-        self.checks.push(Chk::new((true, js::parse_date(date))));
+    fn bound(mut self, is_min: bool, date: &str, method: &str) -> Self {
+        let t = js::parse_date(date);
+        assert!(!t.is_nan(), "z::date().{method}(): invalid date");
+        self.checks.push(Chk::new((is_min, t)));
         self
     }
+    /// `.min(date)`; the date is an ISO string. Panics if it does not parse.
+    pub fn min(self, date: &str) -> Self {
+        self.bound(true, date, "min")
+    }
     /// `.max(date)`.
-    pub fn max(mut self, date: &str) -> Self {
-        self.max = Some((parse_date(date).expect("z::date().max(): invalid date"), None));
-        self.checks.push(Chk::new((false, js::parse_date(date))));
-        self
+    pub fn max(self, date: &str) -> Self {
+        self.bound(false, date, "max")
     }
     /// `.min(new Date(ms))`.
     pub fn min_ms(mut self, ms: f64) -> Self {
-        self.min = chrono::DateTime::from_timestamp_millis(ms as i64).map(|d| (d, None));
         self.checks.push(Chk::new((true, ms)));
         self
     }
     /// `.max(new Date(ms))`.
     pub fn max_ms(mut self, ms: f64) -> Self {
-        self.max = chrono::DateTime::from_timestamp_millis(ms as i64).map(|d| (d, None));
         self.checks.push(Chk::new((false, ms)));
         self
     }
@@ -2170,57 +2164,43 @@ impl ZDate {
 
 impl ZodType for ZDate {
     fn check(&self, input: Option<&Value>, ctx: &mut ParseCtx) -> Result<Option<Value>, ()> {
-        let (date, original) = match input {
-            Some(Value::String(s)) => (parse_date(s), Some(s.clone())),
-            Some(Value::Number(n)) if self.coerce => (n.as_i64().and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis), None),
+        // `z.coerce.date()` is `new Date(input)`; without coercion, Corvis takes an ISO date string (JSON has no dates).
+        let t = match input {
+            Some(Value::String(_) | Value::Number(_)) if self.coerce => js::to_date(input),
+            Some(Value::String(s)) if js::looks_like_iso_datetime(s) => js::parse_date(s),
+            Some(Value::String(_)) => f64::NAN,
             other => {
                 invalid_type(ctx, "date", other, &self.errors);
                 return Err(());
             }
         };
-        let Some(date) = date else {
+        if t.is_nan() {
             ctx.add(ZodIssueCode::InvalidDate, "Invalid date", Map::new());
             return Err(());
-        };
-        let mut ok = true;
-        let min_msg = self.checks.iter().find(|c| c.kind.0).and_then(|c| c.message.clone());
-        let max_msg = self.checks.iter().find(|c| !c.kind.0).and_then(|c| c.message.clone());
-        if let Some((min, msg)) = &self.min
-            && date < *min
-        {
-            ok = false;
-            ctx.add(
-                ZodIssueCode::TooSmall,
-                msg.clone().or(min_msg).unwrap_or_else(|| format!("Date must be greater than or equal to {}", min.to_rfc3339())),
-                issue_params(&[
-                    ("minimum", json!(min.timestamp_millis())),
-                    ("type", json!("date")),
-                    ("inclusive", json!(true)),
-                    ("exact", json!(false)),
-                ]),
-            );
         }
-        if let Some((max, msg)) = &self.max
-            && date > *max
-        {
+        let mut ok = true;
+        for c in &self.checks {
+            let (is_min, bound) = c.kind;
+            let (code, key, text) = if is_min && t < bound {
+                (ZodIssueCode::TooSmall, "minimum", "greater than or equal to")
+            } else if !is_min && t > bound {
+                (ZodIssueCode::TooBig, "maximum", "smaller than or equal to")
+            } else {
+                continue;
+            };
             ok = false;
             ctx.add(
-                ZodIssueCode::TooBig,
-                msg.clone().or(max_msg).unwrap_or_else(|| format!("Date must be smaller than or equal to {}", max.to_rfc3339())),
-                issue_params(&[
-                    ("maximum", json!(max.timestamp_millis())),
-                    ("type", json!("date")),
-                    ("inclusive", json!(true)),
-                    ("exact", json!(false)),
-                ]),
+                code,
+                c.message.clone().unwrap_or_else(|| format!("Date must be {text} {}", v3_bound_text(bound))),
+                issue_params(&[(key, js::num_json(bound)), ("type", json!("date")), ("inclusive", json!(true)), ("exact", json!(false))]),
             );
         }
         if !ok {
             return Err(());
         }
-        Ok(Some(Value::String(match (original, self.coerce) {
-            (Some(s), false) => s,
-            _ => date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        Ok(Some(Value::String(match input {
+            Some(Value::String(s)) if !self.coerce => s.clone(),
+            _ => js::date_to_iso(t).unwrap_or_default(),
         })))
     }
     fn type_name(&self) -> String {
@@ -3293,6 +3273,23 @@ mod tests {
         assert!(V3_CUID.is_linear());
         assert!(V3_IPV6.is_linear());
         assert!(regexes::IPV4.is_linear());
+    }
+
+    /// A bound without a time zone is one local instant, the same in both versions (the inputs are that instant and
+    /// the millisecond before it, written in UTC, so a version that read the bound as UTC would disagree off UTC).
+    #[test]
+    fn a_zone_less_date_bound_is_the_same_local_instant_in_both_versions() {
+        use crate::z::{ParseOptions, ZodSchema, ZodVersion};
+        let schema = date().min("2024-01-01T10:00:00");
+        let bound = js::parse_date("2024-01-01T10:00:00");
+        let at = json!(js::date_to_iso(bound).unwrap());
+        let before = json!(js::date_to_iso(bound - 1.0).unwrap());
+        for version in [ZodVersion::V3, ZodVersion::V4] {
+            let opts = ParseOptions::new().version(version).date_strings(true);
+            let e = schema.parse_with(&before, &opts).expect_err("one millisecond before the bound");
+            assert_eq!(e.issues[0].code, ZodIssueCode::TooSmall, "{version:?}");
+            assert!(schema.parse_with(&at, &opts).is_ok(), "{version:?}: the bound itself");
+        }
     }
 
     #[test]

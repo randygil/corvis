@@ -34,7 +34,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 - [x] 3.1 Failing tests in `crates/corvis/src/z/js.rs`: the three inputs of Decision 2 and the wrapped-year search;
   verify they fail on the untouched code with `cargo test -p corvis --lib z::js` (panic) and with
   `cargo test --release -p corvis --lib z::js` (finite result)
-- [ ] 3.2 Checked numerals, the year bound before `make_utc`, `i128` in `days_from_civil`/`make_utc`, offsets in `f64`;
+- [x] 3.2 Checked numerals, the year bound before `make_utc`, `i128` in `days_from_civil`/`make_utc`, offsets in `f64`;
   verify the tests of 3.1 pass in debug and release, and the `date.coerce.edges` cases (V4 and V3) pass
 - [x] 3.3 `js_date_parse_is_total`, and totality properties for `string_to_number` and `string_to_bigint`, in
   `crates/corvis/src/fuzz_tests.rs`; verify `cargo test -p corvis --lib fuzz_tests` passes and that the date property
@@ -61,7 +61,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 6. Coercion (Decisions 6 and 7, built-in pipes and rules)
 
-- [ ] 6.1 `ZDate`: bounds only in `checks`, parsed once with `js::parse_date`; zod 3 mode input through `js::parse_date`
+- [x] 6.1 `ZDate`: bounds only in `checks`, parsed once with `js::parse_date`; zod 3 mode input through `js::parse_date`
   / `js::to_date` with the same accepted shapes; the zone-less bound test of Decision 6; verify
   `cargo test -p corvis --lib z::` and both fixture lists
 - [ ] 6.2 `js::to_bigint` returns `None` outside `i128`; unit test with `1e39` and `-1e39`; rustdoc of

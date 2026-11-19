@@ -506,3 +506,16 @@ chrono; the zod 4 half passed with 3.2.
   `literal_values` and do not unwrap for `.required()`, as the fixture shows. `check` and `overwrite` have no zod 3
   counterpart and no fixture case; they forward `accepts_undefined` only (`ZOverwrite` did already; `ZCheckFn` gains it,
   the S3a gap) and keep no `literal_values`.
+
+### 6. Coercion
+
+- 6.1: `ZDate` keeps only `checks` (the chrono `min`/`max` fields and the chrono parser are gone). `min`/`max` still panic
+  on a bound the JavaScript parser refuses (before: on one chrono refused), so a bound chrono refused and V8 accepts
+  (`"Jan 1 2024"`) now builds. zod 3 mode: with `coerce`, a string or a number goes through `js::to_date` (zod 3's
+  `new Date(x)`; this is what makes the recorded `"+275760-09-13T00:00:00.000Z"` succeed); without it, an ISO-looking
+  string (`js::looks_like_iso_datetime`, the gate zod 4 mode's `date_strings` uses) through `js::parse_date`; any other
+  input as before. Its bounds are checked in the order they were added, each with its own message, and the message text
+  is unchanged (the bound in RFC 3339). Consequence of the one parser: a day past the end of the month rolls over as in
+  JavaScript (`"2023-02-30"` is 2023-03-02; zod 3's own `z.coerce.date()` answers the same), so zod 3 mode's
+  `z::date()` now accepts it where chrono refused it; the old unit assertion moved to `"2023-13-01"`, which V8 refuses
+  too. A coerced fractional millisecond number is truncated as `new Date(1.5)` does (before: refused).
