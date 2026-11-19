@@ -771,6 +771,17 @@ mod tests {
         assert_eq!(date_to_iso(parse_date("2024-02-29T10:20:30.5+02:00")).unwrap(), "2024-02-29T08:20:30.500Z");
     }
 
+    /// JavaScript's BigInt has no bound; a number whose integer value does not fit in `i128` is refused, never
+    /// saturated.
+    #[test]
+    fn bigint_of_a_number_outside_i128_is_refused() {
+        assert_eq!(to_bigint(Some(&json!(1e39))), None);
+        assert_eq!(to_bigint(Some(&json!(-1e39))), None);
+        assert_eq!(to_bigint(Some(&json!(2f64.powi(127)))), None);
+        assert_eq!(to_bigint(Some(&json!(-(2f64.powi(127))))), Some(i128::MIN));
+        assert_eq!(to_bigint(Some(&json!(1e38))), Some(100_000_000_000_000_000_000_000_000_000_000_000_000));
+    }
+
     /// Expected values printed by Node 24 (`x.toFixed(d)`, `parseFloat(s)`, `parseInt(s, 10)`).
     #[test]
     fn to_fixed_parse_float_and_parse_int() {
