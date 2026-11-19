@@ -493,9 +493,9 @@ chrono; the zod 4 half passed with 3.2.
 - Patterns: `V3_EMAIL`, `V3_CUID` and `V3_IPV6` are `JsRegex` statics with zod 3's sources and flags; zod 3's
   `ipv4Regex` has the source of `regexes::IPV4` and reuses it; `url` is `url::Url::parse` (`new URL`). The `regex`
   statics `EMAIL`, `CUID`, `URL` and `fmt_num` / `num_value` are removed.
-- Follow-up found while porting: `JsRegex` translates the `i` flag to the `regex` crate's Unicode case folding, under
-  which `[A-Z]` also matches U+017F and U+212A; V8 without the `u` flag does not. It affects every `i` pattern of both
-  modes (zod 3's email and cuid included), not only this change.
+- Found while porting: `JsRegex` translates the `i` flag to the `regex` crate's Unicode case folding, under which
+  `[A-Z]` also matches U+017F and U+212A; V8 without the `u` flag does not. It affects every `i` pattern of both modes
+  (zod 3's email and cuid included). Fixed after the security review (its finding 3).
 
 ### 5. Check-like wrappers
 
@@ -515,13 +515,17 @@ chrono; the zod 4 half passed with 3.2.
   `new Date(x)`; this is what makes the recorded `"+275760-09-13T00:00:00.000Z"` succeed); without it, an ISO-looking
   string (`js::looks_like_iso_datetime`, the gate zod 4 mode's `date_strings` uses) through `js::parse_date`; any other
   input as before. Its bounds are checked in the order they were added, each with its own message, and the message text
-  is unchanged (the bound in RFC 3339). Consequence of the one parser: a day past the end of the month rolls over as in
-  JavaScript (`"2023-02-30"` is 2023-03-02; zod 3's own `z.coerce.date()` answers the same), so zod 3 mode's
-  `z::date()` now accepts it where chrono refused it; the old unit assertion moved to `"2023-13-01"`, which V8 refuses
-  too. A coerced fractional millisecond number is truncated as `new Date(1.5)` does (before: refused).
+  is unchanged (the bound in RFC 3339). Consequence of the one parser: with `coerce`, a day past the end of the month
+  rolls over as in JavaScript (`"2023-02-30"` is 2023-03-02; zod 3's own `z.coerce.date()` answers the same). Without
+  `coerce`, zod 3 mode's `z::date()` first accepted it too and returned the raw text; after the security review (its
+  finding 5) it reads the text with the strict ISO parser alone (`js::parse_iso_date`) and refuses `"2023-02-30"`
+  again, as chrono did, and the unit assertion on `"2023-02-30"` is back beside `"2023-13-01"`. A coerced fractional
+  millisecond number is truncated as `new Date(1.5)` does (before: refused).
 - 6.3: every `pipes` record matches (the two divergences, `"Infinity"` as an array item and `"99999999999999999999"`
   for `ParseIntPipe`, answer the recorded 400). The pipes read number text with `z::js` only: `ParseIntPipe` checks
-  `-?\d+` on `String(value)` and `Number()` finiteness, then `js::parse_int`, refusing a magnitude of 2^63 or more;
+  `-?\d+` on `String(value)` and reads the numeral exactly as an `i64` (a JSON integer as it is), refusing one outside
+  `i64`; it first read it with `js::parse_int`, which rounds beyond 2^53, and the security review (its finding 2) made
+  that a third divergence, `"9007199254740993"`;
   `ParseFloatPipe` is `js::parse_float` guarded by `js::to_number(..).is_finite()`; `ParseArrayPipe` refuses a falsy
   value (`null`, `""`, `false`, `0`) unless optional, trims the whole string with `js::js_trim` and reads each item with
   `js::to_number` (`""` and `null` as NaN). `DefaultValuePipe` replaces only `null`. Not ported, no record: the original's
@@ -595,7 +599,8 @@ chrono; the zod 4 half passed with 3.2.
   (`intersection.conflict`, `an_unmergeable_intersection_is_returned_without_the_panic_hook`), through the pipe
   (`pipeThrown` in `zod_pipe`), user callback panics
   (`a_panicking_transform_in_the_pipe_is_a_thrown_error_logged_once_a_minute_without_its_message`), overwrite and
-  check as structure (`du.overwrite`, `templateLiteral.check`), zone-less bound
+  check as structure (`du.overwrite`; `templateLiteral.check` is a construction divergence since the security
+  review), zone-less bound
   (`a_zone_less_date_bound_is_the_same_local_instant_in_both_versions`), BigInt beyond i128
   (`coerce_bigint_of_a_number_beyond_i128_is_an_invalid_type_issue`, `bigint_of_a_number_outside_i128_is_refused`),
   empty literal and untagged enum (`literal.empty`, `an_empty_literal_panics_when_built`,
@@ -610,3 +615,70 @@ chrono; the zod 4 half passed with 3.2.
   bans, licenses and sources but fails advisories on new "unmaintained" advisories for `chrono`, `chrono-tz` and
   `chrono-tz-build` (RUSTSEC-2026-0543, -0555, -0559), crates `dev`'s lockfile has at the same versions. Left unticked
   for the coordinator.
+
+## Security review
+
+One round, on the branch rebased onto `dev`, with proof-of-concept tests run against the branch. Five findings, all
+fixed; each fix landed after a commit with its regression test failing. Security wins over parity with the original
+where they disagree (findings 2 and 4 add divergences, recorded in the fixture replays).
+
+1. **(Medium) `toFixed` formats the full exact expansion.** `js::to_fixed` formatted `|x|` with all its exact fraction
+   digits, up to 1074 for a subnormal, and zod 3 mode's `multipleOf` calls it (through `float_safe_remainder_v3`) for
+   every number: 14,000 × `5e-324` (a 98 KB body) cost about a second of CPU. Fix: the precision is
+   `js::fixed_precision`, the exact expansion when it is short and otherwise `digits + max(60, digits)`; its comment
+   proves that a number with a longer expansion is never close enough to a tie for the shorter one to round the other
+   way, so every result is unchanged. Tests: `to_fixed(5e-324, 2) == "0.00"`, `to_fixed(-1e-300, 2) == "-0.00"` and
+   neighbors of a tie in `to_fixed_parse_float_and_parse_int` (values printed by Node 24); the property
+   `js_to_fixed_is_bounded_and_exact` (any finite double, digits 0 to 100: the precision is at most `digits + 60` up
+   to 60 digits, and the result equals the full expansion's) failed before the fix with 852 digits for
+   `toFixed(-1.16e-242, 0)`; `js_to_fixed_rounds_near_ties_as_the_exact_expansion` (a few units in the last place
+   around ties, up to 22 digits). The cost is pinned by counting digits, not by timing.
+2. **(Low) `ParseIntPipe` rounds integers beyond 2^53.** Going through `parseInt`'s double, `"9007199254740993"` became
+   `9007199254740992` and `"1234567890123456789"` became `1234567890123456768`: a handler would act on another id than
+   the client sent (`dev` parsed exactly). Fix: after the `-?\d+` check the text is parsed exactly as an `i64`, and a
+   JSON integer is taken as it is; the same result as the original below 2^53, a 400 outside `i64`. Tests:
+   `parse_int_pipe_reads_integers_beyond_2_pow_53_exactly` (both strings and their negatives, the `i64` bounds as
+   strings and as JSON numbers, refusals just outside) and the replay `builtin_pipes_follow_the_original`, both
+   failing before the fix. Divergence: the recorder (`generate.mjs`) marks the record `"9007199254740993"` with
+   `divergence.reason` "an integer beyond 2^53, read exactly" and the exact integer as its result, written as a bare
+   JSON number; re-recording changed only that record.
+3. **(Low) Case-insensitive matching without `u` folds U+017F and U+212A to ASCII.** `JsRegex` translated the `i` flag
+   to the `regex` crate's Unicode case folding, so zod 3 mode's `.email()` (`V3_EMAIL`, flag `i`) accepted
+   `"\u{212A}evin@example.com"`, `"\u{17F}am@example.com"` and `"a@example.\u{212A}om"`, which zod 3 refuses (and `dev`
+   refused), and zod 4's `BOOLEAN` pattern matched `"fal\u{17F}e"`. The root fix was contained in `z/regex.rs`: under
+   `i` without `u`/`v`, the literals `s`, `k`, U+017F and U+212A, every bracket class, `\w`/`\W` and the lookarounds of
+   `\b`/`\B` are written so the folding cannot cross into ASCII. Inside ASCII plus those two characters (a set closed
+   under the folding) a class lists its members case-sensitively, a character matching when it or, for an ASCII
+   letter, its other case is in the class; outside it the class keeps the `regex` crate's folding, which agrees with
+   V8 there. Both engines are covered. With `u` the folding is JavaScript's, unchanged. Tests:
+   `ignore_case_without_unicode_keeps_long_s_and_kelvin_apart_from_ascii` (37 patterns and inputs printed by Node 24,
+   `BOOLEAN` included) and the new fixture case `string.email.caseFold` in both lists (recorded with the installed zod
+   4.4.3; re-recording only added it), both failing before the fix. Left as is: V8 and Unicode folding still differ
+   for some non-ASCII pairs (`ß` and `ẞ` match under the `regex` crate, not in V8); no ASCII character is involved.
+4. **(Low) A template literal skips the checks of its parts.** `check_wrapper_structure!` forwards `pattern`, so
+   `template_literal(["user-", string().super_refine(<refuse "admin">)])` built and accepted `"user-admin"`:
+   `ZTemplateLiteral` tests only the combined pattern. On `dev` such a part with superRefine, check or overwrite did not
+   build, and `.refine()` parts were already ignored. zod 4.4.3 ignores them too, but a declared check that is not
+   applied is the unsafe outcome. Fix: a hidden trait method `checks_beyond_pattern` is `true` for the four check-like
+   wrappers and forwarded by every wrapper that forwards `pattern` (optional, exact optional, nullable, lazy, meta,
+   union); `ZTemplateLiteral::new` panics with "a template literal cannot run the checks of its parts" when a part
+   answers `true`. None of the three port apps builds a template literal (`grep` over their sources). Tests: one
+   `#[should_panic]` per wrapper kind
+   (`a_template_literal_part_with_{refine,super_refine,check,overwrite}_panics_when_built`) and one through
+   `.optional()`, failing before the fix; `a_template_literal_of_plain_parts_builds`; the wrapper
+   table test asserts the new method. Divergence: the replay's `construct_divergence` expects that build panic for
+   `templateLiteral.check`, `templateLiteral.overwrite` and the new cases `templateLiteral.refine` and
+   `templateLiteral.superRefine` (zod 4 records them accepted, with refinements that refuse every value), which
+   supersedes the "Behavior visible to applications" row for template literal parts.
+5. **(Hardening, taken) zod 3 mode `z::date()` returned text the lenient parser rolled over.** Without coercion it
+   returns the input string, and since Decision 6 it validated that string with `js::parse_date`, V8's fallbacks
+   included: `z::date().min("2023-03-01")` accepted and returned `"2023-02-30"`, and `"2023-02-31 Tuesday"` passed
+   (`dev`'s chrono parser refused both). Fix: on the non-coercing path only the strict ISO parser
+   (`js::parse_iso_date`) is used, so the validated text is a real calendar date; `z::coerce::date()` keeps following
+   `new Date()` and returns the normalized date. Tests: `coercion` in `z/tests.rs` (the restored `"2023-02-30"`
+   assertion, `"2023-02-31 Tuesday"`, and `.min("2023-03-01")` against `"2023-02-30"`), failing before the fix.
+
+Found while fixing 5, not changed here (outside the findings; the zod fixture records in UTC, so it cannot see them):
+the legacy date parser accepts `"2023-02-31 Tuesday"`, which V8 answers Invalid Date, and reads an ISO-shaped date with
+an out-of-range day (`"2023-02-30"`) as local time where V8 reads it as UTC (`z::coerce::date()` gives
+`2023-03-02T04:00:00.000Z` on a UTC-4 machine; V8 gives `2023-03-02T00:00:00.000Z` in any zone).
