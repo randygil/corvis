@@ -527,3 +527,8 @@ chrono; the zod 4 half passed with 3.2.
   `js::to_number` (`""` and `null` as NaN). `DefaultValuePipe` replaces only `null`. Not ported, no record: the original's
   array pipe runs `JSON.parse` on each item before `+item`, so `"true"` would be `1` there and is refused here, and it
   falls back to `,` for an empty separator. Both are left for the follow-up fixture of the implicit conversions.
+- 6.4: every `rules` record matches. `is_number_string` and `is_ip` use the sources of validator.js 13.15.35 (the
+  version class-validator 0.14.4 resolves to in the fixture's lockfile), copied from its `isNumeric` and `isIP` as the
+  composed strings V8 compiles; they are ASCII and lookaround-free, so they run on the `regex` crate like the other rule
+  patterns. `min_length`/`max_length` count as validator.js `isLength` does: UTF-16 length minus surrogate pairs minus
+  variation selectors that follow a non-selector, which is the `char` count minus those selectors.

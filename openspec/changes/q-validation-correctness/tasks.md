@@ -71,7 +71,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
   `parseFloat` helper in `z::js` if the records need it); unrepresentable values refused with the pipe's 400 and marked
   as divergences in `generate.mjs` (a `divergence` field the replay accepts); verify `cargo test -p corvis --test
   builtin_pipes_fixtures` and the existing pipe tests
-- [ ] 6.4 `validation/rules.rs`: `is_number_string`, `is_ip`, `min_length`, `max_length` as the `rules` records show;
+- [x] 6.4 `validation/rules.rs`: `is_number_string`, `is_ip`, `min_length`, `max_length` as the `rules` records show;
   verify `builtin_pipes_fixtures` and `cargo test -p corvis --lib validation::`
 
 ## 7. Thrown errors (Decision 8)
