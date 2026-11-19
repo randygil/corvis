@@ -220,9 +220,17 @@ pub fn to_fixed(x: f64, digits: usize) -> String {
     fixed_text(x, digits, fixed_precision(x, digits))
 }
 
-/// How many fraction digits `to_fixed` formats `|x|` with before it rounds to `digits` by hand.
+/// How many fraction digits `to_fixed` formats `|x|` with before it rounds to `digits` by hand: the exact expansion
+/// when it is short, otherwise `digits + max(60, digits)`, so the work is bounded (a subnormal has 1074 exact digits).
+///
+/// The shorter expansion rounds as the exact one. Formatting at precision `p` moves `|x|` by at most `10^-p / 2`, so
+/// only an `|x|` that close to a tie `(2k + 1) / (2 * 10^digits)` could round the other way. A tie has `digits + 1`
+/// fraction digits, so `|x|` is not one when its expansion is longer than `p`; then `|x|` and the tie differ by at
+/// least `2^e / 5^digits`, where `2^e` is the lowest bit of `|x|`, and `2^e > 10^-digits / 2^54` near a tie. That is
+/// more than `10^-p / 2` once `p - digits >= 16 + 0.7 * digits`, which both `60` (for `digits <= 63`) and `digits`
+/// (for `digits >= 54`) satisfy.
 pub(crate) fn fixed_precision(x: f64, digits: usize) -> usize {
-    exact_fraction_digits(x).max(digits)
+    exact_fraction_digits(x).min(digits.saturating_add(digits.max(60))).max(digits)
 }
 
 /// `|x|` formatted with `precision` fraction digits, then rounded half up to `digits` by hand (Rust's own rounding of a
