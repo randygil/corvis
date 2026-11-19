@@ -105,7 +105,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 - [x] 10.1 Rustdoc: `ZodError::thrown`, `z::coerce::date()` (the range), `ZDate::min/max` (one parser, local time),
   `z::coerce::bigint()`, `z::literal`, `z::native_enum`, `ParseEnumPipe::of` (`# Panics`), the built-in pipes whose
   behavior changed, the zod 3 notes on `ZodVersion::V3`; verify `cargo doc -p corvis --no-deps` without warnings
-- [ ] 10.2 Docs with the `docs-writer` agent, English then Spanish: `docs/application/validation.md` (thrown errors and
+- [x] 10.2 Docs with the `docs-writer` agent, English then Spanish: `docs/application/validation.md` (thrown errors and
   `thrown()`, the date range, the zod 3 mode changes the fixture confirmed, unwinding needed for thrown errors),
   `docs/pipes.md` (the built-in pipe behaviors the fixture changed and the recorded divergences); `docs/es/` the same;
   verify `npm run docs:check` in `docs/`
@@ -125,7 +125,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
   (`.github/workflows/ci.yml`) and `--no-default-features`, with no warnings
 - [x] 11.5 Regression tests: one per spec scenario of this change and one per row of design.md's invariants table, as
   listed in groups 2 to 9
-- [ ] 11.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
+- [x] 11.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 11.7 Framework runtime code changed (`z/`, `validation/`, `common/pipe.rs`): run the `corvis-parity` check and
   verify the three port apps keep 0 apidiff differences
 - [ ] 11.8 `cargo deny check` (no new crate) and `node scripts/check-naming.mjs` pass; `openspec validate
