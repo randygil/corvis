@@ -1237,6 +1237,9 @@ impl ZodType for ZUnion {
     fn pattern(&self) -> Option<String> {
         union_pattern(&self.0)
     }
+    fn checks_beyond_pattern(&self) -> bool {
+        self.0.iter().any(|o| o.node().checks_beyond_pattern())
+    }
     fn def_type(&self) -> &'static str {
         "union"
     }

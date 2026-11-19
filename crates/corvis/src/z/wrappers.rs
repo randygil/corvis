@@ -65,6 +65,9 @@ impl ZodType for ZOptional {
     fn pattern(&self) -> Option<String> {
         self.0.node().pattern().map(|p| format!("^({})?$", clean_regex(&p)))
     }
+    fn checks_beyond_pattern(&self) -> bool {
+        self.0.node().checks_beyond_pattern()
+    }
     fn def_type(&self) -> &'static str {
         "optional"
     }
@@ -115,6 +118,9 @@ impl ZodType for ZExactOptional {
     fn pattern(&self) -> Option<String> {
         self.0.node().pattern()
     }
+    fn checks_beyond_pattern(&self) -> bool {
+        self.0.node().checks_beyond_pattern()
+    }
     fn def_type(&self) -> &'static str {
         "optional"
     }
@@ -161,6 +167,9 @@ impl ZodType for ZNullable {
     }
     fn pattern(&self) -> Option<String> {
         self.0.node().pattern().map(|p| format!("^({}|null)$", clean_regex(&p)))
+    }
+    fn checks_beyond_pattern(&self) -> bool {
+        self.0.node().checks_beyond_pattern()
     }
     fn def_type(&self) -> &'static str {
         "nullable"
@@ -704,6 +713,10 @@ macro_rules! check_wrapper_structure {
         }
         fn pattern(&self) -> Option<String> {
             self.inner.node().pattern()
+        }
+        /// The pattern is the inner schema's, which this wrapper's own check is not part of.
+        fn checks_beyond_pattern(&self) -> bool {
+            true
         }
         fn def_type(&self) -> &'static str {
             self.inner.def_type()
@@ -1297,6 +1310,9 @@ impl ZodType for ZLazy {
     fn pattern(&self) -> Option<String> {
         self.get().node().pattern()
     }
+    fn checks_beyond_pattern(&self) -> bool {
+        self.get().node().checks_beyond_pattern()
+    }
     fn def_type(&self) -> &'static str {
         "lazy"
     }
@@ -1440,6 +1456,9 @@ impl ZodType for ZMeta {
     fn pattern(&self) -> Option<String> {
         self.inner.node().pattern()
     }
+    fn checks_beyond_pattern(&self) -> bool {
+        self.inner.node().checks_beyond_pattern()
+    }
     fn def_type(&self) -> &'static str {
         self.inner.def_type()
     }
@@ -1461,8 +1480,9 @@ impl ZodType for ZMeta {
 mod tests {
     use crate::z::{self, Schema, ZodSchema, ZodType};
 
-    /// Every zod 4 structural method of a check-like wrapper answers what the wrapped schema answers. A method added
-    /// to `check_wrapper_structure!` is added to `same_structure` too.
+    /// Every zod 4 structural method of a check-like wrapper answers what the wrapped schema answers, and
+    /// `checks_beyond_pattern` is `true` (its own check is not in the pattern). A method added to
+    /// `check_wrapper_structure!` is added to `same_structure` too.
     #[test]
     fn check_like_wrappers_forward_the_wrapped_structure() {
         let inners: [(&str, Schema); 4] = [
@@ -1491,6 +1511,7 @@ mod tests {
         assert_eq!(o.values(), i.values(), "{what}: values");
         assert_eq!(o.prop_values(), i.prop_values(), "{what}: prop_values");
         assert_eq!(o.pattern(), i.pattern(), "{what}: pattern");
+        assert!(o.checks_beyond_pattern() && !i.checks_beyond_pattern(), "{what}: checks_beyond_pattern");
         assert_eq!(o.def_type(), i.def_type(), "{what}: def_type");
         assert_eq!(o.object_shape().map(std::ptr::from_ref), i.object_shape().map(std::ptr::from_ref), "{what}: object_shape");
         assert_eq!(o.string_patterns(), i.string_patterns(), "{what}: string_patterns");

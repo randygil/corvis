@@ -412,7 +412,7 @@ fn schema(name: &str) -> z::Schema {
         "templateLiteral.check" => s(z::template_literal([z::TemplatePart::from("id-"), z::number().check_fn(|_| {}).into()])),
         "templateLiteral.refine" => s(z::template_literal([z::TemplatePart::from("id-"), z::number().refine(|_| false, ()).into()])),
         "templateLiteral.superRefine" => {
-            s(z::template_literal([z::TemplatePart::from("id-"), z::number().super_refine(|_, ctx| { ctx.add_issue("no"); }).into()]))
+            s(z::template_literal([z::TemplatePart::from("id-"), z::number().super_refine(|_, ctx| ctx.add_issue("no")).into()]))
         }
         "literal.empty" => s(z::literal(json!([]))),
         "object.required.refine" => s(z::object! { a: z::string().optional().refine(|_| true, ()) }.required()),
@@ -618,11 +618,12 @@ fn run_parse_fixtures(list: &str, version: z::ZodVersion) {
             let name = case["name"].as_str().unwrap();
             let built = std::panic::catch_unwind(|| schema(name)).map_err(|p| panic_text(&*p));
             if let Some(want) = construct_divergence(list, name) {
-                match built {
-                    Err(got) if got.contains(want) => {}
-                    Err(got) => failures.entry(name.to_string()).or_default().push(format!("divergence: build panicked with {got:?}, want {want:?}")),
-                    Ok(_) => failures.entry(name.to_string()).or_default().push(format!("divergence: expected a panic when built: {want:?}")),
-                }
+                let problem = match built {
+                    Err(got) if got.contains(want) => continue,
+                    Err(got) => format!("divergence: build panicked with {got:?}, want {want:?}"),
+                    Ok(_) => format!("divergence: expected a panic when built: {want:?}"),
+                };
+                failures.entry(name.to_string()).or_default().push(problem);
                 continue;
             }
             // The original throws while the schema is created: Corvis panics while it is built.

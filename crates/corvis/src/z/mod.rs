@@ -139,6 +139,14 @@ pub trait ZodType: Send + Sync + 'static {
         None
     }
 
+    /// `true` when this node runs a check that its [`pattern`](Self::pattern) does not express: a refine,
+    /// superRefine, check or overwrite on it, or on a schema whose pattern it forwards. A template literal tests only
+    /// the patterns of its parts, so it refuses such a part rather than skip the check.
+    #[doc(hidden)]
+    fn checks_beyond_pattern(&self) -> bool {
+        false
+    }
+
     /// `_zod.def.type` (`"string"`, `"object"`, `"pipe"`, ...).
     fn def_type(&self) -> &'static str {
         "custom"

@@ -2849,6 +2849,13 @@ impl ZTemplateLiteral {
             match p {
                 TemplatePart::Schema(s) => {
                     let pat = s.node().pattern().unwrap_or_else(|| panic!("Invalid template literal part, no pattern found"));
+                    // zod 4 builds such a part and never runs its check; a declared check that is skipped would accept
+                    // what it refuses.
+                    assert!(
+                        !s.node().checks_beyond_pattern(),
+                        "Invalid template literal part: a template literal cannot run the checks of its parts (refine, \
+                         superRefine, check, overwrite); refine the whole template literal instead"
+                    );
                     let pat = pat.strip_prefix('^').unwrap_or(&pat);
                     let pat = pat.strip_suffix('$').unwrap_or(pat);
                     src.push_str(pat);
