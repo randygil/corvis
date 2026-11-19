@@ -63,7 +63,7 @@ Estos pipes se verificaron contra la salida de los pipes originales (paquete com
 
 | Pipe | Acepta | Rechaza |
 |---|---|---|
-| `ParseIntPipe` | `"5"`, `"-0"`, `"007"`; un numeral mayor que 2^53 se redondea como `parseInt` (`"9007199254740993"` da `9007199254740992`) | `"+5"`, `" 5"`, `"5 "`, `""`, `"0x10"`, `"1e3"` |
+| `ParseIntPipe` | `"5"`, `"-0"`, `"007"`; un numeral mayor que 2^53 se lee exacto (`"9007199254740993"` da `9007199254740993`) | `"+5"`, `" 5"`, `"5 "`, `""`, `"0x10"`, `"1e3"` |
 | `ParseFloatPipe` | `"1.5"`, `" 1.5 "`, `".5"`, `"5."`, `"1e3"`; el texto se lee como lo hace `parseFloat`, así que `"0x10"` da `0` | `"Infinity"`, `"NaN"`, `""`, `"1,5"`, `"1.5abc"` |
 | `ParseBoolPipe` | `"true"`, `"false"` y booleanos | `"TRUE"`, `"1"`, `""` |
 | `ParseArrayPipe` | El string se recorta y se parte por el separador; con `.numbers()` cada elemento se lee como `Number()` (`" 2"` es `2`, `"0x10"` es `16`) | Un valor vacío o ausente (salvo `.optional()`); con `.numbers()`, un elemento vacío, `NaN` o un infinito, con `[índice] item must be a number` |
@@ -71,9 +71,10 @@ Estos pipes se verificaron contra la salida de los pipes originales (paquete com
 
 Los elementos de `ParseArrayPipe` no se recortan uno por uno: `"a, b"` da `["a", " b"]`.
 
-Dos divergencias con el original, porque Corvis trabaja con valores JSON y nunca acepta en silencio un valor distinto:
+Tres divergencias con el original, porque Corvis trabaja con valores JSON y nunca acepta en silencio un valor distinto:
 
-- `ParseIntPipe` rechaza un entero de 2^63 o más (`"99999999999999999999"`) con su 400, donde el original devuelve un `Number`.
+- `ParseIntPipe` lee exacto un numeral mayor que 2^53, donde el `parseInt` del original lo redondea al double más cercano (allí `"9007199254740993"` da `9007199254740992`), así que el handler recibe el id que envió el cliente.
+- `ParseIntPipe` rechaza un entero fuera de `i64` (2^63 o más, como `"99999999999999999999"`) con su 400, donde el original devuelve un `Number`.
 - `ParseArrayPipe` con `.numbers()` rechaza `"Infinity"` como elemento (JSON no tiene infinito), con el mismo error `[0] item must be a number`.
 
 Otros dos comportamientos del pipe de arreglos original no se portaron: ejecuta `JSON.parse` sobre cada elemento antes de convertirlo, así que `"true"` pasa a ser `1` allí y aquí se rechaza, y recurre a `,` cuando el separador está vacío (aquí un separador vacío parte en caracteres).

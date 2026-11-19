@@ -256,7 +256,7 @@ match schema.parse(&input) {
 - A panic in your own code (a `transform` that unwraps) is still caught by the pipe and the serializer and answered the same way. One `error` log line is written at most once a minute; it names the site and the kind of parameter but never the panic message, which can carry request data. A direct call to `parse` does not catch it: it keeps propagating to the caller.
 - This relies on unwinding, Rust's default. With `panic = "abort"` in the profile, a thrown error aborts the process.
 
-Errors raised **when the schema is built** are still panics, since the original throws when the schema is declared and application code builds its schemas at startup: `z::literal(json!([]))` (an empty list of values), `z::native_enum::<T>()` and `ParseEnumPipe::of::<T>()` when the variant names of `T` cannot be read (an untagged, internally or adjacently tagged enum: only enums of unit variants with the default representation work), and `z::date().min(..)` or `.max(..)` with a bound that is not a date.
+Errors raised **when the schema is built** are still panics, since the original throws when the schema is declared and application code builds its schemas at startup: `z::literal(json!([]))` (an empty list of values), `z::native_enum::<T>()` and `ParseEnumPipe::of::<T>()` when the variant names of `T` cannot be read (an untagged, internally or adjacently tagged enum: only enums of unit variants with the default representation work), `z::date().min(..)` or `.max(..)` with a bound that is not a date, and `z::template_literal(..)` with a part that has a check (see [zod 3 mode](#zod-3-mode)).
 
 ### Dates and BigInt
 
@@ -264,7 +264,7 @@ Both versions read dates with a single parser that follows JavaScript's `Date.pa
 
 - The accepted range is the ECMAScript one: years -271821 to 275760 (`+275760-09-13T00:00:00.000Z` is the last instant). Anything beyond it, a numeral too long to fit an integer or a huge zone offset is an invalid date (`invalid_type`, `received: "Invalid Date"`), never a wrapped value.
 - A date-time without a zone (`"2024-01-01T10:00:00"`) is local time and a date alone (`"2024-01-01"`) is UTC, in zod 4 mode and in zod 3 mode.
-- A day past the end of the month rolls over as in JavaScript: `"2023-02-30"` is March 2. In zod 3 mode `z::date()` now accepts it as well (it used to refuse it); `"2023-13-01"` is still refused.
+- A day past the end of the month rolls over as in JavaScript: `z::coerce::date()` reads `"2023-02-30"` as March 2. In zod 3 mode, `z::date()` without coercion returns the text it validated, so it takes only the strict ISO format of a real calendar date and refuses `"2023-02-30"`, `"2023-13-01"` and `"2023-02-31 Tuesday"`.
 - A coerced number with a fraction is truncated, as `new Date(1.5)` does.
 - `z::date().min("...")` and `.max("...")` parse the bound once with that parser and panic if it is not a date.
 
@@ -284,7 +284,7 @@ zod 3 mode (`ZodVersion::V3`) now uses the same JavaScript primitives as zod 4 m
 | `z::coerce::string()` | `String(x)`: `[1,2]` gives `"1,2"` |
 | Numbers in messages | JavaScript text (`1e+21`, `1e-7`) |
 
-zod 4 mode, the default, is not changed by these. Whatever the mode, `.refine()`, `.super_refine()`, `.check_fn()` and `.overwrite()` now keep the structure of the schema they wrap, so a schema with `.overwrite(..)` or `.check_fn(..)` can be an option of a discriminated union or a part of a template literal (before, building it panicked).
+zod 4 mode, the default, is not changed by these. Whatever the mode, `.refine()`, `.super_refine()`, `.check_fn()` and `.overwrite()` now keep the structure of the schema they wrap, so a schema with `.overwrite(..)` or `.check_fn(..)` can be an option of a discriminated union (before, building it panicked). A template literal tests only the pattern of its parts and cannot run their checks, so building one whose part has any of these four (also under `.optional()`, `.nullable()` or in a union) panics with a message that says so. zod 4 builds such a template literal and ignores the check; Corvis refuses it rather than accept what the check refuses. Refine the whole template literal instead.
 
 ### Equivalence with the Node.js integration
 
@@ -314,6 +314,6 @@ Pipes validate the handler's argument; they do not replace `req.body()`. A guard
 
 - **Depth of recursive schemas.** `z::lazy` and `z::json()` allow at most 128 levels of nesting per parse. Past that limit the parse stops recursing and returns a `custom` issue with the message `Too deeply nested: the input exceeds the maximum depth of 128` at the path of the first value that exceeds it (without `input`, to avoid copying the subtree). zod has no such limit: in Node.js the parse throws `RangeError: Maximum call stack size exceeded`; in Rust a stack overflow aborts the whole process, so the limit is mandatory. Unions do not wrap it in `invalid_union`, so it reaches the `400` of `ZodValidationPipe` as is. Change it with `z::configure(|c| c.max_depth = n)` (global, `z::DEFAULT_MAX_DEPTH` = 128) or per parse with `ParseOptions::new().max_depth(n)`. 128 levels leave plenty of margin: a typical recursive tree needs about 670 levels to exhaust the 2 MiB stack of a tokio worker in release (about 220 in debug).
 - **Linear cost.** Objects, records, arrays and tuples move each value to its child instead of copying the subtree at every level (3000 levels used to take minutes; now it takes milliseconds), and `z::json()` validates a JSON input in a single pass with the same result as zod's `z.lazy` union. A value is copied only when an issue needs it.
-- **Regular expressions.** Patterns without lookarounds or backreferences (including those that use `\b`) run with the `regex` crate, in linear time. Those that need them stay on the backtracking `fancy-regex` engine, as in V8, with a cap of 1,000,000 steps per `test`: when it is reached the text is considered invalid and a `[JsRegex]` `WARN` is logged. Avoid backreferences and lookarounds in `.regex()` rules applied to client text.
+- **Regular expressions.** Patterns without lookarounds or backreferences (including those that use `\b`) run with the `regex` crate, in linear time. Those that need them stay on the backtracking `fancy-regex` engine, as in V8, with a cap of 1,000,000 steps per `test`: when it is reached the text is considered invalid and a `[JsRegex]` `WARN` is logged. Avoid backreferences and lookarounds in `.regex()` rules applied to client text. With the `i` flag and without `u`, letters match case-insensitively as in V8: the long s `ſ` and the Kelvin sign `K` match only themselves, never `s` or `k`.
 - **`#[array_unique]`** compares with a hash table (linear) instead of pairwise.
-- `z::url()` accepts any scheme (`javascript:` included); for links that will be displayed use `z::http_url()`.
+- `z::url()` accepts any scheme (`javascript:` included); for links that will be displayed use `z::http_url()`. The same holds for `.url()` in both modes: it does not make a value safe to use as a link, since `"javascript:alert(1)"` passes.

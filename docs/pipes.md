@@ -63,7 +63,7 @@ These pipes were checked against the output of the original pipes (common packag
 
 | Pipe | Accepts | Refuses |
 |---|---|---|
-| `ParseIntPipe` | `"5"`, `"-0"`, `"007"`; a numeral beyond 2^53 is rounded like `parseInt` (`"9007199254740993"` gives `9007199254740992`) | `"+5"`, `" 5"`, `"5 "`, `""`, `"0x10"`, `"1e3"` |
+| `ParseIntPipe` | `"5"`, `"-0"`, `"007"`; a numeral beyond 2^53 is read exactly (`"9007199254740993"` gives `9007199254740993`) | `"+5"`, `" 5"`, `"5 "`, `""`, `"0x10"`, `"1e3"` |
 | `ParseFloatPipe` | `"1.5"`, `" 1.5 "`, `".5"`, `"5."`, `"1e3"`; the text is read as `parseFloat` does, so `"0x10"` gives `0` | `"Infinity"`, `"NaN"`, `""`, `"1,5"`, `"1.5abc"` |
 | `ParseBoolPipe` | `"true"`, `"false"` and booleans | `"TRUE"`, `"1"`, `""` |
 | `ParseArrayPipe` | The string is trimmed and split on the separator; with `.numbers()` each item is read as `Number()` (`" 2"` is `2`, `"0x10"` is `16`) | An empty or missing value (unless `.optional()`); with `.numbers()`, an empty item, `NaN` or an infinity, with `[index] item must be a number` |
@@ -71,9 +71,10 @@ These pipes were checked against the output of the original pipes (common packag
 
 The items of `ParseArrayPipe` are not trimmed one by one: `"a, b"` gives `["a", " b"]`.
 
-Two divergences from the original, because Corvis works on JSON values and never accepts a different value silently:
+Three divergences from the original, because Corvis works on JSON values and never accepts a different value silently:
 
-- `ParseIntPipe` refuses an integer of 2^63 or more (`"99999999999999999999"`) with its 400, where the original returns a `Number`.
+- `ParseIntPipe` reads a numeral beyond 2^53 exactly, where the original's `parseInt` rounds it to the nearest double (`"9007199254740993"` gives `9007199254740992` there), so a handler gets the id the client sent.
+- `ParseIntPipe` refuses an integer outside `i64` (2^63 or more, such as `"99999999999999999999"`) with its 400, where the original returns a `Number`.
 - `ParseArrayPipe` with `.numbers()` refuses `"Infinity"` as an item (JSON has no infinity), with the same `[0] item must be a number` error.
 
 Two more behaviors of the original's array pipe are not ported: it runs `JSON.parse` on each item before converting it, so `"true"` becomes `1` there and is refused here, and it falls back to `,` when the separator is empty (here an empty separator splits into characters).
