@@ -71,6 +71,14 @@ fn coercion_v3() {
     assert_eq!(z::coerce::date().parse(&json!(0)).unwrap(), json!("1970-01-01T00:00:00.000Z"));
     assert!(z::date().is_valid(&json!("2024-02-29")));
     assert_eq!(z::date().parse(&json!("2023-13-01")).unwrap_err().messages(), vec!["Invalid date"]);
+    // Without coercion the text is the validated output, so it must be a real calendar date: no rollover of a day past
+    // the end of its month and nothing after the date, which JavaScript's lenient parser would accept.
+    assert_eq!(z::date().parse(&json!("2023-02-30")).unwrap_err().messages(), vec!["Invalid date"]);
+    assert_eq!(z::date().parse(&json!("2023-02-31 Tuesday")).unwrap_err().messages(), vec!["Invalid date"]);
+    assert_eq!(z::date().min("2023-03-01").parse(&json!("2023-02-30")).unwrap_err().messages(), vec!["Invalid date"]);
+    assert_eq!(z::date().min("2023-03-01").parse(&json!("2023-03-01T10:00:00Z")).unwrap(), json!("2023-03-01T10:00:00Z"));
+    // `z.coerce.date()` is `new Date(input)`, and its output is the normalized date.
+    assert_eq!(z::coerce::date().parse(&json!("2023-02-30")).unwrap(), json!("2023-03-02T00:00:00.000Z"));
 }
 
 #[test]
