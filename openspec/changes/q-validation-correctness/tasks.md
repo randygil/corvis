@@ -76,7 +76,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 7. Thrown errors (Decision 8)
 
-- [ ] 7.1 `Thrown` payload and `resume_unwind` at `throw_encode_error` and the unmergeable intersection; `catch_unwind`
+- [x] 7.1 `Thrown` payload and `resume_unwind` at `throw_encode_error` and the unmergeable intersection; `catch_unwind`
   at `parse_val` and `run_v3`; `ZodError::thrown()`, the private field, `Display`; the `throws` branch of
   `tests/zod4_fixtures.rs` expects `Err` with the recorded message; verify both fixture lists and
   `cargo test -p corvis --lib z::`

@@ -532,3 +532,15 @@ chrono; the zod 4 half passed with 3.2.
   composed strings V8 compiles; they are ASCII and lookaround-free, so they run on the `regex` crate like the other rule
   patterns. `min_length`/`max_length` count as validator.js `isLength` does: UTF-16 length minus surrogate pairs minus
   variation selectors that follow a non-selector, which is the `char` count minus those selectors.
+
+### 7. Thrown errors
+
+- 7.1: `core::throw` unwinds with the private `Thrown` payload through `resume_unwind` (no panic hook);
+  `throw_encode_error` and the unmergeable intersection call it. The catch is one `catch_unwind` in `parse_val`, around
+  both versions: `run_v3` is private and only `parse_val` calls it, and zod 3 mode reaches a throwing zod 4 node only
+  through `v3_via_v4` inside that parse, so one catch covers what the design lists as two. Any other payload is resumed
+  with `resume_unwind`, so a user panic keeps unwinding and its hook line is not printed twice. Naming: Decision 8 calls
+  both the constructor and the getter `thrown`; Rust cannot have an associated `ZodError::thrown(message)` beside the
+  method `thrown(&self)`, so the public getter is `thrown()` and the constructor is the crate-private
+  `ZodError::from_thrown`. Between 7.1 and 7.2 the pipe answered a thrown error with `"errors": []`, which
+  `zod_pipe`'s `pipeThrown` caught (the failing test of 7.2).

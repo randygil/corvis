@@ -248,10 +248,12 @@ impl Serialize for ZodIssue {
     }
 }
 
-/// `ZodError`: the list of issues found while parsing.
+/// `ZodError`: the list of issues found while parsing, or the error the original throws while parsing
+/// ([`thrown`](Self::thrown)). Build one with [`ZodError::new`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ZodError {
     pub issues: Vec<ZodIssue>,
+    thrown: Option<String>,
 }
 
 fn key_of(seg: &Value) -> String {
@@ -264,7 +266,22 @@ fn key_of(seg: &Value) -> String {
 
 impl ZodError {
     pub fn new(issues: Vec<ZodIssue>) -> Self {
-        ZodError { issues }
+        ZodError { issues, thrown: None }
+    }
+
+    pub(crate) fn from_thrown(message: String) -> Self {
+        ZodError { issues: Vec::new(), thrown: Some(message) }
+    }
+
+    /// The message of the error the original throws instead of reporting issues: an intersection whose results
+    /// cannot be merged (`"Unmergable intersection. Error path: [..]"`) or a unidirectional transform met while
+    /// encoding (`"Encountered unidirectional transform during encode: ZodTransform"`). The issues are then empty.
+    /// `None` for an ordinary validation error.
+    ///
+    /// Parsing returns these by unwinding to the parse entry point, so they need the default `panic = "unwind"`; with
+    /// `panic = "abort"` the process aborts, as a panic does.
+    pub fn thrown(&self) -> Option<&str> {
+        self.thrown.as_deref()
     }
 
     /// `error.errors` (alias of `issues`).
@@ -510,8 +527,11 @@ impl Serialize for ZodError {
 }
 
 impl fmt::Display for ZodError {
-    /// Like zod, the message is the pretty-printed list of issues.
+    /// Like zod, the message is the pretty-printed list of issues, or the thrown error's message.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(message) = &self.thrown {
+            return f.write_str(message);
+        }
         let s = serde_json::to_string_pretty(&self.issues).map_err(|_| fmt::Error)?;
         f.write_str(&s)
     }

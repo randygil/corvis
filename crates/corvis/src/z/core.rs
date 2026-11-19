@@ -436,10 +436,19 @@ impl RawIssue {
     }
 }
 
-/// `throw new $ZodEncodeError(name)`: zod throws (it is not a validation issue), so this panics.
-/// [`ZodValidationPipe`](super::ZodValidationPipe) and the serializer turn it into their exceptions.
+/// The unwind payload of an error zod throws while parsing (not a validation issue).
+pub(crate) struct Thrown(pub(crate) String);
+
+/// `throw new Error(message)` inside a parse: unwinds to the parse entry point
+/// ([`parse_val`](super::parse_val)), which returns it as a [`ZodError`](super::ZodError) with
+/// [`thrown()`](super::ZodError::thrown) set. `resume_unwind` does not call the panic hook, so nothing is printed.
+pub(crate) fn throw(message: String) -> ! {
+    std::panic::resume_unwind(Box::new(Thrown(message)))
+}
+
+/// `throw new $ZodEncodeError(name)`.
 pub(crate) fn throw_encode_error(name: &str) -> ! {
-    panic!("Encountered unidirectional transform during encode: {name}")
+    throw(format!("Encountered unidirectional transform during encode: {name}"))
 }
 
 pub(crate) fn prefix_all(issues: Vec<RawIssue>, seg: impl Into<Value>) -> Vec<RawIssue> {
