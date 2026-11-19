@@ -682,3 +682,24 @@ Found while fixing 5, not changed here (outside the findings; the zod fixture re
 the legacy date parser accepts `"2023-02-31 Tuesday"`, which V8 answers Invalid Date, and reads an ISO-shaped date with
 an out-of-range day (`"2023-02-30"`) as local time where V8 reads it as UTC (`z::coerce::date()` gives
 `2023-03-02T04:00:00.000Z` on a UTC-4 machine; V8 gives `2023-03-02T00:00:00.000Z` in any zone).
+
+## Verification
+
+Windows, `CARGO_TARGET_DIR` shared, on the branch rebased onto `dev` (after the HTTP server robustness change) with the
+fixes of the security review.
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `cargo build --workspace --all-targets` | no warnings |
+| `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p corvis --no-default-features -- -D warnings` | clean |
+| `cargo test --workspace` | 2,793 passed, 0 failed, 101 ignored |
+| `cargo check -p corvis --tests --features <f>` for the ten features of the CI loop (before the review fixes) | no warnings |
+| `cargo check -p corvis --no-default-features --tests` | does not compile, on `dev` either: `fuzz_tests.rs` imports `crate::jwt` and `jsonwebtoken` unconditionally. Not part of CI; left for its own issue |
+| `cargo deny check` | bans, licenses and sources ok; advisories fails on `dev` too (RUSTSEC-2026-0543, -0555, -0559: `chrono`, `chrono-tz`, `chrono-tz-build` unmaintained). No crate added by this change |
+| `node scripts/check-naming.mjs`; `openspec validate q-validation-correctness --strict` | passed; valid |
+| `npm run docs:check` | 179 English and 179 Spanish pages |
+| Security review (one round) | four findings and one hardening note, all fixed with a regression test seen failing first; see "Security review" |
+| Parity, consi: 93 unit tests, apidiff, dbdiff | 832 / 832 equal, databases equivalent |
+| Parity, facten: 254 unit tests (2 ignored), apidiff, routes, dbdiff | 727 / 727 equal, 74 routes on both sides, databases equivalent |
+| Parity, houseplan: 70 + 10 unit tests, apidiff, routes, dbdiff | 636 / 636 equal, 31 routes on both sides; databases equivalent on the second run. The first run differed in `wallet_snapshots` by the two rows of one tick of the 5-minute snapshot job, which the scenario does not control |

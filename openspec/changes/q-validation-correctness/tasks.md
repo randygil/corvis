@@ -109,7 +109,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
   `thrown()`, the date range, the zod 3 mode changes the fixture confirmed, unwinding needed for thrown errors),
   `docs/pipes.md` (the built-in pipe behaviors the fixture changed and the recorded divergences); `docs/es/` the same;
   verify `npm run docs:check` in `docs/`
-- [ ] 10.3 Security review with the `security-reviewer` agent (Review note 6 and the invariants table); repeat rounds
+- [x] 10.3 Security review with the `security-reviewer` agent (Review note 6 and the invariants table); repeat rounds
   until no open finding; record findings and fixes in design.md under "Security review"; verify every finding has a
   regression test or a recorded reason
 
@@ -121,16 +121,20 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 - [x] 11.3 `cargo test --workspace` passes, including `zod4_fixtures`, `zod_pipe`, `zod_security`, `zod_thrown`,
   `zod_linear_traversal`, `builtin_pipes_fixtures` and the `fuzz_tests` module; `cargo test --release -p corvis --lib
   z::js` passes
-- [ ] 11.4 Per-feature checks: `cargo check -p corvis --tests --features <f>` for each feature of the CI loop
+- [x] 11.4 Per-feature checks: `cargo check -p corvis --tests --features <f>` for each feature of the CI loop
   (`.github/workflows/ci.yml`) and `--no-default-features`, with no warnings
+  (the ten CI features pass; `--no-default-features --tests` does not compile on `dev` either: `fuzz_tests.rs` imports
+  `crate::jwt` unconditionally. See "Verification" in design.md)
 - [x] 11.5 Regression tests: one per spec scenario of this change and one per row of design.md's invariants table, as
   listed in groups 2 to 9
 - [x] 11.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
-- [ ] 11.7 Framework runtime code changed (`z/`, `validation/`, `common/pipe.rs`): run the `corvis-parity` check and
+- [x] 11.7 Framework runtime code changed (`z/`, `validation/`, `common/pipe.rs`): run the `corvis-parity` check and
   verify the three port apps keep 0 apidiff differences
-- [ ] 11.8 `cargo deny check` (no new crate) and `node scripts/check-naming.mjs` pass; `openspec validate
+- [x] 11.8 `cargo deny check` (no new crate) and `node scripts/check-naming.mjs` pass; `openspec validate
   q-validation-correctness --strict` is valid
-- [ ] 11.9 The security review of 10.3 is closed; a "Verification" table (check and result, as archived changes have)
+  (bans, licenses and sources pass; advisories fails on `dev` too, for the unmaintained notices of `chrono`, `chrono-tz`
+  and `chrono-tz-build`, RUSTSEC-2026-0543, -0555 and -0559, at the same locked versions)
+- [x] 11.9 The security review of 10.3 is closed; a "Verification" table (check and result, as archived changes have)
   is added at the end of this file before archiving
 
 ## Workflow follow-up
