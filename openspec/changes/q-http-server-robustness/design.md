@@ -493,6 +493,18 @@ Windows, `CARGO_TARGET_DIR` shared, after the last code change (commit "Group Co
 | `npm run docs:check` | 179 English and 179 Spanish pages |
 | `openspec validate q-http-server-robustness --strict` | valid |
 
+After the rebase onto `dev` (which had gained the ORM correctness change) and the security review commit:
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check`; `cargo build --workspace --all-targets`; `cargo clippy --workspace --all-targets -- -D warnings` | clean, no warnings |
+| `cargo test --workspace` (before the child token change) | 2,757 passed, 0 failed, 101 ignored |
+| `cargo test -p corvis --features tls,compression` (after it) | 1,290 passed, 0 failed, 54 ignored |
+| Security review (one round) | no finding; two hardening notes taken, see "Security review" |
+| Parity, consi: 93 unit tests, apidiff, dbdiff | 832 / 832 equal, databases equivalent |
+| Parity, facten: 254 unit tests (2 ignored), apidiff, routes, dbdiff | 727 / 727 equal, 74 routes on both sides, databases equivalent |
+| Parity, houseplan: 70 + 10 unit tests, apidiff, routes, dbdiff | 636 / 636 equal, 31 routes on both sides, databases equivalent |
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.

@@ -89,7 +89,7 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 - [x] 8.1 Docs: `shutdown_timeout` and what it cancels in `docs/deployment.md` and `docs/fundamentals/lifecycle-events.md`;
   the orphaned `#[res]` response and `get_response()` after the handler in `docs/controllers.md`; translate in
   `docs/es/`; verify `npm run docs:check` in `docs/`
-- [ ] 8.2 Security review with the `security-reviewer` agent: accept backoff (a client cannot trigger the wait: only
+- [x] 8.2 Security review with the `security-reviewer` agent: accept backoff (a client cannot trigger the wait: only
   non-connection errors), shutdown cancellation (no task of the server after `serve`, no permit or budget leaked by a
   cancelled connection), the boxed pending body (413 by length and while streaming, drain bounds, `client_aborted` over
   HTTP/2), the split read with `git diff --color-moved=zebra`; repeat rounds until no open finding; record findings and
@@ -106,10 +106,10 @@ never `sleep` to synchronize, never compare durations between runs. Behavior mus
 - [x] 9.5 Regression tests: one per spec scenario, as listed in groups 2-6; the failing tests of 3.1 and 4.1 were seen
   failing before their fix
 - [x] 9.6 Docs pages updated in English and Spanish, then `npm run docs:check` in `docs/`
-- [ ] 9.7 Framework runtime code changed (`server.rs`, `server/`, `router/mod.rs`, `http/res.rs`, `testing.rs`): run the
+- [x] 9.7 Framework runtime code changed (`server.rs`, `server/`, `router/mod.rs`, `http/res.rs`, `testing.rs`): run the
   `corvis-parity` check and verify the three port apps keep 0 apidiff differences
 - [x] 9.8 `cargo deny check` and `node scripts/check-naming.mjs` pass
-- [ ] 9.9 The security review of 8.2 is closed; a "Verification" table (checks and results, as in the archived changes)
+- [x] 9.9 The security review of 8.2 is closed; a "Verification" table (checks and results, as in the archived changes)
   is added to design.md
 
 ## 10. Framing check against hyper (issue #205, added to this change)
