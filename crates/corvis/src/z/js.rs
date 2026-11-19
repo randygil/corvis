@@ -217,9 +217,18 @@ pub fn to_fixed(x: f64, digits: usize) -> String {
     if !x.is_finite() || x.abs() >= 1e21 {
         return num_to_string(x);
     }
-    // The exact decimal expansion of `|x|` (a double has finitely many fraction digits), rounded half up by hand:
-    // Rust's own rounding of a tie is to even.
-    let exact = format!("{:.*}", exact_fraction_digits(x).max(digits), x.abs());
+    fixed_text(x, digits, fixed_precision(x, digits))
+}
+
+/// How many fraction digits `to_fixed` formats `|x|` with before it rounds to `digits` by hand.
+pub(crate) fn fixed_precision(x: f64, digits: usize) -> usize {
+    exact_fraction_digits(x).max(digits)
+}
+
+/// `|x|` formatted with `precision` fraction digits, then rounded half up to `digits` by hand (Rust's own rounding of a
+/// tie is to even), with the sign of `x`.
+pub(crate) fn fixed_text(x: f64, digits: usize, precision: usize) -> String {
+    let exact = format!("{:.*}", precision, x.abs());
     let (int, frac) = exact.split_once('.').unwrap_or((exact.as_str(), ""));
     let mut kept: Vec<u8> = int.bytes().chain(frac.bytes().take(digits)).collect();
     if frac.as_bytes().get(digits).is_some_and(|d| *d >= b'5') {
@@ -252,7 +261,7 @@ pub fn to_fixed(x: f64, digits: usize) -> String {
 }
 
 /// How many fraction digits the exact decimal expansion of a finite `x` has.
-fn exact_fraction_digits(x: f64) -> usize {
+pub(crate) fn exact_fraction_digits(x: f64) -> usize {
     if x == 0.0 {
         return 0;
     }
@@ -802,6 +811,12 @@ mod tests {
             // An exact tie (1e14 + 0.125 is representable): rounded to the larger magnitude.
             (1e14 + 0.125, 2, "100000000000000.13"),
             (0.30000000000000004, 17, "0.30000000000000004"),
+            // Below a unit of the last digit: the zero text, with the sign of a negative number.
+            (5e-324, 2, "0.00"),
+            (-1e-300, 2, "-0.00"),
+            (-0.0, 2, "0.00"),
+            (0.004999999999999999, 2, "0.00"),
+            (0.005, 2, "0.01"),
         ] {
             assert_eq!(to_fixed(x, d), want, "({x}).toFixed({d})");
         }

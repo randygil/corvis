@@ -313,6 +313,31 @@ proptest! {
         prop_assert!(t.is_nan() || (t.fract() == 0.0 && t.abs() <= 8.64e15), "{soup:?} -> {t}");
     }
 
+    /// `toFixed` formats a bounded number of digits whatever the number (a subnormal has 1074 exact fraction digits;
+    /// zod 3's `multipleOf` calls it for every input), and gives what the full exact expansion gives.
+    #[test]
+    fn js_to_fixed_is_bounded_and_exact(x in finite_f64(), digits in 0usize..=100) {
+        let precision = js::fixed_precision(x, digits);
+        prop_assert!(precision <= digits + 60.max(digits), "toFixed({x:e}, {digits}) formats {precision} digits");
+        if x.abs() < 1e21 {
+            let exact = js::fixed_text(x, digits, js::exact_fraction_digits(x).max(digits));
+            prop_assert_eq!(js::to_fixed(x, digits), exact, "({:e}).toFixed({})", x, digits);
+        }
+    }
+
+    /// Numbers a few units in the last place around a tie of `toFixed`, where a short expansion could round the wrong
+    /// way.
+    #[test]
+    fn js_to_fixed_rounds_near_ties_as_the_exact_expansion(k in 0u64..1_000_000, digits in 0i32..=22, ulps in -4i32..=4) {
+        let digits_usize = usize::try_from(digits).unwrap();
+        let mut x = (2 * k + 1) as f64 / (2.0 * 10f64.powi(digits));
+        for _ in 0..ulps.unsigned_abs() {
+            x = if ulps > 0 { x.next_up() } else { x.next_down() };
+        }
+        let exact = js::fixed_text(x, digits_usize, js::exact_fraction_digits(x).max(digits_usize));
+        prop_assert_eq!(js::to_fixed(x, digits_usize), exact, "({:e}).toFixed({})", x, digits);
+    }
+
     /// `Number(text)` and `BigInt(text)` are total on number-like text.
     #[test]
     fn js_number_and_bigint_parsing_are_total(soup in date_soup(), text in "\\PC{0,24}") {
@@ -321,6 +346,12 @@ proptest! {
             let _ = js::string_to_bigint(s);
         }
     }
+}
+
+/// Finite doubles of every class: normal and subnormal, both signs, zero.
+fn finite_f64() -> impl Strategy<Value = f64> {
+    use prop::num::f64::{NEGATIVE, NORMAL, POSITIVE, SUBNORMAL, ZERO};
+    POSITIVE | NEGATIVE | NORMAL | SUBNORMAL | ZERO
 }
 
 /// Fragments of date and number text: digits, separators, signs, month and zone names and long digit runs.
