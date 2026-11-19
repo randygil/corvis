@@ -416,10 +416,9 @@ fn schema(name: &str) -> z::Schema {
         }
         "literal.empty" => s(z::literal(json!([]))),
         "object.required.refine" => s(z::object! { a: z::string().optional().refine(|_| true, ()) }.required()),
-        "discriminatedUnion.refinedKey" => z::discriminated_union(
-            "type",
-            [s(z::object! { "type": z::literal("a").refine(|_| true, ()), a: z::string() })],
-        ),
+        "discriminatedUnion.refinedKey" => {
+            z::discriminated_union("type", [s(z::object! { "type": z::literal("a").refine(|_| true, ()), a: z::string() })])
+        }
         other => panic!("no Rust schema for fixture case `{other}`"),
     }
 }
@@ -665,9 +664,15 @@ fn run_parse_fixtures(list: &str, version: z::ZodVersion) {
                 // What the original throws while parsing is an error with no issues and the thrown message.
                 if let Some(msg) = expected.get("throws") {
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| schema.parse_opt(input.as_ref(), &opts))) {
-                        Ok(Err(e)) if e.issues.is_empty() && e.thrown().map(|t| json!(t)).as_ref() == Some(msg) && json!(e.to_string()) == *msg => {}
+                        Ok(Err(e))
+                            if e.issues.is_empty()
+                                && e.thrown().map(|t| json!(t)).as_ref() == Some(msg)
+                                && json!(e.to_string()) == *msg => {}
                         Ok(got) => failures.entry(label).or_default().push(format!("expected the thrown error {msg}, got {got:?}")),
-                        Err(p) => failures.entry(label).or_default().push(format!("expected the thrown error {msg}, panicked: {}", panic_text(&*p))),
+                        Err(p) => failures
+                            .entry(label)
+                            .or_default()
+                            .push(format!("expected the thrown error {msg}, panicked: {}", panic_text(&*p))),
                     }
                     continue;
                 }

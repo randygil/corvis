@@ -49,9 +49,8 @@ fn an_unmergeable_intersection_is_returned_without_the_panic_hook() {
     assert_eq!(z::ZodError::new(Vec::new()).thrown(), None);
 
     // A custom `createValidationException` receives the thrown error.
-    let create: z::CreateValidationException = Arc::new(|e: z::ZodError| {
-        corvis::http::BadRequestException::new(e.thrown().unwrap_or("no thrown error").to_string())
-    });
+    let create: z::CreateValidationException =
+        Arc::new(|e: z::ZodError| corvis::http::BadRequestException::new(e.thrown().unwrap_or("no thrown error").to_string()));
     let ex = z::validate(&json!("x"), &conflict(), Some(&create)).unwrap_err();
     assert_eq!(ex.get_response()["message"], "Unmergable intersection. Error path: []");
 

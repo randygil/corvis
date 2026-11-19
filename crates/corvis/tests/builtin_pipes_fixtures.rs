@@ -4,8 +4,7 @@
 //! framework's pipes and from class-validator; every record is replayed here and all mismatches are reported at once.
 
 use corvis::common::pipe::{
-    ArgumentMetadata, DefaultValuePipe, Metatype, ParamKind, ParseArrayPipe, ParseBoolPipe, ParseFloatPipe, ParseIntPipe,
-    PipeTransform,
+    ArgumentMetadata, DefaultValuePipe, Metatype, ParamKind, ParseArrayPipe, ParseBoolPipe, ParseFloatPipe, ParseIntPipe, PipeTransform,
 };
 use corvis::validation::rules;
 use serde_json::{Value, json};

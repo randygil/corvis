@@ -155,7 +155,12 @@ pub fn validate_opt(value: Option<&Value>, schema: &Schema, create: Option<&Crea
     validate_at(Site { who: "validate", what: "value" }, value, schema, create)
 }
 
-fn validate_at(site: Site, value: Option<&Value>, schema: &Schema, create: Option<&CreateValidationException>) -> Result<Value, HttpException> {
+fn validate_at(
+    site: Site,
+    value: Option<&Value>,
+    schema: &Schema,
+    create: Option<&CreateValidationException>,
+) -> Result<Value, HttpException> {
     catch_thrown(site, || schema.parse_opt(value, &ParseOptions::new())).map_err(|e| match (create, e) {
         (Some(f), e) => f(e.unwrap_or_default()),
         (None, Some(e)) if e.thrown().is_none() => ZodValidationException::new(e),
