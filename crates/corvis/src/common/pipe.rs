@@ -416,6 +416,25 @@ mod tests {
         Member,
     }
 
+    fn query_meta() -> ArgumentMetadata {
+        ArgumentMetadata { kind: ParamKind::Query, data: None, metatype: Metatype { name: "String", validator: None, zod: None } }
+    }
+
+    /// An id beyond 2^53 is the id the client sent, not the nearest double (`parseInt` rounds it).
+    #[tokio::test]
+    async fn parse_int_pipe_reads_integers_beyond_2_pow_53_exactly() {
+        let pipe = ParseIntPipe::new();
+        for text in ["9007199254740993", "1234567890123456789", "-9007199254740993", "9223372036854775807", "-9223372036854775808"] {
+            let want: i64 = text.parse().unwrap();
+            assert_eq!(pipe.transform(Value::from(text), &query_meta()).await.unwrap(), Value::from(want), "{text}");
+            assert_eq!(pipe.transform(Value::from(want), &query_meta()).await.unwrap(), Value::from(want), "{want} as a JSON number");
+        }
+        for refused in [Value::from("9223372036854775808"), Value::from("-9223372036854775809"), Value::from(u64::MAX)] {
+            let e = pipe.transform(refused.clone(), &query_meta()).await.unwrap_err();
+            assert_eq!(e.get_response()["message"], NUMERIC_EXPECTED, "{refused}");
+        }
+    }
+
     #[test]
     #[should_panic(expected = "Untagged")]
     fn parse_enum_pipe_of_an_untagged_enum_panics_when_built() {
@@ -426,7 +445,7 @@ mod tests {
     async fn parse_enum_pipe_of_a_plain_enum_accepts_its_variants() {
         let _ = (Role::Admin, Role::Member);
         let pipe = ParseEnumPipe::of::<Role>();
-        let meta = ArgumentMetadata { kind: ParamKind::Query, data: None, metatype: Metatype { name: "Role", validator: None, zod: None } };
+        let meta = query_meta();
         assert_eq!(pipe.transform(Value::from("admin"), &meta).await.unwrap(), "admin");
         let e = pipe.transform(Value::from("root"), &meta).await.unwrap_err();
         assert_eq!(e.get_status(), 400);

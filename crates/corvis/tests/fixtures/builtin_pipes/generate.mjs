@@ -6,9 +6,10 @@
 // Encodings: a missing value is `{ "$undefined": true }` (the Rust pipes receive `null` for it); a non-finite number
 // is `{ "$number": "Infinity" | "-Infinity" | "NaN" }`. A pipe result is `{ ok }` or `{ status, body }`.
 //
-// `divergence`: the original answers with a value Corvis cannot represent (a non-finite number, an integer beyond
-// i64). Corvis refuses it with the pipe's own error instead; `divergence.result` is that error, recorded from the
-// original for an input it refuses the same way.
+// `divergence`: what Corvis answers instead of the recorded result. The original answers with a value Corvis cannot
+// represent (a non-finite number, an integer beyond i64): Corvis refuses it with the pipe's own error, recorded from
+// the original for an input it refuses the same way. Or `ParseIntPipe` rounds an integer beyond 2^53 (`parseInt`):
+// Corvis returns the exact integer, written as a bare JSON number.
 import { createRequire } from 'node:module';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +59,13 @@ function unrepresentable(pipe, input, value) {
     items[index] = 'NaN';
     return { reason: 'a non-finite item', refusedAs: items.join(',') };
   }
-  if (pipe === 'ParseIntPipe' && Math.abs(value) >= 2 ** 63) return { reason: 'an integer beyond i64', refusedAs: 'x' };
+  if (pipe === 'ParseIntPipe') {
+    const exact = BigInt(input);
+    if (exact < -(2n ** 63n) || exact >= 2n ** 63n) return { reason: 'an integer beyond i64', refusedAs: 'x' };
+    // `parseInt` rounds a numeral beyond 2^53 to the nearest double: a handler would act on another id than the one
+    // the client sent. Corvis reads it exactly.
+    if (!Number.isSafeInteger(value)) return { reason: 'an integer beyond 2^53, read exactly', result: { ok: exact } };
+  }
   return null;
 }
 
@@ -69,7 +76,7 @@ async function p(pipe, options, inputs) {
     if ('ok' in record.result) {
       const raw = await PIPES[pipe](options).transform(input === U ? undefined : input, { type: 'query' });
       const why = unrepresentable(pipe, input, raw);
-      if (why) record.divergence = { reason: why.reason, result: await answer(pipe, options, why.refusedAs) };
+      if (why) record.divergence = { reason: why.reason, result: why.result ?? (await answer(pipe, options, why.refusedAs)) };
     }
     pipes.push(record);
   }
@@ -105,4 +112,6 @@ const fixture = {
   pipes,
   rules,
 };
-writeFileSync(out, JSON.stringify(fixture, null, 1) + '\n');
+// A BigInt is written as the bare JSON integer (exact; `JSON.stringify` cannot write one).
+const text = JSON.stringify(fixture, (_k, v) => (typeof v === 'bigint' ? `$bigint:${v}` : v), 1);
+writeFileSync(out, text.replace(/"\$bigint:(-?\d+)"/g, '$1') + '\n');

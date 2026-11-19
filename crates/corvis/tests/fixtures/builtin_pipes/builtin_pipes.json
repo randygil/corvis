@@ -297,6 +297,12 @@
    "input": "9007199254740993",
    "result": {
     "ok": 9007199254740992
+   },
+   "divergence": {
+    "reason": "an integer beyond 2^53, read exactly",
+    "result": {
+     "ok": 9007199254740993
+    }
    }
   },
   {
