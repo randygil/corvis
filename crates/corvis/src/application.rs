@@ -656,6 +656,11 @@ impl CorvisApplication {
         self.shared.clone()
     }
 
+    /// The options the server will listen with (the test client reads requests with them too).
+    pub(crate) fn server_options(&self) -> &crate::server::ServerOptions {
+        &self.config.server
+    }
+
     /// `app.listen(3000)`. Runs until the process is stopped (or, with
     /// `enable_shutdown_hooks()`, until SIGINT/SIGTERM, then closes gracefully).
     pub async fn listen(self, addr: impl ListenAddr) -> crate::Result<()> {

@@ -194,3 +194,127 @@ async fn res_without_attribute_is_an_error() {
     let r = request(&app).get("/plain").send().await;
     assert_eq!(r.status(), 500);
 }
+
+// ---------------------------------------------------------------------------
+// A `#[res]` response nobody can end
+// ---------------------------------------------------------------------------
+
+type Line = (corvis::LogLevel, String, Option<String>);
+
+/// Collects the log lines of this test binary (no other test of it reads or replaces the logger).
+#[derive(Clone, Default)]
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<Line>>>);
+
+impl corvis::LoggerService for Capture {
+    fn log(&self, level: corvis::LogLevel, message: &str, context: Option<&str>) {
+        self.0.lock().unwrap().push((level, message.to_string(), context.map(str::to_string)));
+    }
+}
+
+#[controller("orphan")]
+pub struct OrphanController;
+
+#[routes]
+impl OrphanController {
+    /// Returns without ending the response and keeps no handle of it.
+    #[get("forgot")]
+    #[header("X-Route", "r")]
+    fn forgot(&self, #[res] res: Res) {
+        res.set_header("X-Before", "1");
+    }
+
+    /// Hands the response to a task that ends it once the test says so.
+    #[get("task-ends")]
+    fn task_ends(&self, #[res] res: Res) {
+        tokio::spawn(async move {
+            END_IT.notified().await;
+            res.json(json!({ "late": true }));
+        });
+        ENDS_RETURNED.notify_one();
+    }
+
+    /// Hands the response to a task that drops it, without ending it, once the test says so.
+    #[get("task-drops")]
+    fn task_drops(&self, #[res] res: Res) {
+        tokio::spawn(async move {
+            DROP_IT.notified().await;
+            drop(res);
+        });
+        DROPS_RETURNED.notify_one();
+    }
+
+    /// Passthrough: the returned value is the response.
+    #[get("pass")]
+    fn pass(&self, #[res(passthrough)] res: Res) -> Value {
+        res.set_header("X-P", "1");
+        json!({ "ok": true })
+    }
+}
+
+static ENDS_RETURNED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static DROPS_RETURNED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static END_IT: tokio::sync::Notify = tokio::sync::Notify::const_new();
+static DROP_IT: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+#[module(controllers = [OrphanController])]
+pub struct OrphanModule;
+
+#[corvis::test]
+async fn a_handled_response_nobody_can_end_is_answered_with_500() {
+    let capture = Capture::default();
+    corvis::logger::set_logger(capture.clone());
+    let mut app = CorvisFactory::create::<OrphanModule>().await.unwrap();
+    app.silence_route_logs();
+    app.init().await.unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(5), request(&app).get("/orphan/forgot").send())
+        .await
+        .expect("the request is answered instead of waiting for a response nothing can end");
+    assert_eq!(r.status(), 500);
+    assert_eq!(r.json_value(), json!({ "statusCode": 500, "message": "Internal server error" }));
+    // The headers already set on the response stay, as for a thrown error.
+    assert_eq!(r.header("x-before"), Some("1"));
+    assert_eq!(r.header("x-route"), Some("r"));
+    let orphaned = || {
+        let lines = capture.0.lock().unwrap();
+        lines.iter().filter(|(_, m, _)| m.contains("without ending the response")).cloned().collect::<Vec<Line>>()
+    };
+    let mine = orphaned();
+    assert_eq!(mine.len(), 1, "{mine:?}");
+    assert_eq!(mine[0].0, corvis::LogLevel::Error);
+    assert_eq!(mine[0].2.as_deref(), Some("ExceptionsHandler"));
+
+    // A task that held the last handle drops it without ending the response: answered then. (In this test, so the
+    // count of log lines above is not disturbed by a test running alongside.)
+    let c = request(&app);
+    let pending = tokio::spawn(async move { c.get("/orphan/task-drops").send().await });
+    DROPS_RETURNED.notified().await;
+    DROP_IT.notify_one();
+    let r = tokio::time::timeout(Duration::from_secs(5), pending).await.expect("answered once the handle was dropped").unwrap();
+    assert_eq!(r.status(), 500);
+    assert_eq!(orphaned().len(), 2);
+}
+
+#[corvis::test]
+async fn a_handled_response_ended_by_a_task_after_the_handler_returned_is_what_the_client_gets() {
+    let mut app = CorvisFactory::create::<OrphanModule>().await.unwrap();
+    app.silence_route_logs();
+    app.init().await.unwrap();
+    let c = request(&app);
+    let pending = tokio::spawn(async move { c.get("/orphan/task-ends").send().await });
+    ENDS_RETURNED.notified().await;
+    END_IT.notify_one();
+    let r = tokio::time::timeout(Duration::from_secs(5), pending).await.expect("answered once the task ended it").unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.json_value(), json!({ "late": true }));
+}
+
+#[corvis::test]
+async fn passthrough_responses_are_built_from_the_returned_value() {
+    let mut app = CorvisFactory::create::<OrphanModule>().await.unwrap();
+    app.silence_route_logs();
+    app.init().await.unwrap();
+    let r = request(&app).get("/orphan/pass").send().await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.json_value(), json!({ "ok": true }));
+    assert_eq!(r.header("x-p"), Some("1"));
+}

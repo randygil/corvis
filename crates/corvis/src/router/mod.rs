@@ -24,6 +24,7 @@ use crate::common::middleware::{CorvisMiddleware, Endpoint, MiddlewareConsumer, 
 use crate::common::pipe::{ParamKind, PipeTransform};
 use crate::di::container::Container;
 use crate::di::{DiError, ModuleRef, ResolveCtx};
+use crate::http::res::ResEnd;
 use crate::http::{ForbiddenException, HandlerResult, HttpException, NotFoundException, Request, RequestMethod, Res, ResMode, Response};
 use crate::logger::Logger;
 use controller::{ErasedHandler, ParamDef, VersionValue};
@@ -741,8 +742,19 @@ pub(crate) async fn execute_route(route: Arc<CompiledRoute>, mut req: Request, p
             crate::logger::Logger::new("ExceptionsHandler")
                 .error("Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client");
         }
-        res.wait_end().await;
-        return res.take_response().unwrap_or_default();
+        if !res.headers_sent() {
+            // From here the framework keeps only this handle: once the application holds none, nothing can end the
+            // response.
+            drop(ctx.request().remove::<Res>());
+        }
+        if res.wait_end_or_orphaned().await == ResEnd::Ended {
+            return res.take_response().unwrap_or_default();
+        }
+        crate::logger::Logger::new("ExceptionsHandler").error(OrphanedResponse.to_string());
+        let mut resp = handle_exception(HttpException::internal(OrphanedResponse).already_logged(), &ctx, &route.filters).await;
+        res.merge_into(&mut resp, true);
+        apply_enhancer_headers(&ctx, &mut resp, false);
+        return resp;
     }
     match result {
         Ok(mut resp) => {
@@ -1032,6 +1044,19 @@ pub(crate) async fn handle_exception(exception: HttpException, ctx: &ExecutionCo
     }
     BaseExceptionFilter::handle(&exception)
 }
+
+/// A `#[res]` handler returned without ending the response and no handle of it is left.
+#[derive(Debug)]
+struct OrphanedResponse;
+impl std::fmt::Display for OrphanedResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "A #[res] handler returned without ending the response (send, json, end, redirect, ...), and nothing holds the \
+             response any more: answered with 500",
+        )
+    }
+}
+impl std::error::Error for OrphanedResponse {}
 
 #[derive(Debug)]
 struct PanicError(String);

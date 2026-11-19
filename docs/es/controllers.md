@@ -269,7 +269,7 @@ async fn magic(&self, #[query("token")] token: Option<String>, #[res] res: Res) 
 }
 ```
 
-- Con `#[res]` el handler es dueño de la respuesta: el valor de retorno se ignora y la petición queda abierta hasta que llama a `send`, `json`, `end`, `end_empty`, `redirect`, `redirect_with` o `send_status`.
+- Con `#[res]` el handler es dueño de la respuesta: el valor de retorno se ignora y la petición queda abierta hasta que llama a `send`, `json`, `end`, `end_empty`, `redirect`, `redirect_with` o `send_status`. El handler puede mover `res` a una tarea que termine la respuesta más tarde. Si el handler retorna sin terminarla y no queda ninguna copia de `res` (no se quedó con ninguna, o la tarea que tenía la última la soltó), ya nada puede terminarla: Corvis responde con el `500` genérico (se conservan los encabezados ya puestos en `res`, como ante un error) y registra una línea de error. Express dejaría la petición abierta hasta que el cliente desista.
 - Con `#[res(passthrough)]` (o `#[res(passthrough = true)]`) Corvis sigue serializando el valor de retorno y conserva el estado, las cabeceras y las cookies que el handler fijó en `res`. Es la forma cómoda de poner una cookie sin renunciar al resto:
 
 ```rust
@@ -286,7 +286,7 @@ async fn login(&self, #[body] b: Value, #[res(passthrough)] res: Res) -> HttpRes
 - `send(string)` usa `text/html` si no hay tipo y `send(Vec<u8>)` usa `application/octet-stream`; ambos (igual que `json`) llevan `ETag`, `Content-Length`, el charset y `304`. `end(bytes)` escribe los bytes sin tocar, sin `ETag` ni charset. `set` y `header` agregan el charset por defecto a `Content-Type`.
 - `redirect` codifica la URL, agrega `Vary: Accept` y un cuerpo negociado con `Accept` (`Found. Redirecting to /` como `text/plain`, `<p>...</p>` como `text/html` o vacío).
 - `cookie` y `clear_cookie` siguen al paquete `cookie` 0.7 y validan el nombre, el valor, `path` y `domain` (ver [Cookies](/es/http/cookies)).
-- Los interceptors y filtros pueden leer el objeto con `ctx.switch_to_http().get_response()`.
+- Los guards (una vez superados), los interceptors y los filtros pueden leer el objeto con `ctx.switch_to_http().get_response()`. Después de que un handler con `#[res]` retornó sin terminar la respuesta, `get_response()` devuelve `None`: el código que termine la respuesta más tarde debe conservar el `Res` que recibió.
 
 `Res` tiene los métodos de Express en `snake_case`: `status`, `status_code`, `send_status`, `set`, `header`, `set_header`, `append`, `get`, `get_header`, `get_header_values`, `get_headers`, `has_header`, `remove_header`, `type_`, `content_type`, `vary`, `links`, `attachment`, `location`, `cookie`, `cookie_json`, `clear_cookie`, `redirect`, `redirect_with`, `send`, `json`, `end`, `end_empty`, `headers_sent` y `writable_ended`.
 

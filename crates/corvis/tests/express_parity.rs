@@ -401,6 +401,68 @@ async fn wire_level_headers() {
     app.close().await.unwrap();
 }
 
+/// One request through a listening server (a fresh HTTP/1.1 connection): status, headers and body.
+async fn over_the_wire(addr: std::net::SocketAddr, method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> TestResponse {
+    let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tcp)).await.unwrap();
+    tokio::spawn(conn);
+    let mut req = hyper::Request::builder().method(method).uri(path).header("host", "x");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let req = req.body(http_body_util::Full::new(bytes::Bytes::from(body.to_string()))).unwrap();
+    let resp = tokio::time::timeout(Duration::from_secs(5), sender.send_request(req)).await.unwrap().unwrap();
+    let (parts, body) = resp.into_parts();
+    let body = http_body_util::BodyExt::collect(body).await.unwrap().to_bytes();
+    TestResponse { status: parts.status.as_u16(), headers: parts.headers, body }
+}
+
+/// The test client and a listening server of the same application answer the same request the same way: status,
+/// headers apart from `Date`, and body.
+#[corvis::test]
+async fn the_test_client_answers_like_a_listening_server() {
+    let mut app = app_with(|a| {
+        a.set_x_powered_by("Express");
+    })
+    .await;
+    let c = request(&app);
+    let addr = app.listen_in_background("127.0.0.1:0").await.unwrap();
+    let origin = [("origin", "http://localhost:3000")];
+    // Method, path, headers, body.
+    type Case<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], &'a str);
+    let cases: [Case; 12] = [
+        ("GET", "/health", &[], ""),
+        ("GET", "/api/v1/invoices", &origin, ""),
+        ("HEAD", "/api/v1/invoices", &[], ""),
+        ("GET", "/api/v1/invoices", &[("if-none-match", r#"W/"10-pnTVDOEJvLRrZ5ZYLPWh1K0vIZg""#)], ""),
+        ("GET", "/api/v1/invoices/not-a-uuid", &[], ""),
+        ("GET", "/api/v1/invoices/a/pdf", &[], ""),
+        ("GET", "/api/v1/invoices/export/txt", &[], ""),
+        ("GET", "/api/v1/invoices/plain/header", &[], ""),
+        ("GET", "/api/v1/invoices/file/header", &[], ""),
+        ("GET", "/api/v1/invoices/empty/text", &[], ""),
+        ("GET", "/missing", &[], ""),
+        ("POST", "/api/v1/invoices", &[("content-type", "application/json")], r#"{"a":"#),
+    ];
+    for (method, path, headers, body) in cases {
+        let mut req = c.method(method.parse().unwrap(), path).body(body.to_string());
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        let mut memory = req.send().await;
+        let mut wire = over_the_wire(addr, method, path, headers, body).await;
+        memory.headers.remove("date");
+        wire.headers.remove("date");
+        // Framing of the transport: hyper writes the length of a body of known size when the response has none.
+        if !memory.headers.contains_key("content-length") {
+            let framed = wire.headers.remove("content-length");
+            assert_eq!(framed.map(|v| v.to_str().unwrap().to_string()), Some(wire.body.len().to_string()), "{method} {path}");
+        }
+        assert_eq!((memory.status, &memory.headers, &memory.body), (wire.status, &wire.headers, &wire.body), "{method} {path}");
+    }
+    app.close().await.unwrap();
+}
+
 #[controller("echo")]
 pub struct EchoController;
 

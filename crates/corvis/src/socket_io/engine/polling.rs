@@ -106,7 +106,7 @@ pub(super) async fn post(
     let deadline = request_timeout.and_then(|t| Instant::now().checked_add(t));
     if crate::server::content_length(headers).is_some_and(|n| n > cap as u64) {
         // Not read: at most `cap` more bytes are discarded in the background so the client can read the answer.
-        tokio::spawn(crate::server::drain(PendingBody { body: body_in, deadline }, cap as u64));
+        tokio::spawn(crate::server::drain(PendingBody::new(body_in, deadline), cap as u64));
         guard.finish();
         return empty(StatusCode::PAYLOAD_TOO_LARGE);
     }

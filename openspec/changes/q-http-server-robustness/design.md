@@ -275,6 +275,236 @@ server.
 3. Should the test client set a remote address (`127.0.0.1:0`)? Recommendation: no; `Request::ip()` already answers
    `127.0.0.1` without one, and `remote_addr()` returning `None` tells a test it is in memory.
 
+## Implementation notes
+
+### Reconcile (task 1.1)
+
+Re-checked on `dev` at `e936d68` (after #185, #186 and #191 landed). Every finding still applies; only line numbers
+moved:
+
+| Finding | `d46758a` | `e936d68` |
+|---|---|---|
+| 1, accept loop | `server.rs:2301-2306` | unchanged |
+| 3, shutdown | `server.rs:2347-2353`, spawns `2323`, `2328`, `607` | unchanged; `application.rs` runs the hooks from `listen_with` (`:687-694`) and `listen_until_in_background` (`:726-727`), `close_with_signal` at `:788` |
+| 10, `@Res()` wait | `res.rs:857-866`, `router/mod.rs:730-737`, extension `:865`, router clone `:719`, `get_response` `context.rs:387-389` | `res.rs:866-874`, `router/mod.rs:739-745`, extension `:874`, router clone `:728`, `get_response` `context.rs:400-402` (e3 added `has_cookie_prefix` and the poison-tolerant extension accessors above them) |
+| 13, `from_hyper` | `server.rs:471-529`, `612` | unchanged |
+| 14, test client | `testing.rs:383-399` | unchanged |
+| 16, `ConnState` | `server.rs:621-667` | unchanged (`server.rs` still 2,897 lines; e2 did not touch it) |
+| `finish` notifies twice | `res.rs:766-767` | `res.rs:774-775` |
+| `take_response` clones | `res.rs:869-875` | `res.rs:877-883` |
+
+No conflict with e3 (`http/res.rs` edits are in other functions) nor with e2 (no edit to `server.rs`).
+`cargo test -p corvis` on the untouched tree: 1,172 passed, 0 failed, 54 ignored.
+
+### Issue #205: the framing check and hyper on a `Transfer-Encoding` value with obs-text (group 10)
+
+The minimal input printed by the CI failure (no seed was kept) is a `POST` with a chunked body of no chunks and one
+trailer, `Transfer-Encoding: chunked, chunked` spliced into the head, and the space after that header's colon replaced
+by the byte 0x80: `Transfer-Encoding:\x80chunked, chunked`. Replayed through the property's assertions
+(`a_transfer_encoding_value_that_is_not_visible_ascii_is_read_as_hyper_reads_it`), it failed exactly as in CI:
+`hyper answered [400] (body errors 0), check ending None`.
+
+The check was wrong. Hyper 1.12 decides whether a request is chunked with `headers::is_chunked_`, which reads the value
+through `HeaderValue::to_str`: a value with a byte outside visible ASCII and tab (obs-text, which httparse accepts in a
+value) is "not chunked", so the last `Transfer-Encoding` is not `chunked` and hyper answers `400`
+(`transfer_encoding_invalid`). The check compared bytes and read `chunked`, so it went on framing a body and later
+requests hyper never reads. The disagreement was on the safe side (hyper refused the request and closed the
+connection), but the check exists so that the two never read a stream differently. Fix: `ends_in_chunked` returns
+`false` for a value that is not visible ASCII, so the head is handed to hyper and the stream ends there, the rule for
+every `Transfer-Encoding` hyper does not take as chunked. Unit cases added to `heads_hyper_handles_alone_are_handed_off`.
+`Content-Length` needed no change (`1*DIGIT` already excludes such bytes).
+
+Checking the fix with 200,000 cases found a second failure, this time in the test's model of hyper: a mutation spliced
+`Connection: close` and then deleted the space after the colon; hyper (rightly) ended the connection after that
+request, and the property, which only recognized `connection: close` with the space, expected one request more. The
+model now reads `Connection` lines as hyper does (`asks_to_close`, comma-separated tokens, any spacing), pinned by
+`connection_close_without_a_space_ends_the_stream_for_the_model_too`; its seed is kept in
+`crates/corvis/proptest-regressions/server/h1_framing/tests.txt`. After both, 200,000 and 600,000 cases pass. The test
+jobs of `ci.yml` now upload `proptest-regressions/` on failure, as the fuzz job does, so the next seed is not lost.
+
+### Accept errors (group 2)
+
+`server/accept.rs` as designed. The backoff and the log live in `AcceptErrors`, whose `accept` also acquires the
+`max_connections` permit after any wait, so no permit is held while waiting. The log sink is a closure (the server passes
+`Logger::new("CorvisServer").warn`), which is how the unit tests read the lines without a global logger. The first line
+of a burst reads `accept failed: <error>; new connections wait until it succeeds again`, later ones
+`accept failed: <error>; <n> errors since the last line`. The unit tests also cover the minute: 80 errors in a row give
+two lines, the second counting the 67 errors after the first.
+
+### Shutdown (group 3)
+
+- The failing test of 3.1 was written against the default deadline (the option did not exist yet) and observed
+  `["started", "hook"]`: `serve` returned after 10 s with the handler still pending in its connection task, the hook ran,
+  and the handler was never dropped. It now uses `shutdown_timeout(1 s)` and observes `["started", "dropped", "hook"]`
+  exactly 1 s (paused clock) after the signal.
+- Added to the design: the tracker is also the executor of the connection builder (`ServerTasks` implements
+  `hyper::rt::Executor`). Hyper runs every HTTP/2 stream in a task of its own, outside the connection's task, so
+  cancelling the connection alone would leave HTTP/2 handlers to stop whenever their task is next polled, possibly after
+  `serve` returned. With the tracked executor they are cancelled and awaited like the rest
+  (`an_http2_handler_still_running_at_the_deadline_is_dropped_before_the_hooks_run`; the unit test
+  `the_shutdown_cancels_every_kind_of_server_task_at_the_deadline_and_waits_for_them` pins the mechanism, since on a
+  current-thread runtime the stream task happens to be polled before the hooks either way).
+- The tracker waits for the whole connection task, which includes the closing drain of a socket (`linger_close`, at most
+  2 s and 1 MiB). Before, the shutdown stopped waiting once a connection had finished its HTTP part. So a shutdown can
+  now take up to 2 s longer when a client does not close its side, always within `shutdown_timeout`.
+- The warning line: `<n> connection(s) still had requests in flight when ServerOptions::shutdown_timeout ran out: they
+  were closed and their handlers cancelled` (context `CorvisServer`), counted by a guard in each connection task.
+- The TLS scenario is a unit test in `server.rs` (`a_tls_client_that_sends_nothing_does_not_hold_the_shutdown`), not in
+  `tests/tls.rs`: the only public way to drive the shutdown in a test, `listen_until_in_background`, listens without TLS,
+  and adding a TLS twin to `application.rs` is the business of `q-core-lifecycle-and-cache-correctness`. It drives
+  `serve` itself. The handshake already gave up on the stop signal; the test pins that it stays so.
+- Not tracked: the drain that the Engine.IO polling transport starts for an over-long `POST`
+  (`socket_io/engine/polling.rs`), spawned inside the engine with the rest of its session tasks. Once the connection is
+  cancelled its body fails at the next read, so it ends right after, but it is not awaited. Threading the tracker
+  through the engine belongs with the engine's own shutdown (`q-core-lifecycle-and-cache-correctness` closes the
+  sessions).
+
+### `#[res]` responses nobody can end (group 4)
+
+- The failing test of 4.1 (`a_handled_response_nobody_can_end_is_answered_with_500`) timed out after its 5 s on the
+  untouched tree: the request was never answered.
+- Deviation: the count of handles is an `AtomicUsize` in `ResInner` (a manual `Clone` increments it, `Drop` decrements
+  it), not `Arc::strong_count`. `Drop::drop` runs before the `Arc` field is released, so a waiter woken from the `Drop`
+  of the last outside handle would still read a count of 2, go back to sleep, and never be woken again. The explicit
+  count is decremented before the notification. `Drop` notifies only in the handled mode and only when one handle is
+  left, the waiter's.
+- The orphaned response goes through `handle_exception` as `HttpException::internal(OrphanedResponse)`, marked as
+  already logged: the router writes the one `ExceptionsHandler` error line itself, so it is there even when an
+  application filter catches the exception. The headers already set on the `Res` (and the route's `#[header]`s) are
+  merged as for a thrown error.
+- The extension is removed only when the response is not ended yet; a handler that already ended it leaves
+  `get_response()` working as before.
+- Grep for `get_response()` called after a handler returned: none in this repository (the only callers of the
+  `HttpArgumentsHost` method are guards and interceptors before the handler) and none in the three port applications,
+  which never call `switch_to_http().get_response()`. Their two handled `#[res]` handlers (consi
+  `settlement.controller.rs` `report`, houseplan `auth.controller.rs` `magic`) end the response on every `Ok` path.
+
+### One request path (groups 5 and 6)
+
+- `RequestBody` (`UnsyncBoxBody<Bytes, Box<dyn Error + Send + Sync>>`) is the boxed body; `PendingBody::new` boxes any
+  body (also used by the Engine.IO polling drain). `BodySource::Stream` holds the `PendingBody` itself.
+- `respond` takes `&ServerTasks` for the drain; the test client keeps a `ServerTasks` of its own (its in-memory drains
+  end at once). The test client reads `ServerOptions` through a new crate-private accessor,
+  `CorvisApplication::server_options` (the only edit to `application.rs`).
+- "Same answer as a listening server" (`the_test_client_answers_like_a_listening_server` in `express_parity.rs`, 12
+  requests: JSON, HEAD, `304`, `400`, `404`, files, CORS, a malformed body): equal status, headers and body apart from
+  `Date` and one framing header of the transport: hyper writes `Content-Length` for a body of known size when the
+  response has none. The test asserts that this header equals the body's length rather than ignoring it. Writing it in
+  the test client too would change the headers that many existing tests see, for a header the transport owns.
+- Task 6.4: `cargo test --workspace` passed in full (2,666 passed, 0 failed): no test relied on the test client
+  ignoring a body limit.
+
+### Split of `server.rs` (group 7)
+
+- Test counts (`cargo test -p corvis -- --list`, lines ending in `: test`): on the untouched tree 1,226 (default features)
+  and 1,855 (`tls,compression,socket-io`); after groups 2 to 6, just before any move, 1,247 and 1,877; after the moves
+  1,247 and 1,877. The two lists are the same once the module path of each moved test is mapped (the only other
+  difference is the doctest of `ServerOptions`, now under `server/options.rs`).
+- The three move steps (7.2 to 7.4) were done in one pass by a script that cuts the file at item boundaries, then
+  verified together with every suite the three steps name; the moves do not depend on each other. Code is moved as it
+  was; the edits are imports, `pub(super)` (or `pub(in crate::server)` for the test helpers of `guarded_body` that the
+  watchdog tests share), and one line of a watchdog test that read the state through a private field of
+  `GuardedBody` and now uses the state `body_of` returns (the same `Arc`).
+- `IGNORE_INVALID_HEADERS` stays in `server.rs` next to `connection_builder`, its only user. `ServerTasks` stays in
+  `server.rs` with `serve`. `finish_response` is now `pub(super)` (the test client reaches it through `respond`);
+  `request::drain` is re-exported for the Engine.IO polling transport under `socket-io` only.
+- `server.rs` went from 3,114 lines (after groups 2 to 6) to about 600.
+- `ConnState` (task 7.5) is five fields: `activity: Activity` (in `guarded_body.rs`, next to `InflightGuard`, which
+  writes it), `end: EndFlags` and `clocks: Clocks` (in `watchdog.rs`, next to `finish_connection` and the watchdog that
+  read them), `cancels: CancelState` (`rapid_reset.rs`) and `budget: ResponseBudget` (`budget.rs`). Field accesses
+  became paths (`state.activity.inflight`); three fields were renamed inside their group where the path would repeat
+  itself (`clocks.clocks` is `clocks.bodies`, `clocks_changed` is `clocks.changed`, `budget` is `budget.held`,
+  `budget_freed` is `budget.freed`, `cancel_ceiling` is `cancels.ceiling`). Methods that touch one group moved onto it:
+  `tally` and `record` onto `CancelState`; `note_progress` and `last_progress` onto `Clocks`; `defer_release`,
+  `flush_deferred`, `release` (was `release_budget`), `wake_if_room` and `warn_wait_once` onto `ResponseBudget`.
+  `admit` stays on `ConnState`, since `Admission` and `Waiting` keep the connection's `Arc`. `ConnState::new(ceiling)`
+  replaces the struct literal. No ordering, lock or lock scope changed. Test counts after it: 1,247 and 1,877.
+- One run of `--features tls --test transport_security` failed three tests at their first line,
+  `std::fs::create_dir_all` of the upload directory in the system temp folder (Windows); the next run passed and the
+  failure did not come back in later full runs. Not related to this change (no server code runs before that line).
+
+### Left to the maintainer's session
+
+Task 8.2 (security review), 9.7 (corvis-parity of the three port applications) and 9.9 (closing the review). The port
+applications need no change: no public API they use changed signature (`ServerOptions` gained a method, `Res` lost
+its derived `Clone` for a manual one with the same behavior), and their two handled `#[res]` handlers end the response
+on every path.
+
+## Security review
+
+One round, on the branch rebased onto `dev`, by reading the source: no candidate reached the point where only a run
+could settle it. No confirmed finding and none left to validate.
+
+Checked and found sound:
+
+- **Accept loop.** Connection errors (`ECONNABORTED`, `ConnectionReset`) are retried at once; the errors that back off
+  come from process or system resources (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`), which a client reaches only by
+  exhausting descriptors, as before, bounded by `max_connections`. No permit is held during the wait, and the shutdown
+  is honored during the wait, the permit wait and the accept. Log lines carry the OS error text only.
+- **Shutdown.** Plain and TLS connections, HTTP/2 streams and the drains of `respond` all run under `ServerTasks`; a
+  spawn after the cancellation ends on its first poll, and nothing tracked can spawn after `wait()` returned. A TLS
+  client that sends nothing does not hold the shutdown. The `max_connections` permit, the response budget and the
+  compression slots are released on drop, so a cancelled connection leaks none.
+- **Orphaned `#[res]`.** The handle count is lowered before `notify_waiters`, the `Notified` exists before both checks,
+  and a handle can only come from cloning one that exists, so no `500` is sent while the application still holds a
+  `Res`. The body is the generic one and the log line is a fixed string.
+- **Request path.** `respond` is the old body of `handle`; the test client only gains limits it never applied. Only
+  pending bodies are boxed, and their consumers map any error to `400` or stop without reading its type; `413` by
+  declared length and while streaming, the drain bounds and `client_aborted` over HTTP/2 are unchanged.
+- **#205.** `ends_in_chunked` reads a `Transfer-Encoding` value as hyper 1.12 does for every byte value (the same
+  visible-ASCII set, the last token, the last line). `Content-Length` with `Transfer-Encoding` is rejected by the check
+  in either order. The disagreements left in the comparison (obs-fold, `identity` followed by `chunked`) all end with
+  hyper answering `400` and dispatching nothing.
+- **Split.** With `--color-moved=zebra`, the lines not moved are imports, visibility, field paths of the grouped
+  `ConnState`, reformatted signatures, test helpers and the intended new code; atomic orderings and lock scopes match.
+
+Hardening notes taken:
+
+1. `ServerTasks::spawn` gave every task a clone of one cancellation token, so every poll of every task of the server
+   went through the same waiters lock. Each task now waits on a child token: its own node, still reached by the
+   parent's `cancel()`. Not measured; `q-http-request-hot-path` owns the benchmark.
+2. The rustdoc of `shutdown_timeout` and `lifecycle-events.md` (English and Spanish) now say that a handler that never
+   reaches an `.await` makes the shutdown wait beyond the deadline, and that with `None` a client holding a response
+   open decides how long the shutdown takes.
+
+Recorded, not changed here: the Engine.IO polling drain and WebSocket sessions are still outside `ServerTasks`
+(`q-core-lifecycle-and-cache-correctness`); the polling drain ends at its next read once its connection is cancelled.
+
+## Verification
+
+Windows, `CARGO_TARGET_DIR` shared, after the last code change (commit "Group ConnState into one struct per concern").
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `cargo build --workspace --all-targets` | no warnings |
+| `cargo clippy --workspace --all-targets -- -D warnings`; `-p corvis --no-default-features`; `-p corvis --all-targets --features tls,socket-io,compression` | clean |
+| `cargo check -p corvis --tests --features <f>` for websockets, compression, tls, health-tls, auth-local, auth-api-key, auth-session, auth-oauth2, socket-io | no warnings |
+| `cargo test --workspace --no-fail-fast` | 2,666 passed, 0 failed, 101 ignored |
+| `cargo test -p corvis --features socket-io --no-fail-fast` | 1,723 passed, 0 failed, 57 ignored |
+| `cargo test -p corvis --features tls,compression --no-fail-fast` | 1,290 passed, 0 failed, 54 ignored |
+| `server_lifecycle` and `--features tls --test tls`, 5 runs in a row; `server::accept` unit tests, 5 runs | all passed |
+| Framing property (`h1_framing::tests::mutated_streams_...`) with 200,000 and 600,000 cases | passed |
+| Fuzz steps: `PROPTEST_CASES=20000 cargo test -p corvis --lib fuzz` and `--features socket-io --lib fuzz` | passed |
+| Test counts before and after the split (`-- --list`) | 1,247 / 1,247 default; 1,877 / 1,877 with `tls,compression,socket-io` |
+| `cargo deny check` | advisories, bans, licenses, sources ok |
+| `node scripts/check-naming.mjs`; `node scripts/check-crate-files.mjs` | passed |
+| `node scripts/lint-ratchet.mjs` | no count above the baseline; `expect_used` and `missing_docs` of `corvis` read one lower, the known Windows difference |
+| `npm run docs:check` | 179 English and 179 Spanish pages |
+| `openspec validate q-http-server-robustness --strict` | valid |
+
+After the rebase onto `dev` (which had gained the ORM correctness change) and the security review commit:
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check`; `cargo build --workspace --all-targets`; `cargo clippy --workspace --all-targets -- -D warnings` | clean, no warnings |
+| `cargo test --workspace` (before the child token change) | 2,757 passed, 0 failed, 101 ignored |
+| `cargo test -p corvis --features tls,compression` (after it) | 1,290 passed, 0 failed, 54 ignored |
+| Security review (one round) | no finding; two hardening notes taken, see "Security review" |
+| Parity, consi: 93 unit tests, apidiff, dbdiff | 832 / 832 equal, databases equivalent |
+| Parity, facten: 254 unit tests (2 ignored), apidiff, routes, dbdiff | 727 / 727 equal, 74 routes on both sides, databases equivalent |
+| Parity, houseplan: 70 + 10 unit tests, apidiff, routes, dbdiff | 636 / 636 equal, 31 routes on both sides, databases equivalent |
+
 ## Review notes
 
 These settle the open questions and override the design where they differ.

@@ -571,8 +571,13 @@ fn content_length(value: &[u8]) -> Option<u64> {
     (n <= MAX_LEN).then_some(n)
 }
 
-/// `true` when the last coding of a `Transfer-Encoding` value is `chunked` (hyper's `is_chunked_`).
+/// `true` when the last coding of a `Transfer-Encoding` value is `chunked` (hyper's `is_chunked_`). Hyper reads the
+/// value only when it is visible ASCII (`HeaderValue::to_str`): any other byte (obs-text such as 0x80, which httparse
+/// accepts in a value) makes the coding "not chunked", so hyper answers `400` and the head is handed to it (#205).
 fn ends_in_chunked(value: &[u8]) -> bool {
+    if !value.iter().all(|&b| b == b'\t' || (0x20..0x7f).contains(&b)) {
+        return false;
+    }
     let last = value.rsplit(|&b| b == b',').next().unwrap_or(&[]);
     trim(last).eq_ignore_ascii_case(b"chunked")
 }

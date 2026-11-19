@@ -103,7 +103,7 @@ async fn main() -> corvis::Result<()> {
 
 Con `enable_shutdown_hooks()`, al recibir la señal:
 
-1. el servidor deja de aceptar conexiones y espera a que terminen las que están en curso;
+1. el servidor deja de aceptar conexiones y espera a que terminen las peticiones en curso, como mucho `ServerOptions::shutdown_timeout` (10 s por defecto; `None` espera sin límite); pasado ese tiempo, las peticiones que siguen en marcha se cancelan y sus conexiones se cierran;
 2. se ejecuta la secuencia de apagado, con `signal` igual a `Some("SIGINT")` o `Some("SIGTERM")`;
 3. `listen` retorna.
 
@@ -121,6 +121,8 @@ impl BeforeApplicationShutdown for JobsService {
 
 ::: info Conexiones durante el apagado
 Cuando el apagado lo inicia una señal, las conexiones HTTP ya terminaron antes de llamar a `on_module_destroy`. Los hooks sirven para cerrar recursos propios (colas, conexiones a bases de datos, archivos), no para seguir atendiendo peticiones.
+
+Una petición que sigue en marcha al vencer `shutdown_timeout` se cancela, no se deja corriendo: el future de su handler se descarta en el `.await` en el que esperaba, antes de ejecutar los hooks. Una transacción de base de datos que tuviera abierta nunca se confirma (con el ORM, su conexión vuelve al pool y la transacción se revierte). Un handler que deba terminar siempre necesita un `shutdown_timeout` mayor, o `None`. Lo que el servidor no cancela: las tareas que la aplicación lanza por su cuenta (`tokio::spawn` en un handler), las conexiones WebSocket y el código que bloquea un hilo sin hacer `await` (el trabajo de `spawn_blocking` corre hasta el final). Un handler que nunca llega a un `.await` no se puede cancelar, así que el apagado lo espera más allá de `shutdown_timeout`. Con `None`, un cliente que mantiene abierta una respuesta (un stream, una lectura lenta) decide cuánto dura el apagado.
 :::
 
 ## Contextos sin servidor

@@ -106,7 +106,15 @@ app.enable_shutdown_hooks();
 app.listen(port).await
 ```
 
-Con `enable_shutdown_hooks()`, al recibir `SIGINT` (Ctrl+C) o `SIGTERM` (en Unix) el servidor deja de aceptar conexiones, espera hasta 10 segundos a que terminen las peticiones en curso y ejecuta `on_module_destroy`, `before_application_shutdown` y `on_application_shutdown` (ver [Eventos del ciclo de vida](/es/fundamentals/lifecycle-events)). Es lo que esperan los orquestadores al reemplazar una instancia. En Windows solo se escucha Ctrl+C.
+Con `enable_shutdown_hooks()`, al recibir `SIGINT` (Ctrl+C) o `SIGTERM` (en Unix) el servidor deja de aceptar conexiones, cierra las que están inactivas, espera hasta `shutdown_timeout` (10 segundos por defecto) a que terminen las peticiones en curso y ejecuta `on_module_destroy`, `before_application_shutdown` y `on_application_shutdown` (ver [Eventos del ciclo de vida](/es/fundamentals/lifecycle-events)). Es lo que esperan los orquestadores al reemplazar una instancia. En Windows solo se escucha Ctrl+C.
+
+```rust
+app.set_server_options(ServerOptions::new().shutdown_timeout(Duration::from_secs(25))); // None: esperar sin límite
+```
+
+Cuando se acaba el tiempo, todo lo que el servidor inició y sigue en marcha se cancela antes de ejecutar los hooks: se cierran las conexiones, los handlers se descartan en el `.await` en el que esperaban (una transacción de base de datos que tuvieran abierta nunca se confirma), y lo mismo ocurre con los handshakes TLS y con las lecturas que descartan cuerpos de petición no leídos. Una línea de advertencia indica cuántas conexiones se cortaron. Así ningún handler del servidor usa un pool de base de datos u otro provider que `on_module_destroy` ya cerró. No se cubren: las tareas que la aplicación lanza por su cuenta (`tokio::spawn` en un handler), las conexiones WebSocket y el código que bloquea un hilo sin hacer `await`. Mantén `shutdown_timeout` por debajo del tiempo que tu orquestador espera antes de matar el proceso (Kubernetes: `terminationGracePeriodSeconds`, 30 s por defecto).
+
+Si el proceso se queda sin descriptores de archivo, aceptar conexiones nuevas falla hasta que se cierre alguna: el servidor espera antes de reintentar (5 ms, duplicando hasta 1 s) en lugar de girar en vacío, y registra una advertencia como mucho una vez por minuto con el número de fallos.
 
 ## Health checks
 

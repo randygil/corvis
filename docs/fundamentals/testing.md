@@ -181,6 +181,8 @@ async fn crud_validation_and_errors() {
 
 Configure the application (global pipes, prefix, CORS, versioning) **before** `app.init()`, just as you would in `main`. `request(&app)` panics if the application wasn't initialized, and also if its `init()` failed: create a new application instead of reusing one whose initialization failed.
 
+A request of the test client takes the same path as one a listening server receives, with the application's `ServerOptions` and body limits: a body over the body parser's limit, or a declared `Content-Length` over the transport limit (`set_body_limit`), gets `413` as it would over a socket, and a multipart body reaches file interceptors as a stream. Only the transport is left out (sockets, TLS, WebSocket upgrades, Engine.IO), and `req.remote_addr()` is `None`. A test that sends a large body sets the limit it needs (`use_body_parser("json", limit)`, `set_body_limit`) like the application does.
+
 ### `TestClient` and `TestRequest`
 
 `request(&app)` returns a `TestClient` with `get`, `post`, `put`, `patch`, `delete`, `options`, `head`, and `method(Method, path)`. Each one creates a `TestRequest`:

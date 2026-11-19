@@ -478,31 +478,30 @@ pub async fn read_body(req: &Request, limit: u64) -> Result<bytes::Bytes, HttpEx
     Ok(out.freeze())
 }
 
-/// Where a multipart body comes from: the socket (read on demand) or the request buffer
-/// (requests built in memory, e.g. by `corvis::testing`).
+/// Where a multipart body comes from: the body the server left unread (read on demand, over a socket or from the test
+/// client) or the request buffer (requests built in memory with `Request::new`).
 pub(crate) enum BodySource {
-    Stream { body: hyper::body::Incoming, deadline: Option<tokio::time::Instant> },
+    Stream(crate::server::PendingBody),
     Buffered(Option<bytes::Bytes>),
 }
 
 impl BodySource {
     pub(crate) fn of(req: &Request) -> Self {
         match crate::server::PendingBodySlot::take(req) {
-            Some(p) => BodySource::Stream { body: p.body, deadline: p.deadline },
+            Some(p) => BodySource::Stream(p),
             None => BodySource::Buffered(Some(req.raw_body().clone()).filter(|b| !b.is_empty())),
         }
     }
 
     pub(crate) fn is_stream(&self) -> bool {
-        matches!(self, BodySource::Stream { .. })
+        matches!(self, BodySource::Stream(_))
     }
 
     /// Puts an unfinished socket body back on the request (after a failed read), so the server
     /// drains a bounded part of it once the error response is sent.
     pub(crate) fn give_back(self, req: &Request) {
-        if let (BodySource::Stream { body, deadline }, Some(slot)) = (self, req.get::<crate::server::PendingBodySlot>()) {
-            let mut guard = slot.0.lock().unwrap_or_else(|e| e.into_inner());
-            *guard = Some(crate::server::PendingBody { body, deadline });
+        if let (BodySource::Stream(pending), Some(slot)) = (self, req.get::<crate::server::PendingBodySlot>()) {
+            *slot.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(pending);
         }
     }
 
@@ -511,7 +510,7 @@ impl BodySource {
         use http_body_util::BodyExt;
         match self {
             BodySource::Buffered(b) => Ok(b.take()),
-            BodySource::Stream { body, deadline } => loop {
+            BodySource::Stream(crate::server::PendingBody { body, deadline }) => loop {
                 let frame = match deadline {
                     Some(d) => tokio::time::timeout_at(*d, body.frame()).await.map_err(|_| crate::server::request_timeout_error())?,
                     None => body.frame().await,
