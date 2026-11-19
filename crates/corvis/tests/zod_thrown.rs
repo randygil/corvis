@@ -33,7 +33,7 @@ fn hook_calls() -> usize {
 
 /// An intersection of two transforms that return different values: zod throws.
 fn conflict() -> z::Schema {
-    z::intersection(z::string().transform(|_| json!(1)), z::string().transform(|_| json!(2))).into()
+    z::intersection(z::string().transform(|_| json!(1)), z::string().transform(|_| json!(2)))
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn deepest_ok(schema: &z::Schema, opts: &ParseOptions) -> usize {
 #[test]
 fn a_thrown_error_deep_in_a_lazy_schema_leaves_the_full_nesting_limit() {
     fn node() -> z::Schema {
-        z::union([conflict(), z::array(z::lazy(node)).into()]).into()
+        z::union([conflict(), z::array(z::lazy(node)).into()])
     }
     let schema = node();
     let opts = ParseOptions::new().max_depth(8);

@@ -32,6 +32,9 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
+/// A parse of the input with the given options, returning the output.
+type Parse = dyn Fn(&Value, &ParseOptions) -> Value;
+
 fn node() -> z::Schema {
     z::Schema::from(z::object! { c: z::lazy(node).nullable(), pad: z::array(z::string()) })
 }
@@ -52,7 +55,7 @@ fn nested(depth: usize) -> Value {
 
 /// Bytes allocated by `parse` of `nested(depth)`; the input and output are leaked, since a value this deep cannot be
 /// dropped recursively on every stack and dropping allocates nothing anyway.
-fn allocated_by(depth: usize, parse: &dyn Fn(&Value, &ParseOptions) -> Value) -> usize {
+fn allocated_by(depth: usize, parse: &Parse) -> usize {
     let v = nested(depth);
     let opts = ParseOptions::new().max_depth(depth + 10);
     let before = ALLOCATED.load(Ordering::Relaxed);
@@ -68,7 +71,7 @@ fn recursive_traversal_is_linear() {
     std::thread::Builder::new()
         .stack_size(512 * 1024 * 1024)
         .spawn(|| {
-            let schemas: [(&str, &dyn Fn(&Value, &ParseOptions) -> Value); 2] = [
+            let schemas: [(&str, &Parse); 2] = [
                 ("z.lazy object", &|v, opts| node().parse_with(v, opts).unwrap()),
                 ("z.json()", &|v, opts| z::json().parse_with(v, opts).unwrap()),
             ];
