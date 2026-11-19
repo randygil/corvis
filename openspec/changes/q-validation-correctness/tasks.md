@@ -115,15 +115,15 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 11. Definition of done
 
-- [ ] 11.1 `cargo build --workspace --all-targets` with no warnings
-- [ ] 11.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
+- [x] 11.1 `cargo build --workspace --all-targets` with no warnings
+- [x] 11.2 `cargo clippy --workspace --all-targets -- -D warnings` passes, and
   `cargo clippy -p corvis --no-default-features -- -D warnings`
-- [ ] 11.3 `cargo test --workspace` passes, including `zod4_fixtures`, `zod_pipe`, `zod_security`, `zod_thrown`,
+- [x] 11.3 `cargo test --workspace` passes, including `zod4_fixtures`, `zod_pipe`, `zod_security`, `zod_thrown`,
   `zod_linear_traversal`, `builtin_pipes_fixtures` and the `fuzz_tests` module; `cargo test --release -p corvis --lib
   z::js` passes
 - [ ] 11.4 Per-feature checks: `cargo check -p corvis --tests --features <f>` for each feature of the CI loop
   (`.github/workflows/ci.yml`) and `--no-default-features`, with no warnings
-- [ ] 11.5 Regression tests: one per spec scenario of this change and one per row of design.md's invariants table, as
+- [x] 11.5 Regression tests: one per spec scenario of this change and one per row of design.md's invariants table, as
   listed in groups 2 to 9
 - [ ] 11.6 Docs pages updated in English and Spanish (`docs/` and `docs/es/`), then `npm run docs:check` in `docs/`
 - [ ] 11.7 Framework runtime code changed (`z/`, `validation/`, `common/pipe.rs`): run the `corvis-parity` check and

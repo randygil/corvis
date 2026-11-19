@@ -572,3 +572,41 @@ chrono; the zod 4 half passed with 3.2.
   5 runs in a row. `word_boundary_patterns_are_linear_and_exact` now asserts `is_linear()` for `\w+\bX` instead of the
   elapsed time; `array_unique_is_linear` reads a `cfg(test)` thread-local count of element comparisons (below `2 * n`
   for 100,000 distinct numbers). `grep -rn "elapsed()"` over the paths of the task finds nothing.
+
+### 11. Definition of done (11.1 to 11.5, 11.8)
+
+- 11.1: `cargo build --workspace --all-targets`, 0 warnings (the first run found one of this change, a `thread_local!`
+  placed between `array_unique`'s doc comment and the function; fixed).
+- 11.2: `cargo clippy --workspace --all-targets -- -D warnings` and `cargo clippy -p corvis --no-default-features -- -D
+  warnings` pass (fixed on the way: an exact `f64` tie literal in the `to_fixed` test, a closure type alias and two
+  conversions to the same type in the new test binaries).
+- 11.3: `cargo test --workspace --no-fail-fast`: 2762 passed, 0 failed, 101 ignored; `zod4_fixtures` 3,
+  `zod_pipe` 2, `zod_security` 5, `zod_thrown` 5, `zod_linear_traversal` 1, `builtin_pipes_fixtures` 2, and the
+  `fuzz_tests` module pass. `cargo test --release -p corvis --lib z::js`: 6 passed.
+- 11.4: `cargo check -p corvis --tests --features <f>` passes with 0 warnings for the ten features of the CI loop.
+  `--no-default-features --tests` does not compile, for a reason older than this change: `fuzz_tests.rs` imports
+  `crate::jwt` and `jsonwebtoken` unconditionally (so on `dev` too); this change only added the `z::js` properties
+  there. The CI loop's own check without default features is the library clippy of 11.2, which passes. Left unticked
+  for the coordinator: gating the JWT properties of `fuzz_tests.rs` is outside this change.
+- 11.5: one regression test per spec scenario and invariant row. `validation/zod`: huge year and wrapped year
+  (`dates_out_of_range_are_invalid`, `a_year_whose_wrapped_time_looks_valid_is_invalid`, debug and release),
+  edges of the range (`date.coerce.edges`, both lists), astral, multipleOf and number coercion in zod 3
+  (`string.*.astral`, `number.multipleOf.big`, `coerce.number.edges` in `casesV3`), unmergeable intersection
+  (`intersection.conflict`, `an_unmergeable_intersection_is_returned_without_the_panic_hook`), through the pipe
+  (`pipeThrown` in `zod_pipe`), user callback panics
+  (`a_panicking_transform_in_the_pipe_is_a_thrown_error_logged_once_a_minute_without_its_message`), overwrite and
+  check as structure (`du.overwrite`, `templateLiteral.check`), zone-less bound
+  (`a_zone_less_date_bound_is_the_same_local_instant_in_both_versions`), BigInt beyond i128
+  (`coerce_bigint_of_a_number_beyond_i128_is_an_invalid_type_issue`, `bigint_of_a_number_outside_i128_is_refused`),
+  empty literal and untagged enum (`literal.empty`, `an_empty_literal_panics_when_built`,
+  `native_enum_of_an_untagged_enum_panics_when_built`). `core/builtin-pipes`: NaN item, large item and replay
+  (`builtin_pipes_follow_the_original`), untagged and plain enum (`parse_enum_pipe_of_*`). `core/validation-pipe`:
+  `number_address_and_length_rules_follow_the_original`. Invariants: the depth tests of `zod_security` plus
+  `a_thrown_error_deep_in_a_lazy_schema_leaves_the_full_nesting_limit`; `zod_linear_traversal`; the `regex.rs` tests
+  and `which_zod3_patterns_are_linear`; `array_unique_is_linear`; `pipeThrown` and
+  `the_serializer_answers_a_thrown_error_with_its_500`; the rate-limited log line test; `js_date_parse_is_total`.
+- 11.8: `node scripts/check-naming.mjs` passes (1055 files); `openspec validate q-validation-correctness --strict` is
+  valid. No crate is added (no commit of this change touches a manifest or the lockfile). `cargo deny check` passes
+  bans, licenses and sources but fails advisories on new "unmaintained" advisories for `chrono`, `chrono-tz` and
+  `chrono-tz-build` (RUSTSEC-2026-0543, -0555, -0559), crates `dev`'s lockfile has at the same versions. Left unticked
+  for the coordinator.
