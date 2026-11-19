@@ -253,6 +253,22 @@ pub fn enum_variants<T: DeserializeOwned>() -> &'static [&'static str] {
     }
 }
 
+/// [`enum_variants`] for a builder that needs them (`builder` names it in the message).
+///
+/// # Panics
+///
+/// When `T` has no readable variant names: an untagged, internally or adjacently tagged enum, or a type that is not an
+/// enum.
+pub(crate) fn readable_enum_variants<T: DeserializeOwned>(builder: &str) -> &'static [&'static str] {
+    let variants = enum_variants::<T>();
+    assert!(
+        !variants.is_empty(),
+        "{builder}::<{}>(): the variant names of this type cannot be read; only enums of unit variants with serde's default (externally tagged) representation are supported",
+        std::any::type_name::<T>()
+    );
+    variants
+}
+
 /// Builds the final message: the custom one (with `$property` / `$value` tokens) or the default.
 pub fn message(custom: Option<&str>, default: String, property: &str, value: V<'_>) -> String {
     match custom {

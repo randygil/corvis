@@ -347,9 +347,14 @@ impl ParseEnumPipe {
     pub fn new<I: IntoIterator<Item = S>, S: Into<String>>(values: I) -> Self {
         ParseEnumPipe { values: values.into_iter().map(Into::into).collect(), optional: false, status: StatusCode::BAD_REQUEST }
     }
-    /// Uses the variants of a serde enum.
+    /// Uses the variants of a serde enum (unit variants, `rename_all` respected).
+    ///
+    /// # Panics
+    ///
+    /// When the variant names of `T` cannot be read: an untagged, internally or adjacently tagged enum, or a type that
+    /// is not an enum (the message names `T`), instead of building a pipe that refuses every value.
     pub fn of<T: serde::de::DeserializeOwned>() -> Self {
-        Self::new(crate::validation::rules::enum_variants::<T>().iter().copied())
+        Self::new(crate::validation::rules::readable_enum_variants::<T>("ParseEnumPipe::of").iter().copied())
     }
     pub fn optional(mut self) -> Self {
         self.optional = true;

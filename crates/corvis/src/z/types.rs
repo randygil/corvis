@@ -2284,12 +2284,15 @@ pub struct ZLiteral {
 
 impl ZLiteral {
     /// `z.literal(value)`; a JSON array means several values (like `z.literal([...])`).
+    ///
+    /// # Panics
+    ///
+    /// For an empty array, with the original's message "Cannot create literal schema with no valid values".
     pub fn new(value: Value) -> Self {
-        let values = match value {
-            Value::Array(a) => a.into_iter().map(Val::Json).collect(),
-            v => vec![Val::Json(v)],
-        };
-        ZLiteral { values, error: None }
+        match value {
+            Value::Array(a) => Self::from_vals(a.into_iter().map(Val::Json).collect()),
+            v => ZLiteral { values: vec![Val::Json(v)], error: None },
+        }
     }
     /// From any JS values (`undefined`, `BigInt`, ...).
     pub fn from_vals(values: Vec<Val>) -> Self {
@@ -3159,6 +3162,10 @@ pub fn date() -> ZDate {
     ZDate::new()
 }
 /// `z.literal(value)` (a JSON array is a list of values: `z.literal([...])`).
+///
+/// # Panics
+///
+/// For an empty array (`z::literal(json!([]))`), when the schema is built, as the original throws when it is created.
 pub fn literal(value: impl Into<Value>) -> ZLiteral {
     ZLiteral::new(value.into())
 }
@@ -3182,9 +3189,14 @@ where
 {
     ZEnum::from_entries(entries.into_iter().map(|(k, v)| (k.into(), v)).collect())
 }
-/// `z.nativeEnum(...)` for a Rust enum deriving `Deserialize` (unit variants).
+/// `z.nativeEnum(...)` for a Rust enum deriving `Deserialize` (unit variants, `rename_all` respected).
+///
+/// # Panics
+///
+/// When the variant names of `T` cannot be read: an untagged, internally or adjacently tagged enum, or a type that is
+/// not an enum (the message names `T`). The schema is built by application code, so this fails at startup.
 pub fn native_enum<T: DeserializeOwned>() -> ZEnum {
-    ZEnum::new(crate::validation::rules::enum_variants::<T>().iter().map(|s| s.to_string()).collect())
+    ZEnum::new(crate::validation::rules::readable_enum_variants::<T>("z::native_enum").iter().map(|s| s.to_string()).collect())
 }
 /// `z.any()`.
 pub fn any() -> ZAny {

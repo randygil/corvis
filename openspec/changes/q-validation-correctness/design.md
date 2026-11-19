@@ -555,3 +555,10 @@ chrono; the zod 4 half passed with 3.2.
   exception receives the thrown error. Found while writing them, not changed (follow-up): encoding
   `z.string().transform(..)` checks the inner string first, so `encode(3)` gives an `invalid_type` issue where zod
   4.4.3 throws the encode error before any check (verified with node); the test uses `"a"`, where both throw.
+
+### 8. Construction errors
+
+- 8.1: `ZLiteral::new` builds an array through `from_vals`, whose assertion carries the recorded message. `z::native_enum`
+  and `ParseEnumPipe::of` share `rules::readable_enum_variants` (crate-private), which panics with
+  `"<builder>::<type name>(): the variant names of this type cannot be read; ..."`; `enum_variants` keeps its signature
+  for the derives. Both fixture lists pass in full from here on.

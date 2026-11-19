@@ -87,7 +87,7 @@ on the unfixed code. zod 4 mode output must not change except where design.md "B
 
 ## 8. Construction errors (Decision 9)
 
-- [ ] 8.1 `ZLiteral::new` asserts non-empty with the recorded message; `z::native_enum` and `ParseEnumPipe::of` panic
+- [x] 8.1 `ZLiteral::new` asserts non-empty with the recorded message; `z::native_enum` and `ParseEnumPipe::of` panic
   for an empty variant list naming the type; `# Panics` rustdoc; `#[should_panic]` tests (empty literal, untagged enum,
   internally tagged enum) and a plain enum test; verify the `literal.empty` case and `cargo test -p corvis --lib`
 
