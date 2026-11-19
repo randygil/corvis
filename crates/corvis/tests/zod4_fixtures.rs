@@ -387,7 +387,7 @@ fn schema(name: &str) -> z::Schema {
         "number.multipleOf.big" => s(z::number().multiple_of(1.0)),
         "number.multipleOf.tenth" => s(z::number().multiple_of(0.1)),
         "number.multipleOf.hundredth" => s(z::number().multiple_of(0.01)),
-        "string.email.edges" => s(z::string().email()),
+        "string.email.edges" | "string.email.caseFold" => s(z::string().email()),
         "string.cuid.edges" => s(z::string().cuid()),
         "string.url.edges" => s(z::string().url()),
         "string.ip.edges" => s(z::string().ip()),

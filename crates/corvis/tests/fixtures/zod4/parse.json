@@ -8472,6 +8472,62 @@
    ]
   },
   {
+   "name": "string.email.caseFold",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "Kevin@example.com",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "ſam@example.com",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "a@example.Kom",
+     "success": false,
+     "issues": [
+      {
+       "origin": "string",
+       "code": "invalid_format",
+       "format": "email",
+       "pattern": "/^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$/",
+       "path": [],
+       "message": "Invalid email address"
+      }
+     ]
+    },
+    {
+     "input": "kevin@example.com",
+     "success": true,
+     "data": "kevin@example.com"
+    }
+   ]
+  },
+  {
    "name": "string.cuid.edges",
    "mode": "parse",
    "locale": null,
@@ -11579,6 +11635,56 @@
      "input": "a_b@c-d.ef",
      "success": true,
      "data": "a_b@c-d.ef"
+    }
+   ]
+  },
+  {
+   "name": "string.email.caseFold",
+   "mode": "parse",
+   "locale": null,
+   "reportInput": false,
+   "globalError": false,
+   "results": [
+    {
+     "input": "Kevin@example.com",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "ſam@example.com",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "a@example.Kom",
+     "success": false,
+     "issues": [
+      {
+       "validation": "email",
+       "code": "invalid_string",
+       "message": "Invalid email",
+       "path": []
+      }
+     ]
+    },
+    {
+     "input": "kevin@example.com",
+     "success": true,
+     "data": "kevin@example.com"
     }
    ]
   },

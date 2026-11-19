@@ -486,6 +486,59 @@ mod tests {
         assert!(re.test("XX"));
     }
 
+    /// Without `u`/`v`, V8's case-insensitive match compares upper cases and never maps a non-ASCII character to an
+    /// ASCII one, so U+017F (ſ) and U+212A (Kelvin) match only themselves; the `regex` crate's case folding maps them
+    /// to `s` and `k`. Expected values printed by Node 24.
+    #[test]
+    fn ignore_case_without_unicode_keeps_long_s_and_kelvin_apart_from_ascii() {
+        let (long_s, kelvin) = ("\u{17F}", "\u{212A}");
+        for (src, flags, input, want) in [
+            (r"^k$", "i", "K", true),
+            (r"^k$", "i", kelvin, false),
+            (r"^s$", "i", "S", true),
+            (r"^s$", "i", long_s, false),
+            (r"^[a-z]+$", "i", "Z", true),
+            (r"^[a-z]+$", "i", long_s, false),
+            (r"^[a-z]+$", "i", kelvin, false),
+            (r"^[^a-z]$", "i", long_s, true),
+            (r"^[^a-z]$", "i", kelvin, true),
+            (r"^[^a-z]$", "i", "k", false),
+            ("^\u{17F}$", "i", long_s, true),
+            ("^\u{17F}$", "i", "s", false),
+            ("^\u{17F}$", "i", "S", false),
+            ("^\u{212A}$", "i", kelvin, true),
+            ("^\u{212A}$", "i", "k", false),
+            (r"^[Ā-ſ]$", "i", long_s, true),
+            (r"^[Ā-ſ]$", "i", "s", false),
+            (r"^[Ā-ſ]$", "i", "\u{101}", true),
+            (r"^\w$", "i", long_s, false),
+            (r"^\w$", "i", kelvin, false),
+            (r"^\w$", "i", "_", true),
+            (r"^\W$", "i", long_s, true),
+            (r"^\W$", "i", kelvin, true),
+            (r"^\W$", "i", "a", false),
+            (r"^[\W]$", "i", kelvin, true),
+            (r"^[\W]$", "i", "k", false),
+            (r"^[^\w]$", "i", long_s, true),
+            (r"^[^\w]$", "i", "k", false),
+            (r"\bk", "i", "\u{17F}k", true),
+            (r"^a\b", "i", "a\u{17F}", true),
+            ("^\u{e9}$", "i", "\u{c9}", true),
+            ("^\u{3a3}$", "i", "\u{3c2}", true),
+            // With `u`, JavaScript folds case as Unicode does, as the `regex` crate does.
+            (r"^k$", "iu", kelvin, true),
+            (r"^s$", "iu", long_s, true),
+            // A lookahead puts the pattern on the backtracking engine.
+            (r"^(?=.)[a-z]+$", "i", kelvin, false),
+            (r"^(?=.)[^a-z]+$", "i", kelvin, true),
+            (r"^(?=.)k$", "i", "K", true),
+        ] {
+            assert_eq!(JsRegex::new(src, flags).test(input), want, "/{src}/{flags}.test({input:?})");
+        }
+        assert!(!crate::z::regexes::BOOLEAN.test("fal\u{17F}e"));
+        assert!(crate::z::regexes::BOOLEAN.test("FALSE"));
+    }
+
     #[test]
     fn engine_selection() {
         // `\b` is the ASCII word boundary of JS on both engines.
