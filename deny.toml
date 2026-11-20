@@ -15,6 +15,12 @@ ignore = [
     # SQLite < 3.54.0 incluido por `sqlx-sqlite` 0.8; sin versión de `sqlx` con el arreglo.
     # Justificación completa en `.cargo/audit.toml`. Quitar con #155.
     { id = "RUSTSEC-2026-0459", reason = "no sqlx release accepts libsqlite3-sys >= 0.39; tracked in #155" },
+    # `chrono`, `chrono-tz` y `chrono-tz-build` declarados sin mantenimiento (no es una vulnerabilidad). Son tipos
+    # de la API pública de corvis-orm y del planificador; cambiarlos por otro crate se decide en #211.
+    # Justificación completa en `.cargo/audit.toml`. Quitar con #211.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, no vulnerability; replacement tracked in #211" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz is unmaintained, no vulnerability; replacement tracked in #211" },
+    { id = "RUSTSEC-2026-0559", reason = "chrono-tz-build is unmaintained, no vulnerability; replacement tracked in #211" },
 ]
 
 [licenses]

@@ -14,7 +14,14 @@
 # corvis-orm solo abre los archivos que configura la aplicación, y el ataque necesita un par
 # base de datos + `-wal` escrito por alguien menos confiable; está documentado en la sección de
 # seguridad de corvis-orm. Quitar esta excepción con #155.
-ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
+# RUSTSEC-2026-0543, RUSTSEC-2026-0555, RUSTSEC-2026-0559 — `chrono`, `chrono-tz` y `chrono-tz-build` declarados
+# sin mantenimiento (todas las versiones). No describen una vulnerabilidad.
+# Justificación: `chrono` es parte de la API pública de corvis-orm (los tipos de fecha de los modelos) y lo exige
+# la feature `chrono` de `sqlx`; `chrono-tz` da las zonas horarias de los cron jobs. Cambiarlos por un crate
+# mantenido cambia esa API, así que se decide y se hace en #211, no aquí. Quitar estas excepciones con #211.
+ignore = [
+    "RUSTSEC-2023-0071", "RUSTSEC-2026-0459", "RUSTSEC-2026-0543", "RUSTSEC-2026-0555", "RUSTSEC-2026-0559",
+]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 
 [output]
