@@ -13,18 +13,22 @@ struct Counting;
 /// Bytes allocated since the start (a reallocation counts its new size).
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 
+// SAFETY: every method forwards to `System` with the arguments it received; the counter is the only addition.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
+        // SAFETY: the caller upholds the contract of `GlobalAlloc::alloc`, passed on unchanged.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` came from `System` through this allocator, with this layout.
         unsafe { System.dealloc(ptr, layout) };
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCATED.fetch_add(new_size, Ordering::Relaxed);
+        // SAFETY: `ptr` came from `System` through this allocator; the caller upholds the rest of the contract.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }

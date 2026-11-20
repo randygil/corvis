@@ -6,7 +6,7 @@
         "crates/corvis/src/__private.rs": 1
       },
       "clippy::expect_used": {
-        "crates/corvis/src/application.rs": 5,
+        "crates/corvis/src/application.rs": 4,
         "crates/corvis/src/common/param.rs": 1,
         "crates/corvis/src/config.rs": 2,
         "crates/corvis/src/di/container.rs": 1,
@@ -17,7 +17,8 @@
         "crates/corvis/src/modules/schedule/cron_time.rs": 5,
         "crates/corvis/src/modules/throttler.rs": 1,
         "crates/corvis/src/posture.rs": 1,
-        "crates/corvis/src/server.rs": 5,
+        "crates/corvis/src/server/budget.rs": 1,
+        "crates/corvis/src/server/timed_io.rs": 4,
         "crates/corvis/src/socket_io/engine/mod.rs": 1,
         "crates/corvis/src/socket_io/engine/polling.rs": 4,
         "crates/corvis/src/socket_io/parser.rs": 6,
@@ -27,8 +28,7 @@
         "crates/corvis/src/ws.rs": 1,
         "crates/corvis/src/z/compound.rs": 1,
         "crates/corvis/src/z/error.rs": 5,
-        "crates/corvis/src/z/json_schema.rs": 1,
-        "crates/corvis/src/z/types.rs": 2
+        "crates/corvis/src/z/json_schema.rs": 1
       },
       "clippy::missing_errors_doc": {
         "crates/corvis/src/application.rs": 13,
@@ -100,7 +100,7 @@
         "crates/corvis/src/z/error.rs": 1,
         "crates/corvis/src/z/js.rs": 1,
         "crates/corvis/src/z/regex.rs": 1,
-        "crates/corvis/src/z/types.rs": 5
+        "crates/corvis/src/z/types.rs": 3
       },
       "clippy::panic": {
         "crates/corvis/src/auth/local/strategy.rs": 1,
@@ -108,8 +108,7 @@
         "crates/corvis/src/http/res.rs": 9,
         "crates/corvis/src/http/response.rs": 1,
         "crates/corvis/src/testing.rs": 2,
-        "crates/corvis/src/z/compound.rs": 3,
-        "crates/corvis/src/z/core.rs": 1,
+        "crates/corvis/src/z/compound.rs": 2,
         "crates/corvis/src/z/regex.rs": 1,
         "crates/corvis/src/z/types.rs": 2
       },
@@ -144,13 +143,14 @@
         "crates/corvis/src/multer/append_field.rs": 4,
         "crates/corvis/src/multer/buffer.rs": 5,
         "crates/corvis/src/multer/busboy.rs": 1,
-        "crates/corvis/src/server.rs": 3,
-        "crates/corvis/src/validation/rules.rs": 7,
+        "crates/corvis/src/server/request.rs": 2,
+        "crates/corvis/src/server/watchdog.rs": 1,
+        "crates/corvis/src/validation/rules.rs": 10,
         "crates/corvis/src/websockets.rs": 12,
         "crates/corvis/src/ws.rs": 6,
         "crates/corvis/src/z/js.rs": 1,
         "crates/corvis/src/z/json_schema.rs": 1,
-        "crates/corvis/src/z/types.rs": 8
+        "crates/corvis/src/z/types.rs": 5
       },
       "missing_debug_implementations": {
         "crates/corvis/src/__private.rs": 9,
@@ -280,7 +280,7 @@
         "crates/corvis/src/router/controller.rs": 59,
         "crates/corvis/src/router/cors.rs": 16,
         "crates/corvis/src/router/versioning.rs": 8,
-        "crates/corvis/src/server.rs": 1,
+        "crates/corvis/src/server/options.rs": 1,
         "crates/corvis/src/socket_io/broadcast.rs": 5,
         "crates/corvis/src/socket_io/gateway.rs": 5,
         "crates/corvis/src/socket_io/namespace.rs": 2,
@@ -288,9 +288,9 @@
         "crates/corvis/src/socket_io/server.rs": 3,
         "crates/corvis/src/socket_io/socket.rs": 2,
         "crates/corvis/src/socket_io/value.rs": 28,
-        "crates/corvis/src/testing.rs": 36,
+        "crates/corvis/src/testing.rs": 35,
         "crates/corvis/src/validation/mod.rs": 21,
-        "crates/corvis/src/validation/rules.rs": 46,
+        "crates/corvis/src/validation/rules.rs": 44,
         "crates/corvis/src/websockets.rs": 30,
         "crates/corvis/src/ws.rs": 19,
         "crates/corvis/src/z/compound.rs": 13,
@@ -353,7 +353,7 @@
         "crates/corvis/src/modules/schedule/mod.rs": 1,
         "crates/corvis/src/modules/throttler.rs": 1,
         "crates/corvis/src/multer/mod.rs": 1,
-        "crates/corvis/src/server.rs": 1,
+        "crates/corvis/src/server/options.rs": 1,
         "crates/corvis/src/socket_io/engine/mod.rs": 1,
         "crates/corvis/src/socket_io/engine/options.rs": 1,
         "crates/corvis/src/socket_io/value.rs": 1,
