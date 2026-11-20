@@ -29,10 +29,18 @@ struct Counting;
 
 static LIVE: AtomicIsize = AtomicIsize::new(0);
 static PEAK: AtomicIsize = AtomicIsize::new(0);
+/// The lowest value of `LIVE` since `reset_rise`, and the most `LIVE` rose above the lowest value before it.
+static LOW: AtomicIsize = AtomicIsize::new(0);
+static RISE: AtomicIsize = AtomicIsize::new(0);
 
 fn grow(by: isize) {
     let now = LIVE.fetch_add(by, Ordering::SeqCst) + by;
     PEAK.fetch_max(now, Ordering::SeqCst);
+    if by < 0 {
+        LOW.fetch_min(now, Ordering::SeqCst);
+    } else {
+        RISE.fetch_max(now - LOW.load(Ordering::SeqCst), Ordering::SeqCst);
+    }
 }
 
 unsafe impl GlobalAlloc for Counting {
@@ -45,7 +53,7 @@ unsafe impl GlobalAlloc for Counting {
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) };
-        LIVE.fetch_sub(layout.size() as isize, Ordering::SeqCst);
+        grow(-(layout.size() as isize));
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc_zeroed(layout) };
@@ -71,6 +79,11 @@ static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 
 fn live() -> isize {
     LIVE.load(Ordering::SeqCst)
+}
+
+fn reset_rise() {
+    LOW.store(live(), Ordering::SeqCst);
+    RISE.store(0, Ordering::SeqCst);
 }
 
 fn reset_peak() {
@@ -377,13 +390,15 @@ async fn a_post_of_an_existing_session_copies_nothing_of_its_request() {
         .into_bytes()
     };
     // The peak of one request on a kept-alive connection that already served one like it (its read buffer is grown).
+    // Measured as the rise above the lowest point since the first response arrived: the server may still hold what
+    // the first request allocated when the client has read its response, and a peak counted from that moment would
+    // miss the second request altogether.
     let peak_of = async |request: &[u8], status: &str| {
         let mut stream = tokio::net::TcpStream::connect(fx.addr).await.unwrap();
         assert!(exchange(&mut stream, request).await.contains(status));
-        let before = live();
-        reset_peak();
+        reset_rise();
         assert!(exchange(&mut stream, request).await.contains(status));
-        PEAK.load(Ordering::SeqCst) - before
+        RISE.load(Ordering::SeqCst)
     };
     // What the HTTP server itself allocates for these bytes (reading, parsing, answering a route that does not exist),
     // then what the engine adds to it for a `POST` of a session.
