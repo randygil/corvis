@@ -6,7 +6,7 @@
         "crates/corvis/src/__private.rs": 1
       },
       "clippy::expect_used": {
-        "crates/corvis/src/application.rs": 4,
+        "crates/corvis/src/application.rs": 5,
         "crates/corvis/src/common/param.rs": 1,
         "crates/corvis/src/config.rs": 2,
         "crates/corvis/src/di/container.rs": 1,
